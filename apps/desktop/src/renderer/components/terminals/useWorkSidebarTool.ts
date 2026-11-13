@@ -411,14 +411,16 @@ function usePublishActiveWorkTool(
     if (!publish) return;
     const timer = window.setTimeout(() => {
       const current = latest.current;
-      if (!current.laneId) return;
+      const pin = current.pin;
+      // No machine for the lane: nothing to publish to.
+      if (!current.laneId || !pin) return;
       const openToolsSnapshot = [...current.openTools];
-      void publish(current.laneId, current.tool, openToolsSnapshot, current.pin).catch((error: unknown) => {
+      void publish(current.laneId, current.tool, openToolsSnapshot, pin).catch((error: unknown) => {
         // An older runtime rejects a tool id it does not know. Only that case
         // retries without the active tool; any other failure keeps the last
         // published state rather than telling other devices "no tool".
         if (current.tool === null || !current.laneId || !isUnknownToolError(error)) return;
-        return publish(current.laneId, null, openToolsSnapshot, current.pin);
+        return publish(current.laneId, null, openToolsSnapshot, pin);
       }).catch(() => {});
     }, WORK_TOOL_PUBLISH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);

@@ -5,6 +5,7 @@ import { formatCodexVoiceDuration, type CodexVoicePreferences } from "../../../s
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { microphonePermissionGuidance } from "./microphonePermissionGuidance";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Voice conversations: talk with any chat, carried by Codex voice.
@@ -128,8 +129,9 @@ export function useCodexVoice({
       // session when it returns. A token-less stop could end a session another
       // window just started on the same chat.
       if (notifyBrain && connection.token) {
-        void window.ade.agentChat.codex
-          .realtimeStop({ sessionId: connection.sessionId, token: connection.token }, connection.pin)
+        const token = connection.token;
+        void withChatPin(connection.pin, (chatPin) => window.ade.agentChat.codex
+          .realtimeStop({ sessionId: connection.sessionId, token }, chatPin))
           .catch((error: unknown) => logVoice("stop failed", error));
       }
     }
@@ -246,15 +248,15 @@ export function useCodexVoice({
     try {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      const result = await window.ade.agentChat.codex.realtimeStart({
+      const result = await withChatPin(connection.pin, (chatPin) => window.ade.agentChat.codex.realtimeStart({
         sessionId,
         sdp: offer.sdp ?? "",
         preferences: preferencesRef.current,
-      }, connection.pin);
+      }, chatPin));
       if (connectionRef.current !== connection) {
         // Stopped while connecting: the brain session exists now, so end it.
-        void window.ade.agentChat.codex
-          .realtimeStop({ sessionId, token: result.token }, connection.pin)
+        void withChatPin(connection.pin, (chatPin) => window.ade.agentChat.codex
+          .realtimeStop({ sessionId, token: result.token }, chatPin))
           .catch(() => {});
         return;
       }
@@ -315,11 +317,12 @@ export function useCodexVoice({
       const connection = connectionRef.current;
       if (!connection?.token || inFlight) return;
       inFlight = true;
+      const token = connection.token;
       try {
-        const state = await window.ade.agentChat.codex.realtimeState({
+        const state = await withChatPin(connection.pin, (chatPin) => window.ade.agentChat.codex.realtimeState({
           sessionId: connection.sessionId,
-          token: connection.token,
-        }, connection.pin);
+          token,
+        }, chatPin));
         if (cancelled || connectionRef.current !== connection) return;
         if (state.status === "ended") {
           teardown(false);

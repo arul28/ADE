@@ -354,8 +354,6 @@
 }
 
 /* ── Stat-strip refinements ───────────────────────────────────────────── */
-.usage-stat-value .kit-tag { white-space: nowrap; }
-
 /* Small fact trio (per day / peak / per 1M). */
 .usage-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .usage-fact { display: flex; flex-direction: column; gap: 4px; min-width: 0; }

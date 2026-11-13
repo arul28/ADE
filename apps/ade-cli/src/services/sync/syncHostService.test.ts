@@ -6409,10 +6409,12 @@ describe("sync host account authentication", () => {
             modelHandoffHistory: [{ fromModelId: "claude-sonnet", toModelId: "claude-opus" }],
             title: "claude-opus stays in free text",
           })) as never);
-          expect(await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
-            ok: true,
-            result: { modelId: null, presetId: null, modelHandoffHistory: null, title: "claude-opus stays in free text" },
-          });
+          // A summary reaches a guest only through its allow-list: the model is
+          // hidden, and preset and handoff history are not sent at all.
+          const summary = await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" });
+          expect(summary).toMatchObject({ ok: true, result: { modelId: null, title: "claude-opus stays in free text" } });
+          expect(summary.result).not.toHaveProperty("presetId");
+          expect(summary.result).not.toHaveProperty("modelHandoffHistory");
         } finally {
           await env.close([guest?.client ?? null]);
         }
@@ -6447,11 +6449,15 @@ describe("sync host account authentication", () => {
           env.execute.mockImplementationOnce((async () => ({
             sessionId: "session-shared",
             crossMachineHandoff: { targetMachineName: "Studio Mac", targetMachineKey: "machine-studio" },
+            transcriptPath: "/Users/owner/.ade/transcripts/session-shared.jsonl",
+            providerResumeSessionId: "provider-session-1",
           })) as never);
-          expect(await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
-            ok: true,
-            result: { sessionId: "session-shared", crossMachineHandoff: { targetMachineName: null, targetMachineKey: null } },
-          });
+          // Fields outside the guest allow-list (machine handoff, disk paths, provider ids) are not sent.
+          const summary = await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" });
+          expect(summary).toMatchObject({ ok: true, result: { sessionId: "session-shared" } });
+          expect(summary.result).not.toHaveProperty("crossMachineHandoff");
+          expect(summary.result).not.toHaveProperty("transcriptPath");
+          expect(summary.result).not.toHaveProperty("providerResumeSessionId");
         } finally {
           await env.close([guest?.client ?? null]);
         }
@@ -8703,6 +8709,8 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.input",
         // Closing a browser tab changes the desktop: the owner's phone only.
         "workTools.closeBrowserTab",
+        // Clicking and typing into a desktop's tab is driving it, not viewing.
+        "workTools.sendBrowserTabInput",
         // Lane resolution can import a lane and pull mutates worktrees —
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",

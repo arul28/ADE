@@ -1,7 +1,7 @@
 /**
  * The `provider_logins` actions: `status` (a read for anyone), `captureNow`
- * (the person's "look now"), `allowKeychain` (the person's one Keychain read
- * on a Mac, user-only and machine-scoped), `allowGitHubCli` (the person's
+ * (the person's "look now"), `allowKeychain` (the person's one OS keyring read
+ * on their desktop, user-only and machine-scoped), `allowGitHubCli` (the person's
  * switch for Copilot's GitHub CLI login on one computer, user-only and
  * machine-scoped; on is for that computer's desktop only), and the person's five writes `use`, `setCloud`,
  * `setCloudAll`, `setCloudBalance` and `remove` (user-only: the desktop app, never the CLI, an
@@ -81,8 +81,8 @@ export function buildProviderLoginsDomainService(): Record<ProviderLoginAction, 
       return sync ? await sync.captureNow(provider) : notThisRuntime(provider);
     },
     /**
-     * `{provider: "antigravity", slot?}`: copy the sign-in from this Mac's
-     * Keychain, once. Refused off macOS. The desktop calls it only for the Mac
+     * `{provider: "antigravity", slot?}`: copy the agy CLI sign-in from this
+     * computer's OS keyring, once. Refused on a cloud computer. The desktop calls it only for the computer
      * the person is using (a remote pin is refused in the preload).
      */
     async allowKeychain(args?: unknown): Promise<ProviderLoginStatus> {

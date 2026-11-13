@@ -1,8 +1,10 @@
+import { useMemo } from "react";
 import { Archive } from "@phosphor-icons/react";
 import type { ArchiveSummary } from "../../../shared/types/archive";
 import { ARCHIVE_REMINDER_INTERVAL_MS, archiveReminderTitle } from "../../../shared/archive";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useSnoozedReminderBanner } from "./useSnoozedReminderBanner";
+import { useTabCopyPin } from "../../state/repositoryScope";
 
 /**
  * The weekly "clean up your archive" reminder.
@@ -18,7 +20,6 @@ import { useSnoozedReminderBanner } from "./useSnoozedReminderBanner";
 
 export const ARCHIVE_SETTINGS_ROUTE = settingsRouteFor("archive.items");
 
-const readSummary = () => window.ade.archive.summary({});
 const hasStaleItems = (summary: ArchiveSummary) => summary.staleTotal > 0;
 
 export function useArchiveReminderBanner({
@@ -31,6 +32,14 @@ export function useArchiveReminderBanner({
   enabled: boolean;
   onReview: () => void;
 }): void {
+  // The archive the reminder points to (Settings → Archive) is the tab copy's.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
+  const readSummary = useMemo(
+    () => (tabCopyPin ? () => window.ade.archive.summary({}, tabCopyPin) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tabCopyPinKey],
+  );
   useSnoozedReminderBanner({
     projectRoot,
     enabled,
@@ -40,6 +49,7 @@ export function useArchiveReminderBanner({
     firstCheckDelayMs: 15_000,
     recheckIntervalMs: 6 * 3_600_000,
     read: readSummary,
+    readKey: tabCopyPinKey,
     qualifies: hasStaleItems,
     icon: <Archive size={13} weight="bold" />,
     title: archiveReminderTitle,

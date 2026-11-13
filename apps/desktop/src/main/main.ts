@@ -1,5 +1,7 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
+import { installNoticeLayer, placeNoticeLayer } from "./services/noticeLayer/noticeLayerWindow";
+import type { NoticeLayerRect } from "../shared/noticeLayer";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import {
@@ -9,6 +11,7 @@ import {
   whenSystemCertificateReadSettles,
 } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
+import { coerceSavedWindowRepositoryTabs, type SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
@@ -79,6 +82,7 @@ import {
 import {
   appNavigationOwnership,
   dispatchOwnerAwareNavigation,
+  resolveAccountProjectNavigation,
   ownerNavigationFailureCopy,
 } from "./services/deeplinks/ownerAwareNavigation";
 import { resolveLocalProjectRoot } from "./services/deeplinks/localProjectResolution";
@@ -513,7 +517,7 @@ import { createDemoEngineSet } from "./services/demoVideo/demoEngines";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
-import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
+import { BUILT_IN_BROWSER_DISK_CACHE_BYTES, BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
@@ -938,6 +942,11 @@ stripInheritedProviderHomeEnv(process.env);
 if (process.env.VITE_DEV_SERVER_URL) {
   // Dev-only: prevent stale Vite optimized-dep URLs from being served from Electron cache.
   app.commandLine.appendSwitch("disable-http-cache");
+} else {
+  // Each profile's HTTP cache, the ADE browser's included, is capped and
+  // evicted least-recently-used, as Chrome does under storage pressure.
+  // Without a cap the shared browser profile's cache grew past 800 MB.
+  app.commandLine.appendSwitch("disk-cache-size", String(BUILT_IN_BROWSER_DISK_CACHE_BYTES));
 }
 
 function getRendererUrl(): string {
@@ -1454,8 +1463,9 @@ async function createWindow(args: {
     }
   }
 
-  // Block unexpected external navigation/window creation.
-  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  // Block unexpected external navigation/window creation. The one window the
+  // renderer may open is its own notice layer (`installNoticeLayer`).
+  installNoticeLayer(win);
   win.webContents.on("will-navigate", (event, url) => {
     const allowed = getRendererUrl();
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -2155,6 +2165,14 @@ app.whenReady().then(async () => {
     },
   );
 
+  // The bottom-right cards' own window over a live browser page (`noticeLayer`).
+  ipcMain.handle(IPC.appPlaceNoticeLayer, (event, arg: { rect?: NoticeLayerRect | null } = {}): boolean => {
+    if (!isTrustedAdeRendererSender(event)) return false;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return false;
+    return placeNoticeLayer(win, arg?.rect ?? null);
+  });
+
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
     if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");
     setPtyDataSubscriptionsForSender(
@@ -2479,6 +2497,45 @@ app.whenReady().then(async () => {
   };
   const windowPendingProjectRoots = new Map<number, Map<string, number>>();
   const windowProjectBindings = new Map<number, RemoteOpenProjectBinding>();
+  /** Each window's repository tabs, as its renderer last sent them (S5). */
+  const windowRepositoryTabs = new Map<number, SavedWindowRepositoryTabs>();
+  /**
+   * The saved tabs a window reopens: only the first window of a launch, or a
+   * window opened when none is open, with no project asked for. Its session
+   * hands them out until the renderer sends its own strip.
+   */
+  const windowRestoreRepositoryTabs = new Map<number, SavedWindowRepositoryTabs>();
+  const parseSavedRepositoryTabs = (value: unknown): SavedWindowRepositoryTabs | null =>
+    coerceSavedWindowRepositoryTabs(value, (binding) => {
+      const parsed = sanitizeRendererProjectBinding(binding);
+      return parsed?.kind === "remote" ? parsed : null;
+    });
+  const markWindowRepositoryTabsRestore = (windowId: number): void => {
+    const saved = parseSavedRepositoryTabs(readGlobalState(globalStatePath).lastRepositoryTabs);
+    if (saved && saved.tabs.length > 0) windowRestoreRepositoryTabs.set(windowId, saved);
+  };
+  const persistWindowRepositoryTabs = (windowId: number): void => {
+    // The update quit and the shutdown close every window; what they leave
+    // must not replace the strip the person had.
+    if (shutdownRequested || autoUpdateService.isInstallQuitArmed()) return;
+    const tabs = windowRepositoryTabs.get(windowId);
+    if (!tabs) return;
+    writeGlobalState(globalStatePath, {
+      ...readGlobalState(globalStatePath),
+      lastRepositoryTabs: { ...tabs, updatedAt: new Date().toISOString() },
+    });
+  };
+  const setWindowRepositoryTabs = (windowId: number | null, value: unknown): void => {
+    if (windowId == null) return;
+    const tabs = parseSavedRepositoryTabs(value);
+    if (!tabs) return;
+    windowRepositoryTabs.set(windowId, tabs);
+    windowRestoreRepositoryTabs.delete(windowId);
+    const openWindows = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed());
+    if (BrowserWindow.getFocusedWindow()?.id === windowId || openWindows.length === 1) {
+      persistWindowRepositoryTabs(windowId);
+    }
+  };
   const ipcWindowScope = new AsyncLocalStorage<number | null>();
   const rpcSocketCleanupByRoot = new Map<string, () => void>();
   const projectLastActivatedAt = new Map<string, number>();
@@ -9703,6 +9760,7 @@ app.whenReady().then(async () => {
     win.webContents.on("did-finish-load", () => sendWindowFocus(win.isFocused()));
     win.on("focus", () => {
       sendWindowFocus(true);
+      persistWindowRepositoryTabs(win.id);
       const focusedRemoteBinding = windowProjectBindings.get(win.id) ?? null;
       const focusedRoot = windowProjectRoots.get(win.id) ?? null;
       if (focusedRemoteBinding) {
@@ -9747,6 +9805,9 @@ app.whenReady().then(async () => {
       windowKnownLocalProjectRoots.delete(win.id);
       windowPendingProjectRoots.delete(win.id);
       windowProjectBindings.delete(win.id);
+      // The saved strip stays: closing the last window is how a person quits.
+      windowRepositoryTabs.delete(win.id);
+      windowRestoreRepositoryTabs.delete(win.id);
       if (activeProjectRoot === previousRoot) {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
@@ -9755,7 +9816,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; openProjectTabRoots: string[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[] } => {
+  const getWindowSession = (windowId: number | null): { windowId: number | null; project: ProjectInfo | null; binding: OpenProjectBinding | null; openProjectTabs: ProjectInfo[]; openProjectTabRoots: string[]; pendingLocalProjectRoots: string[]; knownLocalProjectRoots: string[]; repositoryTabs?: SavedWindowRepositoryTabs | null } => {
     if (windowId == null) {
       const project = projectForRoot(activeProjectRoot);
       return {
@@ -9775,6 +9836,9 @@ app.whenReady().then(async () => {
     // only projects with a live context, and an idle project's context can be
     // released while its tab stays open.
     const openProjectTabRoots = Array.from(windowProjectTabRoots.get(windowId) ?? []);
+    // The saved strip this window reopens (a launch or the first window
+    // after all closed), until its renderer sends a strip of its own.
+    const repositoryTabs = windowRestoreRepositoryTabs.get(windowId) ?? null;
     const remoteBinding = windowProjectBindings.get(windowId) ?? null;
     if (remoteBinding) return {
       windowId,
@@ -9784,6 +9848,7 @@ app.whenReady().then(async () => {
       openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
+      repositoryTabs,
     };
     const project = projectForRoot(windowProjectRoots.get(windowId) ?? null);
     return {
@@ -9794,6 +9859,7 @@ app.whenReady().then(async () => {
       openProjectTabRoots,
       pendingLocalProjectRoots: pendingProjectRootsForWindow(windowId),
       knownLocalProjectRoots,
+      repositoryTabs,
     };
   };
 
@@ -9834,6 +9900,11 @@ app.whenReady().then(async () => {
       onCreated: (createdWindow) => {
         attachWheelZoom(createdWindow);
         registerWindowSession(createdWindow, null, restoredRemoteBinding);
+        // The first window after every window closed reopens the saved tabs,
+        // unless it was opened for one project.
+        if (openWindows.length === 0 && !args.projectRoot && !requestedRemote) {
+          markWindowRepositoryTabsRestore(createdWindow.id);
+        }
         args.onWindow?.(createdWindow);
       },
       onCloseRequested: handleMainWindowCloseRequested,
@@ -9926,8 +9997,22 @@ app.whenReady().then(async () => {
     }
   };
 
-  dispatchAppNavigationRequest = (request) => {
+  dispatchAppNavigationRequest = (incoming) => {
     void (async () => {
+      // A link that names an account project goes to a reachable copy of it,
+      // or opens its tab with no machine (L33). Old links pass unchanged.
+      const request = await resolveAccountProjectNavigation(incoming, {
+        readAccountList: async () => ipcBridge?.readAccountProjectList() ?? { state: "not_loaded", projects: [] },
+        getLocalMachineKey: () => ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
+        connectedMachineKeys: () => ipcBridge?.connectedMachineKeys() ?? [],
+        onlineMachineKeys: async () => {
+          const listed = await Promise.race([
+            ipcBridge?.listAccountMachines() ?? Promise.resolve(null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 4_000)),
+          ]);
+          return listed?.state === "ok" ? listed.machines.filter((machine) => machine.online).map((machine) => machine.machineKey) : [];
+        },
+      });
       const handledByOwner = await dispatchOwnerAwareNavigation(request, {
         getLocalMachineKey: () =>
           ipcBridge?.getLocalMachineIdentity().machineKey ?? "",
@@ -10014,7 +10099,7 @@ app.whenReady().then(async () => {
       targetWindow.focus();
       targetWindow.webContents.send(IPC.appNavigate, request);
     })().catch((error: unknown) => {
-      const ownership = appNavigationOwnership(request.target);
+      const ownership = appNavigationOwnership(incoming.target);
       getActiveContext().logger.warn("deeplink.dispatch_window_failed", {
         ...(ownership
           ? {
@@ -10791,6 +10876,7 @@ app.whenReady().then(async () => {
     getProjectContext: (projectRoot) =>
       projectContexts.get(normalizeProjectRoot(projectRoot)) ?? null,
     setWindowProjectTabs: rememberWindowProjectTabs,
+    setWindowRepositoryTabs,
     bindRemoteProject: bindWindowToRemoteProject,
     localRuntimeConnectionPool: shouldUseInProcessProjectRuntime()
       ? null
@@ -10993,6 +11079,8 @@ app.whenReady().then(async () => {
     onCreated: (createdWindow) => {
       attachWheelZoom(createdWindow);
       registerWindowSession(createdWindow, null, initialRemoteProjectBinding);
+      // Every launch reopens the saved repository tabs, after an update too.
+      markWindowRepositoryTabsRestore(createdWindow.id);
     },
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,

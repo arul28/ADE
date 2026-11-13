@@ -1,10 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
-import { ShareNetwork, UserPlus } from "@phosphor-icons/react";
+import { ShareNetwork, UserCircle } from "@phosphor-icons/react";
 import {
-  LANE_SHARE_PRESET_NAMES,
-  laneSharePresetLabel,
-  laneSharePresetRights,
   laneShareRightsForHost,
   laneShareRiskLevel,
   type LaneSharePresetName,
@@ -16,7 +13,7 @@ import { Dialog, confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
-import { LaneShareRightsPanel, LaneShareRiskSummary } from "./LaneShareRightsPanel";
+import { LaneSharePresetPicker, LaneShareRightsPanel, LaneShareRiskSummary } from "./LaneShareRightsPanel";
 import { confirmHighRiskShare, useLaneShareDefaults } from "./laneShareDefaults";
 import { revokeLaneShares } from "./laneShareActions";
 import { LANE_SHARE_MAX_GUESTS } from "../../../shared/laneShareDirectory";
@@ -26,12 +23,16 @@ import {
   laneShareEmailNote,
   laneSharePresetText,
   laneShareProblem,
+  laneShareRightsPreset,
   laneSharesForLane,
   laneShareStateLabel,
   laneShareUsageText,
   sameLaneShareRights,
+  withLaneSharePreset,
 } from "./laneShareModel";
 import { reloadLaneShares, useLaneShareList, useLaneShareStore, type LaneShareSheetRequest } from "./laneShareStore";
+import { requirePin } from "../../state/repositoryScope";
+import { LaneShareMeta, LaneShareState, type LaneShareTone } from "./laneShareUi";
 
 /**
  * The share sheet: people on the left (invite form, one row per guest with
@@ -45,100 +46,71 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type Draft = { rights: LaneShareRights; endsAt: number | null };
 
-function presetOf(rights: LaneShareRights): LaneSharePresetName | "custom" {
-  const label = laneSharePresetLabel(rights);
-  return sameLaneShareRights(rights, { ...laneSharePresetRights(label), limits: { ...laneSharePresetRights(label).limits, endsAt: rights.limits.endsAt } })
-    ? label
-    : "custom";
+/** A person's state: "Removed here" while a revoke waits on the directory, else the share's own state. */
+function personState(entry: LaneShareGivenEntry, revokePending: boolean, now?: number): { label: string; tone: LaneShareTone } {
+  if (revokePending) return { label: "Removed here", tone: "warn" };
+  const state = laneShareStateLabel(entry, now);
+  return { label: state.label, tone: state.tone ?? (entry.connectedDevices > 0 ? "ok" : null) };
 }
 
-function withPreset(rights: LaneShareRights, preset: LaneSharePresetName): LaneShareRights {
-  const next = laneSharePresetRights(preset);
-  // A preset changes what the person may do; privacy and the end date stay.
-  return { ...next, privacy: rights.privacy, limits: { ...next.limits, endsAt: rights.limits.endsAt } };
-}
-
-function PresetSelect({
-  value,
-  disabled,
-  onChange,
-  label,
-}: {
-  value: LaneSharePresetName | "custom";
-  disabled?: boolean;
-  onChange: (preset: LaneSharePresetName) => void;
-  label: string;
-}) {
-  return (
-    <select
-      className="kit-input"
-      data-size="sm"
-      aria-label={label}
-      disabled={disabled}
-      value={value}
-      onClick={(event) => event.stopPropagation()}
-      onChange={(event) => {
-        const next = event.target.value;
-        if ((LANE_SHARE_PRESET_NAMES as readonly string[]).includes(next)) onChange(next as LaneSharePresetName);
-      }}
-      style={{ width: 118, flex: "none" }}
-    >
-      {value === "custom" ? <option value="custom">Custom</option> : null}
-      {LANE_SHARE_PRESET_NAMES.map((name) => <option key={name} value={name}>{LANE_SHARE_PRESET_LABELS[name]}</option>)}
-    </select>
-  );
-}
-
-function GuestRow({
+/** One person with access: their address, then state, access level and who made it, on one quiet line. */
+function PersonRow({
   entry,
   selected,
   presetValue,
   revokePending,
-  disabled,
   onSelect,
-  onPreset,
 }: {
   entry: LaneShareGivenEntry;
   selected: boolean;
   presetValue: LaneSharePresetName | "custom";
   revokePending: boolean;
-  disabled: boolean;
   onSelect: () => void;
-  onPreset: (preset: LaneSharePresetName) => void;
 }) {
-  const state = revokePending ? { label: "Removed here", tone: "warn" as const } : laneShareStateLabel(entry);
-  const editable = entry.local && isLiveLaneShare(entry) && !revokePending;
+  const state = personState(entry, revokePending);
+  // Rights known here name the level the picker shows (Custom included); the
+  // directory's label is the fallback for a share with no rights on this computer.
+  const access = presetValue !== "custom"
+    ? LANE_SHARE_PRESET_LABELS[presetValue]
+    : entry.rights ? "Custom" : laneSharePresetText(entry.preset);
   return (
-    <div
-      role="option"
-      aria-selected={selected}
-      tabIndex={0}
-      className={`kit-row flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 ${selected ? "bg-fg/[0.07]" : ""}`}
+    <button
+      type="button"
+      aria-pressed={selected}
+      className="ade-ls-person"
       onClick={onSelect}
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          onSelect();
-        }
-      }}
       data-testid="lane-share-guest-row"
       data-state={entry.state}
     >
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[12px] text-fg/88" title={entry.receiverEmail ?? undefined}>{entry.receiverEmail ?? "Guest"}</div>
-        <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-fg/50">
-          {entry.connectedDevices > 0 ? <span className="kit-dot" data-state="ok" aria-hidden /> : null}
-          <span className="kit-tag" data-tone={state.tone ?? undefined}>{state.label}</span>
-          {entry.createdBy === "agent" ? <span className="truncate" data-testid="lane-share-made-by-agent">Made by an agent</span> : null}
-        </div>
+      <UserCircle size={18} className="ade-ls-person-glyph" aria-hidden />
+      <div className="ade-ls-person-text">
+        <div className="ade-ls-person-name" title={entry.receiverEmail ?? undefined}>{entry.receiverEmail ?? "Guest"}</div>
+        <LaneShareMeta
+          parts={[
+            <LaneShareState key="state" label={state.label} tone={state.tone} />,
+            access,
+            entry.createdBy === "agent" ? <span key="agent" data-testid="lane-share-made-by-agent">Made by an agent</span> : null,
+          ]}
+        />
       </div>
-      {editable ? (
-        <PresetSelect value={presetValue} disabled={disabled} onChange={onPreset} label={`Rights for ${entry.receiverEmail ?? "this guest"}`} />
-      ) : (
-        <span className="shrink-0 text-[11px] text-fg/45">{laneSharePresetText(entry.preset)}</span>
-      )}
-    </div>
+    </button>
   );
+}
+
+/** One plain line about the selected share's state, when it needs saying. */
+function SelectedNote({ entry, editable, laneGone, revokePending }: { entry: LaneShareGivenEntry; editable: boolean; laneGone: boolean; revokePending: boolean }) {
+  const line = selectedNoteText(entry, editable, laneGone, revokePending);
+  return line ? <div className="ade-ls-line">{line}</div> : null;
+}
+
+function selectedNoteText(entry: LaneShareGivenEntry, editable: boolean, laneGone: boolean, revokePending: boolean): string | null {
+  if (revokePending) return null;
+  if (laneGone) return "The lane was deleted, so the share ended.";
+  if (!entry.local) return "This share was made on another computer. Change it there.";
+  if (entry.needsRights) return "This computer holds no rights for this share, so they get nothing. Save rights here, or remove the share.";
+  if (entry.laneState === "archived") return "The lane is archived, so the share is paused. Unarchive the lane to resume it.";
+  if (entry.connectedDevices > 0 && editable) return "Connected now. A change applies to their next action.";
+  return null;
 }
 
 export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRequest; onClose: () => void }) {
@@ -188,14 +160,14 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
   const savedDraft: Draft | null = selectedEntry
     ? { rights: selectedEntry.rights ?? defaults.rights, endsAt: selectedEntry.endsAt }
     : null;
-  const shownDraft: Draft = selectedEntry ? edits[selectedEntry.grantId] ?? savedDraft! : newDraft;
+  const selectedEdit = selectedEntry ? edits[selectedEntry.grantId] : undefined;
+  // A selected person shows their edit, else their saved rights; nobody selected shows the new person's draft.
+  const shownDraft: Draft = selectedEdit ?? savedDraft ?? newDraft;
   const draft: Draft = { ...shownDraft, rights: forHost(shownDraft.rights) };
-  const dirty = selectedEntry
-    ? Boolean(edits[selectedEntry.grantId]) && (
-      !sameLaneShareRights(edits[selectedEntry.grantId]!.rights, selectedEntry.rights)
-      || edits[selectedEntry.grantId]!.endsAt !== selectedEntry.endsAt
-      || selectedEntry.needsRights)
-    : false;
+  const dirty = selectedEntry != null && selectedEdit != null && (
+    !sameLaneShareRights(selectedEdit.rights, selectedEntry.rights)
+    || selectedEdit.endsAt !== selectedEntry.endsAt
+    || selectedEntry.needsRights);
   const formDisabled = blocked || loading || busy != null;
   const rightsDisabled = formDisabled || (selectedEntry ? !selectedEditable : false);
   const who = selectedEntry?.receiverEmail ?? (email.trim() || "this person");
@@ -250,7 +222,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
         rights,
         endsAt: newDraft.endsAt,
         ...(high ? { confirmHighRisk: true } : {}),
-      }, pin);
+      }, requirePin(pin, "No computer with this lane is online."));
       const link = result.directory?.link ?? null;
       let copied = false;
       if (copyLink && link) copied = await copyTextToClipboard(link);
@@ -287,7 +259,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
         rights: next.rights,
         ...(next.endsAt !== selectedEntry.endsAt ? { endsAt: next.endsAt } : {}),
         ...(nextRisk === "high" ? { confirmHighRisk: true } : {}),
-      }, pin);
+      }, requirePin(pin, "No computer with this lane is online."));
       setEdits((current) => {
         const { [selectedEntry.grantId]: _saved, ...rest } = current;
         return rest;
@@ -310,7 +282,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
     setFormError(null);
     setNotice(null);
     try {
-      const result = await window.ade.laneShare.resendInvite({ grantId: target.grantId }, pin);
+      const result = await window.ade.laneShare.resendInvite({ grantId: target.grantId }, requirePin(pin, "No computer with this lane is online."));
       setNotice(laneShareEmailNote(result.directory) ?? `The invite to ${target.receiverEmail ?? "the guest"} was sent again. It works for 24 hours.`);
       await refresh();
       setSelected(result.grantId);
@@ -376,7 +348,7 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
         { label: "Send invite", onClick: () => { void sendInvite(false); }, variant: "solid" as const, disabled: formDisabled || atLimit || !email.trim(), busy: busy === "invite" },
       ];
 
-  const selectedState = selectedEntry ? laneShareStateLabel(selectedEntry, now) : null;
+  const selectedState = selectedEntry ? personState(selectedEntry, selectedRevokePending, now) : null;
   const usage = selectedEntry ? laneShareUsageText(selectedEntry) : null;
 
   return (
@@ -405,149 +377,118 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
             }}
           />
         ) : null}
-        <div className="grid min-w-0 gap-4" style={{ gridTemplateColumns: "minmax(0, 300px) minmax(0, 1fr)" }}>
+        <div className="ade-ls-sheet">
           {/* People */}
-          <div className="flex min-w-0 flex-col gap-2" data-testid="lane-share-people">
-            <div
-              role="option"
-              aria-selected={selected === NEW}
-              tabIndex={0}
-              className={`kit-panel flex flex-col gap-2 p-2.5 ${selected === NEW ? "" : "cursor-pointer"}`}
-              onClick={() => setSelected(NEW)}
-              onKeyDown={(event) => { if (event.key === "Enter") setSelected(NEW); }}
-            >
-              <div className="flex items-center gap-1.5 text-[12px] text-fg/80">
-                <UserPlus size={13} weight="duotone" />
-                Invite a person
-              </div>
-              <div className="flex min-w-0 items-center gap-2">
-                <input
-                  className="kit-input min-w-0 flex-1"
-                  type="email"
-                  placeholder="Email address"
-                  aria-label="Email address to invite"
-                  value={email}
-                  disabled={formDisabled || atLimit}
-                  onFocus={() => setSelected(NEW)}
-                  onChange={(event) => {
-                    setFormError(null);
-                    setEmail(event.target.value);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void sendInvite(false);
-                    }
-                  }}
-                />
-                <PresetSelect
-                  value={presetOf(forHost(newDraft.rights))}
-                  disabled={formDisabled || atLimit}
-                  label="Rights for the new person"
-                  onChange={(preset) => {
-                    setSelected(NEW);
-                    newTouched.current = true;
-                    setNewDraft((current) => ({ ...current, rights: withPreset(current.rights, preset) }));
-                  }}
-                />
-              </div>
-              {atLimit ? (
-                <div className="text-[11px] leading-[1.4] text-fg/55">
-                  A lane can have {LANE_SHARE_MAX_GUESTS} guests, pending invites included. Remove one to invite another.
-                </div>
-              ) : null}
+          <div className="ade-ls-people" data-testid="lane-share-people">
+            <h3 className="ade-ls-pane-title">
+              People
+              <span className="kit-num">{liveCount} of {LANE_SHARE_MAX_GUESTS}</span>
+            </h3>
+            <div className="ade-ls-invite">
+              <input
+                className="kit-input"
+                type="email"
+                placeholder="Invite by email"
+                aria-label="Email address to invite"
+                value={email}
+                disabled={formDisabled || atLimit}
+                onFocus={() => setSelected(NEW)}
+                onChange={(event) => {
+                  setFormError(null);
+                  setSelected(NEW);
+                  setEmail(event.target.value);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void sendInvite(false);
+                  }
+                }}
+              />
             </div>
+            {atLimit ? (
+              <div className="ade-ls-line">A lane can have {LANE_SHARE_MAX_GUESTS} people, invites included. Remove one to invite another.</div>
+            ) : null}
 
-            <div role="listbox" aria-label="People with access" className="flex min-w-0 flex-col gap-0.5">
+            <div role="group" aria-label="People with access" className="ade-ls-person-list">
               {loading ? (
-                <div className="px-2 py-1.5 text-[12px] text-fg/50">Loading…</div>
+                <div className="ade-ls-empty">Loading…</div>
               ) : shares.length === 0 ? (
-                <div className="px-2 py-1.5 text-[12px] text-fg/50">Nobody has access to this lane yet.</div>
+                <div className="ade-ls-empty">Nobody has access yet.</div>
               ) : shares.map((share) => {
                 const shareDraft = edits[share.grantId]?.rights ?? share.rights;
                 return (
-                  <GuestRow
+                  <PersonRow
                     key={share.grantId}
                     entry={share}
                     selected={selected === share.grantId}
-                    presetValue={shareDraft ? presetOf(forHost(shareDraft)) : "custom"}
+                    presetValue={shareDraft ? laneShareRightsPreset(forHost(shareDraft)) : "custom"}
                     revokePending={revokePending[share.grantId] === true}
-                    disabled={formDisabled}
                     onSelect={() => {
                       setFormError(null);
                       setSelected(share.grantId);
-                    }}
-                    onPreset={(preset) => {
-                      setSelected(share.grantId);
-                      const base = edits[share.grantId] ?? { rights: share.rights ?? defaults.rights, endsAt: share.endsAt };
-                      setEdits((current) => ({ ...current, [share.grantId]: { ...base, rights: withPreset(base.rights, preset) } }));
                     }}
                   />
                 );
               })}
             </div>
-            <div className="px-2 text-[10.5px] text-fg/40">
-              <span className="kit-num">{liveCount}</span> of {LANE_SHARE_MAX_GUESTS} guests
-            </div>
           </div>
 
-          {/* Rights of the selected person */}
-          <div className="flex min-w-0 flex-col gap-2" data-testid="lane-share-rights-pane">
-            {selectedEntry ? (
-              <div className="flex min-w-0 flex-col gap-1.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <span className="min-w-0 truncate text-[13px] font-medium text-fg/90" title={selectedEntry.receiverEmail ?? undefined}>
-                    {selectedEntry.receiverEmail ?? "Guest"}
-                  </span>
-                  {selectedState ? <span className="kit-tag" data-tone={selectedState.tone ?? undefined}>{selectedRevokePending ? "Removed here" : selectedState.label}</span> : null}
-                  {usage ? <span className="kit-num text-[11px] text-fg/50">{usage}</span> : null}
-                </div>
-                {selectedRevokePending ? (
-                  <Banner layout="inline" model={{
-                    id: "lane-share-revoke-pending",
-                    tone: "warning",
-                    title: "Removed on this computer. The account directory will follow.",
-                    detail: "The directory did not answer the revoke. Retry to finish it.",
-                    report: false,
-                    actions: [{ label: "Retry", onClick: () => { void remove(selectedEntry, true); }, busy: busy === "remove" }],
-                  }} />
+          {/* Access of the selected person, or of the person being invited */}
+          <div className="ade-ls-access" data-testid="lane-share-rights-pane">
+            <div className="ade-ls-access-head">
+              <div className="ade-ls-access-who">
+                <span className="ade-ls-access-name" title={selectedEntry?.receiverEmail ?? undefined}>
+                  {selectedEntry ? selectedEntry.receiverEmail ?? "Guest" : email.trim() || "New person"}
+                </span>
+                {selectedEntry && selectedState ? (
+                  <LaneShareMeta
+                    parts={[
+                      <LaneShareState key="state" label={selectedState.label} tone={selectedState.tone} />,
+                      usage ? <span key="usage" className="kit-num">{usage}</span> : null,
+                    ]}
+                  />
                 ) : null}
-                {selectedEntry.connectedDevices > 0 && selectedEditable ? (
-                  <div className="text-[11px] text-fg/55">Connected now. A change applies to their next action.</div>
+                {selectedEntry ? (
+                  <div className="ade-ls-access-actions">
+                    {selectedEntry.state === "pending" && selectedEntry.local && !selectedRevokePending ? (
+                      <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={formDisabled} onClick={() => { void resend(selectedEntry); }}>
+                        Re-send invite
+                      </button>
+                    ) : null}
+                    {selectedEntry.state === "expired" ? (
+                      <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={formDisabled || atLimit} onClick={() => inviteAgain(selectedEntry)}>
+                        Invite again
+                      </button>
+                    ) : null}
+                    {isLiveLaneShare(selectedEntry) && !selectedRevokePending ? (
+                      <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={blocked || busy != null} onClick={() => { void remove(selectedEntry); }}>
+                        Remove access
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
-                {selectedEntry.needsRights && !selectedRevokePending ? (
-                  <div className="text-[11px] text-fg/55">This computer holds no rights for this share, so the guest gets nothing. Save rights here, or remove the share.</div>
-                ) : null}
-                {selectedEntry.laneState === "archived" ? (
-                  <div className="text-[11px] text-fg/55">The lane is archived, so the share is paused. Unarchive the lane to resume it.</div>
-                ) : null}
-                {laneGone ? (
-                  <div className="text-[11px] text-fg/55">The lane was deleted, so the share ended.</div>
-                ) : null}
-                {!selectedEntry.local ? (
-                  <div className="text-[11px] text-fg/55">This share was made on another computer. Edit it there.</div>
-                ) : null}
-                <div className="flex flex-wrap gap-1.5">
-                  {selectedEntry.state === "pending" && selectedEntry.local && !selectedRevokePending ? (
-                    <button type="button" className="kit-btn" data-size="sm" disabled={formDisabled} onClick={() => { void resend(selectedEntry); }}>
-                      Re-send invite
-                    </button>
-                  ) : null}
-                  {selectedEntry.state === "expired" ? (
-                    <button type="button" className="kit-btn" data-size="sm" disabled={formDisabled || atLimit} onClick={() => inviteAgain(selectedEntry)}>
-                      Invite again
-                    </button>
-                  ) : null}
-                  {isLiveLaneShare(selectedEntry) && !selectedRevokePending ? (
-                    <button type="button" className="kit-btn" data-size="sm" data-tone="crit" disabled={blocked || busy != null} onClick={() => { void remove(selectedEntry); }}>
-                      Remove access
-                    </button>
-                  ) : null}
-                </div>
               </div>
-            ) : (
-              <div className="text-[12px] text-fg/60">Rights for the new person. They start from your default rights.</div>
-            )}
+              {selectedEntry ? null : <div className="ade-ls-line">They start from your default rights.</div>}
+              {selectedEntry && selectedRevokePending ? (
+                <Banner layout="inline" model={{
+                  id: "lane-share-revoke-pending",
+                  tone: "warning",
+                  title: "Removed on this computer. The account directory will follow.",
+                  detail: "The directory did not answer the revoke. Retry to finish it.",
+                  report: false,
+                  actions: [{ label: "Retry", onClick: () => { void remove(selectedEntry, true); }, busy: busy === "remove" }],
+                }} />
+              ) : null}
+              {selectedEntry ? <SelectedNote entry={selectedEntry} editable={selectedEditable} laneGone={laneGone} revokePending={selectedRevokePending} /> : null}
+            </div>
+
+            <LaneSharePresetPicker
+              value={laneShareRightsPreset(draft.rights)}
+              disabled={rightsDisabled || (!selectedEntry && atLimit)}
+              label={`Access for ${who}`}
+              onChange={(preset) => updateDraft({ ...draft, rights: withLaneSharePreset(draft.rights, preset) })}
+            />
             <LaneShareRiskSummary rights={draft.rights} />
             {formError ? (
               <Banner
@@ -555,14 +496,15 @@ export function LaneShareSheet({ request, onClose }: { request: LaneShareSheetRe
                 model={{ id: "lane-share-form-error", tone: "error", title: formError.message, ...(formError.fixable ? { report: false } : {}) }}
               />
             ) : null}
-            {notice ? <div className="text-[11.5px] leading-[1.4] text-fg/70" role="status">{notice}</div> : null}
-            <div className="min-h-0 overflow-y-auto pr-1" style={{ maxHeight: "48vh" }}>
+            {notice ? <div className="ade-ls-line" role="status">{notice}</div> : null}
+            <div className="ade-ls-scroll">
               <LaneShareRightsPanel
                 rights={draft.rights}
                 endsAt={draft.endsAt}
                 now={now}
                 disabled={rightsDisabled}
                 cliTyping={cliTyping}
+                runtimePin={pin ?? null}
                 onChange={(rights) => updateDraft({ ...draft, rights })}
                 onEndsAtChange={(endsAt) => updateDraft({ ...draft, endsAt })}
               />

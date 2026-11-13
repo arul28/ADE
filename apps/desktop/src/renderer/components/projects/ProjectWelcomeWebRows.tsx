@@ -7,6 +7,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
+  isAccountNoCopyLocation,
   welcomeProjectMachineName,
   type RecentProjectLocation,
 } from "../app/projectTabGrouping";
@@ -259,7 +260,7 @@ function ProjectMachineStack({
   const [open, setOpen] = useState(false);
   const chipRef = useRef<HTMLButtonElement | null>(null);
   if (locations.length === 0) return null;
-  if (locations.length === 1 && locations[0]!.summary.kind !== "remote") return null;
+  if (locations.length === 1 && (locations[0]!.summary.kind !== "remote" || isAccountNoCopyLocation(locations[0]!.summary))) return null;
   const ordered = [
     ...locations.filter((location) => location.summary.kind !== "remote"),
     ...locations.filter((location) => location.summary.kind === "remote"),
@@ -380,7 +381,10 @@ export function RecentProjectRow({
   const parked = connectionState === "parked";
   // Remote rows are "offline" until their target reports a live connection. On
   // web, a machine that is merely dialable is not dimmed — it opens on click.
-  const offline = web ? web.status === "offline" : isRemote && connectionState !== "connected";
+  // An account project with no copy is not offline: it opens its tab, where
+  // a copy can be added.
+  const noCopy = !web && isAccountNoCopyLocation(rp);
+  const offline = web ? web.status === "offline" : isRemote && !noCopy && connectionState !== "connected";
   const projectIconDataUrl = locations
     .map((location) => location.summary.remote?.iconDataUrl ?? null)
     .find((dataUrl): dataUrl is string => Boolean(dataUrl)) ?? null;
@@ -465,7 +469,7 @@ export function RecentProjectRow({
             </span>
           ) : (
             <span className="ade-welcome-row-sub">
-              <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />
+              {noCopy ? "No copy on any computer yet" : <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />}
             </span>
           )}
         </span>

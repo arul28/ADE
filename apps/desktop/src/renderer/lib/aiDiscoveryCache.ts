@@ -191,8 +191,11 @@ export async function getAgentChatModelsCached(args: {
   cursorSource?: "sdk" | "cli" | "all";
   force?: boolean;
   ttlMs?: number;
-  pin?: OpenProjectBinding | null;
+  /** The machine whose models to list. Null: none is online, so the list is empty. */
+  pin: OpenProjectBinding | null;
 }): Promise<AgentChatModelInfo[]> {
+  const pin = args.pin;
+  if (!pin) return [];
   const activateRuntime = args.activateRuntime === true;
   const key = modelsCacheKey(args.projectRoot, args.provider, activateRuntime, args.cursorSource, args.pin);
   const ttlMs = args.ttlMs ?? DEFAULT_MODELS_TTL_MS;
@@ -211,7 +214,7 @@ export async function getAgentChatModelsCached(args: {
     provider: args.provider,
     ...(activateRuntime ? { activateRuntime: true } : {}),
     ...(args.cursorSource ? { cursorSource: args.cursorSource } : {}),
-  }, ...(args.pin ? [args.pin] as const : [])).then((models) => {
+  }, pin).then((models) => {
     const current = providerModelsCache.get(key);
     if (current?.inFlight === request) {
       providerModelsCache.set(key, {

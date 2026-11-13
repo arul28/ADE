@@ -15,7 +15,7 @@
  * `useCrossMachineLaneSync` (ref-counted), and the snapshot is a push feed.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
@@ -84,6 +84,76 @@ export function useRemoteConnectionSnapshot(active: boolean): {
     };
   }, [active]);
   return { snapshot, loaded };
+}
+
+// ── One shared connection state per remote target ───────────────────────────
+
+let sharedSnapshot: RemoteRuntimeConnectionSnapshot | null = null;
+const sharedSnapshotListeners = new Set<() => void>();
+let stopSharedSnapshot: (() => void) | null = null;
+
+function startSharedSnapshot(): () => void {
+  const bridge = typeof window === "undefined" ? undefined : window.ade?.remoteRuntime;
+  if (typeof bridge?.getConnectionSnapshot !== "function") return () => undefined;
+  let stopped = false;
+  const apply = (next: RemoteRuntimeConnectionSnapshot | null | undefined) => {
+    if (stopped || !next) return;
+    if (sharedSnapshot && sharedSnapshot.updatedAt > next.updatedAt) return;
+    sharedSnapshot = next;
+    for (const listener of sharedSnapshotListeners) listener();
+  };
+  void bridge.getConnectionSnapshot().then(apply, () => undefined);
+  const unsubscribe = typeof bridge.onConnectionSnapshotChanged === "function"
+    ? bridge.onConnectionSnapshotChanged((next) => apply(next))
+    : undefined;
+  return () => {
+    stopped = true;
+    unsubscribe?.();
+  };
+}
+
+function subscribeSharedSnapshot(listener: () => void): () => void {
+  sharedSnapshotListeners.add(listener);
+  if (sharedSnapshotListeners.size === 1) stopSharedSnapshot = startSharedSnapshot();
+  return () => {
+    sharedSnapshotListeners.delete(listener);
+    if (sharedSnapshotListeners.size > 0) return;
+    stopSharedSnapshot?.();
+    stopSharedSnapshot = null;
+  };
+}
+
+/**
+ * "offline" when the connection snapshot lists the target and it is not
+ * connected; "online" when it is connected; "unknown" before the first
+ * snapshot, and for a target the snapshot does not list (the hosted web
+ * client lists none). Pure.
+ */
+export function remoteTargetState(
+  snapshot: Pick<RemoteRuntimeConnectionSnapshot, "connections"> | null,
+  targetId: string,
+): "online" | "offline" | "unknown" {
+  const connection = snapshot?.connections.find((entry) => entry.target.id === targetId);
+  if (!connection) return "unknown";
+  return connectionOnline(connection) ? "online" : "offline";
+}
+
+/**
+ * Whether the remote target is connected, from one shared snapshot feed for
+ * every caller (one read and one listener in the window, however many hooks
+ * ask). Returns a string, so a snapshot push that changes nothing for this
+ * target renders nothing. Null target: "unknown", and no feed.
+ */
+export function useRemoteTargetState(targetId: string | null): "online" | "offline" | "unknown" {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => (targetId ? remoteTargetState(sharedSnapshot, targetId) : "unknown"),
+    () => "unknown",
+  );
 }
 
 /** This computer's sync identity, read once per activation through the shared reader. */

@@ -115,9 +115,8 @@ export function NeedsAttentionStrip({
   const [open, setOpen] = React.useState(false);
   const [askOpen, setAskOpen] = React.useState(false);
   const [fixingId, setFixingId] = React.useState<string | null>(null);
-  // The project's own fixes run on the machine that owns the project: the
-  // tab's binding, so unpinned.
-  const projectFix = useProjectFix(null, attention.setReport);
+  // The project's own fixes run on the copy the checks were read from.
+  const projectFix = useProjectFix(attention.projectPin, attention.setReport);
   const needs = items.filter((item) => item.severity !== "note");
   const notes = items.filter((item) => item.severity === "note");
   const worst = items.some((item) => item.severity === "problem")
@@ -222,15 +221,15 @@ export function NeedsAttentionStrip({
               <ul className="ade-attn-list" data-kind="notes" aria-label="Notes">{notes.map(renderRow)}</ul>
             </>
           ) : null}
-          {hasProject ? (
+          {hasProject && attention.projectPin ? (
             askOpen ? (
               <div className="ade-gen-attn-ask">
                 <AgentLaunchSetup
                   defaultPrompt={attentionAgentPrompt(items, projectRoot)}
                   chatTitle="Fix what Settings found"
                   promptLabel="Prompt for the agent"
-                  pin={null}
-                  projectRoot={projectRoot}
+                  pin={attention.projectPin}
+                  projectRoot={attention.projectPin ? null : projectRoot}
                   onLaunched={() => setAskOpen(false)}
                   onCancel={() => setAskOpen(false)}
                   failureTitle="Couldn't start the agent"

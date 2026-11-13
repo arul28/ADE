@@ -594,9 +594,9 @@ function CliRailItem(props: RailItemProps & { provider: AgentCliLoginProvider })
 }
 
 /**
- * Antigravity: the agent's own Google sign-in (its ACP `authenticate`), the
- * same `ai.antigravitySignIn*` actions Settings runs, shown in the sign-in
- * sheet. The start, every status read, a pasted return address and the
+ * Antigravity: the CLI's own Google sign-in (`agy acp --login`), the same
+ * `ai.antigravitySignIn*` actions Settings runs, shown in the sign-in
+ * sheet. The start, every status read, the pasted code and the
  * cancel take the setup card's pin, so one flow stays on one machine.
  * Google's page opens once per flow; the other methods (Gemini Enterprise,
  * keys) stay in Settings.

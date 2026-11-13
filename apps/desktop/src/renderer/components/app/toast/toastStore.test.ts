@@ -19,6 +19,7 @@ import {
 } from "./toastStore";
 import { ToastStack } from "./ToastStack";
 import { useLaneEventToasts } from "./useLaneEventToasts";
+import { useAppStore } from "../../../state/appStore";
 import { useAutoDiagnosticsToast } from "./useAutoDiagnosticsToast";
 import {
   buildOptimisticChatLaunchSnapshot,
@@ -311,6 +312,14 @@ function makeRebaseRun(overrides: Partial<RebaseRun> = {}): RebaseRun {
 }
 
 describe("useLaneEventToasts", () => {
+  // The toasts follow the lanes of the tab's copy.
+  beforeEach(() => {
+    useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
+  });
+  afterEach(() => {
+    useAppStore.setState({ projectBinding: null });
+  });
+
   it("turns lane-created lifecycle events into navigable success toasts", () => {
     const api = installLaneEventApi();
     const navigate = vi.fn();

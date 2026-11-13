@@ -19,9 +19,8 @@ import { createContext, useContext, useMemo } from "react";
 import type { GitHubPrListItem, LaneSummary, OpenProjectBinding, PrSummary } from "../../../../shared/types";
 import {
   machineBlockedReason,
-  machineChipFor,
+  rowMachineChip,
   routableMachines,
-  shouldShowMachineChips,
   useAllMachineLanes,
   type AllMachineLanes,
   type LaneMachine,
@@ -44,7 +43,7 @@ export type PrMachineIndex = {
   machines: readonly LaneMachine[];
   /** Each machine's lanes, by machine id. */
   lanesByMachineId: ReadonlyMap<string, readonly LaneSummary[]>;
-  /** The machine the tab is bound to. */
+  /** The machine the tab is bound to (the PR rows' machine while the tab has a copy). */
   boundMachine: LaneMachine | null;
   /** Chip for rows whose lane is on the tab's machine; null on a one-machine project. */
   boundChip: MachineChipModel | null;
@@ -72,10 +71,7 @@ const NO_PRS: readonly PrSummary[] = [];
 
 export function buildPrMachineIndex(all: AllMachineLanes): PrMachineIndex {
   const machines = routableMachines(all.machines);
-  // The chip rule counts the machines this index can route to, not every
-  // machine the union knows: an unaddressable machine holds no PR's lane here.
-  const showChips = shouldShowMachineChips(machines.length);
-  const chipFor = (machine: LaneMachine | null) => (machine && showChips ? machineChipFor(machine) : null);
+  const chipFor = (machine: LaneMachine | null) => rowMachineChip(machine);
   const boundMachine = machines.find((machine) => machine.isActiveBinding) ?? null;
   const foreignByCoord = new Map<string, ForeignPrLink>();
   const allLanes: LaneSummary[] = [];
@@ -147,10 +143,12 @@ export function usePrMachineIndexContext(): PrMachineIndex {
 // ── Runtime pin for one PR's calls ───────────────────────────────────────────
 
 /**
- * The machine every call about the PR in this subtree must reach. `null` (the
- * default) is the tab's own machine: calls stay unpinned. The detail pane and a
- * foreign row's menu set it to the lane owner's binding, so
- * land/sync/resolve/manage-lane run where the lane and its PR row live.
+ * The machine every call about the PR in this subtree must reach. `PrsProvider`
+ * sets it to the machine that holds the surface's PR rows (the repository
+ * reader); the detail pane and a foreign row's menu set it to the lane owner's
+ * binding, so land/sync/resolve/manage-lane run where the lane and its PR row
+ * live. Null only outside a provider, or when no machine is online: then a
+ * control must not call at all.
  */
 const PrRuntimePinContext = createContext<OpenProjectBinding | null>(null);
 

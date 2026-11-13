@@ -306,6 +306,7 @@ import {
   type CodexPermissionPreset,
   type MusePermissionPickerValue,
 } from "../shared/permissionModePickerOptions";
+import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 
 export type ComposerDraftEditIntent = {
   previousText: string;
@@ -2155,11 +2156,11 @@ function JiraIssueSelectModal({
           if (!status.connected || !status.siteUrl) {
             throw new Error(status.error?.message ?? "Connect Jira in Settings to attach an issue.");
           }
-          const page = await jira.listIssues({
+          const page = await withChatPin(pinRef.current, (chatPin) => jira.listIssues({
             state: "all",
             query: query || undefined,
             limit: 50,
-          }, pinRef.current);
+          }, chatPin));
           if (cancelled) return;
           setSiteLabel(new URL(status.siteUrl).host);
           setIssues(page.issues
@@ -2972,10 +2973,20 @@ function AgentChatComposerImpl({
   const [githubIssuePickerOpen, setGitHubIssuePickerOpen] = useState(false);
   const [jiraIssuePickerOpen, setJiraIssuePickerOpen] = useState(false);
   const [githubRepo, setGitHubRepo] = useState<{ owner: string; name: string } | null>(null);
+  // The repository is read on the chat's machine; none known means no repo.
+  const githubRepoPin = useChatRuntimeScope().pin;
+  const githubRepoPinRef = useRef(githubRepoPin);
+  githubRepoPinRef.current = githubRepoPin;
+  const githubRepoPinKey = githubRepoPin?.key ?? null;
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade?.github?.detectRepo?.()
+    const pin = githubRepoPinRef.current;
+    if (!pin) {
+      setGitHubRepo(null);
+      return undefined;
+    }
+    void window.ade?.github?.detectRepo?.(pin)
       .then((repo) => {
         if (!cancelled) setGitHubRepo(repo);
       })
@@ -2985,7 +2996,7 @@ function AgentChatComposerImpl({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [githubRepoPinKey]);
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
@@ -3789,11 +3800,12 @@ function AgentChatComposerImpl({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, chatRuntimePinRef.current)?.catch?.(() => {});
+      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, chatPaneScope?.kind === "personal"));
+      void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, warmPin)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [chatRuntimePinKey, sessionId]);
+  }, [chatPaneScope?.kind, chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -4028,13 +4040,15 @@ function AgentChatComposerImpl({
     let chipPlacement: AttachmentChipPlacement = options.chipPlacement ?? { kind: "end" };
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
+    // A personal pane's adapter knows its computer; it has no binding when no project is open.
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
       // One probe per batch, not per file: the answer is a property of the
       // machine, and asking again mid-batch would only widen the window in
       // which half the files were staged under a different contract.
-      const stagingMode = await readAttachmentStagingMode(attachmentOwnerBinding, attachmentApi);
+      const stagingMode = await readAttachmentStagingMode(attachmentApiPin, attachmentApi);
       for (const file of Array.from(files)) {
         if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
           setAttachError("Files were not attached because the selected project or machine changed. Attach them again.");
@@ -4074,13 +4088,13 @@ function AgentChatComposerImpl({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await attachmentApi.stageFileAttachment(
+            const { path: stagedPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.stageFileAttachment(
               {
                 sourcePath: plan.sourcePath,
                 filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
               },
-              attachmentOwnerBinding,
-            );
+              chatPin,
+            ));
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
             rememberDraftAttachmentSource(stagedPath, {
               kind: "local",
@@ -4095,7 +4109,7 @@ function AgentChatComposerImpl({
               file,
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
-              pin: attachmentOwnerBinding,
+              pin: attachmentApiPin,
             });
           }
 
@@ -4176,6 +4190,7 @@ function AgentChatComposerImpl({
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -4189,10 +4204,10 @@ function AgentChatComposerImpl({
         setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
         return;
       }
-      const { path: tempPath } = await attachmentApi.saveTempAttachment({
+      const { path: tempPath } = await withChatPin(attachmentApiPin, (chatPin) => attachmentApi.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
-      }, attachmentOwnerBinding);
+      }, chatPin));
       if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
         dropPendingImageAttachment(pendingImage.id);
         setAttachError("Clipboard image was not attached because the selected machine changed. Paste it again.");
@@ -7460,11 +7475,11 @@ function AgentChatComposerImpl({
       if (request.mode === "draft") {
         const draftsApi = agentChatApiRef.current?.drafts;
         const updated = draftsApi && typeof draftsApi.update === "function"
-          ? await draftsApi.update({ id: request.entry.id, schedule: input }, composerMachineBinding)
-          : await window.ade.agentChat.drafts.update(
+          ? await withChatPin(composerMachineBinding, (chatPin) => draftsApi.update({ id: request.entry.id, schedule: input }, chatPin))
+          : await withChatPin(composerMachineBinding, (chatPin) => window.ade.agentChat.drafts.update(
             { id: request.entry.id, schedule: input },
-            composerMachineBinding,
-          );
+            chatPin,
+          ));
         if (!updated) throw new Error("That draft was taken on another machine.");
       } else {
         const created = await draftsRef.current?.activateScheduled(input);
@@ -8351,6 +8366,7 @@ function AgentChatComposerImpl({
         open={addSecretOpen}
         onOpenChange={setAddSecretOpen}
         onSaved={handleProjectSecretSaved}
+        pin={chatRuntimePin}
       />
 
       {/* Codex voice: talk with this chat. */}
@@ -8391,7 +8407,7 @@ function AgentChatComposerImpl({
         ) : null
       ) : null}
     </>
-  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, onHandoffToDevinCloud, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, showAppControlToggle, showIosSimulatorToggle, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, onHandoffToDevinCloud, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, showAppControlToggle, showIosSimulatorToggle, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
   const sendControls = useMemo(() => (turnActive ? (
 
         <>

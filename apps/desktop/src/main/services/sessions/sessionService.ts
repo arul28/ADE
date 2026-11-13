@@ -204,7 +204,8 @@ function isResumeProvider(value: unknown): value is TerminalResumeProvider {
     || value === "qwen"
     || value === "kimi"
     || value === "grok"
-    || value === "copilot";
+    || value === "copilot"
+    || value === "antigravity";
 }
 
 function normalizeAttentionSource(value: unknown): SessionAttentionSource | null {
@@ -756,6 +757,7 @@ export function createSessionService({
       "grok",
       "copilot",
       "devin",
+      "antigravity",
       "qwen-chat",
       "kimi-chat",
       "grok-chat",

@@ -8,9 +8,9 @@ export type FilesTabProps = {
   embedded?: boolean;
   active?: boolean;
   /**
-   * Machine the files live on, when the host already knows it is not this
-   * tab's machine (the Work tools pane, following its chat). Null keeps the
-   * historical behavior: the tab's bound machine.
+   * The copy the files live on, when the host knows it (the Work tools pane,
+   * following its chat). Null: the tab's copy. With no copy at all, the page
+   * shows its empty state and makes no call.
    */
   pin?: OpenProjectBinding | null;
 };

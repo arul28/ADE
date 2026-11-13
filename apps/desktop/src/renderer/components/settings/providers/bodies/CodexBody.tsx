@@ -3,13 +3,14 @@
  * List-only — no marketplace, install, or toggle. Codex 0.156.0 `plugin/list`.
  */
 import { ArrowsClockwise } from "@phosphor-icons/react";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
 import { Banner } from "../../../ui/notice";
 import type { AgentChatCodexPlugin } from "../../../../../shared/types";
 import type { ProvidersViewContext } from "../types";
-import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { useSettingsReadPin } from "../../ProjectCopyScope";
 import { extractError } from "../../../../lib/format";
+import { requirePin } from "../../../../state/repositoryScope";
 
 function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
   switch (origin) {
@@ -27,7 +28,11 @@ function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
 }
 
 export function CodexBody(_props: { ctx: ProvidersViewContext }) {
-  const { pin } = useSettingsMachineScope();
+  // A page about This computer has no scope pin; read through its own copy.
+  const pin = useSettingsReadPin();
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const pinKey = pin?.key ?? null;
   const [plugins, setPlugins] = useState<AgentChatCodexPlugin[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -36,14 +41,16 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
     setRefreshing(true);
     setError(null);
     try {
-      setPlugins(await window.ade.agentChat.listCodexPlugins({}, pin));
+      setPlugins(await window.ade.agentChat.listCodexPlugins({}, requirePin(pinRef.current)));
     } catch (err: unknown) {
       setPlugins(null);
       setError(extractError(err));
     } finally {
       setRefreshing(false);
     }
-  }, [pin]);
+    // `pinKey` carries the pin's identity; a rebuilt pin is the same machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinKey]);
 
   useEffect(() => {
     void loadPlugins();

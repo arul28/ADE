@@ -1,3 +1,4 @@
+import { BRAND_IMG_SRC, brandDocument, escapeHtml } from "../brandPage";
 import { captureCloudAction, type CloudWaitUntil } from "./analytics";
 import { formatCloudCents, type CloudCheckoutResult } from "./contract";
 import { accountEmail, sendCloudEmail } from "./email";
@@ -740,18 +741,29 @@ async function handleStripeWebhook(request: Request, env: CloudEnv, waitUntil: C
 
 /* ---- Public routes ---- */
 
-const RETURN_MESSAGES: Record<string, string> = {
-  done: "Thanks. Your plan will show in ADE in a moment.",
-  cancelled: "Nothing changed.",
-  portal: "Any changes you made will show in ADE in a moment.",
+const RETURN_MESSAGES: Record<string, { heading: string; line: string }> = {
+  done: { heading: "You're all set", line: "Your plan will show in ADE in a moment." },
+  cancelled: { heading: "Nothing changed", line: "You left checkout before paying." },
+  portal: { heading: "Back to ADE", line: "Any changes you made will show in ADE in a moment." },
 };
 
 function returnPage(url: URL, method: string): Response {
   if (method !== "GET") return json({ error: "method not allowed" }, 405);
-  const message = RETURN_MESSAGES[url.searchParams.get("to") ?? ""] ?? RETURN_MESSAGES.portal;
-  const html = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ADE</title><style>body{font:16px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;place-items:center;background:#111;color:#eee;text-align:center;padding:24px}p{margin:.25em 0}.dim{color:#999}</style><main><p>${message}</p><p class="dim">You can close this tab and go back to ADE.</p></main></html>`;
+  // Own keys only: `?to=constructor` or `?to=__proto__` must not read an inherited value.
+  const to = url.searchParams.get("to") ?? "";
+  const message = Object.hasOwn(RETURN_MESSAGES, to) ? RETURN_MESSAGES[to] : RETURN_MESSAGES.portal;
+  const html = brandDocument({
+    title: message.heading,
+    card: `<p class="sub">${escapeHtml(message.line)}</p>`,
+    foot: "You can close this page and go back to ADE.",
+  });
   return new Response(html, {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'" },
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; ${BRAND_IMG_SRC}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+      "referrer-policy": "no-referrer",
+    },
   });
 }
 

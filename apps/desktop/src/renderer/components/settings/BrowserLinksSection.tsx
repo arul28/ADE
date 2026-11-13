@@ -6,6 +6,7 @@ import { modifierKeyLabel } from "../../lib/platform";
 import { refreshLinkOpenMode, setLinkOpenMode } from "../../lib/openExternal";
 import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
 import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
+import { useThisComputerCopyPin } from "./ProjectCopyScope";
 
 const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string; hint: string; icon: Icon }> = [
   { value: "in-app", label: "In ADE", hint: "A tab in the ADE browser, beside your work.", icon: AppWindow },
@@ -17,20 +18,23 @@ const OPTIONS: ReadonlyArray<{ value: BrowserLinkOpenMode; label: string; hint: 
  *
  * Machine-local (`.ade/local.yaml`): which browser a link lands in is a
  * property of the machine you are sitting at, not of the repository, so this
- * never travels to a teammate.
+ * never travels to a teammate. It is read from and saved to this computer's
+ * copy of the project.
  */
 export function BrowserLinksSection() {
+  const pin = useThisComputerCopyPin();
   const [mode, setMode] = useState<BrowserLinkOpenMode>("in-app");
   const [busy, setBusy] = useState(false);
   const flash = useSavedFlash();
 
   useEffect(() => {
+    if (!pin) return undefined;
     let cancelled = false;
     // Optional: the browser-mock and hosted-web renderers reach this component
     // without an Electron config bridge, and an unreadable preference should
     // show the default rather than throw during mount.
     window.ade?.projectConfig
-      ?.get()
+      ?.get(pin)
       .then((snapshot) => {
         if (cancelled) return;
         setMode(snapshot.effective.browser?.linkOpenMode ?? "in-app");
@@ -42,7 +46,7 @@ export function BrowserLinksSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   const handleChange = async (next: BrowserLinkOpenMode) => {
     const previous = mode;
@@ -52,7 +56,7 @@ export function BrowserLinksSection() {
       await saveProjectLocalConfig((snapshot) => ({
         ...snapshot.local,
         browser: { ...(snapshot.local.browser ?? {}), linkOpenMode: next },
-      }));
+      }), pin);
       // Push it into the link router now rather than waiting for a reload:
       // the next click has to obey the choice that was just made.
       setLinkOpenMode(next);
@@ -84,7 +88,7 @@ export function BrowserLinksSection() {
               type="button"
               role="radio"
               aria-checked={active}
-              disabled={busy}
+              disabled={busy || !pin}
               onClick={() => { if (!active) void handleChange(option.value); }}
               className="ade-ap-choice"
               data-active={active}

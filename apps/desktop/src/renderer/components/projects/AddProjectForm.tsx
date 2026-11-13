@@ -7,32 +7,27 @@ import {
   CircleNotch,
   Desktop,
   DotsThree,
-  LockSimple,
   XCircle,
 } from "@phosphor-icons/react";
-import type {
-  ListMyGitHubReposResult,
-  MyGitHubRepoSummary,
-  RecentProjectSummary,
-} from "../../../shared/types";
+import type { RecentProjectSummary } from "../../../shared/types";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
-import { extractError, relativeWhen } from "../../lib/format";
+import { extractError } from "../../lib/format";
+import { captureError } from "../../../shared/sentry/capture";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
-import { rememberExplicitRemotePick } from "../app/usePreferLocalCheckout";
+import { Banner } from "../ui/notice";
+import { useAddToAccount } from "./useAddToAccount";
 import {
   COLORS,
-  LABEL_STYLE,
   MONO_FONT,
   SANS_FONT,
   fgTint,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { ConnectGithubPrompt } from "./ConnectGithubPrompt";
+import { RepoField, inputStyle, sectionLabelStyle } from "./AddProjectRepoField";
 import {
   copyMachines,
   existingCopiesForRepo,
@@ -58,13 +53,12 @@ import {
 } from "./projectCopyJobs";
 
 /**
- * Opens a copy in this window. A copy on another machine is a choice made on
- * purpose, so this computer's own copy (if any) does not take the tab back.
+ * Opens a copy in this window. Its repository tab shows that copy; nothing
+ * moves the tab back to this computer's copy (S4).
  */
 export async function openProjectCopy(target: CopyOpenTarget): Promise<void> {
   const store = useAppStore.getState();
   if (target.kind === "remote") {
-    rememberExplicitRemotePick(remoteProjectBindingKey(target.targetId, target.projectId));
     await store.switchRemoteProject(target.targetId, target.projectId);
     return;
   }
@@ -83,40 +77,6 @@ export type AddProjectFormProps = {
   onOpenProject: (target: CopyOpenTarget) => Promise<void>;
 };
 
-const inputStyle: CSSProperties = {
-  height: 36,
-  padding: "0 12px",
-  fontSize: 12,
-  fontFamily: MONO_FONT,
-  color: COLORS.textPrimary,
-  background: fgTint(4),
-  border: `1px solid ${COLORS.border}`,
-  borderRadius: 8,
-  outline: "none",
-  width: "100%",
-  boxSizing: "border-box",
-};
-
-const sectionLabelStyle: CSSProperties = { ...LABEL_STYLE, letterSpacing: "0.08em", textTransform: "uppercase" };
-
-/** The repository list gives up after 15 s, so a stalled GitHub call shows an error. */
-function withRepoListDeadline(promise: Promise<ListMyGitHubReposResult>): Promise<ListMyGitHubReposResult> {
-  return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(() => {
-      reject(new Error("Timed out loading repositories. Check GitHub auth and network access."));
-    }, 15_000);
-    promise.then(
-      (value) => {
-        window.clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        window.clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
 
 /** The machine the person last worked on, when the recent projects say so clearly. */
 function lastUsedMachineId(recents: readonly RecentProjectSummary[]): string | null {
@@ -130,6 +90,33 @@ function lastUsedMachineId(recents: readonly RecentProjectSummary[]): string | n
     }
   }
   return latest?.kind === "remote" && latest.remote ? latest.remote.targetId : null;
+}
+
+/**
+ * The machines in "Start on" order (decision 8): this computer, then the
+ * machines that already have a copy, then the machine last worked on, then
+ * the rest as saved. New work in the project starts on the first one with a
+ * copy, so the list reads top to bottom in that order.
+ *
+ * ADE Cloud as a place to add a project is the Cloud lane's (a cloud computer
+ * that clones with no computer of the person's). When `main` has it, it goes
+ * here as the last row, after the computers.
+ */
+function startOnOrder(
+  machines: readonly CopyMachine[],
+  hasCopy: (machineId: string) => boolean,
+  lastUsed: string | null,
+): CopyMachine[] {
+  const rank = (machine: CopyMachine): number => {
+    if (machine.isLocal) return 0;
+    if (hasCopy(machine.machineId)) return 1;
+    if (machine.machineId === lastUsed) return 2;
+    return 3;
+  };
+  return machines
+    .map((machine, index) => ({ machine, index }))
+    .sort((left, right) => rank(left.machine) - rank(right.machine) || left.index - right.index)
+    .map((entry) => entry.machine);
 }
 
 type RowState =
@@ -179,7 +166,9 @@ export function AddProjectForm({
       .then((rows) => {
         if (!cancelled) setRecents(rows);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        // No recents: the form still lists the machines, with no copy marked as there.
+        captureError(error, { fingerprint: ["add-project", "list-recent"], level: "warning", handled: true });
         if (!cancelled) setRecents([]);
       });
     return () => {
@@ -191,14 +180,22 @@ export function AddProjectForm({
   const urlValid = isGitHubRepoUrl(repoUrl);
   const repoKey = urlValid ? repoKeyForUrl(repoUrl) : null;
   const folderName = urlValid ? repoNameForUrl(repoUrl) : "";
+  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ webMode, folderName, onClose });
 
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
   const jobs = useCopyJobs(repoKey);
 
-  const machines = useMemo(() => copyMachines(snapshot, { includeLocal: !webMode }), [snapshot, webMode]);
   const existing = useMemo(
     () => existingCopiesForRepo(repoKey, { recents: recents ?? [], snapshot }),
     [recents, repoKey, snapshot],
+  );
+  const machines = useMemo(
+    () => startOnOrder(
+      copyMachines(snapshot, { includeLocal: !webMode }),
+      (machineId) => existing.has(machineId),
+      recents ? lastUsedMachineId(recents) : null,
+    ),
+    [existing, recents, snapshot, webMode],
   );
   const jobByMachine = useMemo(() => new Map(jobs.map((job) => [job.machine.machineId, job])), [jobs]);
 
@@ -227,11 +224,21 @@ export function AddProjectForm({
     [machines, rowState],
   );
 
+  // The machine new work starts on: the first, in "Start on" order, that has
+  // a copy or gets one now.
+  const startsHereId = machines.find((machine) => {
+    const state = rowState(machine);
+    if (state.kind === "existing") return true;
+    if (state.kind === "job") return state.job.status !== "failed";
+    return state.kind === "available" && ticked.has(machine.machineId);
+  })?.machineId ?? null;
+
   const renderMachineRow = (machine: CopyMachine, index: number) => (
     <MachineRow
       key={machine.machineId}
       machine={machine}
       first={index === 0}
+      startsHere={Boolean(repoKey) && machine.machineId === startsHereId}
       state={rowState(machine)}
       ticked={ticked.has(machine.machineId)}
       repoChosen={Boolean(repoKey)}
@@ -375,16 +382,31 @@ export function AddProjectForm({
     && cloneableTicked.length === 0
     && openOn != null
     && openableTarget(openOn, rowState(openOn)) != null;
+  // No computer picked and nothing to open: the add puts the project on the
+  // account only, with no copy anywhere.
+  const accountOnly =
+    Boolean(repoKey)
+    && canAddToAccount
+    && !submitted
+    && cloneableTicked.length === 0
+    && !openOnlyCopy
+    && !jobs.some((job) => job.status === "cloning");
 
   const handleAdd = () => {
     if (!repoKey) return;
     setOpenError(null);
+    if (accountOnly) {
+      void addToAccount(repoUrl, { openTab: true });
+      return;
+    }
     if (openOnlyCopy && openOn) {
       const target = openableTarget(openOn, rowState(openOn));
       if (target) void openTarget(target);
       return;
     }
     if (!canAdd) return;
+    // The account lists the project too; a clone does not wait for it.
+    if (canAddToAccount) void addToAccount(repoUrl, { openTab: false });
     const opensOnId = openOn?.machineId ?? null;
     for (const machine of cloneableTicked) {
       startCopyJob({
@@ -442,8 +464,9 @@ export function AddProjectForm({
         defaultPath: parentByMachine[machine.machineId] || undefined,
       });
       if (picked) setParentByMachine((current) => ({ ...current, [machine.machineId]: picked }));
-    } catch {
+    } catch (error) {
       // The picker closing with an error leaves the folder as it was.
+      captureError(error, { fingerprint: ["add-project", "choose-folder"], level: "warning", handled: true });
     }
   };
 
@@ -504,7 +527,13 @@ export function AddProjectForm({
         </div>
         {repoKey && !submitted && cloneableTicked.length === 0 && !openOnlyCopy ? (
           <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-            Pick at least one machine.
+            {accountOnly
+              ? "No computer picked: ADE adds it to your account with no copy. Add a copy any time."
+              : "Pick at least one computer."}
+          </span>
+        ) : repoKey && !submitted && cloneableTicked.length > 1 ? (
+          <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+            New work starts on the first computer in this list that has a copy.
           </span>
         ) : null}
       </div>
@@ -534,6 +563,20 @@ export function AddProjectForm({
         </label>
       ) : null}
 
+      {accountError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "add-project-account",
+            tone: "error",
+            title: `Couldn't add ${folderName || "the project"} to your account`,
+            detail: accountError,
+            report: { surface: "add-project", code: "account_add_failed", technicalDetail: accountError },
+            actions: accountOnly ? [{ label: "Try again", onClick: () => void addToAccount(repoUrl, { openTab: true }) }] : [],
+          }}
+        />
+      ) : null}
+
       {openError ? (
         <span role="alert" style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger }}>
           Couldn't open the project: {openError}
@@ -551,14 +594,14 @@ export function AddProjectForm({
         <button
           type="button"
           style={primaryButton({
-            opacity: canAdd || openOnlyCopy ? 1 : 0.55,
-            cursor: canAdd || openOnlyCopy ? "pointer" : "not-allowed",
+            opacity: (canAdd || openOnlyCopy || accountOnly) && !addingToAccount ? 1 : 0.55,
+            cursor: (canAdd || openOnlyCopy || accountOnly) && !addingToAccount ? "pointer" : "not-allowed",
             minWidth: 120,
           })}
-          disabled={!canAdd && !openOnlyCopy}
+          disabled={(!canAdd && !openOnlyCopy && !accountOnly) || addingToAccount}
           onClick={handleAdd}
         >
-          {openOnlyCopy ? "Open" : "Add project"}
+          {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : "Add to account") : "Add project"}
         </button>
       </div>
     </div>
@@ -568,6 +611,7 @@ export function AddProjectForm({
 function MachineRow({
   machine,
   first,
+  startsHere,
   state,
   ticked,
   repoChosen,
@@ -580,6 +624,8 @@ function MachineRow({
 }: {
   machine: CopyMachine;
   first: boolean;
+  /** New work in the project starts on this machine ("Start on" order). */
+  startsHere: boolean;
   state: RowState;
   ticked: boolean;
   repoChosen: boolean;
@@ -727,6 +773,11 @@ function MachineRow({
           <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{machine.name}</span>
         </span>
         {detail}
+        {startsHere ? (
+          <span className="kit-tag" data-tone="accent" title="New work in this project starts here" style={{ flexShrink: 0 }}>
+            Starts here
+          </span>
+        ) : null}
         {trailing}
       </div>
       {editing && (state.kind === "available" || (state.kind === "job" && state.job.status === "failed")) && !machine.isLocal ? (
@@ -742,176 +793,6 @@ function MachineRow({
           />
         </div>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * The repository: a URL or `owner/repo`, or one picked from the person's
- * GitHub repositories (listed with this computer's GitHub sign-in).
- */
-function RepoField({
-  value,
-  onChange,
-  valid,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  valid: boolean;
-}) {
-  const [listOpen, setListOpen] = useState(false);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <label htmlFor="add-project-repository" style={sectionLabelStyle}>Repository</label>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          id="add-project-repository"
-          autoFocus
-          type="text"
-          value={value}
-          placeholder="owner/repo or https://github.com/owner/repo"
-          onChange={(event) => onChange(event.target.value)}
-          style={inputStyle}
-        />
-        <button
-          type="button"
-          style={outlineButton({ minWidth: 44 })}
-          aria-label={listOpen ? "Hide your repositories" : "Show your repositories"}
-          aria-expanded={listOpen}
-          onClick={() => setListOpen((open) => !open)}
-        >
-          {listOpen ? <CaretUp size={12} weight="bold" /> : <CaretDown size={12} weight="bold" />}
-        </button>
-      </div>
-      {value.trim().length > 0 && !valid ? (
-        <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>
-          Enter a GitHub repo, like owner/repo or https://github.com/owner/repo
-        </span>
-      ) : null}
-      {listOpen ? (
-        <RepoList
-          onPick={(repo) => {
-            onChange(repo.cloneUrl);
-            setListOpen(false);
-          }}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function RepoList({ onPick }: { onPick: (repo: MyGitHubRepoSummary) => void }) {
-  const [search, setSearch] = useState("");
-  const [debounced, setDebounced] = useState("");
-  const [repos, setRepos] = useState<MyGitHubRepoSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [reload, setReload] = useState(0);
-  const requestRef = useRef(0);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebounced(search), 200);
-    return () => window.clearTimeout(timer);
-  }, [search]);
-
-  useEffect(() => {
-    const requestId = ++requestRef.current;
-    setLoading(true);
-    setError(null);
-    const list = window.ade.github?.listMyRepos;
-    const request: Promise<ListMyGitHubReposResult> = typeof list === "function"
-      ? list({ search: debounced || undefined })
-      : Promise.reject(new Error("GitHub is not available here."));
-    void withRepoListDeadline(request)
-      .then((result) => {
-        if (requestRef.current !== requestId) return;
-        setRepos([...result.repos].sort((a, b) => Date.parse(b.pushedAt ?? "") - Date.parse(a.pushedAt ?? "") || 0));
-      })
-      .catch((err) => {
-        if (requestRef.current !== requestId) return;
-        setError(extractError(err));
-        setRepos([]);
-      })
-      .finally(() => {
-        if (requestRef.current === requestId) setLoading(false);
-      });
-  }, [debounced, reload]);
-
-  if (error && /github_not_connected|not connected/i.test(error)) {
-    return (
-      <ConnectGithubPrompt
-        statusError={null}
-        onConnected={() => setReload((value) => value + 1)}
-        onCancel={() => setError(null)}
-      />
-    );
-  }
-
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 10,
-        overflow: "hidden",
-      }}
-    >
-      <input
-        type="text"
-        value={search}
-        onChange={(event) => setSearch(event.target.value)}
-        placeholder="Filter your repositories…"
-        aria-label="Filter your repositories"
-        style={{ ...inputStyle, border: "none", borderBottom: `1px solid ${COLORS.border}`, borderRadius: 0, fontFamily: SANS_FONT }}
-      />
-      <div role="listbox" aria-label="Your repositories" style={{ maxHeight: 220, overflowY: "auto" }}>
-        {loading && repos.length === 0 ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px", fontSize: 12, color: COLORS.textMuted }}>
-            <CircleNotch size={12} weight="bold" className="animate-spin" />
-            Loading your repositories…
-          </div>
-        ) : error ? (
-          <div style={{ padding: "12px", fontSize: 12, color: COLORS.danger }}>{error}</div>
-        ) : repos.length === 0 ? (
-          <div style={{ padding: "12px", fontSize: 12, color: COLORS.textMuted }}>
-            {debounced ? "No repositories match." : "No repositories found."}
-          </div>
-        ) : (
-          repos.map((repo) => (
-            <button
-              key={repo.fullName}
-              type="button"
-              role="option"
-              aria-selected={false}
-              className="kit-row"
-              onClick={() => onPick(repo)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                width: "100%",
-                padding: "8px 12px",
-                background: "transparent",
-                border: "none",
-                textAlign: "left",
-                cursor: "pointer",
-                color: COLORS.textPrimary,
-                fontFamily: MONO_FONT,
-                fontSize: 12,
-              }}
-            >
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {repo.fullName}
-              </span>
-              {repo.isPrivate ? <LockSimple size={11} weight="fill" aria-label="Private" /> : null}
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                {repo.pushedAt ? relativeWhen(repo.pushedAt) : ""}
-              </span>
-            </button>
-          ))
-        )}
-      </div>
     </div>
   );
 }

@@ -528,6 +528,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   laneAppControl = false,
   laneBrowserTabs = 0,
   suppressMachineChip = false,
+  machineNamed = false,
   suppressStatusLabel = false,
   subagentMark = null,
   subagentBusy = false,
@@ -633,6 +634,12 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
    */
   suppressMachineChip?: boolean;
   /**
+   * Lanes from several computers are on screen: this card stands in for its
+   * lane header, so it names an online machine as the header would
+   * (`LaneMachineMarker` with `named`).
+   */
+  machineNamed?: boolean;
+  /**
    * Drop the status WORD from the row face, keeping the slot's hover actions.
    *
    * Set by the Kanban board, where the column header already states the status
@@ -682,10 +689,16 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const projectBinding = useAppStore((s) => s.projectBinding);
+  // The Cursor sign-in of the machine the session runs on: the row's machine,
+  // else the tab's machine.
+  const statusPin = runtimePin ?? projectBinding;
+  const statusPinRef = React.useRef(statusPin);
+  statusPinRef.current = statusPin;
+  const statusPinKey = statusPin?.key ?? null;
   const hasCursorCloudAgent = Boolean(session.cursorCloudAgentId?.trim());
   const [cursorCloudConnected, setCursorCloudConnected] = React.useState(() => {
     if (!hasCursorCloudAgent) return false;
-    return peekAiStatusCached(activeProjectRoot, projectBinding)?.providerConnections?.cursor?.authAvailable === true;
+    return peekAiStatusCached(activeProjectRoot, statusPin)?.providerConnections?.cursor?.authAvailable === true;
   });
 
   React.useEffect(() => {
@@ -694,8 +707,9 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       return undefined;
     }
     let cancelled = false;
+    const pin = statusPinRef.current;
     const applyCached = () => {
-      const cached = peekAiStatusCached(activeProjectRoot, projectBinding);
+      const cached = peekAiStatusCached(activeProjectRoot, pin);
       if (!cancelled) {
         setCursorCloudConnected(cached?.providerConnections?.cursor?.authAvailable === true);
       }
@@ -706,7 +720,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     }
     void getAiStatusCached({
       projectRoot: activeProjectRoot,
-      pin: projectBinding,
+      pin,
     }).then((status) => {
       if (!cancelled) setCursorCloudConnected(status.providerConnections?.cursor?.authAvailable === true);
     }).catch(() => undefined);
@@ -725,10 +739,11 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       window.removeEventListener(AI_STATUS_CACHE_UPDATED_EVENT, onCacheChange);
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onCacheChange);
     };
-  }, [activeProjectRoot, hasCursorCloudAgent, projectBinding]);
+  }, [activeProjectRoot, hasCursorCloudAgent, statusPinKey]);
   const delta = useSessionDelta(
     session.id,
     deltaEnabled && (!isRemoteProject || isSelected),
+    runtimePin,
   );
   const primaryText = primarySessionLabel(session);
   const settled = canonicalPhase === "settled";
@@ -920,7 +935,21 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      so badging every other machine's row was noise, and relative to the tab's
      binding it even badged this computer's own sessions. The glyph survives
      only where it explains something: rows that went quiet and can't act. */
-  const machineGlyph = machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
+  const machineNameChip = machineMarker && !isMachineMarkerShown(machineMarker) && machineNamed && !suppressMachineChip ? (
+    <span
+      data-session-machine={machineMarker.machineName}
+      data-machine-id={machineMarker.machineId}
+      data-machine-online="true"
+      data-machine-marker-mode="name"
+      role="img"
+      aria-label={`On ${machineMarker.machineName}`}
+      className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/[0.10] bg-fg/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/75"
+    >
+      <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/60" aria-hidden />
+      <span className="max-w-28 truncate">{machineMarker.machineName}</span>
+    </span>
+  ) : null;
+  const machineGlyph = machineNameChip ?? (machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
     <span
       data-session-machine={machineMarker.machineName}
       data-machine-id={machineMarker.machineId}
@@ -935,7 +964,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
     >
       <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
     </span>
-  ) : null;
+  ) : null);
 
   const cloudName = laneCloud === "devin" ? "Devin Cloud" : laneCloud === "cursor" ? "Cursor Cloud" : null;
   const cloudGlyph = cloudName ? (

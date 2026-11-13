@@ -372,7 +372,7 @@ describe("WebMachineSessionManager", () => {
 
     const attempts = clients.map((_, index) => manager.connectEnvironment(`machine-${index + 1}`));
     await expect(attempts[WEB_MACHINE_SESSION_LIMIT]).rejects.toThrow(
-      "All four machine sessions are currently active",
+      `All ${WEB_MACHINE_SESSION_LIMIT} machine sessions are currently active`,
     );
     for (const release of releases) release();
     await Promise.all(attempts.slice(0, WEB_MACHINE_SESSION_LIMIT));

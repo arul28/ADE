@@ -73,6 +73,7 @@ import type {
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { isImeComposing } from "../../lib/imeComposition";
+import { NO_CHAT_MACHINE_MESSAGE, withChatPin } from "../chat/chatMachinePin";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -431,12 +432,11 @@ function WorkCliContinuationComposer({
     )) return () => {
       cancelled = true;
     };
-    // Native provider history is machine-local and externalSessions has no
-    // pinned surface. A foreign session keeps its durable stored launch instead
-    // of consulting unrelated history on the active machine.
+    // Native provider history is machine-local: the lookup reads the session's
+    // own machine. With no machine known, the stored launch stands.
     const request = runtimePin
-      ? null
-      : recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
+      ? recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId, runtimePin)
+      : null;
     if (!request) return () => {
       cancelled = true;
     };
@@ -458,9 +458,7 @@ function WorkCliContinuationComposer({
       cancelled = true;
     };
     const args = { laneId: session.laneId, provider };
-    void (runtimePin
-      ? window.ade.agentChat.slashCommands(args, runtimePin)
-      : window.ade.agentChat.slashCommands(args))
+    void (withChatPin(runtimePin, (chatPin) => window.ade.agentChat.slashCommands(args, chatPin)))
       .then((commands) => {
         if (!cancelled) {
           setSlashCommands(commands.filter((command) => command.source !== "local"));
@@ -673,7 +671,7 @@ function ClosedCliSessionSurface({
     const args = { terminalId: session.id, maxBytes: 160_000 };
     void (runtimePin
       ? window.ade.terminal.preview(args, runtimePin)
-      : window.ade.terminal.preview(args))
+      : Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE)))
       .then((result) => {
         if (!cancelled) setPreview(result);
       })

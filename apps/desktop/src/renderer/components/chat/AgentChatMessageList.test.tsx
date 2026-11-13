@@ -92,6 +92,7 @@ import {
   shouldKeepPinnedThroughViewportShrink,
   shouldStickToBottomAfterScroll,
 } from "./AgentChatMessageList";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { looksLikeWireframe } from "./questionOptionPreview";
 import { resetChatTaskListCardStateForTests } from "./ChatTaskListCard";
 import {
@@ -133,11 +134,13 @@ function foldAriaLabel(button: HTMLElement): string {
 
 function LocationProbe() {
   const location = useLocation();
+  // The machine Files opens on is shown on its own, by key.
+  const { filesPin, ...state } = (location.state ?? {}) as { filesPin?: OpenProjectBinding };
   return (
-    <div data-testid="location">
+    <div data-testid="location" data-files-pin={filesPin?.key ?? ""}>
       {location.pathname}{location.search}
       {"::"}
-      {JSON.stringify(location.state ?? null)}
+      {JSON.stringify(location.state == null ? null : state)}
     </div>
   );
 }
@@ -146,6 +149,18 @@ async function expectLocationText(expected: string): Promise<void> {
   await waitFor(() => {
     expect(screen.getByTestId("location").textContent).toBe(expected);
   });
+}
+
+/** The chat's machine, as the chat pane passes it. */
+const CHAT_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
+/** The chat subtree's scope, as the chat pane provides it: work-log strips read their machine from it. */
+function inChatScope(list: ReactElement) {
+  return (
+    <ChatRuntimeScopeProvider pin={CHAT_PIN} binding={CHAT_PIN} laneId={null} sessionId={null}>
+      {list}
+    </ChatRuntimeScopeProvider>
+  );
 }
 
 function renderMessageList(
@@ -186,6 +201,7 @@ function renderMessageList(
     wrapList?: (list: ReactElement) => ReactElement;
   },
 ) {
+  const runtimePin = options && "runtimePin" in options ? options.runtimePin ?? null : CHAT_PIN;
   const wrapList = options?.wrapList ?? ((list: ReactElement) => list);
   return render(
     <MemoryRouter initialEntries={[{ pathname: "/", state: options?.initialState }]}>
@@ -199,7 +215,7 @@ function renderMessageList(
         sessionId={options?.sessionId}
         sessionProvider={options?.sessionProvider}
         resolveSpawnedChatProvider={options?.resolveSpawnedChatProvider}
-        runtimePin={options?.runtimePin}
+        runtimePin={runtimePin}
         scrollMemoryKey={options?.scrollMemoryKey}
         transcriptCollapseCacheKey={options?.transcriptCollapseCacheKey}
         laneId={options?.laneId}
@@ -934,17 +950,18 @@ describe("AgentChatMessageList transcript rendering", () => {
           status: "running",
         },
       },
-    ], { showStreamingIndicator: true });
+    ], { showStreamingIndicator: true, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     const openButton = await screen.findByRole("button", { name: "Open http://localhost:5173/ in ADE browser" });
     fireEvent.click(openButton);
 
     await waitFor(() => {
+      // `localhost` in the chat's output is the chat machine's, so the browser opens it there.
       expect(globalThis.window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
         url: "http://localhost:5173/",
         newTab: true,
-      });
+      }, CHAT_PIN);
     });
   });
 
@@ -1009,7 +1026,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           status: "running",
         },
       },
-    ], { sessionId: "session-1", onInsertDraft, showStreamingIndicator: true });
+    ], { sessionId: "session-1", onInsertDraft, showStreamingIndicator: true, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: "Show activity from the active turn" }));
     const logsButton = await screen.findByRole("button", {
@@ -1051,7 +1068,7 @@ describe("AgentChatMessageList transcript rendering", () => {
         timestamp: "2026-03-17T10:00:01.000Z",
         event: { type: "done", turnId: "turn-1", status: "completed" },
       },
-    ], { sessionId: "session-1", onRevealChatTerminal });
+    ], { sessionId: "session-1", onRevealChatTerminal, wrapList: inChatScope });
 
     fireEvent.click(screen.getByRole("button", { name: /^Show .+ from this turn$/ }));
     fireEvent.click(await screen.findByRole("button", {
@@ -3322,6 +3339,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     await expectLocationText(
       "/files::{\"openFilePath\":\"apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx\",\"laneId\":\"lane-123\"}",
     );
+    // Files opens on the chat's machine, not the tab's.
+    expect(screen.getByTestId("location").getAttribute("data-files-pin")).toBe(CHAT_PIN.key);
   });
 
   it("passes Windows line and column suffixes through to Files navigation", async () => {

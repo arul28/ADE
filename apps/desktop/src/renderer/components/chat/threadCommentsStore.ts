@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { threadCommentRevision, type ChatThreadComment, type ChatThreadCommentAnchor, type ChatThreadCommentSelection } from "../../../shared/threadComments";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Pending thread comments per chat, as last reported by the chat's host.
@@ -104,7 +105,7 @@ export function refreshThreadComments(sessionId: string, pin: OpenProjectBinding
   const api = threadCommentsApi();
   if (!api) return Promise.resolve();
   const startedAt = writeVersion.get(sessionId) ?? 0;
-  return api.list({ sessionId }, pin ?? null)
+  return withChatPin(pin ?? null, (chatPin) => api.list({ sessionId }, chatPin))
     .then((list) => {
       if (Array.isArray(list) && (writeVersion.get(sessionId) ?? 0) === startedAt) setThreadComments(sessionId, list);
     })

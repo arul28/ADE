@@ -22,6 +22,9 @@ import {
   setAgentBrowserPresenceForTest,
 } from "./agentBrowserPresence";
 
+/** The machine a row's session lives on. */
+const ROW_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 const { navigateMock, sessionDeltaMock } = vi.hoisted(() => ({
   navigateMock: vi.fn(),
   // Rows have no diff unless a test says so; `mockReturnValue` per test.
@@ -1016,11 +1019,12 @@ describe("SessionCard status slot", () => {
         isSelected={false}
         onSelect={onSelect}
         onContextMenu={vi.fn()}
+        runtimePin={ROW_PIN}
       />,
     );
 
     fireEvent.click(screen.getByTestId("session-settle-button"));
-    await waitFor(() => expect(settle).toHaveBeenCalledWith("session-1", undefined));
+    await waitFor(() => expect(settle).toHaveBeenCalledWith("session-1", undefined, ROW_PIN));
     expect(onSelect).not.toHaveBeenCalled();
   });
 
@@ -1141,13 +1145,14 @@ describe("SessionCard status slot", () => {
         isSelected={false}
         onSelect={vi.fn()}
         onContextMenu={vi.fn()}
+        runtimePin={ROW_PIN}
       />,
     );
 
     const button = screen.getByTestId("session-settle-button");
     expect(button.getAttribute("aria-label")).toBe("Un-settle session");
     fireEvent.click(button);
-    expect(unsettle).toHaveBeenCalledWith("session-1");
+    expect(unsettle).toHaveBeenCalledWith("session-1", ROW_PIN);
   });
 
   it("pins the slot open while the snooze popover is up", () => {

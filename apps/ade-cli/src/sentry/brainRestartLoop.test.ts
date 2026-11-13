@@ -11,7 +11,7 @@ vi.mock("../../../desktop/src/shared/sentry/capture", () => ({
   isSentryActive: () => true,
 }));
 
-import { startBrainRestartLoopWatch } from "./brainRestartLoop";
+import { brainStartIsInRestartLoop, startBrainRestartLoopWatch } from "./brainRestartLoop";
 
 const NOW = Date.parse("2026-10-30T12:00:00.000Z");
 // Past any platform's pid range, so never a live process.
@@ -62,6 +62,8 @@ describe("brain restart loop report", () => {
     ]);
     startBrainRestartLoopWatch({ runtimeDir, build: "b1" });
     expect(readStarts().starts.at(-1)).toMatchObject({ pid: process.pid, counted: true });
+    // This brain reopens nothing by itself (no agent CLI) while in the loop.
+    expect(brainStartIsInRestartLoop()).toBe(true);
     // Not while the loop may still be going.
     expect(captureProblem).not.toHaveBeenCalled();
 
@@ -83,6 +85,8 @@ describe("brain restart loop report", () => {
     startBrainRestartLoopWatch({ runtimeDir, build: "b1" });
     vi.advanceTimersByTime(10 * 60_000);
     expect(captureProblem).toHaveBeenCalledTimes(1);
+    // Not reported again, but still a loop: it still reopens nothing.
+    expect(brainStartIsInRestartLoop()).toBe(true);
   });
 
   it.each<{ name: string; build: string; previous: Partial<SeedStart>; uptimeSec?: number }>([
@@ -102,6 +106,7 @@ describe("brain restart loop report", () => {
     const { starts, lastReportedAt } = readStarts();
     expect(starts.at(-1)).toMatchObject({ pid: process.pid, counted: false });
     expect(lastReportedAt).toBeNull();
+    expect(brainStartIsInRestartLoop()).toBe(false);
     expect(captureProblem).not.toHaveBeenCalled();
   });
 });

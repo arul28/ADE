@@ -22,6 +22,12 @@ import { peerGitRemoteIdentity } from "../../../../desktop/src/main/services/git
 import { accountMachinePresence } from "../../../../desktop/src/shared/machinePresence";
 import { readChatLaunchKindsCapability } from "../../../../desktop/src/shared/chatLaunch";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
+import { githubRepoIdentityFromOrigin } from "../../../../desktop/src/shared/accountProject";
+import {
+  parseAccountProjectSelector,
+  recordMatchesAccountProject,
+  type ResolvedAccountProject,
+} from "../projects/accountProjectSelector";
 import type { ContainmentPlatform } from "../../../../desktop/src/shared/pathCase";
 import {
   REMOTE_CALLER_PARAM,
@@ -167,6 +173,13 @@ export type AgentMachineBridgeOptions = {
    * it woke one; throws with the reason when it may not (the monthly cap).
    */
   wakeForUse?: (machine: AdeAccountMachine) => Promise<boolean>;
+  /**
+   * The account project an id names, as this machine last read the account's
+   * list: its ids after merges and its repository addresses. With it, an id
+   * also finds a folder there that has no account link yet (an older brain,
+   * a folder not linked, a copy still linked to a merged id), by its origin.
+   */
+  resolveAccountProjectId?: (id: string) => Extract<ResolvedAccountProject, { kind: "found" }> | null;
 };
 
 /** How long a woken machine gets to show online in the account before the call fails as offline. */
@@ -245,6 +258,22 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     const needle = selector.toLowerCase();
     const byId = records.find((record) => record.projectId === selector);
     if (byId) return byId;
+    // An account project id (the caller followed its merges) or a GitHub
+    // `owner/name`: that machine's copy, picked as the desktop picks.
+    const account = parseAccountProjectSelector(selector);
+    if (account) {
+      const listedProject = account.kind === "id" ? options.resolveAccountProjectId?.(account.id) ?? null : null;
+      const copy = pickLiveCheckout(records.filter((record) =>
+        account.kind === "id"
+          ? record.accountProjectId === account.id
+          : githubRepoIdentityFromOrigin(record.gitOriginUrl)?.repoKey.toLowerCase() === account.repoKey))
+        // By the account's own view of the id: a merged-from link or the origin.
+        ?? (listedProject ? pickLiveCheckout(records.filter((record) => recordMatchesAccountProject(record, listedProject))) : null);
+      if (copy) return copy;
+      if (account.kind === "id") {
+        throw new Error(`${machineName(machine)} has no copy of ${selector}. \`ade projects list --account\` shows where its copies are.`);
+      }
+    }
     const platform = targetPathPlatform(machine.platform ?? null);
     const byPath = records.find((record) => samePathOnPlatform(record.rootPath, selector, platform));
     if (byPath) return byPath;

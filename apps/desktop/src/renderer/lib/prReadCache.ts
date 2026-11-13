@@ -1,5 +1,6 @@
 import type { GitHubPrSnapshot, OpenProjectBinding, PrListConditionalReply, PrSummary } from "../../shared/types";
 import { cacheScopePin } from "./tabBindingKey";
+import { NO_PROJECT_COMPUTER_ONLINE } from "./requirePin";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -8,7 +9,6 @@ type InFlightEntry<T> = {
 const prListInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
 const githubSnapshotInFlight = new Map<string, InFlightEntry<GitHubPrSnapshot>>();
 const prRefreshInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
-const prSurfaceWarmInFlight = new Map<string, InFlightEntry<void>>();
 const linkedPrRefreshInFlight = new Map<string, InFlightEntry<PrSummary | null>>();
 const linkedPrRecentRefresh = new Map<string, { refreshedAt: number; result: PrSummary | null }>();
 const machineReconcileRequestedAt = new Map<string, number>();
@@ -36,21 +36,22 @@ function projectKey(
 }
 
 /**
- * The scope of an unpinned GitHub snapshot read.
+ * The scope of a GitHub snapshot read: the machine that answers it.
  *
- * `getGitHubSnapshot` takes no pin, so the read follows the machine this
- * window's project tab is bound to — the same path on two machines is two
- * different credential stores and two different databases. The root alone
- * cannot say which one a memoized refusal came from, so the caller also names
- * the window's binding: one machine's "no GitHub credential" must never answer
- * the other machine's reads. It is an argument, not a store read, so the key
- * is a function of what the caller asked for.
+ * The same path on two machines is two different credential stores and two
+ * different databases. The root alone cannot say which one a memoized refusal
+ * came from, so the key also names the machine: the pin's key, or for an
+ * unpinned read the window's binding (where an unpinned read goes). One
+ * machine's "no GitHub credential" must never answer another machine's reads.
+ * A pin of the tab's own copy keys like the unpinned read of that copy, so the
+ * two share one entry and one in-flight read.
  */
 function snapshotReadScopeKey(
   projectRoot: string | null | undefined,
   bindingKey: string | null | undefined,
+  pin?: OpenProjectBinding | null,
 ): string {
-  return JSON.stringify([projectKey(projectRoot), bindingKey ?? null]);
+  return JSON.stringify([projectKey(projectRoot, pin), pin?.key ?? bindingKey ?? null]);
 }
 
 function summaryFreshness(summary: PrSummary): number {
@@ -82,14 +83,17 @@ function coalesceInFlight<T>(
   return promise;
 }
 
-export function listPrsCoalesced(options?: {
+/** `pin`: the machine whose PR rows to read. Null: none is online, so the list is empty. */
+export function listPrsCoalesced(options: {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  pin: OpenProjectBinding | null;
 }): Promise<PrSummary[]> {
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     prListInFlight,
-    projectKey(options?.projectRoot, options?.pin),
-    () => window.ade.prs.listAll(options?.pin ?? null),
+    projectKey(options.projectRoot, pin),
+    () => window.ade.prs.listAll(pin),
   );
 }
 
@@ -113,19 +117,20 @@ const prListGeneration = new Map<string, number>();
  * the machine this window's tab is bound to, so the binding is part of the key
  * (the same root on two machines is two databases).
  */
-function prListKey(options?: PrListCacheOptions): string {
-  if (cacheScopePin(options?.pin)) return projectKey(null, options?.pin);
+function prListKey(options: PrListCacheOptions): string {
+  if (cacheScopePin(options.pin)) return projectKey(null, options.pin);
   // No pin, or a pin that names the tab's copy: keyed like the window's own
   // read of that copy, so two projects never share an entry.
   return JSON.stringify([
-    projectKey(options?.projectRoot, options?.pin),
-    options?.bindingKey ?? options?.pin?.key ?? null,
+    projectKey(options.projectRoot, options.pin),
+    options.bindingKey ?? options.pin?.key ?? null,
   ]);
 }
 
 type PrListCacheOptions = {
   projectRoot?: string | null;
-  pin?: OpenProjectBinding | null;
+  /** The machine whose PR rows to read. Null: none is online. */
+  pin: OpenProjectBinding | null;
   /** The window's `projectBinding.key`, for an unpinned read. */
   bindingKey?: string | null;
 };
@@ -149,6 +154,8 @@ function readPrListConditional(
   held: { value: PrSummary[]; signature: string | null } | undefined,
   pin: OpenProjectBinding | null,
 ): Promise<PrSummary[]> {
+  // No machine online: no rows, and nothing is asked.
+  if (!pin) return Promise.resolve([]);
   const prs = window.ade.prs;
   const listAllConditional = prs.listAllConditional;
   const generation = prListGeneration.get(key) ?? 0;
@@ -177,16 +184,16 @@ function readPrListConditional(
   });
 }
 
-export function listPrsCached(options?: PrListCacheOptions): Promise<PrSummary[]> {
+export function listPrsCached(options: PrListCacheOptions): Promise<PrSummary[]> {
   const key = prListKey(options);
   const settled = prListSettled.get(key);
   if (settled && !settled.stale && Date.now() - settled.at < PR_LIST_TTL_MS) return Promise.resolve(settled.value);
   // Past its time (or dropped by a PR event): ask whether it changed. An
   // unchanged list costs a signature, not the whole list again.
-  return readPrListConditional(key, settled, options?.pin ?? null);
+  return readPrListConditional(key, settled, options.pin);
 }
 
-export function invalidatePrListCache(options?: PrListCacheOptions): void {
+export function invalidatePrListCache(options: PrListCacheOptions): void {
   // Keep the list and its signature for the conditional re-read; only its
   // freshness goes, and any read already under way is superseded.
   const key = prListKey(options);
@@ -207,13 +214,17 @@ export function getGitHubSnapshotCoalesced(
      */
     automaticRefresh?: boolean;
   } = {},
-  options?: {
+  options: {
     projectRoot?: string | null;
-    /** The window's `projectBinding.key`: the read follows it (see `snapshotReadScopeKey`). */
+    /** The window's `projectBinding.key`: an unpinned read follows it (see `snapshotReadScopeKey`). */
     bindingKey?: string | null;
+    /** The machine that reads GitHub for the repository (the repository reader). Null: none is online. */
+    pin: OpenProjectBinding | null;
   },
 ): Promise<GitHubPrSnapshot> {
-  const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey);
+  const pin = options.pin;
+  if (!pin) return Promise.reject(new Error(NO_PROJECT_COMPUTER_ONLINE));
+  const scopeKey = snapshotReadScopeKey(options?.projectRoot, options?.bindingKey, pin);
   // A machine with no GitHub sign-in (a fresh Linux box is the usual one)
   // answers every snapshot read with the same refusal, and every PR event
   // here used to ask it again over the relay. Remember that answer briefly;
@@ -231,7 +242,7 @@ export function getGitHubSnapshotCoalesced(
       includeExternalClosed: args.includeExternalClosed === true,
       historyPageLimit: args.historyPageLimit ?? null,
     }),
-    () => window.ade.prs.getGitHubSnapshot(args).then(
+    () => window.ade.prs.getGitHubSnapshot(args, pin).then(
       (snapshot) => {
         githubSnapshotAuthRefusals.delete(scopeKey);
         return snapshot;
@@ -253,17 +264,19 @@ const githubSnapshotAuthRefusals = new Map<string, { at: number; error: unknown 
 
 export function refreshPrsCoalesced(
   args: { prId?: string; prIds?: string[] } = {},
-  options?: { projectRoot?: string | null; pin?: OpenProjectBinding | null },
+  options: { projectRoot?: string | null; pin: OpenProjectBinding | null },
 ): Promise<PrSummary[]> {
   const prIds = args.prIds?.filter(Boolean).sort() ?? [];
+  const pin = options.pin;
+  if (!pin) return Promise.resolve([]);
   return coalesceInFlight(
     prRefreshInFlight,
     JSON.stringify({
-      projectRoot: projectKey(options?.projectRoot, options?.pin),
+      projectRoot: projectKey(options.projectRoot, pin),
       prId: args.prId ?? null,
       prIds,
     }),
-    () => window.ade.prs.refresh(args, options?.pin ?? null),
+    () => window.ade.prs.refresh(args, pin),
   );
 }
 
@@ -296,7 +309,7 @@ export function refreshLinkedPrCoalesced(
       try {
         const refreshed = await refreshPrsCoalesced(
           { prIds: [prId] },
-          { projectRoot: options?.projectRoot, pin: options?.pin },
+          { projectRoot: options?.projectRoot, pin: options?.pin ?? null },
         );
         const result = refreshed.find((next) => next.id === prId) ?? null;
         linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result });
@@ -305,39 +318,6 @@ export function refreshLinkedPrCoalesced(
         linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result: pr });
         throw error;
       }
-    },
-  );
-}
-
-export function warmPrSurfaceCoalesced(options?: {
-  projectRoot?: string | null;
-  /** The window's `projectBinding.key`, as for `getGitHubSnapshotCoalesced`. */
-  bindingKey?: string | null;
-  includeGithubSnapshot?: boolean;
-  forceGithubSnapshot?: boolean;
-}): Promise<void> {
-  const rootKey = projectKey(options?.projectRoot);
-  return coalesceInFlight(
-    prSurfaceWarmInFlight,
-    JSON.stringify({
-      projectRoot: rootKey,
-      bindingKey: options?.bindingKey ?? null,
-      includeGithubSnapshot: options?.includeGithubSnapshot !== false,
-      forceGithubSnapshot: options?.forceGithubSnapshot === true,
-    }),
-    async () => {
-      const tasks: Array<Promise<unknown>> = [
-        refreshPrsCoalesced({}, { projectRoot: options?.projectRoot }).catch(() => null),
-      ];
-      if (options?.includeGithubSnapshot !== false) {
-        tasks.push(
-          getGitHubSnapshotCoalesced(
-            { force: options?.forceGithubSnapshot === true },
-            { projectRoot: options?.projectRoot, bindingKey: options?.bindingKey },
-          ).catch(() => null),
-        );
-      }
-      await Promise.all(tasks);
     },
   );
 }
@@ -355,16 +335,16 @@ export const MACHINE_PR_RECONCILE_COOLDOWN_MS = 60_000;
  */
 export function requestMachinePrReconcile(
   projectRoot: string | null | undefined,
-  pin?: OpenProjectBinding | null,
+  pin: OpenProjectBinding | null,
 ): void {
   const reconcile = window.ade?.prs?.reconcileOnFocus;
-  if (typeof reconcile !== "function") return;
+  if (typeof reconcile !== "function" || !pin) return;
   const key = projectKey(projectRoot, pin);
   const now = Date.now();
   const last = machineReconcileRequestedAt.get(key);
   if (last != null && now - last < MACHINE_PR_RECONCILE_COOLDOWN_MS) return;
   machineReconcileRequestedAt.set(key, now);
-  void reconcile(pin ?? null).catch(() => {
+  void reconcile(pin).catch(() => {
     // best-effort; the next focus asks again once the cooldown passes
   });
 }
@@ -376,7 +356,6 @@ export function clearPrReadInFlightForTest(): void {
   prListGeneration.clear();
   githubSnapshotInFlight.clear();
   prRefreshInFlight.clear();
-  prSurfaceWarmInFlight.clear();
   linkedPrRefreshInFlight.clear();
   linkedPrRecentRefresh.clear();
   machineReconcileRequestedAt.clear();

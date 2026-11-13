@@ -10,7 +10,9 @@ import type {
   AgentChatNoticeDetail,
   AgentChatRecoverContinuityArgs,
 } from "../../../shared/types";
-import { useAgentChatApi } from "./agentChatApi";
+import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
+import { chatApiPin, requireChatPin } from "./chatMachinePin";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { Banner } from "../ui/notice";
 import { QUIET_LINE_ICON_CLASS, QUIET_LINE_TEXT_CLASS } from "./quietLineStyle";
 
@@ -147,6 +149,8 @@ export function ChatContinuityRecoveryCard({
   const [failure, setFailure] = useState<{ reason: RecoveryFailureReason } | null>(null);
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
   const agentChatApi = useAgentChatApi();
+  // The chat's machine; a personal chat's adapter names its own.
+  const recoveryPin = chatApiPin(useChatRuntimeScope().pin, useChatPaneScope()?.kind === "personal");
   const autoRecoveryPending = useAutoRecoveryPending(detail);
 
   const runRecovery = useCallback(
@@ -155,7 +159,9 @@ export function ChatContinuityRecoveryCard({
       setPendingMode(mode);
       setFailure(null);
       try {
-        const res = await (onRecoverContinuity ?? agentChatApi.recoverContinuity)({ sessionId, mode });
+        const res = onRecoverContinuity
+          ? await onRecoverContinuity({ sessionId, mode })
+          : await agentChatApi.recoverContinuity({ sessionId, mode }, requireChatPin(recoveryPin));
         if (!res.ok) {
           setFailure({ reason: res.reason });
           return;
@@ -170,7 +176,7 @@ export function ChatContinuityRecoveryCard({
         setPendingMode(null);
       }
     },
-    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity, agentChatApi],
+    [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity, agentChatApi, recoveryPin],
   );
 
   // ── Resolved ─────────────────────────────────────────────────────────────

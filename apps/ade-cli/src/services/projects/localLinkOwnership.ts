@@ -1,6 +1,8 @@
 import { getOrCreateLocalAccountMachineIdentity } from "../../../../desktop/src/main/services/account/localMachineIdentity";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
+import { resolveMachineAdeLayout } from "./machineLayout";
+import { readAccountProjectState } from "./accountProjectSync";
 import { deriveProjectId } from "./projectRegistry";
 
 /**
@@ -22,11 +24,35 @@ export function localLinkOwnership(
   if (!root) return null;
   try {
     const accountMachineKey = (deps.identity ?? getOrCreateLocalAccountMachineIdentity)().machineKey.trim();
-    return accountMachineKey ? { accountMachineKey, projectId: deriveProjectId(root) } : null;
+    if (!accountMachineKey) return null;
+    const projectId = deriveProjectId(root);
+    const accountProjectId = accountProjectIdForCopy(accountMachineKey, projectId);
+    return { accountMachineKey, projectId, ...(accountProjectId ? { accountProjectId } : {}) };
   } catch (error) {
     deps.logger?.warn("deeplink.link_ownership_unavailable", {
       error: error instanceof Error ? error.message : String(error),
     });
+    return null;
+  }
+}
+
+/**
+ * The account project that has the copy `projectId` on the machine
+ * `accountMachineKey`, from the list this machine last read. A link adds it
+ * next to the pair (L33). Null when the list has no such copy: the folder is
+ * not on the account yet, or the list is not read. Removed and merged
+ * projects never match.
+ */
+export function accountProjectIdForCopy(accountMachineKey: string, projectId: string, adeDir?: string): string | null {
+  try {
+    const state = readAccountProjectState(adeDir ?? resolveMachineAdeLayout().adeDir);
+    if (state.userId === null) return null;
+    for (const project of Object.values(state.projects)) {
+      if (project.removedAt !== null || project.mergedInto !== null) continue;
+      if (project.copies.some((copy) => copy.machineKey === accountMachineKey && copy.checkoutId === projectId)) return project.id;
+    }
+    return null;
+  } catch {
     return null;
   }
 }

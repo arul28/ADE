@@ -419,6 +419,18 @@ ends, and closes on Escape without moving the reading position.
 - **Right-click a page for the usual browser menu.** `builtInBrowserContextMenu.ts` builds it from Electron's `context-menu` params, Chrome's way round: a link offers Copy link address, an image Copy image / Copy image address, a text field the editor menu (spelling, undo, cut, copy, paste, select all), a selection Copy, and the page itself Back / Forward / Reload; Inspect is always last. Reload, Back and Forward run the same service calls as the toolbar on the clicked tab, and every action re-finds the tab first, so a page closed while its menu is open does nothing. The menu only opens for the visible active tab of a focused window, so an agent's synthetic right-click on a background tab cannot pop a menu over the person's work.
 - **The address bar's search engine is a setting.** Settings → ADE browser → Search engine picks Google (default, what it always was), DuckDuckGo, Bing, Brave Search, Kagi, Ecosia or a Custom URL with `%s` where the words go. A custom URL must be http(s) with `%s` after the host and no credentials (`isValidBrowserSearchTemplate` substitutes two words and checks the host did not move); an unusable one is saved, the row says it can't be used, and searches use Google until it is fixed. It is a machine-wide browser setting like the tab limit, stored by this desktop's main process, because the omnibox that searches runs in this desktop's renderer against this desktop's browser; it does not sync to other machines.
 
+## Built-in browser: Chrome identity, tab ownership, cleanup, and other machines
+
+- **The browser introduces itself as Chrome.** Electron's UA named the app and Electron (`… ade-desktop/x Chrome/… Electron/x …`), and an overridden UA also stops Chromium sending the `Sec-CH-UA*` client hints, so Google's account pages sent people to `/not-supported`. `builtInBrowserChromeIdentity.ts` sets one clean UA on every browser-tab session (`session.setUserAgent`, in `createBrowserNetworkRouter().configureSession`) and an all-URL `onBeforeSendHeaders` pass strips any leftover token and adds Chrome's low-entropy hints on secure requests (`"Not?A_Brand";v="24", "Chromium";v="152", "Google Chrome";v="152"`, `?0`, `"macOS"`). A request whose UA is not Chrome's (the iPhone and iPad device presets are Safari) is left alone, and the page-side patch likewise keeps a non-Chrome UA's own brand list. The tab preload (`preload/browserMedia.ts`, `installChromeBrandHook`) adds the same brand to `navigator.userAgentData` (`brands` and the high-entropy `brands`/`fullVersionList`) so script and headers agree; the GREASE brand is spelled exactly as Chromium spells it in JS. This replaced the Teams-only header rewrite. ADE's own app window keeps its UA. Google's sign-in flow can still refuse embedded browsers for other reasons; the login import is the fallback.
+- **Who a tab belongs to** (`browser/browserTabOwnership.ts`): **you** (you opened it, or kept an agent's tab), **a chat** (an agent opened it for its work), or **free** (its chat let go). A person's real input makes an agent's tab theirs (`keptByPerson`): a page mouse-down or key-down on the visible active tab of a focused window (`before-mouse-event` / `before-input-event`, ignored for 1.5 s after any agent action because synthetic input arrives through the same events), hand navigation, Attach to chat, or the strip's **Keep** (`builtInBrowser.keepTab`, renderer IPC only). Opening or looking at a tab does not count.
+- **The strip groups an agent's tabs under its chat, like Chrome tab groups.** One coloured label with the chat's name (the lane's colour, else a Chrome group colour picked by the chat id) and a line under the group's tabs. Clicking the label folds the group (the active tab never folds away); right-click opens the chat, keeps the tabs, or closes them. A tab's tooltip says who it belongs to and, for an agent tab counting down, when it closes. With a single tab the strip normally hides, but not when that tab is an agent's: its group and **Keep** live only there. `closeTab` finds its tab again after its awaits, because the sweep and a group's **Close tabs** run closes concurrently. The renderer's tab normalizer (`browserPanelNormalizers.ts#normalizeTab`) is a field allowlist: a new tab field must be added there or the strip never sees it.
+- **One lane toggle.** In a lane, the strip shows that lane's tabs plus your own lane-less tabs (**This lane**, with a `+N` of what it hides) or every tab (**All tabs**). The tab on screen always keeps its chip. The choice is one per computer (`localStorage` `ade.browser.laneFilter`). The browser stays one per project (one profile per install), never one per lane.
+- **Agent tabs clean themselves up.** The brain tells every desktop when a chat starts a turn, goes idle (`done`) or ends (`releaseChatBrowser`) through the bridge-served `chatBrowserLifecycle` method, locally and as a broadcast to desktops holding a pin, but only for chats that sent a browser command through that brain. A chat's agent tabs that nobody kept close 15 minutes after it goes idle (`CHAT_IDLE_CLOSE_MS`; any browser command from the chat re-arms the countdown, a new turn cancels it) and at once when it ends or its lane is archived or deleted. A tab that is on screen, recording, watched, or mid-handoff waits and is retried every 5 minutes. Each lifecycle word (and each browser command from the chat) bumps the chat's generation; a close pass already under way stops at the next tab when it sees a newer one, so a turn that starts mid-close keeps the rest of its tabs. A two-hour sweep closes agent tabs no command touched, for chats whose word never arrived (a brain restart). `tab.autoCloseAt` carries the deadline to the strip.
+- **Background tabs sleep.** A tab unused for 30 minutes (not active, not audible, not recording, watched, emulating, in DevTools or logging, no agent action running, and nothing a reload would lose: no field in use, no field changed from what the page loaded with, no editor area with text) drops its page to `about:blank` and remembers its URL, title and navigation entries (`tab.sleeping`); showing it, an agent read or action, or a watcher wakes it with `navigationHistory.restore`, falling back to loading the URL. Status, persistence and access checks use the remembered URL (`tabPageUrl`). Every blocker is read again after the page check (it awaits), and a sleeping tab sent to any new page (an agent's `navigate` with `activate: false`) forgets the remembered one, so a wake never restores an old page over a new one.
+- **PDFs and printing.** Tabs run with `plugins: true`, so Chromium's PDF viewer opens PDFs in the tab; the page's right-click menu has **Print…**. Each profile's HTTP disk cache is capped at 320 MB (`--disk-cache-size`, packaged and non-Vite runs). Per-project profiles left from before the shared profile are deleted once every live persistent cookie they hold is confirmed in the shared profile (`builtInBrowserProfileMigration.ts`: verified partitions are recorded as `retiredPartitions` and removed at the start of the next launch, before any session opens them).
+- **Notices never freeze the page.** See "Bottom-right notices and the browser" in `docs/design/notices.md`: while a visible page covers the notice corner, the corner's cards are drawn in their own see-through window over that corner (the notice layer), so they stay bottom-right and the page around them stays live.
+- **Tabs on other machines.** Tabs stay on the machine that opened them. A pane pinned to another machine lists that machine's tabs for the lane (from `work_tools.getLaneState`, every 5 s while visible) in a row under the strip (`RemoteBrowserTabs.tsx`). Picking one streams it: `work_tools.readBrowserTabFrame` (person-only: scoped for every caller, CTO included, and in `ADE_ACTION_USER_ONLY`, so only the desktop app reaches it over RPC) renews a 6-second watch on that machine's desktop, which runs an ordinary preview stream with owner `remote` and answers with the newest frame; frames are polled one at a time at about 4 fps and stop when nobody polls. **Take control** sends clicks, scrolls and typing as fractions of the frame (`work_tools.sendBrowserTabInput`, person-only like the read, `webContents.sendInputEvent`/`insertText`), and makes the tab the person's. The viewer is keyed by machine and tab, so a newly picked tab starts blank, and input goes only to a fresh picture: with no frame for 3 s it says the link is lost and ends control until frames return. **Open here** loads the page in this computer's browser (a remote localhost goes through a tunnel as usual). When this chat's agent starts working in a tab over there, the pane shows it once. A local-server row for a port the other machine already has open asks whether to watch it there or tunnel it here. The phone's Browser card uses the same two calls through the sync commands `workTools.readBrowserTabFrame` / `workTools.sendBrowserTabInput`.
+
 ## Built-in browser: new tabs, device presets, find, and dev servers
 
 - **A new tab is a launchpad, not a home page.** `createTab` with no URL parks the tab on `about:blank` and flags it `isLaunchpad` with the title "New tab"; ADE issues no request the person did not ask for. Closing the last tab leaves **zero** tabs, and revealing the pane does not conjure a replacement. `open-request` and the agent `open` command are unchanged: they navigate. The machine-local tab store migrated to v2 for exactly one reason: to drop the google.com home page v1 had persisted, so the old default is not resurrected on the next launch. A google tab saved after that migration is the person's own and is kept.
@@ -1684,24 +1696,52 @@ accepted update alike, and the update dialog shows its answer per chat:
   what it still needs instead of waiting for a report that cannot come.
 - Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h).
 - Tracked agent CLIs (Claude Code, Codex, … in a terminal) follow the same
-  setting. When a runtime stops on purpose (an update, a reboot, the brain
-  quitting), `ptyService.disposeAll({ reopenAfterRestart: true })` saves the
-  CLIs it still has open to its own file,
-  `.ade/cache/reopen-cli-after-restart.<pid>.json`
-  (`apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`), and marks
-  one that is still printing and not at its prompt as mid-turn. Two runtimes
-  of one project that stop together never overwrite each other's list. The
-  project's next runtime claims each file with a rename before it reads it,
-  so a list is acted on once (`reopenCliSessionsAfterRestart`). A CLI is
-  reopened at its prompt (`ptyService.resumeSession`), and a mid-turn one gets
-  the durable "continue" row instead, which reopens it with
-  `RESTART_RESUME_PROMPT`. The "continue" counts toward the same restart streak
-  as a chat's (`MAX_CONSECUTIVE_RESTART_RESUMES`); past it, the CLI only
-  reopens. Removing a project deletes its lists. Archived CLIs, ones
-  already open, ones another runtime owns, and lists older than 6 h are
-  skipped. A crash writes no list, so a crash never reopens a CLI. A brain
-  that does this reports `cliSessionsReopen: true` in `runtime.updateImpact`,
-  and the update dialog then says CLI sessions reopen.
+  setting (`reopenCliSessionsAfterRestart`, store in
+  `apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`). Two
+  sources:
+  - **A stop on purpose** (an update, a reboot, the brain quitting):
+    `ptyService.disposeAll({ reopenAfterRestart: true })` saves the CLIs it
+    still has open to its own file,
+    `.ade/cache/reopen-cli-after-restart.<pid>.json`, and marks one that is
+    still printing and not at its prompt as mid-turn. Two runtimes of one
+    project that stop together never overwrite each other's list. The next
+    runtime claims each file with a rename before it reads it.
+  - **A crash, force quit, kill or power loss** writes nothing at exit. The
+    next runtime reads the session rows instead
+    (`findCliSessionsCutOffByCrash`): tracked agent CLI rows, `running` or
+    `detached`, whose owner is in this computer's process registry
+    (`runtime_processes`, never synced), is not this process, and no longer
+    runs. The session table syncs between machines, so another machine's
+    rows never qualify. "Recent" is the dead owner's last heartbeat. Mid-turn
+    comes from `.ade/cache/cli-reopen/turns.<pid>.json`, which the live
+    runtime keeps current from the CLI's own exact turn signal (Claude Code
+    hooks, Codex OSC); a turn only guessed from output does not count, so that
+    CLI reopens at its prompt.
+  The planned list wins: its ids are left out of the crash list. Both sources
+  take one claim per session and dead owner
+  (`.ade/cache/cli-reopen/<session>.<owner>.claim`, created with `wx`) right
+  before that session's reopen, so a session never reopens twice and a stop
+  during the reopens leaves the rest to the next start. After unclean stops a
+  session reopens at most `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row
+  (`.ade/cache/cli-reopen/<session>.json`, written before the reopen starts);
+  a planned stop or a resume by hand starts that count again. A brain in a
+  restart loop (`brainStartIsInRestartLoop`, from `brain-starts.json`)
+  reopens nothing. With the setting off or in a loop, the crash candidates
+  are claimed and stay closed, so a later start does not reopen them.
+  A CLI reopens at its prompt (`ptyService.resumeSession`). A mid-turn one,
+  unless it waits on the user's answer, then gets the durable "continue" row
+  (`RESTART_RESUME_PROMPT`), which fires once the CLI is at its prompt; it
+  counts toward the same restart streak as a chat's. Every reopened CLI shows
+  one line in its own terminal (`ptyService.showSessionNotice`,
+  `cliReopenedNotice`): "ADE restarted (unexpectedly) and reopened this
+  session", with "during a turn … tells the agent to continue" when it is
+  continued. Every viewer of the session sees it. Removing a project deletes
+  its lists and crash state. Archived CLIs, ones already open, ones another
+  runtime owns, and stops older than 6 h are skipped. The log lines are
+  `agent_chat.cli_reopened_after_restart` and `agent_chat.cli_reopen_skipped`,
+  with counts only. A brain that reopens CLIs reports
+  `cliSessionsReopen: true` in `runtime.updateImpact`, and the update dialog
+  then says CLI sessions reopen.
   A cut-off turn counts by its row's end time (none counts as now: the dead
   owner was only just found). A chat at rest must also have gone quiet within
   that time, by its idle time or, when a graceful shutdown cleared that, by its
@@ -2093,7 +2133,7 @@ still-live button invites a second spend.
   flows Settings uses: `providerInstances.login*` for Claude and Codex
   (Codex device code when the screen is not that machine),
   `ai.cliLogin*` for Copilot, Grok, Kimi (region tabs), Droid, Muse and
-  Devin, `ai.antigravitySignIn*` (paste back the address when remote) and
+  Devin, `ai.antigravitySignIn*` (paste back the code Google shows) and
   Cursor's own login. Qwen, OpenCode and Pi open their Settings page on that
   machine. The card shows the device code, link or paste field the machine's
   sign-in printed, opens only http(s) links, and closes once the machine

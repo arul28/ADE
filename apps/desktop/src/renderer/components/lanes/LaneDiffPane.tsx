@@ -63,33 +63,51 @@ function DiffFailedRetry({ onRetry }: { onRetry: () => void }) {
   );
 }
 
-export function LaneDiffPane({
-  laneId,
-  selectedPath,
-  selectedFileMode,
-  selectedCommit,
-  liveSync = false,
-  runtimePin = null,
-  initialCommitFilePath = null,
-  commitHeaderStart = null
-}: {
+type LaneDiffPaneProps = {
   laneId: string | null;
   selectedPath: string | null;
   selectedFileMode: LaneDiffMode | null;
   selectedCommit: GitCommitSummary | null;
   liveSync?: boolean;
   /**
-   * Machine this lane actually lives on. `null` means the tab's bound machine
-   * (the historical behavior). When set, every diff/git read is routed there.
+   * The machine this lane lives on. Every diff, git and file call goes there.
+   * Null: the lane has no machine online, so the pane reads nothing.
    */
-  runtimePin?: OpenProjectBinding | null;
+  runtimePin: OpenProjectBinding | null;
   /** The commit file to open first (History opens a commit at the file you clicked). */
   initialCommitFilePath?: string | null;
   /** Rendered at the start of the commit header (History puts its Back button here). */
   commitHeaderStart?: React.ReactNode;
-}) {
+};
+
+export function LaneDiffPane(props: LaneDiffPaneProps) {
+  if (!props.runtimePin) {
+    return (
+      <div
+        data-testid="lane-diff-no-computer"
+        className="flex h-full flex-col items-center justify-center gap-1 px-6 text-center text-sm"
+        style={{ color: COLORS.textMuted }}
+      >
+        <span style={{ color: COLORS.textSecondary }}>No computer with this lane is online.</span>
+        <span className="text-xs">Its changes show when that computer connects.</span>
+      </div>
+    );
+  }
+  return <LaneDiffPaneOnMachine {...props} runtimePin={props.runtimePin} />;
+}
+
+function LaneDiffPaneOnMachine({
+  laneId,
+  selectedPath,
+  selectedFileMode,
+  selectedCommit,
+  liveSync = false,
+  runtimePin,
+  initialCommitFilePath = null,
+  commitHeaderStart = null
+}: LaneDiffPaneProps & { runtimePin: OpenProjectBinding }) {
   const navigate = useNavigate();
-  const pin = runtimePin ?? null;
+  const pin = runtimePin;
   // A foreign lane's diff stays read-only. Live sync watches the lane's own
   // machine through the pinned Files API, so it follows edits made there.
   const isForeign = !usePinTargetsTab(pin);
@@ -438,7 +456,7 @@ export function LaneDiffPane({
                   // Files pins itself to the lane's machine from `filesPin`, so a
                   // foreign lane's file opens (and saves) on that machine.
                   onClick={() => navigate("/files", {
-                    state: { openFilePath: selectedPath, laneId, ...(pin ? { filesPin: pin } : {}) },
+                    state: { openFilePath: selectedPath, laneId, ...(pin && isForeign ? { filesPin: pin } : {}) },
                   })}
                   title="Open in Files tab"
                 >
@@ -462,7 +480,8 @@ export function LaneDiffPane({
                     const text = diffRef.current?.getModifiedValue();
                     if (text == null) return;
                     setBusyAction("save");
-                    window.ade.files
+                    // The same copy as the reads above.
+                    files
                       .writeTextAtomic({ laneId, path: selectedPath, text })
                       .then(() => {
                         return refreshWorkingDiff();

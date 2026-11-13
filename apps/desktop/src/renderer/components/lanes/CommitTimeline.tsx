@@ -65,7 +65,7 @@ export function CommitTimeline({
   refreshTrigger,
   hasUpstream,
   remoteMissing,
-  runtimePin = null,
+  runtimePin,
   cacheScope = null,
   cacheBranchRef = null,
 }: {
@@ -76,8 +76,8 @@ export function CommitTimeline({
   refreshTrigger?: number;
   hasUpstream?: boolean | null;
   remoteMissing?: boolean;
-  /** Machine this lane lives on; `null` means the tab's bound machine. */
-  runtimePin?: OpenProjectBinding | null;
+  /** The machine this lane lives on. */
+  runtimePin: OpenProjectBinding;
   /**
    * The lane's cache scope and branch (`laneGitListCache.ts`). The last
    * successful history is painted from it on mount; `null` keeps this list uncached.
@@ -85,7 +85,7 @@ export function CommitTimeline({
   cacheScope?: string | null;
   cacheBranchRef?: string | null;
 }) {
-  const pin = runtimePin ?? null;
+  const pin = runtimePin;
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);

@@ -1,6 +1,7 @@
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { TERMINAL_BRACKETED_PASTE_END, TERMINAL_BRACKETED_PASTE_START } from "./terminalBracketedPaste";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /**
  * Clipboard-image paste for terminals that take the image as a saved file.
@@ -135,10 +136,10 @@ export async function attachClipboardImageToRuntime(
   if (!data) return false;
   let saved: { path: string };
   try {
-    saved = await window.ade.agentChat.saveTempAttachment(
+    saved = await withChatPin(runtime.runtimePin ?? undefined, (chatPin) => window.ade.agentChat.saveTempAttachment(
       { data, filename: image.filename || "clipboard.png" },
-      runtime.runtimePin ?? undefined,
-    );
+      chatPin,
+    ));
   } catch (error) {
     reportImagePasteFailure(runtime, io, error);
     return true;

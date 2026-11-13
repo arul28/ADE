@@ -44,6 +44,7 @@ import {
   type WorkToolAvailability,
   type WorkToolDefinition,
 } from "./workTools";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /**
  * What a tool has to say about itself on the picker card and in the activity
@@ -686,7 +687,7 @@ export function useWorkToolStatuses(args: {
       }
       const read = typeof prs.listAll === "function"
         ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey }).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
-        : prs.getForLane(laneId, runtimePinRef.current).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
+        : withChatPin(runtimePinRef.current, (chatPin) => prs.getForLane(laneId, chatPin)).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
       void read.then((count) => {
         if (!cancelled) setPrCount(count);
       }).catch(() => {
@@ -695,11 +696,14 @@ export function useWorkToolStatuses(args: {
     };
     load();
     // An issue webhook says nothing about this lane's pull requests.
-    const dispose = window.ade?.prs?.onEvent?.((event) => {
-      if (event?.type === "github-issue-changed") return;
-      invalidatePrListCache({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey });
-      load();
-    });
+    const feedPin = runtimePinRef.current;
+    const dispose = feedPin
+      ? window.ade?.prs?.onEvent?.((event) => {
+        if (event?.type === "github-issue-changed") return;
+        invalidatePrListCache({ projectRoot: prListProjectRoot, pin: feedPin, bindingKey: tabBindingKey });
+        load();
+      }, feedPin)
+      : undefined;
     return () => {
       cancelled = true;
       dispose?.();

@@ -2,10 +2,12 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useRootAppStore } from "../../state/appStore";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import {
   createLaneMachineRouter,
   machineBlockedReason,
   machineChipFor,
+  rowMachineChip,
   shouldShowMachineChips,
   useAllMachineLanes,
   type MachineChipModel,
@@ -44,7 +46,7 @@ export type LaneTarget =
    * `pin` addresses the lane's copy, the tab's own included. `machineId` is
    * null for the tab's own machine: only another machine's rows carry one.
    */
-  | { ok: true; laneId: string; pin: OpenProjectBinding | null; machineId: string | null; name: string }
+  | { ok: true; laneId: string; pin: OpenProjectBinding; machineId: string | null; name: string }
   | { ok: false; reason: string };
 
 export type ForeignLaneModel = {
@@ -84,6 +86,7 @@ export function useLanesPageMachines({
 }) {
   // Mounting this while the tab is visible keeps the shared cross-machine union
   // refreshing (ref-counted, no new loop).
+  // `buildAllMachineLanes` leaves out the computers that are gone from the account.
   const allMachineLanes = useAllMachineLanes(active);
   const allMachineLanesRef = useRef(allMachineLanes);
   allMachineLanesRef.current = allMachineLanes;
@@ -120,6 +123,16 @@ export function useLanesPageMachines({
   foreignRowByKeyRef.current = foreignRowByKey;
   const activeMachine = allMachineLanes.machines[0] ?? null;
   const activeMachineId = activeMachine?.machineId ?? null;
+  /**
+   * The pin of the tab's own lanes (the rows from the tab's copy): that
+   * machine's address from the router. Null while the copy is offline or no
+   * project is open; then nothing is sent for those rows.
+   */
+  // The union carries no slice for the tab's own machine, so its `online`
+  // stays true after that machine drops. The tab's copy pin follows the
+  // connection, and is null while that machine is offline.
+  const tabCopyPin = useTabCopyPin();
+  const tabLanePin = activeMachine?.routable && activeMachine.online && tabCopyPin != null ? activeMachine.pin : null;
 
   // The shared router over the same union the list renders. Every action on a
   // row resolves through it, so a lane on another machine is only ever sent
@@ -151,10 +164,16 @@ export function useLanesPageMachines({
     }
     return { ok: true, laneId: key, pin: route.pin, machineId: null, name: local.lane.name };
   }, []);
-  const liveMachines = useMemo(
-    () => (goneMachineIds.size ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)) : allMachineLanes.machines),
-    [allMachineLanes.machines, goneMachineIds],
-  );
+  // The tab's own machine has no union slice, so `online` stays true after it
+  // drops; its copy pin is null then, and the filter chip shows it offline.
+  const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null;
+  const liveMachines = useMemo(() => {
+    const live = goneMachineIds.size
+      ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId))
+      : allMachineLanes.machines;
+    if (!tabMachineOffline) return live;
+    return live.map((machine) => (machine.isActiveBinding ? { ...machine, online: false } : machine));
+  }, [allMachineLanes.machines, goneMachineIds, tabMachineOffline]);
   const multiMachine = shouldShowMachineChips(liveMachines.length);
 
   /* ---- Selection ---- */
@@ -230,18 +249,19 @@ export function useLanesPageMachines({
     }
     return byMachineId;
   }, [liveMachines, allViewLanes, machineIdForKey]);
-  // One machine, or the list filtered down to one: every row would carry the
-  // same chip, so none do (the active filter chip already names the machine).
+  // A row names its computer only when it is not this one (`rowMachineChip`).
+  // A list filtered down to one machine carries no chips: the active filter
+  // chip already names it.
   const machineChipByLaneId = useMemo(() => {
-    if (!multiMachine || effectiveMachineFilter !== "all") return undefined;
+    if (effectiveMachineFilter !== "all") return undefined;
     const map = new Map<string, MachineChipModel>();
     for (const lane of allViewLanes) {
       const machineId = machineIdForKey(lane.id);
-      const chip = machineId ? machineFilterChips.get(machineId) : undefined;
+      const chip = rowMachineChip(machineId ? machineFilterChips.get(machineId) : null);
       if (chip) map.set(lane.id, chip);
     }
-    return map;
-  }, [allViewLanes, effectiveMachineFilter, machineFilterChips, machineIdForKey, multiMachine]);
+    return map.size > 0 ? map : undefined;
+  }, [allViewLanes, effectiveMachineFilter, machineFilterChips, machineIdForKey]);
   /** Why a row on an unreachable machine can't be acted on, by row key. */
   const disabledReasonByLaneId = useMemo(() => {
     const map = new Map<string, string>();
@@ -255,6 +275,7 @@ export function useLanesPageMachines({
 
   return {
     allMachineLanes,
+    tabLanePin,
     foreignLanes,
     foreignRowByKey,
     foreignRowByKeyRef,

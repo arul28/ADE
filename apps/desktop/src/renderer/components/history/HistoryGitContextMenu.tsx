@@ -1,6 +1,6 @@
 import React from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import {
   buildCommitContextActions,
   groupCommitContextActions,
@@ -12,6 +12,8 @@ import { Z_LAYERS } from "../ui/zLayers";
 
 type HistoryGitContextMenuProps = {
   laneId: string;
+  /** The lane's machine. Null: nothing can be sent there, so actions do nothing. */
+  pin: OpenProjectBinding | null;
   commit: GitCommitSummary;
   isHead: boolean;
   hasWorktree: boolean;
@@ -27,6 +29,7 @@ type HistoryGitContextMenuProps = {
 
 export function HistoryGitContextMenu({
   laneId,
+  pin,
   commit,
   isHead,
   hasWorktree,
@@ -41,9 +44,11 @@ export function HistoryGitContextMenu({
   const groups = groupCommitContextActions(actions);
 
   const run = (actionId: HistoryGitActionId) => {
+    if (!pin) return;
     void runHistoryGitAction({
       actionId,
       laneId,
+      pin,
       commit,
       onNotice,
       onError,

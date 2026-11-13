@@ -145,9 +145,14 @@ async function settle<T>(promise: Promise<T>): Promise<T | null> {
   }
 }
 
+/**
+ * Chats and CTO sessions for the timeline, read from the tab machine (`pin`).
+ * CTO sessions come from the CTO's home when it is known, else from `pin`.
+ */
 export async function fetchSupplementalTimelineRecords(
   limit: number,
-  cto: HistoryCtoRoute = { skip: false, pin: null },
+  cto: HistoryCtoRoute,
+  pin: OpenProjectBinding,
 ): Promise<OperationRecord[]> {
   const roundedLimit = Math.floor(limit);
   const safeLimit = Number.isFinite(roundedLimit)
@@ -155,14 +160,10 @@ export async function fetchSupplementalTimelineRecords(
     : 500;
   const [chats, ctoSnapshot] = await Promise.all([
     typeof window.ade?.agentChat?.list === "function"
-      ? settle(window.ade.agentChat.list({ includeAutomation: true }))
+      ? settle(window.ade.agentChat.list({ includeAutomation: true }, pin))
       : Promise.resolve(null),
     typeof window.ade?.cto?.getState === "function" && !cto.skip
-      ? settle(
-          cto.pin
-            ? window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }, cto.pin)
-            : window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }),
-        )
+      ? settle(window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }, cto.pin ?? pin))
       : Promise.resolve(null),
   ]);
 

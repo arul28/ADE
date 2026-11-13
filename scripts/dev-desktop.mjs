@@ -46,6 +46,8 @@ function usage() {
     "projects in ADE and no saved choices, and nothing it does reaches your ADE.",
     "--keep skips the reset: the same app comes back as a returning user, which is",
     "when What's new pages and situational suggestions can show.",
+    "--keep --attach uses a first-run brain that already runs on the socket, for",
+    "example one started with `serve --dev-test-machine` to test the account sync.",
     "Sign it in once: ADE_HOME=~/.ade-dev-first-run ade --socket <socket> login",
     "(or through the app's own sign-in card); later launches keep that sign-in.",
   ].join("\n");
@@ -172,8 +174,11 @@ const FIRST_RUN_KEPT = new Set(["secrets", "account-settings.json", "account-vau
  * The sign-in is kept because an account is required and a copied session
  * would share a refresh token with the owner's ADE, which rotating signs out.
  */
-async function prepareFirstRun(socketPath, { keep = false } = {}) {
-  if (await canConnectToSocket(socketPath)) {
+async function prepareFirstRun(socketPath, { keep = false, attach = false } = {}) {
+  // --keep --attach resets nothing, so it may use a first-run brain that is
+  // already running (for example one started with --dev-test-machine, which
+  // runs sync on its own lease).
+  if (!(keep && attach) && await canConnectToSocket(socketPath)) {
     throw new Error(
       `A brain is already listening at ${socketPath}. Stop that first-run app first (its brain must not be running while its home is reset).`,
     );
@@ -265,7 +270,7 @@ function devToolsEnv() {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.keep && !options.firstRun) throw new Error("--keep only applies with --first-run.");
-  if (options.firstRun) await prepareFirstRun(options.socketPath, { keep: options.keep });
+  if (options.firstRun) await prepareFirstRun(options.socketPath, { keep: options.keep, attach: options.mode === "attach" });
   if (!fs.existsSync(`${options.projectRoot}/.ade`)) {
     process.stderr.write(`[ade] warning: ${options.projectRoot} does not contain .ade; desktop may open the project picker.\n`);
   }

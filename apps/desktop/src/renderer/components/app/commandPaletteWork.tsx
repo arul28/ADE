@@ -390,7 +390,10 @@ export function useWorkSessionActions({
 }) {
   return useCallback(
     async (entry: ThreadIndexEntry, action: ThreadRowAction) => {
-      const { session, binding } = entry;
+      const { session } = entry;
+      // The row's machine. A row of the tab's own copy carries no binding, so
+      // its actions go to the tab's machine.
+      const binding = entry.binding ?? projectBinding;
       if (action === "new-chat") {
         if (!entry.machineOnline) return;
         // Persist the draft before navigation. Work can be unmounted while the

@@ -3,12 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  claimCliReopen,
+  countCliCrashReopen,
+  findCliSessionsCutOffByCrash,
   forgetCliSessionsToReopen,
   recordCliSessionsToReopen,
+  resetCliCrashReopenCount,
   takeCliSessionsToReopen,
 } from "./cliReopenAfterRestart";
 
 const DAY_MS = 24 * 60 * 60_000;
+const HOUR_MS = 60 * 60_000;
+// Past any platform's pid range, so never a live process.
+const DEAD_PID = 99_999_901;
+const OTHER_DEAD_PID = 99_999_902;
 
 describe("CLI reopen after restart", () => {
   const roots: string[] = [];
@@ -46,5 +54,70 @@ describe("CLI reopen after restart", () => {
     recordCliSessionsToReopen(root, [{ sessionId: "cli-d", midTurn: false }], () => stoppedAt);
     forgetCliSessionsToReopen(root);
     expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater)).toEqual([]);
+  });
+
+  it("after a crash, reopens only this computer's recent CLIs whose owner is gone", () => {
+    const now = Date.now();
+    const seen = (agoMs: number) => new Date(now - agoMs).toISOString();
+    const startedAt = "2026-11-12T10:00:00.000Z";
+    const row = (id: string, ownerPid: number | null, extra: Record<string, unknown> = {}) => ({
+      id,
+      status: "running",
+      archivedAt: null,
+      ownerPid,
+      ownerProcessStartedAt: startedAt,
+      ...extra,
+    });
+    const result = findCliSessionsCutOffByCrash({
+      rows: [
+        row("cut-off", DEAD_PID),
+        row("swept", DEAD_PID, { status: "detached" }),
+        // Another machine's row: the session table syncs, the process registry does not.
+        row("other-machine", 77_777_777),
+        // A live peer runtime of this computer still serves it.
+        row("live-peer", process.pid),
+        // The pid came back as another process: not the owner the row names.
+        row("reused-pid", DEAD_PID, { ownerProcessStartedAt: "2026-11-12T09:00:00.000Z" }),
+        row("stale", OTHER_DEAD_PID),
+        row("archived", DEAD_PID, { archivedAt: seen(0) }),
+        row("ended", DEAD_PID, { status: "disposed" }),
+        row("planned", DEAD_PID),
+        row("no-owner", null),
+      ],
+      knownOwners: [
+        { pid: DEAD_PID, startedAt, lastSeen: seen(60_000) },
+        { pid: process.pid, startedAt, lastSeen: seen(0) },
+        { pid: OTHER_DEAD_PID, startedAt, lastSeen: seen(7 * HOUR_MS) },
+      ],
+      ownPid: 1,
+      exclude: new Set(["planned"]),
+      maxAgeMs: 6 * HOUR_MS,
+    });
+    expect(result.cutOff).toEqual([
+      { sessionId: "cut-off", ownerPid: DEAD_PID, ownerStartedAt: startedAt },
+      { sessionId: "swept", ownerPid: DEAD_PID, ownerStartedAt: startedAt },
+    ]);
+    expect(result.stale).toBe(1);
+    expect(result.cutOff.map((entry) => entry.sessionId)).not.toContain("other-machine");
+  });
+
+  it("claims a session once per dead owner and caps reopens after unclean stops in a row", () => {
+    const root = projectRoot();
+    const owner = { sessionId: "cli-a", ownerPid: DEAD_PID, ownerStartedAt: "2026-11-12T10:00:00.000Z" };
+    // Two runtimes, or the planned list and the crash list, race for one session.
+    expect(claimCliReopen(root, owner)).toBe(true);
+    expect(claimCliReopen(root, owner)).toBe(false);
+    // The runtime that reopened it crashes too: a new owner, a new claim.
+    expect(claimCliReopen(root, { ...owner, ownerPid: OTHER_DEAD_PID })).toBe(true);
+
+    expect([1, 2, 3, 4].map(() => countCliCrashReopen(root, "cli-a", 6 * HOUR_MS))).toEqual([1, 2, 3, 4]);
+    // Another session keeps its own count.
+    expect(countCliCrashReopen(root, "cli-b", 6 * HOUR_MS)).toBe(1);
+    // A planned stop or a resume by hand breaks the row.
+    resetCliCrashReopenCount(root, ["cli-a"]);
+    expect(countCliCrashReopen(root, "cli-a", 6 * HOUR_MS)).toBe(1);
+    // Forgetting the project drops its claims with its lists.
+    forgetCliSessionsToReopen(root);
+    expect(claimCliReopen(root, owner)).toBe(true);
   });
 });

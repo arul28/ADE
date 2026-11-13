@@ -7,6 +7,8 @@ import { closeWorkToolForReal } from "./closeWorkToolForReal";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 
 const PROJECT_ROOT = "/repo";
+/** The chat's machine: an Apple close needs one to name the device. */
+const CHAT_PIN = { kind: "local" as const, key: "local:/repo", rootPath: "/repo", displayName: "Repo" };
 
 function setProject(rootPath: string | null): void {
   useAppStore.setState({
@@ -110,13 +112,13 @@ describe("closeWorkToolForReal", () => {
     });
     (window as unknown as { ade: unknown }).ade = { iosSimulator: { stopStream, deviceStop } };
 
-    closeWorkToolForReal("ios", { laneId: "lane-1", chatSessionId: "chat-1" });
+    closeWorkToolForReal("ios", { laneId: "lane-1", chatSessionId: "chat-1", runtimePin: CHAT_PIN });
     await flush();
 
-    expect(stopStream).toHaveBeenCalledWith(undefined, { laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(stopStream).toHaveBeenCalledWith(CHAT_PIN, { laneId: "lane-1", chatSessionId: "chat-1" });
     expect(deviceStop).toHaveBeenCalledWith(
       { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true },
-      undefined,
+      CHAT_PIN,
     );
     // The encoder must stop before the device it is reading goes away.
     expect(order).toEqual(["stopStream", "deviceStop"]);
@@ -132,7 +134,7 @@ describe("closeWorkToolForReal", () => {
       },
     };
 
-    closeWorkToolForReal("ios", { laneId: "lane-1", chatSessionId: "chat-1" });
+    closeWorkToolForReal("ios", { laneId: "lane-1", chatSessionId: "chat-1", runtimePin: CHAT_PIN });
     await flush();
 
     expect(deviceStop).toHaveBeenCalled();
@@ -175,7 +177,7 @@ describe("useWorkSidebarTool close-for-real failures", () => {
       appControl: { stop: vi.fn(() => Promise.reject(new Error("runtime refused"))) },
     };
 
-    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+    const { result, rerender } = renderHook(() => useWorkSidebarTool("lane-1", CHAT_PIN, "chat-1"));
     act(() => result.current.setTool("app-control"));
     rerender();
     expect(result.current.openTools).toEqual(["app-control"]);

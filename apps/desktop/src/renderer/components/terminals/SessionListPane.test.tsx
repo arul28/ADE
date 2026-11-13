@@ -150,6 +150,9 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
   };
 }
 
+/** The tab's copy: the machine this computer's rows live on. */
+const TAB_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
+
 function paneElement(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
   const session = makeSession();
   return (
@@ -179,7 +182,7 @@ function paneElement(props: Partial<ComponentProps<typeof SessionListPane>> = {}
         workCollapsedSectionIds={[]}
         toggleWorkSectionCollapsed={vi.fn()}
         sessionsGroupedByLane={new Map([[session.laneId, [session]]])}
-        resolveSessionRuntimePin={() => null}
+        resolveSessionRuntimePin={() => TAB_PIN}
         {...props}
       />
     </MemoryRouter>
@@ -288,13 +291,15 @@ describe("SessionListPane", () => {
     const missingChat = makeSession({ id: "session-missing", laneId: "lane-gone", laneName: "Gone lane" });
     // Like the real lane list: archived lanes come back only when asked for, and
     // only project A's machine has this lane archived.
-    const list = vi.fn(async (args?: { includeArchived?: boolean }) =>
-      args?.includeArchived && useAppStore.getState().projectBinding?.key === projectA.key ? [archivedLane] : [],
+    const list = vi.fn(async (args?: { includeArchived?: boolean }, pin?: OpenProjectBinding) =>
+      args?.includeArchived && pin?.key === projectA.key ? [archivedLane] : [],
     );
     Object.defineProperty(window, "ade", { configurable: true, value: { lanes: { list } } });
     useAppStore.setState({ projectBinding: projectA });
 
     renderPane({
+      // The chats live on the tab's copy, whichever project the tab shows.
+      resolveSessionRuntimePin: () => useAppStore.getState().projectBinding,
       runningFiltered: [archivedChat, missingChat],
       allSessionsUnfiltered: [archivedChat, missingChat],
       sessionsGroupedByLane: new Map([
@@ -1249,7 +1254,7 @@ describe("SessionListPane", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settle 1" }));
 
-    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"]));
+    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"], TAB_PIN));
     expect(screen.getByText("Settled 1")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
@@ -1286,7 +1291,7 @@ describe("SessionListPane", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Settle all" }));
-    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ready"]));
+    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ready"], TAB_PIN));
   });
 
   describe("cross-machine union", () => {
@@ -1319,8 +1324,9 @@ describe("SessionListPane", () => {
       expect(screen.getByRole("button", { name: /Elsewhere Lane/ })).toBeTruthy();
 
       // The foreign lane has a single chat, so its card carries the marker.
-      const marker = document.querySelector("[data-machine-marker-mode]");
-      expect(marker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
+      const marker = document.querySelector('[data-machine-marker-mode][data-machine-online="false"]');
+      // Lanes from two computers are listed, so the marker names its computer.
+      expect(marker?.textContent).toContain("Mac Studio (12)");
       expect(marker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
       expect(marker?.getAttribute("data-machine-online")).toBe("false");
     });
@@ -1777,13 +1783,11 @@ describe("SessionListPane", () => {
         ".ade-lane-group-header",
       )!;
       expect(header.closest("[data-dimmed]")).not.toBeNull();
-      const marker = document.querySelector("[data-machine-marker-mode]")!;
+      const marker = document.querySelector('[data-machine-marker-mode][data-machine-online="false"]')!;
       expect(marker.getAttribute("data-machine-online")).toBe("false");
-      // Non-Primary lanes keep the compact tower even while offline; the
-      // accessible label and tooltip still name the unreachable machine.
-      expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
+      // The marker names the unreachable machine and says it is offline.
       expect(marker.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
-      expect(screen.queryByText("Mac Studio (12)")).toBeNull();
+      expect(marker.textContent).toContain("Mac Studio (12)");
       expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeNull();
     });
 
@@ -3004,10 +3008,9 @@ describe("SessionListPane visual hierarchy", () => {
       const foreignGroup = container.querySelector(
         '[data-group-id="target-studio:lane-primary-studio"]',
       ) as HTMLElement;
-      const foreignMarker = foreignGroup.querySelector("[data-machine-marker-mode]");
-      expect(foreignMarker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
+      const foreignMarker = foreignGroup.querySelector('[data-machine-marker-mode][data-machine-online="false"]');
       expect(foreignMarker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
-      expect(within(foreignGroup).queryByText("Mac Studio (12)")).toBeNull();
+      expect(foreignMarker?.textContent).toContain("Mac Studio (12)");
     });
 
     it("keeps Primary out of the quiet shelves when everything in it has settled", () => {

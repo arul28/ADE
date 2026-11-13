@@ -1,4 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
+import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
+import type { NoticeLayerRect } from "../shared/noticeLayer";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
@@ -13,9 +16,11 @@ import type {
   LaneShareMoveAction,
   LaneShareListArgs,
   LaneShareListResult,
+  LaneShareGivenEntry,
   LaneShareReceivedResult,
   LaneShareResendResult,
   LaneShareRevokeResult,
+  LaneShareRevokeGivenResult,
   LaneShareUpdateRightsArgs,
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
@@ -273,6 +278,8 @@ import type {
   ProviderInstanceSetDefaultArgs,
   ProviderInstanceSetSettingsArgs,
   ProviderInstanceSettings,
+  BuiltInBrowserRemoteInputEvent,
+  BuiltInBrowserRemoteTabFrame,
 } from "../shared/types";
 import { adeActionAccess, thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../shared/adeActionAccess";
 import type {
@@ -5234,6 +5241,7 @@ const adeBridge = {
       binding: OpenProjectBinding | null;
       openProjectTabs: ProjectInfo[];
       openProjectTabRoots?: string[];
+      repositoryTabs?: SavedWindowRepositoryTabs | null;
     }> => {
       const session = (await ipcRenderer.invoke(IPC.appGetWindowSession)) as {
         windowId: number | null;
@@ -5241,6 +5249,7 @@ const adeBridge = {
         binding: OpenProjectBinding | null;
         openProjectTabs?: ProjectInfo[];
         openProjectTabRoots?: string[];
+        repositoryTabs?: SavedWindowRepositoryTabs | null;
       };
       rememberProjectBinding(session.binding);
       return { ...session, openProjectTabs: session.openProjectTabs ?? [] };
@@ -5267,6 +5276,8 @@ const adeBridge = {
       rootPaths: string[],
     ): Promise<{ openProjectTabs: ProjectInfo[] }> =>
       ipcRenderer.invoke(IPC.appSetWindowProjectTabs, { rootPaths }),
+    setWindowRepositoryTabs: async (tabs: SavedWindowRepositoryTabs): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetWindowRepositoryTabs, { tabs }),
     newWindow: async (): Promise<{ windowId: number | null }> =>
       ipcRenderer.invoke(IPC.appNewWindow),
     openProjectInNewWindow: async (
@@ -5603,6 +5614,15 @@ const adeBridge = {
       ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
+    // The account's project list as this computer's brain last read it, or
+    // as a connected machine read it (a remote pin). A file read on that
+    // machine: no server call.
+    accountList: async (pin?: OpenProjectBinding | null): Promise<AccountProjectListResult> =>
+      ipcRenderer.invoke(IPC.projectAccountList, pin?.kind === "remote" ? { targetId: pin.targetId } : {}),
+    accountAdd: async (origin: string): Promise<AccountProjectChangeResult> =>
+      ipcRenderer.invoke(IPC.projectAccountAdd, { origin }),
+    accountRemove: async (projectId: string): Promise<AccountProjectChangeResult> =>
+      ipcRenderer.invoke(IPC.projectAccountRemove, { projectId }),
     findForRepo: async (args: {
       repoOwner: string;
       repoName: string;
@@ -11470,6 +11490,12 @@ const adeBridge = {
       ),
     // Local IPC only: the tab is this desktop's own, and reassigning it is the
     // person's move, never the bridge's.
+    // Local IPC only: keeping a tab is the person's word, never an agent's.
+    keepTab: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
+      clearAround(
+        () => builtInBrowserStatusCache.clear(),
+        () => ipcRenderer.invoke(IPC.builtInBrowserKeepTab, args),
+      ),
     handTabToChat: async (args: BuiltInBrowserTabArgs): Promise<BuiltInBrowserStatus> =>
       clearAround(
         () => builtInBrowserStatusCache.clear(),
@@ -12043,14 +12069,15 @@ const adeBridge = {
     captureNow: (args: { provider?: ProviderLoginProvider | null } = {}, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> =>
       callProviderLogins<ProviderLoginSyncStatus>("captureNow", args, pin),
     /**
-     * The one Keychain read that macOS asks the person about, on the Mac in
-     * front of them. Never the tab's bound machine: a call for another
+     * The one OS keyring read (the macOS Keychain, Windows Credential Manager
+     * or a Linux keyring) for Antigravity's agy CLI sign-in, on the computer in
+     * front of the person. Never the tab's bound machine: a call for another
      * computer (a remote pin or a remote binding) is refused here, since the
-     * prompt would show on that computer's screen.
+     * keyring and its prompt belong to that computer.
      */
     allowKeychain: async (args: { provider: "antigravity"; slot?: "personal" | "business" | null }, pin?: OpenProjectBinding | null): Promise<ProviderLoginSyncStatus> => {
       if (pin?.kind === "remote" || (!pin && await getRemoteProjectBinding())) {
-        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that Mac.");
+        throw new Error(thisDesktopOnlyRefusal("provider_logins", "allowKeychain") ?? "Run this on that computer.");
       }
       return await ipcRenderer.invoke(IPC.providerLoginsCall, { action: "allowKeychain", args: { ...args } }) as ProviderLoginSyncStatus;
     },
@@ -14712,6 +14739,33 @@ const adeBridge = {
       );
       return runtime.handled ? runtime.result : null;
     },
+    /**
+     * A browser tab's newest frame on the machine the pin names, for a person
+     * watching from here. Each call renews a short watch there; stop calling
+     * and the frames stop. Null when that machine has no such tab.
+     */
+    readBrowserTabFrame: async (
+      args: { tabId: string; maxWidth?: number | null },
+      pin?: OpenProjectBinding | null,
+    ): Promise<BuiltInBrowserRemoteTabFrame | null> => {
+      const runtime = await callPinnedOrBoundRuntimeActionIfBound<BuiltInBrowserRemoteTabFrame | null>(pin,
+        "work_tools",
+        "readBrowserTabFrame",
+        { args },
+      );
+      return runtime.handled ? runtime.result : null;
+    },
+    /** A person's click, scroll or typing into that tab (Take control). */
+    sendBrowserTabInput: async (
+      args: { tabId: string; event: BuiltInBrowserRemoteInputEvent },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: boolean }> => callPinnedOrBoundRuntimeActionOr<{ ok: boolean }>(
+      pin,
+      "work_tools",
+      "sendBrowserTabInput",
+      { args },
+      async () => ({ ok: false }),
+    ),
     /** Dev servers on the lane's machine; see `builtInBrowser.getDevServers`. */
     listDevServers: async (
       args: DevServersArgs = {},
@@ -14937,6 +14991,14 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
     onCommand: (cb: (command: AppZoomCommand) => void) =>
       subscribeAppCommand("zoom", cb),
+  },
+  /** The bottom-right cards' own window over a live browser page (`shared/noticeLayer`). */
+  noticeLayer: {
+    // See-through windows depend on the Linux compositor; there the cards
+    // stay in the corner and the page pauses behind them, as before.
+    available: process.platform !== "linux",
+    place: async (rect: NoticeLayerRect | null): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.appPlaceNoticeLayer, { rect }),
   },
   cto: {
     getState: async (
@@ -15315,6 +15377,9 @@ const adeBridge = {
   // connection with the one-use ticket `connect` answers.
   laneShareGuest: {
     listReceived: (): Promise<LaneShareReceivedResult> => ipcRenderer.invoke(IPC.laneShareGuestListReceived),
+    listGiven: (): Promise<LaneShareGivenEntry[]> => ipcRenderer.invoke(IPC.laneShareGuestListGiven),
+    revokeGiven: (args: { grantId: string }): Promise<LaneShareRevokeGivenResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestRevokeGiven, { grantId: args.grantId }),
     open: (args: { grantId: string }): Promise<LaneShareOpenResult> =>
       ipcRenderer.invoke(IPC.laneShareGuestOpen, { grantId: args.grantId }),
     accept: (args: { grantId: string }): Promise<LaneShareAcceptResult> =>

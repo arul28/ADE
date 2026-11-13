@@ -11,6 +11,7 @@ import {
   type ExternalChatHistoryImportOptions,
 } from "../../chat/externalChatHistoryImport";
 import type { ExternalSessionDiscoveryRecord } from "../discoveryUtils";
+import { loadAntigravityStorePage } from "./antigravity";
 import { claudeRecordsToEvents } from "./claude";
 import { codexRecordsToEvents } from "./codex";
 import { EnvelopeSink, type JsonlConverter } from "./common";
@@ -260,6 +261,7 @@ export async function loadExternalSessionEvents(
   const byteLimit = isImport ? MAX_IMPORT_TRANSCRIPT_BYTES : EXTERNAL_SESSION_PREVIEW_MAX_WINDOW_BYTES;
 
   const cursorStorePath = args.provider === "cursor" ? cursorStoreSourceFor(record) : null;
+  const antigravityStorePath = args.provider === "antigravity" ? record?.sourcePath?.trim() || null : null;
   let raw: RawPage | null = null;
   try {
     if (args.provider === "opencode") {
@@ -272,6 +274,15 @@ export async function loadExternalSessionEvents(
         fallbackBaseMs,
         ...(args.homeDir ? { homeDir: args.homeDir } : {}),
         ...(args.env ? { env: args.env } : {}),
+      });
+    } else if (antigravityStorePath) {
+      raw = loadAntigravityStorePage({
+        file: antigravityStorePath,
+        options,
+        cursor,
+        maxEvents,
+        maxBytes: byteLimit,
+        fallbackBaseMs,
       });
     } else if (cursorStorePath) {
       raw = loadCursorStorePage({
@@ -306,14 +317,22 @@ export async function loadExternalSessionEvents(
   }
 
   // Nothing convertible: the sampled messages, on the first page only.
-  if (!raw || (!cursor && raw.page.length === 0 && raw.earlier.length === 0)) {
+  // A preview whose first page found only bookkeeping keeps its older cursor,
+  // so the person can still page back to the conversation.
+  const emptyFirstPage = Boolean(raw) && !cursor && raw!.page.length === 0 && raw!.earlier.length === 0
+    && (isImport || raw!.olderCursor === null);
+  if (!raw || emptyFirstPage) {
     if (cursor) return { events: [], hasOlder: false, olderCursor: null, truncated: false };
     const sampled = sampledContentEvents(record, options);
+    // A source read that left history unread says so here too.
+    const sourceTruncated = raw?.bytesTruncated === true;
     return {
-      events: isImport ? finalizeExternalImportEvents(sampled, options) : sampled.slice(-maxEvents),
+      events: isImport
+        ? finalizeExternalImportEvents(sampled, { ...options, transcriptBytesTruncated: sourceTruncated, transcriptByteLimit: byteLimit })
+        : sampled.slice(-maxEvents),
       hasOlder: false,
       olderCursor: null,
-      truncated: sampled.length > maxEvents,
+      truncated: sampled.length > maxEvents || sourceTruncated,
     };
   }
 

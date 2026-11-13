@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } 
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
+import { useAppStore } from "../../state/appStore";
 import type { AgentChatEventEnvelope, AiSettingsStatus, CursorSdkAuthEvent, PiAuthStatusEvent } from "../../../shared/types";
 import { setUsageHeaderVisible, setUsageProviderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 
@@ -264,6 +265,8 @@ describe("ProvidersSection", () => {
   let emitCursorAuthStatus: ((event: CursorSdkAuthEvent) => void) | null = null;
 
   beforeEach(() => {
+    // This computer's copy of the project: its settings and chats are read there.
+    useAppStore.setState({ projectBinding: { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } });
     setUsageHeaderVisible(true);
     emitChatEvent = null;
     emitOAuthStatus = null;
@@ -359,6 +362,7 @@ describe("ProvidersSection", () => {
 
   afterEach(() => {
     cleanup();
+    useAppStore.setState({ projectBinding: null });
     setUsageHeaderVisible(true);
     globalThis.window.ade = originalAde;
   });

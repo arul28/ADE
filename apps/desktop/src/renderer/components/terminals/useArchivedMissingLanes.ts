@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /** A lane the Work list has chats for but no lane row, and those chats. */
 type MissingLaneGroup = readonly [laneId: string, sessions: readonly TerminalSessionSummary[]];
@@ -44,7 +45,7 @@ function missingLaneQueries(
 async function archivedLaneIdsOf(query: MissingLaneQuery): Promise<string[]> {
   // Status stays off: with it on, the owning machine runs git for every lane,
   // and archived-ness is all this read is for.
-  const lanes = await window.ade.lanes.list({ includeArchived: true, includeStatus: false }, query.pin);
+  const lanes = await withChatPin(query.pin, (chatPin) => window.ade.lanes.list({ includeArchived: true, includeStatus: false }, chatPin));
   const missing = new Set(query.laneIds);
   return lanes
     .filter((lane) => Boolean(lane.archivedAt) && missing.has(lane.id))

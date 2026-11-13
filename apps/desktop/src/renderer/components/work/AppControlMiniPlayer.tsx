@@ -39,6 +39,7 @@ import {
   useAppControlCardGrant,
   writeAppControlMiniPlayerChoice,
 } from "./appControlCardGrants";
+import { withChatPin } from "../chat/chatMachinePin";
 
 /**
  * The lane's App Control app, floating over the chat.
@@ -294,9 +295,10 @@ function AppControlMiniPlayerBox({
     // An agent action moves `lastTraceEntryId`; read that one entry to learn
     // where it landed, and show the cursor there.
     const traceId = event.session?.lastTraceEntryId ?? null;
-    if (!traceId || traceId === lastTraceIdRef.current) return;
+    const tracePin = runtimePinRef.current;
+    if (!traceId || traceId === lastTraceIdRef.current || !tracePin) return;
     lastTraceIdRef.current = traceId;
-    void window.ade?.appControl?.getTrace?.({ laneId, limit: 1 }, runtimePinRef.current)
+    void window.ade?.appControl?.getTrace?.({ laneId, limit: 1 }, tracePin)
       .then((result) => {
         const entry = result?.entries?.[result.entries.length - 1] ?? null;
         if (!scope.isActive() || !entry || entry.id !== traceId) return;
@@ -326,9 +328,10 @@ function AppControlMiniPlayerBox({
   }, [laneId, shownForSeed]);
   useEffect(() => {
     const read = window.ade?.appControl?.getLatestFrame;
-    if (!shownForSeed || !connectedTargetId || !isAdeAvailable(read)) return undefined;
+    const seedPin = runtimePinRef.current;
+    if (!shownForSeed || !connectedTargetId || !seedPin || !isAdeAvailable(read)) return undefined;
     let cancelled = false;
-    void read({ laneId }, runtimePinRef.current)
+    void read({ laneId }, seedPin)
       .then((frame) => {
         if (!cancelled && frame) acceptFrame(frame);
       })
@@ -348,9 +351,10 @@ function AppControlMiniPlayerBox({
   // event to learn from: one read, then events.
   useEffect(() => {
     const api = window.ade?.appControl;
-    if (!isAdeAvailable(api?.getRecordingStatus)) return undefined;
+    const statusPin = runtimePinRef.current;
+    if (!isAdeAvailable(api?.getRecordingStatus) || !statusPin) return undefined;
     let cancelled = false;
-    void api.getRecordingStatus({ laneId }, runtimePinRef.current)
+    void api.getRecordingStatus({ laneId }, statusPin)
       .then((status) => {
         if (!cancelled) setCapture(captureStateFrom(status));
       })
@@ -387,10 +391,10 @@ function AppControlMiniPlayerBox({
     if (!isAdeAvailable(api?.stopRecording)) return;
     // The status the stop answers with is the one the event also carries;
     // taking it here means a lost event cannot leave the pill up.
-    const status = await api.stopRecording(
+    const status = await withChatPin(runtimePinRef.current, (pin) => api.stopRecording(
       { laneId, ...(chatSessionId ? { chatSessionId } : {}) },
-      runtimePinRef.current,
-    ).catch((error: unknown) => {
+      pin,
+    )).catch((error: unknown) => {
       showToast({
         tone: "error",
         title: "Recording did not stop",

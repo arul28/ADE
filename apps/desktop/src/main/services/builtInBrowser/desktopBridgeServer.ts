@@ -18,6 +18,9 @@ import {
 import {
   BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD,
   BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD,
+  BUILT_IN_BROWSER_CHAT_LIFECYCLE_METHOD,
+  BUILT_IN_BROWSER_CAPTURE_TAB_FRAME_METHOD,
+  BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { promisify } from "node:util";
 import type { Logger } from "../logging/logger";
@@ -504,6 +507,25 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     if (name === BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD) {
       return service.releaseLaneTabs({ laneId: normalizedString(rawParams.laneId) });
+    }
+    if (name === BUILT_IN_BROWSER_CAPTURE_TAB_FRAME_METHOD) {
+      const maxWidth = Number(rawParams.maxWidth);
+      return service.captureTabFrameForRuntime({
+        tabId: normalizedString(rawParams.tabId),
+        maxWidth: Number.isFinite(maxWidth) ? maxWidth : null,
+      });
+    }
+    if (name === BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD) {
+      return await service.sendTabInputForRuntime({
+        tabId: normalizedString(rawParams.tabId),
+        event: rawParams.event,
+      });
+    }
+    if (name === BUILT_IN_BROWSER_CHAT_LIFECYCLE_METHOD) {
+      return service.chatBrowserLifecycle({
+        chatSessionId: normalizedString(rawParams.chatSessionId),
+        state: normalizedString(rawParams.state),
+      });
     }
     if (
       name === "getProfileDiagnostics"

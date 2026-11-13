@@ -16,10 +16,11 @@ import {
 import { useMachinePlacement } from "./useMachinePlacement";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudLaneTarget } from "./useAdeCloudLaneTarget";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useActiveStartOn } from "../../state/repositoryScope";
 
 export type LaneMachineTarget = {
-  /** Null for the tab's machine (unpinned path); else that machine's binding. */
-  pin: OpenProjectBinding | null;
+  /** That machine's copy of the repository: where every call for the new lane goes. */
+  pin: OpenProjectBinding;
   /** That machine's lanes from the union, when known; null for the tab's. */
   lanes: LaneSummary[] | null;
 };
@@ -29,11 +30,13 @@ export type LaneMachineTarget = {
  * shared by every lane-creation entry (the create-lane dialog, the Linear
  * batch launch).
  *
- * There is no silent default: `selectedMachineId` is "" until the user picks,
- * except when exactly one machine can hold the lane (once the connection
- * snapshot has answered), which is then selected since there is nothing to
- * choose. Picking never rebinds the project tab; callers pin their calls to
- * `targetPin`.
+ * The default is the "Start on" choice of the open repository
+ * (`useActiveStartOn`): this computer's copy, then the computer used last,
+ * then another online copy. When that choice cannot hold a lane here, and
+ * exactly one machine can (once the connection snapshot has answered), that
+ * one is selected. Otherwise `selectedMachineId` is "" until the user picks.
+ * The dialog names the selected computer. Picking never rebinds the project
+ * tab; callers pin their calls to `targetPin`.
  *
  * A machine is a target only when the cross-machine union resolved its
  * checkout's binding, or its checkout was matched by git origin. A checkout
@@ -175,16 +178,17 @@ export function useLaneMachineChoice(open: boolean) {
   );
 
   const machineTargets = useMemo(() => {
-    const targets = new Map<string, { pin: OpenProjectBinding | null; lanes: LaneSummary[] | null }>();
+    const targets = new Map<string, LaneMachineTarget>();
     for (const machine of baseMachines) {
       if (machine.isBound) {
-        targets.set(machine.id, { pin: null, lanes: null });
+        // The tab's own copy: its address is the tab's binding.
+        if (projectBinding) targets.set(machine.id, { pin: projectBinding, lanes: null });
         continue;
       }
       const unionMachine = unionView.machinesById.get(machine.id);
       if (unionMachine?.binding) {
         const pin = unionMachine.pin;
-        targets.set(machine.id, { pin, lanes: pin ? unionView.lanesByMachineId.get(machine.id) ?? [] : null });
+        if (pin) targets.set(machine.id, { pin, lanes: unionView.lanesByMachineId.get(machine.id) ?? [] });
         continue;
       }
       const checkout = machine.project;
@@ -217,7 +221,7 @@ export function useLaneMachineChoice(open: boolean) {
       }
     }
     return targets;
-  }, [baseMachines, unionView]);
+  }, [baseMachines, projectBinding, unionView]);
 
   const eligibleMachineIds = useMemo(
     () => machines
@@ -226,21 +230,35 @@ export function useLaneMachineChoice(open: boolean) {
     [machineTargets, machines],
   );
   const adeCloud = useAdeCloudLaneTarget(open, repoOriginUrl);
+  // "Start on": the default place for new work in this repository.
+  const { defaultChoice: startOnChoice } = useActiveStartOn(open);
+  const startOnMachineId = startOnChoice?.kind === "copy"
+    ? startOnChoice.copy.machineId
+    : startOnChoice?.kind === "cloud"
+      ? ADE_CLOUD_MACHINE_ID
+      : null;
   // ADE Cloud stays the pick only while it can be picked.
   const adeCloudPicked = pickedMachineId === ADE_CLOUD_MACHINE_ID && adeCloud.offered && !adeCloud.unavailableReason;
   // The picked machine while it is still eligible. With exactly one eligible
   // machine (once the snapshot has answered) there is nothing to ask.
+  const startOnCloud = startOnMachineId === ADE_CLOUD_MACHINE_ID && adeCloud.offered && !adeCloud.unavailableReason;
   const selectedMachineId = adeCloudPicked
     ? ADE_CLOUD_MACHINE_ID
     : pickedMachineId && eligibleMachineIds.includes(pickedMachineId)
     ? pickedMachineId
+    // Nothing picked: the "Start on" default while it can hold the lane.
+    : !pickedMachineId && startOnMachineId && eligibleMachineIds.includes(startOnMachineId)
+      ? startOnMachineId
     // Not before the origin read settles: until then other machines' copies
     // of the repo are unconfirmed, and "only one machine" may be wrong.
     : snapshotLoaded && localProjectsSettled && eligibleMachineIds.length === 1
       ? eligibleMachineIds[0]!
+    // No copy can take it, but ADE Cloud is the default and can.
+    : !pickedMachineId && startOnCloud && snapshotLoaded && localProjectsSettled && eligibleMachineIds.length === 0
+      ? ADE_CLOUD_MACHINE_ID
       : "";
   const selectedTarget = selectedMachineId ? machineTargets.get(selectedMachineId) ?? null : null;
-  /** Pin for every call this dialog makes; null = the tab's machine. */
+  /** Pin for every call this dialog makes; null until a machine is selected. */
   const targetPin = selectedTarget?.pin ?? null;
   const targetPinKey = targetPin?.key ?? null;
   const targetPinRef = useRef<OpenProjectBinding | null>(targetPin);
@@ -260,7 +278,7 @@ export function useLaneMachineChoice(open: boolean) {
     /** ADE Cloud as a choice: offered, why not, sizes, free computers. */
     adeCloud,
     /** The lane goes to ADE Cloud: no pin, no machine lanes; an ADE Cloud launch makes it. */
-    adeCloudPicked,
+    adeCloudPicked: selectedMachineId === ADE_CLOUD_MACHINE_ID,
     /** `origin` of the repo lanes are created for, when known. */
     repoOriginUrl,
   };

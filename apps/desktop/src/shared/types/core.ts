@@ -650,6 +650,8 @@ export type AppNavigationTarget =
       event?: number | null;
       offset?: number | null;
       ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
     }
   | {
       kind: "file";
@@ -679,6 +681,8 @@ export type AppNavigationTarget =
       envelope?: DeeplinkEnvelope | null;
       /** From a link: the account machine and project that own the lane. */
       ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
     }
   | {
       kind: "pr";
@@ -692,6 +696,8 @@ export type AppNavigationTarget =
       repoOwner?: string | null;
       repoName?: string | null;
       ownership?: DeeplinkOwnership | null;
+      /** From a link: the account project (`ap_…`), with or without the pair. */
+      accountProjectId?: string | null;
     }
   | {
       kind: "branch";
@@ -744,6 +750,17 @@ export type AppNavigationTarget =
   | {
       kind: "route";
       route: string;
+    }
+  | {
+      /**
+       * A link to an account project that no reachable computer can open
+       * (main resolves the link's `accountProjectId` first). `no-copy` opens
+       * the repository tab with no machine; `removed` and `unknown` say so.
+       */
+      kind: "account-project";
+      accountProjectId: string;
+      name?: string | null;
+      reason: "no-copy" | "removed" | "unknown";
     }
   | {
       kind: "files-external";

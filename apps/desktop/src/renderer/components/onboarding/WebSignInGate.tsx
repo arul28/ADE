@@ -6,7 +6,7 @@ import "./launchGateGlass.css";
 import { AdeWordmark } from "../ui/AdeWordmark";
 
 /** The hosted client's sign-in card over the mesh backdrop. `LaunchGate` renders it inside the app shell. */
-export function WebSignInGate() {
+export function WebSignInGate({ linkWaiting = false }: { linkWaiting?: boolean } = {}) {
   const { status, loading } = useAccountStatus();
 
   return (
@@ -25,6 +25,7 @@ export function WebSignInGate() {
             configured={status.configured !== false}
             onSignedIn={() => undefined}
             sessionState={accountSessionState(status)}
+            subtitle={linkWaiting ? "Your link opens after you sign in." : undefined}
           />
         )}
       </div>
@@ -37,10 +38,10 @@ export function WebSignInGate() {
  * app shell exists. It mounts the same appearance root as the app shell, so a
  * signed-out visitor sees the same theme, motion, and system colour scheme.
  */
-export function WebSignInScreen() {
+export function WebSignInScreen({ linkWaiting = false }: { linkWaiting?: boolean } = {}) {
   return (
     <AppearanceRoot>
-      <WebSignInGate />
+      <WebSignInGate linkWaiting={linkWaiting} />
     </AppearanceRoot>
   );
 }

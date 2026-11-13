@@ -80,6 +80,8 @@ export type RemoteProjectRecord = {
   catalogVisibility?: "recent" | "system";
   /** False when the folder is gone on that machine; absent from older brains. */
   exists?: boolean;
+  /** The account project this folder is a copy of; absent from older brains. */
+  accountProjectId?: string;
 };
 
 export type PooledConnection = {
@@ -183,6 +185,9 @@ export function coerceProjects(value: unknown): RemoteProjectRecord[] {
         ? { catalogVisibility: entry.catalogVisibility }
         : {}),
       ...(typeof entry.exists === "boolean" ? { exists: entry.exists } : {}),
+      ...(typeof entry.accountProjectId === "string" && /^ap_[0-9a-f]{32}$/.test(entry.accountProjectId)
+        ? { accountProjectId: entry.accountProjectId }
+        : {}),
     }];
   });
 }

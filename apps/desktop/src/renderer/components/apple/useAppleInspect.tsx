@@ -27,7 +27,7 @@ export function useAppleInspect({
   live: boolean;
   laneId: string | null;
   projectRoot: string | null;
-  runtimePinRef: MutableRefObject<OpenProjectBinding | null>;
+  runtimePinRef: MutableRefObject<OpenProjectBinding>;
   onAddContext?: ((item: IosElementContextItem) => void) | undefined;
   onInsertDraft?: ((text: string) => void) | undefined;
   /** Each snapshot, for what else it tells (the orientation). */

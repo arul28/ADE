@@ -12,11 +12,13 @@ import { trustedAccountRelayBaseUrls } from "./accountDirectory";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
+  LaneShareGivenEntry,
   LaneShareGuestBridge,
   LaneShareLeaveResult,
   LaneShareOpenResult,
   LaneShareReceivedEntry,
   LaneShareReceivedResult,
+  LaneShareRevokeGivenResult,
 } from "./types/laneShare";
 
 /**
@@ -57,6 +59,45 @@ function laneShareReceivedEntry(grant: Record<string, unknown>): LaneShareReceiv
     createdAt: num(grant.createdAt),
     acceptedAt: num(grant.acceptedAt),
   };
+}
+
+/**
+ * A given grant as the directory has it. The rights, usage and connections
+ * live on the lane's computer, so they are empty here (`local: false`).
+ */
+function laneShareGivenEntry(grant: Record<string, unknown>): LaneShareGivenEntry {
+  return {
+    grantId: grant.id as string,
+    laneId: str(grant.laneId) ?? "",
+    receiverEmail: str(grant.receiverEmail),
+    state: str(grant.state) ?? "unknown",
+    endsAt: num(grant.endsAt),
+    createdAt: num(grant.createdAt),
+    acceptedAt: num(grant.acceptedAt),
+    inviteExpiresAt: num(grant.inviteExpiresAt),
+    link: str(grant.link),
+    repoKey: str(grant.repoKey),
+    projectLabel: str(grant.projectLabel),
+    laneLabel: str(grant.laneLabel),
+    preset: str(grant.preset),
+    directoryRisk: directoryRisk(grant.risk),
+    machineKey: str(grant.machineKey),
+    local: false,
+    rights: null,
+    needsRights: false,
+    risk: null,
+    usage: null,
+    connectedDevices: 0,
+    laneState: null,
+    createdBy: null,
+  };
+}
+
+/** The given list from `GET /lane-shares/given`, malformed rows dropped. */
+export function parseLaneShareGivenResponse(body: unknown): LaneShareGivenEntry[] {
+  const record = body && typeof body === "object" ? body as { grants?: unknown } : {};
+  const grants = Array.isArray(record.grants) ? record.grants.filter(isGrantRecord) : [];
+  return grants.map(laneShareGivenEntry);
 }
 
 /** The received list from `GET /lane-shares/received`, malformed rows dropped. */
@@ -126,6 +167,16 @@ export function createLaneShareGuestDirectory(options: {
   return {
     async listReceived(): Promise<LaneShareReceivedResult> {
       return parseLaneShareReceivedResponse(await request("GET", "/lane-shares/received"));
+    },
+
+    async listGiven(): Promise<LaneShareGivenEntry[]> {
+      return parseLaneShareGivenResponse(await request("GET", "/lane-shares/given"));
+    },
+
+    async revokeGiven(args): Promise<LaneShareRevokeGivenResult> {
+      const grantId = cleanGrantId(args.grantId);
+      const grant = grantOf(await request("POST", `/lane-shares/${encodeURIComponent(grantId)}/revoke`));
+      return { grantId, state: str(grant?.state) ?? "revoked" };
     },
 
     async open(args): Promise<LaneShareOpenResult> {

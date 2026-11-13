@@ -20,6 +20,7 @@ const PROVIDERS = new Set<ExternalSessionProvider>([
   "kimi",
   "grok",
   "copilot",
+  "antigravity",
 ]);
 
 function asProvider(value: unknown): ExternalSessionProvider | null {
@@ -111,7 +112,7 @@ function pointersFromRecord(raw: unknown): ProviderPointer[] {
   pushPointer(pointers, "muse", asId(record.museSessionId));
   pushPointer(pointers, "cursor", asId(record.cursorSdkAgentId));
   pushPointer(pointers, "cursor", asId(record.cursorCloudAgentId));
-  if (provider === "qwen" || provider === "kimi" || provider === "grok" || provider === "copilot") {
+  if (provider === "qwen" || provider === "kimi" || provider === "grok" || provider === "copilot" || provider === "antigravity") {
     pushPointer(pointers, provider, asId(record.acpSessionId));
   }
   return pointers;

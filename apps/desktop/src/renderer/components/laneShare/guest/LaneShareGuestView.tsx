@@ -13,7 +13,8 @@ import { showToast } from "../../app/toast/toastStore";
 import { CloneLocallyDialog, type CloneLocallyTarget } from "../../projects/CloneLocallyDialog";
 import { openProjectCopy } from "../../projects/AddProjectForm";
 import { formatLaneShareEnd } from "../laneShareModel";
-import type { LaneShareGuestConnection, LaneShareGuestConnectionState, LaneShareGuestSession } from "./laneShareGuestConnection";
+import { LaneShareMeta, LaneShareState } from "../laneShareUi";
+import { laneShareGuestStatusLabel, type LaneShareGuestConnection, type LaneShareGuestConnectionState, type LaneShareGuestSession } from "./laneShareGuestConnection";
 import {
   clearLaneShareGuestNotice,
   laneShareGuestConnection,
@@ -22,6 +23,7 @@ import {
   refreshLaneShareGuestState,
   retainLaneShareGuestConnection,
   useLaneShareGuestStore,
+  useLaneShareGuestLaneName,
 } from "./laneShareGuestStore";
 import { LaneShareGuestChat, laneShareGuestModelLabel } from "./LaneShareGuestChat";
 import { plainTerminalText } from "./laneShareGuestTranscript";
@@ -158,7 +160,7 @@ function GuestTerminal({
         {live ? (
           <div className="flex min-w-0 items-center gap-2">
             <input
-              className="min-w-0 flex-1 rounded-md border border-fg/10 bg-transparent px-2 py-1 font-mono text-[12px] text-fg/85 outline-none focus:border-fg/25"
+              className="kit-input kit-num min-w-0 flex-1" data-size="sm"
               value={line}
               disabled={typing}
               placeholder="Type a line for the CLI"
@@ -262,7 +264,7 @@ function GuestStartPanel({
     <label className="flex items-center gap-1.5 text-[11.5px] text-fg/60">
       <span>{label}</span>
       <select
-        className="max-w-[200px] rounded-md border border-fg/10 bg-transparent px-1.5 py-0.5 text-[11.5px] text-fg/85"
+        className="kit-input max-w-[200px]" data-size="sm"
         value={value}
         aria-label={label}
         onChange={(event) => onChange(event.target.value)}
@@ -286,7 +288,7 @@ function GuestStartPanel({
       )}
       {canTypeFirst && models.length > 0 ? (
         <input
-          className="min-w-0 rounded-md border border-fg/10 bg-transparent px-2 py-1 text-[12px] outline-none focus:border-fg/25"
+          className="kit-input min-w-0" data-size="sm"
           value={firstLine}
           placeholder="First line for the CLI (optional, counts as one message)"
           aria-label="First line for the CLI"
@@ -323,6 +325,7 @@ export function LaneShareGuestView({
   const connectionState = useLaneShareGuestStore((state) => state.connections[grantId]);
   const sessions = useLaneShareGuestStore((state) => state.sessions[grantId] ?? EMPTY_SESSIONS);
   const guestState = useLaneShareGuestStore((state) => state.guestStates[grantId] ?? null);
+  const laneName = useLaneShareGuestLaneName(entry);
   const notice = useLaneShareGuestStore((state) => state.notices[grantId] ?? null);
   const [cloneTarget, setCloneTarget] = React.useState<CloneLocallyTarget | null>(null);
   const [starting, setStarting] = React.useState<GuestStartKind | null>(null);
@@ -393,25 +396,27 @@ export function LaneShareGuestView({
     <div className="flex h-full min-h-0 min-w-0 flex-col" data-testid="lane-share-guest-view">
       <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-fg/[0.06] px-4 py-2">
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="min-w-0 truncate text-[13px] font-medium text-fg/90" title={entry.laneLabel ?? undefined}>
-            {entry.laneLabel ?? "Shared lane"}
+          <span className="min-w-0 truncate text-[13px] font-medium text-fg/90" title={laneName ?? undefined}>
+            {laneName ?? "Shared lane"}
             {selected ? <span className="text-fg/50"> / {selected.title}</span> : null}
           </span>
-          <span className="min-w-0 truncate text-[11px] text-fg/50">
-            Shared by {ownerLabel}
-            {entry.projectLabel ? ` · ${entry.projectLabel}` : ""}
-            {machineName ? ` · on ${machineName}` : ""}
-            {` · ${formatLaneShareEnd(entry.endsAt)}`}
-          </span>
+          <LaneShareMeta
+            parts={[
+              `Shared by ${ownerLabel}`,
+              entry.projectLabel,
+              machineName ? `on ${machineName}` : null,
+              entry.endsAt != null ? formatLaneShareEnd(entry.endsAt) : null,
+            ]}
+          />
         </div>
-        <span className="kit-tag shrink-0" data-tone={label.tone ?? undefined}>{label.text}</span>
+        <LaneShareState label={label.text} tone={label.tone} />
         {selected ? (
-          <button type="button" className="kit-btn" data-size="sm" onClick={() => onSelectSession(null)}>All sessions</button>
+          <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => onSelectSession(null)}>All sessions</button>
         ) : null}
         {repoUrl ? (
           <button
             type="button"
-            className="kit-btn"
+            className="kit-btn kit-btn-ghost"
             data-size="sm"
             title="Add the repository of this lane on this computer. The share works without it."
             onClick={openAddProject}
@@ -420,13 +425,13 @@ export function LaneShareGuestView({
             Add this project
           </button>
         ) : null}
-        <button type="button" className="kit-btn" data-size="sm" onClick={() => { void leave(); }}>
+        <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => { void leave(); }}>
           <SignOut size={13} />
           Leave
         </button>
         {onClose ? (
-          <button type="button" className="kit-btn" data-size="sm" aria-label="Close the shared lane" onClick={onClose}>
-            <X size={13} />
+          <button type="button" className="kit-icon-btn" aria-label="Close the shared lane" title="Close" onClick={onClose}>
+            <X size={14} />
           </button>
         ) : null}
       </div>
@@ -539,7 +544,7 @@ export function LaneShareGuestView({
                   <span className="shrink-0 text-fg/55">{laneShareGuestSessionIcon(session.kind)}</span>
                   <span className="min-w-0 flex-1 truncate" title={session.title}>{session.title}</span>
                   <span className="shrink-0 text-[11px] text-fg/45">
-                    {session.kind === "shell" || (session.kind === "cli" && !canTypeCli) ? "Read only" : session.status}
+                    {session.kind === "shell" || (session.kind === "cli" && !canTypeCli) ? "Read only" : laneShareGuestStatusLabel(session)}
                   </span>
                 </button>
               ))}

@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE } from "../../../shared/types/remoteRuntime";
 import { useAppStore } from "../../state/appStore";
+import { requireChatPin } from "../chat/chatMachinePin";
 
 /**
  * State behind the Work input box for a running agent CLI: the person's
@@ -477,7 +478,8 @@ async function step(sessionId: string): Promise<void> {
     // The item's id makes the send idempotent on the host: another window
     // that claimed the same item at the same moment gets this one's answer.
     const args = { sessionId, text: head.text, clientMessageId: head.id };
-    const result = await (pin ? api(args, pin) : api(args));
+    // No machine known: the item fails here, never on the tab's machine.
+    const result = await api(args, requireChatPin(pin));
     if (result.outcome === "delivered" || result.outcome === "held") {
       setQueue(sessionId, getQueue(sessionId).filter((item) => item.id !== head.id));
       appendCliInputHistory(sessionId, head.text);

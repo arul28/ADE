@@ -280,6 +280,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // Close one of the lane's browser tabs from the phone. Optional: an older
   // brain omits it and the phone's tab rows stay read-only.
   "workTools.closeBrowserTab",
+  // A browser tab's live picture, and a tap or typing into it. Optional: an
+  // older brain omits them and the phone shows the last screenshot instead.
+  "workTools.readBrowserTabFrame",
+  "workTools.sendBrowserTabInput",
   // Edit your own PR comment. Optional: the phone hides Edit against an older brain.
   "prs.updateComment",
   // A skill chip's SKILL.md, read from the chat's machine. Optional: an older

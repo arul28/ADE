@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Star } from "@phosphor-icons/react";
 import { Banner } from "../../ui/notice";
 import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
+import { useActiveRepositoryReader } from "../../../state/repositoryScope";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 import {
   ADE_GITHUB_REPO_URL,
@@ -12,7 +13,7 @@ import {
   starPillShowing,
 } from "../../../lib/starPill";
 import { captureStarPromptAnalytics } from "../../../lib/starPillActivity";
-import type { GitHubRepoStarState } from "../../../../shared/types";
+import type { GitHubRepoStarState, OpenProjectBinding } from "../../../../shared/types";
 
 /** How long "Thanks!" stays up before it fades. */
 const THANKS_HOLD_MS = 2_000;
@@ -21,9 +22,11 @@ const THANKS_FADE_MS = 320;
 
 type ThanksPhase = "none" | "showing" | "leaving";
 
-async function readStarState(): Promise<GitHubRepoStarState> {
+/** Asks GitHub through the reader copy's machine; no copy online answers "unknown". */
+async function readStarState(pin: OpenProjectBinding | null): Promise<GitHubRepoStarState> {
+  if (!pin) return "unknown";
   try {
-    return (await window.ade?.github?.isRepoStarred?.()) ?? "unknown";
+    return (await window.ade?.github?.isRepoStarred?.(pin)) ?? "unknown";
   } catch {
     return "unknown";
   }
@@ -44,12 +47,15 @@ export function StarRepoPill() {
   const checkAfterFocusRef = useRef(false);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
+  const readerPin = useActiveRepositoryReader();
+  const readerPinRef = useRef(readerPin);
+  readerPinRef.current = readerPin;
 
   const runCheck = useCallback(async () => {
     if (checkingRef.current) return;
     checkingRef.current = true;
     try {
-      const state = await readStarState();
+      const state = await readStarState(readerPinRef.current);
       // Read fresh: the pill may have been hidden while the request ran.
       const shownWhenAnswered = visibleRef.current;
       const before = rootAppStoreApi.getState().starPill;

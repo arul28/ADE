@@ -48,6 +48,7 @@ import {
 import { createConfigReloadService } from "../../desktop/src/main/services/projects/configReloadService";
 import { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import { createLaneService, type LaneDeleteTeardownDeps } from "../../desktop/src/main/services/lanes/laneService";
+import { brainStartIsInRestartLoop } from "./sentry/brainRestartLoop";
 import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
@@ -1353,6 +1354,13 @@ export async function createAdeRuntime(args: {
     const searchServiceHolder: { current: SearchService | null } = { current: null };
     /** Frees a deleted or archived lane's browser tabs; set once the browser surface exists. */
     const releaseLaneBrowserTabsHolder: { current: ((laneId: string) => Promise<void>) | null } = { current: null };
+    // A chat's turn starting, ending, or the chat ending reaches the browsers
+    // that hold its agent tabs, so those tabs close on their own (15 minutes
+    // after the chat goes idle, at once when it ends). Bound once the browser
+    // surface exists, which is after the chat service.
+    const chatBrowserLifecycleHolder: {
+      current: ((chatSessionId: string, state: "running" | "idle" | "ended") => void) | null;
+    } = { current: null };
     // Built after the chat service; a lane's delete reaches it through here.
     const cloudChatUploaderRef: { current: ReturnType<typeof createCloudChatUploader> | null } = { current: null };
     const cloudLaneNameSyncRef: { current: CloudLaneNameSync | null } = { current: null };
@@ -1407,8 +1415,12 @@ export async function createAdeRuntime(args: {
         // them in every browser, and close none.
         if (event.type === "lane-deleted" && event.laneId) cloudChatUploaderRef.current?.noteLaneDeleted(event.laneId);
         // Lane sharing: an archived lane pauses its shares (guests are closed
-        // and refused until it is unarchived); a deleted lane ends them. A
-        // rename or a branch change needs nothing: shares key on the lane id.
+        // and refused until it is unarchived); a deleted lane ends them. Shares
+        // key on the lane id, so a rename or a branch change only tells the
+        // connected guests to read the lane's name again.
+        if ((event.type === "lane-renamed" || event.type === "lane-branch-updated") && event.laneId) {
+          syncService?.getLaneShareService().noteLaneChanged(event.laneId, true);
+        }
         if ((event.type === "lane-archived" || event.type === "lane-reclaimed") && event.laneId) {
           syncService?.getLaneShareService().pauseLane(event.laneId);
         }
@@ -1493,6 +1505,9 @@ export async function createAdeRuntime(args: {
     sessionService.onChanged((event) => {
       pushEvent("runtime", { type: "terminal_session_changed", event });
       const session = sessionService.get(event.sessionId);
+      // Lane sharing: guests of the lane see a new or removed session at once,
+      // other updates at most every few seconds; nothing runs with no guest.
+      syncService?.getLaneShareService().noteLaneChanged(session?.laneId ?? null, event.reason !== "meta-updated");
       const runtimeState = session
         ? ptyServiceForSessionChanges?.getRuntimeState(event.sessionId, session.status)
         ?? session.runtimeState
@@ -1953,6 +1968,7 @@ export async function createAdeRuntime(args: {
     // The attach service is built further down; hence the holder.
     let userBrowserAttachServiceForRelease: UserBrowserAttachService | null = null;
     const releaseChatBrowser = (chatSessionId: string): void => {
+      chatBrowserLifecycleHolder.current?.(chatSessionId, "ended");
       const attachService = userBrowserAttachServiceForRelease;
       if (!attachService) return;
       void Promise.resolve()
@@ -2704,8 +2720,11 @@ export async function createAdeRuntime(args: {
       };
     if (browserSurface) {
       releaseLaneBrowserTabsHolder.current = (laneId) => browserSurface.remoteBrowserForwarder.releaseLaneTabs(laneId);
+      chatBrowserLifecycleHolder.current = (chatSessionId, state) =>
+        browserSurface.remoteBrowserForwarder.chatBrowserLifecycle(chatSessionId, state);
       teardown.push(() => {
         releaseLaneBrowserTabsHolder.current = null;
+        chatBrowserLifecycleHolder.current = null;
       });
       teardown.push(() => browserSurface.remoteBrowserForwarder.dispose());
       teardown.push(() => browserSurface.userBrowserAttachService.dispose());
@@ -2785,6 +2804,12 @@ export async function createAdeRuntime(args: {
       // needs the project-scoped, read-only projection, not one chat's view.
       getBrowserStatus: builtInBrowserBridge
         ? () => builtInBrowserBridge.getStatusForRuntime()
+        : null,
+      captureBrowserTabFrame: builtInBrowserBridge
+        ? (input) => builtInBrowserBridge.captureTabFrameForRuntime(input)
+        : null,
+      sendBrowserTabInput: builtInBrowserBridge
+        ? (input) => builtInBrowserBridge.sendTabInputForRuntime(input)
         : null,
       getAppControlStatus: appControlService
         ? (laneId) => appControlService.getStatus({ laneId })
@@ -3039,6 +3064,8 @@ export async function createAdeRuntime(args: {
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         // One value per machine: this brain decides its own resumes.
         readContinueAfterRestart: () => resolveContinueAfterRestart(),
+        // A brain in a restart loop reopens no agent CLI by itself.
+        isRuntimeInRestartLoop: brainStartIsInRestartLoop,
         embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
         // The MCP registry's secret values: the generic vault kind, account-wide.
@@ -3195,6 +3222,10 @@ export async function createAdeRuntime(args: {
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId);
+          if (event.event.type === "done") chatBrowserLifecycleHolder.current?.(event.sessionId, "idle");
+          else if (event.event.type === "status" && event.event.turnStatus === "started") {
+            chatBrowserLifecycleHolder.current?.(event.sessionId, "running");
+          }
         },
         onChatDeleted: (sessionId) => cloudChatUploader?.noteChatDeleted(sessionId),
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({

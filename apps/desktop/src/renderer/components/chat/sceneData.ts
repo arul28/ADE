@@ -72,11 +72,12 @@ export function SceneDataFeed({
   const sessions = sessionsForPin ?? boundSessions;
   const [prs, setPrs] = useState<PrSummary[] | null>(null);
   useEffect(() => {
-    if (!wantPrs) return;
+    const feedPin = scope.pin;
+    if (!wantPrs || !feedPin) return;
     return window.ade.prs.onEvent((event) => {
       // The event carries the machine's PR list, as `useLanePrs` reads it.
       if (event.type === "prs-updated") setPrs(event.prs);
-    }, scope.pin);
+    }, feedPin);
   }, [wantPrs, scope.pin]);
 
   // PRs: read once and when lanes change (coalesced with every other reader of

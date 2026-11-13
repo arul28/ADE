@@ -8,6 +8,8 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
+import { useOnlineCopyPins } from "../../state/repositoryScope";
+import type { OpenProjectBinding } from "../../../shared/types";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { textareaCls } from "./designTokens";
@@ -31,13 +33,12 @@ export type AdeActionValue = {
   resolvers?: Record<string, string>;
 };
 
-type AdeActionsApi = {
-  listRegistry?: () => Promise<AdeActionRegistryEntry[]>;
-};
-
-function getActionsApi(): AdeActionsApi {
-  return (window as unknown as { ade: { actions?: AdeActionsApi } }).ade.actions ?? {};
+function getActionsApi(): Partial<Window["ade"]["actions"]> {
+  return window.ade?.actions ?? {};
 }
+
+/** No computer with the project online: the registry cannot be read. */
+const NO_COMPUTER_ONLINE = "No computer with this project is online.";
 
 const TRIGGER_PLACEHOLDERS: Array<{ label: string; value: string }> = [
   { label: "Issue #", value: "{{trigger.issue.number}}" },
@@ -61,6 +62,12 @@ export function AdeActionEditor({
   const [registry, setRegistry] = useState<AdeActionRegistryEntry[]>([]);
   const [registryError, setRegistryError] = useState<string | null>(null);
   const [showJson, setShowJson] = useState(false);
+  // The registry is static for an ADE version (C-any): this computer's copy
+  // first, else the first online copy.
+  const onlinePins = useOnlineCopyPins();
+  const registryPin: OpenProjectBinding | null =
+    onlinePins.find((pin) => pin.kind === "local") ?? onlinePins[0] ?? null;
+  const registryPinKey = registryPin?.key ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -70,9 +77,16 @@ export function AdeActionEditor({
         setRegistryError("Action registry bridge unavailable.");
         return;
       }
+      if (!registryPin) {
+        setRegistryError(NO_COMPUTER_ONLINE);
+        return;
+      }
       try {
-        const next = await api.listRegistry();
-        if (!cancelled) setRegistry(next);
+        const next = await api.listRegistry(registryPin);
+        if (!cancelled) {
+          setRegistry(next);
+          setRegistryError(null);
+        }
       } catch (err) {
         if (!cancelled) setRegistryError(err instanceof Error ? err.message : String(err));
       }
@@ -81,7 +95,9 @@ export function AdeActionEditor({
     return () => {
       cancelled = true;
     };
-  }, []);
+    // The pin is held by key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registryPinKey]);
 
   const schema = useMemo(
     () => findAdeActionSchema(value.domain, value.action),

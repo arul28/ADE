@@ -17,6 +17,7 @@ import {
   isVideoArtifact,
   useArtifactPreview,
 } from "./useArtifactPreview";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * What the transcript already knows about proof, so a citation in an answer
@@ -105,8 +106,7 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
     const reusable = cached && !(online && !cached.startedOnline && !cached.settled);
     let pending = reusable ? cached.promise : null;
     if (!pending) {
-      pending = window.ade.computerUse
-        .listArtifacts({ artifactId, limit: 1 }, scope.pin)
+      pending = withChatPin(scope.pin, (pin) => window.ade.computerUse.listArtifacts({ artifactId, limit: 1 }, pin))
         .then((rows): CitedArtifactLookup => ({ ok: true, artifact: rows.find((row) => row.id === artifactId) ?? null }))
         .catch((): CitedArtifactLookup => ({ ok: false }));
       fetchedArtifacts.set(key, { promise: pending, startedOnline: online, settled: false });

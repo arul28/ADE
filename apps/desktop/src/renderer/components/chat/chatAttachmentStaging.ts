@@ -11,6 +11,7 @@ import {
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { rememberDraftAttachmentSource } from "./draftAttachmentSources";
+import { withChatPin } from "./chatMachinePin";
 
 export type AttachmentStagingPlan =
   /** Send only the path; the bytes never enter the renderer. */
@@ -85,7 +86,7 @@ export async function readAttachmentStagingMode(
   const read = api?.getAttachmentStagingMode;
   if (typeof read !== "function") return CONSERVATIVE_ATTACHMENT_STAGING_MODE;
   try {
-    const mode = await read(pin);
+    const mode = await withChatPin(pin, (chatPin) => read(chatPin));
     if (!mode || typeof mode.maxBytes !== "number" || !Number.isFinite(mode.maxBytes)) {
       return CONSERVATIVE_ATTACHMENT_STAGING_MODE;
     }
@@ -175,7 +176,7 @@ export async function stageAttachmentBytesFromFile(args: {
     mimeType = converted.mimeType;
     previewDataUrl = `data:${converted.mimeType};base64,${converted.data}`;
   }
-  const { path } = await (args.api ?? window.ade.agentChat).saveTempAttachment({ data, filename }, args.pin);
+  const { path } = await withChatPin(args.pin, (chatPin) => (args.api ?? window.ade.agentChat).saveTempAttachment({ data, filename }, chatPin));
   // Kept so a draft that moves to another machine can save it there again.
   rememberDraftAttachmentSource(path, { kind: "bytes", data, filename });
   return { path, mimeType, previewDataUrl };

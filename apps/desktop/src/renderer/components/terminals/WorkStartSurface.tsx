@@ -8,6 +8,7 @@ import type {
 import type { WorkDraftKind } from "../../state/appStore";
 import { selectLanesLoadError, useAppStore, useRootAppStore } from "../../state/appStore";
 import { defaultLaneId } from "../../lib/laneSelection";
+import { useActiveStartOn } from "../../state/repositoryScope";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
 import type {
@@ -71,6 +72,11 @@ export function WorkStartSurface({
   const boundMachineId = projectBinding?.kind === "remote"
     ? projectBinding.targetId
     : "this-mac";
+  // With no pick of its own, the draft runs where "Start on" says (as in the
+  // chat pane), so its lane must be one of that machine's lanes.
+  const { defaultChoice: startOnChoice } = useActiveStartOn();
+  const startOnMachineId = startOnChoice?.kind === "copy" ? startOnChoice.copy.machineId : null;
+  const runMachineId = draftMachineId ?? startOnMachineId;
   const laneForMachine = useCallback((machineId: string | null, laneId: string) => {
     const resolvedMachineId = machineId ?? boundMachineId;
     if (resolvedMachineId === boundMachineId) {
@@ -82,10 +88,10 @@ export function WorkStartSurface({
   }, [boundMachineId, crossMachineLanesByMachineId, lanes]);
   const isKnownLaneId = useCallback(
     (laneId: string | null | undefined): laneId is string =>
-      typeof laneId === "string" && Boolean(laneForMachine(draftMachineId, laneId)),
-    [draftMachineId, laneForMachine],
+      typeof laneId === "string" && Boolean(laneForMachine(runMachineId, laneId)),
+    [runMachineId, laneForMachine],
   );
-  const foreignDraft = Boolean(draftMachineId && draftMachineId !== boundMachineId);
+  const foreignDraft = Boolean(runMachineId && runMachineId !== boundMachineId);
   const fallbackLaneId = defaultLaneId(lanes) ?? "";
   const [selectedLaneId, setSelectedLaneId] = useState<string>(() => {
     if (draftLaneId && (foreignDraft || isKnownLaneId(draftLaneId))) {
@@ -103,19 +109,19 @@ export function WorkStartSurface({
     ? fallbackLaneId
     : selectedLaneId;
   const selectedLane = useMemo(
-    () => laneForMachine(draftMachineId, launchLaneId)
+    () => laneForMachine(runMachineId, launchLaneId)
       ?? (launchLaneId ? null : lanes[0])
       ?? null,
-    [draftMachineId, laneForMachine, lanes, launchLaneId],
+    [runMachineId, laneForMachine, lanes, launchLaneId],
   );
 
   const setLaneAndSync = useCallback((laneId: string) => {
     setSelectedLaneId(laneId);
     onDraftLaneChange?.(laneId);
-    if (!draftMachineId || draftMachineId === boundMachineId) {
+    if (!runMachineId || runMachineId === boundMachineId) {
       selectLaneGlobal(laneId);
     }
-  }, [boundMachineId, draftMachineId, onDraftLaneChange, selectLaneGlobal]);
+  }, [boundMachineId, runMachineId, onDraftLaneChange, selectLaneGlobal]);
 
   // `lanes` is this tab's machine only. A draft lane on another machine does
   // not depend on it, so an empty local list neither clears nor hides it.
@@ -139,13 +145,13 @@ export function WorkStartSurface({
             : fallbackLaneId;
       setSelectedLaneId(nextLaneId);
       onDraftLaneChange?.(nextLaneId);
-      if (!draftMachineId || draftMachineId === boundMachineId) {
+      if (!runMachineId || runMachineId === boundMachineId) {
         selectLaneGlobal(nextLaneId);
       }
     }
   }, [
     draftLaneId,
-    draftMachineId,
+    runMachineId,
     boundMachineId,
     fallbackLaneId,
     foreignDraft,

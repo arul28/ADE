@@ -2,11 +2,10 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { TopBar } from "./TopBar";
 import { IssueLaunchHost } from "./IssueLaunchHost";
-import { rememberExplicitRemotePick } from "./usePreferLocalCheckout";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { applyShellHeaderInset } from "../../lib/zoom";
 import { resetAppZoomCacheForTests } from "../../lib/appZoom";
@@ -377,6 +376,9 @@ describe("TopBar", () => {
     cleanup();
     vi.restoreAllMocks();
     globalThis.window.localStorage.clear();
+    // The window's tab strip memory lives in sessionStorage; one test's tabs
+    // must not restore into the next.
+    globalThis.window.sessionStorage.clear();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -841,110 +843,6 @@ describe("TopBar", () => {
     expect(screen.getByTitle(rootPath)).toBeTruthy();
   });
 
-  describe("an active remote copy of a repo this computer has", () => {
-    const origin = "git@github.com:arul28/ADE.git";
-    const binding = {
-      kind: "remote" as const,
-      key: "remote:studio:project-1",
-      targetId: "studio",
-      runtimeName: "Mac Studio",
-      projectId: "project-1",
-      rootPath: "/srv/ade/ADE",
-      displayName: "ADE",
-    };
-
-    function bindRemoteWithLocalCopy(switchProjectToPath: ReturnType<typeof vi.fn>) {
-      (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
-        {
-          rootPath: "/Users/arul/ADE",
-          displayName: "ADE",
-          exists: true,
-          lastOpenedAt: "2026-04-22T00:00:00.000Z",
-          kind: "local",
-          laneCount: 3,
-          gitOriginUrl: origin,
-        },
-      ]);
-      (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
-        makeRemoteConnectionSnapshot("studio", "Mac Studio", {
-          projects: [
-            {
-              projectId: "project-1",
-              rootPath: "/srv/ade/ADE",
-              displayName: "ADE",
-              addedAt: 0,
-              lastOpenedAt: 0,
-              // The SSH and HTTPS forms of one origin must still match.
-              gitOriginUrl: "https://github.com/arul28/ADE",
-            },
-          ],
-        }),
-      );
-      useAppStore.setState({
-        project: { rootPath: binding.rootPath, displayName: "ADE", baseRef: "main" },
-        projectBinding: binding,
-        openRemoteProjectTabs: [binding],
-        openProjectTabRoots: ["/Users/arul/Other"],
-        projectHydrated: true,
-        showWelcome: false,
-        switchProjectToPath,
-      } as any);
-    }
-
-    it("moves the tab to this computer's checkout in place", async () => {
-      const switchProjectToPath = vi.fn(async (rootPath: string) => {
-        useAppStore.setState({
-          project: { rootPath, displayName: "ADE", baseRef: "main" },
-          projectBinding: { kind: "local", key: `local:${rootPath}`, rootPath, displayName: "ADE" },
-        } as any);
-      });
-      bindRemoteWithLocalCopy(switchProjectToPath);
-
-      render(<TopBar />);
-
-      await waitFor(() => {
-        expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE", { skipWorktreeGate: true });
-      });
-      await waitFor(() => {
-        expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key))
-          .not.toContain(binding.key);
-      });
-      // One tab for the repo, on this computer: no second ADE tab.
-      await waitFor(() => {
-        expect(screen.queryByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeNull();
-        expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
-      });
-      expect(useAppStore.getState().closeProject).not.toHaveBeenCalled();
-    });
-
-    it("puts the remote project back when the local checkout fails to open", async () => {
-      const switchProjectToPath = vi.fn(async () => {
-        throw new Error("not a git repository");
-      });
-      bindRemoteWithLocalCopy(switchProjectToPath);
-
-      render(<TopBar />);
-
-      await waitFor(() => {
-        expect(useAppStore.getState().switchRemoteProject).toHaveBeenCalledWith("studio", "project-1");
-      });
-      expect(switchProjectToPath).toHaveBeenCalledTimes(1);
-      expect(useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key))
-        .toContain(binding.key);
-    });
-
-    it("stays on the remote copy a machine picker chose on purpose", async () => {
-      const switchProjectToPath = vi.fn(async () => undefined);
-      bindRemoteWithLocalCopy(switchProjectToPath);
-      rememberExplicitRemotePick(binding.key);
-
-      render(<TopBar />);
-
-      expect(await screen.findByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeTruthy();
-      await flushMicrotasks(5);
-      expect(switchProjectToPath).not.toHaveBeenCalled();
-    });
-  });
 
   it("renders a remote project tab with the connections control without immediate polling", async () => {
     (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
@@ -1014,7 +912,8 @@ describe("TopBar", () => {
     );
 
     render(<TopBar />);
-    fireEvent.click(await screen.findByTitle("Close project"));
+    const remoteTab = await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)");
+    fireEvent.click(within(remoteTab).getByTitle("Close project"));
 
     expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
     expect(
@@ -1928,7 +1827,7 @@ describe("TopBar", () => {
           identifier: "ADE-123",
           branchName: "ade-123-add-linear-quick-view",
         }),
-      }));
+      }), expect.objectContaining({ key: "local:/Users/arul/ADE" }));
     });
   });
 
@@ -2127,7 +2026,7 @@ describe("TopBar", () => {
     render(<TopBar />);
 
     await screen.findByText("ADE");
-    fireEvent.click(screen.getByTitle("Remove project"));
+    fireEvent.click(screen.getByTitle("Close project"));
 
     await waitFor(() => {
       expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: "Close \"ADE\" project tab?" }));
@@ -2142,7 +2041,7 @@ describe("TopBar", () => {
     render(<TopBar />);
 
     await screen.findByText("ADE");
-    fireEvent.click(screen.getByTitle("Remove project"));
+    fireEvent.click(screen.getByTitle("Close project"));
 
     await waitFor(() => {
       expect(useAppStore.getState().closeProject).toHaveBeenCalledTimes(1);

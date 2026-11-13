@@ -172,10 +172,9 @@ account has run them yet:
 | Devin | `credentials.toml` (`windsurf_api_key`) under the XDG data home, or `%APPDATA%` / `%LOCALAPPDATA%` on Windows | `devin`, as `session_token` | None: the token does not expire. |
 | Muse | `<XDG config>/muse/auth.json` `providers` | `meta`, as `api_key` (or `dca_token` for a `dca:` value) | None: a minted key does not expire. |
 
-Antigravity is not lent. Its ACP agent stores only a refresh token (no access
-token), so lending it would hand the proxy the long-lived credential, and
-Google has suspended accounts that used Antigravity's sign-in through other
-clients.
+Antigravity is not lent. Lending it would hand the proxy the CLI's long-lived
+refresh token, and Google has suspended accounts that used Antigravity's
+sign-in through other clients.
 
 On macOS, a Codex login kept in the Keychain (`cli_auth_credentials_store =
 "keyring"` or `"auto"`) is not read: Codex creates the item so only Codex may

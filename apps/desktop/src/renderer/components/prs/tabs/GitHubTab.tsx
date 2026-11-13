@@ -118,10 +118,14 @@ export function GitHubTab({
     setViewerLogin: setContextViewerLogin,
     setWriteViewerLogin: setContextWriteViewerLogin,
     optimisticTerminalStates = {},
+    // The repository reader: GitHub is read through this machine, and the
+    // snapshot's lane links name its lanes.
+    pin: readerPin,
   } = usePrs();
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  // The snapshot read is unpinned, so it follows the window's binding.
-  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  const readerPinKey = readerPin?.key ?? null;
+  const readerPinRef = React.useRef(readerPin);
+  readerPinRef.current = readerPin;
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
 
@@ -152,7 +156,7 @@ export function GitHubTab({
     listSource,
     refreshFilterSearchRef,
     chrome: listFilterChrome,
-  } = useGitHubTabListFilters({ projectRoot, filter, snapshot, initial: initialWarmCacheRef.current });
+  } = useGitHubTabListFilters({ projectRoot, pin: readerPin, filter, snapshot, initial: initialWarmCacheRef.current });
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
     () => initialWarmCacheRef.current?.externalHistoryLoaded ?? false,
   );
@@ -213,11 +217,14 @@ export function GitHubTab({
     /** A timer or a `prs-updated` reaction, not a person pressing Refresh. */
     automaticRefresh?: boolean;
   }) => {
-    const requestKey = snapshotRequestKey(projectBindingKey, options);
+    const requestKey = snapshotRequestKey(readerPinKey, options);
     const inFlightSnapshot = inFlightSnapshotRef.current;
     if (options?.force !== true && inFlightSnapshot && snapshotRequestSatisfies(inFlightSnapshot, requestKey)) {
       return inFlightSnapshot.request;
     }
+    const requestPin = readerPinRef.current;
+    // No machine reads GitHub for this repository: nothing to ask.
+    if (!requestPin) return Promise.resolve(snapshotRef.current as GitHubPrSnapshot);
     const shouldShowLoading = !options?.silent && (options?.force === true || snapshotRef.current == null);
     if (shouldShowLoading) {
       loadingSnapshotRequestCountRef.current += 1;
@@ -243,7 +250,7 @@ export function GitHubTab({
             historyPageLimit: requestKey.historyPageLimit,
           } : {}),
         },
-        { projectRoot: requestProjectRoot, bindingKey: projectBindingKey },
+        { projectRoot: requestProjectRoot, pin: requestPin },
       );
     })()
       .then((next) => {
@@ -284,7 +291,7 @@ export function GitHubTab({
       });
     inFlightSnapshotRef.current = { request: pending, ...requestKey };
     return pending;
-  }, [projectBindingKey, setContextViewerLogin, setContextWriteViewerLogin]);
+  }, [readerPinKey, setContextViewerLogin, setContextWriteViewerLogin]);
 
   React.useEffect(() => {
     if (projectRootRef.current === projectRoot) return;
@@ -399,7 +406,12 @@ export function GitHubTab({
     });
   }, [externalHistoryLoaded, filter, loadSnapshot]);
 
+  // The tab stays mounted behind other pages (`active` false). A hidden tab
+  // does not listen: every `prs-updated` would otherwise cost it a snapshot
+  // read that nobody sees. It catches up when it is shown again (below).
   React.useEffect(() => {
+    const eventPin = readerPinRef.current;
+    if (!eventPin || !active) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event: PrEventPayload) => {
       if (event.type !== "prs-updated" && event.type !== "pr-auto-linked") return;
       // Same freshness guard as the PR-fingerprint effect below: `prs-updated`
@@ -412,9 +424,25 @@ export function GitHubTab({
         silent: true,
         ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
       });
-    });
+    }, eventPin);
     return unsubscribe;
-  }, [currentHistoryPageLimit, loadSnapshot]);
+  }, [active, currentHistoryPageLimit, loadSnapshot]);
+
+  // Shown again after a while away: read once if the copy is older than the
+  // revisit window, the same rule a fresh mount follows.
+  const wasActiveRef = React.useRef(active);
+  React.useEffect(() => {
+    const wasActive = wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (!active || wasActive) return;
+    if (Date.now() - lastSnapshotLoadedAtRef.current < GITHUB_TAB_REVISIT_CACHE_TTL_MS) return;
+    const includeExternalClosed =
+      externalHistoryLoadedRef.current || filterRef.current !== "open";
+    void loadSnapshot({
+      silent: snapshotRef.current != null,
+      ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
+    });
+  }, [active, currentHistoryPageLimit, loadSnapshot]);
 
   React.useEffect(() => {
     if (prsContextLoading && prs.length === 0) return;
@@ -434,6 +462,9 @@ export function GitHubTab({
     }
     if (lastPrFingerprintRef.current === nextFingerprint) return;
     lastPrFingerprintRef.current = nextFingerprint;
+    // A hidden tab keeps the fingerprint current but does not read; the
+    // revisit read above covers what changed while it was hidden.
+    if (!active) return;
     if (Date.now() - lastSnapshotLoadedAtRef.current < GITHUB_TAB_SNAPSHOT_FRESH_MS) return;
     startHotRefreshWindow();
     const includeExternalClosed =
@@ -444,7 +475,7 @@ export function GitHubTab({
       automaticRefresh: true,
       ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
     });
-  }, [currentHistoryPageLimit, loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
+  }, [active, currentHistoryPageLimit, loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
 
   const {
     displayedItems,
@@ -629,21 +660,23 @@ export function GitHubTab({
   }, [currentHistoryPageLimit, loadSnapshot, onRefreshAll, startHotRefreshWindow]);
 
   const handleAddStackPullRequests = React.useCallback(async (pullRequests: number[]) => {
-    if (!selectedStack || !snapshot?.repo) return;
+    const stackPin = readerPinRef.current;
+    if (!selectedStack || !snapshot?.repo || !stackPin) return;
     await window.ade.prs.addGitHubStackPullRequests({
       repo: snapshot.repo,
       stackNumber: selectedStack.number,
       pullRequests,
-    });
+    }, stackPin);
     await loadSnapshot({ silent: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 
   const handleUnstack = React.useCallback(async () => {
-    if (!selectedStack || !snapshot?.repo) return;
+    const stackPin = readerPinRef.current;
+    if (!selectedStack || !snapshot?.repo || !stackPin) return;
     await window.ade.prs.unstackGitHubStack({
       repo: snapshot.repo,
       stackNumber: selectedStack.number,
-    });
+    }, stackPin);
     await loadSnapshot({ silent: true });
   }, [loadSnapshot, selectedStack, snapshot?.repo]);
 

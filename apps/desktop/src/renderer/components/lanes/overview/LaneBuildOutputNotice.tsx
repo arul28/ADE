@@ -39,7 +39,7 @@ export function LaneBuildOutputNotice({
   active,
 }: {
   laneId: string;
-  /** The lane's machine when it is not the tab's; null keeps the unpinned route. */
+  /** The lane's machine. Null: no machine online, so nothing is read. */
   pin: OpenProjectBinding | null;
   active: boolean;
 }) {
@@ -49,7 +49,7 @@ export function LaneBuildOutputNotice({
 
   useEffect(() => {
     setRemoved(null);
-    if (!active || !isAdeAvailable(window.ade?.storage?.laneBuildOutputRemoved)) return;
+    if (!active || !pin || !isAdeAvailable(window.ade?.storage?.laneBuildOutputRemoved)) return;
     let cancelled = false;
     let showing = false;
     const refresh = () => {

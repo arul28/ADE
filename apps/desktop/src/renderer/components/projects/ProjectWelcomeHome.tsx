@@ -12,6 +12,7 @@ import type {
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCache";
 import { useAccountStatus } from "../../lib/account";
 import { useAppStore } from "../../state/appStore";
+import { useActiveRepositoryReader } from "../../state/repositoryScope";
 import { usageProviderLogo } from "../terminals/ToolLogos";
 import { providerColor } from "../usage/providerColors";
 import { usageLeftLevel, usageLeftLevelColor } from "../usage/usageDesign";
@@ -455,6 +456,8 @@ export type HomePr = {
   additions: number | null;
   deletions: number | null;
   tracked: PrSummary | null;
+  /** The pull request on GitHub, for a row with no ADE page to open (the direct read). */
+  htmlUrl?: string | null;
 };
 
 export function prBucket(pr: HomePr): PrBucket {
@@ -485,12 +488,37 @@ export type HomePullRequests = {
   loaded: boolean;
   viewer: string | null;
   error: string | null;
+  /** The next step for `error` when Retry is not it (connect GitHub, install the App). */
+  errorAction?: { label: string; onClick: () => void } | null;
   retrying: boolean;
   retry: () => void;
 };
 
+/**
+ * The card's two lists from a set of pull requests: open ones (yours first,
+ * then by bucket, then the newest) and the ones merged this week. The machine
+ * read and the direct read (`useDirectHomePullRequests`) share it.
+ */
+export function homePullRequestLists(prs: readonly HomePr[], viewer: string | null): Pick<HomePullRequests, "open" | "recent" | "viewer"> {
+  // Yours first among open PRs: what you authored or a lane of yours tracks.
+  const mine = (pr: HomePr) => (pr.tracked != null || (viewer != null && pr.author === viewer) ? 0 : 1);
+  const open = prs
+    .filter((pr) => pr.state === "open" || pr.state === "draft")
+    .sort((a, b) => (mine(a) - mine(b)) || (PR_BUCKET[prBucket(a)].order - PR_BUCKET[prBucket(b)].order) || b.updatedAt.localeCompare(a.updatedAt));
+  const cutoff = Date.now() - RECENT_PR_WINDOW_MS;
+  const recent = prs
+    .filter((pr) => pr.state === "merged" && Date.parse(pr.mergedAt || pr.updatedAt) >= cutoff)
+    .sort((a, b) => (b.mergedAt || b.updatedAt).localeCompare(a.mergedAt || a.updatedAt));
+  return { open, recent, viewer };
+}
+
 export function usePullRequests(projectRoot: string | null): HomePullRequests {
-  const projectBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  // A repository read: the reader copy (the tab's copy while it has one). With
+  // none online, the card shows its empty state and reads nothing.
+  const reader = useActiveRepositoryReader();
+  const readerKey = reader?.key ?? null;
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
   const [data, setData] = useState<{ snapshot: GitHubPrSnapshot | null; tracked: PrSummary[] } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -508,7 +536,8 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     lastSignatureRef.current = null;
     setLoadError(null);
     const bridge = window.ade?.prs;
-    if (!projectRoot || !bridge?.getGitHubSnapshot) {
+    const pin = readerRef.current;
+    if (!projectRoot || !pin || !bridge?.getGitHubSnapshot) {
       forceNextRef.current = false;
       forcedInFlightRef.current = false;
       setData({ snapshot: null, tracked: [] });
@@ -528,8 +557,8 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       // One page of closed history (cached ten minutes in main) brings the
       // week's merges with it; open PRs come in the same snapshot.
       const [snapshotResult, trackedResult] = await Promise.allSettled([
-        getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: projectBindingKey }),
-        listPrsCoalesced({ projectRoot }),
+        getGitHubSnapshotCoalesced({ automaticRefresh: !force, force, includeExternalClosed: true, historyPageLimit: 1 }, { projectRoot, bindingKey: pin.key, pin }),
+        listPrsCoalesced({ projectRoot, pin }),
       ]);
       if (requestRef.current !== request) return;
       if (force) forcedInFlightRef.current = false;
@@ -562,7 +591,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
     };
     void load();
     // PR events arrive in bursts during a sync; one reload per quiet second.
-    const unsubscribe = bridge.onEvent?.(soon);
+    const unsubscribe = bridge.onEvent?.(soon, pin);
     window.addEventListener("focus", soon);
     return () => {
       if (timer != null) window.clearTimeout(timer);
@@ -573,7 +602,7 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
       unsubscribe?.();
       window.removeEventListener("focus", soon);
     };
-  }, [projectRoot, projectBindingKey, reloadKey]);
+  }, [projectRoot, readerKey, reloadKey]);
   return useMemo(() => {
     const snapshot = data?.snapshot ?? null;
     const trackedById = new Map((data?.tracked ?? []).map((pr) => [pr.id, pr]));
@@ -599,21 +628,9 @@ export function usePullRequests(projectRoot: string | null): HomePullRequests {
         tracked: item.linkedPrId ? trackedById.get(item.linkedPrId) ?? null : null,
       });
     }
-    const viewer = snapshot?.viewerLogin ?? null;
-    // Yours first among open PRs: what you authored or a lane of yours tracks.
-    const mine = (pr: HomePr) => (pr.tracked != null || (viewer != null && pr.author === viewer) ? 0 : 1);
-    const open = prs
-      .filter((pr) => pr.state === "open" || pr.state === "draft")
-      .sort((a, b) => (mine(a) - mine(b)) || (PR_BUCKET[prBucket(a)].order - PR_BUCKET[prBucket(b)].order) || b.updatedAt.localeCompare(a.updatedAt));
-    const cutoff = Date.now() - RECENT_PR_WINDOW_MS;
-    const recent = prs
-      .filter((pr) => pr.state === "merged" && Date.parse(pr.mergedAt || pr.updatedAt) >= cutoff)
-      .sort((a, b) => (b.mergedAt || b.updatedAt).localeCompare(a.mergedAt || a.updatedAt));
     return {
-      open,
-      recent,
+      ...homePullRequestLists(prs, snapshot?.viewerLogin ?? null),
       loaded: data != null,
-      viewer,
       error: loadError,
       retrying,
       retry: () => {
@@ -662,7 +679,7 @@ function PullRequestRow({ pr, onOpen }: { pr: HomePr; onOpen?: () => void }) {
       role="listitem"
       className="kit-row ade-home-pr-row"
       data-settled={settled || undefined}
-      onClick={onOpen}
+      onClick={onOpen ?? (pr.htmlUrl ? () => { void window.ade.app.openExternal(pr.htmlUrl as string); } : undefined)}
       title={tracked?.checksReason ? `${pr.title} — ${tracked.checksReason}` : pr.title}
     >
       <span className="ade-home-pr-icon" data-state={state} aria-label={state}>
@@ -701,6 +718,7 @@ export function PullRequestsCard({
   onOpenPrs?: () => void;
 }) {
   const { open, recent, loaded, error: prLoadError, retrying, retry: retryPullRequests } = prs;
+  const errorAction = prs.errorAction ?? { label: "Retry", onClick: retryPullRequests };
   const counts = useMemo(() => {
     const result = { failing: 0, review: 0, ready: 0 };
     for (const pr of open) {
@@ -726,12 +744,13 @@ export function PullRequestsCard({
           </div>
         ) : (
           <>
-            <dl className="ade-home-pr-stats">
+            {/* A direct read that needs a step (connect GitHub) has no counts to show; zeros would read as "no pull requests". */}
+            {prs.errorAction && open.length + recent.length === 0 ? null : <dl className="ade-home-pr-stats">
               <div data-tone={counts.failing > 0 ? "crit" : undefined}><dd className="kit-num">{counts.failing}</dd><dt>failing</dt></div>
               <div data-tone={counts.review > 0 ? "warn" : undefined}><dd className="kit-num">{counts.review}</dd><dt>in review</dt></div>
               <div data-tone={counts.ready > 0 ? "ok" : undefined}><dd className="kit-num">{counts.ready}</dd><dt>ready</dt></div>
               <div><dd className="kit-num">{recent.length}</dd><dt>merged · 7d</dt></div>
-            </dl>
+            </dl>}
             {prLoadError && open.length + recent.length > 0 ? (
               <Banner
                 layout="inline"
@@ -739,7 +758,7 @@ export function PullRequestsCard({
                   id: "home-prs-read",
                   tone: "warning",
                   title: prLoadError,
-                  actions: [{ label: "Retry", onClick: retryPullRequests }],
+                  actions: [errorAction],
                 }}
               />
             ) : null}
@@ -748,8 +767,8 @@ export function PullRequestsCard({
                 <GitPullRequest size={18} aria-hidden />
                 <span>{retrying || !loaded ? "Reading pull requests…" : prLoadError ?? "No pull requests this week."}</span>
                 {prLoadError ? (
-                  <button type="button" className="ade-home-line-link" onClick={retryPullRequests}>
-                    Retry
+                  <button type="button" className="ade-home-line-link" onClick={errorAction.onClick}>
+                    {errorAction.label}
                   </button>
                 ) : null}
               </div>

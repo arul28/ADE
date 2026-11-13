@@ -125,9 +125,13 @@ export function makePreflightResult(args: {
   };
 }
 
+/** The repository reader: the machine the PRs tab reads GitHub through. */
+export const PRS_READER_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 export function makePrsContext(prs: Array<Partial<PrWithConflicts> & { id: string }>) {
   return {
     prs,
+    pin: PRS_READER_PIN,
     mergeContextByPrId: {},
     detailStatus: null,
     detailChecks: [],

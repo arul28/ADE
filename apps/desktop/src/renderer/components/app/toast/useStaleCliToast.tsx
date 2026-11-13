@@ -9,6 +9,7 @@ import { isStaleCliNoticeSnoozed, snoozeStaleCliNotice } from "../../../lib/stal
 import { workViewStoreForProject } from "../../../state/appStore";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { dismissToast, showToast, type ToastChip, type ToastInput } from "./toastStore";
+import { useTabCopyPin } from "../../../state/repositoryScope";
 
 /** One id, so a re-detection updates the visible notice in place. */
 export const STALE_CLI_TOAST_ID = "stale-cli-sessions";
@@ -116,6 +117,11 @@ export function useStaleCliToast({
   // already-visible notice updated without re-tripping the once-per-hour snooze,
   // and prevents the snooze from hiding a notice the user is actively looking at.
   const staleCliNoticeActiveRef = useRef(false);
+  // The running sessions are read on the tab's copy.
+  const tabCopyPin = useTabCopyPin();
+  const tabCopyPinRef = useRef(tabCopyPin);
+  tabCopyPinRef.current = tabCopyPin;
+  const tabCopyPinKey = tabCopyPin?.key ?? null;
 
   useEffect(() => {
     const shouldCheckStaleCliNotice =
@@ -140,7 +146,7 @@ export function useStaleCliToast({
     const refreshStaleCliNotice = async () => {
       if (document.visibilityState !== "visible") return;
       try {
-        const sessions = await listSessionsCached({ status: "running", limit: 500 });
+        const sessions = await listSessionsCached({ status: "running", limit: 500 }, undefined, tabCopyPinRef.current);
         if (cancelled) return;
         const nowMs = Date.now();
         const stale = sessions
@@ -217,7 +223,7 @@ export function useStaleCliToast({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [isRemoteProject, isWorkAdjacentRoute, projectRoot, showWelcome]);
+  }, [isRemoteProject, isWorkAdjacentRoute, projectRoot, showWelcome, tabCopyPinKey]);
 
   const staleCliNoticeAgeHours = staleCliNotice
     ? getStaleRunningCliSessionAgeHours({

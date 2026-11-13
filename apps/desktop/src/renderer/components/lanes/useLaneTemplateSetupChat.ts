@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { LaneDependencyStatus, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import { usePinTargetsTab } from "../../state/crossMachineLanes";
 import { useLaneChatHandoff } from "../../lib/laneChatHandoff";
 import { buildLaneTemplateSetupPrompt } from "../../lib/laneTemplateSetupPrompt";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
@@ -26,13 +27,16 @@ export function useLaneTemplateSetupChat({
 }): { start: (known?: LaneDependencyStatus | null) => Promise<void>; busy: boolean } {
   const handOff = useLaneChatHandoff(pin, { startDraftInLane: true });
   const tabLanes = useAppStore((state) => state.lanes);
+  // The tab's own copy already holds its lane list.
+  const pinTargetsTab = usePinTargetsTab(pin);
   const projectName = useAppStore((state) => state.project?.displayName ?? null);
   const [busy, setBusy] = useState(false);
 
   const start = useCallback(async (known?: LaneDependencyStatus | null) => {
     setBusy(true);
     try {
-      const lanes: LaneSummary[] = pin
+      if (!pin) throw new Error(`${machineName} is not online.`);
+      const lanes: LaneSummary[] = !pinTargetsTab
         ? await window.ade.lanes.list({ includeArchived: false }, pin)
         : tabLanes;
       const primary = lanes.find((lane) => lane.laneType === "primary");
@@ -68,7 +72,7 @@ export function useLaneTemplateSetupChat({
     } finally {
       setBusy(false);
     }
-  }, [handOff, machineName, origin, pin, projectName, tabLanes]);
+  }, [handOff, machineName, origin, pin, pinTargetsTab, projectName, tabLanes]);
 
   return { start, busy };
 }

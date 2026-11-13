@@ -20,6 +20,7 @@ import { useAgentChatApi } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { extractError } from "../../lib/format";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -332,7 +333,7 @@ export function ChatAccountNote({
     if (busy || pendingId) return;
     setPendingId(target.id);
     setError(null);
-    agentChatApi.switchAccount({ sessionId, instanceId: target.id }, runtimePin)
+    withChatPin(runtimePin, (chatPin) => agentChatApi.switchAccount({ sessionId, instanceId: target.id }, chatPin))
       .then((result) => {
         if (!result.ok) {
           setError(result.message);

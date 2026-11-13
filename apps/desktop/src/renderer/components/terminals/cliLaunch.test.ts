@@ -33,7 +33,7 @@ import { PI_THINKING_LEVELS } from "../../../shared/cliLaunch";
 import { PI_THINKING_LEVELS as PI_SDK_THINKING_LEVELS } from "../../../main/services/chat/piSdkProtocol";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
 import { GROK_CLAUDE_MARKER_OVERRIDE_ENV } from "../../../shared/grokSupervision";
-import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatPermissionMode, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 
 const originalPlatform = process.platform;
 
@@ -181,16 +181,22 @@ describe("recoverImportedContinuationLaunch", () => {
     vi.useRealTimers();
   });
 
-  async function loadRecoveryWith(
-    list: ReturnType<typeof vi.fn>,
-  ): Promise<typeof import("./cliLaunch").recoverImportedContinuationLaunch> {
+  /** The machine the imported session lives on. */
+  const STUDIO = { kind: "remote", key: "remote:studio:project-1" } as unknown as OpenProjectBinding;
+
+  async function loadRecoveryWith(list: ReturnType<typeof vi.fn>) {
     vi.stubGlobal("window", {
       ade: {
         externalSessions: { list },
       },
     });
     const module = await import("./cliLaunch");
-    return module.recoverImportedContinuationLaunch;
+    return (
+      provider: Parameters<typeof module.recoverImportedContinuationLaunch>[0],
+      importedProvider: Parameters<typeof module.recoverImportedContinuationLaunch>[1],
+      targetId: string,
+      pin: OpenProjectBinding = STUDIO,
+    ) => module.recoverImportedContinuationLaunch(provider, importedProvider, targetId, pin);
   }
 
   it("deduplicates concurrent lookups and reuses the result within the TTL", async () => {
@@ -212,6 +218,13 @@ describe("recoverImportedContinuationLaunch", () => {
     const withinTtl = recover("codex", "codex", "session-dedup");
     expect(withinTtl).toBe(first);
     expect(list).toHaveBeenCalledTimes(1);
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "session-dedup" }), STUDIO);
+
+    // The same session id on another machine is another rollout: its own lookup, on that machine.
+    const laptop = { kind: "remote", key: "remote:laptop:project-1" } as unknown as OpenProjectBinding;
+    expect(recover("codex", "codex", "session-dedup", laptop)).not.toBe(first);
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: "session-dedup" }), laptop);
   });
 
   it("starts a new lookup after the cached entry expires", async () => {

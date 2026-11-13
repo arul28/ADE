@@ -17,6 +17,7 @@ import type {
   BuiltInBrowserSettingsPersisted,
 } from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
+import type { SavedWindowRepositoryTabs } from "../../../shared/windowRepositoryTabs";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 import type { MainWindowState } from "./mainWindowState";
 
@@ -119,6 +120,14 @@ export type GlobalState = {
    * once, then clears this so a later ordinary launch stays on welcome.
    */
   restoreUpdateWorkspaceOnLaunch?: boolean;
+  /**
+   * The repository tabs of the window last in focus (S5, spec 5.1), by
+   * repository and with the copy each showed. The next launch's first window
+   * reopens them, also after an update. Older builds ignore it and keep
+   * reading `lastProjectRoot`, `lastRemoteProjectBinding` and
+   * `updateWorkspace`, which are still written.
+   */
+  lastRepositoryTabs?: SavedWindowRepositoryTabs;
   failedInstallAttempts?: FailedInstallAttempts;
   /**
    * The build "Go back" left because it could not start

@@ -28,6 +28,7 @@ import { selectChatPrs, selectGithubLanePrTags } from "../lanes/lanePageModel";
 import { Banner } from "../ui/notice";
 import { openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
+import { requireChatPin, withChatPin } from "./chatMachinePin";
 
 /**
  * "Link a PR by number or URL" — the manual route into the many-to-many model.
@@ -37,19 +38,20 @@ import { isImeComposing } from "../../lib/imeComposition";
  * teammate — had no way to reach the chat at all, so a thread could show every
  * PR except the one the user was actually working on.
  *
- * The caller hides this row whenever the pane is pinned to another machine.
- * `prs.linkToLane` carries no pin, so it resolves the lane against the bound
- * machine, which does not own this lane. That is the same reason the inline
- * creator is hidden there.
+ * The caller hides this row whenever the pane is pinned to another machine,
+ * like the inline creator. The link names the chat's machine.
  */
 const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
   laneId,
   sessionId,
   onLinked,
+  pin,
 }: {
   laneId: string;
   sessionId?: string | null;
   onLinked: (pr: PrSummary) => void;
+  /** The chat's machine, which owns the lane. Null: none known. */
+  pin: OpenProjectBinding | null;
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState("");
@@ -72,7 +74,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
         laneId,
         prUrlOrNumber: trimmed,
         sessionId: sessionId ?? null,
-      });
+      }, requireChatPin(pin));
       setBusy(false);
       close();
       onLinked(linked);
@@ -82,7 +84,7 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
       setError(err instanceof Error ? err.message : "Could not link that pull request.");
       setBusy(false);
     }
-  }, [busy, close, laneId, onLinked, sessionId, value]);
+  }, [busy, close, laneId, onLinked, pin, sessionId, value]);
 
   if (!open) {
     return (
@@ -341,7 +343,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     let nextLinkedPrs: PrSummary[] = [];
     try {
       if (typeof window.ade.prs.listAll === "function") {
-        const allPrs = await window.ade.prs.listAll(runtimePinRef.current);
+        const allPrs = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.listAll(chatPin));
         const scopedPrs = selectPrsForChatInLane(allPrs, laneId, sessionId);
         const visiblePrs = selectChatPrs(laneForPr, scopedPrs, sessionId);
         nextLinkedPrs = visiblePrs;
@@ -350,7 +352,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
           ?? pickPrimaryPr(visiblePrs)
           ?? selectPrimaryLanePr(laneForPr, scopedPrs);
       } else {
-        const legacy = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
+        const legacy = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getForLane(laneId, chatPin));
         nextLinkedPrs = legacy ? [legacy] : [];
         cached = selectPrimaryLanePr(laneForPr, legacy ? [legacy] : []);
       }
@@ -404,7 +406,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     if (syncing) return;
     setSyncing(true);
     try {
-      await window.ade.prs.syncLanePr(laneId, runtimePinRef.current);
+      await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.syncLanePr(laneId, chatPin));
     } catch {
       // best-effort
     } finally {
@@ -422,6 +424,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   // timer lives in a ref cleared only on unmount, so a PR-row change can no
   // longer strand it.
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       if (event.type !== "pr-reconcile") return;
       // Debounce the hide so a fast reconcile doesn't flicker.
@@ -442,7 +446,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
         // A reconcile just healed backend state — re-read the lane's PR.
         void refresh();
       }
-    }, runtimePinRef.current);
+    }, feedPin);
     return () => {
       unsubscribe();
     };
@@ -460,6 +464,8 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
   }, []);
 
   useEffect(() => {
+    const feedPin = runtimePinRef.current;
+    if (!feedPin) return undefined;
     const unsubscribe = window.ade.prs.onEvent((event) => {
       const currentPrId = currentPrIdRef.current;
       if (event.type === "pr-notification") {
@@ -474,7 +480,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
       } else {
         setCurrentPr(null);
       }
-    }, runtimePinRef.current);
+    }, feedPin);
     return unsubscribe;
   }, [laneId, refresh, runtimePinKey, setCurrentPr]);
 
@@ -516,9 +522,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     const prId = pr.id;
     let cancelled = false;
     void Promise.allSettled([
-      window.ade.prs.getChecks(prId, runtimePinRef.current),
-      window.ade.prs.getReviews(prId, runtimePinRef.current),
-      window.ade.prs.getStatus(prId, runtimePinRef.current),
+      withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getChecks(prId, chatPin)),
+      withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getReviews(prId, chatPin)),
+      withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getStatus(prId, chatPin)),
     ]).then(([c, r, s]) => {
       if (cancelled) return;
       if (c.status === "fulfilled") setChecks(c.value);
@@ -537,7 +543,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
       return;
     }
     let cancelled = false;
-    void window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id }, runtimePinRef.current)
+    void withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.getStackLinkOffer({ sessionId, prId: pr.id }, chatPin))
       .then((offer) => {
         if (cancelled) return;
         const linkable = (offer?.siblings ?? []).filter((sibling) => !sibling.claimedByOtherChat);
@@ -557,11 +563,11 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
     setStackLinkBusy(true);
     setStackLinkError(null);
     try {
-      const result = await window.ade.prs.linkChatStack({
+      const result = await withChatPin(runtimePinRef.current, (chatPin) => window.ade.prs.linkChatStack({
         sessionId: visibleStackOffer.sessionId,
         stackNumber: visibleStackOffer.stackNumber,
         prId: visibleStackOffer.prId,
-      }, runtimePinRef.current);
+      }, chatPin));
       if (!result?.ok) {
         setStackLinkError("Could not link this GitHub stack.");
         return;
@@ -714,8 +720,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
               sessionTitle={sessionTitle}
               sessionId={sessionId}
               onCreated={handleCreated}
+              pin={runtimePin}
             />
-            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} pin={runtimePin} />
           </>
         )}
       </div>
@@ -791,7 +798,7 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
             </div>
           ) : null}
           {foreignPin ? null : (
-            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} pin={runtimePin} />
           )}
           </>
         ) : foreignPin ? (
@@ -814,8 +821,9 @@ const ChatPrPaneLive = React.memo(function ChatPrPaneLive({
               sessionTitle={sessionTitle}
               sessionId={sessionId}
               onCreated={handleCreated}
+              pin={runtimePin}
             />
-            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} />
+            <ChatPrLinkRow laneId={laneId} sessionId={sessionId} onLinked={handleLinked} pin={runtimePin} />
           </>
         )}
       </div>

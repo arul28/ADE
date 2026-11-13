@@ -998,6 +998,7 @@ import {
   FAST_MODE_SETTING_SCOPE,
 } from "../../../shared/fastModePolicy";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { coerceAccountProjectListResult, type AccountProjectChangeResult, type AccountProjectListResult } from "../../../shared/accountProject";
 import { PROVIDER_LOGINS_CLOUD_SETTING } from "../../../shared/providerLoginsCloudSetting";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
@@ -1831,6 +1832,7 @@ export function registerIpc({
   waitForStartupProjectOpen,
   getProjectContext,
   setWindowProjectTabs,
+  setWindowRepositoryTabs,
   bindRemoteProject,
   localRuntimeConnectionPool,
   projectRecoveryConnectionPool,
@@ -1872,6 +1874,8 @@ export function registerIpc({
   waitForStartupProjectOpen?: () => Promise<void>;
   getProjectContext?: (projectRoot: string) => AppContext | null | undefined;
   setWindowProjectTabs?: (windowId: number | null, rootPaths: string[]) => ProjectInfo[];
+  /** Keeps the window's repository tabs; main rebuilds the value field by field (S5). */
+  setWindowRepositoryTabs?: (windowId: number | null, tabs: unknown) => void;
   bindRemoteProject?: (windowId: number | null, binding: OpenProjectBinding & { kind: "remote" }) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   projectRecoveryConnectionPool?: LocalRuntimeConnectionPool | null;
@@ -3622,6 +3626,12 @@ export function registerIpc({
     return { openProjectTabs };
   });
 
+  handle(IPC.appSetWindowRepositoryTabs, async (event, arg: { tabs?: unknown } = {}) => {
+    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    setWindowRepositoryTabs?.(windowId, arg?.tabs);
+    return { ok: true as const };
+  });
+
   handle(IPC.appNewWindow, async () => {
     if (!createWindow) return { windowId: null };
     const result = await createWindow({ projectRoot: null });
@@ -4672,6 +4682,22 @@ export function registerIpc({
   handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
   );
+
+  // The account's project list as a machine last read it: this computer's
+  // brain, or a connected machine (`targetId`) for a client with no brain of
+  // its own. A read of a JSON file on that machine; no server call.
+  handle(IPC.projectAccountList, async (_event, arg?: { targetId?: unknown }): Promise<AccountProjectListResult> => {
+    const targetId = typeof arg?.targetId === "string" ? arg.targetId.trim() : "";
+    if (targetId) {
+      return coerceAccountProjectListResult(
+        await runtimeBridge.callMachineMethod<unknown>(targetId, "projects.accountList", {}, { timeoutMs: 10_000 }),
+      );
+    }
+    if (!localRuntimeConnectionPool) return { state: "not_loaded", projects: [] };
+    return coerceAccountProjectListResult(
+      await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
+    );
+  });
 
   // First-run setup on this computer. All four run here and only here: setup
   // is the first open of ADE on a machine, and it reads that machine's own
@@ -11263,6 +11289,11 @@ export function registerIpc({
     return ensureBuiltInBrowser().switchTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserSwitchTab), win);
   });
 
+  handle(IPC.builtInBrowserKeepTab, async (event, arg) => {
+    const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserKeepTab, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().keepTab(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserKeepTab), win);
+  });
+
   handle(IPC.builtInBrowserHandTabToChat, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserHandTabToChat, { windowMs: 10_000, max: 60 });
     return ensureBuiltInBrowser().handTabToChat(parseBuiltInBrowserTabArgs(arg, IPC.builtInBrowserHandTabToChat), win);
@@ -12750,7 +12781,7 @@ export function registerIpc({
         action,
         ...(request.args && typeof request.args === "object" ? { args: request.args } : {}),
       }, {
-        // The Keychain and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
+        // The OS keyring and GitHub CLI reads have the long limit in the table: they wait for the person's answer.
         timeoutMs: localRuntimeActionTimeoutMs("provider_logins", action),
       });
       return response?.result;
@@ -13126,12 +13157,22 @@ export function registerIpc({
     return accountBridge.listMachines();
   });
 
+  // The account's project list (S13): account calls with this computer's own
+  // token. No machine pin: the list belongs to the account, not to a machine.
+  handle(IPC.projectAccountAdd, async (_event, arg: { origin?: unknown } = {}): Promise<AccountProjectChangeResult> =>
+    accountBridge.addAccountProject(typeof arg?.origin === "string" ? arg.origin.trim().slice(0, 2048) : ""));
+  handle(IPC.projectAccountRemove, async (_event, arg: { projectId?: unknown } = {}): Promise<AccountProjectChangeResult> =>
+    accountBridge.removeAccountProject(typeof arg?.projectId === "string" ? arg.projectId.trim() : ""));
+
   // Lane sharing, the guest's side: account calls from this computer to the
   // account directory, with this computer's own token (it stays in main). No
   // machine pin: the shared lane's machine is reached only by the renderer's
   // guest connection, with the one-use ticket `connect` answers. The ticket
   // is returned to the renderer and never logged or stored.
   handle(IPC.laneShareGuestListReceived, async () => accountBridge.laneShareGuest().listReceived());
+  handle(IPC.laneShareGuestListGiven, async () => accountBridge.laneShareGuest().listGiven());
+  handle(IPC.laneShareGuestRevokeGiven, async (_event, arg: { grantId?: unknown } | undefined) =>
+    accountBridge.laneShareGuest().revokeGiven({ grantId: String(arg?.grantId ?? "") }));
   handle(IPC.laneShareGuestOpen, async (_event, arg: { grantId?: unknown }) =>
     accountBridge.laneShareGuest().open({ grantId: String(arg?.grantId ?? "") }));
   handle(IPC.laneShareGuestAccept, async (_event, arg: { grantId?: unknown }) =>
@@ -14469,6 +14510,20 @@ export function registerIpc({
     },
     /** The account machine directory, for the in-process `@mac:` mention path. */
     listAccountMachines: () => accountBridge.listMachines(),
+    /** This computer's account project list (with retired ids), for links that name an account project. */
+    async readAccountProjectList(): Promise<AccountProjectListResult> {
+      if (!localRuntimeConnectionPool) return { state: "not_loaded", projects: [] };
+      return coerceAccountProjectListResult(
+        await localRuntimeConnectionPool.callSync<unknown>("projects.accountList", {}, { timeoutMs: 10_000 }),
+      );
+    },
+    /** Account machine keys of the machines this desktop is connected to now. */
+    connectedMachineKeys(): string[] {
+      return runtimeBridge.snapshot().connections
+        .filter((connection) => connection.state === "connected")
+        .map((connection) => connection.target.pairedMachine?.machineKey?.trim() ?? "")
+        .filter(Boolean);
+    },
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
     resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
     readRemoteArtifactRange: runtimeBridge.readRemoteArtifactRange,

@@ -22,6 +22,9 @@ const CLAUDE_UNAVAILABLE = {
   auth: { ready: false, mode: "none", detail: null },
 };
 
+/** Project A's copy on this computer. */
+const PROJECT_A_PIN: OpenProjectBinding = { kind: "local", key: "local:/project/a", rootPath: "/project/a", displayName: "a" };
+
 describe("aiDiscoveryCache", () => {
   beforeEach(() => {
     invalidateAiDiscoveryCache();
@@ -166,8 +169,8 @@ describe("aiDiscoveryCache", () => {
   it("reuses cached model discovery per provider", async () => {
     modelsMock.mockResolvedValueOnce([{ id: "claude-1", displayName: "Claude 1", isDefault: true }]);
 
-    const first = await getAgentChatModelsCached({ projectRoot: "/project/a", provider: "claude" });
-    const second = await getAgentChatModelsCached({ projectRoot: "/project/a", provider: "claude" });
+    const first = await getAgentChatModelsCached({ projectRoot: "/project/a", provider: "claude", pin: PROJECT_A_PIN });
+    const second = await getAgentChatModelsCached({ projectRoot: "/project/a", provider: "claude", pin: PROJECT_A_PIN });
 
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);

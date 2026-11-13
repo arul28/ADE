@@ -174,6 +174,8 @@ export type LaneShareReceivedResult = {
 };
 
 export type LaneShareLeaveResult = { grantId: string; state: string };
+/** A giver's revoke at the account directory: the grant and its state after. */
+export type LaneShareRevokeGivenResult = { grantId: string; state: string };
 
 /**
  * Moving a chat to or from the other person of a share
@@ -198,10 +200,11 @@ export type LaneShareMoveAction =
   | "movePackRelease";
 
 // ---------------------------------------------------------------------------
-// The guest's side (`window.ade.laneShareGuest`). Account calls only: they go
-// from THIS device to the account directory with this device's own account
-// token (desktop: the main process; web: the page's account session). No
-// machine is involved, so there is no pin. The shared lane's machine is
+// The account's direct bridge (`window.ade.laneShareGuest`): the guest's calls
+// and the giver's account-only ones (the list of shares given, a revoke).
+// They go from THIS device to the account directory with this device's own
+// account token (desktop: the main process; web: the page's account session).
+// No machine is involved, so there is no pin. A shared lane's machine is
 // reached only through the guest connection, with a one-use ticket.
 
 /** How this account relates to one grant (`GET /lane-shares/:id`). `none`: not this account's grant (or no such grant). */
@@ -230,8 +233,17 @@ export type LaneShareConnectTicket = {
   ticketExpiresAt: number | null;
 };
 
+/**
+ * This device's own account calls for lane sharing: the guest's (received,
+ * accept, leave, connect) and the giver's account-only ones (the list of
+ * shares given and a revoke). None needs a computer of the account online.
+ */
 export type LaneShareGuestBridge = {
   listReceived: () => Promise<LaneShareReceivedResult>;
+  /** Every share this account gave, on any computer, as the directory has them (`local: false` rows). */
+  listGiven: () => Promise<LaneShareGivenEntry[]>;
+  /** Stops a share at the directory. The lane's computer drops a connected guest on its next grant read. */
+  revokeGiven: (args: { grantId: string }) => Promise<LaneShareRevokeGivenResult>;
   open: (args: { grantId: string }) => Promise<LaneShareOpenResult>;
   accept: (args: { grantId: string }) => Promise<LaneShareAcceptResult>;
   leave: (args: { grantId: string }) => Promise<LaneShareLeaveResult>;

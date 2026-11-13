@@ -282,6 +282,8 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   letter-spacing: 0.06em;
   background: color-mix(in srgb, var(--color-fg) 7%, transparent);
   color: var(--kit-text-2);
+  /* One short label at a fixed height: a wrapped line would spill out of it. */
+  white-space: nowrap;
 }
 .kit-tag[data-tone="ok"] { background: color-mix(in srgb, var(--kit-ok) 14%, transparent); color: var(--kit-ok); }
 .kit-tag[data-tone="warn"] { background: color-mix(in srgb, var(--kit-warn) 14%, transparent); color: var(--kit-warn); }
@@ -429,6 +431,9 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   font-size: 12.5px;
 }
 .kit-input::placeholder { color: var(--kit-text-3); }
+.kit-input[data-size="sm"] { height: 26px; padding: 0 8px; font-size: 12px; }
+/* A multi-line field: the same box, its height set by its rows. */
+textarea.kit-input { height: auto; padding-top: 6px; padding-bottom: 6px; line-height: 1.45; resize: none; }
 .kit-input:focus { border-color: color-mix(in srgb, var(--color-fg) 35%, transparent); }
 .kit-input:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent); outline-offset: 1px; }
 .kit-input[aria-invalid="true"] { border-color: color-mix(in srgb, var(--kit-crit) 60%, transparent); }

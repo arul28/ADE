@@ -2926,31 +2926,32 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }));
   });
 
-  it("drops the Electron token only for Teams, which refuses it", async () => {
+  it("introduces every tab request as Chrome: no Electron or app token, Chrome's client hints", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({ url: "https://example.test", activate: true });
 
-    const [teams] = fakes.filteredBeforeSendHeaders;
-    expect(teams?.urls).toEqual(["https://teams.cloud.microsoft/*", "https://teams.microsoft.com/*"]);
-    let rewritten: Record<string, string> | undefined;
-    teams?.listener(
-      { requestHeaders: { "User-Agent": "Mozilla/5.0 Chrome/140.0 Electron/41.0 Safari/537.36" } },
-      (response) => { rewritten = response.requestHeaders; },
-    );
-    expect(rewritten?.["User-Agent"]).toBe("Mozilla/5.0 Chrome/140.0 Safari/537.36");
-  });
+    const [identity] = fakes.filteredBeforeSendHeaders;
+    expect(identity?.urls).toEqual(["<all_urls>"]);
+    const send = (url: string, requestHeaders: Record<string, string>) => {
+      let response: { requestHeaders?: Record<string, string> } | undefined;
+      identity?.listener({ url, requestHeaders } as never, (next) => { response = next; });
+      return response?.requestHeaders;
+    };
 
-  it("does not impersonate Chrome or rewrite browser request headers", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
-    await service.createTab({ url: "https://example.test", activate: true });
+    const secure = send("https://accounts.google.com/", {
+      "User-Agent": "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) ade-desktop/1.2.3 Chrome/152.0.7977.169 Electron/44.10.1 Safari/537.36",
+    });
+    expect(secure?.["User-Agent"]).toBe("Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.169 Safari/537.36");
+    expect(secure?.["sec-ch-ua"]).toContain("\"Google Chrome\"");
+    expect(secure?.["sec-ch-ua-mobile"]).toBe("?0");
 
-    const wc = fakes.webContentsInstances[0];
-    expect(wc?.userAgentCalls).toEqual([]);
-    expect(fakes.beforeSendHeadersHandlers).toHaveLength(0);
-    expect(fakes.dispatchBeforeSendHeaders({
-      "User-Agent": "Electron/41",
-      "Sec-CH-UA": "\"Chromium\";v=\"140\", \"Electron\";v=\"41\"",
-    })).toBeNull();
+    // A hint the page already sends gains the brand rather than a second header.
+    const hinted = send("https://example.test/", { "Sec-CH-UA": "\"Chromium\";v=\"152\", \"Not?A_Brand\";v=\"24\"" });
+    expect(Object.keys(hinted ?? {}).filter((key) => key.toLowerCase() === "sec-ch-ua")).toEqual(["Sec-CH-UA"]);
+    expect(hinted?.["Sec-CH-UA"]).toContain("\"Google Chrome\"");
+
+    // Hints only go to secure contexts, as in Chrome; a clean request passes through untouched.
+    expect(send("http://example.test/", { "User-Agent": "Mozilla/5.0 Chrome/152.0 Safari/537.36" })).toBeUndefined();
   });
 
   it("allows only narrow Google account auth permissions", async () => {
@@ -3023,6 +3024,49 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       requestingUrl: "https://example.test/alerts",
     })).resolves.toBe(false);
     expect(fakes.permissionPrompt).not.toHaveBeenCalled();
+  });
+
+  it("closes exactly the tabs asked for when closes run at the same time", async () => {
+    // The cleanup sweep and a chat group's "Close tabs" start several closes
+    // at once. Each one awaits before it removes its tab, so a close that
+    // remembered a position from before the await removed whichever tab had
+    // shifted into it: a tab nobody asked to close.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://a.example.test", activate: true });
+    await service.createTab({ url: "https://b.example.test", activate: true });
+    await service.createTab({ url: "https://c.example.test", activate: true });
+    const byHost = (host: string) => service.getStatus().tabs.find((tab) => tab.url?.includes(host))?.id ?? "";
+    const [a, b, c] = [byHost("a.example"), byHost("b.example"), byHost("c.example")];
+    expect([a, b, c].every(Boolean), "three tabs open").toBe(true);
+
+    await Promise.all([service.closeTab({ tabId: a }), service.closeTab({ tabId: b })]);
+
+    const left = service.getStatus().tabs.map((tab) => tab.id);
+    expect(left).toContain(c);
+    expect(left).not.toContain(a);
+    expect(left).not.toContain(b);
+  });
+
+  it("stops a chat's close pass when the chat goes back to work mid-pass", async () => {
+    // A close pass awaits each close before the next. A newer lifecycle word
+    // for the chat (a turn starting) must stop it there, or the rest of the
+    // chat's tabs close in the middle of that turn.
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const first = await service.createTab({ url: "https://one.example.test", activate: false, laneId: "lane-1", chatSessionId: "chat-1" });
+    const second = await service.createTab({ url: "https://two.example.test", activate: false, laneId: "lane-1", chatSessionId: "chat-1" });
+    const firstId = first.targetTabId ?? "";
+    const secondId = second.targetTabId ?? "";
+    expect(firstId && secondId, "two agent tabs open").toBeTruthy();
+
+    expect(service.chatBrowserLifecycle({ chatSessionId: "chat-1", state: "ended" }).tabs).toBe(2);
+    // Same tick: the pass is awaiting its first close.
+    service.chatBrowserLifecycle({ chatSessionId: "chat-1", state: "running" });
+
+    await vi.waitFor(() => expect(service.getStatus().tabs.map((tab) => tab.id)).not.toContain(firstId));
+    for (let i = 0; i < 5; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    const left = service.getStatus().tabs.map((tab) => tab.id);
+    expect(left).toContain(secondId);
+    expect(left).not.toContain(firstId);
   });
 
   it("intercepts popup requests as real ADE browser tabs", async () => {

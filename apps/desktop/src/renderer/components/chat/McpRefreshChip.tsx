@@ -5,6 +5,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { captureError } from "../../../shared/sentry/capture";
 import { restartAgentSession } from "../terminals/sessionLifecycleActions";
 import { StatusChip } from "../ui/notice/StatusChip";
+import { withChatPin } from "./chatMachinePin";
 
 /**
  * "New MCP server added · Refresh chat" (or removed, or changed), in the
@@ -49,7 +50,7 @@ export function McpRefreshChip({
       return undefined;
     }
     let active = true;
-    void read({ chatSessionId: sessionId }, pinRef.current)
+    void withChatPin(pinRef.current, (chatPin) => read({ chatSessionId: sessionId }, chatPin))
       .then((next) => {
         if (!active) return;
         const missing = Array.isArray(next?.missing) ? next.missing : [];

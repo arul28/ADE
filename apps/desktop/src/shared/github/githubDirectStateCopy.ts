@@ -36,10 +36,14 @@ export type GithubDirectStateContext = {
   formatTime?: (epochMs: number) => string;
   /** The read still works through another sign-in (the CLI or a token). */
   changesUseOtherSignIn?: "gh" | "token" | null;
+  /** What the list shows, for the body text. Defaults to "pull requests". */
+  items?: "pull requests" | "issues";
 };
 
 const repoLabel = (ctx: GithubDirectStateContext): string =>
   ctx.owner && ctx.name ? `${ctx.owner}/${ctx.name}` : "this repository";
+
+const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 const ownerLabel = (ctx: GithubDirectStateContext): string => ctx.owner ?? "the repository's owner";
 
@@ -64,26 +68,27 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
   const when = (epochMs: number | null | undefined): string | null =>
     epochMs != null && context.formatTime ? context.formatTime(epochMs) : null;
   const kind: GithubDirectErrorKind = error.kind;
+  const items = context.items ?? "pull requests";
   switch (kind) {
     case "not_connected":
       if (error.reason === "signed_out") {
         return {
           title: "Sign in to ADE",
-          body: "Sign in to your ADE account to see pull requests here.",
+          body: `Sign in to your ADE account to see ${items} here.`,
           primary: null,
           secondary: null,
         };
       }
       return {
         title: "Connect GitHub",
-        body: "Connect GitHub to see pull requests and push from any device.",
+        body: `Connect GitHub to see ${items} and push from any device.`,
         primary: { label: "Connect GitHub", kind: "connect" },
         secondary: { label: "Or paste a token", kind: "link", url: GITHUB_FINE_GRAINED_TOKEN_NEW_URL },
       };
     case "sign_in_expired":
       return {
         title: "GitHub connection ended",
-        body: "Your GitHub connection ended. Connect GitHub again to keep working with pull requests.",
+        body: `Your GitHub connection ended. Connect GitHub again to keep working with ${items}.`,
         primary: { label: "Connect GitHub", kind: "connect" },
         secondary: null,
       };
@@ -107,7 +112,7 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
         ? "Until then, ADE uses your GitHub CLI sign-in for changes."
         : context.changesUseOtherSignIn === "token"
           ? "Until then, ADE uses your token for changes."
-          : "Until then, you can read pull requests here but not change them.";
+          : `Until then, you can read ${items} here but not change them.`;
       const orgLine = error.accountType === "Organization"
         ? ` If you don't own ${ownerLabel(context)}, ask an owner to approve it.`
         : "";
@@ -139,7 +144,9 @@ export function githubDirectStateCopy(error: GithubDirectError, ctx: GithubDirec
       const at = when(error.retryAt);
       return {
         title: "GitHub rate limit reached",
-        body: at ? `GitHub rate limit reached. Pull requests update again at ${at}.` : "GitHub rate limit reached. Pull requests update again in a few minutes.",
+        body: at
+          ? `GitHub rate limit reached. ${capitalized(items)} update again at ${at}.`
+          : `GitHub rate limit reached. ${capitalized(items)} update again in a few minutes.`,
         primary: null,
         secondary: null,
       };

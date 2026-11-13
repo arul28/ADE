@@ -1,12 +1,45 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
+import type { OpenProjectBinding } from "../../../../shared/types";
+import { useAppStore } from "../../../state/appStore";
+import { captureError } from "../../../../shared/sentry/capture";
 
-// Authoritative storage lives in the ade-cli main process so recents sync
-// across desktop and iOS surfaces. localStorage is a hot cache that
-// keeps the picker responsive while the RPC roundtrip completes.
+// Recents belong to this client (`localStorage`), not to a machine: the same
+// list on every project tab. Older versions kept the list on the tab's
+// machine, so this client reads it once from there and merges it after its
+// own picks. Nothing writes back to a machine.
 const STORAGE_KEY = "ade.modelPicker.recents.v1";
+/** Set once the machine's list was merged in; until then each start tries again. */
+const IMPORTED_KEY = "ade.modelPicker.recents.imported.v1";
 const MAX_RECENTS = 10;
+
+function importDone(): boolean {
+  try {
+    return window.localStorage.getItem(IMPORTED_KEY) != null;
+  } catch {
+    return false;
+  }
+}
+
+function markImportDone(): void {
+  try {
+    window.localStorage.setItem(IMPORTED_KEY, "1");
+  } catch {
+    // Not saved: the next start merges the same list again, which changes nothing.
+  }
+}
+
+/** This client's picks first (newest), then the machine's older ones. */
+function mergeRecents(local: readonly string[], imported: readonly string[]): string[] {
+  const merged: string[] = [];
+  for (const value of [...local, ...imported]) {
+    if (typeof value === "string" && value.length > 0 && !merged.includes(value)) merged.push(value);
+  }
+  return merged.slice(0, MAX_RECENTS);
+}
+
+let importInFlight: Promise<void> | null = null;
 
 function readPersisted(): string[] {
   try {
@@ -30,25 +63,10 @@ function persistCache(values: string[]): void {
   }
 }
 
-function getRpcApi():
-  | {
-      getRecents: () => Promise<{ recents: string[] }>;
-      pushRecent: (id: string) => Promise<{ recents: string[] }>;
-    }
-  | null {
+function getImportApi(): ((pin: OpenProjectBinding) => Promise<{ recents: string[] }>) | null {
   if (typeof window === "undefined") return null;
-  const ade = (window as unknown as { ade?: { modelPicker?: unknown } }).ade;
-  const picker = ade?.modelPicker as
-    | {
-        getRecents?: () => Promise<{ recents: string[] }>;
-        pushRecent?: (id: string) => Promise<{ recents: string[] }>;
-      }
-    | undefined;
-  if (!picker?.getRecents || !picker.pushRecent) return null;
-  return picker as {
-    getRecents: () => Promise<{ recents: string[] }>;
-    pushRecent: (id: string) => Promise<{ recents: string[] }>;
-  };
+  const getRecents = window.ade?.modelPicker?.getRecents;
+  return typeof getRecents === "function" ? getRecents : null;
 }
 
 type RecentsState = {
@@ -69,35 +87,36 @@ const useRecentsStore = create<RecentsState>((set, get) => ({
     const next = [id, ...filtered].slice(0, MAX_RECENTS);
     set({ recents: next });
     persistCache(next);
-    const api = getRpcApi();
-    if (!api) return;
-    void api
-      .pushRecent(id)
-      .then((result) => {
-        const authoritative = Array.isArray(result?.recents) ? result.recents : null;
-        if (!authoritative) return;
-        set({ recents: authoritative });
-        persistCache(authoritative);
-      })
-      .catch(() => {
-        // Optimistic update is preserved; we'll reconcile on next hydrate.
-      });
   },
   hydrateFromRemote: async () => {
-    const api = getRpcApi();
-    if (!api) {
-      // RPC surface not yet bound — leave hydrated:false so we retry once it
-      // becomes available, instead of permanently locking on stale local cache.
+    if (importDone()) {
+      set({ hydrated: true });
       return;
     }
-    try {
-      const result = await api.getRecents();
-      const authoritative = Array.isArray(result?.recents) ? result.recents : [];
-      set({ recents: authoritative, hydrated: true });
-      persistCache(authoritative);
-    } catch {
-      set({ hydrated: true });
-    }
+    if (importInFlight) return importInFlight;
+    // The one-time import reads the old list from the tab's copy.
+    const pin = useAppStore.getState().projectBinding;
+    const getRecents = getImportApi();
+    // No tab open or no bridge yet: stay unhydrated so a later mount imports.
+    if (!pin || !getRecents) return;
+    importInFlight = (async () => {
+      try {
+        const result = await getRecents(pin);
+        const imported = Array.isArray(result?.recents) ? result.recents : [];
+        // A pick made while the import ran stays in front: the lists merge.
+        const next = mergeRecents(get().recents, imported);
+        set({ recents: next, hydrated: true });
+        persistCache(next);
+        markImportDone();
+      } catch (error) {
+        // The list here stays as it is; the next start tries the import again.
+        captureError(error, { fingerprint: ["model-picker", "recents-import"], level: "warning", handled: true });
+        set({ hydrated: true });
+      } finally {
+        importInFlight = null;
+      }
+    })();
+    return importInFlight;
   },
 }));
 

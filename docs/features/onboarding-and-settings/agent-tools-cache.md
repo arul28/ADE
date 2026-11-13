@@ -42,7 +42,7 @@ it through `cacheLookup.ts` and `pinnedTool.ts`; downloads go through
 | Qwen Code | `qwen` | Vendor standalone bundle from GitHub releases, with its own Node | Qwen ACP chats and terminals. |
 | Kimi Code | `kimi` | Archive from GitHub releases | Kimi ACP chats and terminals. |
 | Devin | `devin` | Archive from `static.devin.ai` | Devin ACP chats and terminals. |
-| Antigravity | `antigravity` | Zip from `dl.google.com` | See the Antigravity provider doc. |
+| Antigravity | `antigravity` | Archive of the `agy` CLI from GitHub releases | Antigravity ACP chats (`agy acp`) and terminals. See the Antigravity provider doc. |
 | Pi | `pi` | npm dependency tree of `@earendil-works/pi-coding-agent` | The Pi SDK worker imports it; terminals run its `dist/cli.js`. |
 | Node | `node` | Archive from `nodejs.org` | Runtime for Pi's terminal CLI only. |
 | Muse Code | `muse` | One bare executable from Meta's release manifest | Not on npm at all; 330-470 MB per target. See [Muse: a direct-file pin](#muse-a-direct-file-pin). |
@@ -90,12 +90,12 @@ has them in `node_modules`, so it never downloads them.
 | `qwen` | 0.25.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHA256SUMS`, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
 | `kimi` | 2.3.1 | `archive` (tar.gz, win zip) | vendor `.sha256` sidecars, cross-checked with GitHub asset digests | `github.com` + release-asset hosts |
 | `devin` | 3000.11.3 | `archive` (tar.gz, win zip) | vendor `manifest.json` sha256 | `static.devin.ai` |
-| `antigravity` | 1.4.1 | `archive` (zip) | sha256 computed by `tools:pin` (Google publishes none) | `dl.google.com` |
+| `antigravity` | 1.5.6 | `archive` (tar.gz, win zip) | GitHub asset digests, checked against the download | `github.com` + release-asset hosts |
 | `cursor-cli` | 2026.10.16-e3cb207 | `archive` (tar.gz, win zip, strip 1) | sha256 computed by `tools:pin` (Cursor publishes none) | `downloads.cursor.com` |
 | `node` | 24.22.0 | `archive` (tar.gz, win zip, strip 1) | vendor `SHASUMS256.txt` | `nodejs.org` |
 | `muse` | 1.4.7-R6101.1 | `file` | Meta manifest sha256 + size | `lookaside.facebook.com` |
 
-For the two computed hashes, the first download is trusted; re-pinning the same
+For the computed hash (Cursor), the first download is trusted; re-pinning the same
 version must reproduce the hash or `tools:pin` fails.
 
 ### Pin formats
@@ -112,8 +112,8 @@ with Node's zlib; Grok ships `bin/grok.br` and runs `bin/grok`.
 
 An entry may name extra required `files` (`{ path, windowsPath?, executable? }`).
 Every resolution returns them as absolute paths, and an install that lacks one
-is not usable. Qwen's `script`, Cursor's `script`, Pi's `module` and `cli`, and
-Antigravity's `harness` are files.
+is not usable. Qwen's `script`, Cursor's `script`, and Pi's `module` and `cli` are
+files.
 
 ### Download hosts
 
@@ -126,8 +126,7 @@ and HTTPS is required.
 | `npm-tarball`, `npm-tree` | `registry.npmjs.org` |
 | `muse` | `lookaside.facebook.com` |
 | `devin` | `static.devin.ai` |
-| `antigravity` | `dl.google.com` |
-| `qwen`, `kimi` | `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
+| `qwen`, `kimi`, `antigravity` | `github.com`, `release-assets.githubusercontent.com`, `objects.githubusercontent.com` |
 | `cursor-cli` | `downloads.cursor.com` |
 | `node` | `nodejs.org` |
 
@@ -211,7 +210,7 @@ without unpacking the tarball.
 | `qwen` | `node/bin/node` + file `script` = `lib/cli-entry.js` | `node/node.exe` |
 | `kimi` | `kimi` | `kimi.exe` |
 | `devin` | `bin/devin` | `bin/devin.exe` |
-| `antigravity` | `agy_acp_server.par` + file `harness` = `localharness_external` | `agy_acp_server.exe`, `localharness_external.exe` |
+| `antigravity` | `antigravity` | `antigravity.exe` |
 | `pi` | directory `node_modules/@earendil-works/pi-coding-agent` + files `module` = `dist/index.js`, `cli` = `dist/bundle/cli.js` | same |
 | `cursor-cli` | `node` (Cursor's bundled Node) + file `script` = `index.js` | `node.exe` |
 | `node` | `bin/node` | `node.exe` |
@@ -336,7 +335,7 @@ profile — 650 MB must never roam.
 ```
 
 Vendor pins use a cache directory name of their own (`devin-<target>`,
-`qwen-code-<target>`, `antigravity-acp-<target>`, …), not an npm package name.
+`qwen-code-<target>`, `antigravity-cli-<target>`, …), not an npm package name.
 
 `.install-complete` (`TOOL_INSTALL_SENTINEL`) is written as the last step of an
 install and contains the tool name, package, version, target, integrity (or
@@ -517,7 +516,8 @@ Every place that starts a pinned copy applies `shared/pinnedToolSpawnEnv.ts`:
 | `qwen` | `QWEN_CODE_SKIP_UPDATE_CHECK_ONCE=true`, plus `general.enableAutoUpdate: false` in ADE's own system-defaults file (`QWEN_CODE_SYSTEM_DEFAULTS_PATH`, `qwenSkillDefaults.ts`); the user's `~/.qwen/settings.json` is never written |
 | `pi` | `PI_SKIP_VERSION_CHECK=1` |
 | `cursor-cli` | `--disable-auto-update` (no env var; its updater would relink the user's `~/.local/bin/cursor-agent`) |
-| `devin`, `antigravity`, `muse` | none found; their updaters do not touch ADE's layout |
+| `antigravity` | `AGY_CLI_DISABLE_AUTO_UPDATE=1` |
+| `devin`, `muse` | none found; their updaters do not touch ADE's layout |
 
 ### Claude fall-forward
 
@@ -697,7 +697,7 @@ or reports the download.
 
 Downloads happen only on demand. Neither the brain nor the desktop app
 downloads every pinned tool at launch: every pin together is well over a
-gigabyte (Antigravity alone unpacks to about 1 GB on Linux).
+gigabyte.
 
 ### Which tools a machine fetches
 
@@ -1111,7 +1111,7 @@ needs only Node built-ins (plus the `npm` CLI for Pi's tree); no `npm ci`.
 | `qwen` | newest non-prerelease `v<x.y.z>` GitHub release (GitHub's "latest" points at an SDK tag) | `SHA256SUMS`, cross-checked with GitHub asset digests |
 | `kimi` | newest `@moonshot-ai/kimi-code@<x.y.z>` GitHub release | `.sha256` sidecars, cross-checked with GitHub asset digests |
 | `devin` | `static.devin.ai/cli/current/manifest.json` | `static.devin.ai/cli/<v>/manifest.json` + HEAD size |
-| `antigravity` | the ACP registry's `antigravity-acp/agent.json` | downloads every target and hashes it (~1 GB) |
+| `antigravity` | GitHub releases of `google-antigravity/antigravity-cli` | GitHub asset digests, each checked against a full download |
 | `pi` | npm latest | `npm install --package-lock-only --ignore-scripts` in a scratch dir, every tarball downloaded once to measure and verify its sha512 |
 | `copilot-cli` | npm `@github/copilot` latest | npm version manifest |
 | `cursor-cli` | the build named in `https://cursor.com/install` | downloads every target and hashes it (~0.8 GB) |

@@ -11,7 +11,8 @@ export type ExternalSessionProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "antigravity";
 
 /** Every provider the importer knows, in display order. */
 export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
@@ -26,6 +27,7 @@ export const EXTERNAL_SESSION_PROVIDERS: readonly ExternalSessionProvider[] = [
   "kimi",
   "grok",
   "copilot",
+  "antigravity",
 ];
 
 export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, string> = {
@@ -40,6 +42,7 @@ export const EXTERNAL_SESSION_PROVIDER_LABELS: Record<ExternalSessionProvider, s
   kimi: "Kimi",
   grok: "Grok",
   copilot: "Copilot",
+  antigravity: "Antigravity",
 };
 
 export function isExternalSessionProvider(value: unknown): value is ExternalSessionProvider {
@@ -159,6 +162,15 @@ export const EXTERNAL_SESSION_PROVIDER_CAPABILITIES: Record<ExternalSessionProvi
     fork: false,
     forkIntoDifferentCwd: false,
     importToChat: true,
+  },
+  // `agy --conversation <id>` reopens a conversation in its own folder; agy
+  // has no fork.
+  antigravity: {
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: false,
+    forkIntoDifferentCwd: false,
+    importToChat: false,
   },
 };
 

@@ -1,3 +1,7 @@
+import type {
+  BuiltInBrowserRemoteInputEvent,
+  BuiltInBrowserRemoteTabFrame,
+} from "../../../../desktop/src/shared/types/builtInBrowser";
 import type { BuiltInBrowserService } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import type { BuiltInBrowserRemoteCallMethod } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
 import {
@@ -240,6 +244,9 @@ export type BuiltInBrowserDesktopBridgeClient = {
   getStatusForRuntime: () => Promise<BuiltInBrowserRuntimeStatus>;
   listTabsForAgent: (input: Record<string, unknown>) => Promise<BridgeReturn<"getStatus"> | null>;
   releaseLaneTabs: (input: { laneId: string }) => Promise<{ released: number }>;
+  chatBrowserLifecycle: (input: { chatSessionId: string; state: BuiltInBrowserChatLifecycleState }) => Promise<{ tabs: number }>;
+  captureTabFrameForRuntime: (input: { tabId: string; maxWidth: number | null }) => Promise<BuiltInBrowserRemoteTabFrame | null>;
+  sendTabInputForRuntime: (input: { tabId: string; event: BuiltInBrowserRemoteInputEvent }) => Promise<{ ok: boolean }>;
   acknowledgeRemoteRequest: (
     input: BuiltInBrowserAcknowledgeRemoteRequestArgs,
   ) => { ok: boolean };
@@ -261,10 +268,31 @@ export const BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD = "listTabsForAgent";
  */
 export const BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD = "releaseLaneTabs";
 
+/** Where a chat is in its life, for its agent tabs' auto-close. */
+export type BuiltInBrowserChatLifecycleState = "running" | "idle" | "ended";
+
+/**
+ * A chat started a turn, went idle, or ended: its agent tabs keep running,
+ * start their 15-minute countdown, or close. Called by the brain's chat
+ * service only, so it is bridge-served and never an agent command.
+ */
+export const BUILT_IN_BROWSER_CHAT_LIFECYCLE_METHOD = "chatBrowserLifecycle";
+
+/**
+ * A tab's newest frame and a person's input into it, for someone watching
+ * from another machine or the phone. Called by the brain's `work_tools`
+ * service only (user clients), so both are bridge-served, never agent commands.
+ */
+export const BUILT_IN_BROWSER_CAPTURE_TAB_FRAME_METHOD = "captureTabFrameForRuntime";
+export const BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD = "sendTabInputForRuntime";
+
 const BUILT_IN_BROWSER_BRIDGE_SERVED_METHODS = new Set<string>([
   BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
   BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD,
   BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD,
+  BUILT_IN_BROWSER_CHAT_LIFECYCLE_METHOD,
+  BUILT_IN_BROWSER_CAPTURE_TAB_FRAME_METHOD,
+  BUILT_IN_BROWSER_SEND_TAB_INPUT_METHOD,
 ]);
 
 /**

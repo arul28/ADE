@@ -10,6 +10,7 @@ import {
   type ChatLaunchLocalRecord,
 } from "../../../state/chatLaunchStore";
 import { ipcErrorMessage } from "../../../lib/format";
+import { requirePin } from "../../../lib/requirePin";
 import { confirmDialog } from "../../ui/dialog/confirm";
 import { startChatLaunch, type StartChatLaunchOutcome } from "./chatLaunchActions";
 
@@ -94,6 +95,8 @@ export function adeCloudCapacityProblem(account: CloudAccountState | null, count
  */
 export async function adeCloudStartBranchReady(
   laneConfig: ChatLaunchLaneConfig | null,
+  /** The copy whose branch was picked. Null: no computer with the project is online. */
+  pin: OpenProjectBinding | null,
 ): Promise<{ go: true } | { go: false; error: string | null }> {
   if (!laneConfig) return { go: true };
   const args: CloudStartBranchArgs | null = laneConfig.mode === "existing"
@@ -102,7 +105,8 @@ export async function adeCloudStartBranchReady(
   const lanes = window.ade?.lanes;
   if (!args || !lanes?.cloudStartBranch || !lanes.pushCloudStartBranch) return { go: true };
   try {
-    const check = await lanes.cloudStartBranch(args);
+    const branchPin = requirePin(pin);
+    const check = await lanes.cloudStartBranch(args, branchPin);
     if (!check.push || !check.branch) return { go: true };
     const why = check.onRemote
       ? `${check.unpushedCommits === 1 ? "1 commit" : `${check.unpushedCommits} commits`} on ${check.branch} aren't on GitHub yet.`
@@ -113,7 +117,7 @@ export async function adeCloudStartBranchReady(
       confirmLabel: "Push and start",
     });
     if (!push) return { go: false, error: null };
-    const after = await lanes.pushCloudStartBranch(args);
+    const after = await lanes.pushCloudStartBranch(args, branchPin);
     return after.push
       ? { go: false, error: `${check.branch} still isn't on GitHub. Push it, then send again.` }
       : { go: true };

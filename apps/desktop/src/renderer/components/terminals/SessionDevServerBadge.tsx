@@ -10,6 +10,7 @@ import { MENU_LABEL_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { cn } from "../ui/cn";
 import { workToolDefinition } from "./workTools";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { requireChatPin } from "../chat/chatMachinePin";
 
 /** `localhost:5173`, the way every surface names a dev server. */
 export function devServerLabel(server: Pick<DevServerRecord, "url" | "port">): string {
@@ -73,7 +74,7 @@ export function SessionDevServerBadge({
     try {
       const result = await stopDevServer(
         { chatSessionId: sessionId, port: server.port, laneId: server.source.laneId },
-        pinRef.current,
+        requireChatPin(pinRef.current),
       );
       if (result.ok) {
         showToast({

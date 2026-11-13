@@ -56,6 +56,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | Metric | Before #1560 | Baseline | Ceiling |
 |---|---|---|---|
 | Static tabs (Lanes, CTO, History, Settings, Automations, Chats): main-thread work | 3–18 ms/s | 3–26 ms/s | 30 ms/s |
+| CTO, Automations, History and the command palette after every call names its machine (account repository tabs): idle main-thread work, freeze on opening, palette search | — | idle CTO 0.3–0.7 ms/s, Automations 0.6–3.1 ms/s (one sample 9.2), History 0.4–3.3 ms/s; base in the same session 0.3–0.6, 0.6–0.8 and 0.4–0.7 ms/s; no long task on opening any of the three; History 1.8k elements; palette open plus a "PONG" search (5.5 s) 228–307 ms main-thread work with one 82–114 ms long task, median 86 ms (base 260–291 ms, 82–90 ms) (`route-sweep.mjs`, `render-count.mjs`, Mac Studio M4 Max dev build, 2026-11-12, branch `ade/account-desktop-b3-cto` at `cd39d5d3f` against base `ffcee3670`, load average ~10 from other agents, not the baseline machine) | 30 ms/s; 100 ms |
 | Work with a chat streaming: main-thread work | — | 39–43 ms/s, 36–40 style recalcs/s | 60 ms/s |
 | Work, idle Claude chat with mod UI on screen (dock with the band of three mods, 116 elements): main-thread work | — | 11–17 ms/s; 10–15 ms/s with the setting off, which is the default (Mac Studio M4 Max, 2026-10-12, not the baseline machine) | 30 ms/s |
 | Settings, nothing animating: frames drawn | — | 0/s | 0/s |
@@ -67,7 +68,7 @@ Measured with `route-sweep.mjs` (idle phase), `gpu-trace.mjs`, and
 | PRs with running checks (3 spinners): frames drawn | 63/s | 30/s | 40/s |
 | PRs with running checks: GPU swap time | 118 ms/s | 57 ms/s | 80 ms/s |
 | Chat list cards: re-renders | ~15/s | 0 | 0 |
-| Top bar: re-renders | 28 per 15 s | 1–4 per 15 s | 5 per 15 s |
+| Top bar: re-renders | 28 per 15 s | 1–4 per 15 s (1 per 15 s on `ade/account-desktop-b3-cto`, 2026-11-12, same as its base) | 5 per 15 s |
 | Work area: re-renders | 30 per 12 s | 2 per 12 s | 5 per 12 s |
 | React commits on Work while a chat streams | — | 5.3/s | 10/s |
 
@@ -207,6 +208,7 @@ Run without the app (`scripts/perf/service/`).
 | Settings › MCP servers: scan of the provider CLI configs (169 KB `~/.claude.json`, 17 KB Codex `config.toml`; runs in Electron main, twice per page open) | one-off `tsx` loop over `scanProviderMcpConfigs`, 20 runs (no bench file yet) | — | 4–6 ms, 18 ms cold | 25 ms |
 | MCP App: file one app with the chat (218 KB page, its record, and the prune of a 40-app chat; `mcpAppStore.write`, runs in the brain once per tool call that has a page) | one-off `tsx` loop, 60 runs (no bench file yet) | — | 0.9–1.7 ms; reading one back 0.1 ms | 10 ms |
 | MCP App: tool result to transcript card (list lookup, `resources/read` through the live session, file, emit), 6 KB page | timestamps of the `tool_result` and `ade_card` events in a dev-brain transcript, Claude ×4 and Codex ×2 | — | 2–10 ms (Claude, first call of a session reads the tool list); 2 ms (Codex) | 100 ms |
+| Antigravity session logs (agy 1.5 SQLite, `antigravitySessionLog.ts`): the import list of agy conversations (`discoverAntigravitySessions`, limit 200), and the background watcher's reads (idle tick: two `stat` calls every 2 s while a subagent, background tool or held tool is open; a read after a change; the read at each turn's end; one preview page) | one-off bundle of the real modules run with ADE.app's Electron as Node over 252 real agy 1.4.7 logs; MacBook Pro M3 Pro, 18 GB, load average ~4, 2026-11-12, branch `ade/antigravity-agy-cli` (not the baseline machine) | list: 560-605 ms cold, longest event-loop block 86 ms; 247 ms warm (every open read every log twice) | list: 250-440 ms cold, longest block 22-32 ms (yields every 10 reads); 1.8-2.1 ms warm (each log's read and record kept while its mtime and size hold). Watcher: idle tick 2.8 µs; read after a change 0.35 ms median, 1.1 ms max; turn-end read 0.37 ms median, 2.8 ms max; preview page 0.41 ms median, 2.4 ms max | list warm 10 ms, cold block 50 ms (approved by the owner 2026-11-12) |
 | Chat search across 37 registered projects (2,000 chat docs each, every doc a hit) | `search-fanout.bench.mts` | not from #1560: until 2026-10-13 the search loaded every project and blocked the brain past its 30 s watchdog | 325–341 ms, longest event-loop block 10 ms | 800 ms, block 50 ms |
 | Apple stream relay, one viewer, 2.5 Mb/s 60 fps stream, second half of a 30 s run: delay from the relay's send to the viewer (p50 / p90 / p99), frames delivered per second, and delta frames delivered ahead of a keyframe (checked by sequence number). 1 Mb/s 40 ms link, plus a fast Wi-Fi link that stalls 250 ms every 2 s | `apple-stream-pacing.bench.mts` | not paced (no acks, as before): 1 Mb/s 34.9 s / 43.9 s / 45.8 s, still growing; Wi-Fi stalls 9 / 70 / 239 ms, 57 fps | paced (the viewer acks): 1 Mb/s 52 / 73 / 240 ms, 58 fps, cap 2500 → 540–675 kb/s; Wi-Fi stalls 8 / 43 / 236 ms, 60 fps, 2 frames skipped; 0 undecodable throughout (also 600 kb/s 120 ms: 133 / 319 / 392 ms; 5 Mb/s 20 ms: 30 / 31 / 162 ms, no skips) | proposed, needs approval: p50 100 ms, p90 350 ms, ≥ 50 fps, 0 undecodable |
 | Apple pane, 3D view of an iPhone Duo (inner display, 2007×2853 frame), the simulator scrolling continuously (an agent drag every ~0.5 s), 20 s average: dev Electron renderer / GPU process CPU. The screen texture now follows the pane's size up to 1,600 px on its long side (was a fixed 512 wide, soft on Retina and in renders) | `ps` sampling (`%cpu` of the worktree's `--type=renderer` and `--type=gpu-process`), same window, same pane size, back to back; the chat UI was live in both runs (idle reads 24–28% / 50–61%) | 512: 36.6% / 64.4% | 1,600: 45.0% / 75.1% (Mac Studio M4 Max dev build, 2026-10-22, not the baseline machine) | not set yet; needs approval |
@@ -859,6 +861,92 @@ interleaved A/B on this same machine under load; compare like conditions.
 The zero-baseline long-task row has a small absolute ceiling rather than a
 percentage margin; hidden-tab reads have a strict zero ceiling. These rows do
 not change any desktop ceiling.
+
+### Signed-out rows on the Mac Studio, 2026-11-12
+
+A second machine (Mac Studio M4 Max, 36 GB, Chrome 155, load average 7–13
+from other agents), so these do not replace the PR #1561 baselines above.
+`npm run bench:webclient -- --skip-chat --runs 3` (one run for the bisect
+points), medians. The ceilings stay as they are.
+
+| Metric | Before Sentry (`8298e50a8~1`) | main `1896ab16b` | Joined branch `99be2796f` | `ade/account-web-cli-links` `75461a9ff` | Ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Requests | 53 | 74 | 94 | 67 | 60 |
+| Transfer (KB) | 816 | 1,607 | 2,799 | 1,496 | 2,000 |
+| JS (KB) | 598 | 1,358 | 1,655 | 1,252 | 950 |
+| Images (KB) | 79 | 82 | 975 | 82 | 100 |
+| Heap after GC (MB) | 2.5 | 3.7 | 4.6 | 3.6 | 3.5 |
+| Gate visible (ms) | 89 | 110 | 233 | 88 | 190 |
+| Long-task total (ms) | 0 | 0 | 0 | 0 | 10 |
+
+Where the growth came from (bisected on main's first-parent history):
+
+- #1612 (`8298e50a8`, Sentry on every surface): +449 KB JS, +4 requests. The
+  Sentry chunk loads after the first paint, but inside the bench's window.
+  Still over: it needs an owner decision (load it later, or a new ceiling
+  with a recorded reason).
+- #1951 (`24fe8f57c`, notices): +7 requests, +105 KB JS. The sign-in card
+  imported the whole notice system for its error banner. Fixed on
+  `ade/account-web-cli-links`: the banner loads only when an error shows.
+- #2059 (`3d10a29f6`) and #2159 (`d5ad85b1a`): +90 KB and +34 KB JS. The
+  settings manifest imports the full MCP catalogue (134 KB of source) to add
+  one search entry per server, and `webclient/shell/webRoutes.ts` imports
+  the manifest for `settingsRouteFor`. Still over: the fix is a small
+  id/name/publisher index for the manifest, kept with the catalogue.
+- The joined account-projects branch: +20 requests, +893 KB images, +297 KB
+  JS. The web shell imported `requirePin` through `state/repositoryScope`,
+  which pulled in the app store and its 842 KB scene image. Fixed on
+  `ade/account-web-cli-links` (import from `lib/requirePin`).
+
+Measured again after the rebase (same script, `--runs 3`, load average
+4–6):
+
+| Metric | main `aa55f74a6` | Joined branch (PR #2205) `96682f195` | `ade/account-web-cli-links` `502572197` | Ceiling |
+| --- | ---: | ---: | ---: | ---: |
+| Requests | 74 | 96 | 67 | 60 |
+| Transfer (KB) | 1,607 | 2,475 | 1,498 | 2,000 |
+| JS (KB) | 1,358 | 1,663 | 1,253 | 950 |
+| Images (KB) | 82 | 642 | 82 | 100 |
+| Heap after GC (MB) | 3.7 | 4.6 | 3.6 | 3.5 |
+| Gate visible (ms) | 91 | 122 | 100 | 190 |
+
+The rows still over on the branch (requests, JS, heap) are over by more on
+main. The Sentry chunk alone is 445 KB of the branch's 1,253 KB JS; without
+it, JS is about 808 KB, under the ceiling. The settings manifest chunk is
+166 KB.
+
+Measured again with three more fixes on `ade/account-web-cli-links` (same
+script, `--runs 3` for the last column, load average 94–150 from other
+agents, so the gate times are noise; the counts and bytes are not):
+
+| Metric | PR #2205 alone `96682f195` | `502572197` | `5d6daedc5` | With the Sentry session fix | Ceiling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Requests | 96 | 67 | 61 | 60 | 60 |
+| Transfer (KB) | 2,475 | 1,498 | 1,318 | 1,318 | 2,000 |
+| JS (KB) | 1,663 | 1,253 | 1,084 | 1,084 | 950 |
+| Images (KB) | 642 | 82 | 71 | 71 | 100 |
+| Heap after GC (MB) | 4.6 | 3.6 | 3.3 | 3.3 | 3.5 |
+| Gate visible (ms) | 122 | 100 | 301 | 190 | 190 |
+
+What each commit removed from PR #2205's 96 requests:
+
+- `d2eba4d89`: the app store and its scene image (through `requirePin`), and
+  the notice system on the sign-in card.
+- `d9385e5b8`: the account list code loads only for a read or a link.
+- `4445438e7` (67 → 63): the settings manifest and the MCP catalogue. The
+  target-to-route map moved to `webTargetPaths.ts`, which only a signed-in
+  boot loads.
+- `5d6daedc5` (63 → 61): an empty icon link. The browser asked for
+  `/favicon.ico` twice, and the SPA fallback sent the page each time.
+- The Sentry session fix (61 → 60): the last request over the ceiling was a
+  Sentry session envelope (release health, sent when the page goes idle).
+  The session now starts with the signed-in workspace. Errors still report
+  from the signed-out page: a thrown error sent an `event` envelope in a
+  headless check with every Sentry request blocked.
+
+Still over: JS (1,084 KB, ceiling 950). The Sentry SDK chunk is 445 KB of it
+and loads at idle, so errors before sign-in still report. Without it, JS is
+about 640 KB. Requests and heap are now at or under their ceilings.
 
 ## Mac Studio (M4 Max), ADE-175 pass
 
@@ -2963,3 +3051,198 @@ move from Work to Lanes, from a perf run, 3 runs. The chat row is
 B2 adds an optional `pin` to each member. A call with no pin takes the same
 route as before, so the counts do not move. The total time of the Lanes calls
 follows the GitHub PR calls, which vary from run to run.
+
+### Repository tabs (S4, 2026-11-12)
+
+Dev app on `ade/account-desktop-b4-repository-tabs` against the B2 head
+`73d327cf4`, checked out over the same tree. Same Mac (Mac Studio M4 Max),
+same steps for both: `--first-run --keep`, the account brain on its own
+socket, two local project tabs (a clone of ADE and a small repo with no
+origin), the test machine stopped, nothing streaming. Load average 15–80 for
+both runs. A first pair that ran at load 390 is not used.
+
+| Row | Before (B2) | After (S4) | Ceiling |
+| --- | --- | --- | --- |
+| Project tab switch, warm (`interaction.mjs projects 4`): first frame median / settled median / worst long frame | 36 / 145 ms / 0 ms | 34 / 82 ms / 0 ms | 60 ms first frame |
+| Project tab switch, press to content (`press-to-paint.mjs projects 4`): median / settled median | 35 / 133 ms | 35 / 111 ms | — |
+| Process start to first window, warm (`desktop-main-start.mjs --mode warm --runs 7`), median | 586 ms (sd 11) | 582 ms (sd 21) | not set |
+| Window reload to both project tabs painted (scratch probe, 3 runs), median | 407 ms | 425 ms | — |
+| Home: "+" to the first Projects row (scratch probe, 8 runs), median | 34 ms, no long task | 36 ms (second batch; first batch 46 ms right after a reload), long tasks 0–58 ms in 2 of 16 runs | — |
+| Renderer JS heap after GC, two tabs idle | 221 MB | 215–222 MB | — |
+
+S4 adds no timer and no poll. The account project list is one read at start
+and on window focus (at most one in 15 s); it reads a file in the brain and
+makes no server call. Home reads this computer's machine key once per app
+session, and only when the account's list is loaded. A repository with copies
+on two machines now keeps one open copy instead of two tabs, so a window with
+such a repository mounts one project surface less.
+
+### Settings pages read one picked copy (B3 Settings, 2026-11-12)
+
+Dev app on `ade/account-desktop-b3-settings` against the preload pass
+`ffcee3670` (its renderer checked out over the same tree in the same run, so
+both passes share the app, the brain and the load). Same Mac (Mac Studio M4
+Max), `--first-run --keep`, the account brain on its own socket, the dev test
+machine "tabs" connected, one local project tab whose repository also has a
+copy on "tabs", nothing streaming. Each page was visited once before the
+pass. `route-sweep.mjs` with 20 s idle, no perf run.
+
+| Row | Before (`ffcee3670`) | After (B3) | Ceiling |
+| --- | --- | --- | --- |
+| Settings › Providers, idle: main-thread work / page elements / renderer heap | 1.6 ms/s / 768 / 115 MB | 1.0 ms/s / 768 / 115 MB | 30 ms/s; 3k / 220 MB |
+| Settings › General, idle | 0.7 ms/s / 647 / 118 MB | 0.5 ms/s / 647 / 117 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Lanes, idle | 1.1 ms/s / 526 / 119 MB | 0.8 ms/s / 530 / 120 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Storage & cleanup, idle | 0.8 ms/s / 666 / 109 MB | 1.0 ms/s / 670 / 121 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Location, idle | 1.0 ms/s / 552 / 110 MB | 0.5 ms/s / 556 / 122 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Project › Secrets, idle | 0.6 ms/s / 516 / 111 MB | 0.6 ms/s / 520 / 112 MB | 30 ms/s; 3k / 220 MB |
+| Settings › Integrations, idle | 0.7 ms/s / 2,415 / 112 MB | 0.7 ms/s / 2,419 / 117 MB | 30 ms/s; 3k / 220 MB |
+| Navigation long tasks (all seven pages) | 0 ms | 0 ms | 100 ms |
+| IPC per minute, idle (all seven pages) | 0 | 0 | — |
+
+A project page adds the line that names its copy (4 elements). The heap
+readings move by up to 12 MB in both directions between pages and passes;
+that is garbage-collection timing, not a held structure. An earlier pass in
+the same session with a remote tab also open read 8–12 ms/s before and
+0.6–3.6 ms/s after, from load by other agents on the Mac; the pair above is
+the comparison.
+
+### Files and device tools name their copy (B3 files, 2026-11-12)
+
+Branch `ade/account-desktop-b3-files` at `52123c331` against the B2 head
+`ffcee3670` (checked out over the same tree, Vite HMR, page reloaded). Same
+Mac (Mac Studio M4 Max), load average 4–6 from other agents. No perf run.
+Each idle window is 20 s after a 6 s settle; main-thread work is
+`TaskDuration` from `Performance.getMetrics`. One warm-up, then 3 runs.
+
+Dev app: `--first-run --keep`, the account brain on its own socket, the dev
+test machine "tabs" connected, one local project tab with the same
+repository on both machines. The Files route is `route-sweep.mjs none
+/work,/files 8`. The tool rows open each tool card in the Tools pane of a
+local chat (no device running: the Android setup card, the Apple device
+list).
+
+| Row | Before (B2) | After (B3) | Ceiling |
+| --- | --- | --- | --- |
+| Files page idle: main-thread work / heap / elements | 0.8–4.1 ms/s / 122–126 MB / 1,101 | 0.9–1.9 ms/s / 117–125 MB / 1,101 | 30 ms/s, 220 MB, 3k |
+| Files page: long tasks on the move from Work | 0 ms | 0 ms | 100 ms |
+| Tools pane, Files tool: main-thread work / heap / elements | 1.2–1.4 ms/s / 129–137 MB / 1,237 | 1.1–1.5 ms/s / 126–133 MB / 1,237 | 30 ms/s, 220 MB, 3k |
+| Tools pane, Android tool (setup card) | 1.2–1.4 ms/s / 128–134 MB / 1,012 | 1.3–2.2 ms/s (median 1.3) / 124–129 MB / 1,012 | 30 ms/s, 220 MB, 3k |
+| Tools pane, Apple tool (no device) | 1.9–2.2 ms/s / 129–135 MB / 1,226 | 1.5–3.2 ms/s (median 2.1) / 126–132 MB / 1,226 | 30 ms/s, 220 MB, 3k |
+
+Browser mock (the setup of the 2026-11-03 tools pane section, Vite at the
+two commits, headless Chrome 155, 1600×1000). The calls are the same in
+count before and after; after, each one carries a pin.
+
+| Row | Before (B2) | After (B3) | Ceiling |
+| --- | --- | --- | --- |
+| Git tool idle: main-thread work / heap | 2.4–6.3 ms/s / 109 MB | 2.4–2.6 ms/s / 109 MB | 30 ms/s, 220 MB |
+| Files tool idle: main-thread work / heap / elements | 2.4–6.6 ms/s / 109 MB / 861 | 2.9–5.2 ms/s / 109 MB / 861 | 30 ms/s, 220 MB, 3k |
+| Android live (flat): main-thread work / heap / elements | 28.1–32.2 ms/s / 112–113 MB / 872 | 26.4–27.0 ms/s / 112–113 MB / 872 | none set for a live device |
+| Android tool open: device calls | `getStreamStatus` ×8, `onEvent` ×3, one each of `startStream`, `resolveStreamUrl`, `recordList`, `getStatus`, `getDeviceSettings` | the same | — |
+| Files tool open: file calls | one each of `listTree`, `refreshGitDecorations`, `listWorkspaces`, `onChange`, `watchChanges` | the same | — |
+
+`file-index.bench.mts` (no service change): build 111–140 ms, lookup
+0.9–6.6 ms (rows above: 500 ms and 50 ms ceilings).
+
+The change adds no call, effect or timer. A pin equal to the tab's binding
+takes the same route as no pin (B2), so the numbers stay inside the noise.
+
+### Work calls name their machine (B3 Work, 2026-11-12)
+
+Dev app on `ade/account-desktop-b3-work` (`08ae07477`). The "before" is the
+B2 head `ffcee3670`: its renderer was checked out over the same tree and the
+page reloaded, so both sides ran in the same app session. Same Mac (Mac Studio
+M4 Max), `--first-run --keep`, the account brain on its own socket, the dev
+test machine "tabs" connected, one local project tab, nothing streaming. The
+chat row compares with the B2 run of the same script on the same steps.
+
+| Row | Before | After (B3 Work) | Ceiling |
+| --- | --- | --- | --- |
+| Work chat switch, warm, 2 machines: first changed frame median / settled median / worst long frame | 32 / 144 ms / 0 ms (B2) | 37 / 145 ms / 0 ms | 60 ms first frame |
+| Switching to a chat: time until settled / longest task (`chat-switch.mjs 3`, chat rows) | — | 14–48 ms / 0 ms | 250 ms / 120 ms |
+| Model picker: open to first frame, warm / long frames (`interaction.mjs pickers 4`) | 32 ms / 0 ms | 25 ms / 0 ms | 110 ms / 85 ms |
+| Idle, 2 machines, Work open: runtime event IPC per minute (60 s, after a reload) | 103, 104 (local 79, remote 24–25) | 105 (local 79, remote 26) | 150 (proposed) |
+
+`chat-switch.mjs` waits up to 4 s for a chat timeline, so the two shell rows
+in the list read 4,000 ms; they are left out. One idle window taken after
+manual tests on three tabs (two closed just before) read 140 per minute. The
+same build read 105 after a reload, so that window does not count. The DOM
+node count of the chat row drops from about 900 to about 800 per chat.
+
+### Tab restore and project flows (S5 restore, S13a/b/c, 2026-11-12)
+
+Dev app on `ade/account-desktop-b5-project-flows` (holds the b4 restore
+commits) against the S4 head `75fe3617e`, checked out over the same tree.
+Same Mac (Mac Studio M4 Max), `--first-run --keep --home`, the account brain
+on its own socket, the dev test machine "tabs" connected, four tabs (two
+local, one repository with copies on two computers, one remote), nothing
+streaming. Load average 6–12 from other agents. The Location and remove rows
+are new surfaces, so they have no "before".
+
+| Row | Before (S4) | After (b5) | Ceiling |
+| --- | --- | --- | --- |
+| Process start to first window, warm (`desktop-main-start.mjs --mode warm --runs 7`), median | 569 ms (sd 42) | 581 ms (sd 19) | not set |
+| Settings › Location from Work to the Copies rows painted (scratch probe, 7 runs), median / worst long task | — | 23 ms / 0 ms | — |
+| Remove window: request to the scope choices painted (scratch probe, 7 runs), median / worst long task | — | 18 ms / 0 ms | — |
+
+The restore adds two IPC handlers and one state key, and no timer or poll.
+The renderer sends the tab strip only when its JSON changes. The Location
+copies read this computer's project list on mount, on window focus, and
+after a removal or a finished copy in the same window; no poll. The
+account add and remove are one server call each, on a press.
+
+### The tab has no machine: the joined desktop branch (join, 2026-11-12)
+
+Dev app on `ade/account-desktop-pages` at `7976f7002` (the eight desktop
+branches joined, `origin/main` merged once, the direct GitHub reader added)
+against the B2 head `237027ca8`, checked out over the same tree. Same Mac (Mac
+Studio M4 Max), `--first-run --keep`, the account brain on its own socket, the
+dev test machine "tabs" connected, nothing streaming, one reload before each
+idle window. The sweep fixes made after these numbers add no timer, poll or
+subscription (one more `useActiveStartOn` read on the Work draft, and one
+cross-machine re-read after a bulk settle).
+
+| Row | Before (B2) | After (join) | Ceiling |
+| --- | --- | --- | --- |
+| Process start to first window, warm, median | 593 ms | 557 ms | not set |
+| Lanes open: IPC calls in the first window (3 runs) | 44 / 39 / 39 | 41 / 35 / 35 | — |
+| PRs open: IPC calls in the first window (3 runs) | 27 / 24 / 22 | 30 / 25 / 24 | — |
+| Idle `pr.getGithubSnapshot` calls, Work / PRs open (60 s) | — | 0 / 0 | 0 |
+| Idle runtime events per minute, Work open | 91 | 104 | 150 (proposed) |
+| Idle runtime events per minute, Lanes open | 98 | 116 | 150 (proposed) |
+| Static tabs idle, renderer main thread | — | 0.8–5.6 ms/s | — |
+| Tab switch median, first changed frame / settled | 26 / 88 ms | 19.9 / 58 ms | — |
+| Work chat switch, warm, first changed frame / settled median | 37.9 / 147 ms | 32.7 / 144 ms | 60 ms first frame |
+| Home "+" to the add window painted, median | 34 ms | 39 ms | — |
+| Reload to the tab painted | 436 ms | 419 ms | — |
+
+No row is more than 25% worse or over a ceiling. The two event rows rise
+by 14% and 18%; both stay under 150. Automations reads 4.8–5.6 ms/s idle
+against 2.9 before. A 30 s CPU profile shows about 0.3 ms/s of JavaScript and
+1.2 ms/s of garbage collection, which is noise. Its extra renders come from
+`crossMachineLanesByMachineId`: `mergeCrossMachineLanes` stores a new
+`lastSyncedAtMs` about every 10 s per other machine, and the B2 head does the
+same. The PRs row of the tab switch has one 52 ms long frame with 1,959 nodes
+against 1,671 before; the ADE repository has more open pull requests now.
+AppShell renders about 9 times in 30 s idle against 0–2 before; the cause is
+not found, and it is not `useTabCopyPin` or `useActiveRepositoryReader`
+(replacing both did not change the count).
+
+### Built-in browser: Chrome identity, notice layer, tab lifecycle (2026-11-12)
+
+Dev app on `ade/browser-overhaul` (on `cd5876050`), Mac Studio (Mac16,9, M4 Max),
+not the baseline machine; sync off, nothing streaming, the Browser top tab with
+one page. Other agents and dev apps were running on the Mac, so differences
+under about 20% are noise.
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| Page load, 400 requests to a local page, cache off, median of 8 (two sets): the Chrome-identity header hook on every tab request (`builtInBrowserChromeIdentity.ts`) | hook off (same tree, hook commented out): 329 ms, 254 ms; Electron main 3.0 s CPU over 9 loads | hook on: 287 ms, 353 ms; Electron main 2.5 s CPU over 9 loads | no measurable change |
+| Corner cards drawn in the notice layer over a live page (`noticeLayer.ts`), 15 s idle with one card | no card: main 2.4%, GPU 0.6% / 472 MB footprint, renderer 1.4% | card in the layer: main 2.9%, GPU 0.5% / 476 MB, renderer 0.9%; the layer kept open while hidden holds about 2 MB of JS heap | +10 MB GPU footprint |
+| Browser top tab, idle after load, warm visit (`route-sweep.mjs`) | — (new surface for this table) | 14.4–20.4 ms/s main-thread work, 0 IPC/min, 945 elements, no long task on opening | 30 ms/s |
+
+Not measured: the remote-tab row and viewer (a 5 s `workTools.getLaneState`
+poll while a chat's browser is on another machine, and a frame read every
+250 ms, one in flight, only while someone watches a remote tab) need two
+machines. Sleeping tabs (30 min) and the 320 MB disk-cache cap lower memory and
+disk use over hours; a 15-minute window cannot show them.

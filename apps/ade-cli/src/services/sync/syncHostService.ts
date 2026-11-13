@@ -246,7 +246,7 @@ import {
 import type { LaneShareGuestRole } from "./laneShareGuestPolicy";
 import { type LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import type { LaneShareMoveService } from "./laneShareMoveService";
-import { createLaneShareGuestHost } from "./laneShareGuestHost";
+import { createLaneShareGuestHost, type LaneShareGuestHandoff } from "./laneShareGuestHost";
 import type { LaneShareGrantSource } from "./laneShareGrantService";
 import {
   createRelayAuthorizationLifecycle,
@@ -358,6 +358,7 @@ import {
   type SyncPeerCursorResolution,
 } from "./syncPeerCursorResolution";
 import {
+  detachSocketForHandoff,
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
@@ -1347,6 +1348,14 @@ type SyncHostServiceArgs = {
    * to the listener instead of closing them.
    */
   sharedListener?: SharedSyncListener | null;
+  /**
+   * Lane sharing: a host that serves only guests of this project's shared
+   * lanes, beside the brain's served project (`syncService.adoptLaneShareGuest`).
+   * It never attaches to the shared listener (guests are handed to it), never
+   * publishes discovery or a Tailscale route, runs no changeset pump and no
+   * brain status broadcast, and on dispose closes its guests (they reconnect).
+   */
+  laneShareGuestsOnly?: boolean;
   discoveryEnabled?: boolean;
   runtimeKind?: SyncRuntimeKind;
   runtimeVersion?: string;
@@ -2958,8 +2967,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     lifecycle.initialize(initial);
     peer.relayAuthorization = lifecycle;
   };
-  // Lane sharing: guests. `laneShareGuestHost.ts` owns the guest hello, the
-  // grants and rights of connected guests, and the grant refresh;
+  // The listener that routes a guest on to another project (none for a host without one).
+  const routingListener = args.sharedListener ?? null;
+  // Lane sharing: guests. `laneShareGuestHost.ts` owns the grants and rights
+  // of connected guests and the grant refresh; `laneShareGuestHello.ts` the
+  // guest hello and hand-off;
   // `laneShareGuestGates.ts` owns the gates, all default refuse:
   //   - inbound: `admitLaneShareGuestEnvelope` (queued) and
   //     `admitLaneShareGuestImmediateEnvelope` (top of
@@ -2990,10 +3002,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     requestedProjectChatScope,
     normalizeTerminalInputId,
     buildSyncHostHelloOkPayload,
+    releasePeerForHandoff: (peer) => releasePeerForHandoff(peer as PeerState),
+    ...(routingListener
+      ? { routeLaneShareGuest: (handoff: LaneShareGuestHandoff) => routingListener.routeLaneShareGuest(handoff) }
+      : {}),
   });
   const {
     trackLaneShareTurns,
     handleLaneShareGuestHello,
+    acceptHandedOffLaneShareGuest,
+    laneShareHasPendingGuestWork,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
     laneShareGuestTypedLineStillAllowed,
@@ -3005,6 +3023,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
   } = laneShareGuestHost;
 
@@ -3354,6 +3373,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const sharedListener = args.sharedListener ?? null;
+  // A guests-only host (`syncService.adoptLaneShareGuest`) serves only lane
+  // share guests handed to it. It changes five things, all gated here:
+  // no poll pump wake, no brain status timer, no shared-listener attach, no
+  // tailnet route, and dispose closes its guests ("Sync host changed projects").
+  const guestsOnly = args.laneShareGuestsOnly === true;
   const expectedLoopbackNonce = sharedListener?.getExpectedLoopbackNonce()
     ?? generateLoopbackNonce();
   // Self-owned listener (desktop-embedded / standalone): only created when no
@@ -3667,7 +3691,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * active interval — the same bound the free-running interval gave.
    */
   function wakePollPump(): void {
-    if (disposed) return;
+    // Guests never get changesets: a guests-only host has nothing to pump.
+    if (disposed || guestsOnly) return;
     const intervalMs = pollPumpHasReceivableWork() ? pollIntervalMs : pollIdleIntervalMs;
     if (pollTimer && pollTimerIntervalMs === intervalMs) return;
     if (pollTimer) clearTimeout(pollTimer);
@@ -3758,7 +3783,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (dbVersionError) throw dbVersionError;
   }
-  const brainStatusTimer = setInterval(() => {
+  // Brain status never reaches a guest, so a guests-only host has none to send.
+  const brainStatusTimer = guestsOnly ? null : setInterval(() => {
     broadcastBrainStatus({ periodic: true });
   }, brainStatusIntervalMs);
   const accountLeaseTimer = setInterval(() => {
@@ -3799,6 +3825,46 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!peer.authTimeout) return;
     clearTimeout(peer.authTimeout);
     peer.authTimeout = null;
+  }
+
+  /**
+   * A guest socket moves to another project's host (`LaneShareGuestHandoff`):
+   * this host drops the peer without closing the socket and removes every
+   * listener it put on it, so nothing here acts on the socket again. Only a
+   * peer still in its hello is released; it has no subscription or presence.
+   */
+  function releasePeerForHandoff(peer: PeerState): void {
+    peer.lifecycleGeneration += 1;
+    abortPeerOperations(peer, "Sync peer moved to another project.");
+    clearPeerAuthTimeout(peer);
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
+    peer.envelopeChunks.reset();
+    detachSocketForHandoff(peer.ws);
+    peers.delete(peer);
+    laneShareGuestSocketClosed(peer);
+  }
+
+  /**
+   * A guest socket handed to this host by the brain's router. False when it
+   * closed on the way. The hello runs in the peer's queue, as a frame would.
+   */
+  function adoptLaneShareGuest(handoff: LaneShareGuestHandoff): boolean {
+    if (disposed || handoff.ws.readyState !== WebSocket.OPEN) return false;
+    const peer = registerPeer(handoff.ws, handoff.remoteAddress, handoff.remotePort, handoff.transportOrigin);
+    const negotiatedCompression = negotiateSyncApplicationCompression(handoff.hello.compression);
+    const generation = peer.lifecycleGeneration;
+    peer.messageQueue = peer.messageQueue
+      .then(() => acceptHandedOffLaneShareGuest(peer, handoff, generation, negotiatedCompression))
+      .catch((error) => {
+        args.logger.warn("sync_host.lane_share_guest_adopt_failed", { error: error instanceof Error ? error.message : String(error) });
+        try {
+          peer.ws.close(4003, "Authentication failed");
+        } catch {
+          // ignore close failures
+        }
+      });
+    return true;
   }
 
   function abortPeerOperations(peer: PeerState, reason: string): void {
@@ -4121,9 +4187,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // The previous owner (host service or listener parking) must leave no
       // listeners behind — this host attaches its own message/close/error
       // handlers via registerPeer.
-      ws.removeAllListeners("message");
-      ws.removeAllListeners("close");
-      ws.removeAllListeners("error");
+      detachSocketForHandoff(ws);
       const peer = registerPeer(
         ws,
         sanitizeRemoteAddress(snapshot.remoteAddress),
@@ -4301,7 +4365,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   let detachSharedListener: (() => void) | null = null;
   let detachSharedListenerStatus: (() => void) | null = null;
-  if (sharedListener) {
+  if (sharedListener && !guestsOnly) {
     // The listener re-checks loopback on its own (and moves off a shadowed
     // port). Mirror its verdict so route health and Tailscale publication
     // follow it instead of the last check this host happened to run.
@@ -4808,7 +4872,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
   });
 
-  const unregisterTailnetRoute = registerMachineTailnetRoute({
+  const unregisterTailnetRoute = guestsOnly ? () => {} : registerMachineTailnetRoute({
     tcp: () => ({
       published: tailnetDiscoveryStatus.state === "published",
       error: tailnetDiscoveryStatus.state === "published" ? null : tailnetDiscoveryStatus.error,
@@ -7944,7 +8008,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Lane sharing: its own path end to end. It shares no state with the
       // owner's auth kinds below (no pairing record, no arbitration).
       if (hello.auth?.kind === "guest") {
-        await handleLaneShareGuestHello(peer, envelope, hello, hello.auth, lifecycleGeneration, negotiatedCompression);
+        await handleLaneShareGuestHello(peer, envelope.requestId, hello, hello.auth, lifecycleGeneration, negotiatedCompression);
         return;
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
@@ -9703,7 +9767,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
+    /** A guest socket the brain's router hands to this project (`LaneShareGuestHandoff`). */
+    adoptLaneShareGuest,
+    /**
+     * Whether a guests-only host must stay: an open socket, a guest message
+     * queued behind a turn (its start is checked here), or a move it runs.
+     */
+    laneShareGuestsBusy(): boolean {
+      return peers.size > 0 || laneShareHasPendingGuestWork();
+    },
     /** A move of this grant changed: its guests read their state again. */
     notifyLaneShareGuestState(grantId: string): void {
       notifyLaneShareGuests((role) => role.grantId === grantId);
@@ -9731,7 +9805,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
       clearInterval(heartbeatTimer);
-      clearInterval(brainStatusTimer);
+      if (brainStatusTimer) clearInterval(brainStatusTimer);
       if (ackBrainStatusTimer) clearTimeout(ackBrainStatusTimer);
       ackBrainStatusTimer = null;
       clearInterval(accountLeaseTimer);
@@ -9743,7 +9817,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } catch {
         // Never throw from dispose.
       }
-      if (!server) {
+      if (guestsOnly) {
+        // Only guests, handed to this host: close them with the code a guest
+        // reads as "reconnect", so each lands on its project's host again.
+        for (const peer of peers) {
+          abortPeerOperations(peer, "Sync host stopped.");
+          clearPeerAuthTimeout(peer);
+          try {
+            peer.ws.close(4002, "Sync host changed projects");
+          } catch {
+            // ignore close failures
+          }
+        }
+        peers.clear();
+      } else if (!server) {
         // Shared listener: do NOT close the server or the peer sockets this
         // host does not own. Detach the connection handler and hand every
         // open, authenticated socket back to the listener so the next hosted
@@ -9763,9 +9850,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.relayAuthorization?.dispose();
           peer.relayAuthorization = null;
           peer.envelopeChunks.reset();
-          peer.ws.removeAllListeners("message");
-          peer.ws.removeAllListeners("close");
-          peer.ws.removeAllListeners("error");
+          detachSocketForHandoff(peer.ws);
           // No new terminal input can enter after listener detachment. Drain
           // the dedicated synchronous-input queue before exporting receipts so
           // a write and its dedupe record move to the next host atomically.

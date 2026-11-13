@@ -29,15 +29,20 @@ import type { GithubRepoLookup, GithubRepoLookupResult } from "./githubRepoLooku
  * 1. The heartbeat answer carries the list's cursor. When it differs from the
  *    one held here, read what changed (`GET /account/projects?since=`).
  * 2. Build this machine's copies from the registry: projects the person
- *    opened, with a GitHub origin, in a real folder (not a temp, scratch or
- *    hidden one, not a test registration, not gone).
+ *    opened, with a GitHub origin, not a test registration, not gone, and
+ *    not inside a folder a tool owns (`.git`, `node_modules`, `.ade/worktrees`,
+ *    `.claude/worktrees`, the OS temp folders). A project opened on purpose
+ *    (desktop, phone, `ade` with a path) counts anywhere else, a hidden
+ *    folder such as `~/.config/nvim` too; any other one only in a real folder
+ *    (not a temp, scratch or hidden one).
  * 3. Ask GitHub for the repository id of a few copies whose answer is due.
  * 4. When the copies, or what the account knows about them, changed since the
  *    last publish, send them all in one `PUT /account/projects/copies`, and
  *    write the links (account project id, repository id) on the registry.
  *
  * The first publish for an account is the first fill: projects opened in the
- * last 90 days ask to be added (`add: "auto"`). After it, a copy is recorded
+ * last 90 days ask to be added (`add: "auto"`), except those in a temp,
+ * scratch or hidden folder (no junk on the account). After it, a copy is recorded
  * only when its project is already on the account; a person adds a project
  * explicitly. A dev test machine never adds.
  *
@@ -72,6 +77,12 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_LIST_BODY_BYTES = 8 * 1024 * 1024;
 /** Path segments that mark a scratch folder. */
 const SCRATCH_SEGMENT = /^(tmp|temp|scratch)$/i;
+/** Folders a tool owns, by name. */
+const TOOL_SEGMENTS = new Set([".git", "node_modules"]);
+/** Folders whose `worktrees` folder a tool owns (ADE's and Claude's lane worktrees). */
+const TOOL_WORKTREE_PARENTS = new Set([".ade", ".claude"]);
+/** How a project gets into the registry when a person opens or adds it on purpose. */
+const EXPLICIT_SOURCES = new Set<ProjectRecord["registrationSource"]>(["desktop", "mobile", "cli-explicit"]);
 
 type RepoLookupEntry = {
   status: "found" | "not_found" | "unavailable" | "unsupported";
@@ -225,9 +236,15 @@ export type AccountProjectListRpcResult =
   | { state: "signed_out"; projects: [] }
   /** Signed in, but this machine has not read the account's list yet (or the directory has none). */
   | { state: "not_loaded"; projects: [] }
-  | { state: "ready"; cursor: number; projects: AccountProjectView[] };
+  | {
+    state: "ready";
+    cursor: number;
+    projects: AccountProjectView[];
+    /** Merged and removed ids (additive; older readers ignore it). */
+    retired?: Array<{ id: string; name: string; mergedInto: string | null; removedAt: number | null }>;
+  };
 
-/** The list as this machine last read it, for the signed-in account only. Removed and merged rows are left out. */
+/** The list as this machine last read it, for the signed-in account only. Removed and merged rows are in `retired`, not in `projects`. */
 export function readAccountProjectListForRpc(adeDir: string, accountUserId: string | null): AccountProjectListRpcResult {
   if (!accountUserId) return { state: "signed_out", projects: [] };
   const state = readAccountProjectState(adeDir);
@@ -235,7 +252,12 @@ export function readAccountProjectListForRpc(adeDir: string, accountUserId: stri
   const projects = Object.values(state.projects)
     .filter((project) => project.removedAt === null && project.mergedInto === null)
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
-  return { state: "ready", cursor: state.cursor, projects };
+  // Merged and removed ids, so a link or an old phone that names one is
+  // followed or told; only the four fields a reader needs.
+  const retired = Object.values(state.projects)
+    .filter((project) => project.removedAt !== null || project.mergedInto !== null)
+    .map((project) => ({ id: project.id, name: project.name, mergedInto: project.mergedInto, removedAt: project.removedAt }));
+  return { state: "ready", cursor: state.cursor, projects, ...(retired.length > 0 ? { retired } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,11 +275,30 @@ function tokenSubject(token: string): string | null {
   }
 }
 
-/** Whether a folder is a place the person keeps a project, not a temp, scratch or hidden one. */
-function isEligibleFolder(rootPath: string): boolean {
-  if (isInsideTempFolder(rootPath)) return false;
-  const segments = rootPath.split(/[\\/]+/).filter(Boolean);
-  return !segments.some((segment) => SCRATCH_SEGMENT.test(segment) || (segment.startsWith(".") && segment !== "." && segment !== ".."));
+function pathSegments(rootPath: string): string[] {
+  return rootPath.split(/[\\/]+/).filter(Boolean);
+}
+
+/** Whether a folder is inside one a tool owns (Windows and POSIX paths alike; names compared without case). */
+function isInsideToolFolder(rootPath: string): boolean {
+  if (isInsideTempFolder(rootPath)) return true;
+  const segments = pathSegments(rootPath).map((segment) => segment.toLowerCase());
+  return segments.some((segment, index) =>
+    TOOL_SEGMENTS.has(segment) || (segment === "worktrees" && TOOL_WORKTREE_PARENTS.has(segments[index - 1] ?? "")));
+}
+
+/**
+ * How a registered project counts as a copy: `fill` in a real folder (the
+ * first fill may add it), `opened` when the person opened it on purpose in a
+ * hidden or scratch folder, and null when it is no copy (a tool's folder, or
+ * found in a hidden or scratch folder).
+ */
+function copyFolderKind(record: Pick<ProjectRecord, "rootPath" | "registrationSource">): "fill" | "opened" | null {
+  if (isInsideToolFolder(record.rootPath)) return null;
+  const hiddenOrScratch = pathSegments(record.rootPath).some((segment) =>
+    SCRATCH_SEGMENT.test(segment) || (segment.startsWith(".") && segment !== "." && segment !== ".."));
+  if (!hiddenOrScratch) return "fill";
+  return EXPLICIT_SOURCES.has(record.registrationSource) ? "opened" : null;
 }
 
 function backoff(base: number, max: number, failures: number): number {
@@ -303,6 +344,8 @@ function nextLookupEntry(previous: RepoLookupEntry | undefined, result: GithubRe
 type Candidate = {
   record: ProjectRecord;
   identity: GithubRepoIdentity;
+  /** The first fill may add it: it is in a real folder (`copyFolderKind` is `fill`). */
+  autoFill: boolean;
 };
 
 /** The account project a copy matches in the list held here, following merges. */
@@ -368,7 +411,12 @@ function buildCopies(args: {
   for (const candidate of ordered) {
     if (!mainByGroup.has(groupKey(candidate))) mainByGroup.set(groupKey(candidate), candidate.record.projectId);
   }
-  const copies = ordered.map((candidate): AccountProjectCopyInput => {
+  // The server reads the copies in order and adds a project only for an
+  // `auto` copy. Copies the first fill may add go first, so a newer hidden
+  // copy of the same repository finds the project they add. The order
+  // depends on the folder only, so it stays the same after the fill.
+  const sent = [...ordered].sort((left, right) => Number(right.autoFill) - Number(left.autoFill));
+  const copies = sent.map((candidate): AccountProjectCopyInput => {
     const lookup = state.repoLookups[candidate.identity.repoKey];
     const found = lookup?.repoId ? lookup : null;
     const owner = found?.owner ?? candidate.identity.owner;
@@ -384,7 +432,7 @@ function buildCopies(args: {
       checkoutId: candidate.record.projectId,
       rootPath: candidate.record.rootPath,
       isMain: mainByGroup.get(groupKey(candidate)) === candidate.record.projectId,
-      add: args.autoAdd && now - candidate.record.lastOpenedAt <= FIRST_FILL_WINDOW_MS ? "auto" : "none",
+      add: args.autoAdd && candidate.autoFill && now - candidate.record.lastOpenedAt <= FIRST_FILL_WINDOW_MS ? "auto" : "none",
     };
   });
   return { copies, mainCheckouts: [...mainByGroup.values()].sort() };
@@ -500,13 +548,13 @@ export function createAccountProjectSync(options: AccountProjectSyncOptions): Ac
   };
 
   const eligibleCandidates = async (): Promise<Candidate[]> => {
-    const records = options.registry.list().filter((record) =>
-      record.catalogVisibility === "recent"
-      && record.registrationSource !== "test"
-      && isEligibleFolder(record.rootPath));
-    const withIdentity = records
-      .map((record) => ({ record, identity: githubRepoIdentityFromOrigin(record.gitOriginUrl) }))
-      .filter((candidate): candidate is Candidate => candidate.identity !== null);
+    const withIdentity: Candidate[] = [];
+    for (const record of options.registry.list()) {
+      if (record.catalogVisibility !== "recent" || record.registrationSource === "test") continue;
+      const kind = copyFolderKind(record);
+      const identity = githubRepoIdentityFromOrigin(record.gitOriginUrl);
+      if (kind && identity) withIdentity.push({ record, identity, autoFill: kind === "fill" });
+    }
     // A folder that is gone is not a copy. A drive that is not plugged in, or
     // a check that ran out of time, keeps the copy: it is still the person's.
     const states = await options.readFolderStates(withIdentity.map((candidate) => candidate.record));

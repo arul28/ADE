@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import { cursorCloudErrorMessage, repoMatchKey, type CursorCloudExistingPr } from "../../lib/cursorCloudUtils";
 import { isInjectableCloudSecretName } from "./CursorCloudSecretsPicker";
 import type { LaneGitRemoteStatus } from "./useLaneGitRemote";
+import { withChatPin } from "./chatMachinePin";
 
 export type CursorCloudRepoListState =
   | { status: "loading" }
@@ -35,8 +36,8 @@ type UseCursorCloudDraftStateInput = {
  * because Cursor allows five a minute per account; `force` (Retry) skips it.
  */
 function loadCursorCloudRepoUrls(force: boolean, pin: OpenProjectBinding | null): Promise<string[]> {
-  return window.ade.ai
-    .cursorCloudListRepositories(force ? { refresh: true } : undefined, pin)
+  return withChatPin(pin, (chatPin) => window.ade.ai
+    .cursorCloudListRepositories(force ? { refresh: true } : undefined, chatPin))
     .then((repos) => repos.map((repo) => repo.url));
 }
 
@@ -106,11 +107,13 @@ export function useCursorCloudDraftState({
     }
     let cancelled = false;
     const list = window.ade.projectSecrets?.list;
-    if (!list) {
+    // The secrets of the draft's machine. None known: none to offer.
+    const secretsPin = pinRef.current;
+    if (!list || !secretsPin) {
       setAvailableSecretNames([]);
       return;
     }
-    void list()
+    void list(secretsPin)
       .then((result) => {
         if (cancelled) return;
         setAvailableSecretNames(
@@ -125,7 +128,7 @@ export function useCursorCloudDraftState({
     return () => {
       cancelled = true;
     };
-  }, [cursorCloudAvailable, laneId]);
+  }, [cursorCloudAvailable, laneId, pinKey]);
 
   useEffect(() => {
     if (!cursorCloudAvailable || !laneId) {
@@ -140,7 +143,7 @@ export function useCursorCloudDraftState({
       setRememberSecretNames(false);
       return;
     }
-    void readRemembered(laneId, pinRef.current)
+    void withChatPin(pinRef.current, (chatPin) => readRemembered(laneId, chatPin))
       .then((names) => {
         if (cancelled) return;
         const injectable = names.filter(isInjectableCloudSecretName);
@@ -168,7 +171,7 @@ export function useCursorCloudDraftState({
       return;
     }
     let cancelled = false;
-    void getOpenPr({ laneId, branch: laneGitBranch }, pinRef.current)
+    void withChatPin(pinRef.current, (chatPin) => getOpenPr({ laneId, branch: laneGitBranch }, chatPin))
       .then((result) => {
         if (cancelled) return;
         const prUrl = result?.prUrl?.trim() || "";

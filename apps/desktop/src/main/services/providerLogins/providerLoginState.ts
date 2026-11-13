@@ -35,7 +35,7 @@ export type ProviderLoginStateFile = {
   accountUserId: string | null;
   bundles: Record<string, BundleMarks>;
   pushed: Record<string, PushedLogin>;
-  /** The person's last Allow of a Keychain read, by provider (a Mac only): when, the slot, and the key it wrote. */
+  /** The person's last Allow of an OS keyring read, by provider (a desktop only): when, the slot, and the key it wrote. */
   keychain?: Record<string, { allowedAt: number; slot: string; key: string }>;
   /**
    * The write-back (step 3b), by vault key: the newer copy a cloud computer

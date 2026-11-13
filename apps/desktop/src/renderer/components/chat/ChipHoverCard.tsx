@@ -78,6 +78,7 @@ import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { McpMentionCardBody } from "./McpMentionCardBody";
 import { settingsEntryById, settingsEntryLabel, settingUnavailableReason } from "../settings/settingsManifest";
 import { settingAgentAccess, settingIsProtected } from "../../../shared/settingsAgentAccess";
+import { withChatPin } from "./chatMachinePin";
 
 /** Everything a card may read, all of it belonging to the CHAT's machine. */
 export type ChipCardSources = {
@@ -315,7 +316,7 @@ export async function loadChipCardData(
     const laneId = target.laneId ?? sources.laneId;
     const lane = laneId ? sources.lanes.find((candidate) => candidate.id === laneId) : null;
     if (!laneId || !lane) return null;
-    const commit = await window.ade.git.getCommit({ laneId, commitSha: target.sha }, sources.pin).catch(() => null);
+    const commit = await withChatPin(sources.pin, (chatPin) => window.ade.git.getCommit({ laneId, commitSha: target.sha }, chatPin)).catch(() => null);
     if (!commit) return null;
     return {
       kind: "commit",
@@ -345,6 +346,7 @@ export async function loadChipCardData(
   }
   if (target.kind === "machine") return { kind: "machine", machineKey: target.machineKey };
   if (target.kind === "mcp") {
+    if (!sources.pin) return null;
     const result = await window.ade?.agentChat?.listMentionSuggestions?.(
       { query: `mcp ${target.name}`, ...(sources.sessionId ? { excludeSessionId: sources.sessionId } : {}) },
       sources.pin,
@@ -422,7 +424,9 @@ export async function loadChipCardData(
       : { kind: "skill", name: target.name, description: null, source: "Slash command", argumentHint: null };
   }
   if (target.kind === "artifact") {
-    const records = await window.ade.computerUse.listArtifacts({ artifactId: target.artifactId, limit: 1 }, sources.pin).catch(() => [] as ComputerUseArtifactView[]);
+    const records = sources.pin
+      ? await window.ade.computerUse.listArtifacts({ artifactId: target.artifactId, limit: 1 }, sources.pin).catch(() => [] as ComputerUseArtifactView[])
+      : [];
     const artifact = records.find((row) => row.id === target.artifactId);
     if (!artifact) return null;
     return {
@@ -449,7 +453,7 @@ export async function loadChipCardData(
   }
   if (target.kind === "github-issue") {
     const issue = peekGitHubIssue(sources.rootPath, target.owner, target.repo, target.number)
-      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number).catch(() => null);
+      ?? await loadGitHubIssue(sources.rootPath, target.owner, target.repo, target.number, { pin: sources.pin }).catch(() => null);
     if (!issue || issue.isPullRequest) return null;
     return {
       kind: "github-issue",
@@ -462,7 +466,7 @@ export async function loadChipCardData(
   }
   if (target.kind === "linear") {
     const issue = peekLinearIssue(sources.rootPath, target.identifier)
-      ?? await loadLinearIssue(sources.rootPath, target.identifier).catch(() => null);
+      ?? await loadLinearIssue(sources.rootPath, target.identifier, { pin: sources.pin }).catch(() => null);
     if (issue) {
       return {
         kind: "linear",

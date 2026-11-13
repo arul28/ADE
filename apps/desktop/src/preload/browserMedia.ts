@@ -64,8 +64,81 @@ function installAdeMediaHook(): void {
   });
 }
 
+/**
+ * Chrome's brand in `navigator.userAgentData`, to match the headers.
+ *
+ * The main process sends Chrome's identity on every request
+ * (`builtInBrowserChromeIdentity.ts`); a page that reads the same facts from
+ * script must see the same answer, or the disagreement is itself the tell.
+ * Electron's list has Chromium and the GREASE brand but not "Google Chrome",
+ * so this adds it to `brands` and to the high-entropy `brands` and
+ * `fullVersionList`, with Chromium's version. Nothing else changes, and a page
+ * without `userAgentData` (an insecure origin) is left alone, as in Chrome.
+ */
+function installChromeBrandHook(): void {
+  type Brand = { brand: string; version: string };
+  const w = window as Window & { NavigatorUAData?: { prototype: object } };
+  const proto = w.NavigatorUAData?.prototype as {
+    brands?: Brand[];
+    getHighEntropyValues?: (hints: string[]) => Promise<Record<string, unknown>>;
+  } | undefined;
+  if (!proto) return;
+  const withChrome = (list: unknown, full = false): unknown => {
+    if (!Array.isArray(list)) return list;
+    const brands = list as Brand[];
+    // Read at use, not at install: a device preset changes the UA later, and a
+    // non-Chrome one (Safari on iPhone and iPad) must keep its own list.
+    const fullVersion = /Chrome\/(\d+(?:\.\d+)*)/.exec(navigator.userAgent)?.[1] ?? null;
+    if (!fullVersion) return brands;
+    if (brands.some((entry) => entry?.brand === "Google Chrome")) return brands;
+    const chromium = brands.find((entry) => entry?.brand === "Chromium");
+    if (!chromium) {
+      // An overridden UA can leave the list empty; build Chrome's own.
+      const version = full ? fullVersion : fullVersion.split(".")[0]!;
+      return Object.freeze([
+        { brand: "Not?A_Brand", version: full ? "24.0.0.0" : "24" },
+        { brand: "Chromium", version },
+        { brand: "Google Chrome", version },
+      ].map((entry) => Object.freeze(entry)));
+    }
+    const next = brands.slice();
+    next.splice(next.indexOf(chromium) + 1, 0, { brand: "Google Chrome", version: chromium.version });
+    return Object.freeze(next.map((entry) => Object.freeze({ ...entry })));
+  };
+  const brandsDescriptor = Object.getOwnPropertyDescriptor(proto, "brands");
+  const brandsGetter = brandsDescriptor?.get;
+  if (brandsDescriptor && brandsGetter) {
+    Object.defineProperty(proto, "brands", {
+      ...brandsDescriptor,
+      get(this: unknown) {
+        return withChrome(brandsGetter.call(this));
+      },
+    });
+  }
+  const highEntropy = proto.getHighEntropyValues;
+  if (typeof highEntropy === "function") {
+    Object.defineProperty(proto, "getHighEntropyValues", {
+      configurable: true,
+      writable: true,
+      value: function getHighEntropyValues(this: unknown, hints: string[]) {
+        return highEntropy.call(this, hints).then((values) => {
+          const result = { ...values };
+          if ("brands" in result) result.brands = withChrome(result.brands);
+          if ("fullVersionList" in result) result.fullVersionList = withChrome(result.fullVersionList, true);
+          return result;
+        });
+      },
+    });
+  }
+}
+
 try {
   contextBridge.executeInMainWorld({ func: installAdeMediaHook });
 } catch {
   // A page where the main world is not reachable: Now Playing falls back to the page's media elements.
+}
+try {
+  contextBridge.executeInMainWorld({ func: installChromeBrandHook });
+} catch {
+  // Main world unreachable: the request headers still carry Chrome's identity.
 }

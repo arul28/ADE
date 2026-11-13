@@ -23,6 +23,9 @@ function listResult(overrides: Partial<AppleDeviceListResult> = {}): AppleDevice
   return { installed: [], lane: null, owners: [], laneId: null, ...overrides };
 }
 
+/** The lane's machine: the card always reads one. */
+const LANE_PIN = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" } as const;
+
 const owner = { udid: "udid-1", laneId: "lane-a", laneName: "Lane A", origin: "clone" as const, mine: false };
 const installed = {
   udid: "udid-1",
@@ -84,7 +87,7 @@ describe("useLaneAppleDevices", () => {
   });
 
   it("reads the device name once for a new claim, then only the claims on each lane refresh", async () => {
-    const { result, rerender } = renderHook(({ key }) => useLaneAppleDevices({ refreshKey: key }), {
+    const { result, rerender } = renderHook(({ key }) => useLaneAppleDevices({ refreshKey: key, pin: LANE_PIN }), {
       initialProps: { key: 1 },
     });
 
@@ -102,7 +105,7 @@ describe("useLaneAppleDevices", () => {
   it("dims the mark on a stop event and drops it when the claim is released", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      const { result } = renderHook(() => useLaneAppleDevices({ refreshKey: 1 }));
+      const { result } = renderHook(() => useLaneAppleDevices({ refreshKey: 1, pin: LANE_PIN }));
       await waitFor(() => expect(result.current.get("lane-a")?.running).toBe(true));
 
       act(() => {
@@ -129,7 +132,7 @@ describe("useLaneAppleDevices", () => {
 
   it("asks nothing on a local non-Mac project", async () => {
     platformForTest.mac = false;
-    const { result } = renderHook(() => useLaneAppleDevices({ refreshKey: 1 }));
+    const { result } = renderHook(() => useLaneAppleDevices({ refreshKey: 1, pin: LANE_PIN }));
     await act(async () => {
       await Promise.resolve();
     });
@@ -198,7 +201,7 @@ describe("useAppleLaneDeviceCard", () => {
       // The owner's 2026-09-23 report: back on the tools grid after a shut down,
       // the Apple Development card still said Running. The grid's read landed
       // before `simctl shutdown` did, and nothing but the 6s poll re-read it.
-      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
+      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: LANE_PIN, enabled: true }));
       await waitFor(() => expect(result.current).toMatchObject({ name: "iPhone 17 Pro", state: "running", laneId: "lane-a", udid: "udid-1", origin: "attached" }));
 
       power = "Shutdown";
@@ -213,7 +216,7 @@ describe("useAppleLaneDeviceCard", () => {
 
     it("goes Starting → Running on a start, and back to no device when the lane gives it up", async () => {
       power = "Shutdown";
-      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
+      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: LANE_PIN, enabled: true }));
       await waitFor(() => expect(result.current?.state).toBe("off"));
 
       emit({ type: "apple.device.state", laneId: "lane-a", udid: "udid-1", phase: "starting" });
@@ -231,7 +234,7 @@ describe("useAppleLaneDeviceCard", () => {
 
     it("a booted event reads Running at once, as streaming does", async () => {
       power = "Shutdown";
-      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
+      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: LANE_PIN, enabled: true }));
       await waitFor(() => expect(result.current?.state).toBe("off"));
 
       // The re-read never answers, so only the event itself can move the card.
@@ -247,7 +250,7 @@ describe("useAppleLaneDeviceCard", () => {
     });
 
     it("ignores another lane's events", async () => {
-      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
+      const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: LANE_PIN, enabled: true }));
       await waitFor(() => expect(result.current?.state).toBe("running"));
       const readsBefore = deviceList.mock.calls.length;
       emit({ type: "apple.device.state", laneId: "lane-b", udid: "udid-9", phase: "stopped" });
@@ -259,7 +262,7 @@ describe("useAppleLaneDeviceCard", () => {
       // The hosted web client gets no `apple.device.state` events, so the card
       // menu's own mutations bump `refreshKey` to force this re-read.
       const { result, rerender } = renderHook(
-        ({ key }: { key: number }) => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true, refreshKey: key }),
+        ({ key }: { key: number }) => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: LANE_PIN, enabled: true, refreshKey: key }),
         { initialProps: { key: 0 } },
       );
       await waitFor(() => expect(result.current?.state).toBe("running"));

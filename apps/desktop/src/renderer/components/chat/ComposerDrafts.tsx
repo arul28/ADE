@@ -49,6 +49,7 @@ import {
   providerLabel,
   sameAttachment,
 } from "./draftsFormat";
+import { withChatPin } from "./chatMachinePin";
 
 const DRAFTS_MENU_MAX_WIDTH = 380;
 const DRAFTS_MENU_VIEWPORT_MARGIN = 16;
@@ -212,6 +213,8 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   latestAttachmentsRef.current = attachments;
   const latestComposerMachineBindingRef = useRef(composerMachineBinding);
   latestComposerMachineBindingRef.current = composerMachineBinding;
+  /** The machine each draft saved here went to, for `consume`. */
+  const savedDraftBindingsRef = useRef(new Map<string, OpenProjectBinding | null>());
   const [draftSnapshot, setDraftSnapshot] = useState<{
     entries: DraftEntry[];
     ownerBinding: OpenProjectBinding | null;
@@ -269,7 +272,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       : bindingOverride;
     const sequence = ++refreshSequenceRef.current;
     try {
-      const next = await window.ade.agentChat.drafts.list(capturedBinding);
+      const next = await withChatPin(capturedBinding, (chatPin) => window.ade.agentChat.drafts.list(chatPin));
       if (sequence !== refreshSequenceRef.current) return;
       setDraftSnapshot({
         entries: next,
@@ -415,19 +418,20 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
           continue;
         }
         const { dataUrl } = await readAttachmentImageDataUrl(attachment.path, operationBinding);
-        const saved = await window.ade.agentChat.saveTempAttachment({
+        const saved = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.saveTempAttachment({
           data: base64FromDataUrl(dataUrl),
           filename: attachmentName(attachment.path),
-        }, operationBinding);
+        }, chatPin));
         storedAttachments.push({ path: saved.path, type: "image" });
       }
-      const created = await window.ade.agentChat.drafts.create({
+      const created = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.create({
         text: savedText,
         ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
         provider,
         modelId,
         ...(schedule ? { schedule } : {}),
-      }, operationBinding);
+      }, chatPin));
+      savedDraftBindingsRef.current.set(created.id, operationBinding);
       if (storedAttachments.length > 0) {
         const confirmedAttachments = draftAttachments(created);
         const runtimeConfirmedImages = storedAttachments.every((stored) => (
@@ -435,7 +439,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         ));
         if (!runtimeConfirmedImages) {
           try {
-            await window.ade.agentChat.drafts.delete({ id: created.id }, operationBinding);
+            await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.delete({ id: created.id }, chatPin));
           } catch {
             // The composer remains intact even if an older runtime cannot roll
             // back the text-only compatibility write.
@@ -530,7 +534,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     }
     await runDraftOperation("Could not attach this draft.", async () => {
       refreshSequenceRef.current += 1;
-      const claimed = await window.ade.agentChat.drafts.claim({ id: entry.id }, operationBinding);
+      const claimed = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.claim({ id: entry.id }, chatPin));
       if (!claimed) {
         if ((latestComposerMachineBindingRef.current?.key ?? null) === (operationBinding?.key ?? null)) {
           await refresh(operationBinding);
@@ -554,16 +558,19 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     });
   }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh, runDraftOperation, setError]);
 
-  const remove = useCallback(async (entry: DraftEntry): Promise<boolean> => {
+  const remove = useCallback(async (
+    entry: DraftEntry,
+    binding: OpenProjectBinding | null = entriesOwnerBinding,
+  ): Promise<boolean> => {
     if (operationInFlightRef.current) return false;
-    const operationBinding = entriesOwnerBinding;
+    const operationBinding = binding;
     const operationBindingKey = operationBinding?.key ?? null;
     operationInFlightRef.current = true;
     refreshSequenceRef.current += 1;
     setBusy(true);
     setError(null);
     try {
-      const deleted = await window.ade.agentChat.drafts.delete({ id: entry.id }, operationBinding);
+      const deleted = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.delete({ id: entry.id }, chatPin));
       if (!deleted) {
         if ((latestComposerMachineBindingRef.current?.key ?? null) === operationBindingKey) {
           await refresh(operationBinding);
@@ -590,7 +597,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   const saveEdit = useCallback(async (entry: DraftEntry, text: string) => {
     const operationBinding = entriesOwnerBinding;
     await runDraftOperation("Could not save this draft.", async () => {
-      const updated = await window.ade.agentChat.drafts.update({ id: entry.id, text }, operationBinding);
+      const updated = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.update({ id: entry.id, text }, chatPin));
       if (!updated) {
         setError("That draft was taken on another machine.");
         await refresh(operationBinding);
@@ -616,7 +623,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   const sendNow = useCallback(async (entry: DraftEntry) => {
     const operationBinding = entriesOwnerBinding;
     await runDraftOperation("Could not send this draft.", async () => {
-      const result = await window.ade.agentChat.drafts.sendNow({ id: entry.id }, operationBinding);
+      const result = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.sendNow({ id: entry.id }, chatPin));
       if (!result.ok) {
         throw new Error(result.error?.trim() || "Could not send this draft.");
       }
@@ -630,13 +637,13 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     const operationBinding = entriesOwnerBinding;
     await runDraftOperation("Could not duplicate this draft.", async () => {
       const attachments = draftAttachments(entry);
-      const created = await window.ade.agentChat.drafts.create({
+      const created = await withChatPin(operationBinding, (chatPin) => window.ade.agentChat.drafts.create({
         text: entry.text,
         ...(attachments.length ? { attachments } : {}),
         provider: entry.provider,
         modelId: entry.modelId,
         originSessionId: entry.originSessionId ?? null,
-      }, operationBinding);
+      }, chatPin));
       await refresh(operationBinding);
       setOpenEntry(created);
     });
@@ -682,7 +689,13 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     },
     activatePreservingDraft: () => save(true),
     activateScheduled: (input: DraftScheduleInput) => persistComposerDraft(input, false),
-    consume: remove,
+    // A history stash is consumed after its save resolves, maybe after the
+    // composer moved on or unmounted: delete it on the machine that saved it.
+    consume: (entry: DraftEntry) => {
+      const savedOn = savedDraftBindingsRef.current.get(entry.id);
+      savedDraftBindingsRef.current.delete(entry.id);
+      return remove(entry, savedOn ?? latestComposerMachineBindingRef.current);
+    },
     reload: () => {
       void refresh();
     },

@@ -55,6 +55,12 @@ export function CtoPromptPreview({
       setError("The CTO isn't available. Reopen ADE to reconnect.");
       return () => { cancelled = true; };
     }
+    if (!ctoPin) {
+      // The CTO's machine is not reachable: read nothing.
+      setLoading(false);
+      setPreview(null);
+      return () => { cancelled = true; };
+    }
     setLoading(true);
     setError(null);
     void bridge.previewSystemPrompt({ identityOverride }, ctoPin)
@@ -67,7 +73,7 @@ export function CtoPromptPreview({
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- overrideKey serializes identityOverride
-  }, [overrideKey, ctoPin]);
+  }, [overrideKey, ctoPin?.key]);
 
   const sections = preview?.sections ?? [];
   const showToc = sections.length > 3;

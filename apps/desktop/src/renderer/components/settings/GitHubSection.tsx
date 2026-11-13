@@ -60,6 +60,7 @@ import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
 import { confirmDialog } from "../ui/dialog";
 import { extractError } from "../../lib/format";
+import { requirePin } from "../../state/repositoryScope";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -309,8 +310,8 @@ export function GitHubSection() {
   useEffect(() => {
     let cancelled = false;
     readStatus();
-    window.ade.projectConfig
-      .get(pin)
+    Promise.resolve()
+      .then(() => window.ade.projectConfig.get(requirePin(pin)))
       .then((snapshot) => {
         if (cancelled) return;
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
@@ -333,7 +334,7 @@ export function GitHubSection() {
     };
     window.addEventListener("focus", reload);
     document.addEventListener("visibilitychange", onVisibility);
-    const offStatus = window.ade.github.onStatusChanged?.(() => reload()) ?? (() => {});
+    const offStatus = window.ade.github.onStatusChanged?.(() => reload(), pinRef.current) ?? (() => {});
     return () => {
       window.removeEventListener("focus", reload);
       document.removeEventListener("visibilitychange", onVisibility);
