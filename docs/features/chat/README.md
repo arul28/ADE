@@ -906,10 +906,34 @@ in `chatRuntimeOwnership.ts`:
   brain when that brain is live on this project.** It does not take over chats
   it is not running: startup recovery, prewarm, and scheduled wakes skip them.
   Its own chats and messages sent to it directly still work. Other secondary
-  brains do not make one another yield.
+  brains do not make one another yield. A chat whose owner stamp names an
+  installed brain's socket (its own home's, plus `~/.ade`'s and
+  `~/.ade-alpha`'s) waits for the machine brain even while that brain is down
+  or restarting (`isMachineBrainSocket`): launchd brings it back and it
+  recovers its own chats. Before this, a lane's test brain picked up a chat in
+  the gap after the installed brain was killed, resumed it on the lane's code,
+  and then held it.
+- **The machine brain takes its chats back.** A send, `messageSession`,
+  `runSessionTurn` or rerun on the machine brain for a chat another live brain
+  holds asks that brain, over its socket, to release it
+  (`takeChatRuntimeOrRefuse` → `chat.releaseChatRuntime`, CTO-only), after the
+  request's own cheap checks so a refused request never stops anything. The
+  whole exchange has one 10 s deadline (`chatRuntimeReleaseClient.ts`), and an
+  answer that arrives after it releases nothing. The
+  owner stops its agent process the way "Restart agent session" does (the
+  conversation is kept) and clears its stamp, then the send runs here. While a
+  turn, an accepted send or background work is running there it answers
+  `busy`, and the send is refused in plain words
+  (`ChatRuntimeBusyElsewhereError`): the chat is still working in another copy
+  of ADE, send again when it finishes or close that copy. A brain that does
+  not answer, or one an agent started by hand (served at the `agent` role,
+  which may not release a chat), leaves the old refusal with the owner's
+  socket. So a person never has to find and stop a dev test brain to get a
+  chat back.
 - **A non-owner never re-stamps or releases.** Without a runtime, a persist
-  keeps whatever owner is on disk, and a teardown releases only its own or a
-  dead brain's stamp.
+  keeps whatever owner is on disk, and a teardown or a hand-back releases only
+  its own or a dead brain's stamp, never one a live brain wrote since
+  (`persistedRuntimeOwner`).
 - **A non-owner does not guess.** It cannot see the owner's turn, so its
   summary carries `runtimeOwnedElsewhere` instead of `runtimeAlive`, turn
   status reports `BUSY … runs under another ADE brain` (phase `running`),

@@ -317,6 +317,7 @@ import {
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import {
   brainLogPath,
+  installedAdeHomes,
   isAdoptableAdeHome,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
@@ -1147,7 +1148,8 @@ export async function createAdeRuntime(args: {
     : paths.socketPath;
   const machineRuntimeLayout = resolveMachineAdeLayout();
   // On Windows a machine brain also answers on its endpoint's older pipe names.
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineEndpointNames().runtime);
+  const machineRuntimeEndpointNames = resolveMachineEndpointNames().runtime;
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeEndpointNames);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
@@ -3170,7 +3172,32 @@ export async function createAdeRuntime(args: {
             const beat = readBrainHeartbeat(machineRuntimeLayout.runtimeDir);
             return beat && Date.now() - beat.ts <= BRAIN_HEARTBEAT_STALE_MS ? beat.pid : null;
           },
-        } : {}),
+          // The installed brains' sockets, this home's and every installed
+          // home's: a lane brain on a scratch ADE_HOME that opened the same
+          // project still leaves the installed brain's chats to it. Each
+          // home's Windows pipe follows from the home, not from this
+          // process's channel variables.
+          isMachineBrainSocket: (() => {
+            const names = new Set(machineRuntimeEndpointNames);
+            const { ADE_PACKAGE_CHANNEL: _channel, ADE_RUNTIME_SERVICE_NAME: _service, ...baseEnv } = process.env;
+            for (const home of installedAdeHomes()) {
+              for (const name of resolveMachineEndpointNames({ ...baseEnv, ADE_HOME: home }).runtime) names.add(name);
+            }
+            const known = [...names];
+            return (socketPath: string) => servesMachineRuntimeEndpoint(socketPath, known);
+          })(),
+        } : {
+          // The machine brain takes its chats back from a lane's test brain
+          // instead of refusing a person's send (see takeChatRuntimeOrRefuse).
+          requestChatRuntimeRelease: async (request: { socketPath: string; sessionId: string }) => {
+            const { requestChatRuntimeReleaseFromBrain } = await import("./services/chat/chatRuntimeReleaseClient");
+            return await requestChatRuntimeReleaseFromBrain({
+              ...request,
+              projectRoot,
+              version: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+            });
+          },
+        }),
         projectConfigService,
         db,
         aiIntegrationService,
@@ -4662,3 +4689,4 @@ export async function createAdeRuntime(args: {
     }
   }
 }
+

@@ -51,6 +51,8 @@ export type LocalRuntimeStatus = {
     lastCommand: string;
     blockedMs: number;
     ts: string;
+    /** Who froze the loop: the brain itself, or the machine past the wait ceiling. */
+    freezeCause?: "self" | "memory" | "drive";
   } | null;
   /**
    * The brain started after the one before it on this endpoint stopped
