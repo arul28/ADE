@@ -39,7 +39,7 @@ function snapshot(): readonly RecentProjectSummary[] {
 /**
  * Reads the catalog again. One read at a time: a call during a read runs one
  * more read after it, so a forget or a remove made during a read is seen.
- * A failed read keeps the last catalog.
+ * A failed or unavailable read keeps the last catalog.
  */
 export function readThisComputerCatalog(): void {
   const read = window.ade?.project?.listThisComputer;
@@ -51,7 +51,9 @@ export function readThisComputerCatalog(): void {
   reading = true;
   void Promise.resolve(read())
     .then((next) => {
-      if (sameFolders(folders, next)) return;
+      // No catalog to read (the brain is not connected, or its read failed):
+      // keep the last one rather than drop the folders past the recents.
+      if (!next || sameFolders(folders, next)) return;
       folders = next;
       for (const listener of listeners) listener();
     }, (error: unknown) => {

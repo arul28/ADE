@@ -467,15 +467,22 @@ export function CommandPalette({
     [remoteLocations],
   );
 
-  // A computer picked here that has since disconnected is no place to act:
-  // the actions and the shown place go back to this computer together.
-  const activeProjectLocation =
+  const selectedPlaceDisconnected =
     selectedProjectLocation?.kind === "remote" &&
     !remoteLocations.some(
       (location) =>
         location.kind === "remote" &&
         location.targetId === selectedProjectLocation.targetId,
-    )
+    );
+  // Browsing and creating work on the picked computer's own folders, so they
+  // keep that computer and wait while it is disconnected: a path from it must
+  // never be opened or created on this computer. The add screen and the clone
+  // form only pick a place, so a computer that disconnected falls back to this
+  // computer there, for the actions and the shown place together.
+  const keepsPickedPlace = mode === "project-browse" || mode === "project-create";
+  const placeDisconnected = selectedPlaceDisconnected && keepsPickedPlace;
+  const activeProjectLocation =
+    selectedPlaceDisconnected && !keepsPickedPlace
       ? LOCAL_PROJECT_LOCATION
       : (selectedProjectLocation ?? LOCAL_PROJECT_LOCATION);
   const activeRemoteTargetId =
@@ -1891,6 +1898,10 @@ export function CommandPalette({
       const nextTarget =
         typeof targetPath === "string" ? targetPath.trim() : "";
       if (!nextTarget) return;
+      if (placeDisconnected) {
+        setBrowseError(`${browseMachineName} is not connected. Open this folder once it connects again.`);
+        return;
+      }
       setBrowseError(null);
       setOpenProjectPending(true);
       try {
@@ -1917,7 +1928,9 @@ export function CommandPalette({
     },
     [
       activeRemoteTargetId,
+      browseMachineName,
       onOpenChange,
+      placeDisconnected,
       switchProjectToPath,
       switchRemoteProject,
     ],
@@ -2456,6 +2469,11 @@ export function CommandPalette({
                         machineName={
                           activeRemoteTargetId ? browseMachineName : undefined
                         }
+                        unavailableReason={
+                          placeDisconnected
+                            ? `${browseMachineName} is not connected. Create waits until it connects again.`
+                            : null
+                        }
                         getDefaultParentDir={
                           activeRemoteTargetId
                             ? () =>
@@ -2647,7 +2665,7 @@ export function CommandPalette({
                                             ? "border-transparent bg-[var(--color-accent)] text-[var(--color-accent-fg)] hover:brightness-110"
                                             : "border-[color-mix(in_srgb,var(--color-accent)_40%,var(--color-border))] bg-transparent text-[var(--color-accent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)]",
                                         )}
-                                        disabled={openProjectPending}
+                                        disabled={openProjectPending || placeDisconnected}
                                         onClick={(event) => {
                                           event.stopPropagation();
                                           void handleOpenProject(
@@ -2714,6 +2732,8 @@ export function CommandPalette({
                             report={{ surface: "command_palette_browse", headline: "Couldn't open that folder" }}
                             onDismiss={() => setBrowseError(null)}
                           />
+                        ) : placeDisconnected ? (
+                          <span>{browseMachineName} is not connected. Open waits until it connects again.</span>
                         ) : isCurrentProjectTarget ? (
                           <span>Already open.</span>
                         ) : (
@@ -2770,7 +2790,8 @@ export function CommandPalette({
                           disabled={
                             !canOpenHighlighted ||
                             openProjectPending ||
-                            systemPickerPending
+                            systemPickerPending ||
+                            placeDisconnected
                           }
                           onClick={() => {
                             void handleOpenProject(openTarget);

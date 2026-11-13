@@ -2226,6 +2226,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    *  Slower responses whose token doesn't match the latest value are discarded. */
   let laneRefreshVersion = 0;
   let remoteProjectSwitchGeneration = 0;
+  /** The transition of the remote project open still on its way, if any. */
+  let pendingRemoteSwitchTransition: AppState["projectTransition"] = null;
+  /**
+   * Home or a no-machine tab opened in front wins over a remote project open
+   * still on its way: that open must not finish over it, and its "switching"
+   * state ends here, since the open's own end skips a superseded switch.
+   */
+  const supersedeRemoteProjectSwitch = (prev: AppState): Partial<AppState> => {
+    if (!pendingRemoteSwitchTransition) return {};
+    ++remoteProjectSwitchGeneration;
+    const ownsTransition = prev.projectTransition === pendingRemoteSwitchTransition;
+    pendingRemoteSwitchTransition = null;
+    return ownsTransition ? { projectTransition: null } : {};
+  };
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshToken = 0;
@@ -3192,7 +3206,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : prev,
     ),
   // A new tab is the new-project screen, so it also ends Settings-without-a-project.
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false, activeNoMachineTabId: null }),
+  openNewTab: () => set((prev) => ({
+    isNewTabOpen: true,
+    showWelcome: true,
+    standaloneSettingsOpen: false,
+    activeNoMachineTabId: null,
+    ...supersedeRemoteProjectSwitch(prev),
+  })),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject, activeNoMachineTabId: null });
@@ -3205,7 +3225,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? [...prev.noMachineTabs, tab]
         : prev.noMachineTabs.map((entry, at) => (at === index ? { ...entry, ...tab } : entry));
       return activate
-        ? { noMachineTabs, activeNoMachineTabId: tab.id, isNewTabOpen: false, standaloneSettingsOpen: false }
+        ? {
+            noMachineTabs,
+            activeNoMachineTabId: tab.id,
+            isNewTabOpen: false,
+            standaloneSettingsOpen: false,
+            ...supersedeRemoteProjectSwitch(prev),
+          }
         : { noMachineTabs };
     });
     writeNoMachineTabs(get().noMachineTabs);
@@ -3905,12 +3931,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       laneId: get().selectedLaneId,
       sessionId: get().focusedSessionId,
     };
+    const transition: AppState["projectTransition"] = {
+      kind: "switching",
+      rootPath: null,
+      startedAtMs: Date.now(),
+    };
+    pendingRemoteSwitchTransition = transition;
     set((prev) => ({
-      projectTransition: {
-        kind: "switching",
-        rootPath: null,
-        startedAtMs: Date.now(),
-      },
+      projectTransition: transition,
       projectTransitionError: null,
       ...(outgoingProjectKey
         ? {
@@ -3926,6 +3954,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
+      pendingRemoteSwitchTransition = null;
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
@@ -3998,6 +4027,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return binding;
     } catch (error) {
       if (switchGeneration === remoteProjectSwitchGeneration) {
+        pendingRemoteSwitchTransition = null;
         set({
           projectTransition: null,
           lanesLoading: false,

@@ -1507,8 +1507,8 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<ClearLocalAdeDataResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
-        /** This computer's folders as its brain registers them; empty while the brain is not connected. Optional: the hosted web client has none. */
-        listThisComputer?: () => Promise<RecentProjectSummary[]>;
+        /** This computer's folders as its brain registers them; `null` when the catalog cannot be read (no connected brain, or a failed read). Optional: the hosted web client has none. */
+        listThisComputer?: () => Promise<RecentProjectSummary[] | null>;
         /** The account's project list as this computer (or the pinned machine) last read it. Optional: the hosted web client has none yet. */
         accountList?: (pin?: OpenProjectBinding | null) => Promise<AccountProjectListResult>;
         /** Adds a GitHub repository (URL or origin) to the account's project list, with no copy anywhere (S13). Desktop only. */

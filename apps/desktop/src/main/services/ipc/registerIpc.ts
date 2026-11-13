@@ -4689,17 +4689,19 @@ export function registerIpc({
   // 24 (`RECENT_PROJECT_CAP`); Home lists every folder. Machine-local by
   // design (no pin): another computer's folders come from its connection's
   // catalog. Only while the brain is connected: Home never starts or repairs
-  // it for this, and an empty answer leaves Home on the recents.
-  handle(IPC.projectListThisComputer, async (): Promise<RecentProjectSummary[]> => {
+  // it for this. `null` means the catalog could not be read (no brain, or the
+  // read failed), never "no folders": Home keeps the catalog it last read.
+  handle(IPC.projectListThisComputer, async (): Promise<RecentProjectSummary[] | null> => {
     const pool = localRuntimeConnectionPool;
-    if (!pool || pool.getStatus().connectionState !== "connected") return [];
+    if (!pool || pool.getStatus().connectionState !== "connected") return null;
     const records = await pool.projects().catch((error: unknown) => {
-      // Home stays on the recents; it reads again on its next open.
+      // Home keeps its last catalog; it reads again on its next open.
       getCtx().logger.warn("project.list_this_computer_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
-      return [];
+      return null;
     });
+    if (!records) return null;
     return records
       .filter((record) => record.catalogVisibility !== "system" && record.exists !== false)
       .map((record): RecentProjectSummary => ({

@@ -5673,7 +5673,7 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.projectListRecent),
     // This computer's folders as its brain registers them (Home's "Only on
     // this computer"). Machine-local: no pin.
-    listThisComputer: async (): Promise<RecentProjectSummary[]> =>
+    listThisComputer: async (): Promise<RecentProjectSummary[] | null> =>
       ipcRenderer.invoke(IPC.projectListThisComputer),
     // The account's project list as this computer's brain last read it, or
     // as a connected machine read it (a remote pin). A file read on that
