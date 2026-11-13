@@ -731,7 +731,7 @@ export function idleCleanupWhen(deletesAt: number, now: number): string {
 
 /** What happens before the delete, in ADE and the emails. */
 export function idleCleanupSaveSentence(branch: string | null | undefined): string {
-  return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch}` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
+  return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
 }
 
 /** What to do about a computer the idle cleanup kept because its work couldn't be saved. */

@@ -113,7 +113,7 @@ func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double
   if let held = entry.held {
     return "ADE didn't delete \(name): its work couldn't be saved. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again in a day."
   }
-  let branch = entry.branch.map { "the lane's branch, \($0)" } ?? "the lane's branch"
+  let branch = entry.branch.map { "the lane's branch, \($0)," } ?? "the lane's branch"
   let days = entry.idleDays.map { " after \($0) days unused" } ?? " because it isn't used"
   return "\(name) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)) (\(cloudDate(entry.deletesAt)))\(days). Before that, ADE commits its work and pushes it to \(branch) on GitHub; the lane and its chats stay. \(cloudIgnoredFilesSentence(entry.ignoredFiles)) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
 }

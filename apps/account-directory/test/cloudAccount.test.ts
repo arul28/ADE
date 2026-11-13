@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleCloudBillingPublicRequest, reportExtraHours } from "../src/cloud/billing";
 import type { CloudAccountState } from "../src/cloud/contract";
+import { runIdleCleanup } from "../src/cloud/idleCleanup";
 import { runPlanCleanupPicks } from "../src/cloud/planCleanup";
 import { createCloudProvider } from "../src/cloud/provider";
 import { rewardReferralIfDue } from "../src/cloud/referrals";
@@ -588,30 +589,6 @@ describe("ADE Cloud account", () => {
       await harness.tick();
       expect(harness.rows("select instance_id from cloud_computers where instance_id = 'pending:dup'")).toEqual([]);
     }],
-    ["the 30-day delete leaves a computer the provider says woke up", async () => {
-      seedRestingComputer();
-      provide(harness, INSTANCE, "stopped");
-      harness.net.after.push({ match: /GET .*\/instances$/, run: () => { harness.net.instances.get(INSTANCE)!.status = "running"; } });
-      await harness.tick();
-      expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toEqual([]);
-      expect(computer(harness).deleted_at).toBeNull();
-    }],
-    ["the 30-day delete leaves a computer used since the tick read it", async () => {
-      seedRestingComputer();
-      provide(harness, INSTANCE, "stopped");
-      harness.net.after.push({ match: /GET .*\/instances$/, run: () => { harness.exec("update cloud_computers set last_awake_at = ? where instance_id = ?", clock, INSTANCE); } });
-      await harness.tick();
-      expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toEqual([]);
-      expect(computer(harness).deleted_at).toBeNull();
-    }],
-    ["a computer unused for 30 days, warned twice, is deleted", async () => {
-      seedRestingComputer();
-      provide(harness, INSTANCE, "stopped");
-      await harness.tick();
-      expect(providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`))).toHaveLength(1);
-      expect(computer(harness).deleted_at).toBe(NOW);
-      expect(harness.row("select reason from cloud_delete_log where instance_id = ?", INSTANCE).reason).toBe("inactive_30_days");
-    }],
     ["a sleeping computer that just woke isn't put back to sleep", async () => {
       seedComputer(harness, { status: "sleeping", awake_since: null, machine_key: "key-a", last_awake_at: NOW - 2 * DAY });
       harness.insert("machines", { user_id: OWNER, machine_key: "key-a", last_seen_at: NOW - DAY });
@@ -1050,17 +1027,6 @@ describe("ADE Cloud account", () => {
       },
     });
   }
-
-  function seedRestingComputer(): void {
-    seedComputer(harness, {
-      status: "stopped",
-      awake_since: null,
-      last_awake_at: NOW - 40 * DAY,
-      status_changed_at: NOW - 40 * DAY,
-      delete_warned_7d_at: NOW - 8 * DAY,
-      delete_warned_1d_at: NOW - 2 * DAY,
-    });
-  }
 });
 
 /*
@@ -1387,6 +1353,156 @@ describe("ADE Cloud plan cleanup", () => {
     // Nothing left to free: the next tick finishes the pick.
     await run();
     expect(stored()).toEqual({ paid_plan_next: "plus", picked: 0 });
+  });
+});
+
+/**
+ * The idle cleanup (`idleCleanup.ts`) deletes unused computers from the cron
+ * with nobody watching, so a test is the one way to prove the deletes that
+ * must not happen: before the time the warning announced (a plan change
+ * included), when the push didn't go through, for an account out of hours,
+ * and for a computer used since its warning.
+ */
+describe("ADE Cloud idle cleanup", () => {
+  const BRANCH = "ade/pricing-page";
+  const lane = (overrides: Row = {}) => ({ laneId: "lane_pricing", laneName: "pricing-page", branchRef: BRANCH, primary: false, state: "pushed", ...overrides });
+  const tally = (lanes: Row[]) => JSON.stringify({ result: { pushed: 1, failed: 0, skipped: 0, lanes, readsRemotes: true } });
+  const quiet = JSON.stringify({ result: { interruptedChats: 0, interruptedClis: 0, stillRunning: 0, chatsUploaded: 0, chatsNotUploaded: 0, timedOut: false } });
+  const run = async () => runIdleCleanup(harness.env, createCloudProvider("provider-key"), clock);
+  const execs = () => providerCalls(harness, new RegExp(`POST .*/instances/${INSTANCE}/exec$`));
+  const deletes = () => providerCalls(harness, new RegExp(`DELETE .*/instances/${INSTANCE}$`));
+  /** Every email the cleanup sent, as Resend got it. */
+  const emails = () => providerCalls(harness, /POST https:\/\/api\.resend\.com/).map((call) => ({ subject: String(call.body?.subject), text: String(call.body?.text) }));
+
+  beforeEach(() => {
+    Object.assign(harness.env, { RESEND_API_KEY: "resend-key", CLERK_SECRET_KEY: "sk_test" });
+    seedAccount(harness, OWNER);
+    // The account's address, for every email the run sends.
+    for (let index = 0; index < 8; index += 1) {
+      harness.net.once.push({ match: /GET https:\/\/api\.clerk\.com\/v1\/users\//, reply: harness.net.reply({ primary_email_address_id: "e1", email_addresses: [{ id: "e1", email_address: "person@example.test" }] }) });
+    }
+  });
+
+  /** A sleeping lane computer last used `idleMs` ago, with the ignored files it reported. */
+  function seedIdle(idleMs: number, overrides: Row = {}): void {
+    seedComputer(harness, {
+      status: "sleeping",
+      awake_since: null,
+      last_awake_at: clock - idleMs,
+      status_changed_at: clock - idleMs,
+      created_at: clock - 30 * DAY,
+      lane_id: "lane_pricing",
+      lane_name: "pricing-page",
+      lane_project_origin: "github.com/acme/web",
+      lane_branch: BRANCH,
+      ignored_files_json: JSON.stringify({ checkedAt: clock - idleMs, paths: [".env", "prisma/dev.db"], more: 1, rebuildable: 2 }),
+      ...overrides,
+    });
+    provide(harness, INSTANCE, "sleeping");
+  }
+
+  /** The computer's three answers, in order: prepare-stop, push-work, work-state. */
+  function answerExecs(push: string, check: string): void {
+    for (const stdout of [quiet, push, check]) {
+      harness.net.once.push({ match: new RegExp(`POST .*/instances/${INSTANCE}/exec$`), reply: harness.net.reply({ exit_code: 0, stdout, stderr: "" }) });
+    }
+  }
+
+  it("a free computer is warned at 2 days, emailed again 6 hours before, saved, and deleted no sooner than announced, its lane kept", async () => {
+    seedIdle(2 * DAY + 60_000);
+    await run();
+    const announced = computer(harness).idle_deletes_at as number;
+    // The full day's lead from the warning.
+    expect(announced).toBe(NOW + DAY);
+    expect(emails()).toHaveLength(1);
+    expect(emails()[0]!.subject).toBe("The computer for pricing-page will be deleted in 1 day");
+    expect(emails()[0]!.text).toContain("these won't be kept: .env, prisma/dev.db and 1 more");
+
+    // An overlapping tick sends nothing twice.
+    await run();
+    expect(emails()).toHaveLength(1);
+
+    clock = announced - 6 * HOUR;
+    await run();
+    expect(emails()).toHaveLength(2);
+
+    clock = announced - 60_000;
+    await run();
+    expect([execs(), deletes()]).toEqual([[], []]);
+
+    clock = announced;
+    answerExecs(tally([lane()]), tally([lane()]));
+    await run();
+    expect(execs().map((call) => String(call.body?.command)).find((command) => command.includes("push-work"))).toContain("--message 'saved by ADE before cleanup'");
+    expect(deletes()).toHaveLength(1);
+    expect(computer(harness).deleted_at).toBe(announced);
+    expect(harness.row("select reason from cloud_delete_log where instance_id = ?", INSTANCE).reason).toBe("idle_cleanup");
+    expect(harness.row("select lane_name, branch_ref, reason from cloud_lanes_without_computer where lane_id = 'lane_pricing'"))
+      .toEqual({ lane_name: "pricing-page", branch_ref: BRANCH, reason: "idle_cleanup" });
+  });
+
+  /** Warned a day ago on Free, its announced time now, its last email sent: due unless something below stops it. */
+  const dueRow: Row = { idle_warned_at: NOW - DAY, idle_deletes_at: NOW, idle_emailed_at: NOW - 6 * HOUR };
+
+  it.each<[string, () => Promise<void> | void, boolean]>([
+    ["GitHub refuses the push: kept, back to sleep, and told why", () => {
+      answerExecs(tally([lane({ state: "unpushed" })]), tally([lane({ state: "unpushed" })]));
+    }, true],
+    ["the account is out of hours: never swept", () => {
+      harness.exec("update cloud_accounts set used_milli = included_milli where user_id = ?", OWNER);
+    }, false],
+    ["the computer was used after its warning: the clock restarts", () => {
+      harness.exec("update cloud_computers set last_awake_at = ? where instance_id = ?", NOW - HOUR, INSTANCE);
+    }, false],
+    ["the person pressed Keep it: the clock restarts with no wake", async () => {
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/keep`)).status).toBe(200);
+    }, false],
+    ["a paid computer announced for later moved to Free: the announced time holds", () => {
+      harness.exec("update cloud_computers set idle_deletes_at = ?, idle_warned_at = ?, idle_emailed_at = ? where instance_id = ?", NOW + 2 * DAY, NOW - DAY, NOW - DAY, INSTANCE);
+    }, false],
+  ])("not deleted: %s", async (_label, arrange, saveTried) => {
+    seedIdle(3 * DAY + HOUR, dueRow);
+    await arrange();
+
+    await run();
+
+    expect(deletes()).toEqual([]);
+    expect(computer(harness).deleted_at).toBeNull();
+    expect(execs().length > 0).toBe(saveTried);
+    // A computer it kept ends as it started: one it woke is never left running.
+    expect([harness.net.instances.get(INSTANCE)?.status, computer(harness).status]).toEqual(["sleeping", "sleeping"]);
+    // Nothing to tell the person: no warning starts over, no email goes out.
+    if (!saveTried) expect(emails()).toEqual([]);
+    if (saveTried) {
+      expect(computer(harness).idle_held_reason).toEqual(expect.any(String));
+      expect(emails().map((email) => email.subject)).toEqual(["ADE Cloud didn't delete pricing-page: its work couldn't be saved"]);
+      // A day later it tries again, and still deletes nothing while the push is refused.
+      clock = NOW + DAY;
+      // The refused push ends the run before the check, so its answer is left over.
+      harness.net.once.splice(0, harness.net.once.length, ...harness.net.once.filter((entry) => !entry.match.source.includes("/exec")));
+      answerExecs(tally([lane({ state: "unpushed" })]), tally([lane({ state: "unpushed" })]));
+      await run();
+      expect(deletes()).toEqual([]);
+      expect(harness.rows("select detail from cloud_idle_cleanup_log where step = 'push_refused'")).toEqual([{ detail: "push_left_work" }, { detail: "push_left_work" }]);
+      expect(emails()).toHaveLength(1);
+    }
+  });
+
+  it("a used computer is warned again only 2 days after its last use", async () => {
+    seedIdle(2 * DAY + 60_000);
+    await run();
+    expect(computer(harness).idle_warned_at).toBe(NOW);
+
+    harness.exec("update cloud_computers set last_awake_at = ? where instance_id = ?", NOW + HOUR, INSTANCE);
+    clock = NOW + DAY + HOUR;
+    await run();
+    expect(computer(harness).idle_warned_at).toBeNull();
+    expect(emails()).toHaveLength(1);
+
+    clock = NOW + HOUR + 2 * DAY;
+    await run();
+    expect(computer(harness).idle_warned_at).toBe(clock);
+    expect(computer(harness).idle_deletes_at).toBe(NOW + HOUR + 3 * DAY);
   });
 });
 
