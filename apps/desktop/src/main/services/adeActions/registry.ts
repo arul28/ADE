@@ -4275,6 +4275,19 @@ function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "password
   return {
     status: () => passwords.status(),
     activity: () => passwords.activity(),
+    passkeysForRp: (args?: unknown) => passwords.passkeysForRp(text(objectArg(args).rpId)),
+    savePasskey: (args?: unknown) => {
+      const input = objectArg(args);
+      return passwords.savePasskey({
+        rpId: text(input.rpId),
+        credentialId: text(input.credentialId),
+        userHandle: text(input.userHandle),
+        userName: text(input.userName),
+        userDisplayName: text(input.userDisplayName),
+        privateKeyPkcs8: text(input.privateKeyPkcs8),
+        signCount: typeof input.signCount === "number" ? input.signCount : 0,
+      });
+    },
     revealValue: (args?: unknown) => {
       const input = objectArg(args);
       const field = input.field === "username" || input.field === "value" || input.field === "notes" ? input.field : "password";

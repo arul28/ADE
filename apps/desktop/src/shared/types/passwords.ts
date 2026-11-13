@@ -11,7 +11,7 @@
  *   sites, which username, which kinds of value an item holds, never a value.
  */
 
-export type PasswordItemKind = "login" | "secret";
+export type PasswordItemKind = "login" | "secret" | "passkey";
 
 export type PasswordLoginSecret = {
   kind: "login";
@@ -39,7 +39,24 @@ export type PasswordSecretSecret = {
   updatedAt: string;
 };
 
-export type PasswordItemSecret = PasswordLoginSecret | PasswordSecretSecret;
+/** A passkey ADE's browser made for a site (a software authenticator, ES256). */
+export type PasswordPasskeySecret = {
+  kind: "passkey";
+  rpId: string;
+  /** Base64url. */
+  credentialId: string;
+  /** Base64url. */
+  userHandle: string;
+  userName: string;
+  userDisplayName: string;
+  /** Base64 PKCS#8 DER of the P-256 private key. */
+  privateKeyPkcs8: string;
+  signCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PasswordItemSecret = PasswordLoginSecret | PasswordSecretSecret | PasswordPasskeySecret;
 
 /** What an agent, a list or a log line may see about an item. Never a value. */
 export type PasswordItemSummary = {

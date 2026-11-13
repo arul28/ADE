@@ -1,5 +1,10 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
 import { BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL } from "../shared/types/builtInBrowserLoginCapture";
+import { BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, type WebAuthnPageAnswer } from "../shared/types/builtInBrowserPasskeys";
+import { answerWebAuthnRequest, parseWebAuthnPageRequest } from "./services/builtInBrowser/builtInBrowserPasskeys";
+import { checkPerson } from "./services/passwords/personCheck";
+import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
+import { readMessagesInWorker, sendMessage, terminateMessagesReadWorkers, type MessagesReadRequest } from "./services/messages";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
@@ -2202,9 +2207,30 @@ app.whenReady().then(async () => {
   // no project needed). Values come back only for a fill, into main.
   const callLocalPasswords = async (action: string, args: Record<string, unknown>): Promise<unknown> =>
     (await localRuntimePool.callSync<{ result?: unknown }>("passwords.call", { action, args }))?.result;
+  // Messages on this Mac: its database through a worker (Full Disk Access is
+  // ADE's), sending through the Messages app. Null off macOS.
+  const messagesIntegration = process.platform === "darwin"
+    ? createMessagesIntegrationService({
+        userDataDir: app.getPath("userData"),
+        reader: {
+          access: async () => {
+            const result = await readMessagesInWorker({ op: "access" });
+            return result.ok ? { ok: true as const } : { ok: false as const, code: result.code, message: result.message };
+          },
+          recent: (options) => readMessagesInWorker({ op: "recent", ...options } as MessagesReadRequest),
+          chats: (options) => readMessagesInWorker({ op: "chats", limit: options.limit }),
+          send: async (input) => {
+            const result = await sendMessage({ to: input.to, text: input.text });
+            return result.ok ? { ok: true as const } : { ok: false as const, code: result.code, message: result.message };
+          },
+        },
+        logger: { info: (event, data) => localRuntimeLogger.info(event, data), warn: (event, data) => localRuntimeLogger.warn(event, data) },
+      })
+    : null;
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
     demoEngine: chromiumDemoEngine,
+    messages: messagesIntegration,
     passwords: {
       loginsForPage: async (pageUrl) => {
         const rows = await callLocalPasswords("loginsForPage", { pageUrl });
@@ -2378,6 +2404,35 @@ app.whenReady().then(async () => {
       event.senderFrame != null && event.senderFrame === event.sender.mainFrame,
       { username: text(record.username), password: text(record.password) },
     );
+  });
+
+  // Passkeys saved in ADE Passwords, for a browser tab's WebAuthn call (the tab
+  // preload's hook). Only a browser tab's own frames are answered; the origin
+  // is the asking frame's, from Electron.
+  ipcMain.handle(BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, async (event, payload: unknown): Promise<WebAuthnPageAnswer> => {
+    if (!builtInBrowserService.locateWebContents(event.sender)) return { fallback: true };
+    const request = parseWebAuthnPageRequest(payload);
+    const frameOrigin = event.senderFrame?.origin ?? "";
+    const topOrigin = event.sender.mainFrame?.origin ?? "";
+    if (!request || !frameOrigin || frameOrigin === "null") return { fallback: true };
+    return await answerWebAuthnRequest({
+      request,
+      frameOrigin,
+      topOrigin,
+      checkPerson,
+      passwords: {
+        enabled: async () => {
+          const status = await callLocalPasswords("status", {});
+          return Boolean(status && typeof status === "object" && (status as { enabled?: unknown }).enabled === true);
+        },
+        passkeysForRp: async (rpId) => {
+          const rows = await callLocalPasswords("passkeysForRp", { rpId });
+          return Array.isArray(rows) ? rows : [];
+        },
+        savePasskey: (input) => callLocalPasswords("savePasskey", input),
+        recordUse: (input) => callLocalPasswords("recordUse", { ...input, kind: "login" }),
+      },
+    });
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy
@@ -8865,6 +8920,12 @@ app.whenReady().then(async () => {
       terminateLoginImportReadWorkers();
     } catch {
       // ignore if module not loaded
+    }
+    // A Messages read has its own 20 s limit; quitting cuts it short too.
+    try {
+      terminateMessagesReadWorkers();
+    } catch {
+      // nothing running
     }
   };
 

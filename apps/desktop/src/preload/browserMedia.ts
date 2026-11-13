@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, type BuiltInBrowserLoginSubmission } from "../shared/types/builtInBrowserLoginCapture";
+import { BUILT_IN_BROWSER_WEBAUTHN_CHANNEL } from "../shared/types/builtInBrowserPasskeys";
 
 /**
  * The built-in browser's media hook, a session preload for every browser tab.
@@ -219,4 +220,159 @@ try {
   installLoginCapture();
 } catch {
   // No DOM to watch (a blank frame); nothing to offer.
+}
+
+/**
+ * Passkeys saved in ADE Passwords, in the page's main world.
+ *
+ * Wraps `navigator.credentials.create/get` for `publicKey` requests. The
+ * request goes (as JSON over two window events) to this preload's isolated
+ * world and on to desktop main, which decides; the page gets back a real
+ * `PublicKeyCredential`-shaped object, or the browser's own WebAuthn runs
+ * when ADE has nothing for the site (`fallback`). Nothing here decides
+ * anything: main takes the origin from the frame, checks the RP ID and asks
+ * the person.
+ */
+function installAdePasskeyHook(): void {
+  const credentials = navigator.credentials as CredentialsContainer | undefined;
+  if (!credentials || typeof window.PublicKeyCredential !== "function") return;
+  const originalCreate = credentials.create.bind(credentials);
+  const originalGet = credentials.get.bind(credentials);
+  const toBytes = (source: unknown): Uint8Array | null => {
+    if (source instanceof ArrayBuffer) return new Uint8Array(source);
+    if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    return null;
+  };
+  const b64u = (source: unknown): string => {
+    const bytes = toBytes(source);
+    if (!bytes) return "";
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const fromB64u = (value: string): ArrayBuffer => {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  };
+  let sequence = 0;
+  const ask = (request: Record<string, unknown>): Promise<Record<string, unknown>> => new Promise((resolve) => {
+    const id = `${Date.now()}-${(sequence += 1)}-${Math.random().toString(36).slice(2)}`;
+    const onAnswer = (event: Event) => {
+      let detail: Record<string, unknown>;
+      try {
+        detail = JSON.parse(String((event as CustomEvent).detail)) as Record<string, unknown>;
+      } catch {
+        return;
+      }
+      if (detail.id !== id) return;
+      window.removeEventListener("__ade_webauthn_answer", onAnswer);
+      resolve(detail.answer as Record<string, unknown>);
+    };
+    window.addEventListener("__ade_webauthn_answer", onAnswer);
+    window.dispatchEvent(new CustomEvent("__ade_webauthn_ask", { detail: JSON.stringify({ id, request }) }));
+  });
+  const fail = (answer: Record<string, unknown>) => new DOMException(String(answer.message ?? "The operation was not allowed."), String(answer.error ?? "NotAllowedError"));
+  const credential = (fields: Record<string, PropertyDescriptor>, responseProto: object, responseFields: Record<string, PropertyDescriptor>) => {
+    const response = Object.create(responseProto) as object;
+    Object.defineProperties(response, responseFields);
+    const made = Object.create(window.PublicKeyCredential.prototype) as object;
+    Object.defineProperties(made, { ...fields, response: { value: response, enumerable: true }, type: { value: "public-key", enumerable: true }, authenticatorAttachment: { value: "platform", enumerable: true } });
+    return made as Credential;
+  };
+  credentials.create = async function create(options?: CredentialCreationOptions): Promise<Credential | null> {
+    const publicKey = options?.publicKey;
+    if (!publicKey) return originalCreate(options);
+    const answer = await ask({
+      kind: "create",
+      rpId: publicKey.rp?.id ?? null,
+      rpName: publicKey.rp?.name ?? null,
+      userId: b64u(publicKey.user?.id),
+      userName: String(publicKey.user?.name ?? ""),
+      userDisplayName: String(publicKey.user?.displayName ?? ""),
+      challenge: b64u(publicKey.challenge),
+      excludeCredentialIds: (publicKey.excludeCredentials ?? []).map((entry) => b64u(entry.id)),
+      algorithms: (publicKey.pubKeyCredParams ?? []).map((entry) => entry.alg),
+      userVerification: publicKey.authenticatorSelection?.userVerification ?? "preferred",
+      wantsCredProps: Boolean((publicKey.extensions as Record<string, unknown> | undefined)?.credProps),
+    });
+    if (answer.fallback) return originalCreate(options);
+    if (answer.error) throw fail(answer);
+    const rawId = fromB64u(String(answer.credentialId));
+    const transports = Array.isArray(answer.transports) ? answer.transports.map(String) : ["internal", "hybrid"];
+    return credential(
+      {
+        id: { value: String(answer.credentialId), enumerable: true },
+        rawId: { value: rawId, enumerable: true },
+        getClientExtensionResults: { value: () => (answer.credProps ? { credProps: { rk: true } } : {}) },
+        toJSON: { value: () => ({ id: answer.credentialId, rawId: answer.credentialId, type: "public-key", authenticatorAttachment: "platform", response: { clientDataJSON: answer.clientDataJSON, attestationObject: answer.attestationObject, authenticatorData: answer.authenticatorData, publicKey: answer.publicKey, publicKeyAlgorithm: answer.publicKeyAlgorithm, transports }, clientExtensionResults: answer.credProps ? { credProps: { rk: true } } : {} }) },
+      },
+      window.AuthenticatorAttestationResponse.prototype,
+      {
+        clientDataJSON: { value: fromB64u(String(answer.clientDataJSON)), enumerable: true },
+        attestationObject: { value: fromB64u(String(answer.attestationObject)), enumerable: true },
+        getTransports: { value: () => transports.slice() },
+        getAuthenticatorData: { value: () => fromB64u(String(answer.authenticatorData)) },
+        getPublicKey: { value: () => fromB64u(String(answer.publicKey)) },
+        getPublicKeyAlgorithm: { value: () => Number(answer.publicKeyAlgorithm) },
+      },
+    );
+  };
+  credentials.get = async function get(options?: CredentialRequestOptions): Promise<Credential | null> {
+    const publicKey = options?.publicKey;
+    if (!publicKey) return originalGet(options);
+    const answer = await ask({
+      kind: "get",
+      rpId: publicKey.rpId ?? null,
+      challenge: b64u(publicKey.challenge),
+      allowCredentialIds: (publicKey.allowCredentials ?? []).map((entry) => b64u(entry.id)),
+      userVerification: publicKey.userVerification ?? "preferred",
+      mediation: typeof options?.mediation === "string" ? options.mediation : null,
+    });
+    if (answer.fallback) return originalGet(options);
+    if (answer.error) throw fail(answer);
+    const rawId = fromB64u(String(answer.credentialId));
+    return credential(
+      {
+        id: { value: String(answer.credentialId), enumerable: true },
+        rawId: { value: rawId, enumerable: true },
+        getClientExtensionResults: { value: () => ({}) },
+        toJSON: { value: () => ({ id: answer.credentialId, rawId: answer.credentialId, type: "public-key", authenticatorAttachment: "platform", response: { clientDataJSON: answer.clientDataJSON, authenticatorData: answer.authenticatorData, signature: answer.signature, userHandle: answer.userHandle }, clientExtensionResults: {} }) },
+      },
+      window.AuthenticatorAssertionResponse.prototype,
+      {
+        clientDataJSON: { value: fromB64u(String(answer.clientDataJSON)), enumerable: true },
+        authenticatorData: { value: fromB64u(String(answer.authenticatorData)), enumerable: true },
+        signature: { value: fromB64u(String(answer.signature)), enumerable: true },
+        userHandle: { value: answer.userHandle ? fromB64u(String(answer.userHandle)) : null, enumerable: true },
+      },
+    );
+  };
+}
+
+/** The isolated-world half: carries the page's request to desktop main and the answer back. */
+function installPasskeyBridge(): void {
+  window.addEventListener("__ade_webauthn_ask", (event) => {
+    let parsed: { id?: unknown; request?: unknown };
+    try {
+      parsed = JSON.parse(String((event as CustomEvent).detail)) as { id?: unknown; request?: unknown };
+    } catch {
+      return;
+    }
+    if (typeof parsed.id !== "string") return;
+    const reply = (answer: unknown) => window.dispatchEvent(new CustomEvent("__ade_webauthn_answer", { detail: JSON.stringify({ id: parsed.id, answer }) }));
+    ipcRenderer.invoke(BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, parsed.request)
+      .then(reply)
+      // ADE could not answer: the browser's own WebAuthn takes the request.
+      .catch(() => reply({ fallback: true }));
+  });
+}
+
+try {
+  installPasskeyBridge();
+  contextBridge.executeInMainWorld({ func: installAdePasskeyHook });
+} catch {
+  // Main world unreachable: the page keeps the browser's own WebAuthn.
 }

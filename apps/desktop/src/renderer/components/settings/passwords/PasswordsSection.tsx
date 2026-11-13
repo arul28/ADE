@@ -91,7 +91,7 @@ function statusLine(status: PasswordsStatus): string {
 }
 
 function loginHint(item: PasswordItemSummary): string {
-  const parts = [item.username, item.sites.join(", ")].filter((part): part is string => Boolean(part));
+  const parts = [item.kind === "passkey" ? "Passkey" : null, item.username, item.sites.join(", ")].filter((part): part is string => Boolean(part));
   return parts.join(" · ") || "No username";
 }
 
@@ -185,7 +185,8 @@ export function PasswordsSection() {
   const enabled = status?.enabled === true;
 
   const logins = useMemo(
-    () => items.filter((item) => item.kind === "login").sort((left, right) => left.title.localeCompare(right.title)),
+    // Passkeys sit with the logins: both are how you sign in to a site.
+    () => items.filter((item) => item.kind === "login" || item.kind === "passkey").sort((left, right) => left.title.localeCompare(right.title)),
     [items],
   );
   const secrets = useMemo(
@@ -238,8 +239,8 @@ export function PasswordsSection() {
     setNotice(null);
     setError(null);
     setSearch("");
-    setTab(saved.kind === "login" ? "logins" : "secrets");
-    if (saved.kind === "login") setSelectedLoginId(saved.id);
+    setTab(saved.kind === "secret" ? "secrets" : "logins");
+    if (saved.kind !== "secret") setSelectedLoginId(saved.id);
     else setSelectedSecretId(saved.id);
     try {
       await loadItems();
@@ -250,10 +251,10 @@ export function PasswordsSection() {
   }, [loadItems, refreshStatus]);
 
   const removeItem = async (item: PasswordItemSummary) => {
-    const noun = item.kind === "login" ? "login" : "secret";
+    const noun = item.kind === "secret" ? "secret" : item.kind === "passkey" ? "passkey" : "login";
     const confirmed = await confirmDialog({
       title: `Delete this ${noun}?`,
-      message: item.kind === "login"
+      message: item.kind !== "secret"
         ? `“${item.title}” is removed from Passwords on every computer. This can't be undone.`
         : `“${item.title}” is removed from Passwords on every computer, and commands that use it stop getting a value. This can't be undone.`,
       confirmLabel: "Delete",
@@ -264,7 +265,7 @@ export function PasswordsSection() {
     setNotice(null);
     try {
       await window.ade.passwords.remove({ id: item.id }, pinRef.current);
-      if (item.kind === "login") setSelectedLoginId(null);
+      if (item.kind !== "secret") setSelectedLoginId(null);
       else setSelectedSecretId(null);
       await loadItems();
       refreshStatus();
@@ -539,18 +540,24 @@ export function PasswordsSection() {
                           <div className="ade-pw-facts">
                             <Fact label="Sites:">{selectedLogin.sites.join(", ") || "None"}</Fact>
                             <Fact label="Username:">{selectedLogin.username || "No username"}</Fact>
-                            <Fact label="Password:"><RevealValue itemId={selectedLogin.id} field="password" label={selectedLogin.title} /></Fact>
+                            {selectedLogin.kind === "passkey" ? (
+                              <Fact label="Passkey:">saved in ADE · used by ADE's browser after Touch ID</Fact>
+                            ) : (
+                              <Fact label="Password:"><RevealValue itemId={selectedLogin.id} field="password" label={selectedLogin.title} /></Fact>
+                            )}
                             {selectedLogin.hasTotp ? <Fact label="Authenticator code:"><LiveCode itemId={selectedLogin.id} pin={pin} /></Fact> : null}
                             <Fact label="Updated:">{formatUpdatedAt(selectedLogin.updatedAt)}</Fact>
                           </div>
                           <div className="ade-pw-detail-actions">
-                            <button
-                              type="button"
-                              className="ade-modern-btn"
-                              onClick={() => setDialog({ kind: "change-password", item: selectedLogin })}
-                            >
-                              <Password size={13} /> Change password…
-                            </button>
+                            {selectedLogin.kind === "passkey" ? null : (
+                              <button
+                                type="button"
+                                className="ade-modern-btn"
+                                onClick={() => setDialog({ kind: "change-password", item: selectedLogin })}
+                              >
+                                <Password size={13} /> Change password…
+                              </button>
+                            )}
                             <button
                               type="button"
                               className="ade-modern-btn"

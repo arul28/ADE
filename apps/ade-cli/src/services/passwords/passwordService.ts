@@ -30,6 +30,7 @@ import type {
   PasswordItemSecret,
   PasswordItemSummary,
   PasswordLoginSecret,
+  PasswordPasskeySecret,
   PasswordSecretSecret,
   PasswordsStatus,
   PasswordUseRecord,
@@ -103,6 +104,20 @@ function summarize(id: string, secret: PasswordItemSecret): PasswordItemSummary 
       username: secret.username || null,
       hasPassword: Boolean(secret.password),
       hasTotp: Boolean(secret.totpUri),
+      projectScope: null,
+      updatedAt: secret.updatedAt,
+    };
+  }
+  if (secret.kind === "passkey") {
+    const site = normalizeLoginOrigin(`https://${secret.rpId}`)?.site ?? secret.rpId;
+    return {
+      id,
+      kind: "passkey",
+      title: site,
+      sites: [site],
+      username: secret.userName || secret.userDisplayName || null,
+      hasPassword: false,
+      hasTotp: false,
       projectScope: null,
       updatedAt: secret.updatedAt,
     };
@@ -574,9 +589,46 @@ export function createPasswordService(args: {
         if (input.field === "notes") return secret.notes;
         return null;
       }
+      // A passkey's private key is never shown, only used by ADE's browser.
+      if (secret.kind === "passkey") return null;
       if (input.field === "value") return secret.value;
       if (input.field === "notes") return secret.notes;
       return null;
+    },
+
+    /**
+     * The passkeys for one relying party, private keys included, for desktop
+     * main to sign a WebAuthn request with. Person-only and this-desktop-only
+     * in the action layer, like `resolveForFill`.
+     */
+    async passkeysForRp(rpId: string): Promise<Array<PasswordPasskeySecret & { id: string }>> {
+      await ensureOpened();
+      const wanted = rpId.trim().toLowerCase();
+      return [...opened.entries()]
+        .filter((entry): entry is [string, PasswordPasskeySecret] => entry[1].kind === "passkey" && entry[1].rpId === wanted)
+        .map(([id, secret]) => ({ ...secret, id }));
+    },
+
+    /** Save a passkey ADE's browser just made (desktop main, after the person approved it). */
+    async savePasskey(input: Omit<PasswordPasskeySecret, "kind" | "createdAt" | "updatedAt"> & { createdAt?: string }): Promise<PasswordItemSummary> {
+      if (!input.rpId || !input.credentialId || !input.privateKeyPkcs8) throw new Error("A passkey needs its site, id and key.");
+      const stamp = now().toISOString();
+      const secret: PasswordPasskeySecret = {
+        kind: "passkey",
+        rpId: input.rpId.toLowerCase(),
+        credentialId: input.credentialId,
+        userHandle: input.userHandle,
+        userName: input.userName,
+        userDisplayName: input.userDisplayName,
+        privateKeyPkcs8: input.privateKeyPkcs8,
+        signCount: input.signCount,
+        createdAt: input.createdAt ?? stamp,
+        updatedAt: stamp,
+      };
+      const id = newItemId();
+      await writeItem(id, secret);
+      logger.info("passwords.item_saved", { itemId: id, kind: "passkey" });
+      return summarize(id, secret);
     },
 
     /** A secret's value by name, for injecting into a process ADE starts. Never returned to an agent. */

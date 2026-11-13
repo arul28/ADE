@@ -406,7 +406,7 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   project_secret: ["get", "exportEnv"],
   // Passwords: only the person adds, changes, imports or removes saved items;
   // agents use logins through `ade browser signin` and never read a value.
-  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue"],
+  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   // Sharing a gh sign-in with the account hands it to every computer the
   // person signs in to; only the person decides, from Settings › GitHub.
   github: ["setGhAccountSharing"],
@@ -473,7 +473,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
   // Passwords is the account's, not a project's (`passwords.call`).
-  passwords: ["status", "activity", "code", "revealValue", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -496,7 +496,7 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   account_vault: ["get"],
   project_secret: ["get", "exportEnv"],
   // The values of a saved login, for desktop main to fill a page with.
-  passwords: ["resolveForFill", "revealValue"],
+  passwords: ["resolveForFill", "revealValue", "passkeysForRp"],
   // A custom provider's launch env, tokens included.
   ai: ["harnessLaunchEnv"],
   // Raw proof bytes, streamed to the user's own desktop.
@@ -1195,7 +1195,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request", "exec"],
   // Passwords: `list`/`loginsForPage` return summaries only (agents use them
   // to pick a login); every write and `resolveForFill` are user-only below.
-  passwords: ["status", "activity", "code", "revealValue", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse"],
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse"],
   messages: ["status", "recent", "chats", "send", "codeWait"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,

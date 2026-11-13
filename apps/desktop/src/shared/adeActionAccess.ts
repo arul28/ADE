@@ -351,7 +351,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   // `resolveForFill` only for this computer's own desktop app.
   passwords: {
     read: ["status", "activity", "code", "list", "loginsForPage"],
-    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse", "revealValue"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   },
   // Messages on the Mac the person sits at: reading follows its Read Texts
   // switch; each text an agent sends is approved on a card first.
@@ -800,6 +800,8 @@ export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Reco
   passwords: {
     resolveForFill: "Saved logins are filled by ADE on the computer whose browser shows the page.",
     revealValue: "A saved value is shown only in ADE on the computer you are using, after Touch ID or Windows Hello.",
+    passkeysForRp: "Passkeys are used by ADE's browser on the computer you are using.",
+    savePasskey: "Passkeys are saved by ADE's browser on the computer you are using.",
   },
   provider_logins: {
     allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",

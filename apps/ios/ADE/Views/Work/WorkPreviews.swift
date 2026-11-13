@@ -1571,6 +1571,10 @@ enum ADEPreviewScreen: String, CaseIterable {
   case hubAccount = "hub-account"
   /// Every Hub status line and empty grid of the account project list.
   case hubAccountStates = "hub-account-states"
+  /// Settings › Account › Passwords over fixture items. See `PasswordsPreviewHost`.
+  case passwords = "passwords"
+  /// One fixture login's detail, with its live authenticator code.
+  case passwordDetail = "password-detail"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1837,6 +1841,10 @@ struct ADEPreviewScreenHost: View {
       HubAccountPreviewHost()
     case .hubAccountStates:
       HubAccountStatesPreviewHost()
+    case .passwords:
+      PasswordsPreviewHost(detail: false)
+    case .passwordDetail:
+      PasswordsPreviewHost(detail: true)
     }
   }
 }
