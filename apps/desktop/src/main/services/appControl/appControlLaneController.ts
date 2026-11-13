@@ -1270,6 +1270,33 @@ const APP_CONTROL_SCREENCAST_PARAMS = {
 } as const;
 
 /**
+ * Resolves once the shell has no live process. False when it still has one
+ * after `timeoutMs`: a stop that could not end the old app in time.
+ */
+export const waitForShellExit = async (
+  ptyService: AppControlPtyService,
+  terminalSessionId: string,
+  timeoutMs: number,
+): Promise<boolean> => {
+  if (!ptyService.hasLivePty(terminalSessionId)) return true;
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(!ptyService.hasLivePty(terminalSessionId));
+    };
+    const unsubscribe = ptyService.onExit((event) => {
+      if (event.sessionId === terminalSessionId) finish();
+    });
+    const timer = setTimeout(finish, timeoutMs);
+    timer.unref?.();
+  });
+};
+
+/**
  * One lane's App Control session and everything that hangs off it: the CDP
  * pollers, the screencast socket, the diagnostics tallies and the agent
  * trace. The service keeps one of these per lane.
@@ -2085,7 +2112,7 @@ export function createAppControlLaneController(context: AppControlLaneController
   const throwIfDisposed = (): void => {
     if (disposed) throw new AdeExpectedError("App Control on this lane was closed before the app started.", "user");
   };
-  const launch =(launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
+  const launch = (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
     const run = launchQueue.then(() => launchNow(launchArgs));
     launchQueue = run.catch(() => {});
     return run;
@@ -2160,32 +2187,6 @@ export function createAppControlLaneController(context: AppControlLaneController
     return null;
   };
 
-  /**
-   * Resolves once the shell has no live process. False when it still has one
-   * after `timeoutMs`: a stop that could not end the old app in time.
-   */
-  const waitForShellExit = async (
-    ptyService: AppControlPtyService,
-    terminalSessionId: string,
-    timeoutMs: number,
-  ): Promise<boolean> => {
-    if (!ptyService.hasLivePty(terminalSessionId)) return true;
-    return await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        unsubscribe();
-        resolve(!ptyService.hasLivePty(terminalSessionId));
-      };
-      const unsubscribe = ptyService.onExit((event) => {
-        if (event.sessionId === terminalSessionId) finish();
-      });
-      const timer = setTimeout(finish, timeoutMs);
-      timer.unref?.();
-    });
-  };
 
   /**
    * Sessions launched onto the lane's Linux screen. Their App Control calls

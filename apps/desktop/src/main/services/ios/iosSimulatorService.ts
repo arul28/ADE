@@ -6217,15 +6217,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const leasesEnded = deviceLeases.endChat(trimmed);
     if (leasesEnded > 0) args.logger.info("apple.device_leases_ended_with_chat", { chatSessionId: trimmed, count: leasesEnded });
     // A chat's turn ending also ends the recordings it started automatically.
-    // For a turn end that comes after the session claims below, for the same
-    // reason; when the chat went away the order does not matter.
-    const endRecordings = () => recordings.onTurnEnded(trimmed).catch((error: unknown) => {
+    // Started here, with no await before it, so the list of recordings to stop
+    // is fixed now: a recording the chat's next turn starts while the claims
+    // below are released is not this turn's. On a turn end it runs beside the
+    // claim releases (nothing is shut down then) and is awaited after them.
+    const recordingsEnded = recordings.onTurnEnded(trimmed).catch((error: unknown) => {
       args.logger.debug("apple.recording_turn_end_failed", {
         chatSessionId: trimmed,
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    if (!options.keepRunning) await endRecordings();
+    if (!options.keepRunning) await recordingsEnded;
     let result: IosSimulatorShutdownResult = { released: false, previousSession: null };
     for (const runtime of [...runtimes.values()]) {
       // A chat can hold a device session without holding an app session, so the
@@ -6258,7 +6260,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       const released = await shutdown({ chatSessionId: trimmed, laneId: runtime.laneId, force: false });
       if (released.released) result = released;
     }
-    if (options.keepRunning) await endRecordings();
+    if (options.keepRunning) await recordingsEnded;
     return result;
   };
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { remoteWorkUseKey, type RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
@@ -213,6 +213,8 @@ type RemoteDeviceProps = {
 function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
   const laneId = use.workCopyLaneId;
   const [state, setState] = useState<RemoteDeviceState>("loading");
+  // Read again when the chat uses the copy anew: set by the subscription below.
+  const readAgainRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     let cancelled = false;
     // Only the newest read answers: an older one that lands last is stale.
@@ -225,15 +227,27 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
         .catch((error: unknown) => { if (isLatest()) setState(failedRead(error)); });
     };
     read();
+    readAgainRef.current = read;
     const unsubscribe = kind.follow(laneId, remotePin, read);
     return () => {
       cancelled = true;
+      readAgainRef.current = null;
       unsubscribe?.();
     };
     // Keyed by the component's key (pin key + lane); the pin object is stable for it.
-    // A renewed use (same lane, new start) reads again: its report must not reuse the old reading.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [laneId, kind, use.lastStartedAt]);
+  }, [laneId, kind]);
+  // A renewed use (same lane, new start) reads again, so its report does not
+  // reuse an old "no device". Only then: a chat sends taps and shots many
+  // times a minute, and a device already seen stays seen through its events.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const lastSeenStartRef = useRef(use.lastStartedAt);
+  useEffect(() => {
+    if (use.lastStartedAt === lastSeenStartRef.current) return;
+    lastSeenStartRef.current = use.lastStartedAt;
+    if (stateRef.current !== "device") readAgainRef.current?.();
+  }, [use.lastStartedAt]);
   const hasDevice = state === "device" ? true : state === "none" ? false : null;
   useEffect(() => {
     if (hasDevice !== null) onDeviceState?.(use, hasDevice);

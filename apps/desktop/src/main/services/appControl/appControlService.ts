@@ -66,6 +66,7 @@ import {
   providersFor,
   readAppProcessId,
   requireSupportedDriver,
+  waitForShellExit,
   type AppControlLaneController,
   type AppControlLaneRef,
   type CreateAppControlServiceArgs,
@@ -477,19 +478,7 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
       const ptyService = args.ptyService;
       if (!shellId || !ptyService) return;
       await controllers.get(laneId)?.stop({ force: true });
-      if (!ptyService.hasLivePty(shellId)) return;
-      await new Promise<void>((resolve) => {
-        const finish = () => {
-          clearTimeout(timer);
-          unsubscribe();
-          resolve();
-        };
-        const unsubscribe = ptyService.onExit((event) => {
-          if (event.sessionId === shellId) finish();
-        });
-        const timer = setTimeout(finish, REMOTE_WORK_APP_STOP_WAIT_MS);
-        timer.unref?.();
-      });
+      await waitForShellExit(ptyService, shellId, REMOTE_WORK_APP_STOP_WAIT_MS);
     },
   });
 

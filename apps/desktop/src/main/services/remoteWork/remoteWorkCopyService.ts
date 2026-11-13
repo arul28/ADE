@@ -937,8 +937,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           );
         }
       }
-      if (appShells.size) await stopCopyApps(owner, syncBusyError);
+      // The commit first: a commit that is not on origin refuses here, and
+      // the running app must not have been stopped for a launch that refuses.
       await ensureCommit(source);
+      if (appShells.size) await stopCopyApps(owner, syncBusyError);
       const syncedTree = await syncCopy(copy.path, source, patch, keptFiles);
       updateCopy(owner, (current) => (current ? {
         ...current,
