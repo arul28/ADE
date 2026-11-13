@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { ArrowSquareOut, CreditCard } from "@phosphor-icons/react";
 import {
-  CLOUD_PLAN_CLEANUP_GRACE_DAYS,
   CLOUD_PLAN_LABELS,
   CLOUD_PLAN_RANK,
   cloudCatalogHasPro,
@@ -13,6 +12,7 @@ import {
   formatCloudHours,
   type CloudAccountState,
   type CloudPaidPlanId,
+  type CloudPlanCleanupPick,
   type CloudPlanFacts,
   type CloudPlanId,
 } from "../../../../shared/adeCloud";
@@ -22,6 +22,7 @@ import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { PushAllWorkButton } from "../../remoteTargets/PushAllWorkButton";
 import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
+import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
 
 /** The monthly limits a person picks for extra disk, in dollars. */
 const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
@@ -42,6 +43,8 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diskLimit, setDiskLimit] = useState(DEFAULT_EXTRA_DISK_LIMIT);
+  // Pro to Plus over Plus's limits: the question first (CloudPlanLimitsDialog).
+  const [askingPlus, setAskingPlus] = useState(false);
 
   const catalog = cloudCatalogOf(account);
   const pro = cloudCatalogHasPro(catalog) ? catalog.plans.pro : null;
@@ -106,27 +109,45 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
       if (ok) await checkout("pro");
       return;
     }
-    // Pro to Plus starts with the next month and is never refused. When the
-    // account is over Plus's limits, the server's sentence says what has to
-    // fit and what ADE removes otherwise (their work pushed first).
-    const preview = account.downgradePreviews?.plus ?? null;
-    const removalDate = formatCloudDate(billing.periodEnd + CLOUD_PLAN_CLEANUP_GRACE_DAYS * 86_400_000);
+    // Pro to Plus starts with the next month. Over Plus's limits, ADE asks
+    // first: clean up yourself (no move), or pick what ADE frees now.
+    if (account.downgradePreviews?.plus) {
+      setAskingPlus(true);
+      return;
+    }
     const ok = await confirmDialog({
       title: "Move to Plus?",
-      message: preview
-        ? `You move to Plus on ${formatCloudDate(billing.periodEnd)}. ${preview.sentence} This happens on ${removalDate}.`
-        : `You move to Plus on ${formatCloudDate(billing.periodEnd)}. Pro stays until then.`,
+      message: `You move to Plus on ${formatCloudDate(billing.periodEnd)}. Pro stays until then.`,
       confirmLabel: "Move to Plus",
     });
     if (!ok) return;
     await run(async () => {
-      const result = await bridge?.openCheckout?.("plus");
-      const cleanup = result?.cleanup;
-      showToast({
-        title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
-        ...(cleanup?.sentence ? { message: cleanup.sentence } : {}),
-      });
+      await bridge?.openCheckout?.("plus");
+      showToast({ title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.` });
     });
+  };
+
+  // The dialog shows a refusal itself; only a move that went through reaches the toast.
+  const moveToPlusWith = async (pick: CloudPlanCleanupPick) => {
+    const result = await bridge?.openCheckout?.("plus", pick);
+    if (result?.change !== "next_period") throw new Error("ADE Cloud didn't change your plan. Nothing changed. Try again in a moment.");
+    const freeing = result.freeing?.length ?? 0;
+    if (pick.instanceIds.length > 0 && freeing === 0) {
+      // The plan changed but the pick wasn't queued (another pick was running): say so, never a quiet success.
+      showToast({
+        tone: "warning",
+        title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
+        message: "ADE didn't start freeing the computers you picked. Choose them again from the notice on this page.",
+      });
+      onChanged();
+      return;
+    }
+    showToast({
+      tone: "success",
+      title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
+      ...(freeing ? { message: planCleanupPickSentence(pick.push, freeing) } : {}),
+    });
+    onChanged();
   };
 
   const actionFor = (column: Column): { label: string; primary: boolean } | null => {
@@ -214,7 +235,7 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         </div>
         {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
           <p className="adecd-plan-fine" data-tone="warn">
-            If you cancel in Manage billing: {account.downgradePreviews.free.sentence}
+            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until they fit; you clean up or pick what ADE frees here.
           </p>
         ) : null}
         <p className="adecd-plan-fine">
@@ -292,6 +313,15 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
           <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: "ADE Cloud couldn't change your plan", detail: error, dismiss: { onDismiss: () => setError(null) } }} />
         ) : null}
       </div>
+      {askingPlus && account.downgradePreviews?.plus ? (
+        <CloudPlanLimitsDialog
+          cleanup={account.downgradePreviews.plus}
+          mode="downgrade"
+          currentPlanLabel={cloudPlanLabelOf(account, catalog)}
+          onClose={() => setAskingPlus(false)}
+          onPick={moveToPlusWith}
+        />
+      ) : null}
     </section>
   );
 }

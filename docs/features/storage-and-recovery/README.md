@@ -76,7 +76,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
 | `apps/ade-cli/src/services/runtime/syncFsCallTracker.ts`, `apps/ade-cli/src/services/projects/projectRootAccessMonitor.ts`, `apps/desktop/src/main/services/state/unansweringRoots.ts` | A folder waiting on a permission prompt or a hung drive: the tracker names the synchronous file call the main thread is stuck in (shared memory the watchdog worker reads) and fails calls under a folder that is not answering; the monitor finds such folders off the main thread, one probe per drive, and tells devices. See [A folder waiting on a permission prompt](#a-folder-waiting-on-a-permission-prompt). |
-| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts`, `brainLoopWatchdogWorker.ts` | Worker-thread **event-loop watchdog** for the machine brain (the worker's source and its stall evaluation live in `brainLoopWatchdogWorker.ts`). On macOS the worker also takes a 2 s native `sample` of a wedged brain before the kill (12 s cap), so the report names the blocking call. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
+| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts`, `brainLoopWatchdogWorker.ts` | Worker-thread **event-loop watchdog** for the machine brain (the worker's source and its stall evaluation live in `brainLoopWatchdogWorker.ts`). On macOS the worker also takes a 2 s native `sample` of a wedged brain before the kill (12 s cap), so the report names the blocking call. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain, unless the machine caused it (memory pressure, a stuck drive), which it waits out up to 5 min (see [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice)). On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
 | `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
 | `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
@@ -539,6 +539,35 @@ was running: remote sync commands and local `ade/actions/call` requests both
 register with `trackBrainLoopWatchdogCommand`, and a start or end is sent to
 the worker at once, so a call that blocks the moment it starts is named instead
 of reported as `idle`.
+
+The kill is only for a freeze the brain caused. Every terminal and agent
+session runs under the brain, so a restart ends all of them, and it cannot fix
+a freeze the machine caused. Before it kills, the worker asks
+`brainLoopFreezeCause` who froze the loop, from the process's page faults and
+CPU since the last heartbeat (as rates per 30 s) and the synchronous file call
+it is inside: `memory` (50+ major faults per 30 s, or 50,000+ minor faults per
+30 s while the process used at most half the time on the CPU, so a loop that
+allocates as it spins is still its own), `drive` (one file call open 10 s or
+more), or `self`. Windows never waits on memory: libuv counts every Windows
+fault as major. It judges again every tick, so a freeze that outlasts the
+machine's trouble becomes the brain's own. For `memory` and `drive` it logs
+`brain.loop_watchdog_waiting_on_machine` once and keeps waiting up to
+`BRAIN_LOOP_MACHINE_WAIT_CEILING_MS` (5 min), after which it kills as before.
+Every heartbeat interval (15 s) while it waits, it rewrites the breadcrumb
+(with `freezeCause`) and refreshes the machine heartbeat it published (marked
+`machineWait`), so the outside watchdog (`brainWatchdogCheck.ts`, which kills
+a brain whose beat is 90 s old) does not end the wait early, and a kill from
+outside still leaves the evidence. Every breadcrumb carries `freezeCause`
+(`self` for the brain's own freeze), which survives into `last-wedge.json` and
+`lastWedge`. When the freeze ends it logs
+`brain.loop_watchdog_machine_wait_ended` and removes its own breadcrumb (not
+one another brain on the same home wrote, and not one a kill already started
+from), so the next start reports no wedge. The breadcrumb names its writer's
+`pid`: a brain starting on the same home while that writer is alive and the
+file is under 2 minutes old leaves it alone, so a live wait is never counted
+as a crash (or against a project's open strikes). On 2026-11-13 a Mac Studio
+with 12.6 of 13.3 GB of swap in use froze the brain for 35 s while it paged,
+and the old rule killed it and every Claude Code session and subagent under it.
 
 The Node report is written by the main thread, which is the stuck one, so it
 only lands if the loop frees up inside the grace. On macOS the worker therefore

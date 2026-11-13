@@ -23,6 +23,8 @@ import type {
   CloudInviteRedeemResult,
   CloudLaneWithoutComputer,
   CloudPaidPlanId,
+  CloudPlanCleanupPick,
+  CloudPlanId,
   CloudReferralSummary,
   CloudUpdateChannel,
   CloudUpdateCheck,
@@ -132,7 +134,13 @@ export type CloudProvider = {
    * asking for its other plan the server changes the plan itself and answers
    * `{ url: null, change }`.
    */
-  billingCheckout(plan?: CloudPaidPlanId): Promise<CloudCheckoutResult>;
+  billingCheckout(plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudCheckoutResult>;
+  /**
+   * The person's pick for an account already over a cheaper plan
+   * (`POST /cloud/billing/plan-cleanup`): ADE frees exactly those computers,
+   * their work pushed first when `push`. Answers the account after it.
+   */
+  pickPlanCleanup(input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState>;
   /** Stripe's billing portal for changing the card or cancelling. */
   billingPortal(): Promise<{ url: string }>;
   /** Paid accounts only; extra hours are off by default. */

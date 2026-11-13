@@ -11,7 +11,9 @@ import type {
   CloudPaidPlanId,
   CloudPlanChangeTiming,
   CloudPlanCleanup,
+  CloudPlanCleanupComputer,
   CloudPlanCleanupDone,
+  CloudPlanCleanupPick,
   CloudPlanFacts,
   CloudPlanId,
   CloudTimedWakesCancelled,
@@ -36,7 +38,7 @@ export {
 } from "../../../account-directory/src/cloud/contract";
 export type { CloudEarnedHours, CloudFreePlan, CloudFreePlanState, CloudInviteRedeemResult, CloudInviteRefusalReason, CloudReferralSummary };
 /** The shared sentences for a cheaper plan's limits and cancelled timed wakes (the server's emails say the same). */
-export { planCleanupDoneSentence, timedWakesCancelledSentence, CLOUD_PLAN_CLEANUP_GRACE_DAYS } from "../../../account-directory/src/cloud/contract";
+export { overPlanLimitsSentence, planCleanupDoneSentence, planCleanupSentence, timedWakesCancelledSentence } from "../../../account-directory/src/cloud/contract";
 
 export { formatCloudCents };
 
@@ -739,15 +741,16 @@ export function cloudShapeWithin(shape: CloudShapeId, max: CloudShapeId): boolea
 }
 
 export type { CloudAccountState, CloudCatalog, CloudHoursState, CloudPaidPlanId, CloudPlanChangeTiming, CloudPlanFacts, CloudPlanId };
-export type { CloudPlanCleanup, CloudPlanCleanupDone, CloudTimedWakesCancelled };
+export type { CloudPlanCleanup, CloudPlanCleanupComputer, CloudPlanCleanupDone, CloudPlanCleanupPick, CloudTimedWakesCancelled };
 export type { CloudDiskUsage, CloudDiskUsageItem, CloudDiskUsageKind, CloudDiskUsageReport, CloudLaneWork };
 
 /**
  * What opening checkout did: a browser page opened, or the plan changed
- * without one. A downgrade over the cheaper plan's limits carries `cleanup`,
- * what those limits will free (show its `sentence`).
+ * without one. A downgrade made with a pick carries `freeing`, the computers
+ * ADE frees now; one made without a pick over the cheaper plan's limits
+ * carries `cleanup`, what goes over (show its `sentence`).
  */
-export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup };
+export type CloudOpenCheckoutResult = { opened: boolean; change?: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup; freeing?: string[] };
 
 /** The server's sentence for what needs hours at 0. The server enforces it; these two only stop a request that can't work. */
 export const CLOUD_OUT_OF_HOURS_MESSAGE = "You're out of ADE Cloud hours for this period.";
@@ -843,25 +846,37 @@ export function readCloudInviteRefusalReason(value: unknown): CloudInviteRefusal
 export function readCloudPlanCleanup(value: unknown): CloudPlanCleanup | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  if (typeof raw.sentence !== "string" || !raw.sentence) return null;
+  if (typeof raw.sentence !== "string") return null;
   if (raw.planId !== "free" && raw.planId !== "plus" && raw.planId !== "pro") return null;
   const text = (entry: unknown): string | null => (typeof entry === "string" && entry ? entry : null);
-  const computers = Array.isArray(raw.computers)
-    ? raw.computers.flatMap((entry): CloudPlanCleanup["computers"] => {
+  const computersOf = (list: unknown): CloudPlanCleanupComputer[] => (Array.isArray(list)
+    ? list.flatMap((entry): CloudPlanCleanupComputer[] => {
       if (!entry || typeof entry !== "object") return [];
       const computer = entry as Record<string, unknown>;
       if (typeof computer.instanceId !== "string" || !computer.instanceId) return [];
-      return [{ instanceId: computer.instanceId, name: text(computer.name), laneName: text(computer.laneName), branch: text(computer.branch), diskGb: finite(computer.diskGb) }];
+      return [{
+        instanceId: computer.instanceId,
+        name: text(computer.name),
+        laneName: text(computer.laneName),
+        branch: text(computer.branch),
+        diskGb: finite(computer.diskGb),
+        ...(typeof computer.createdAt === "number" && Number.isFinite(computer.createdAt) ? { createdAt: computer.createdAt } : {}),
+      }];
     })
-    : [];
+    : []);
+  const freeing = raw.freeing && typeof raw.freeing === "object" ? raw.freeing as Record<string, unknown> : null;
   return {
     planId: raw.planId,
-    computers,
+    computers: computersOf(raw.computers),
+    ...(Array.isArray(raw.choices) ? { choices: computersOf(raw.choices) } : {}),
     usedGb: finite(raw.usedGb),
     limitGb: finite(raw.limitGb),
     computerCount: finite(raw.computerCount),
     computerLimit: finite(raw.computerLimit),
-    dueAt: typeof raw.dueAt === "number" && Number.isFinite(raw.dueAt) ? raw.dueAt : null,
+    startsAt: typeof raw.startsAt === "number" && Number.isFinite(raw.startsAt) ? raw.startsAt : null,
+    freeing: freeing && typeof freeing.push === "boolean" && Array.isArray(freeing.instanceIds) && typeof freeing.at === "number"
+      ? { push: freeing.push, at: freeing.at, instanceIds: freeing.instanceIds.filter((id): id is string => typeof id === "string") }
+      : null,
     sentence: raw.sentence,
   };
 }
@@ -1024,10 +1039,11 @@ export type CloudMachineActionResult = {
   message: string;
   /**
    * What stops the action, so the card can offer the way out:
-   * plans and hours (0 hours, or more disk than the free plan has), or wait
-   * for a backup window.
+   * plans and hours (0 hours, more disk than the free plan has, or more
+   * computers or disk than the plan in force allows), or wait for a backup
+   * window.
    */
-  blocker: "rate_limited" | "out_of_hours" | "over_plan_disk" | null;
+  blocker: "rate_limited" | "out_of_hours" | "over_plan_disk" | "over_plan_limits" | null;
   /** For `delete`: the box is gone but its account row could not be removed. */
   accountRowLeft?: boolean;
   /**
