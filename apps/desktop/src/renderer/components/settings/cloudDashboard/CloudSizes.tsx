@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { Cpu } from "@phosphor-icons/react";
-import { cloudCatalogOf, cloudHoursLeftMilli, type CloudAccountState } from "../../../../shared/adeCloud";
+import { cloudCatalogOf, cloudExtraHourCentsOf, cloudHoursLeftMilli, cloudPlanIdOf, type CloudAccountState } from "../../../../shared/adeCloud";
 import { CLOUD_AWAKE_TIME_LINE, cloudTiers } from "../../../../shared/cloudTiers";
 import { pickCloudDefaultTier } from "../../../lib/cloudDefaultTier";
 import { useRootAppStore } from "../../../state/appStore";
@@ -17,7 +17,8 @@ export function CloudSizes({ account }: { account: CloudAccountState }) {
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const current = tiers.find((tier) => tier.id === defaultTier) ?? tiers[0] ?? null;
   const leftMilli = cloudHoursLeftMilli(account);
-  const extraCents = account.extraHours.available ? catalog.extraHourCents : null;
+  // The account's own plan's extra-hour price (2, 1.5 or 1.2 cents).
+  const extraCents = account.extraHours.available ? cloudExtraHourCentsOf(cloudPlanIdOf(account), catalog) : null;
   return (
     <section id="cloud-sizes" className="kit-card adecd-card" aria-label="Sizes">
       <header className="kit-card-head">

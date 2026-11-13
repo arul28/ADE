@@ -64,7 +64,7 @@ export function formatCloudStatus(value: unknown): string {
   if (disk) rows.push(["Disk", `${cloudHoursText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
   const computers = isRecord(status.computers) ? status.computers : null;
   // No plan limits how many computers an account has: a count, never "of N" (an older app may still send max).
-  if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} · ${String(computers.awake ?? 0)} awake`]);
+  if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} ${computers.inUse === 1 ? "computer" : "computers"} · ${String(computers.awake ?? 0)} awake`]);
   rows.push(["Default size", typeof status.defaultSize === "string" ? status.defaultSize : "unknown here (the app's choice)"]);
   const agents = isRecord(status.agents) ? status.agents : null;
   if (agents) {

@@ -244,12 +244,11 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         </div>
         {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
           <p className="adecd-plan-fine" data-tone="warn">
-            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until they fit; you clean up or pick what ADE frees here.
+            If you cancel in Manage billing: {account.downgradePreviews.free.sentence} ADE deletes nothing on its own. Once Free starts, you can't make a new computer until their disk fits; you clean up or pick what ADE frees here.
           </p>
         ) : null}
         <p className="adecd-plan-fine">
           An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster (see Sizes). Disk is what all your computers hold at one time. Make as many computers as you like.
-          {showPhoneMinutes ? " Phone minutes are for ADE Cloud's phone simulator, coming soon." : ""}
         </p>
 
         {extraHours.available ? (
