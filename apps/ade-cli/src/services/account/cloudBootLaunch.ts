@@ -82,8 +82,6 @@ export type CloudBootLaunchDeps = {
     start: (args: ChatLaunchArgs) => Promise<ChatLaunchSnapshot>;
     get: (launchId: string) => Promise<ChatLaunchSnapshot | null>;
     subscribe: (listener: (event: ChatLaunchEvent) => void) => () => void;
-    /** "Start anyway" after a failed lane setup (`chatLaunchService.startNow`). */
-    startNow: (launchId: string) => Promise<ChatLaunchSnapshot | null>;
   }>;
   /** Signed in: let ADE Cloud sleep this computer when idle (its brain keeps it awake while it works), and name this machine on the computer (`ade_machine_key`). */
   afterJoin?: () => Promise<void>;
@@ -581,23 +579,8 @@ async function follow(
       unsubscribe?.();
       resolve();
     };
-    // Nobody is at a server launch to press "Start anyway" when the lane's setup
-    // fails (a repository's setup written for a Mac, say): this computer presses
-    // it, once. The agent starts and the failed step stays as a warning.
-    let startedAnyway = false;
     // A failed launch waits for a retry on this computer; it is reported once and followed on.
     const onSnapshot = (snapshot: ChatLaunchSnapshot) => {
-      const setupFailed = snapshot.phase === "failed" && snapshot.stages.some((stage) => stage.id === "environment" && stage.status === "failed");
-      if (setupFailed && !startedAnyway) {
-        startedAnyway = true;
-        const step = snapshot.stages.find((stage) => stage.id === "environment");
-        logger.warn("cloud_boot_launch.setup_failed_started_anyway", { launchId, error: step?.error?.slice(0, 300) ?? null });
-        launches.startNow(launchId).catch((error: unknown) => {
-          logger.warn("cloud_boot_launch.start_anyway_failed", { launchId, error: errorText(error) });
-          onSnapshot(snapshot);
-        });
-        return;
-      }
       queue = queue.then(() => send(snapshot)).then(
         (terminal) => {
           if (terminal && snapshot.phase !== "failed") end();
@@ -635,7 +618,7 @@ export type CloudBootLaunchHost = {
   directoryBaseUrl: () => string | null;
   projectRegistry: ProjectRegistry;
   /** The launch pipeline of one project's runtime, once its scope is open. */
-  chatLaunchService: (projectId: string) => Promise<Pick<ChatLaunchService, "start" | "get" | "subscribe" | "startNow"> | null | undefined>;
+  chatLaunchService: (projectId: string) => Promise<Pick<ChatLaunchService, "start" | "get" | "subscribe"> | null | undefined>;
   /** This brain's ADE Cloud client (`cloudBrainAccess`). */
   cloudClient: () => Promise<CloudProvider | null>;
   holdCloudWork: HoldCloudWork | null;
@@ -725,7 +708,6 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
           start: (args) => service.start(args),
           get: async (launchId) => service.get({ launchId }),
           subscribe: (listener) => service.subscribe(listener),
-          startNow: (launchId) => service.startNow({ launchId }),
         };
       },
       afterJoin: async () => {
