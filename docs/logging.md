@@ -224,7 +224,19 @@ asked for it.
 mis-reported as an event-loop stall. Sleeps of 2 to 59 seconds are logged as
 `brain.suspend_gap` too, and the watchdog's lines name the `pid` and
 `socketPath` of the brain that wrote them (`brain.recovered_from_wedge` is the
-exception, since it describes the previous process).
+exception, since it describes the previous process). A freeze the machine
+caused (memory pressure, a stuck drive) is waited out instead of killed:
+the worker writes `brain.loop_watchdog_waiting_on_machine` (warn, to stderr:
+cause, blocked time, fault and CPU counts) once per wait and
+`brain.loop_watchdog_machine_wait_ended` (info) when it ends, and every wedge
+record carries a closed `freezeCause` (`self`, `memory`, `drive`). A machine
+brain taking a chat back from a lane's test brain logs
+`agent_chat.runtime_reclaim` (info: session id, whether it was released),
+`agent_chat.runtime_reclaim_failed` (warn, so it reaches Sentry Logs through
+the log bridge) when the other brain did not answer, and the releasing brain
+logs `agent_chat.runtime_released_to_machine_brain`. None is a PostHog event:
+both happen without a person deciding anything, and a restart that does
+follow is already counted by `ade_brain_recovered`.
 `brain.memory_sample` (rss, heap,
 external, uptime; every five minutes) and `brain.memory_restart` /
 `brain.memory_restart_deferred` record the RSS slope and the planned

@@ -1336,16 +1336,20 @@ describe("createAgentChatService", () => {
             askTestBrain ? askTestBrain(sessionId) : testBrain.service.releaseChatRuntime({ sessionId }),
         });
         live.push(testBrain.service, machineBrain.service);
-        return { machineBrain: machineBrain.service, sessionId: session.id };
+        return { machineBrain: machineBrain.service, testBrain: testBrain.service, sessionId: session.id };
       };
 
-      it("sends from the machine brain once the test brain hands the chat back", async () => {
-        const { machineBrain, sessionId } = await twoBrains();
+      it("sends from the machine brain once the test brain hands the chat back, and keeps it there", async () => {
+        const { machineBrain, testBrain, sessionId } = await twoBrains();
         const { send } = installClaudeResponseFixture({ sdkSessionId: "sdk-test-brain", responseText: "Continued here." });
 
         await machineBrain.runSessionTurn({ sessionId, text: "continue here", timeoutMs: 15_000 });
 
         expect(send).toHaveBeenCalledWith(expect.stringContaining("continue here"));
+        expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/machine-brain.sock");
+        // The test brain still has the chat loaded; its next save must not
+        // erase the machine brain's claim.
+        await testBrain.updateSession({ sessionId, title: "Renamed in the test brain" });
         expect(readPersistedChatState(sessionId).runtimeOwner?.socketPath).toBe("/tmp/machine-brain.sock");
       });
 
