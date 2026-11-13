@@ -201,11 +201,17 @@ extension SyncService {
       return machine
     }
     guard !candidates.isEmpty else { return }
+    // Counted down here: a pairing joins the fleet's wanted set only at its
+    // next update, so re-reading the room would pair past the limit.
+    let initialRoom = fleet.liveMachineRoom
+    guard initialRoom > 0 else { return }
     syncAutoPairRunning = true
     Task { @MainActor in
       defer { syncAutoPairRunning = false }
+      var room = initialRoom
       for machine in candidates {
-        guard fleet.hasRoomForAnotherLiveMachine else { break }
+        guard room > 0 else { break }
+        room -= 1
         syncAutoPairedAccountMachines.insert(machine.machineKey)
         if case .failure(let failure) = await pairAccountMachineAlongsidePrimary(machine, authorization: authorization) {
           syncFleetAutoPairLog.notice("auto pair of a project copy's computer failed: \(failure.message, privacy: .public)")

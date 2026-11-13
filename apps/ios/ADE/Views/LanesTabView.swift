@@ -21,9 +21,8 @@ struct LanesRootInputs: Equatable {
   var focusedMachineKey: String?
   var focusedMachineName = ""
   var hasHostProfile = false
-  var liveMachineKeys: [String] = []
-  /// Each machine's row state ("parked", "offline"): a change redraws the
-  /// other machines' rows at once.
+  /// Each machine's row state ("parked", "offline"; "live" while live): a
+  /// change redraws the other machines' rows at once.
   var machineStateKeys: [String] = []
 
   @MainActor
@@ -43,7 +42,6 @@ struct LanesRootInputs: Equatable {
     focusedMachineKey = sync.focusedMachineKey
     focusedMachineName = sync.focusedMachineDisplayName
     hasHostProfile = sync.activeHostProfile != nil
-    liveMachineKeys = fleet.liveMachineKeys
     machineStateKeys = fleet.machines.map { "\($0.machineKey)=\($0.rowStateWord ?? "live")" }
   }
 }

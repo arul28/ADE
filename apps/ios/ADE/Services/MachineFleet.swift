@@ -109,6 +109,7 @@ final class MachineFleet: ObservableObject {
   /// before the rest of the connected set. Not saved: it follows the project.
   private var projectMachineKeys: [String] = []
   private var projectMachinesScheduled = false
+  private var projectCancellables: Set<AnyCancellable> = []
   private var lastOrder: [String] = []
   private var lastPublishedPhase: [String: MachineConnection.Phase] = [:]
   private var lastLiveKeys: Set<String> = []
@@ -132,22 +133,31 @@ final class MachineFleet: ObservableObject {
     scheduleReconcile()
   }
 
-  /// The open project, the account's copies and the rosters decide which
-  /// machines the project needs live.
+  /// The open project, the account's copies, the account's computers and
+  /// the rosters decide which machines the project needs live.
   private func observeOpenProject(_ syncService: SyncService) {
+    projectCancellables.removeAll()
     syncService.$activeProjectId
       .removeDuplicates()
       .receive(on: DispatchQueue.main)
       .sink { [weak self] _ in
         MainActor.assumeIsolated { self?.scheduleProjectMachinesUpdate() }
       }
-      .store(in: &hiddenCancellables)
+      .store(in: &projectCancellables)
     AccountProjectStore.shared.objectWillChange
       .receive(on: DispatchQueue.main)
       .sink { [weak self] _ in
         MainActor.assumeIsolated { self?.scheduleProjectMachinesUpdate() }
       }
-      .store(in: &hiddenCancellables)
+      .store(in: &projectCancellables)
+    // A copy's computer maps to a paired machine, and comes online, through
+    // the account's machine list, which can load after the project opens.
+    AccountService.shared.$machines
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] _ in
+        MainActor.assumeIsolated { self?.scheduleProjectMachinesUpdate() }
+      }
+      .store(in: &projectCancellables)
   }
 
   /// Recomputes the open project's machines once per run-loop turn.
@@ -629,17 +639,18 @@ final class MachineFleet: ObservableObject {
     }
     if next != machines {
       // A roster can add or drop a copy of the open project.
-      let rostersChanged = next.map { "\($0.machineKey)#\($0.rosterRevision)" }
-        != machines.map { "\($0.machineKey)#\($0.rosterRevision)" }
+      let rostersChanged = !next.elementsEqual(machines) {
+        $0.machineKey == $1.machineKey && $0.rosterRevision == $1.rosterRevision
+      }
       machines = next
       if rostersChanged { scheduleProjectMachinesUpdate() }
     }
   }
 
-  /// One more machine could go live without parking another one.
-  var hasRoomForAnotherLiveMachine: Bool {
+  /// How many more machines could go live without parking another one.
+  var liveMachineRoom: Int {
     let focused = syncService?.focusedMachineKey
-    return wantedKeys.filter { $0 != focused }.count < liveOtherMachineLimit
+    return max(0, liveOtherMachineLimit - wantedKeys.filter { $0 != focused }.count)
   }
 
   /// The machines that should be live: the user's connected set and the open

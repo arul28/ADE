@@ -698,7 +698,6 @@ func accountProjectOpenCopy(_ held: [(copy: AccountProjectCopy, machine: Account
   }?.copy
 }
 
-
 /// The page of a project that no reachable machine shows: the computers
 /// that hold a folder of it, and one Open for the project. Open picks the
 /// computer itself (`accountProjectOpenCopy`) and goes through the owned-link

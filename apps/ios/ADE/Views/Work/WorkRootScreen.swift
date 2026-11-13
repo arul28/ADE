@@ -2512,7 +2512,8 @@ struct WorkRootListScreen: View, Equatable {
     transitionNamespace: Namespace.ID?,
     boardCard: Bool = false
   ) -> WorkSessionListRow {
-    WorkSessionListRow(
+    let machineBadge = workMachineBadge(laneId: session.laneId, options: inputs.machineFilterOptions)
+    return WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
       // Fall back to the resolved lane (name/branch match) so legacy sessions
@@ -2530,9 +2531,9 @@ struct WorkRootListScreen: View, Equatable {
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
       // keeps its own full-width row, and drawer shells their compact form.
       duoRow: duoLayout.isWide && !boardCard && !compact,
-      machineName: workMachineBadge(laneId: session.laneId, options: inputs.machineFilterOptions)?.label,
+      machineName: machineBadge?.label,
       // Another machine with no live link: its last rows, dimmed.
-      machineIsLive: workMachineBadge(laneId: session.laneId, options: inputs.machineFilterOptions)?.isLive ?? true,
+      machineIsLive: machineBadge?.isLive ?? true,
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

@@ -82,7 +82,6 @@ struct ProviderAccountBadges: View {
 struct ProviderAccountsMachineOption: Identifiable, Equatable {
   let id: String
   let name: String
-  let isPrimary: Bool
 }
 
 /// Settings → AI accounts: the Claude and Codex logins of each connected
@@ -111,12 +110,12 @@ struct SettingsProviderAccountsPage: View {
   /// can manage its accounts from here.
   private var choices: [(option: ProviderAccountsMachineOption, host: ProviderAccountsHost)] {
     var result: [(ProviderAccountsMachineOption, ProviderAccountsHost)] = [(
-      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "Connected computer", isPrimary: true),
+      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "Connected computer"),
       syncService
     )]
     for machine in fleet.machines where machine.state == .live && machine.machineKey != primaryId {
       guard let connection = fleet.connection(for: machine.machineKey), connection.supportsProviderAccounts else { continue }
-      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name, isPrimary: false), connection))
+      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name), connection))
     }
     return result
   }
