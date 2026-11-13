@@ -24,7 +24,8 @@ export type FeatureAnalyticsName =
   | "home"
   | "mcp_servers"
   | "ade_mcp"
-  | "connections";
+  | "connections"
+  | "passwords";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -74,7 +75,12 @@ export type FeatureAnalyticsAction =
   | "github_cli_shared"
   | "github_cli_removed"
   | "github_app_connected"
-  | "github_app_disconnected";
+  | "github_app_disconnected"
+  | "passwords_switched"
+  | "logins_imported"
+  | "agent_signed_in"
+  | "agent_signed_up"
+  | "secrets_exec";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -327,6 +333,20 @@ export function captureGithubAppConnectionAnalytics(args: {
   outcome: "completed" | "cancelled" | "failed";
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "connections" });
+}
+
+/**
+ * Passwords (feature "passwords"): turned on or off on a computer, a CSV
+ * import, and an agent's sign-in, sign-up or `secrets exec`. Never the site,
+ * the account, the item, the command, a count, or an error.
+ */
+export function capturePasswordsAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  action: "passwords_switched" | "logins_imported" | "agent_signed_in" | "agent_signed_up" | "secrets_exec";
+  outcome: "enabled" | "disabled" | "completed" | "failed";
+}): void {
+  captureFeatureUsedAnalytics({ ...args, feature: "passwords" });
 }
 
 /** A private webhook URL was made (with or without its automation). */

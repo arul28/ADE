@@ -25,6 +25,7 @@
  *   POST   passwords/reset             { deviceId, confirm: "reset" } -> { dek, epoch }
  *   GET    passwords/releases          the last key releases
  */
+import * as Sentry from "@sentry/cloudflare";
 import {
   accountPageResult,
   buildAccountPageQuery,
@@ -65,18 +66,39 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
 }
 
 /** Call the key service; null when it is unreachable or unconfigured. */
+/**
+ * The key service could not answer: Passwords is unavailable for everyone
+ * until it is fixed, so it is a Sentry issue per cause (the key service has
+ * no address of its own; this Worker is the one that sees it fail). Never
+ * the account, the key or the body.
+ */
+function reportKeyServiceFailure(path: string, reason: string): void {
+  Sentry.captureMessage(`Passwords key service ${reason}`, {
+    level: "error",
+    tags: { area: "passwords", key_service_path: path, reason },
+    fingerprint: ["passwords", "key-service", reason],
+  });
+}
+
 async function keyService(env: PasswordsEnv, path: "/v1/create" | "/v1/unwrap", body: Record<string, string>): Promise<Record<string, string> | null> {
   const auth = env.KEY_SERVICE_AUTH_SECRET?.trim();
-  if (!env.PASSWORD_KEY_SERVICE || !auth) return null;
+  if (!env.PASSWORD_KEY_SERVICE || !auth) {
+    reportKeyServiceFailure(path, "not_configured");
+    return null;
+  }
   try {
     const response = await env.PASSWORD_KEY_SERVICE.fetch(`https://password-key-service.internal${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-ade-key-service-auth": auth },
       body: JSON.stringify(body),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      reportKeyServiceFailure(path, `status_${response.status}`);
+      return null;
+    }
     return (await response.json()) as Record<string, string>;
-  } catch {
+  } catch (error) {
+    reportKeyServiceFailure(path, error instanceof SyntaxError ? "unreadable" : "unreachable");
     return null;
   }
 }

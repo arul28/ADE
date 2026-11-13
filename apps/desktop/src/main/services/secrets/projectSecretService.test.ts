@@ -5,6 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatProjectSecretEnv, parseProjectSecretEnv } from "./projectSecretEnv";
 import { createProjectSecretService } from "./projectSecretService";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import { createSecretTempFileStore } from "./secretTempFiles";
+import { runWithSecrets } from "./secretExec";
+import { execFileSync } from "node:child_process";
 
 const tempRoots: string[] = [];
 
@@ -41,6 +44,7 @@ function makeVaultMock(): AccountVaultBridge & {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -524,5 +528,90 @@ describe("fresh reads", () => {
       ["UPLOADED", "account", false],
     ]);
     expect(vault.pendingKeys).toHaveBeenCalledWith(VAULT_SCOPE, "project_secret");
+  });
+});
+
+
+describe("createSecretTempFileStore", () => {
+  it("keeps a secret only as long as its chat and lifetime allow, even when a removal fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-secret-temp-files-"));
+    tempRoots.push(root);
+    let clock = Date.parse("2026-10-26T12:00:00.000Z");
+    const warn = vi.fn();
+    const store = createSecretTempFileStore({ dir: path.join(root, "temp-files"), now: () => clock, logger: { info: vi.fn(), warn } });
+
+    const kept = store.write({ chatSessionId: "chat-2", name: "API_KEY", value: "two", ttlMs: 60 * 60_000 });
+    const held = store.write({ chatSessionId: "chat-1", name: "API_KEY", value: "one" });
+    expect(fs.readFileSync(held.path, "utf8")).toBe("one");
+    if (process.platform !== "win32") expect(fs.statSync(held.path).mode & 0o777).toBe(0o600);
+
+    // Windows: something still has the file open when the chat ends.
+    const realRm = fs.rmSync;
+    const rm = vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target) === held.path) throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+      return realRm(target, options);
+    });
+    expect(store.removeForChat("chat-1")).toBe(0);
+    expect(warn).toHaveBeenCalledWith("project_secret.temp_file_remove_failed", expect.anything());
+
+    // Once it is released, the next sweep takes it although it has not expired.
+    rm.mockRestore();
+    store.sweep();
+    expect(fs.existsSync(held.path)).toBe(false);
+    expect(fs.existsSync(kept.path)).toBe(true);
+
+    clock += 60 * 60_000;
+    store.sweep();
+    expect(fs.existsSync(kept.path)).toBe(false);
+    store.dispose();
+  });
+});
+
+describe("runWithSecrets", () => {
+  it("returns the output with every secret masked, and never puts a value in the result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-secret-exec-"));
+    tempRoots.push(root);
+    const value = "dtk_9f8e7d6c5b4a3210";
+    const result = await runWithSecrets({
+      command: [process.execPath, "-e", 'const v = process.env.DEPLOY_TOKEN; console.log("token=" + v); console.log(Buffer.from(v).toString("base64")); console.error("len " + v.length);'],
+      cwd: root,
+      allowedRoots: [root],
+      secrets: { DEPLOY_TOKEN: value },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("token=[secret]");
+    expect(JSON.stringify(result)).not.toContain(value);
+    expect(JSON.stringify(result)).not.toContain(Buffer.from(value).toString("base64"));
+    expect(result.stderr.trim()).toBe(`len ${value.length}`);
+    expect(result.injected).toEqual(["DEPLOY_TOKEN"]);
+  });
+
+  // POSIX: the command's own process group. Windows uses `taskkill /T`
+  // (`terminateProcessTree`), which its own tests cover.
+  it.skipIf(process.platform === "win32")("on a timeout stops everything the command started, not only the command", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-secret-exec-"));
+    tempRoots.push(root);
+    // The background child prints its pid, then both it and the command wait.
+    const result = await runWithSecrets({
+      command: ["sh", "-c", "sleep 30 & echo $!; sleep 31"],
+      cwd: root,
+      allowedRoots: [root],
+      secrets: { DEPLOY_TOKEN: "dtk_9f8e7d6c5b4a3210" },
+      timeoutMs: 300,
+    });
+    expect(result.timedOut).toBe(true);
+    const backgroundPid = Number(result.stdout.trim());
+    expect(Number.isInteger(backgroundPid) && backgroundPid > 1, "the command printed its child's pid").toBe(true);
+    // Signalled with the command's whole group: gone, or exiting as a zombie
+    // of a parent that already died (then `ps` no longer lists it running).
+    const alive = (() => {
+      try {
+        process.kill(backgroundPid, 0);
+      } catch {
+        return false;
+      }
+      return !/^\s*Z/.test(execFileSync("ps", ["-o", "stat=", "-p", String(backgroundPid)], { encoding: "utf8" }).trim() || "Z");
+    })();
+    expect(alive).toBe(false);
   });
 });

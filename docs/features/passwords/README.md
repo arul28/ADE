@@ -9,6 +9,26 @@ with `ade browser signin`, and ADE types the login into the page itself.
 It is not the account vault (`account_vault`, `AccountVault*`), which is the
 sync store for ADE's own account data.
 
+## Source file map
+
+| Where | What |
+| --- | --- |
+| `apps/ade-cli/src/services/passwords/passwordService.ts` | The brain's service, one per ADE home: sealed cache, sync queue, key epochs, Activity, `siteForPage` / `resolveForFill` / `currentCode`. |
+| `apps/ade-cli/src/services/passwords/passwordCrypto.ts`, `passwordMatching.ts`, `passwordTotp.ts`, `passwordCsvImport.ts` | Sealing (AES-256-GCM) and the site-password generator; site matching (Public Suffix List); TOTP; CSV import. Tests: `passwordService.test.ts`. |
+| `apps/ade-cli/src/cliPasswords.ts` | `ade passwords`, `ade code`, `ade messages`: plans and text output. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Stamps the caller's chat and `calledBy` on `passwords.signin` / `signup`, `project_secret.exec` and `messages.send`; refuses `built_in_browser.signin` / `signup`. |
+| `apps/push-relay/src/passwords.ts`, `apps/password-key-service/src/index.ts` | Sealed items, key epochs and `stale_key`; the key service that wraps each account's vault key. |
+| `apps/desktop/src/main/services/passwords/passwordsDomain.ts` | The `passwords` action domain (summaries, the person's writes, `signin`, `signup`, the sign-in card). |
+| `apps/desktop/src/main/services/passwords/passwordSignin.ts`, `passwordLoginRequest.ts` | `ade browser signin` / `signup` around the browser half; the secure sign-in card. |
+| `apps/desktop/src/main/services/passwords/localPasswordsBridge.ts`, `personCheck.ts` | Desktop main's access to this computer's brain, the browser tab's Passwords IPC (login capture, WebAuthn); Touch ID / Windows Hello / confirm, and the passkey account chooser. |
+| `apps/desktop/src/main/services/builtInBrowser/builtInBrowserService.ts`, `builtInBrowserLoginOffers.ts`, `builtInBrowserPasskeys.ts`, `passkeys/` | Filling and signing up in the page, "Save to Passwords?", and the ES256 authenticator. |
+| `apps/desktop/src/preload/browserMedia.ts` | The tab preload: login capture and the page-world passkey hook. |
+| `apps/desktop/src/shared/passwordFillTarget.ts` | The one rule for which pages Passwords acts on. |
+| `apps/desktop/src/main/services/secrets/secretExec.ts` | `ade secrets exec`: run with secrets, mask the output, stop the whole tree on a timeout. |
+| `apps/desktop/src/main/services/messages/`, `messagesIntegration/` | The Messages reader worker, sender, code finder, and the `messages` domain. |
+| `apps/desktop/src/renderer/components/settings/passwords/`, `chat/PasswordLoginCard.tsx`, `chat/browser/BrowserPasswordsButton.tsx` | Settings › Passwords, the sign-in card, and the browser's key button. |
+| `apps/ios/ADE/Services/PasswordsVault.swift`, `Views/Account/PasswordsViews.swift` | The iPhone's read-only view. |
+
 ## Turning it on
 
 - **Off until the person turns it on, on each computer:** Settings ›

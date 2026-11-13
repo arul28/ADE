@@ -276,6 +276,7 @@ import {
   captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  capturePasswordsAnalytics,
   captureGhAccountSharingAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
@@ -4300,7 +4301,12 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
         allowedRoots: [runtime.projectRoot, ...lanes.map((lane) => lane.worktreePath).filter(Boolean)],
         secrets: chosen,
         timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+      }).catch((error: unknown) => {
+        capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: "failed" });
+        throw error;
       });
+      // The command ran: its own exit code is the caller's business, not a failure of exec.
+      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: result.timedOut ? "failed" : "completed" });
       const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : null;
       // One Activity row per run: which names, and the command they went to.
       // Who ran it is stamped by the RPC server, never taken from the caller.

@@ -1,4 +1,5 @@
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import { capturePasswordsAnalytics } from "../analytics/featureProductAnalytics";
 import { createDomainArgReaders } from "../adeActions/domainArgs";
 import { requestPasswordLoginFromUser } from "./passwordLoginRequest";
 import { signInWithPasswords, signUpWithPasswords, type PasswordAgentUse } from "./passwordSignin";
@@ -12,7 +13,7 @@ type OpaqueService = Record<string, unknown>;
  * tables keep them for this computer's own desktop app (user-only,
  * this-desktop-only, secret-bearing).
  */
-export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "passwordService" | "agentChatService" | "builtInBrowserService">>): OpaqueService | null {
+export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "passwordService" | "agentChatService" | "builtInBrowserService" | "productAnalyticsService">>): OpaqueService | null {
   const passwords = runtime.passwordService;
   if (!passwords) return null;
   const objectArg = createDomainArgReaders("passwords").objectArgs;
@@ -24,6 +25,23 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
   const askForLogin = chats
     ? (input: unknown) => requestPasswordLoginFromUser({ requestChatInput: (request) => chats.requestChatInput(request), passwords }, input)
     : null;
+  // One coarse product fact per decision or agent use (never the site,
+  // account, item or error), after the call settles.
+  const counted = async <T>(
+    action: "passwords_switched" | "logins_imported" | "agent_signed_in" | "agent_signed_up",
+    run: () => Promise<T>,
+    outcomeOf: (result: T) => "enabled" | "disabled" | "completed" | "failed" | null = () => "completed",
+  ): Promise<T> => {
+    try {
+      const result = await run();
+      const outcome = outcomeOf(result);
+      if (outcome) capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action, outcome });
+      return result;
+    } catch (error) {
+      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action, outcome: "failed" });
+      throw error;
+    }
+  };
   const noteAgentUse = async (use: PasswordAgentUse, line: string): Promise<void> => {
     await passwords.recordUse({ itemId: use.itemId, kind: "login", target: use.site, by: use.by, chatSessionId: use.chatSessionId });
     if (use.chatSessionId) chats?.postQuietNotice(use.chatSessionId, line);
@@ -64,7 +82,10 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
       const kind = input.kind === "secret" ? "secret" : "login";
       return passwords.recordUse({ itemId: text(input.itemId), kind, target: text(input.target), by: "person", chatSessionId: null });
     },
-    setEnabled: (args?: unknown) => passwords.setEnabled(objectArg(args).enabled === true),
+    setEnabled: (args?: unknown) => {
+      const enabled = objectArg(args).enabled === true;
+      return counted("passwords_switched", () => passwords.setEnabled(enabled), () => (enabled ? "enabled" : "disabled"));
+    },
     setCloudEnabled: (args?: unknown) => passwords.setCloudEnabled(objectArg(args).enabled === true),
     reset: (args?: unknown) => {
       // The person typed it: a stray call can't wipe the account's vault.
@@ -97,7 +118,7 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
       });
     },
     remove: (args?: unknown) => passwords.remove(text(objectArg(args).id)),
-    importCsv: (args?: unknown) => passwords.importCsv(text(objectArg(args).text)),
+    importCsv: (args?: unknown) => counted("logins_imported", () => passwords.importCsv(text(objectArg(args).text))),
     sync: () => passwords.sync(),
     resolveForFill: (args?: unknown) => {
       const input = objectArg(args);
@@ -110,16 +131,17 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
     // Each writes an Activity row and a quiet line in the agent's chat.
     ...(browser
       ? {
-          signin: (args?: unknown) => signInWithPasswords({
+          // Counted only when something was filled (not "sign in yourself").
+          signin: (args?: unknown) => counted("agent_signed_in", () => signInWithPasswords({
             browser,
             passwords,
             noteUse: (use) => noteAgentUse(use, `Signed in to ${use.site}${use.username ? ` as ${use.username}` : ""} with a saved login.`),
             requestLogin: askForLogin,
-          }, objectArg(args)),
-          signup: (args?: unknown) => signUpWithPasswords({
+          }, objectArg(args)), (result) => (result.signin?.filled.length ? "completed" : null)),
+          signup: (args?: unknown) => counted("agent_signed_up", () => signUpWithPasswords({
             browser,
             noteUse: (use) => noteAgentUse(use, `Made a new password for ${use.site}${use.username ? ` (${use.username})` : ""} and saved it to Passwords.`),
-          }, objectArg(args)),
+          }, objectArg(args))),
         }
       : {}),
   } as unknown as OpaqueService;

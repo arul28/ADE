@@ -121,8 +121,10 @@ describe("passwords relay routes", () => {
 
   it("reset starts a new key epoch and turns every old item into a tombstone", async () => {
     const { env } = createEnv();
+    const sealed = (epoch: number) => JSON.stringify({ v: 1, epoch, iv: "aXY=", tag: "dGFn", ct: "Y3Q=" });
     const before = await call(env, "user_a", "POST", "passwords/key", releaseBody);
-    await call(env, "user_a", "PUT", "passwords/items", { items: [{ id: "item_00000001", ciphertext: "sealed-old", ifRevision: "absent" }] });
+    const first = await call(env, "user_a", "PUT", "passwords/items", { items: [{ id: "item_00000001", ciphertext: sealed(1), ifRevision: "absent" }] });
+    expect(first.body.results[0].status).toBe("ok");
     expect((await call(env, "user_a", "POST", "passwords/reset", releaseBody)).status).toBe(400);
     const reset = await call(env, "user_a", "POST", "passwords/reset", { ...releaseBody, confirm: "reset" });
     expect(reset.body.epoch).toBe(2);
@@ -130,5 +132,15 @@ describe("passwords relay routes", () => {
     expect((await call(env, "user_a", "POST", "passwords/key", releaseBody)).body.dek).toBe(reset.body.dek);
     const read = await call(env, "user_a", "GET", "passwords/items");
     expect(read.body.items).toEqual([expect.objectContaining({ id: "item_00000001", ciphertext: null, deleted: true })]);
+    expect(read.body.epoch).toBe(2);
+    // A computer that has not heard of the reset still seals under epoch 1:
+    // refused (it would be unreadable everywhere else), and told the epoch.
+    const late = await call(env, "user_a", "PUT", "passwords/items", { items: [
+      { id: "item_00000002", ciphertext: sealed(1), ifRevision: "absent" },
+      { id: "item_00000003", ciphertext: sealed(2), ifRevision: "absent" },
+    ] });
+    expect(late.body.results.map((r: { status: string }) => r.status)).toEqual(["stale_key", "ok"]);
+    const after = await call(env, "user_a", "GET", "passwords/items");
+    expect(after.body.items.map((r: { id: string }) => r.id).sort()).toEqual(["item_00000001", "item_00000003"]);
   });
 });
