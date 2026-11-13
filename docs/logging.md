@@ -2117,7 +2117,8 @@ event at the expansion owner boundary (`chatMentionService` via the
 `onChatMentionsExpanded` hook, produced by
 `captureChatMentionsExpandedAnalytics`) with `feature: "chat"`,
 `action: "mention_expanded"`, `outcome: "completed"`, and `source: "runtime"`.
-It fires only when a send's text actually gained `<ade-mention>` pointer
+It fires for chat sends and for text a CLI's input box sends
+(`typeIntoAgentCliNow`), only when the text actually gained `<ade-mention>` pointer
 blocks — never per keystroke, per suggestion query, or on the idempotent
 second expansion pass — and carries no mention targets, titles, previews, or
 counts. An installation-wide `chat_mention_expanded` deduplication key with a

@@ -50891,13 +50891,9 @@ export function createAgentChatService(args: {
     if (agentCliProcessEnded(sessionId)) return { outcome: "ended" };
     // `@model:` / `@chat:` / `@lane:` … tokens from the input box get the same
     // facts block a chat send appends, so the CLI agent reads exact ids and
-    // flags instead of guessing. A failed lookup sends the text as typed.
-    let typedText = text;
-    try {
-      typedText = await chatMentionService.expandChatMentionsForSend(text);
-    } catch (error) {
-      logger.warn("agent_cli.mention_expansion_failed", { sessionId, error: getErrorMessage(error) });
-    }
+    // flags instead of guessing. The chat's own expansion step logs a failed
+    // lookup, sends the text as typed, and records the same usage event.
+    const typedText = (await chatMentionService.applyChatMentionExpansion({ sessionId, text })).text;
     // Queued texts go first: a later send must not jump the line.
     if ((await queuedAgentCliSendWaits(sessionId)).length === 0) {
       const outcome = await deliverWakeToSession({ sessionId, text: typedText, kind: "auto" });
