@@ -16,6 +16,17 @@ import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
+/**
+ * Reads whose answer is the same from every computer on the account: usage
+ * totals with `scope: "account"` and the signed-in GitHub user's calendar.
+ */
+const ACCOUNT_WIDE_READS: ReadonlySet<string> = new Set([
+  "usage.getAdeStats",
+  "usage.getGithubContributions",
+]);
+/** How long an account-wide read waits for the first computer to connect. */
+const ACCOUNT_WIDE_READ_WAIT_MS = 15_000;
+
 /** Walk a dotted member path on an adapter's surface, keeping the receiver. */
 function readPath(
   adapter: AdeWebAdapter,
@@ -326,6 +337,53 @@ export function createFederatedWebAdapter({
     adapters.add(adapter);
     return adapter;
   };
+
+  /**
+   * With no machine in front (Home with no project open) the display sits on
+   * `fallbackAdapter`, whose client may not be connected, so an account-wide
+   * read came back empty ("Activity history is unavailable here"). Any
+   * connected computer answers these the same, so one of them does.
+   */
+  const connectedComputerId = (): string | null =>
+    manager.getConnectionSnapshot().connections.find((entry) =>
+      entry.state === "connected" && manager.getClient(entry.target.id) != null)?.target.id ?? null;
+  const needsAnotherComputer = (path: PropertyKey[]): boolean =>
+    currentAdapter === fallbackAdapter
+    && ACCOUNT_WIDE_READS.has(path.map(String).join("."))
+    && fallbackClient.getStatus().state !== "connected";
+  const adapterForUnpinnedCall = (path: PropertyKey[]): AdeWebAdapter => {
+    if (!needsAnotherComputer(path)) return currentAdapter;
+    const targetId = connectedComputerId();
+    if (!targetId) return currentAdapter;
+    try {
+      return adapterForChats(targetId);
+    } catch {
+      return currentAdapter;
+    }
+  };
+  /** True while no computer can answer yet but one is on its way. */
+  const accountWideReadWaitsForComputer = (path: PropertyKey[]): boolean =>
+    needsAnotherComputer(path)
+    && connectedComputerId() == null
+    && manager.getConnectionSnapshot().connections.some((entry) => entry.state === "connecting");
+  /** Resolves when a computer is connected, or after `timeoutMs`; never rejects. */
+  const waitForConnectedComputer = (timeoutMs: number): Promise<void> => new Promise((resolve) => {
+    let done = false;
+    let dispose: (() => void) | null = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      dispose?.();
+      resolve();
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    // The manager calls a new listener at once, before `subscribe` returns.
+    dispose = manager.subscribe(() => {
+      if (connectedComputerId()) finish();
+    });
+    if (done) dispose();
+  });
 
   const disposeClosedProjectAdapters = (bindings: RemoteBinding[]) => {
     const referencedKeys = new Set(bindings.map((binding) => binding.key));
@@ -703,7 +761,15 @@ export function createFederatedWebAdapter({
             return () => {};
           }
         }
-        const { parent, value } = readPath(pinnedAdapter ?? currentAdapter, path);
+        if (!pinnedAdapter && accountWideReadWaitsForComputer(path)) {
+          // Home reads these once as the page opens, which is before the
+          // first computer has connected.
+          return waitForConnectedComputer(ACCOUNT_WIDE_READ_WAIT_MS).then(() => {
+            const { parent, value } = readPath(adapterForUnpinnedCall(path), path);
+            return typeof value === "function" ? Reflect.apply(value, parent, args) : value;
+          });
+        }
+        const { parent, value } = readPath(pinnedAdapter ?? adapterForUnpinnedCall(path), path);
         if (typeof value !== "function") return value;
         // Some adapter functions are themselves proxies so nested missing APIs
         // can keep resolving. Reflect.apply invokes the callable directly
