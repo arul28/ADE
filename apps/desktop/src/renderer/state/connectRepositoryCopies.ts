@@ -16,8 +16,12 @@
  *   opening one of its lanes wakes it.
  * - ADE Web holds at most `WEB_MACHINE_SESSION_LIMIT` connections; a
  *   background connect never parks another computer for room.
- * - One attempt per computer per `RETRY_AFTER_MS`, one at a time. No timer:
- *   it runs again only when the tab or the set of unconnected copies changes.
+ * - One attempt per computer per `RETRY_AFTER_MS`, one at a time. A pass runs
+ *   when the tab or the set of unconnected copies changes, and on window
+ *   focus (a computer started since then is online by now).
+ * - A computer the account lists as online that did not answer is tried again
+ *   on a local timer, up to `TIMED_RETRIES` times; the timer makes no call
+ *   while nothing is due. A computer that is off is not polled: focus finds it.
  */
 import { useEffect } from "react";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
@@ -29,8 +33,12 @@ import { useRepositoryCopies } from "./useRepositoryCopies";
 
 /** A computer that did not join (offline after all, unreachable) is tried again after this long. */
 const RETRY_AFTER_MS = 60_000;
+/** Timed retries for a computer that is online but did not answer; after that, focus or a change retries it. */
+const TIMED_RETRIES = 5;
 
 const attemptedAtByMachineKey = new Map<string, number>();
+/** Failed attempts in a row, for computers the account listed as online. */
+const failuresByMachineKey = new Map<string, number>();
 let running: Promise<void> | null = null;
 let queued: readonly string[] | null = null;
 
@@ -53,9 +61,15 @@ async function connectInBackground(machineKeys: readonly string[]): Promise<void
       machineKey: key,
       message: error instanceof Error ? error.message : String(error),
     }));
-    if (!result.ok && result.reason !== "declined") {
-      forwardSignalToSentry("repository.copy_connect_failed", { reason: result.reason }, `copy_connect_failed:${result.reason}`, "info");
+    if (result.ok || result.reason === "declined") {
+      failuresByMachineKey.delete(key.toLowerCase());
+      // Declined (no room, or the person's Disconnect) asked nothing of the
+      // machine: the next change, such as a freed slot, may try it at once.
+      if (!result.ok) attemptedAtByMachineKey.delete(key.toLowerCase());
+      continue;
     }
+    failuresByMachineKey.set(key.toLowerCase(), (failuresByMachineKey.get(key.toLowerCase()) ?? 0) + 1);
+    forwardSignalToSentry("repository.copy_connect_failed", { reason: result.reason }, `copy_connect_failed:${result.reason}`, "info");
   }
 }
 
@@ -87,6 +101,21 @@ export function useConnectRepositoryCopies(): void {
   )].sort().join("\n");
   useEffect(() => {
     if (!keys) return;
-    schedule(keys.split("\n"));
+    const machineKeys = keys.split("\n");
+    const pass = () => schedule(machineKeys);
+    pass();
+    window.addEventListener("focus", pass);
+    const retry = window.setInterval(() => {
+      const due = machineKeys.some((key) => {
+        const failures = failuresByMachineKey.get(key.toLowerCase()) ?? 0;
+        return failures > 0 && failures <= TIMED_RETRIES;
+      });
+      if (due) pass();
+      // A second past the retry gap, so a tick never lands just short of it.
+    }, RETRY_AFTER_MS + 1_000);
+    return () => {
+      window.removeEventListener("focus", pass);
+      window.clearInterval(retry);
+    };
   }, [keys]);
 }

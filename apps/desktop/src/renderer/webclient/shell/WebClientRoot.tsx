@@ -245,6 +245,10 @@ export function WebClientRoot({
   const workspaceSnapshotRef = useRef(workspaceSnapshot);
   accountRef.current = account;
   workspaceSnapshotRef.current = workspaceSnapshot;
+  // A directory read anywhere (a repository tab connecting its copies in the
+  // background) can bring new machines; the copies lists join a live
+  // connection to its account machine through this list, so keep it current.
+  useEffect(() => accountClient.onMachinesChanged(() => setAccount(accountClient.getSnapshot())), [accountClient]);
 
   const applyAccountPrivacy = useCallback(async (
     snapshot: BrowserAccountSnapshot,

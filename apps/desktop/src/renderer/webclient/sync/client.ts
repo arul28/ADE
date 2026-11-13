@@ -1263,7 +1263,7 @@ export class AdeSyncClient {
   }
 
   private async awaitCurrentRestoration(): Promise<void> {
-    const restoration = this.restorationPromise ?? await this.nextRestoration();
+    const restoration = this.restorationPromise ?? (await this.nextRestoration())?.restoration;
     if (!restoration) {
       throw new AdeSyncError("The computer connected without restoring the workspace.", "restoration_missing");
     }
@@ -1273,12 +1273,16 @@ export class AdeSyncClient {
   /**
    * The restoration of the next hello, when the link dropped after its hello
    * and is dialing again on its own. A first pairing saves the new computer
-   * between its hello and this wait; a socket that closed in that gap used to
-   * fail a connect that was seconds from working ("connected without
+   * between its hello and this wait; a socket that closed in that gap (a new
+   * computer hands it to its project host as soon as that host is up) used
+   * to fail a connect that was seconds from working ("connected without
    * restoring the workspace", then fine on a second try). Null when nothing
    * is dialing, the dial gives up, or no hello comes in time.
+   *
+   * The restoration comes back boxed: a promise resolved with a promise
+   * takes on that promise's result, and the caller needs the promise itself.
    */
-  private nextRestoration(): Promise<Promise<void> | null> {
+  private nextRestoration(): Promise<{ restoration: Promise<void> } | null> {
     const state = this.connection.getStatus().state;
     if (state !== "connecting" && state !== "reconnecting") return Promise.resolve(null);
     // A drop between two dials passes through "disconnected"; these end the wait.
@@ -1286,17 +1290,26 @@ export class AdeSyncClient {
     return new Promise((resolve) => {
       let done = false;
       let off: (() => void) | null = null;
-      const finish = (value: Promise<void> | null) => {
+      const finish = (restoration: Promise<void> | null) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
         off?.();
-        resolve(value);
+        resolve(restoration ? { restoration } : null);
       };
       const timer = setTimeout(() => finish(this.restorationPromise), this.restorationTimeoutMs);
       off = this.on("status", () => {
-        if (this.restorationPromise) finish(this.restorationPromise);
-        else if (gaveUp(this.connection.getStatus().state)) finish(null);
+        if (this.restorationPromise) {
+          finish(this.restorationPromise);
+          return;
+        }
+        if (!gaveUp(this.connection.getStatus().state)) return;
+        // A failed dial reports "error" and then, in the same turn, schedules
+        // the next one; give up only when nothing was scheduled.
+        queueMicrotask(() => {
+          if (this.restorationPromise) finish(this.restorationPromise);
+          else if (gaveUp(this.connection.getStatus().state)) finish(null);
+        });
       });
       if (done) off();
     });

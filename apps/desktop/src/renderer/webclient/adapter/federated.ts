@@ -860,18 +860,23 @@ export function createFederatedWebAdapter({
             // dialed in this tab) is connected first, then the call runs on
             // it. A subscription cannot wait, so it starts the connect and
             // stays off until the caller subscribes again.
-            // The pinned machine may not be the one on screen: connect it
-            // without making it the active machine.
+            // The connect is a background one. Every tab reads every
+            // computer's lanes through pinned calls, so a read in flight
+            // when a computer drops would otherwise dial it again at once:
+            // undoing the person's Disconnect and parking another computer
+            // for room, which the next read dials back. Neither happens
+            // here; the call fails as "not connected" instead.
+            const notConnected = () => markExpected(new Error("The machine is not connected."), "network");
+            const connectPinned = () => manager.connectEnvironment(pinned.targetId, { activate: false, background: true });
             if (isSubscriptionMember(path)) {
-              void manager.connectEnvironment(pinned.targetId, { activate: false }).catch(() => undefined);
+              void connectPinned().catch(() => undefined);
               console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
               return () => {};
             }
-            return manager.connectEnvironment(pinned.targetId, { activate: false }).then((): unknown => (
-              manager.getClient(pinned.targetId)
-                ? callDynamic(...args)
-                : Promise.reject(markExpected(new Error("The machine is not connected."), "network"))
-            ));
+            return connectPinned().then(
+              (): unknown => (manager.getClient(pinned.targetId) ? callDynamic(...args) : Promise.reject(notConnected())),
+              (error: unknown) => Promise.reject(error instanceof WebMachineConnectSkipped ? notConnected() : error),
+            );
           }
           try {
             pinnedAdapter = adapterForBinding(pinned);
