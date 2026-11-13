@@ -321,7 +321,8 @@ export function createLaneShareGuestCommandPrep(deps: LaneShareGuestCommandPrepD
     try {
       const snapshot = await chat.getChatEventHistory(sessionId, { signal });
       if (any(snapshot.events) || any(snapshot.pinnedEvents)) return true;
-      let beforeOffset = snapshot.tailEndOffset;
+      // Older pages start where the window starts (null: nothing older on disk).
+      let beforeOffset = snapshot.tailStartOffset;
       for (let page = 0; page < LANE_SHARE_EVENT_SCAN_MAX_PAGES && typeof beforeOffset === "number" && beforeOffset > 0; page += 1) {
         if (signal?.aborted) return false;
         const older = await chat.getChatEventHistoryPage(sessionId, { beforeOffset, signal });

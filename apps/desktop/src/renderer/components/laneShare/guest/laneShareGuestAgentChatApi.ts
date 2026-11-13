@@ -2,6 +2,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
   AgentChatSessionSummary,
+  AgentChatSteerResult,
 } from "../../../../shared/types";
 import type { LaneShareGuestState } from "../../../../shared/laneShareRights";
 import type { MachineBoundAgentChatApi } from "../../chat/agentChatApi";
@@ -199,6 +200,14 @@ export function createLaneShareGuestAgentChatApi(
     throw lastError;
   };
 
+  /** Without the send right, a message the owner may send becomes a draft for the owner. */
+  const sentAsDraft = async (args: Record<string, unknown>): Promise<boolean> => {
+    const rights = readGuestState()?.rights;
+    if (!rights || rights.speak.send || !rights.speak.drafts) return false;
+    await call("chat.createDraft", { originSessionId: args.sessionId, text: args.text });
+    return true;
+  };
+
   const summaryOf = (sessionId: string) => call<AgentChatSessionSummary | null>("chat.getSummary", { sessionId });
 
   const api = {
@@ -227,20 +236,18 @@ export function createLaneShareGuestAgentChatApi(
       const summary = await summaryOf(sessionId).catch(() => null);
       return sessionFromSummary(summary ?? ({ ...(result as object), sessionId } as AgentChatSessionSummary));
     },
-    // Without the send right, a message the owner may send becomes a draft.
     send: async (args: Record<string, unknown>) => {
-      const rights = readGuestState()?.rights;
-      if (rights && !rights.speak.send && rights.speak.drafts) {
-        await call("chat.createDraft", { originSessionId: args.sessionId, text: args.text });
-        return;
-      }
+      if (await sentAsDraft(args)) return;
       const sendArgs = guestSendArgs(args);
       // The owner's computer drops a repeated send by this id (a retry after a lost answer).
       if (typeof sendArgs.clientSendId !== "string") sendArgs.clientSendId = `lsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
       await call("chat.send", sendArgs);
     },
     // "Send now" and "interrupt" ride on the dispatch mode; the owner's gate reads it.
-    steer: (args: Record<string, unknown>) => call("chat.steer", {
+    // During a turn the pane steers; a draft-only guest still gets a draft.
+    steer: async (args: Record<string, unknown>) => (await sentAsDraft(args))
+      ? { steerId: `draft-${Date.now().toString(36)}`, queued: false }
+      : call<AgentChatSteerResult>("chat.steer", {
       ...guestSendArgs(args),
       ...(typeof args.dispatchMode === "string" ? { dispatchMode: args.dispatchMode } : {}),
     }),
