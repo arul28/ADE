@@ -358,6 +358,11 @@ preset namespace the orphan pruner sweeps. Route homes idle for 30 days are
 removed, and removing any key removes them all (they are rebuilt on the next
 launch), because a Droid route home holds its key.
 
+A CLI session started on a preset or a route lives in that home, and Import
+lists it from there (see
+[Where the other CLIs' sessions live](../terminals-and-sessions/external-session-import.md#where-the-other-clis-sessions-live)).
+Removing a route home also removes the CLI sessions in it.
+
 ## Launching on a preset
 
 Selecting a preset returns its model id plus `presetId` on the picker's

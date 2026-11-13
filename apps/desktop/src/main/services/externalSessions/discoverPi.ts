@@ -16,15 +16,32 @@ import {
   sessionFileCandidate,
   sortDiscoveryRecords,
   EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
+  adeHarnessConfigHomes,
+  uniqueByPath,
+  type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
 import { commandArrayToLine } from "../../../shared/shell";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
 import { piSessionRootForEnvironment } from "../chat/piSessionStore";
+import { startsWithAdeGuidance } from "./discoverAcpShared";
 
-function piSessionsDir(args: ExternalSessionDiscoveryArgs): string {
-  return piSessionRootForEnvironment(args.env ?? process.env);
+/**
+ * The default session tree, then the one under each preset and route home ADE
+ * runs Pi on. `PI_CODING_AGENT_DIR` moves the agent folder; Pi's own rules
+ * (`PI_CODING_AGENT_SESSION_DIR`, a `sessionDir` setting) still decide where
+ * its sessions go inside it, so the same resolver answers for both.
+ */
+function piSessionStores(args: ExternalSessionDiscoveryArgs): Array<{ root: string; configHome: ExternalSessionConfigHome | null }> {
+  const env = args.env ?? process.env;
+  return uniqueByPath([
+    { root: piSessionRootForEnvironment(env), configHome: null },
+    ...adeHarnessConfigHomes("pi", args).map((configHome) => ({
+      root: piSessionRootForEnvironment({ ...env, PI_CODING_AGENT_DIR: configHome.dir }),
+      configHome,
+    })),
+  ], (store) => store.root);
 }
 
 function sessionTitle(records: Record<string, unknown>[]): string | null {
@@ -81,8 +98,9 @@ export async function discoverPiSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const lookupId = args.sessionId?.trim() || null;
-  const candidates = collectSessionFiles(piSessionsDir(args))
-    .map((filePath) => sessionFileCandidate(filePath, {}))
+  const candidates = piSessionStores(args)
+    .flatMap(({ root, configHome }) => collectSessionFiles(root)
+      .map((filePath) => sessionFileCandidate(filePath, { configHome })))
     .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
     .sort((left, right) => right.mtimeMs - left.mtimeMs);
   // An exact lookup must search the whole tree: the requested native session
@@ -101,6 +119,11 @@ export async function discoverPiSessions(
     const cwd = normalizeProviderCwd(asString(header.cwd));
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const normalizedRecords = jsonl.map(asRecord).filter((record): record is Record<string, unknown> => record !== null);
+    const preview = firstUserTextFromRecords(normalizedRecords);
+    // ADE's own Pi chats open with its guidance block, as for Kimi, Qwen and
+    // Grok. A chat that is still open is also hidden by its chat ref; this
+    // keeps an archived or removed-lane chat (or one in a route home) out.
+    if (!args.includeAdeOwned && startsWithAdeGuidance(preview)) continue;
     const messages = normalizedRecords
       .map(externalSessionMessageFromRecord)
       .filter((message): message is NonNullable<typeof message> => message !== null)
@@ -111,7 +134,7 @@ export async function discoverPiSessions(
       id,
       cwd,
       title: sessionTitle(normalizedRecords),
-      preview: firstUserTextFromRecords(normalizedRecords),
+      preview,
       messages,
       createdAt: timestamp,
       updatedAt: candidate.mtimeMs,
@@ -121,6 +144,8 @@ export async function discoverPiSessions(
       sourceMtimeMs: candidate.mtimeMs,
     });
     record.sizeBytes = candidate.size;
+    // The ADE home the session lives in, so an import resumes it there.
+    if (candidate.configHome) record.configHome = candidate.configHome;
     records.push(record);
     seen.add(id);
   }

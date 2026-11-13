@@ -4439,6 +4439,9 @@ export function createPtyService({
     try {
       const sessions = await discoverPiSessions({
         ...(args.env ? { env: args.env } : {}),
+        // This launch's own store only: its env already names the agent
+        // folder, and a session in another preset's home is never this one.
+        defaultHomeOnly: true,
         cwd: args.cwd,
         scopeRoots: [args.cwd],
         limit: 200,
@@ -6572,6 +6575,23 @@ export function createPtyService({
     } catch {
       return null;
     }
+  };
+
+  /**
+   * A routed preset whose model goes through ADE's proxy resolves only once
+   * the proxy runs. After a brain restart nothing has started it, so a resume
+   * came back with the right home but none of the route's env. New launches
+   * prepare the same way before their synchronous resolve.
+   */
+  const prepareResumePresetLaunch = async (
+    provider: string,
+    metadata: Pick<TerminalResumeMetadata, "launch" | "presetId" | "credentialId"> | null | undefined,
+  ): Promise<void> => {
+    if (!metadata) return;
+    const presetId = trackedCliResumePresetId(metadata);
+    const credentialId = trackedCliResumeCredentialId(metadata);
+    if (!presetId && !credentialId) return;
+    await prepareHarnessLaunch({ provider, presetId, credentialId }).catch(() => false);
   };
 
   /**
@@ -8853,6 +8873,7 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
+      await prepareResumePresetLaunch(provider, resumableSession.resumeMetadata);
       const resumeUserMcp = await resolveResumeUserMcp(resumableSession, provider);
       // Resolve Computer Use before this single-flight snapshot. Once the
       // snapshot is taken, command construction and flight creation must stay
@@ -8954,6 +8975,7 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
+      await prepareResumePresetLaunch(provider, resumableSession.resumeMetadata);
       const resumeUserMcp = await resolveResumeUserMcp(resumableSession, provider);
       const { launch: resumeLaunch } = buildResumeCommandForSession(
         resumableSession,
@@ -9425,6 +9447,7 @@ export function createPtyService({
         const reattachInstance = metadata
           ? resolveProviderInstanceForLaunch(metadata.provider, trackedCliResumeInstanceId(metadata))
           : null;
+        if (metadata) await prepareResumePresetLaunch(metadata.provider, metadata);
         const reattachPreset = metadata
           ? resolveResumePresetLaunch(metadata.provider, metadata)
           : null;

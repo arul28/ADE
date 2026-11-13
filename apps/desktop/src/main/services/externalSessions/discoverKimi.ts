@@ -13,6 +13,9 @@ import {
   resolveHomeDir,
   safeReadDir,
   safeStat,
+  adeHarnessConfigHomes,
+  uniqueByPath,
+  type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
@@ -53,6 +56,14 @@ import {
  */
 function kimiHome(args: ExternalSessionDiscoveryArgs): string {
   return kimiCodeConfigHome({ env: args.env ?? process.env, homeDir: resolveHomeDir(args) });
+}
+
+/** The default home, then each preset and route home ADE runs Kimi on (`KIMI_CODE_HOME`). */
+function kimiHomes(args: ExternalSessionDiscoveryArgs): Array<{ home: string; configHome: ExternalSessionConfigHome | null }> {
+  return uniqueByPath([
+    { home: kimiHome(args), configHome: null },
+    ...adeHarnessConfigHomes("kimi", args).map((configHome) => ({ home: configHome.dir, configHome })),
+  ], (entry) => entry.home);
 }
 
 function readWorkspaceRoots(home: string): Map<string, string> {
@@ -146,6 +157,11 @@ type KimiCandidate = {
   historyPath: string;
   mtimeMs: number;
   size: number;
+};
+
+type KimiHomeCandidate = KimiCandidate & {
+  indexWorkDirs: Map<string, string>;
+  configHome: ExternalSessionConfigHome | null;
 };
 
 function kimiHistoryFile(sessionDir: string): { filePath: string; stat: NonNullable<ReturnType<typeof safeStat>> } | null {
@@ -258,13 +274,28 @@ export async function discoverKimiSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const lookupId = safeLookupId(args.sessionId);
   if (lookupId === false) return [];
-  const home = kimiHome(args);
-  if (!safeStat(path.join(home, "sessions"))?.isDirectory()) return [];
-  const index = readSessionIndex(home);
+  const candidates: KimiHomeCandidate[] = [];
+  for (const { home, configHome } of kimiHomes(args)) {
+    if (!safeStat(path.join(home, "sessions"))?.isDirectory()) continue;
+    // Listed before the index is read: a route home can be another CLI's
+    // (Codex keeps a `session_index.jsonl` too), and its layout yields nothing.
+    const found = listKimiCandidates(args, home, lookupId, new Set());
+    if (!found.length) continue;
+    const index = readSessionIndex(home);
+    for (const candidate of found) {
+      if (index.deleted.has(candidate.id)) continue;
+      candidates.push({ ...candidate, indexWorkDirs: index.workDirs, configHome });
+    }
+  }
   return collectNewestSessions({
-    candidates: listKimiCandidates(args, home, lookupId, index.deleted),
+    candidates,
     limit: normalizeExternalSessionLimit(args.limit),
     lookupId,
-    read: (candidate) => kimiRecordFromCandidate(candidate, index.workDirs, args.scopeRoots, args.includeAdeOwned === true),
+    read: (candidate) => {
+      const record = kimiRecordFromCandidate(candidate, candidate.indexWorkDirs, args.scopeRoots, args.includeAdeOwned === true);
+      // The ADE home the session lives in, so an import resumes it there.
+      if (record && candidate.configHome) record.configHome = candidate.configHome;
+      return record;
+    },
   });
 }

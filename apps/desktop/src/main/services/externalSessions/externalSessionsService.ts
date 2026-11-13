@@ -6,6 +6,8 @@ import {
   buildTrackedCliResumeCommand,
   buildTrackedCliResumeLaunchCommand,
   harnessPresetLaunchEnv,
+  trackedCliResumePresetId,
+  type TrackedCliPresetLaunch,
   withCodexNoAltScreen,
   type TrackedCliUserMcp,
 } from "../../../shared/cliLaunch";
@@ -45,7 +47,9 @@ import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
 import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
 import { moveProviderThread } from "../chat/providerThreadMove";
-import { resolveTrackedCliPreset } from "../chat/harnessPresetLaunch";
+import { resolveTrackedCliPreset, routeConfigHomeId } from "../chat/harnessPresetLaunch";
+import { prepareHarnessLaunch } from "../chat/harnessLaunchPrepare";
+import { isRoutePresetId } from "../../../shared/harnessRoutes";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
 import {
@@ -58,6 +62,9 @@ import {
   pathContains,
   realishPath,
   sortDiscoveryRecords,
+  ADE_HARNESS_HOME_ENV_KEY,
+  isAdeHarnessHomeProvider,
+  isAdeLaunchConfigHome,
   type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
@@ -614,15 +621,22 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   void startDroidForkProbe();
   const capabilitiesFor = (
     provider: ExternalSessionProvider,
-    session?: Pick<ExternalSessionDiscoveryRecord, "cwd"> | null,
+    session?: Pick<ExternalSessionDiscoveryRecord, "cwd" | "configHome"> | null,
     cwdExistenceCache?: Map<string, boolean>,
   ): ExternalSessionCapabilities => {
-    const base = provider !== "droid"
+    const providerBase = provider !== "droid"
       ? EXTERNAL_SESSION_PROVIDER_CAPABILITIES[provider]
       : (() => {
           const fork = droidForkAvailable();
           return { ...EXTERNAL_SESSION_PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
         })();
+    // Continuing as an ADE chat seeds the provider's session pointer into a
+    // chat that runs on ADE's own default home, where a session from a preset,
+    // API-key or route home does not exist. A terminal continue (which runs in
+    // that home) and a chat copy (which reads the transcript) still work.
+    const base = isAdeHarnessHomeProvider(provider) && isAdeLaunchConfigHome(session?.configHome)
+      ? { ...providerBase, importToChat: false }
+      : providerBase;
     if (session === undefined || provider === "codex") return base;
     const cwd = session?.cwd?.trim() ?? "";
     const cwdAvailable = cwd.length > 0 && safeDirectoryExists(cwd, cwdExistenceCache);
@@ -1084,6 +1098,77 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     }
   };
 
+  /**
+   * The route preset id (`route.<…>`) whose private home is `routeHomeId`.
+   * A route home is named by a hash of that id and holds no record of it, so
+   * the only source is ADE's own launch records: the resume metadata of the
+   * tracked terminal that ran there, archived ones included.
+   */
+  const routePresetIdForHome = (routeHomeId: string | null | undefined): string | null => {
+    const wanted = routeHomeId?.trim().toLowerCase();
+    if (!wanted) return null;
+    for (const session of args.sessionService.list({ limit: null })) {
+      const presetId = trackedCliResumePresetId(session.resumeMetadata ?? null);
+      if (presetId && isRoutePresetId(presetId) && routeConfigHomeId(presetId) === wanted) return presetId;
+    }
+    return null;
+  };
+
+  /**
+   * The launch identity of the home a transcript lives in: an account, a saved
+   * preset, a stored key, or a route named again from ADE's records. A route
+   * nobody recorded keeps only its folder; the import still runs there, on the
+   * CLI's own sign-in, and says so in the log.
+   */
+  const launchIdentityOf = (
+    provider: ExternalSessionProvider,
+    home: ExternalSessionConfigHome,
+  ): ExternalSessionConfigHome => {
+    if (home.presetId || !home.routeHomeId) return home;
+    const presetId = routePresetIdForHome(home.routeHomeId);
+    if (!presetId) {
+      args.logger.warn("external_sessions.import_route_unresolved", { provider, routeHomeId: home.routeHomeId });
+      return home;
+    }
+    return { ...home, presetId };
+  };
+
+  /**
+   * The environment a preset or API-key home needs besides its folder: the
+   * stored key, the proxy endpoint, the model table. Best-effort: a deleted
+   * preset or key must not make the import fail — the CLI comes back on its
+   * own sign-in, in the same home. A route through ADE's proxy resolves only
+   * once the proxy runs, so it is prepared first, as every launch does.
+   */
+  const presetEnvFor = async (
+    provider: ExternalSessionProvider,
+    identity: ExternalSessionConfigHome | null,
+  ): Promise<TrackedCliPresetLaunch | null> => {
+    if (!identity?.presetId && !identity?.credentialId) return null;
+    const launchIdentity = {
+      provider,
+      presetId: identity.presetId ?? null,
+      credentialId: identity.credentialId ?? null,
+    };
+    try {
+      await prepareHarnessLaunch(launchIdentity);
+      const preset = resolveTrackedCliPreset(provider, launchIdentity)?.preset ?? null;
+      if (!preset) {
+        args.logger.warn("external_sessions.import_preset_unresolved", {
+          provider,
+          error: "The preset or API key this session ran on is not available on this machine.",
+        });
+      }
+      return preset;
+    } catch (error) {
+      args.logger.warn("external_sessions.import_preset_unresolved", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
   // An import creates ADE sessions and receipts that the next list must see,
   // so it drops the shared snapshot however it ends.
   const importExternalSession = async (
@@ -1141,6 +1226,17 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // user picks a different account.
     const accountPlan = resolveImportAccountPlan(provider, importArgs.accountId, summary);
     const { accountProvider, requestedAccount, sourceConfigHome } = accountPlan;
+    // The same for the other harnesses ADE runs on a home of its own (Droid,
+    // Grok, Kimi, Pi): no accounts, only the preset, key or route home.
+    const harnessHome = !accountProvider
+      && isAdeHarnessHomeProvider(provider)
+      && summary.configHome
+      && isAdeLaunchConfigHome(summary.configHome)
+      ? launchIdentityOf(provider, summary.configHome)
+      : null;
+    const sourceIdentity = sourceConfigHome && isAdeLaunchConfigHome(sourceConfigHome)
+      ? launchIdentityOf(provider, sourceConfigHome)
+      : sourceConfigHome;
     const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
     if (enforceLaneScopeCwd) {
       const scopeRoot = realishPath(enforceLaneScopeCwd);
@@ -1350,9 +1446,11 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         ? {
             launchIdentity: requestedAccount
               ? { dir: accountPlan.launchConfigHome, instanceId: requestedAccount.id }
-              : sourceConfigHome,
+              : sourceIdentity,
           }
-        : {}),
+        : harnessHome
+          ? { launchIdentity: harnessHome }
+          : {}),
     });
     // Kept as a named const rather than inlined into buildTrackedCliResumeCommand:
     // the Windows launch path below needs to know whether this was a resume, so it
@@ -1398,33 +1496,22 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     // home). When the launch stays in that source home, re-resolve it here;
     // an account home needs no preset env of its own.
     const sourcePreset = accountProvider
-      && sourceConfigHome
-      && accountPlan.targetConfigHome
-      && pathsEqual(accountPlan.targetConfigHome, sourceConfigHome.dir)
-      && (sourceConfigHome.presetId || sourceConfigHome.credentialId)
-      ? (() => {
-          // Best-effort, like the resume path: a deleted preset or key must not
-          // make the import fail — the CLI comes back on its own sign-in.
-          try {
-            return resolveTrackedCliPreset(accountProvider, {
-              presetId: sourceConfigHome.presetId ?? null,
-              credentialId: sourceConfigHome.credentialId ?? null,
-            })?.preset ?? null;
-          } catch (error) {
-            args.logger.warn("external_sessions.import_preset_unresolved", {
-              provider: accountProvider,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return null;
-          }
-        })()
-      : null;
+      ? (sourceIdentity
+          && accountPlan.targetConfigHome
+          && pathsEqual(accountPlan.targetConfigHome, sourceIdentity.dir)
+          ? await presetEnvFor(accountProvider, sourceIdentity)
+          : null)
+      : await presetEnvFor(provider, harnessHome);
     // The account's home outranks any inherited env: this terminal exists to
-    // resume a transcript that lives there.
+    // resume a transcript that lives there. The preset's own env names the
+    // same home and comes last, as on every other launch path.
     const launchEnv: Record<string, string> = {
       ...(launchFields.env ?? {}),
       ...(accountPlan.launchConfigHome && accountProvider
         ? { [PROVIDER_INSTANCE_ENV_KEY[accountProvider]]: accountPlan.launchConfigHome }
+        : {}),
+      ...(harnessHome && isAdeHarnessHomeProvider(provider)
+        ? { [ADE_HARNESS_HOME_ENV_KEY[provider]]: harnessHome.dir }
         : {}),
       ...harnessPresetLaunchEnv(sourcePreset),
     };

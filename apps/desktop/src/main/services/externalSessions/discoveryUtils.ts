@@ -12,6 +12,7 @@ import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions"
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import { isPathInside as sharedIsPathInside, pathKey, stripExtendedLengthPrefix } from "../shared/pathCompare";
 import { HARNESS_CREDENTIAL_STORE_PROVIDER } from "../../../shared/harnessCredentialProviders";
+import { readHarnessPresetsFromMachine } from "../chat/harnessPresetSettings";
 import {
   commandArrayToLine as sharedCommandArrayToLine,
   resolveCanonicalCommandLineLaunch,
@@ -36,6 +37,12 @@ export type ExternalSessionConfigHome = {
   presetId?: string | null;
   /** The stored API credential whose home this is, when ADE can name it. */
   credentialId?: string | null;
+  /**
+   * The ad-hoc route home (`provider-homes/route/<id>`) this is. Its folder is
+   * named after a hash of the route, so only ADE's own launch records can name
+   * the route again (see `externalSessionsService`).
+   */
+  routeHomeId?: string | null;
 };
 
 export type ExternalSessionDiscoveryRecord = Omit<
@@ -68,6 +75,12 @@ export type ExternalSessionDiscoveryArgs = {
    * conversation back; only an exact `sessionId` lookup should pass it.
    */
   includeAdeOwned?: boolean;
+  /**
+   * Read only the provider's default home (the one `env` names), not the
+   * preset, API-key and route homes ADE owns. For a caller that is looking for
+   * the session of one launch whose environment it already knows.
+   */
+  defaultHomeOnly?: boolean;
   limit?: number | null;
   scopeRoots?: string[] | null;
   /**
@@ -179,7 +192,8 @@ function configHomeBelongsTo(provider: "claude" | "codex", dir: string): boolean
   // Codex-specific evidence only: another harness's preset home can hold a
   // `config.toml` and a `sessions/` folder too (Grok, Kimi), so neither alone
   // names Codex. A real Codex home has its auth/store files or rollout days.
-  if (exists("auth.json") || exists("session_index.jsonl")) return true;
+  // Kimi Code keeps a `session_index.jsonl` too, beside its `workspaces.json`.
+  if (exists("auth.json") || (exists("session_index.jsonl") && !exists("workspaces.json"))) return true;
   if (safeReadDir(dir).some((entry) => entry.isFile() && /^state_\d+\.sqlite$/u.test(entry.name))) {
     return true;
   }
@@ -199,8 +213,10 @@ function configHomeBelongsTo(provider: "claude" | "codex", dir: string): boolean
  * terminal lives in one of those homes, so an import has to launch the resume
  * under the same one.
  *
- * `route` homes are deliberately absent: an ad-hoc harness route is a chat
- * transport, never a terminal CLI, so it holds no CLI session to import.
+ * An ad-hoc route (`provider-homes/route/<id>`, from `--via` on a chat or a
+ * CLI launch) gets a home too. Its folder is a hash of the route, so the home
+ * is tagged with that id and the importer names the route from ADE's own
+ * launch records.
  */
 export function providerConfigHomeDirs(
   provider: "claude" | "codex",
@@ -226,13 +242,144 @@ export function providerConfigHomeDirs(
     if (!configHomeBelongsTo(provider, dir)) continue;
     homes.push({ dir, instanceId: null, presetId: null, credentialId: path.basename(dir) });
   }
+  for (const dir of childDirectories(path.join(providerHomes, "route"))) {
+    if (!configHomeBelongsTo(provider, dir)) continue;
+    homes.push({ dir, instanceId: null, presetId: null, credentialId: null, routeHomeId: path.basename(dir) });
+  }
+  return uniqueConfigHomes(homes);
+}
+
+function uniqueConfigHomes(homes: ExternalSessionConfigHome[]): ExternalSessionConfigHome[] {
+  return uniqueByPath(homes, (home) => home.dir);
+}
+
+/**
+ * The first item for each path, compared the way the platform compares paths:
+ * an inherited override can name an ADE home that the enumeration lists again.
+ */
+export function uniqueByPath<T>(items: readonly T[], pathOf: (item: T) => string): T[] {
   const seen = new Set<string>();
-  return homes.filter((home) => {
-    const key = pathKey(home.dir);
+  return items.filter((item) => {
+    const key = pathKey(pathOf(item));
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * The harness CLIs besides Claude and Codex that ADE can run on a config home
+ * of its own. A preset or route points each one at the home with one variable
+ * (`harnessRouteLaunch.ts`, `harnessKeySourceLaunch.ts`):
+ *
+ * - Droid: `FACTORY_HOME_OVERRIDE` is a HOME-like root; Droid adds `.factory`.
+ *   A preset, a route and a stored Droid key each get one.
+ * - Grok, Kimi, Pi: `GROK_HOME`, `KIMI_CODE_HOME`, `PI_CODING_AGENT_DIR` name
+ *   the config directory itself. Only a preset or route that routes the CLI
+ *   writes one; a plain API key for them is passed in env, so its sessions
+ *   stay in the default home.
+ *
+ * The others never get one: Copilot and Qwen take a preset in env only,
+ * OpenCode moves only its config file (sessions stay in its data store),
+ * Cursor's CLI takes no preset at all (`harnessPresetCliGate.ts`), and Muse
+ * and Antigravity are not preset harnesses.
+ */
+export type AdeHarnessHomeProvider = "droid" | "grok" | "kimi" | "pi";
+
+/** The variable that points each harness CLI at its config home; its value is the home's `dir`. */
+export const ADE_HARNESS_HOME_ENV_KEY: Record<AdeHarnessHomeProvider, string> = {
+  droid: "FACTORY_HOME_OVERRIDE",
+  grok: "GROK_HOME",
+  kimi: "KIMI_CODE_HOME",
+  pi: "PI_CODING_AGENT_DIR",
+};
+
+export function isAdeHarnessHomeProvider(provider: string): provider is AdeHarnessHomeProvider {
+  return Object.prototype.hasOwnProperty.call(ADE_HARNESS_HOME_ENV_KEY, provider);
+}
+
+/**
+ * Whether a route home is this harness's, by the file ADE's route writer puts
+ * there for it (`harnessRouteLaunch.ts`): Droid's `.factory/settings.json`,
+ * Grok's and Kimi's `config.toml`, Pi's `models.json`. A route home holds no
+ * record of its route (its folder is a hash), so its files are the only
+ * evidence. Grok, Kimi and Codex all get a `config.toml`, so those three are
+ * told apart by the session folders each CLI makes: Kimi's are `wd_<slug>`
+ * workspace ids, Grok's are the percent-encoded cwd, Codex's are years.
+ */
+function routeHomeBelongsTo(provider: AdeHarnessHomeProvider, dir: string): boolean {
+  const exists = (...parts: string[]): boolean => fs.existsSync(path.join(dir, ...parts));
+  if (provider === "droid") return exists(".factory", "sessions");
+  if (provider === "pi") return exists("models.json") && exists("sessions");
+  if (!exists("config.toml")) return false;
+  const buckets = safeReadDir(path.join(dir, "sessions"))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  return provider === "kimi"
+    ? buckets.some((name) => name.startsWith("wd_"))
+    : buckets.some(isPercentEncodedAbsolutePath);
+}
+
+function isPercentEncodedAbsolutePath(name: string): boolean {
+  try {
+    const decoded = decodeURIComponent(name);
+    return decoded !== name && (path.posix.isAbsolute(decoded) || path.win32.isAbsolute(decoded));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The config homes ADE owns that can hold this harness's CLI sessions, with
+ * the launch identity that writes to each. The provider's default home is not
+ * in the list; each discoverer reads that one as before.
+ *
+ * - `preset/<id>`: the saved preset list names each preset's harness, so a
+ *   home is this provider's only when its preset says so. A home whose preset
+ *   is gone is skipped: deleting a preset deletes its home too.
+ * - `route/<id>`: classified by `routeHomeBelongsTo`.
+ * - `credential/droid/<id>`: a stored Droid key. No other of these harnesses
+ *   writes a credential home.
+ *
+ * `provider-homes/<provider>/default` is not here either: only an embedded
+ * runtime's chats use it (`providerLoginIsolation.ts`), and chats are ADE's own.
+ */
+export function adeHarnessConfigHomes(
+  provider: AdeHarnessHomeProvider,
+  args: ExternalSessionDiscoveryArgs = {},
+): ExternalSessionConfigHome[] {
+  if (args.defaultHomeOnly) return [];
+  const adeHome = providerAdeHome(args);
+  const providerHomes = path.join(adeHome, "provider-homes");
+  const homes: ExternalSessionConfigHome[] = [];
+  const presetDirs = childDirectories(path.join(providerHomes, "preset"));
+  if (presetDirs.length) {
+    // Folded, because that is how `harnessPresetConfigHomes` names the folder.
+    const presetIdByFolder = new Map(
+      (readHarnessPresetsFromMachine(adeHome) ?? [])
+        .filter((preset) => preset.harness === provider)
+        .map((preset) => [preset.id.trim().toLowerCase(), preset.id.trim()]),
+    );
+    for (const dir of presetDirs) {
+      const presetId = presetIdByFolder.get(path.basename(dir).toLowerCase());
+      if (presetId) homes.push({ dir, presetId });
+    }
+  }
+  for (const dir of childDirectories(path.join(providerHomes, "route"))) {
+    if (routeHomeBelongsTo(provider, dir)) homes.push({ dir, routeHomeId: path.basename(dir) });
+  }
+  if (provider === "droid") {
+    const namespace = HARNESS_CREDENTIAL_STORE_PROVIDER.droid;
+    for (const dir of childDirectories(path.join(providerHomes, "credential", namespace))) {
+      homes.push({ dir, credentialId: path.basename(dir) });
+    }
+  }
+  return uniqueConfigHomes(homes);
+}
+
+/** Whether a record's home is one of ADE's preset, API-key or route homes. */
+export function isAdeLaunchConfigHome(home: ExternalSessionConfigHome | null | undefined): boolean {
+  return Boolean(home?.presetId || home?.credentialId || home?.routeHomeId);
 }
 
 export function safeStat(filePath: string): fs.Stats | null {

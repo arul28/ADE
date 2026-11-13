@@ -323,6 +323,14 @@ export function resolveHarnessPresetForLaunch(
 }
 
 /**
+ * The folder name of an ad-hoc route's private home (`provider-homes/route/<id>`):
+ * a hash of the route preset id, so the same route always reuses its home.
+ */
+export function routeConfigHomeId(routePresetId: string): string {
+  return `r${createHash("sha256").update(routePresetId).digest("hex").slice(0, 16)}`;
+}
+
+/**
  * An ad-hoc route (a picker choice, not a saved preset) as a preset object, so
  * it resolves through exactly the same code as a saved one. Its config home is
  * named after a hash of the route and lives under `route/`, outside the
@@ -331,7 +339,7 @@ export function resolveHarnessPresetForLaunch(
 function presetFromRouteId(presetId: string): HarnessPreset | null {
   const spec = decodeRoutePresetId(presetId);
   if (!spec) return null;
-  const homeId = `r${createHash("sha256").update(presetId).digest("hex").slice(0, 16)}`;
+  const homeId = routeConfigHomeId(presetId);
   const epoch = new Date(0).toISOString();
   return {
     id: homeId,
