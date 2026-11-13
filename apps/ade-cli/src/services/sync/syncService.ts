@@ -95,6 +95,11 @@ import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingletonAsync, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
+import {
+  PREFERRED_PORT_BIND_ATTEMPTS,
+  PREFERRED_PORT_BIND_RETRY_DELAY_MS,
+  isRetryableListenerBindError,
+} from "./syncListenerBind";
 import type { ModelPickerStore } from "../modelPickerStore";
 import type { UsageTrackingHost } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
@@ -608,17 +613,6 @@ export function shouldReclaimStaleViewerDraftAfterTransportFailure(args: {
     && unseenForMs > STALE_VIEWER_DRAFT_BRAIN_LAST_SEEN_MS;
 }
 
-function isRetryableHostBindError(error: unknown): boolean {
-  if (isLoopbackShadowedError(error)) return true;
-  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
-  return code === "EADDRINUSE" || code === "EACCES";
-}
-
-// How long to insist on the preferred port before drifting: 8 × 400ms ≈ 3.2s,
-// enough for a disposing listener (or a sibling host being replaced) to free
-// the port that paired phones have saved.
-const PREFERRED_PORT_BIND_ATTEMPTS = 8;
-const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
 function createInactiveTailnetDiscoveryStatus(
   error: string,
@@ -1194,7 +1188,9 @@ export function createSyncService(args: SyncServiceArgs) {
   };
 
   const scheduleCanonicalPortMigrate = (delayMs: number): void => {
-    if (!args.sharedSyncListener || disposed) return;
+    // Moving back to 8787 is the hosting scope's job; an attempt that finishes
+    // after hosting stopped must not re-arm it.
+    if (!args.sharedSyncListener || disposed || hostService == null) return;
     stopCanonicalPortMigrateTimer();
     canonicalPortMigrateTimer = setTimeout(() => {
       canonicalPortMigrateTimer = null;
@@ -1480,7 +1476,7 @@ export function createSyncService(args: SyncServiceArgs) {
             };
           }
           await candidateHostService.dispose().catch(() => {});
-          const retryable = isRetryableHostBindError(error)
+          const retryable = isRetryableListenerBindError(error)
             && (attemptedPort !== 0 || isLoopbackShadowedError(error));
           args.logger.warn(
             isLoopbackShadowedError(error)

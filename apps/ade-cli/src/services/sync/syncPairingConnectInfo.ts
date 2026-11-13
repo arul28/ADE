@@ -4,7 +4,7 @@ import type {
   SyncPairingConnectInfo,
 } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
-import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
+import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./syncBindHost";
 
 function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;
@@ -83,7 +83,9 @@ export function buildAddressCandidates(
       append(lanAddress, "lan");
     }
   }
-  if (preferredSavedHostKind === "saved") {
+  // A saved host from an earlier network is an unknown address; a
+  // loopback-only bind can only offer one that is loopback.
+  if (preferredSavedHostKind === "saved" && (servesLan || isLoopbackHost(preferredSavedHost ?? ""))) {
     append(device.lastHost, "saved");
   }
   append(tailscaleDnsNameFromDevice(device), "tailscale");

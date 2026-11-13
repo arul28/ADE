@@ -4631,9 +4631,10 @@ never a timeout or refusal), a loopback-only bind is shadowed, or the side door
 cannot open. Already-connected sockets stay up through any move: the old
 server stops accepting but its upgraded sockets are kept. The scope's sync
 service (or the projectless brain) updates the lease port, the device row,
-Bonjour, Tailscale Serve and the directory. With no project host attached, the
-listener also moves back to the preferred port (normally 8787) once it frees;
-a scope's sync service does that itself every 15 s. The move back validates its
+Bonjour, Tailscale Serve and the directory. The move back to the preferred
+port (normally 8787) once it frees is the hosting scope's sync service's job
+(every 15 s while it hosts); with no project host attached, the listener's own
+30 s self-check does it. The move back validates its
 candidate without touching the live port's status, so it cannot flap the route.
 A project host never refuses to start over a shadow
 (`sync_host.loopback_shadowed_hosting_degraded`). A loopback-only bind

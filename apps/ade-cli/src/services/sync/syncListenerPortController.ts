@@ -12,7 +12,8 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
-import { closeCandidateServer, createListenerBinder } from "./syncListenerBind";
+import { closeCandidateServer, createListenerBinder, type SyncListenerLogger } from "./syncListenerBind";
+import { isLoopbackOnlyBindHost } from "./syncBindHost";
 import {
   inspectSyncListenerPort,
   type SyncListenerPortDiagnosis,
@@ -34,11 +35,7 @@ import {
  * `syncListenerBind.ts`, next to the attempt plan it drives.
  */
 
-type SyncListenerPortControllerLogger = {
-  debug?: (message: string, fields?: Record<string, unknown>) => void;
-  info?: (message: string, fields?: Record<string, unknown>) => void;
-  warn?: (message: string, fields?: Record<string, unknown>) => void;
-};
+type SyncListenerPortControllerLogger = SyncListenerLogger;
 
 export type SharedSyncListenerPortChange = {
   from: number;
@@ -167,7 +164,7 @@ export function createSyncListenerPortController(
   const { createServerPair, hasConnectionHandler, expectedLoopbackNonce } = deps;
   // A loopback-only bind has no other address to keep serving: a shadow on
   // its port means moving. A wildcard bind keeps its port (see the side door).
-  const bindsLoopbackOnly = ["127.0.0.1", "::1", "localhost"].includes(bindHost.trim().toLowerCase());
+  const bindsLoopbackOnly = isLoopbackOnlyBindHost(bindHost);
   const loopbackProbe = deps.loopbackProbe ?? probeAdeLoopbackListener;
   const localAddresses = deps.localAddresses ?? defaultLocalAddresses;
   const addressProbe = deps.addressProbe ?? probeAdeListenerAt;
@@ -210,7 +207,8 @@ export function createSyncListenerPortController(
   // A local-only entrance on another port, open only while another program
   // holds 127.0.0.1:<port> over the wildcard bind. LAN peers and relay pipes
   // keep the public port; Tailscale Serve forwards here instead.
-  let sideDoor: { port: number; httpServer: http.Server; wsServer: WebSocketServer } | null = null;
+  // `mainPort` is the listener port it was opened for.
+  let sideDoor: { port: number; mainPort: number; httpServer: http.Server; wsServer: WebSocketServer } | null = null;
 
   /** Call every subscriber, from a snapshot; one that throws is logged, not fatal. */
   const emit = <T>(handlers: Iterable<(value: T) => void>, value: T, failureEvent: string): void => {
@@ -345,25 +343,12 @@ export function createSyncListenerPortController(
     inspectPort,
     activeServicePid: deps.activeServicePid,
     terminatePid: deps.terminatePid,
-    onBound: (nextServer, nextHttpServer, port, { recordedStatus }) => {
+    onBound: (nextServer, nextHttpServer, port) => {
       // The assignment is synchronous inside the bind, right after its
       // `closed` re-check: shutdown can never observe a bound server that
       // nothing tracks.
       server = nextServer;
       httpServer = nextHttpServer;
-      if (!recordedStatus) {
-        // A move's winner validated during its bind; record it now that it
-        // is the live server, so every reader sees port and verdict agree.
-        setLoopbackValidationStatus({
-          port,
-          loopbackAdeValidated: true,
-          lastFailureAt: loopbackValidationStatus.lastFailureAt,
-          reason: null,
-          lastSuccessAt: new Date().toISOString(),
-          shadowedBy: null,
-          loopbackPort: port,
-        });
-      }
       nextServer.on("error", (error: unknown) => {
         logger.warn?.("sync_listener.server_error", {
           error: error instanceof Error ? error.message : String(error),
@@ -372,17 +357,32 @@ export function createSyncListenerPortController(
         });
       });
     },
+    // A move's winner validated during its bind; record it now that it is the
+    // live server, so every reader sees port and verdict agree.
+    recordMoveWinner: (port) => {
+      setLoopbackValidationStatus({
+        port,
+        loopbackAdeValidated: true,
+        lastFailureAt: loopbackValidationStatus.lastFailureAt,
+        reason: null,
+        lastSuccessAt: new Date().toISOString(),
+        shadowedBy: null,
+        loopbackPort: port,
+      });
+    },
   });
 
-  /** The ports a move or side door tries: the few above `port`, then an OS-assigned one. */
-  const portScanFrom = (port: number): number[] => {
+  /** The few ports above `port` a side door tries; never an OS-assigned one. */
+  const sideDoorPortsAbove = (port: number): number[] => {
     const candidates: number[] = [];
     for (let offset = 1; offset <= SELF_HEAL_PORT_SCAN && port + offset <= 65_535; offset += 1) {
       candidates.push(port + offset);
     }
-    candidates.push(0);
     return candidates;
   };
+
+  /** The ports a move tries: the few above `port`, then an OS-assigned one. */
+  const movePortsFrom = (port: number): number[] => [...sideDoorPortsAbove(port), 0];
 
   const currentPort = (): number | null => {
     const address = server?.address();
@@ -395,7 +395,7 @@ export function createSyncListenerPortController(
    * be squatting. Connected sockets stay up through the move.
    */
   const moveOffShadowedPort = async (shadowedPort: number): Promise<number | null> => {
-    const candidates = portScanFrom(shadowedPort);
+    const candidates = movePortsFrom(shadowedPort);
     const previousServer = server;
     const previousHttp = httpServer;
     if (!previousServer || !previousHttp) return null;
@@ -512,11 +512,14 @@ export function createSyncListenerPortController(
         closeSideDoor();
       }
     }
-    let lastError: unknown = null;
     // Only the few ports above the main one, never an OS-assigned port: a
     // stale Tailscale entry left by a crash is recognised by that shape
     // (adeLoopbackForwardPort). With none free, the port itself moves.
-    for (const candidate of portScanFrom(mainPort).filter((candidatePort) => candidatePort !== 0)) {
+    const candidates = sideDoorPortsAbove(mainPort);
+    let lastError: unknown = new Error(candidates.length === 0
+      ? `No port above ${mainPort} is available for a side door.`
+      : `No port above ${mainPort} answered as ADE.`);
+    for (const candidate of candidates) {
       if (closed) return null;
       const pair = createServerPair();
       // `ws` re-emits the http server's errors (EADDRINUSE on a taken
@@ -546,7 +549,7 @@ export function createSyncListenerPortController(
           return sideDoor?.port ?? null;
         }
         doorOpen = true;
-        sideDoor = { port, httpServer: pair.httpServer, wsServer: pair.wsServer };
+        sideDoor = { port, mainPort, httpServer: pair.httpServer, wsServer: pair.wsServer };
         return port;
       } catch (error) {
         lastError = error;
@@ -614,9 +617,11 @@ export function createSyncListenerPortController(
     const hadDoor = sideDoor != null;
     const doorPort = await openSideDoor(port);
     if (closed || currentPort() !== port) {
-      // A door this call opened for a port that is no longer live serves
-      // nothing; a move closes doors it sees, but this one opened after it.
-      if (!hadDoor) closeSideDoor();
+      // A door opened for a port that is no longer live serves nothing; a move
+      // closes the doors it sees, but this one opened after it. Close it only
+      // while it is still that door: a concurrent check may have opened the
+      // live port's door since.
+      if (!hadDoor && sideDoor?.mainPort === port) closeSideDoor();
       return false;
     }
     if (doorPort == null) return recordNoRoute(holder);

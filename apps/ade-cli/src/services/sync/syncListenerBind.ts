@@ -31,7 +31,7 @@ import type { SyncListenerPortDiagnosis } from "./syncListenerPortInspect";
  * synchronously in the place that already guarded for shutdown.
  */
 
-type SyncListenerBindLogger = {
+export type SyncListenerLogger = {
   debug?: (message: string, fields?: Record<string, unknown>) => void;
   info?: (message: string, fields?: Record<string, unknown>) => void;
   warn?: (message: string, fields?: Record<string, unknown>) => void;
@@ -40,7 +40,7 @@ type SyncListenerBindLogger = {
 export type SyncListenerBindOptions = { migrate?: boolean };
 
 export type SyncListenerBindDeps = {
-  logger: SyncListenerBindLogger;
+  logger: SyncListenerLogger;
   bindHost: string;
   /** True when the bind host is loopback-only, so no other address can shadow it. */
   bindsLoopbackOnly: boolean;
@@ -59,23 +59,25 @@ export type SyncListenerBindDeps = {
   /**
    * Adopt a server that bound. Called synchronously inside the bind, right
    * after its `closed` re-check, so shutdown cannot interleave with the
-   * assignment. `recordedStatus` is true when the bind already recorded the
-   * loopback verdict for this port.
+   * assignment.
    */
-  onBound: (
-    server: WebSocketServer,
-    httpServer: http.Server,
-    port: number,
-    details: { recordedStatus: boolean },
-  ) => void;
+  onBound: (server: WebSocketServer, httpServer: http.Server, port: number) => void;
+  /**
+   * Record a move winner's verdict (validated during the bind without being
+   * recorded). Called right after `onBound`, never before: status subscribers
+   * read the live server, which must already be the new one.
+   */
+  recordMoveWinner: (port: number) => void;
 };
 
-// Mirror of the syncService preferred-port semantics: insist on the first
-// candidate for ~3.2s before drifting, so a dying listener from a previous
-// brain process can free the port paired phones have saved.
-const PREFERRED_PORT_BIND_ATTEMPTS = 8;
-const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
+// How long to insist on the preferred port before drifting: 8 × 400ms ≈ 3.2s,
+// enough for a dying listener from a previous brain process (or a sibling host
+// being replaced) to free the port paired phones have saved. The shared
+// listener and a standalone sync host use the same rule.
+export const PREFERRED_PORT_BIND_ATTEMPTS = 8;
+export const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 
+/** A bind error worth trying the next candidate (or the same one again) for. */
 export function isRetryableListenerBindError(error: unknown): boolean {
   if (isLoopbackShadowedError(error)) return true;
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
@@ -282,9 +284,8 @@ export function createListenerBinder(
         });
         // Shutdown won the race with this bind: the catch below closes it.
         if (isClosed()) throw new Error("The shared sync listener has been closed.");
-        deps.onBound(candidateServer, candidateHttpServer, resolvedPort, {
-          recordedStatus: recordCandidateStatus,
-        });
+        deps.onBound(candidateServer, candidateHttpServer, resolvedPort);
+        if (!recordCandidateStatus) deps.recordMoveWinner(resolvedPort);
         return resolvedPort;
       } catch (error) {
         lastError = error;

@@ -28,8 +28,9 @@ export const SYNC_PROTOCOL_VERSION_MISMATCH_CLOSE_CODE = 4406;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const SYNC_HOST_MAX_PORT = 8999;
 /**
- * How many ports above a taken one the shared listener tries for a move or a
- * local side door, before an OS-assigned (ephemeral) port.
+ * How many ports above a taken one the shared listener tries: a move tries
+ * these and then an OS-assigned port; a local side door tries only these, so a
+ * stale Tailscale entry pointing at one is recognisable by its shape.
  */
 export const SYNC_PORT_SCAN_ABOVE = 24;
 

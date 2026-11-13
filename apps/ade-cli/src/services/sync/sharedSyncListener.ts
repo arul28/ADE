@@ -49,23 +49,10 @@ export {
   type SharedSyncListenerPortChange,
 } from "./syncListenerPortController";
 
-// Bind the sync host on all interfaces by default so phones on the same
-// wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
-// so local desktop clients (and the unix RPC socket, which is separate)
-// keep working unchanged. Operators who want the old loopback-only posture can
-// set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
-// for new bootstrap-token devices (see the hello handler in syncHostService)
-// since loopback is already a trust boundary.
-export const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
-const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
-// When the host is bound to loopback only, the OS already restricts connections
-// to local processes, so first-pairing can fall back to the historical
-// bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
-// new devices behind the PIN flow.
-export const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
-  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
+// The bind host and its loopback-only rule live in syncBindHost.ts; existing
+// importers keep reaching them here.
+export { SYNC_HOST_BIND_HOST, SYNC_HOST_BIND_LOOPBACK_ONLY } from "./syncBindHost";
+import { SYNC_HOST_BIND_HOST } from "./syncBindHost";
 
 export const SYNC_HOST_MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
 export const SYNC_RELAY_BRIDGE_PROOF_HEADER = "x-ade-sync-relay-bridge";
