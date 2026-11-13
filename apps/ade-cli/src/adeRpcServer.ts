@@ -8716,8 +8716,10 @@ async function runTool(args: {
     if (newerTurnStarted()) return { released: [], skipped: "newer_turn" };
     const released: string[] = [];
     // Each release checks again first: a newer turn can start while an
-    // earlier release is awaited, and the check and the release call then
-    // run in one synchronous step.
+    // earlier release is awaited. Each service ends the chat's leases in the
+    // same synchronous step as that check, before its first await; claims
+    // released after an await (the iOS hub) are released in the order that
+    // keeps that window shortest.
     const release = async (device: string, run: () => Promise<boolean>): Promise<void> => {
       if (newerTurnStarted()) return;
       try {

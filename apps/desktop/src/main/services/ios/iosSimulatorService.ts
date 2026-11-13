@@ -6209,17 +6209,23 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   ): Promise<IosSimulatorShutdownResult> => {
     const trimmed = chatSessionId?.trim() || null;
     if (!trimmed) return { released: false, previousSession: null };
+    // Its device leases (any holder name its agents gave) pass to the next in
+    // line now, not when their TTL runs out. First, with no await before it:
+    // a turn-end release (`keepRunning`) is checked against the chat's newer
+    // turn just before this call, and a lease that turn takes during an await
+    // would otherwise be ended here.
+    const leasesEnded = deviceLeases.endChat(trimmed);
+    if (leasesEnded > 0) args.logger.info("apple.device_leases_ended_with_chat", { chatSessionId: trimmed, count: leasesEnded });
     // A chat's turn ending also ends the recordings it started automatically.
-    await recordings.onTurnEnded(trimmed).catch((error: unknown) => {
+    // For a turn end that comes after the session claims below, for the same
+    // reason; when the chat went away the order does not matter.
+    const endRecordings = () => recordings.onTurnEnded(trimmed).catch((error: unknown) => {
       args.logger.debug("apple.recording_turn_end_failed", {
         chatSessionId: trimmed,
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    // Its device leases (any holder name its agents gave) pass to the next in
-    // line now, not when their TTL runs out.
-    const leasesEnded = deviceLeases.endChat(trimmed);
-    if (leasesEnded > 0) args.logger.info("apple.device_leases_ended_with_chat", { chatSessionId: trimmed, count: leasesEnded });
+    if (!options.keepRunning) await endRecordings();
     let result: IosSimulatorShutdownResult = { released: false, previousSession: null };
     for (const runtime of [...runtimes.values()]) {
       // A chat can hold a device session without holding an app session, so the
@@ -6252,6 +6258,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       const released = await shutdown({ chatSessionId: trimmed, laneId: runtime.laneId, force: false });
       if (released.released) result = released;
     }
+    if (options.keepRunning) await endRecordings();
     return result;
   };
 

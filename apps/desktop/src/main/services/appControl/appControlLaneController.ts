@@ -1949,6 +1949,7 @@ export function createAppControlLaneController(context: AppControlLaneController
    */
   const stop = async (stopArgs: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> => {
     const previousSession = activeSession;
+    if (previousSession) sessionsOnLaneScreen.delete(previousSession.id);
     if (previousSession && recording.isRecording(laneId)) {
       await recording.stopRecording(laneId, cleanClaimId(stopArgs.chatSessionId)).catch((error: unknown) => {
         args.logger.debug("app_control.stop_recording_failed", {
@@ -2175,6 +2176,17 @@ export function createAppControlLaneController(context: AppControlLaneController
   };
 
   /**
+   * Sessions launched onto the lane's Linux screen. Their App Control calls
+   * count as use of that screen (`noteLaneScreenUse`). Ids only, a few per lane.
+   */
+  const sessionsOnLaneScreen = new Set<string>();
+
+  /** The env a launch names itself, with unset values as empty. */
+  const explicitLaunchEnv = (launchArgs: AppControlLaunchArgs): Record<string, string> => Object.fromEntries(
+    Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
+  );
+
+  /**
    * Linux: the screen the app's windows open on, as terminal env.
    *
    * ADE with no display of its own (a server, an ADE Cloud computer, a brain
@@ -2188,17 +2200,6 @@ export function createAppControlLaneController(context: AppControlLaneController
    * `DISPLAY` or `WAYLAND_DISPLAY` itself keeps it. Cleared keys are set
    * empty: the terminal merges this over the host's environment.
    */
-  /**
-   * Sessions launched onto the lane's Linux screen. Their App Control calls
-   * count as use of that screen (`noteLaneScreenUse`). Ids only, a few per lane.
-   */
-  const sessionsOnLaneScreen = new Set<string>();
-
-  /** The env a launch names itself, with unset values as empty. */
-  const explicitLaunchEnv =(launchArgs: AppControlLaunchArgs): Record<string, string> => Object.fromEntries(
-    Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
-  );
-
   const laneScreenEnv = async (explicitEnv: Record<string, string>): Promise<Record<string, string>> => {
     if (process.platform !== "linux" || !args.laneScreenLaunchEnv) return {};
     const hasValue = (value: string | undefined): boolean => Boolean(value?.trim());

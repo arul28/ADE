@@ -25946,10 +25946,15 @@ export function createAgentChatService(args: {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
       // The turn's working events stamp it with the ADE turn they run in (a
       // provider that keeps one turn id into a new ADE turn moves with it);
-      // its `done` reads the stamp and never moves it.
+      // its `done` reads the stamp and never moves it. A late event of an
+      // earlier turn, arriving once the new ADE turn has an id of its own,
+      // keeps its old stamp, so its `done` cannot release the new turn's claims.
       const startStamp = lastTurnStartedAtBySession.get(managed.session.id);
-      if (startStamp && normalizedEvent.type !== "done") {
-        const stamps = turnStartStampsBySession.get(managed.session.id) ?? new Map<string, string>();
+      const stamps = turnStartStampsBySession.get(managed.session.id) ?? new Map<string, string>();
+      const earlierStamp = stamps.get(eventTurnId);
+      const newTurnHasOwnId = earlierStamp !== undefined && earlierStamp !== startStamp
+        && [...stamps].some(([id, stamp]) => id !== eventTurnId && stamp === startStamp);
+      if (startStamp && normalizedEvent.type !== "done" && !newTurnHasOwnId) {
         stamps.delete(eventTurnId);
         stamps.set(eventTurnId, startStamp);
         while (stamps.size > 8) stamps.delete(stamps.keys().next().value as string);
@@ -72688,6 +72693,7 @@ export function createAgentChatService(args: {
     pendingTurnStartMsBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     turnStartStampsBySession.delete(sessionId);
+    remoteDeviceTargetsBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -75511,6 +75517,7 @@ export function createAgentChatService(args: {
     pendingTurnStartMsBySession.delete(trimmedSessionId);
     lastTurnIdBySession.delete(trimmedSessionId);
     turnStartStampsBySession.delete(trimmedSessionId);
+    remoteDeviceTargetsBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
