@@ -12,6 +12,12 @@ import { useAdeCloudSignIns } from "../providers/cloud/useAdeCloudSignIns";
 import { SettingsToggle } from "../primitives/SettingsControls";
 import { adeCloudSettingsSearch } from "../SettingsMachineScope";
 
+/** Claude's row: how Claude gets on ADE Cloud, then what its pass needs ("Approve a Claude pass for ADE Cloud"). */
+function claudePassLine(fact: string | null): string {
+  const lead = "Uses a Claude pass on ADE Cloud, not a sign-in";
+  return fact ? `${lead}. ${fact}` : lead;
+}
+
 /**
  * The accounts cloud computers sign in with, one row per provider, in plain
  * words: which account, where the sign-in came from, and whether it's ready.
@@ -40,7 +46,10 @@ export function CloudSignIns() {
     }));
   }, [account, cloud, descriptors, keyringIsThisComputer, passUse, saved]);
   const ready = rows.filter((row) => row.tile.state === "connected");
-  const rest = rows.filter((row) => row.tile.state !== "connected");
+  // Claude reaches ADE Cloud through a Claude pass, not a shared sign-in. Until
+  // one is on it gets its own row saying so, not a chip under "Not signed in".
+  const pass = rows.find((row) => row.descriptor.id === "claude" && (row.tile.state === "sign-in" || row.tile.state === "unknown")) ?? null;
+  const rest = rows.filter((row) => row.tile.state !== "connected" && row !== pass);
   const on = cloudSignInsOn(account);
   const [pending, setPending] = useState<boolean | null>(null);
   const pinRef = useRef(accountPin);
@@ -88,7 +97,7 @@ export function CloudSignIns() {
                 ? "Your cloud computers sign in with these accounts. A sign-in on any of your computers reaches them in about a minute."
                 : "No sign-in reaches ADE Cloud yet. Sign in to a provider on any of your computers and it reaches your cloud computers."}
             </p>
-            {ready.length ? (
+            {ready.length || pass ? (
               <ul className="kit-panel adecd-signin-list">
                 {ready.map(({ descriptor, tile }) => (
                   <li key={descriptor.id}>
@@ -102,6 +111,22 @@ export function CloudSignIns() {
                     </button>
                   </li>
                 ))}
+                {pass ? (
+                  <li key={pass.descriptor.id}>
+                    <button type="button" className="adecd-signin" onClick={() => open(pass.descriptor.id)}>
+                      <span className="adecd-signin-logo" aria-hidden="true">{providerListMark(pass.descriptor, 22)}</span>
+                      <span className="adecd-signin-text">
+                        <b>{pass.descriptor.label}</b>
+                        <span className="adecd-signin-wrap">{claudePassLine(pass.tile.facts[0]?.text ?? null)}</span>
+                      </span>
+                      <span
+                        className="kit-dot"
+                        data-state={pass.tile.facts[0]?.tone === "crit" ? "crit" : "warn"}
+                        aria-label={pass.tile.state === "unknown" ? "Not known" : "Not set up"}
+                      />
+                    </button>
+                  </li>
+                ) : null}
               </ul>
             ) : null}
             {rest.length ? (
