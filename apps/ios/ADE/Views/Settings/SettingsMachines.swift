@@ -149,7 +149,7 @@ func settingsMachines(
       if primaryDisconnectedByUser { return .available }
       return .primary(live: primaryLive, connecting: primaryConnecting)
     }
-    if let machine = fleet.machine(for: key), machine.isPinned {
+    if let machine = fleet.machine(for: key), machine.isWanted {
       return .connected(machine.state, gaveUp: machine.gaveUp)
     }
     return .available

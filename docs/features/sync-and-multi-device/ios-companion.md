@@ -2854,8 +2854,12 @@ machines go live before the rest of the connected set, up to the limit, and
 nothing is saved to the connected set. A machine past the limit is "parked".
 An online account computer with a copy that the phone never paired is paired
 next to the primary once per app run, while the limit has room
-(`connectActiveProjectAccountCopies`). Like Start on, that pairing adds it to
-the connected set. A machine the user disconnected in
+(`connectActiveProjectAccountCopies`). Unlike Start on, that pairing does not
+add it to the connected set: like the other copies' machines, it stays live
+while the project is open. Settings lists every machine that is live for the
+open project as connected, with Disconnect. A machine the user connects, or
+whose chat the user opens, goes live first; a project machine past the limit
+parks instead. A machine the user disconnected in
 Settings stays off for the project too
 (`ade.fleet.userDisconnectedMachineKeys.v1`), until the user connects it. The
 Lanes list and the Work list show the lanes and sessions of every machine with

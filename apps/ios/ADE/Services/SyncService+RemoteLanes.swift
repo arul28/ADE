@@ -180,7 +180,8 @@ extension SyncService {
   /// copy of the open project and that this phone never paired: the same
   /// silent account pairing Start on uses. Once per computer per app run,
   /// one at a time, and only while the live limit has room. The fleet then
-  /// keeps it live with the other copies. A failure stays quiet: the
+  /// keeps it live with the other copies while the project is open; it does
+  /// not join the user's connected set. A failure stays quiet: the
   /// computer is listed in Settings with its state.
   func connectActiveProjectAccountCopies() {
     guard !syncAutoPairRunning,
@@ -213,7 +214,11 @@ extension SyncService {
         guard room > 0 else { break }
         room -= 1
         syncAutoPairedAccountMachines.insert(machine.machineKey)
-        if case .failure(let failure) = await pairAccountMachineAlongsidePrimary(machine, authorization: authorization) {
+        switch await pairAccountMachineAlongsidePrimary(machine, authorization: authorization, keepConnected: false) {
+        case .success:
+          // The new pairing is a copy's machine now: the project keeps it live.
+          fleet.scheduleProjectMachinesUpdate()
+        case .failure(let failure):
           syncFleetAutoPairLog.notice("auto pair of a project copy's computer failed: \(failure.message, privacy: .public)")
         }
       }

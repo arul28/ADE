@@ -28491,9 +28491,12 @@ extension SyncService {
   /// like any other connected machine. Returns the machine key, or the
   /// failure for that machine's row (the primary's connection state and copy
   /// are not touched either way).
+  /// `keepConnected` false pairs it without adding it to the user's connected
+  /// set: the open project keeps it live while it is open (auto-pairing).
   func pairAccountMachineAlongsidePrimary(
     _ machine: AccountMachine,
-    authorization: AccountPairingAuthorization
+    authorization: AccountPairingAuthorization,
+    keepConnected: Bool = true
   ) async -> Result<String, SyncPairAlongsideFailure> {
     func fail(_ message: String) -> Result<String, SyncPairAlongsideFailure> {
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
@@ -28526,7 +28529,7 @@ extension SyncService {
       saved[key] = updated
       saveSavedProfiles(saved)
       machineFleet?.savedMachinesChanged()
-      machineFleet?.keepLive(machineKey: key)
+      if keepConnected { machineFleet?.keepLive(machineKey: key) }
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.reconnected)
       return .success(key)
     }
@@ -28594,7 +28597,7 @@ extension SyncService {
         }
       )
       machineFleet?.savedMachinesChanged()
-      machineFleet?.keepLive(machineKey: key)
+      if keepConnected { machineFleet?.keepLive(machineKey: key) }
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.adopted)
       return .success(key)
     } catch {
