@@ -396,8 +396,9 @@ const APP_FALLBACK_MS = 2_500;
 /**
  * A remembered choice opens after this pause, with "Change" and "Open now" in
  * view. Long enough to read the line and press Change; "Open now" skips it.
+ * The old 0.8 s read as a flash with no chance to choose.
  */
-const AUTO_OPEN_MS = 2_000;
+const AUTO_OPEN_MS = 1_500;
 /** `?choose=1` shows the choices even when one is remembered. */
 const CHOOSE_PARAM = "choose";
 
@@ -548,6 +549,16 @@ export function OpenPage() {
   );
 
   useDocumentTitle(title);
+
+  // ADE Web is a likely next stop: warm its connection while the page is up.
+  useEffect(() => {
+    if (!webUrl) return;
+    const link = document.createElement("link");
+    link.rel = "preconnect";
+    link.href = WEB_CLIENT_ORIGIN;
+    document.head.appendChild(link);
+    return () => link.remove();
+  }, [webUrl]);
 
   // Set dynamic OpenGraph tags so unfurlers that execute JS pick them up.
   // CAVEAT: most chat-app unfurlers (Slack, Discord, iMessage) do NOT execute
