@@ -624,9 +624,11 @@ Browser `window.ade` adapter:
   adapter notifies `WebClientRoot`, which remounts the shared renderer so
   unpinned long-lived subscriptions cannot remain attached to the prior
   machine. Account-wide members (`usage.getAdeStats`,
-  `usage.getGithubContributions`, `usage.onUpdate`) go to a connected computer
-  when the displayed adapter is a disconnected fallback, and their
-  subscriptions move with the adapter that serves those reads.
+  `usage.getGithubContributions`, `usage.onUpdate`, and every `cloud` and
+  `cloudAccess` member) go to a connected computer when the displayed adapter
+  is a disconnected fallback, and their subscriptions move with the adapter
+  that serves those reads. So the Connections panel keeps the cloud status and
+  Wake while the computer that dropped is still the displayed one.
 - `apps/desktop/src/renderer/webclient/adapter/reconnectHold.ts` - keeps a
   machine that was connected reading as connected for up to 30 s of time in
   front while its connection comes back, so Work keeps the open chat after a

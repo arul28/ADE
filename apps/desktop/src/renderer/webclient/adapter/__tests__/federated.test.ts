@@ -347,6 +347,38 @@ describe("createFederatedWebAdapter", () => {
     expect(fixture.targetB.onAgentChatEvent).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["usage", "getAdeStats"],
+    ["cloudAccess", "read"],
+    ["cloud", "listMachines"],
+    ["cloud", "machineAction"],
+  ] as const)("sends the account-wide %s.%s to a connected computer while the displayed one is down", async (namespace, member) => {
+    const fixture = managerFixture();
+    (fixture.fallbackClient as unknown as { getStatus: () => unknown }).getStatus = () => ({ state: "disconnected" });
+    vi.mocked(fixture.manager.getConnectionSnapshot).mockReturnValue({
+      connections: [{ state: "connected", target: { id: "machine-b" } }],
+      connectedCount: 1,
+      updatedAt: 0,
+    } as unknown as ReturnType<WebMachineSessionManager["getConnectionSnapshot"]>);
+    const onDown = vi.fn(async () => "from the computer that dropped");
+    const onB = vi.fn(async () => "from machine-b");
+    const surface = (adapter: { ade: Window["ade"] }, fn: typeof onDown) => {
+      (adapter.ade as unknown as Record<string, unknown>)[namespace] = { [member]: fn };
+    };
+    surface(fixture.fallback.adapter, onDown);
+    surface(fixture.targetB.adapter, onB);
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: `account-wide-${namespace}-${member}`,
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    const call = (federated.ade as unknown as Record<string, Record<string, () => Promise<unknown>>>)[namespace][member];
+    await expect(call()).resolves.toBe("from machine-b");
+    expect(onDown).not.toHaveBeenCalled();
+  });
+
   it("invokes proxied subscription functions without resolving their apply member", () => {
     const fixture = managerFixture();
     const unsubscribe = vi.fn();

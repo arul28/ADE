@@ -30,6 +30,19 @@ const ACCOUNT_WIDE_MEMBERS: ReadonlySet<string> = new Set([
   "usage.getGithubContributions",
   "usage.onUpdate",
 ]);
+/**
+ * Namespaces that only reach the account's ADE Cloud through whichever
+ * computer answers: cloud access, the cloud computers, their sleep and wake,
+ * and the account's agent limits (`webclient/adapter/cloud.ts`). The
+ * Connections panel reads them, and its Wake must work while the displayed
+ * computer is the one that dropped.
+ */
+const ACCOUNT_WIDE_NAMESPACES: ReadonlySet<string> = new Set(["cloud", "cloudAccess"]);
+
+function isAccountWideMember(path: readonly PropertyKey[]): boolean {
+  return ACCOUNT_WIDE_NAMESPACES.has(String(path[0] ?? ""))
+    || ACCOUNT_WIDE_MEMBERS.has(path.map(String).join("."));
+}
 /** How long an account-wide read waits for the first computer to connect. */
 const ACCOUNT_WIDE_READ_WAIT_MS = 15_000;
 
@@ -374,7 +387,7 @@ export function createFederatedWebAdapter({
       entry.state === "connected" && manager.getClient(entry.target.id) != null)?.target.id ?? null;
   const needsAnotherComputer = (path: PropertyKey[]): boolean =>
     currentAdapter === fallbackAdapter
-    && ACCOUNT_WIDE_MEMBERS.has(path.map(String).join("."))
+    && isAccountWideMember(path)
     && fallbackClient.getStatus().state !== "connected";
   const adapterForUnpinnedCall = (path: PropertyKey[]): AdeWebAdapter => {
     if (!needsAnotherComputer(path)) return currentAdapter;
@@ -903,7 +916,7 @@ export function createFederatedWebAdapter({
     // An account-wide subscription follows the computer that answers its
     // reads: the first one to connect, or a new client after a reconnect.
     for (const entry of durableSubscriptions) {
-      if (ACCOUNT_WIDE_MEMBERS.has(entry.path.map(String).join("."))) reattachDurableSubscription(entry);
+      if (isAccountWideMember(entry.path)) reattachDurableSubscription(entry);
     }
     const connectionSnapshot = getConnectionSnapshot();
     for (const listener of connectionListeners) listener(connectionSnapshot);

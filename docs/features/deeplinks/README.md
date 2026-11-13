@@ -104,7 +104,9 @@ view and a bar that fills over the pause. Escape stops it, like **Change**, and
 `?choose=1` shows the choices even when one is remembered. After the app is
 tried, the page makes the browser the main button 2.5 s later ("ADE didn't
 open?") unless the page lost focus meanwhile, which means the app or the
-browser's prompt took over. **Change** forgets the choice. While the choices
+browser's prompt took over. **Change** stops this visit's automatic open and
+keeps the saved choice; a pick then saves it again with "Remember" on, or
+clears it with "Remember" off. While the choices
 are on screen on a computer, the page frames ADE Web's hidden `/link-status`
 page (on `app.ade-app.dev`, which holds the sign-in) for up to 4 s. When this
 browser is signed in to ADE Web, the answer names the account's online
