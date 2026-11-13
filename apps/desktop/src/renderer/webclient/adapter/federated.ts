@@ -206,7 +206,14 @@ export function createFederatedWebAdapter({
   };
 
   const reconnectHold = createReconnectHold(
-    (targetId) => manager.getClient(targetId)?.getStatus().state ?? null,
+    (targetId) => {
+      const client = manager.getClient(targetId);
+      if (!client) return null;
+      // A dial round that failed on every route reads "error" but dials
+      // again: that is the reconnect itself (a laptop whose network is not
+      // back yet), not a refusal.
+      return client.isRetryingDial() ? "reconnecting" : client.getStatus().state;
+    },
     () => {
       const connectionSnapshot = getConnectionSnapshot();
       for (const listener of connectionListeners) listener(connectionSnapshot);

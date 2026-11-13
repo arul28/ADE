@@ -789,6 +789,15 @@ export class AdeSyncClient {
     };
   }
 
+  /**
+   * True while the transport reads "error" only because one dial round failed
+   * on every route, and it will dial again on its own. A refusal (a host or
+   * relay that turned this browser down) stops the dialing, so it reads false.
+   */
+  isRetryingDial(): boolean {
+    return this.connection.getStatus().state === "error" && this.connection.willReconnect();
+  }
+
   subscribe(listener: (status: AdeSyncClientStatus) => void): () => void {
     return this.on("status", listener);
   }
