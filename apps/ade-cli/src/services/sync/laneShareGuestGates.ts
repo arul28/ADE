@@ -462,7 +462,8 @@ export function createLaneShareGuestGates(deps: LaneShareGuestGatesDeps) {
     laneWorktreePath: (laneId) => {
       try {
         return toOptionalString(args.laneService?.getLaneBaseAndBranch(laneId)?.worktreePath) ?? null;
-      } catch {
+      } catch (error) {
+        args.logger.warn("sync_host.lane_share_worktree_lookup_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
         return null;
       }
     },

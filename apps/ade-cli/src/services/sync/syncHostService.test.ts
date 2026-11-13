@@ -6788,12 +6788,13 @@ describe("sync host account authentication", () => {
 
       // The real chat pane reads a chat's images and its turns' diffs. The
       // host resolves every path itself: an image in the granted lane's
-      // worktree (not `.ade/`, not `.git`; an ignored one only when the chat
-      // named it) or a staged attachment the chat named; a turn diff only of
+      // worktree (not `.ade/`, not `.git`; with the file right, any it does
+      // not ignore; else only one the chat named, never by a guest's own
+      // message) or a staged attachment the chat named; a turn diff only of
       // a change this chat's own turn reported, read in the lane's worktree.
       const shaBefore = "b".repeat(40);
       const shaAfter = "c".repeat(40);
-      it.each<[string, string, string, (files: { attachment: string; adeFile: string; worktreeAde: string; otherLane: string }) => Record<string, unknown>, boolean, { diffRight?: boolean; namedBeforeShare?: boolean }?]>([
+      it.each<[string, string, string, (files: { attachment: string; adeFile: string; worktreeAde: string; otherLane: string }) => Record<string, unknown>, boolean, { diffRight?: boolean; fileRight?: boolean; namedBeforeShare?: boolean }?]>([
         ["a staged attachment this chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.attachment }), true],
         ["a staged attachment this chat does not name", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.attachment.replace("named", "unnamed") }), false],
         ["a staged attachment named only before the share", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.attachment }), false, { namedBeforeShare: true }],
@@ -6801,7 +6802,9 @@ describe("sync host account authentication", () => {
         ["a file under the lane worktree's own .ade that the chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.worktreeAde }), false],
         ["an image in another lane's worktree that the chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.otherLane }), false],
         ["a path that climbs out of the lane's worktree", "chat.getImageDataUrl", "session-shared", () => ({ path: "../lane-private/shot.png" }), false],
-        ["an image in the lane's worktree that git does not ignore", "chat.getImageDataUrl", "session-shared", () => ({ path: "shots/plain.png" }), true],
+        ["an image in the lane's worktree that git does not ignore", "chat.getImageDataUrl", "session-shared", () => ({ path: "shots/plain.png" }), true, { fileRight: true }],
+        ["an unnamed worktree image without the file right", "chat.getImageDataUrl", "session-shared", () => ({ path: "shots/plain.png" }), false],
+        ["an ignored image only a guest's own message names", "chat.getImageDataUrl", "session-shared", () => ({ path: "ignored/guest.png" }), false, { fileRight: true }],
         ["an ignored image in the lane's worktree the chat does not name", "chat.getImageDataUrl", "session-shared", () => ({ path: "ignored/hidden.png" }), false],
         ["an image of a chat in another lane", "chat.getImageDataUrl", "session-private", (f) => ({ path: f.attachment }), false],
         ["a turn diff this chat reported", "chat.getTurnFileDiff", "session-shared", () => ({ beforeSha: shaBefore, afterSha: shaAfter, filePath: "src/a.ts" }), true],
@@ -6813,6 +6816,7 @@ describe("sync host account authentication", () => {
       ])("chat pane reads: %s", async (_label, action, sessionId, argsFor, allowed, options = {}) => {
         const rights = laneSharePresetRights("watch");
         rights.tools.diff = options.diffRight ?? true;
+        rights.tools.file = options.fileRight ?? false;
         // The host asks the real git whether a worktree file is ignored.
         const { spawn: realSpawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
         spawnMock.mockImplementation(realSpawn as never);
@@ -6832,6 +6836,7 @@ describe("sync host account authentication", () => {
           fs.writeFileSync(path.join(worktree, ".gitignore"), "ignored/\n");
           write(path.join(".ade", "worktrees", sharedLane, "shots", "plain.png"));
           write(path.join(".ade", "worktrees", sharedLane, "ignored", "hidden.png"));
+          write(path.join(".ade", "worktrees", sharedLane, "ignored", "guest.png"));
           const files = {
             attachment: write(path.join(".ade", "attachments", "named.png")),
             adeFile: write(path.join(".ade", "ade.db")),
@@ -6845,6 +6850,8 @@ describe("sync host account authentication", () => {
             truncated: false,
             events: [
               { sessionId: "session-shared", timestamp: at, event: { type: "user_message", text: "look", attachments: [{ type: "image", path: files.attachment }] } },
+              // A guest's message may name any path; it never vouches for one.
+              { sessionId: "session-shared", timestamp: at, event: { type: "user_message", text: "ignored/guest.png", metadata: { author: { kind: "guest", userId: "guest-1", name: null } } } },
               { sessionId: "session-shared", timestamp: at, event: { type: "codex_image_view", path: files.adeFile } },
               { sessionId: "session-shared", timestamp: at, event: { type: "codex_image_view", path: files.worktreeAde } },
               { sessionId: "session-shared", timestamp: at, event: { type: "codex_image_view", path: files.otherLane } },
