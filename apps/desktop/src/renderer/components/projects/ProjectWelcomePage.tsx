@@ -1,12 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useLaneShareHomeRows } from "../laneShare/guest/LaneShareHomeRows";
 import { useNavigate } from "react-router-dom";
 import { BROWSER_TAB_ROUTE, browserTabAvailable } from "../browser/browserTab";
 import { HomeAppButton, openMusicApp } from "../music/musicApps";
 import { musicTabAvailable } from "../music/musicTab";
 import {
   AppWindow,
-  ArrowCounterClockwise,
   ChatCircleDots,
+  Eye,
   FolderOpen,
   GitMerge,
   Globe,
@@ -29,7 +30,6 @@ import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
 import { Banner } from "../ui/notice";
-import { dismissToast, showToast } from "../app/toast/toastStore";
 import {
   ACCOUNT_MACHINE_TARGET_PREFIX,
   recentProjectLocationKey,
@@ -62,6 +62,8 @@ import type {
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { useHomeAccountProjects } from "./useHomeAccountProjects";
+import type { HomeWebComputer } from "./homeProjectRows";
+import { useHomeRowRemoval } from "./useHomeRowRemoval";
 
 // Edit mode's toolbar, gallery and appearance sliders: loaded the first time
 // someone customizes the page, never on the boot path.
@@ -70,9 +72,6 @@ const HomeEditTools = lazy(() => import("../home/HomeEditTools"));
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
-// How long the "Removed — Undo" toast stays before the forget is committed.
-const FORGET_UNDO_WINDOW_MS = 5_000;
-const FORGET_TOAST_ID = "welcome-forget-recent";
 /** Where a web user with no computer gets ADE. */
 const ADE_DOWNLOAD_PAGE_URL = "https://ade-app.dev/";
 
@@ -90,6 +89,8 @@ export function ProjectWelcomePage() {
   const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
     [],
   );
+  // The first recents read finished (or failed): Home's catalog read waits for it.
+  const [recentsLoaded, setRecentsLoaded] = useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [webAddProjectNoticeOpen, setWebAddProjectNoticeOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
@@ -102,16 +103,6 @@ export function ProjectWelcomePage() {
     },
     [],
   );
-  // Keys hidden by a pending deferred forget (committed only after the undo
-  // window expires). Reconnect/open state is keyed the same way.
-  const [pendingForgetKeys, setPendingForgetKeys] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [forgetToast, setForgetToast] = useState<{
-    key: string;
-    name: string;
-    recentKeys: string[];
-  } | null>(null);
   const [connectingKeys, setConnectingKeys] = useState<Set<string>>(
     () => new Set(),
   );
@@ -174,7 +165,6 @@ export function ProjectWelcomePage() {
     return () => window.removeEventListener("keydown", onKey);
   }, [editingHome, setEditingHome]);
   useEffect(() => () => setEditingHome(false), [setEditingHome]);
-  const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
   const recentReadRef = useRef(0);
@@ -186,10 +176,12 @@ export function ProjectWelcomePage() {
         if (recentReadRef.current !== request) return;
         setRecentProjects(rows);
         setRecentListError(null);
+        setRecentsLoaded(true);
       })
       .catch((error: unknown) => {
         if (recentReadRef.current !== request) return;
         setRecentListError(error instanceof Error ? error.message : String(error));
+        setRecentsLoaded(true);
       });
   }, []);
 
@@ -223,15 +215,6 @@ export function ProjectWelcomePage() {
     };
   }, [applyRemoteSnapshot, webMode]);
 
-  useEffect(
-    () => () => {
-      if (forgetTimerRef.current != null) {
-        window.clearTimeout(forgetTimerRef.current);
-      }
-    },
-    [],
-  );
-
   // Live connection state per remote target, used to pick the dot color and
   // decide whether a remote row needs a reconnect before opening.
   const connectionByTarget = useMemo(() => {
@@ -263,14 +246,25 @@ export function ProjectWelcomePage() {
     [webMachines],
   );
   const webRecents = useMemo(() => webRecentProjects(webMachines), [webMachines]);
-  // A web recent row names its computer by the browser's machine key; the
-  // account list names it by the account machine key.
-  const webAccountMachineKeys = useMemo(
-    () => new Map(webMachines.flatMap((machine) => (
-      machine.accountMachine?.machineKey ? [[machine.key, machine.accountMachine.machineKey] as const] : []
-    ))),
-    [webMachines],
-  );
+  // The computers as Home's list reads them on the web: by account machine
+  // key (the account list's name for a computer), and by web machine row key
+  // and browser environment id (a catalog row's and a connection's names).
+  const { webComputers, webComputersByKey } = useMemo(() => {
+    const byAccount = new Map<string, HomeWebComputer>();
+    const byKey = new Map<string, HomeWebComputer>();
+    for (const machine of webMachines) {
+      const computer: HomeWebComputer = {
+        key: machine.key,
+        name: machine.name,
+        live: machine.status === "live",
+        reachable: machine.status === "live" || machine.status === "available" || machine.status === "connecting",
+      };
+      byKey.set(machine.key, computer);
+      if (machine.environment?.envId) byKey.set(machine.environment.envId, computer);
+      if (machine.accountMachine?.machineKey) byAccount.set(machine.accountMachine.machineKey, computer);
+    }
+    return { webComputers: byAccount, webComputersByKey: byKey };
+  }, [webMachines]);
   const activeWebMachine = useMemo(() => (
     webMachines.find((machine) => machine.status === "live")
     ?? webMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
@@ -286,18 +280,26 @@ export function ProjectWelcomePage() {
     if (!workspace.adapter.getActiveBinding()) workspace.adapter.activateHub();
   }, [webMode, workspace]);
 
-  // The account's projects (S4) join the recents; a project with no computer
-  // online opens as its repository tab with no machine (0M).
-  const { visibleProjectGroups, openNoMachineTab, accountProjectCount } = useHomeAccountProjects({
+  // One source: the account's projects decide the rows and the count, on
+  // every client; a project with no computer online opens as its repository
+  // tab with no machine (0M). This computer's other folders follow.
+  const { pendingForgetKeys, handleRemoveRow, handleShowAgain } = useHomeRowRemoval({ recentProjects, setRecentProjects, setRowError });
+  const { list: homeList, openNoMachineTab } = useHomeAccountProjects({
     webMode,
     recentProjects,
+    recentsLoaded,
     webRecents,
-    webAccountMachineKeys,
+    webComputers,
+    webComputersByKey,
     remoteSnapshot,
     pendingForgetKeys,
   });
-
-  const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
+  const accountProjectCount = homeList.accountCount ?? 0;
+  const homeRows = useMemo(
+    () => [...homeList.accountRows, ...homeList.localGroups.flatMap((group) => group.rows)],
+    [homeList],
+  );
+  const visibleProjectGroups = useMemo(() => homeRows.map((row) => row.group), [homeRows]);
 
   // Selecting anything on the hosted client connects its machine first — a
   // machine the account can reach is never a dead end (bug-ledger C2d).
@@ -325,6 +327,8 @@ export function ProjectWelcomePage() {
     [navigate, webMachineByKey, workspace],
   );
 
+  // Lanes shared with this account: they need no computer of its own.
+  const sharedRows = useLaneShareHomeRows();
   // Why the hosted client is showing no machines, in the account's own words.
   // Only computed when there is nothing to list — a populated list speaks for
   // itself even when the last directory read failed.
@@ -335,6 +339,7 @@ export function ProjectWelcomePage() {
           directoryLoading: workspace.directoryLoading,
           retryError: directoryRetryError,
           accountProjectCount,
+          sharedLaneCount: sharedRows.length,
           onGetAde: () => {
             void window.ade.app.openExternal(ADE_DOWNLOAD_PAGE_URL).catch(() => undefined);
           },
@@ -352,7 +357,7 @@ export function ProjectWelcomePage() {
           },
         })
       : null
-  ), [accountProjectCount, directoryRetryError, webMachines.length, webMode, workspace]);
+  ), [accountProjectCount, directoryRetryError, sharedRows.length, webMachines.length, webMode, workspace]);
 
   const openWebChats = useCallback(() => {
     if (!workspace || !activeWebMachine) return;
@@ -461,101 +466,6 @@ export function ProjectWelcomePage() {
     }
   }, [recentProjects]);
 
-  // Deferred-commit forget: hide the row immediately and show an undo toast.
-  // Only after the window elapses do we call the backend forget. Undo cancels
-  // the timer and unhides the row, with no backend call.
-  const commitForget = useCallback((key: string, recentKeys: string[]) => {
-    if (forgetTimerRef.current != null) {
-      window.clearTimeout(forgetTimerRef.current);
-      forgetTimerRef.current = null;
-    }
-    void (async () => {
-      let next = recentProjects;
-      for (const recentKey of recentKeys) {
-        next = await window.ade.project.forgetRecent(recentKey);
-      }
-      setRecentProjects(next);
-    })().catch((error: unknown) => {
-      // The row reappears at the end of the undo window; say why instead of
-      // letting it silently come back.
-      setRowError(error instanceof Error ? error.message : String(error));
-    });
-    setPendingForgetKeys((prev) => {
-      const next = new Set(prev);
-      next.delete(key);
-      return next;
-    });
-    setForgetToast(null);
-  }, [recentProjects]);
-
-  const handleForget = useCallback(
-    (group: RecentProjectGroup) => {
-      const key = group.id;
-      // Flush any prior pending forget so we never stack timers.
-      const previousKey = forgetToast?.key ?? null;
-      if (previousKey && previousKey !== key) {
-        commitForget(previousKey, forgetToast?.recentKeys ?? []);
-      } else if (forgetTimerRef.current != null) {
-        window.clearTimeout(forgetTimerRef.current);
-        forgetTimerRef.current = null;
-      }
-      setForgetToast({
-        key,
-        name: group.displayName,
-        recentKeys: group.recentKeys,
-      });
-      setPendingForgetKeys((prev) => new Set(prev).add(key));
-      forgetTimerRef.current = window.setTimeout(() => {
-        forgetTimerRef.current = null;
-        commitForget(key, group.recentKeys);
-      }, FORGET_UNDO_WINDOW_MS);
-    },
-    [commitForget, forgetToast],
-  );
-
-  const handleUndoForget = useCallback(() => {
-    if (forgetTimerRef.current != null) {
-      window.clearTimeout(forgetTimerRef.current);
-      forgetTimerRef.current = null;
-    }
-    setForgetToast((current) => {
-      if (current) {
-        setPendingForgetKeys((prev) => {
-          const next = new Set(prev);
-          next.delete(current.key);
-          return next;
-        });
-      }
-      return null;
-    });
-  }, []);
-
-  // The undo offer is a shared toast; this page's own timer decides when the
-  // forget commits (and clears `forgetToast`), so the toast itself is sticky.
-  useEffect(() => {
-    if (!forgetToast) {
-      dismissToast(FORGET_TOAST_ID);
-      return;
-    }
-    showToast({
-      id: FORGET_TOAST_ID,
-      tone: "neutral",
-      icon: <Trash size={15} weight="fill" />,
-      title: `Removed ${forgetToast.name}`,
-      actions: [
-        {
-          label: "Undo",
-          variant: "primary",
-          icon: <ArrowCounterClockwise size={12} weight="bold" />,
-          onClick: handleUndoForget,
-        },
-      ],
-      dismissible: false,
-      durationMs: 0,
-    });
-  }, [forgetToast, handleUndoForget]);
-  useEffect(() => () => dismissToast(FORGET_TOAST_ID), []);
-
   const handleDropFolder = useCallback(
     (event: React.DragEvent) => {
       event.preventDefault();
@@ -577,15 +487,6 @@ export function ProjectWelcomePage() {
     [switchProjectToPath],
   );
 
-  const rows = useMemo(() => visibleProjectGroups.map((group) => {
-    const primary = group.primary;
-    const rp = {
-      ...primary.summary,
-      pinned: group.pinned,
-    };
-    return { group, rp, key: recentKey(rp) };
-  }), [visibleProjectGroups]);
-
   const [rowMenu, setRowMenu] = useState<(NonNullable<ContextMenuState> & { key: string }) | null>(null);
   const closeRowMenu = useCallback(() => setRowMenu(null), []);
   const [iconDialogTarget, setIconDialogTarget] = useState<ProjectIconDialogTarget | null>(null);
@@ -594,7 +495,8 @@ export function ProjectWelcomePage() {
 
   const rowMenuEntries = useMemo((): ContextMenuEntry[] => {
     if (!rowMenu) return [];
-    const row = rows.find((entry) => entry.key === rowMenu.key);
+    const hiddenRow = homeList.hiddenRows.find((entry) => entry.key === rowMenu.key);
+    const row = homeRows.find((entry) => entry.key === rowMenu.key) ?? hiddenRow;
     if (!row) return [];
     const { group, rp } = row;
     const remoteBinding = remoteBindingFromRecent(rp);
@@ -608,7 +510,8 @@ export function ProjectWelcomePage() {
         displayName: rp.displayName,
         binding: remoteBinding ?? localBindingFromRecent(rp),
         available: localReady || remoteBinding != null,
-        pinned: Boolean(group.pinned),
+        // Pinning is a recents action: a project this computer never opened has no pin.
+        pinned: group.recentKeys.length > 0 ? Boolean(group.pinned) : null,
         hostIconDataUrl: remoteBinding?.iconDataUrl ?? null,
         cloneTarget: cloneTargetFor({
           binding: remoteBinding,
@@ -660,15 +563,18 @@ export function ProjectWelcomePage() {
         ? {
             kind: "item",
             key: "forget",
-            label: "Remove from recents",
+            label: row.kind === "account" ? "Remove…" : "Remove from this list",
             icon: Trash,
             danger: true,
-            onSelect: () => handleForget(group),
+            onSelect: () => handleRemoveRow(row),
           }
+        : null,
+      hiddenRow
+        ? { kind: "item", key: "show-again", label: "Show on this list", icon: Eye, onSelect: () => handleShowAgain(hiddenRow) }
         : null,
     ];
     return entries.filter((entry): entry is ContextMenuEntry => entry != null);
-  }, [connectionByTarget, handleForget, handleOpen, handleTogglePin, rowMenu, rows, webMode]);
+  }, [connectionByTarget, handleOpen, handleRemoveRow, handleShowAgain, handleTogglePin, homeList.hiddenRows, homeRows, rowMenu, webMode]);
 
   const focusRowButton = useCallback((index: number) => {
     const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
@@ -712,11 +618,15 @@ export function ProjectWelcomePage() {
   const projectsCard = useCallback((preview: boolean) => (
     <ProjectsCard
       preview={preview}
-      rows={rows}
-      count={visibleProjectGroups.length}
+      rows={homeList.accountRows}
+      hiddenRows={homeList.hiddenRows}
+      localGroups={homeList.localGroups}
+      // The account's count, hidden rows included; this computer's recents when there is no account list.
+      count={homeList.accountCount ?? homeRows.length}
       webMode={webMode}
       listRef={listRef}
       onListKeyDown={handleListKeyDown}
+      sharedRows={sharedRows}
       connectionByTarget={connectionByTarget}
       connectingKeys={connectingKeys}
       pendingForgetKeys={pendingForgetKeys}
@@ -724,16 +634,19 @@ export function ProjectWelcomePage() {
       openRootPath={project?.rootPath ?? null}
       projectBinding={projectBinding}
       webMachineByKey={webMachineByKey}
+      webMachineByAccountKey={webMachineByAccountKey}
       onOpen={handleOpen}
       onTogglePin={handleTogglePin}
-      onForget={handleForget}
+      onRemove={handleRemoveRow}
+      onShowAgain={handleShowAgain}
       onMerge={setMergeTarget}
       onRowMenu={setRowMenu}
     />
   ), [
     connectingKeys,
     connectionByTarget,
-    handleForget,
+    handleRemoveRow,
+    handleShowAgain,
     handleListKeyDown,
     handleOpen,
     handleTogglePin,
@@ -741,8 +654,10 @@ export function ProjectWelcomePage() {
     pendingForgetKeys,
     project?.rootPath,
     projectBinding,
-    rows,
-    visibleProjectGroups.length,
+    homeList,
+    homeRows.length,
+    sharedRows,
+    webMachineByAccountKey,
     webMachineByKey,
     webMode,
   ]);

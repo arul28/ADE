@@ -602,6 +602,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const welcomeChanged = currentShowWelcome === hasStoredProject;
 
       if (remoteBinding) {
+        // A remote open that Home superseded (Home opened while it was on its
+        // way) opens under Home: Home stays in front.
+        const openedUnderHome = currentIsNewTabOpen
+          && useAppStore.getState().takeRemoteOpenSupersededByHome(remoteBinding);
         setProjectBinding(remoteBinding);
         setProject({
           rootPath: remoteBinding.rootPath,
@@ -612,8 +616,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         // opening a local one does. Every local open path clears this in the
         // store; this branch bypasses them all, which left a blank "New Tab"
         // pill sitting next to the tab it had just become.
-        if (currentIsNewTabOpen) cancelNewTab();
-        setShowWelcome(false);
+        if (currentIsNewTabOpen && !openedUnderHome) cancelNewTab();
+        if (!openedUnderHome) setShowWelcome(false);
         clearScheduledRefreshes();
         void refreshLanes({ includeStatus: false });
         return;

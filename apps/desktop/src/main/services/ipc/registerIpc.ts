@@ -4684,6 +4684,36 @@ export function registerIpc({
     listRecentProjectSummaries()
   );
 
+  // This computer's folders as its brain registers them: the catalog other
+  // machines read through `projects.list`. The desktop's own recents stop at
+  // 24 (`RECENT_PROJECT_CAP`); Home lists every folder. Machine-local by
+  // design (no pin): another computer's folders come from its connection's
+  // catalog. Only while the brain is connected: Home never starts or repairs
+  // it for this. `null` means the catalog could not be read (no brain, or the
+  // read failed), never "no folders": Home keeps the catalog it last read.
+  handle(IPC.projectListThisComputer, async (): Promise<RecentProjectSummary[] | null> => {
+    const pool = localRuntimeConnectionPool;
+    if (!pool || pool.getStatus().connectionState !== "connected") return null;
+    const records = await pool.projects().catch((error: unknown) => {
+      // Home keeps its last catalog; it reads again on its next open.
+      getCtx().logger.warn("project.list_this_computer_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    if (!records) return null;
+    return records
+      .filter((record) => record.catalogVisibility !== "system" && record.exists !== false)
+      .map((record): RecentProjectSummary => ({
+        rootPath: record.rootPath,
+        displayName: record.displayName,
+        lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : "",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: record.gitOriginUrl ?? null,
+      }));
+  });
+
   // The account's project list as a machine last read it: this computer's
   // brain, or a connected machine (`targetId`) for a client with no brain of
   // its own. A read of a JSON file on that machine; no server call.
@@ -4930,6 +4960,22 @@ export function registerIpc({
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
+    let catalogLeaveError: unknown = null;
+    // A folder Home lists from this computer's catalog alone (no desktop
+    // recent, see `projectListThisComputer`) leaves that catalog the same way.
+    // That is the whole forget, so a failed call throws: Home says why the row
+    // stays. With no background service there is no catalog row to leave.
+    // The folder can still be open here (its recent fell off the 24-entry
+    // list while it stayed open), so it closes as a recent one does.
+    if (!removed && path.isAbsolute(targetKey)) {
+      const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+      await catalogPool?.setProjectCatalogVisibility(targetKey, "system", "desktop");
+      try {
+        await closeProjectByPath(targetKey);
+      } catch {
+        // Best effort, as for a recent local project below.
+      }
+    }
     if (removed && !removed.remote) {
       // Removing a project is the person's way to start over with it: adding
       // it back no longer expects the old database. A project whose whole
@@ -4948,9 +4994,11 @@ export function registerIpc({
             "system",
             "desktop",
           );
-        } catch {
-          // Best effort; the desktop recent remains forgotten even if the
-          // background service is temporarily unavailable.
+        } catch (error) {
+          // Home lists this catalog, so the folder would come back with no
+          // word. The rest of the forget runs; then the error says why the
+          // row stays, and a retry takes the catalog-only path above.
+          catalogLeaveError = error;
         }
       }
     }
@@ -4962,6 +5010,7 @@ export function registerIpc({
         // Best effort; forgetting a project should still update recents even if teardown fails.
       }
     }
+    if (catalogLeaveError) throw catalogLeaveError;
   };
 
   handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {

@@ -2,35 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { AccountProjectView } from "../../../shared/accountProject";
 import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
-import { useAccountProjectList } from "../../state/useRepositoryCopies";
-import {
-  accountProjectGroups,
-  foreignCopyPaths,
-  groupRecentProjects,
-  type RecentProjectGroup,
-} from "../app/projectTabGrouping";
+import { useAccountProjectList, useRepositoryCopySources, useThisMachineKey } from "../../state/useRepositoryCopies";
+import { readThisComputerCatalog, useThisComputerCatalog, withCatalogFolders } from "../../state/thisComputerCatalog";
+import { foreignCopyPaths } from "../app/projectTabGrouping";
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
-
-/** This computer's account machine key: read once per app session, so Home does not render twice on each open. */
-let thisMachineKeyCache: string | null | undefined;
-function useThisMachineKey(enabled: boolean): string | null {
-  const [machineKey, setMachineKey] = useState<string | null>(() => thisMachineKeyCache ?? null);
-  useEffect(() => {
-    if (!enabled || thisMachineKeyCache !== undefined) return undefined;
-    let cancelled = false;
-    void Promise.resolve(window.ade?.account?.getLocalMachineIdentity?.())
-      .then((identity) => {
-        thisMachineKeyCache = identity?.machineKey?.trim() || null;
-        if (!cancelled) setMachineKey(thisMachineKeyCache);
-      })
-      // Not read: the next Home mount asks again. Until then no row counts as another machine's.
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled]);
-  return machineKey;
-}
+import { buildHomeProjectList, type HomeProjectList, type HomeWebComputer } from "./homeProjectRows";
+import { useHomeHiddenProjects } from "./homeHiddenProjects";
 
 /** The account project of a recent row's origin, by any of the project's addresses. */
 function accountProjectForOrigin(projects: readonly AccountProjectView[], gitOriginUrl: string | null | undefined): AccountProjectView | null {
@@ -40,58 +17,123 @@ function accountProjectForOrigin(projects: readonly AccountProjectView[], gitOri
     cachedGitRemoteIdentity(key.startsWith("repo:") ? key.slice("repo:".length) : key) === origin)) ?? null;
 }
 
+/** The local brain as this window last heard of it ("connected:<pid>" or its state); null before the first report. */
+let brainIdentity: string | null = null;
+/** The brain identity the last catalog read went to. */
+let catalogReadIdentity: string | null = null;
+
 /**
- * Home's project rows with the account's projects (S4): every project of the
- * account shows, also one added or cloned on another machine, and a row of
- * another machine's copy opens that machine's copy (F6). `openNoMachineTab`
- * opens a row's repository as a tab with no machine (0M); it returns false
- * when the row has no repository address.
+ * Counts the times a connected local brain answers that the last catalog read
+ * did not reach: Home opened before the brain connected (the read answered
+ * nothing), or the brain restarted. The status report also comes as a
+ * heartbeat; a heartbeat of the same brain changes nothing.
+ */
+function useBrainConnects(desktop: boolean): number {
+  const [connects, setConnects] = useState(0);
+  useEffect(() => {
+    const subscribe = window.ade?.app?.onRuntimeStatusChanged;
+    if (!desktop || typeof subscribe !== "function") return undefined;
+    return subscribe((status) => {
+      brainIdentity = status.connectionState === "connected" ? `connected:${status.pid ?? ""}` : status.connectionState;
+      if (status.connectionState === "connected" && catalogReadIdentity !== brainIdentity) setConnects((count) => count + 1);
+    });
+  }, [desktop]);
+  return connects;
+}
+
+/**
+ * This computer's folders as its brain registers them. The desktop's recents
+ * stop at 24; the catalog has every folder. Read when Home opens and each time
+ * the recents change (an open or a forget changes both), and when a brain the
+ * last read missed connects. The read waits for Home's first recents read
+ * (`ready`), so one open reads the catalog once; the last catalog shows until
+ * then. Desktop only.
+ */
+function useThisComputerFolders(desktop: boolean, ready: boolean, recentsVersion: unknown): readonly RecentProjectSummary[] {
+  const folders = useThisComputerCatalog(desktop);
+  const brainConnects = useBrainConnects(desktop);
+  useEffect(() => {
+    if (!desktop || !ready) return;
+    catalogReadIdentity = brainIdentity;
+    readThisComputerCatalog();
+  }, [brainConnects, desktop, ready, recentsVersion]);
+  return folders;
+}
+
+/**
+ * Icons seen this session, by account project id: a row keeps its icon after
+ * its computer goes offline or the browser disconnects it. Memory only.
+ */
+const rememberedIcons = new Map<string, string>();
+
+/**
+ * Home's project list (one source, see `homeProjectRows`): one row per
+ * account project, the same projects and count on every client, with or
+ * without a machine connection; this computer's other folders in groups
+ * below. `openNoMachineTab` opens a row's repository as a tab with no machine
+ * (0M); it returns false when the row has no repository address.
  */
 export function useHomeAccountProjects(args: {
   webMode: boolean;
   recentProjects: readonly RecentProjectSummary[];
+  /** Home has read the desktop's recents once (or failed to): the catalog read waits for it. */
+  recentsLoaded: boolean;
   webRecents: readonly RecentProjectSummary[];
-  /** On the web: each recent row's machine key to its account machine key. */
-  webAccountMachineKeys: ReadonlyMap<string, string>;
+  /** Web: computers by account machine key, and by web machine row key. */
+  webComputers: ReadonlyMap<string, HomeWebComputer>;
+  webComputersByKey: ReadonlyMap<string, HomeWebComputer>;
   remoteSnapshot: RemoteRuntimeConnectionSnapshot | null;
   pendingForgetKeys: ReadonlySet<string>;
 }): {
-  visibleProjectGroups: RecentProjectGroup[];
+  list: HomeProjectList;
   openNoMachineTab: (rp: RecentProjectSummary) => boolean;
-  /** How many live projects the account has; 0 until the list is read. */
-  accountProjectCount: number;
 } {
-  const { webMode, recentProjects, webRecents, webAccountMachineKeys, remoteSnapshot, pendingForgetKeys } = args;
+  const { webMode, recentProjects, recentsLoaded, webRecents, webComputers, webComputersByKey, remoteSnapshot, pendingForgetKeys } = args;
   const accountList = useAccountProjectList();
   const accountProjects = accountList.state === "ready" ? accountList.projects : null;
-  // Only the F6 rule needs it, and only with the account's list.
+  // This computer's key: the F6 rule and the copies (which copy is this computer's).
   const thisMachineKey = useThisMachineKey(!webMode && accountProjects != null);
-  const visibleProjectGroups = useMemo(() => {
-    const foreign = webMode ? new Set<string>() : foreignCopyPaths({ projects: accountProjects, thisMachineKey });
-    const kept = (webMode ? webRecents : recentProjects).filter((rp) => {
-      if (rp.kind === "remote") return true;
-      if (foreign.has(rp.rootPath)) return false;
-      return rp.exists && !rp.rootPath.includes("ade-project");
-    });
-    const groups = groupRecentProjects({
-      recentProjects: kept,
+  // The same sources as the copies menu and Settings › Location, so the
+  // computer count agrees on all three. Home already holds the recents and
+  // the connections on the desktop, so nothing is read a second time; ADE
+  // Web reads its in-browser connections (no IPC there). The sources add
+  // this computer's catalog, so a folder Home puts in an account row has a
+  // copy to open.
+  const catalogFolders = useThisComputerFolders(!webMode, recentsLoaded, recentProjects);
+  const desktopFolders = useMemo(() => withCatalogFolders(recentProjects, catalogFolders), [catalogFolders, recentProjects]);
+  const sources = useRepositoryCopySources(true, webMode ? null : {
+    snapshot: remoteSnapshot,
+    recents: recentProjects,
+    machineKey: thisMachineKey,
+  });
+  const hidden = useHomeHiddenProjects();
+  const thisMachineName = (thisMachineKey ? accountList.machineNames?.[thisMachineKey]?.trim() : null) || "this computer";
+
+  const list = useMemo(() => {
+    const built = buildHomeProjectList({
+      projects: accountProjects,
+      sources,
+      recents: webMode ? webRecents : desktopFolders,
       remoteSnapshot: webMode ? null : remoteSnapshot,
+      webMode,
+      webComputers,
+      webComputersByKey,
+      hidden,
+      foreignPaths: webMode ? new Set() : foreignCopyPaths({ projects: accountProjects, thisMachineKey }),
+      thisMachineName,
+      rememberedIcons,
     });
-    // On the web too (S14): the account's projects come from the account
-    // directory there, so a project on a computer this browser never
-    // connected to, or on no computer, still has a row.
-    const withAccount = accountProjects
-      ? accountProjectGroups({
-          projects: accountProjects,
-          shownGroups: groups,
-          remoteSnapshot: webMode ? null : remoteSnapshot,
-          thisMachineKey: webMode ? null : thisMachineKey,
-          machineNames: accountList.machineNames,
-          accountMachineKeys: webMode ? webAccountMachineKeys : undefined,
-        })
-      : groups;
-    return withAccount.filter((group) => !pendingForgetKeys.has(group.id));
-  }, [accountList.machineNames, accountProjects, pendingForgetKeys, recentProjects, remoteSnapshot, thisMachineKey, webAccountMachineKeys, webMode, webRecents]);
+    for (const row of built.accountRows) {
+      if (row.iconDataUrl) rememberedIcons.set(row.key, row.iconDataUrl);
+    }
+    if (pendingForgetKeys.size === 0) return built;
+    return {
+      ...built,
+      localGroups: built.localGroups
+        .map((group) => ({ ...group, rows: group.rows.filter((row) => !pendingForgetKeys.has(row.group.id)) }))
+        .filter((group) => group.rows.length > 0),
+    };
+  }, [accountProjects, desktopFolders, hidden, pendingForgetKeys, remoteSnapshot, sources, thisMachineKey, thisMachineName, webComputers, webComputersByKey, webMode, webRecents]);
 
   // A project with no computer online opens as its repository tab, with no
   // machine (0M): the tab waits for a computer instead of failing.
@@ -103,10 +145,10 @@ export function useHomeAccountProjects(args: {
     showNoMachineTab({
       id: project?.id ?? `repo:${origin}`,
       displayName: project?.name ?? rp.displayName,
-      iconDataUrl: rp.remote?.iconDataUrl ?? null,
+      iconDataUrl: rp.remote?.iconDataUrl ?? (project ? rememberedIcons.get(project.id) ?? null : null),
     });
     return true;
   }, [accountProjects, showNoMachineTab]);
 
-  return { visibleProjectGroups, openNoMachineTab, accountProjectCount: accountProjects?.length ?? 0 };
+  return { list, openNoMachineTab };
 }

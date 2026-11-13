@@ -32,13 +32,16 @@ import {
   type RepositoryTab,
   type StartOnChoice,
 } from "../../shared/repositoryTab";
-import type { RecentProjectSummary } from "../../shared/types";
+import type { RecentProjectSummary, RemoteRuntimeConnectionSnapshot, RemoteRuntimeConnectionStatus } from "../../shared/types";
+import { foreignCopyPaths } from "../components/app/projectTabGrouping";
 import { rememberProjectOriginSummaries } from "../components/lanes/laneMachines";
 import { isWebClientMode } from "../lib/webClientMode";
 import { adeCloudLaneComputerForMachine, useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useAdeCloudEnabled } from "./cloudAccess";
 import { useStableBinding } from "./laneMachineRouting";
+import { readThisComputerCatalog, useThisComputerCatalog, withCatalogFolders } from "./thisComputerCatalog";
 import { useRemoteConnectionSnapshot } from "./projectMachines";
+import { readWebAccountMachineKeys, subscribeWebAccountMachineKeys } from "./webAccountMachineKeys";
 
 // ── The account project list (injected) ────────────────────────────────────
 
@@ -77,6 +80,27 @@ export function useAccountProjectList(): AccountProjectListState {
   return useSyncExternalStore(subscribeAccountProjectList, readAccountProjectList, readAccountProjectList);
 }
 
+// ── ADE Web: the account machine key of each connection ─────────────────────
+
+/** The connections with their account machine key filled in where ADE Web knows it. */
+function withAccountMachineKeys(
+  connections: readonly RemoteRuntimeConnectionStatus[],
+  keys: ReadonlyMap<string, string>,
+): readonly RemoteRuntimeConnectionStatus[] {
+  if (keys.size === 0) return connections;
+  return connections.map((connection) => {
+    const accountKey = keys.get(connection.target.id);
+    if (!accountKey || connection.target.pairedMachine?.machineKey) return connection;
+    return {
+      ...connection,
+      target: {
+        ...connection.target,
+        pairedMachine: { hostIdentity: connection.target.pairedMachine?.hostIdentity ?? "", machineKey: accountKey },
+      },
+    };
+  });
+}
+
 // ── This computer ───────────────────────────────────────────────────────────
 
 let thisMachineKeyCache: string | null = null;
@@ -99,6 +123,31 @@ function readThisMachineKey(): Promise<string | null> {
   return thisMachineKeyRead;
 }
 
+/**
+ * This computer's account machine key while `enabled`: read once per app
+ * session (`readThisMachineKey`), so a surface that mounts again starts with
+ * it and does not render twice. Null in the hosted web client.
+ */
+export function useThisMachineKey(enabled: boolean): string | null {
+  const [machineKey, setMachineKey] = useState<string | null>(thisMachineKeyCache);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    // Another reader can fill the cache before this hook is enabled.
+    if (thisMachineKeyCache) {
+      setMachineKey(thisMachineKeyCache);
+      return undefined;
+    }
+    let cancelled = false;
+    void readThisMachineKey().then((key) => {
+      if (!cancelled && key) setMachineKey(key);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+  return machineKey;
+}
+
 type ThisComputer = { machineKey: string | null; localProjects: readonly RecentProjectSummary[] };
 
 const NO_RECENTS: readonly RecentProjectSummary[] = [];
@@ -118,6 +167,7 @@ function useThisComputer(active: boolean): ThisComputer | null {
       void readThisMachineKey().then((key) => {
         if (!cancelled && key) setMachineKey(key);
       });
+      readThisComputerCatalog();
       if (typeof listRecent !== "function") return;
       const readId = ++latestRead;
       void listRecent().then(
@@ -174,25 +224,79 @@ export type RepositoryCopiesState = {
 
 const NO_COPIES: RepositoryCopy[] = [];
 
+/** Every input of `buildRepositoryCopies` except one project's account copies. */
+export type RepositoryCopySources = Omit<RepositoryCopyInputs, "accountCopies">;
+
+/** State a surface already holds, so the sources do not read it a second time (Home). */
+export type GivenCopySources = {
+  snapshot: RemoteRuntimeConnectionSnapshot | null;
+  /** This computer's recents (desktop). */
+  recents: readonly RecentProjectSummary[];
+  machineKey: string | null;
+};
+
+/**
+ * The sources every copies list reads: the connections, this computer, the
+ * account's machine names, and the ADE Cloud lane computers. Home, the copies
+ * menu and Settings › Location read the same sources, so they agree on the
+ * copies and on the count (`copyComputers`). `active` false reads nothing.
+ * With `given`, the snapshot and this computer come from the caller and
+ * nothing is read here.
+ */
+export function useRepositoryCopySources(active: boolean, given?: GivenCopySources | null): RepositoryCopySources {
+  const list = useAccountProjectList();
+  const { snapshot: ownSnapshot } = useRemoteConnectionSnapshot(active && !given);
+  const ownThisComputer = useThisComputer(active && !given);
+  const { computers } = useAdeCloudLaneComputers();
+  const webKeys = useSyncExternalStore(subscribeWebAccountMachineKeys, readWebAccountMachineKeys, readWebAccountMachineKeys);
+  const snapshot = given ? given.snapshot : ownSnapshot;
+  const connections = useMemo(
+    () => withAccountMachineKeys(snapshot?.connections ?? [], webKeys),
+    [snapshot, webKeys],
+  );
+  // `given` is a fresh object each render; its parts are the inputs.
+  const hasGiven = given != null;
+  const givenRecents = given?.recents;
+  const givenKey = given?.machineKey ?? null;
+  const desktop = active && !isWebClientMode();
+  // Given recents that change (an open, a forget, a remove) change the
+  // catalog too; the own path reads it with the recents.
+  useEffect(() => {
+    if (desktop && hasGiven) readThisComputerCatalog();
+  }, [desktop, givenRecents, hasGiven]);
+  const catalog = useThisComputerCatalog(desktop);
+  const accountProjects = list.state === "ready" ? list.projects : null;
+  const thisComputer = useMemo<ThisComputer | null>(() => {
+    const base = hasGiven
+      ? (isWebClientMode() ? null : { machineKey: givenKey, localProjects: givenRecents ?? NO_RECENTS })
+      : ownThisComputer;
+    if (!base) return null;
+    // The recents plus the catalog, less the folders that are another
+    // machine's copy at a path on this disk (F6).
+    const foreign = foreignCopyPaths({ projects: accountProjects, thisMachineKey: base.machineKey });
+    const all = withCatalogFolders(base.localProjects, catalog);
+    const localProjects = foreign.size === 0 ? all : all.filter((project) => !foreign.has(project.rootPath));
+    return localProjects === base.localProjects ? base : { ...base, localProjects };
+  }, [accountProjects, catalog, givenKey, givenRecents, hasGiven, ownThisComputer]);
+  return useMemo<RepositoryCopySources>(() => ({
+    connections,
+    thisMachine: thisComputer,
+    machineNames: list.machineNames,
+    isAdeCloudMachine: (machine) => adeCloudLaneComputerForMachine(machine, computers) != null,
+  }), [computers, connections, list.machineNames, thisComputer]);
+}
+
 function useRepositoryCopyState(tab: RepositoryTab | null, active: boolean): RepositoryCopiesState {
   const on = active && tab != null;
   const list = useAccountProjectList();
-  const { snapshot } = useRemoteConnectionSnapshot(on);
-  const thisComputer = useThisComputer(on);
-  const { computers } = useAdeCloudLaneComputers();
+  const sources = useRepositoryCopySources(on);
 
   const accountCopies = useMemo(() => {
     if (!tab || tab.kind !== "account" || list.state !== "ready") return null;
     return list.projects.find((project) => project.id === tab.id)?.copies ?? [];
   }, [list, tab]);
 
-  const inputs = useMemo<RepositoryCopyInputs>(() => ({
-    accountCopies,
-    connections: snapshot?.connections ?? [],
-    thisMachine: thisComputer,
-    machineNames: list.machineNames,
-    isAdeCloudMachine: (machine) => adeCloudLaneComputerForMachine(machine, computers) != null,
-  }), [accountCopies, computers, list.machineNames, snapshot, thisComputer]);
+  const inputs = useMemo<RepositoryCopyInputs>(() => ({ ...sources, accountCopies }), [accountCopies, sources]);
 
   const copies = useMemo(
     () => (tab ? buildRepositoryCopies(tab, inputs) : NO_COPIES),

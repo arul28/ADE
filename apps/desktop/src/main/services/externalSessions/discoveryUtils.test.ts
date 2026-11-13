@@ -14,10 +14,10 @@ import {
   cwdIsInScope,
   normalizeProviderCwd,
   pathContains,
-  providerAdeHome,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
 } from "./discoveryUtils";
+import { providerAdeHome } from "./adeConfigHomes";
 import { claudeConfigHomeDirs } from "./discoverClaude";
 
 describe("normalizeProviderCwd", () => {
