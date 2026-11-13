@@ -5,6 +5,7 @@ import SwiftUI
 ///
 /// - `-adePreviewScreen duo-cloud`: the ADE Cloud page (the dashboard);
 /// - `duo-cloud-plans`: the same page scrolled to the plans and sizes;
+/// - `duo-cloud-upgraded`: the page a moment after a checkout from Free ("You're on Plus");
 /// - `duo-cloud-invite`: the invite card (link, Copy, Share, counts, the code box);
 /// - `duo-cloud-limits`: what agents may do alone;
 /// - `duo-cloud-machine`: one computer (what uses its disk);
@@ -12,7 +13,7 @@ import SwiftUI
 /// - `duo-provider-signin`: the sign-in sheet at its approve step.
 enum CloudPreviews {
   static let names: Set<String> = [
-    "duo-cloud", "duo-cloud-plans", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
+    "duo-cloud", "duo-cloud-plans", "duo-cloud-upgraded", "duo-cloud-invite", "duo-cloud-limits", "duo-cloud-machine", "duo-providers-cloud", "duo-provider-signin",
   ]
 
   @MainActor static func view(_ name: String) -> AnyView? {
@@ -35,6 +36,13 @@ enum CloudPreviews {
     }
     guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON.utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced")
+    // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
+    if name == "duo-cloud-upgraded", let code = list.account?.referral?.code {
+      UserDefaults.standard.set(
+        [code: ["planId": "free", "periodStart": 1_790_812_800_000.0, "leftMilli": 79_100]],
+        forKey: CloudPlanSeenStore.defaultsKey
+      )
+    }
     let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
     switch name {
     case "duo-cloud-limits":

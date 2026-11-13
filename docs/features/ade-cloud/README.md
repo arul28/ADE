@@ -105,8 +105,11 @@ that stops (see Sleep and busy rules).
   (its settings stay account level) (`CloudSection.tsx` and the
   dashboard in `settings/cloudDashboard/`): the hero with hours, disk and
   computers against the plan, every lane and computer, Plans (`CloudPlans.tsx`:
-  the plans side by side, buy Plus or Pro, move between them or stay on Pro,
-  extra hours and extra disk, and Manage billing, which opens Stripe's portal),
+  one card per plan, the current one on its own patch of the hero's dusk sky
+  and the next one up with the main button; buy Plus or Pro, move between
+  them or stay on Pro; one "how hours and disk work" panel under the cards
+  holds every explanation and the account's own notes; extra hours and extra
+  disk as two tiles; and Manage billing, which opens Stripe's portal),
   Sizes, Invite friends, Sign-ins and what agents may do alone, with the
   80% / 95% / out-of-hours banners and computers due for deletion. Settings
   entries are `integrations.ade-cloud*`.
@@ -218,6 +221,16 @@ minutes are shown on the plan table only; nothing meters them yet.
   Medium (standard 4/8, 2x, 20 GB), Large (full 4/8, 5x, 50 GB) and X-Large
   (full 4/16, 8x, 100 GB). The other four shapes stay valid with the
   provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
+- **"You're on Plus":** when a purchase or a move up lands (the account
+  flips to a higher paid plan while ADE is open, or ADE opens for the first
+  time since the checkout), ADE says so once: a toast app-wide with the plan's
+  hours, disk and renewal date, and on the ADE Cloud page a banner and a
+  one-time glow on the new plan's card. From Free it also says how many unused
+  free hours the paid period replaced. What this computer last saw (plan,
+  period, hours left) is kept per account in localStorage
+  (`cloudPlanMoment.ts`), so a reload never repeats it and a computer that
+  never saw the account seeds quietly. The phone does the same with
+  UserDefaults. It records `ade_feature_used` `cloud_plan`/`completed`.
 - **Changing plans:** Plus to Pro applies now, charges the difference for the
   rest of the period, and keeps the hours used. Pro to Plus applies at the
   period end (`billing.nextPlanId`); the same for Max to Pro or Plus. A

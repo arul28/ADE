@@ -6041,7 +6041,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (BROWSER_MOCK_DEMO) return { ...state, completedAt: state.completedAt ?? new Date().toISOString() };
         // `?mockFirstRun` previews first-run setup on top of the gate.
         if (browserMockFirstRun()) return { ...state, completedAt: null, dismissedAt: null };
-        return browserMockGateState() && !state.completedAt && !state.dismissedAt
+        // The gate's previews and the ADE Cloud dashboard preview (`?mockCloud=`) skip the welcome.
+        return (browserMockGateState() || browserMockFlag("mockCloud")) && !state.completedAt && !state.dismissedAt
           ? { ...state, dismissedAt: new Date().toISOString() }
           : state;
       },

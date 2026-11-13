@@ -88,6 +88,7 @@ import { GlobalCaptureGestureHost } from "../capture/GlobalCaptureGestureHost";
 import { useActivitySync } from "../activity/useActivitySync";
 import { useAgentMessageToasts } from "../activity/useAgentMessageToasts";
 import { isActivityRoute } from "../../lib/legacyRoutes";
+import { CloudPlanMomentWatcher } from "../settings/cloudDashboard/CloudPlanMomentNotice";
 import {
   BROWSER_TAB_KEYBINDING,
   BROWSER_TAB_ROUTE,
@@ -1185,6 +1186,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       />
       {/* One ask a minute after the window opens; the card loads only when a survey is due. */}
       <SurveyHost />
+      {/* "You're on Plus": once, when an ADE Cloud plan is bought or moved up. Renders nothing. */}
+      <CloudPlanMomentWatcher />
 
       <div className="flex-1 flex min-h-0">
         <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
