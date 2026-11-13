@@ -151,7 +151,10 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
       if (event.button !== 0) return;
       const target = event.target instanceof Element ? event.target : null;
       if (!target?.closest("[data-session-row]")) return;
-      if (target.closest("[data-session-row-action], [aria-haspopup], [role='menu'], [role='menuitem'], input, textarea")) return;
+      // The row's face (`data-session-row-action`) selects the chat; the
+      // controls inside it (snooze, settle, menus) keep the drawer open.
+      if (target.closest("button, a[href], [aria-haspopup], [role='menu'], [role='menuitem'], input, textarea")) return;
+      if (!target.closest("[role='button']")?.hasAttribute("data-session-row-action")) return;
       setProjectSidebarDrawerOpen(false);
     };
     bodyElement.addEventListener("click", onClick);

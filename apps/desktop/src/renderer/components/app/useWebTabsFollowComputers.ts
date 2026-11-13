@@ -224,6 +224,12 @@ export function useWebTabsFollowComputers({
       if (state.projectTransition != null) return;
       unsubscribe();
       if (frontRemoteTabKey(state, lastRemoteBindingKeyRef.current) !== frontPlan.tab.key) return;
+      // The person closed the waiting tab meanwhile: it stays closed.
+      const waitingId = frontPlan.noMachine?.id;
+      if (waitingId != null && !state.noMachineTabs.some((tab) => tab.id === waitingId)) {
+        state.openNewTab();
+        return;
+      }
       void bringFrontPlanForward(frontPlan, { noMachineShown: false });
     });
   }, [bringFrontPlanForward, openProjectTabRootsRef, openRemoteProjectTabsRef, recordNameForRef, remoteSnapshotRef, setOpenRemoteProjectTabs, setPreferredBindingKeyByGroup, setTabOrder, tabGroupsRef]);

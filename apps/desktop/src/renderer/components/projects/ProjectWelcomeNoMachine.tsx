@@ -108,12 +108,13 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const defaultAddress = resolveDefaultCopy({ copies, currentKey: tab.lastCopyKey ?? null });
   useEffect(() => {
     if (!defaultAddress || tried.current.has(defaultAddress.key)) return;
-    // ADE Web opens a tab it moved off a stopped computer again itself.
-    if (webMode && isWebResumeOwnedTab(tab.id)) return;
+    // ADE Web opens the copy of a tab it moved off a stopped computer again
+    // itself; another computer's copy that comes online first opens here.
+    if (webMode && isWebResumeOwnedTab(tab.id) && defaultAddress.key === tab.lastCopyKey) return;
     tried.current.add(defaultAddress.key);
     const copy = copies.find((entry) => entry.address?.key === defaultAddress.key);
     if (copy) openCopyAndReport(copy);
-  }, [copies, defaultAddress, openCopyAndReport, tab.id, webMode]);
+  }, [copies, defaultAddress, openCopyAndReport, tab.id, tab.lastCopyKey, webMode]);
 
   const addLocalCopy = () => {
     const local = copyMachines(null, { includeLocal: true })[0];
