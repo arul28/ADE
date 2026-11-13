@@ -1438,7 +1438,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect(githubCalls).toBe(1);
     clock += 5 * 60_000;
     expect((await stateOf()).freePlan?.github?.state).toBe("ok");
-    expect([githubCalls, included()]).toEqual([2, 50_000]);
+    expect([githubCalls, included()]).toEqual([2, 100_000]);
 
     // A GitHub account deleted (or the App revoked) before its age was read: connect GitHub again.
     await connectGithub(OTHER, 99, null);
@@ -1480,7 +1480,7 @@ describe("ADE Cloud earned hours, referrals and the free plan per computer", () 
     expect((await stripeWebhook({ id: "evt_unlock", type: "checkout.session.completed", data: { object: session } })).status).toBe(200);
 
     expect(harness.row("select free_card_unlocked_at, free_github_hold from cloud_accounts where user_id = ?", OWNER)).toEqual({ free_card_unlocked_at: clock, free_github_hold: null });
-    expect([included(), githubClaims()]).toEqual([50_000, [{ github_user_id: 77, user_id: OWNER }]]);
+    expect([included(), githubClaims()]).toEqual([100_000, [{ github_user_id: 77, user_id: OWNER }]]);
     // A card already unlocked: the route says so and opens nothing.
     expect(await (await harness.send(OWNER, "POST", "/cloud/billing/free-unlock", {})).json()).toEqual({ url: null, unlocked: true });
   });
