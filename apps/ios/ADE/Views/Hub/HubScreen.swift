@@ -518,6 +518,15 @@ struct HubScreen: View {
     // switching row carries its own spinner and the others disable, so the list
     // never blanks to a full-screen connecting swap (M12).
     let statusInputs = accountStatusInputs
+    // A failed wake of an ADE Cloud computer stays until it is closed, so it
+    // sits in the list and covers nothing (the wake itself is the overlay).
+    if syncService.anyWakingCloudMachineName == nil, let failure = syncService.anyCloudWakeFailure {
+      CloudComputerWakeFailedBanner(
+        message: failure.message,
+        action: .dismiss { syncService.clearCloudWakeFailure(fleetKey: failure.fleetKey) },
+        insetsFromEdges: false
+      )
+    }
     if let notice = hubAccountNotice(statusInputs) {
       HubAccountStatusCard(
         notice: notice,

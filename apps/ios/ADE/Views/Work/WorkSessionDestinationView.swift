@@ -1682,7 +1682,8 @@ struct WorkSessionDestinationView: View {
       // computer, and the chat says so until the computer answers.
       .wakesCloudComputer(
         machineKey: sessionCloudMachineKey,
-        wakingName: syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey)
+        wakingName: syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey),
+        wakeFailure: syncService.cloudWakeFailure(fleetKey: sessionCloudMachineKey)
       )
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).

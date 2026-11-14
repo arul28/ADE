@@ -282,6 +282,7 @@ extension LanesTabView {
       .wakesCloudComputer(
         machineKey: syncService.focusedMachineKey,
         wakingName: syncService.wakingCloudMachineName(fleetKey: syncService.focusedMachineKey),
+        wakeFailure: syncService.cloudWakeFailure(fleetKey: syncService.focusedMachineKey),
         onAwake: { await reload(refreshRemote: true) }
       )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
@@ -301,6 +302,7 @@ extension LanesTabView {
       .wakesCloudComputer(
         machineKey: machine.machineKey,
         wakingName: syncService.wakingCloudMachineName(fleetKey: machine.machineKey),
+        wakeFailure: syncService.cloudWakeFailure(fleetKey: machine.machineKey),
         onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
     } else {

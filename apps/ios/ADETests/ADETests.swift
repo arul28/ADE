@@ -3938,6 +3938,37 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.focusedMachineKey, "machine:studio-id", "The pairing is kept; only the connection is off.")
   }
 
+  /// Privacy: the ADE Cloud computers, saved chats and wake messages of the
+  /// last account never reach the next one, also across a relaunch.
+  @MainActor
+  func testAccountChangeDropsTheLastAccountsCloudComputersAndSavedChats() throws {
+    let defaultsKey = SyncService.cloudMachineFleetKeysDefaultsKey
+    UserDefaults.standard.set(["machine:old-cloud"], forKey: defaultsKey)
+    defer { UserDefaults.standard.removeObject(forKey: defaultsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let fleet = MachineFleet()
+    fleet.attach(service)
+    service.cloudSavedChats = [try JSONDecoder().decode(CloudSavedChatRow.self, from: Data("""
+      {"machineKey": "old-cloud-key", "chatId": "chat-1", "title": "Old account chat",
+       "projectKey": "github.com/octocat/hello-world", "updatedAt": 1}
+      """.utf8))]
+    service.cloudServerInstances = [CloudServerInstance(
+      id: "box-1", name: "Old Cloud", status: "asleep", pastDue: false,
+      metadata: ["ade_machine_key": "old-cloud-key"]
+    )]
+    service.recordCloudWakeFailure(fleetKey: "machine:old-cloud", message: "Old Cloud did not answer.")
+    XCTAssertTrue(service.cloudMachineFleetKeys.contains("machine:old-cloud"))
+
+    fleet.reset()
+
+    XCTAssertTrue(service.cloudSavedChats.isEmpty)
+    XCTAssertTrue(service.cloudServerInstances.isEmpty)
+    XCTAssertTrue(service.cloudMachineFleetKeys.isEmpty)
+    XCTAssertTrue(service.cloudWakeFailures.isEmpty)
+    XCTAssertTrue(fleet.restingCloudMachines.isEmpty)
+    XCTAssertEqual(UserDefaults.standard.stringArray(forKey: defaultsKey) ?? [], [], "A relaunch must not bring the old account's cloud computers back.")
+  }
+
   @MainActor
   func testMatchingAccountRelayMetadataPreservesDirectPairingOwnership() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))

@@ -1,4 +1,7 @@
 import Foundation
+import OSLog
+
+private let cloudServerLog = Logger(subsystem: "com.ade.ios", category: "cloud")
 
 // The phone's ADE Cloud page talks to whichever ADE machine it is connected to,
 // through `cloud.read` and `cloud.write`: the same actions as
@@ -534,17 +537,17 @@ extension SyncService {
   /// Wakes the cloud box behind an account machine before the phone dials
   /// it, through the machine the phone is on now, else through another
   /// connected machine that can send cloud commands, else through the
-  /// account server itself. False when it isn't a cloud box, nothing can ask,
-  /// or the wake was refused.
-  func wakeCloudMachineIfNeeded(machineKey: String?) async -> Bool {
-    guard let machineKey = syncNonEmpty(machineKey) else { return false }
+  /// account server itself. `name` is the computer's name for the failure
+  /// message.
+  func wakeCloudMachineIfNeeded(machineKey: String?, name: String) async -> CloudWakeResult {
+    guard let machineKey = syncNonEmpty(machineKey) else { return .skipped }
     // Each way is tried in turn: a computer that could not send it (an
     // older one, one whose own server call failed) leaves it to the next.
     if cloudSupported, connectionState == .connected,
        let list = try? await cloudRead("list", as: CloudPhoneList.self),
        let box = list.machines.first(where: { $0.machineKey == machineKey }) {
-      if box.isAwake { return true }
-      if (try? await cloudWrite("wake", args: ["machine": box.instanceId], as: CloudPhoneAck.self)) != nil { return true }
+      if box.isAwake { return .started }
+      if (try? await cloudWrite("wake", args: ["machine": box.instanceId], as: CloudPhoneAck.self)) != nil { return .started }
     }
     if let fleet = machineFleet,
        let connection = fleet.liveMachineKeys.lazy
@@ -558,22 +561,32 @@ extension SyncService {
        ),
        let list = machineConnectionDecode(raw, as: CloudPhoneList.self),
        let box = list.machines.first(where: { $0.machineKey == machineKey }) {
-      if box.isAwake { return true }
+      if box.isAwake { return .started }
       if (try? await connection.sendCommand(
         action: "cloud.write",
         args: ["action": "wake", "args": ["machine": box.instanceId]],
         projectId: nil,
         projectRootPath: nil,
         timeoutNanoseconds: 120 * 1_000_000_000
-      )) != nil { return true }
+      )) != nil { return .started }
     }
     // No connected computer sent it: the phone asks the account server.
-    return await wakeCloudMachineThroughServer(machineKey: machineKey)
+    return await wakeCloudMachineThroughServer(machineKey: machineKey, name: name)
   }
 
 }
 
 // MARK: - ADE Cloud straight from the account server
+
+/// How a wake of an ADE Cloud computer went.
+enum CloudWakeResult: Equatable {
+  /// It is awake, coming up, or the start was sent.
+  case started
+  /// It cannot wake now; the message says why, in words for the person.
+  case failed(String)
+  /// Not a cloud computer, or the account changed meanwhile: nothing to say.
+  case skipped
+}
 
 // The phone asks the account server itself, with its own account sign-in,
 // for what a sleeping ADE Cloud computer cannot answer: the computers
@@ -689,7 +702,11 @@ struct CloudServerClient {
 
   private struct InstanceList: Decodable { let data: [CloudServerInstance] }
   private struct ChatList: Decodable { let chats: [CloudSavedChatRow] }
-  private struct ErrorBody: Decodable { let message: String? }
+  /// `{ error: { code, message } }` (`cloud/http.ts` `fail`).
+  private struct ErrorBody: Decodable {
+    struct Detail: Decodable { let message: String? }
+    let error: Detail?
+  }
 
   func instances() async throws -> [CloudServerInstance] {
     try decode(InstanceList.self, from: try await send("GET", "cloud/instances")).data
@@ -750,7 +767,7 @@ struct CloudServerClient {
     case 200..<300: return data
     case 401, 403: throw Failure.unauthorized
     case 404: throw Failure.noAccess
-    default: throw Failure.server(http.statusCode, message: (try? JSONDecoder().decode(ErrorBody.self, from: data))?.message)
+    default: throw Failure.server(http.statusCode, message: (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error?.message.flatMap { nonEmptyTrimmed($0) })
     }
   }
 }
@@ -782,6 +799,10 @@ extension SyncService {
     cloudServerReadAt = nil
     cloudServerInstances = []
     cloudSavedChats = []
+    // The last account's ADE Cloud computers and wake messages go too.
+    setCloudMachines([])
+    cloudAccountMachineKeys = nil
+    clearCloudWakeFailures()
   }
 
   /// Reads the account's ADE Cloud computers and their saved chats from the
@@ -808,6 +829,7 @@ extension SyncService {
     } catch {
       // No answer (a server with no provider, the network): the saved chats
       // still list; the last list stays for a wake.
+      cloudServerLog.error("cloud_server read=instances failed error=\(String(describing: error), privacy: .public)")
       instances = nil
     }
     let chats: [CloudSavedChatRow]?
@@ -816,6 +838,7 @@ extension SyncService {
     } catch CloudServerClient.Failure.noAccess {
       chats = []
     } catch {
+      cloudServerLog.error("cloud_server read=chats failed error=\(String(describing: error), privacy: .public)")
       chats = nil
     }
     // An account switch while it read: the answer is the old account's.
@@ -836,20 +859,41 @@ extension SyncService {
 
   /// Wakes an ADE Cloud computer through the account server, with no other
   /// computer: finds it by its machine key and asks the server to start it.
-  /// True when it is awake, coming up, or the start was sent.
-  func wakeCloudMachineThroughServer(machineKey: String) async -> Bool {
-    guard let client = await cloudServerClient() else { return false }
+  /// `name` is the computer's name for the failure message.
+  func wakeCloudMachineThroughServer(machineKey: String, name: String) async -> CloudWakeResult {
+    guard let client = await cloudServerClient(),
+          let owner = AccountService.shared.currentPairingAuthorization
+    else { return .failed("Sign in to ADE to wake \(name).") }
+    var listed = false
     do {
       let instances = try await client.instances()
+      listed = true
+      // An account change while it read: the list is the old account's.
+      guard AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
       cloudServerInstances = instances.filter { !$0.isGone }
-      guard let box = instances.first(where: { !$0.isGone && $0.machineKey == machineKey }) else { return false }
-      if box.isAwake || box.isComingUp { return true }
-      // The server refuses a suspended computer itself; say nothing wakes it.
-      if box.pastDue { return false }
+      guard let box = instances.first(where: { !$0.isGone && $0.machineKey == machineKey }) else {
+        return .failed("\(name) is no longer on this account's ADE Cloud.")
+      }
+      if box.isAwake || box.isComingUp { return .started }
+      // The server refuses a suspended computer itself.
+      if box.pastDue { return .failed("\(name) can't wake: the ADE Cloud bill is past due.") }
       try await client.start(instanceId: box.id)
-      return true
+      return .started
+    } catch let failure as CloudServerClient.Failure {
+      switch failure {
+      case .noAccess:
+        // After a good list, a 404 is the computer, not the account.
+        return .failed(listed
+          ? "\(name) is no longer on this account's ADE Cloud."
+          : "This account has no ADE Cloud access, so \(name) can't wake.")
+      case .unauthorized: return .failed("ADE Cloud did not accept this sign-in. Sign in again to wake \(name).")
+      case .transport: return .failed("ADE Cloud did not answer. Check the connection and try again.")
+      case .unreadable: return .failed("ADE Cloud sent an answer this app can't read.")
+      case .server(let status, let message):
+        return .failed(message ?? "ADE Cloud could not wake \(name) (error \(status)).")
+      }
     } catch {
-      return false
+      return .failed("ADE Cloud did not answer. Check the connection and try again.")
     }
   }
 
@@ -950,13 +994,14 @@ extension SyncService {
 
   /// Opens a link to an ADE Cloud computer this phone never paired: wakes it
   /// through the account server, waits for the account to list it online,
-  /// then pairs it next to the primary (the primary is never touched). False
-  /// when it is not one, the account session ended, or it did not come up.
-  func pairRestingCloudMachine(fleetKey: String) async -> Bool {
+  /// then pairs it next to the primary (the primary is never touched).
+  /// `.skipped` when it is not one or the account changed meanwhile.
+  func pairRestingCloudMachine(fleetKey: String, name: String) async -> CloudWakeResult {
     guard machineFleet?.connection(for: fleetKey) == nil,
           let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey,
-          cloudMachineFleetKeys.contains(fleetKey)
-    else { return false }
+          cloudMachineFleetKeys.contains(fleetKey),
+          let owner = AccountService.shared.currentPairingAuthorization
+    else { return .skipped }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: Self.cloudWakeConnectTimeout)
     var machine = AccountService.shared.machines.first { $0.machineKey == accountKey }
@@ -965,13 +1010,15 @@ extension SyncService {
       await AccountService.shared.loadMachines()
       machine = AccountService.shared.machines.first { $0.machineKey == accountKey }
     }
-    guard let machine, machine.online, !Task.isCancelled,
-          let authorization = AccountService.shared.currentPairingAuthorization else { return false }
+    guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
+    guard let machine, machine.online else {
+      return .failed("\(name) did not come online within 2 minutes. Try again.")
+    }
     // The caller adds it to the connected set, after it checked that no newer
     // choice was made during the wait.
-    if case .success = await pairAccountMachineAlongsidePrimary(machine, authorization: authorization, keepConnected: false) {
-      return true
+    switch await pairAccountMachineAlongsidePrimary(machine, authorization: owner, keepConnected: false) {
+    case .success: return .started
+    case .failure(let failure): return .failed(failure.message)
     }
-    return false
   }
 }

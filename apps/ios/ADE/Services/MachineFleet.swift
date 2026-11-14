@@ -409,12 +409,22 @@ final class MachineFleet: ObservableObject {
     defer { if waking { syncService?.endCloudWake(fleetKey: machineKey) } }
     if isLive(machineKey) { return true }
     guard choiceBeforeWake == keepLiveChoices else { return false }
+    // The wake was refused (the screen says why): nothing comes up to wait for.
+    if !waking, syncService?.cloudWakeFailure(fleetKey: machineKey) != nil { return false }
+    let name = machine(for: machineKey)?.name ?? "The cloud computer"
     // A computer this phone never paired: pair it through the account once
     // it is up. The pairing can wait for minutes, so a Connect or Disconnect
     // the user chose meanwhile still wins.
     if connections[machineKey] == nil {
-      guard await syncService?.pairRestingCloudMachine(fleetKey: machineKey) == true else { return false }
+      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name) ?? .skipped
       guard choiceBeforeWake == keepLiveChoices else { return false }
+      switch paired {
+      case .started: break
+      case .failed(let message):
+        syncService?.recordCloudWakeFailure(fleetKey: machineKey, message: message)
+        return false
+      case .skipped: return false
+      }
     }
     let pinsBefore = pinnedKeys
     let requestedBefore = requestedKey
@@ -431,6 +441,16 @@ final class MachineFleet: ObservableObject {
       try? await Task.sleep(for: .milliseconds(250))
     }
     if isLive(machineKey) { return true }
+    // A woken ADE Cloud computer that never answered: the screen says so.
+    if waking, choice == keepLiveChoices, !Task.isCancelled {
+      let message: String
+      if case .needsAttention(let detail)? = machine(for: machineKey)?.state {
+        message = "Couldn't connect to \(name): \(detail)"
+      } else {
+        message = "\(name) did not answer within 2 minutes. Try again."
+      }
+      syncService?.recordCloudWakeFailure(fleetKey: machineKey, message: message)
+    }
     // A newer choice (this machine again, or another one) is what the user
     // wants now: this older attempt leaves the set as that choice made it.
     if choice == keepLiveChoices {
@@ -797,6 +817,10 @@ final class MachineFleet: ObservableObject {
     }
     scheduleReconnectWindowEnd(machines: next, now: now)
     publishRestingCloudMachines(skip: Set(connections.keys))
+    // A computer that answered has no failed wake to show any more.
+    for machine in next where machine.state == .live && syncService?.cloudWakeFailure(fleetKey: machine.machineKey) != nil {
+      syncService?.clearCloudWakeFailure(fleetKey: machine.machineKey)
+    }
     if next != machines {
       // A roster can add or drop a copy of the open project.
       let rostersChanged = !next.elementsEqual(machines) {

@@ -227,6 +227,9 @@ struct WorkRootSyncInputs: Equatable {
   var primaryListsWork = true
   /// An ADE Cloud computer an open from this list waits on while it wakes.
   var wakingCloudMachineName: String?
+  /// The last failed wake of an ADE Cloud computer, when none is waking.
+  var cloudWakeFailureKey: String?
+  var cloudWakeFailureMessage: String?
 
   init() {}
 
@@ -278,6 +281,8 @@ struct WorkRootSyncInputs: Equatable {
     autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
     primaryListsWork = sync.focusedMachineListsWork
     wakingCloudMachineName = sync.anyWakingCloudMachineName
+    cloudWakeFailureKey = sync.anyCloudWakeFailure?.fleetKey
+    cloudWakeFailureMessage = sync.anyCloudWakeFailure?.message
     // Every paired machine with a copy whose work lists: live, reconnecting,
     // or an ADE Cloud computer. An offline, parked or disconnected computer's
     // rows are not listed.
@@ -1089,6 +1094,17 @@ struct WorkRootListScreen: View, Equatable {
     case chat(WorkSessionRoute)
     case board
     case empty
+  }
+
+  /// The chat beside the list in the wide split already shows the wake
+  /// (or the failed wake) of the computer it lives on.
+  private var splitChatShowsWakeStatus: Bool {
+    guard duoLayout.isWide, duoComposeRoute == nil, let route = duoSelectedRoute else { return false }
+    let key = route.remoteChat?.machineKey
+      ?? syncService.remoteChatMachineKey(sessionId: route.sessionId)
+      ?? syncService.focusedMachineKey
+    return syncService.wakingCloudMachineName(fleetKey: key) != nil
+      || syncService.cloudWakeFailure(fleetKey: key) != nil
   }
 
   private var duoDetail: DuoDetail {
@@ -1916,7 +1932,15 @@ struct WorkRootListScreen: View, Equatable {
       // A CLI row on an ADE Cloud computer that is asleep opens once the
       // computer is awake; the list says so meanwhile.
       .safeAreaInset(edge: .top, spacing: 0) {
-        if let name = inputs.wakingCloudMachineName { CloudComputerWakeBanner(machineName: name) }
+        // A chat beside the list (the wide split) shows its own computer's
+        // wake; the list does not say it twice.
+        if !splitChatShowsWakeStatus {
+          CloudComputerWakeStatusLine(
+            wakingName: inputs.wakingCloudMachineName,
+            failure: inputs.cloudWakeFailureKey.flatMap { key in inputs.cloudWakeFailureMessage.map { (key, $0) } },
+            onDismissFailure: { SyncService.shared?.clearCloudWakeFailure(fleetKey: $0) }
+          )
+        }
       }
       .overlay(alignment: .top) {
         if filterPanelOpen {

@@ -4210,7 +4210,11 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
-      if connectionState == .connected { helloSentWithProvisionalDeviceId = deviceIdIsProvisional }
+      if connectionState == .connected {
+        helloSentWithProvisionalDeviceId = deviceIdIsProvisional
+        // The focused computer answered: a failed wake of it is over.
+        if let key = focusedMachineKey, cloudWakeFailures[key] != nil { cloudWakeFailures[key] = nil }
+      }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
       // state — is what stops a stale attempt name from outliving the attempt.
@@ -4795,6 +4799,9 @@ final class SyncService: ObservableObject {
   /// Opens waiting on each waking computer: the mark stays until the last
   /// one is done.
   private var cloudWakeWaiters: [String: Int] = [:]
+  /// Why the last wake of an ADE Cloud computer failed, by fleet key. The
+  /// screen that opened its work says so; a new wake or a live link clears it.
+  @Published private(set) var cloudWakeFailures: [String: String] = [:]
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
@@ -9588,7 +9595,7 @@ final class SyncService: ObservableObject {
       guard wake else { return false }
       // a cloud box asleep is woken through the machine the phone is on;
       // its ADE answers a few seconds later, which the pairing waits out.
-      _ = await wakeCloudMachineIfNeeded(machineKey: machine.machineKey)
+      _ = await wakeCloudMachineIfNeeded(machineKey: machine.machineKey, name: machine.displayName)
       if await pairAccountMachineKeepingPrevious(machine, authorization: authorization) {
         pendingMachineWake = nil
         return true
@@ -29104,9 +29111,13 @@ extension SyncService {
           !isFocusedAndLive(fleetKey),
           let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey
     else { return false }
+    cloudWakeFailures[fleetKey] = nil
     cloudWakeWaiters[fleetKey, default: 0] += 1
     wakingCloudMachineKeys.insert(fleetKey)
-    guard await wakeCloudMachineIfNeeded(machineKey: accountKey) else {
+    let name = cloudMachineName(fleetKey: fleetKey) ?? "The cloud computer"
+    let result = await wakeCloudMachineIfNeeded(machineKey: accountKey, name: name)
+    guard case .started = result else {
+      if case .failed(let message) = result { recordCloudWakeFailure(fleetKey: fleetKey, message: message) }
       endCloudWake(fleetKey: fleetKey)
       return false
     }
@@ -29117,7 +29128,16 @@ extension SyncService {
   /// to wake. Nil for any other machine, or once it answered.
   func wakingCloudMachineName(fleetKey: String?) -> String? {
     guard let fleetKey, wakingCloudMachineKeys.contains(fleetKey) else { return nil }
-    return machineFleet?.machine(for: fleetKey)?.name ?? "the cloud computer"
+    return cloudMachineName(fleetKey: fleetKey) ?? "the cloud computer"
+  }
+
+  /// The name of an ADE Cloud computer: the fleet's (another machine), the
+  /// account's, or the focused host's own. The fleet does not list the
+  /// focused computer.
+  func cloudMachineName(fleetKey: String) -> String? {
+    machineFleet?.machine(for: fleetKey)?.name
+      ?? AccountService.shared.machine(forFleetKey: fleetKey).flatMap { syncNonEmpty($0.displayName) }
+      ?? (fleetKey == focusedMachineKey ? hostName : nil)
   }
 
   /// A waking ADE Cloud computer, for a screen that belongs to no single
@@ -29150,7 +29170,40 @@ extension SyncService {
       if connectionState == .connected { return true }
       try? await Task.sleep(for: .milliseconds(500))
     }
-    return focusedMachineKey == key && connectionState == .connected
+    if focusedMachineKey == key, connectionState == .connected { return true }
+    if focusedMachineKey == key, !autoReconnectPausedByUser, !Task.isCancelled {
+      let name = cloudMachineName(fleetKey: key) ?? "The cloud computer"
+      recordCloudWakeFailure(fleetKey: key, message: "\(name) did not answer within 2 minutes. Try again.")
+    }
+    return false
+  }
+
+  /// A wake of `fleetKey` failed: the screen that opened its work shows
+  /// `message`, and the log keeps it. The rows stay listed.
+  func recordCloudWakeFailure(fleetKey: String, message: String) {
+    syncConnectLog.error("ADE_SYNC_TRACE cloud_wake failed reason=\(message, privacy: .public)")
+    cloudWakeFailures[fleetKey] = message
+  }
+
+  /// The person closed the message, or a newer open starts.
+  func clearCloudWakeFailure(fleetKey: String) {
+    cloudWakeFailures[fleetKey] = nil
+  }
+
+  /// The failure message of `fleetKey`'s last wake, if it failed.
+  func cloudWakeFailure(fleetKey: String?) -> String? {
+    fleetKey.flatMap { cloudWakeFailures[$0] }
+  }
+
+  /// A failed wake, for a screen that belongs to no single machine (the Hub,
+  /// the Work list).
+  var anyCloudWakeFailure: (fleetKey: String, message: String)? {
+    cloudWakeFailures.keys.sorted().first.flatMap { key in cloudWakeFailures[key].map { (key, $0) } }
+  }
+
+  /// An account change: the last account's wake messages go too.
+  func clearCloudWakeFailures() {
+    cloudWakeFailures = [:]
   }
 
   /// One open that waited on a waking ADE Cloud computer is done.

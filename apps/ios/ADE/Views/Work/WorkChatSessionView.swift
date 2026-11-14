@@ -248,35 +248,133 @@ struct CloudComputerWakeBanner: View {
   }
 }
 
+/// The line at the top of a screen when a wake of the ADE Cloud computer
+/// its work lives on failed: what went wrong, and one action. The rows stay
+/// listed; the person tries again or closes the line.
+struct CloudComputerWakeFailedBanner: View {
+  enum Action {
+    case retry(() -> Void)
+    case dismiss(() -> Void)
+  }
+
+  let message: String
+  let action: Action
+  /// False inside a list that already insets its cards (the Hub).
+  var insetsFromEdges = true
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      Image(systemName: "exclamationmark.icloud")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.warning)
+        .accessibilityHidden(true)
+      Text(message)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      switch action {
+      case .retry(let retry):
+        Button("Try again", action: retry)
+          .font(.subheadline.weight(.semibold))
+          .buttonStyle(.borderless)
+          .foregroundStyle(ADEColor.accent)
+          .adeInspectable("CloudComputer.WakeFailed.Retry")
+      case .dismiss(let dismiss):
+        Button(action: dismiss) {
+          Image(systemName: "xmark")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 28, height: 28)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("Close")
+        .adeInspectable("CloudComputer.WakeFailed.Close")
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, insetsFromEdges ? 12 : 0)
+    .padding(.top, insetsFromEdges ? 6 : 0)
+    .accessibilityElement(children: .contain)
+    .adeInspectable("CloudComputer.WakeFailed")
+  }
+}
+
+/// The top line of the Work list, which belongs to no single machine:
+/// "Waking <name>…" while an open waits, else the last failed wake with a
+/// Close button.
+struct CloudComputerWakeStatusLine: View {
+  let wakingName: String?
+  let failure: (fleetKey: String, message: String)?
+  let onDismissFailure: (String) -> Void
+
+  var body: some View {
+    if let wakingName {
+      CloudComputerWakeBanner(machineName: wakingName)
+    } else if let failure {
+      CloudComputerWakeFailedBanner(message: failure.message, action: .dismiss { onDismissFailure(failure.fleetKey) })
+    }
+  }
+}
+
 extension View {
   /// Opens work that lives on an ADE Cloud computer: when that computer is
   /// asleep, the phone wakes it and connects to it (next to the others, or
   /// as the focused computer), and the screen shows the wake until the
-  /// computer answers. `onAwake` runs once it does. Any other machine, or one
-  /// that is already live, changes nothing.
+  /// computer answers. `onAwake` runs once it does. A failed wake shows why,
+  /// with Try again. Any other machine, or one that is already live, changes
+  /// nothing.
   func wakesCloudComputer(
     machineKey: String?,
     wakingName: String?,
+    wakeFailure: String? = nil,
     onAwake: (() async -> Void)? = nil
   ) -> some View {
-    safeAreaInset(edge: .top, spacing: 0) {
-      if let wakingName { CloudComputerWakeBanner(machineName: wakingName) }
-    }
-    .task(id: machineKey) {
-      guard let machineKey, let sync = SyncService.shared,
-            sync.cloudMachineFleetKeys.contains(machineKey)
-      else { return }
-      if machineKey == sync.focusedMachineKey {
-        if await sync.wakeFocusedCloudMachineIfAsleep(), !Task.isCancelled {
+    modifier(CloudComputerWakeModifier(
+      machineKey: machineKey,
+      wakingName: wakingName,
+      wakeFailure: wakeFailure,
+      onAwake: onAwake
+    ))
+  }
+}
+
+private struct CloudComputerWakeModifier: ViewModifier {
+  let machineKey: String?
+  let wakingName: String?
+  let wakeFailure: String?
+  let onAwake: (() async -> Void)?
+  /// Moves on Try again, so the wake task runs once more.
+  @State private var attempt = 0
+
+  func body(content: Content) -> some View {
+    content
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if let wakingName {
+          CloudComputerWakeBanner(machineName: wakingName)
+        } else if let wakeFailure {
+          CloudComputerWakeFailedBanner(message: wakeFailure, action: .retry { attempt += 1 })
+        }
+      }
+      .task(id: "\(machineKey ?? "")#\(attempt)") {
+        guard let machineKey, let sync = SyncService.shared,
+              sync.cloudMachineFleetKeys.contains(machineKey)
+        else { return }
+        if machineKey == sync.focusedMachineKey {
+          if await sync.wakeFocusedCloudMachineIfAsleep(), !Task.isCancelled {
+            await onAwake?()
+          }
+          return
+        }
+        guard let fleet = sync.machineFleet, !fleet.isLive(machineKey) else { return }
+        if await fleet.connect(machineKey: machineKey, timeout: .seconds(10)), !Task.isCancelled {
           await onAwake?()
         }
-        return
       }
-      guard let fleet = sync.machineFleet, !fleet.isLive(machineKey) else { return }
-      if await fleet.connect(machineKey: machineKey), !Task.isCancelled {
-        await onAwake?()
-      }
-    }
   }
 }
 
