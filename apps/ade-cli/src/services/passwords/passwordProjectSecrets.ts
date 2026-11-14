@@ -37,11 +37,12 @@ export type LegacySecretAdoption = {
 };
 
 /**
- * The largest old account secret moved into the account. The relay takes
- * sealed items up to 64 KiB of text, and sealing adds about a third; a bigger
- * old value stays on this computer only instead of failing to upload forever.
+ * The largest old account secret moved into the account, in UTF-8 bytes. The
+ * relay takes sealed items up to 64 KiB of text, and sealing adds about a
+ * third; a bigger old value stays on this computer only instead of failing to
+ * upload forever.
  */
-const LEGACY_ACCOUNT_VALUE_MAX_CHARS = 40_000;
+const LEGACY_ACCOUNT_VALUE_MAX_BYTES = 40_000;
 
 /**
  * The secrets one project's processes get, by name: those for every project,
@@ -232,8 +233,13 @@ export function createProjectSecrets(ctx: ProjectSecretsContext) {
       if (!input.value) throw new Error(`${name} needs a value.`);
       const updatedAt = ctx.now().toISOString();
       let deviceOnly: boolean;
-      if (input.id) deviceOnly = isDeviceId(input.id);
-      else if (SIGN_IN_CONFIG_SECRET_NAMES.has(name)) deviceOnly = true;
+      if (input.id) {
+        deviceOnly = isDeviceId(input.id);
+        // Sign-in's settings are read only from this computer's own store.
+        if (!deviceOnly && SIGN_IN_CONFIG_SECRET_NAMES.has(name)) {
+          throw new Error(`${name} is one of sign-in's settings and stays on this computer only. Make it as a new secret instead of renaming this one.`);
+        }
+      } else if (SIGN_IN_CONFIG_SECRET_NAMES.has(name)) deviceOnly = true;
       else if (input.deviceOnly !== undefined) deviceOnly = input.deviceOnly;
       else deviceOnly = (await device.read()).some((item) => item.name === name && item.projectScope === input.projectScope);
       if (deviceOnly) {
@@ -277,24 +283,25 @@ export function createProjectSecrets(ctx: ProjectSecretsContext) {
       }
       const { accountId, opened } = await ctx.ensureOpened();
       const existing = findSecret(opened, input.name, input.projectScope);
-      // Too big for the relay: kept on this computer, unless the account
-      // already holds a newer value (a local copy would win over it here).
-      if (input.value.length > LEGACY_ACCOUNT_VALUE_MAX_CHARS) {
-        if (existing && existing[1].updatedAt >= input.updatedAt) return { outcome: "kept", id: existing[0] };
-        const saved = await saveOnDevice({ ...input, deviceOnly: true, skipIfNotOlder: true });
-        return { outcome: saved ? "saved" : "kept", id: null };
-      }
-      if (existing) {
-        if (existing[1].updatedAt >= input.updatedAt) return { outcome: "kept", id: existing[0] };
+      if (existing && existing[1].updatedAt >= input.updatedAt) return { outcome: "kept", id: existing[0] };
+      const tooBig = Buffer.byteLength(input.value, "utf8") > LEGACY_ACCOUNT_VALUE_MAX_BYTES;
+      if (existing && !tooBig) {
         await saveInAccount(existing[0], input, existing[1]);
         logger.info("passwords.item_saved", { itemId: existing[0], kind: "secret", legacy: true });
         return { outcome: "saved", id: existing[0] };
       }
       const { key } = await ctx.vaultKey(accountId);
       const id = `pw_${crypto.createHmac("sha256", key).update(`legacy-secret\0${input.projectScope}\0${input.name}`).digest("base64url").slice(0, 32)}`;
-      const cache = await ctx.cacheView(accountId);
-      if (cache.items.some((item) => item.id === id && item.deleted) || cache.pending.some((write) => write.id === id && write.deleted)) {
-        return { outcome: "deleted", id: null };
+      if (!existing) {
+        const cache = await ctx.cacheView(accountId);
+        if (cache.items.some((item) => item.id === id && item.deleted) || cache.pending.some((write) => write.id === id && write.deleted)) {
+          return { outcome: "deleted", id: null };
+        }
+      }
+      // Too big for the relay: kept on this computer only (the account holds no newer value).
+      if (tooBig) {
+        const saved = await saveOnDevice({ ...input, deviceOnly: true, skipIfNotOlder: true });
+        return { outcome: saved ? "saved" : "kept", id: null };
       }
       await saveInAccount(id, input, undefined);
       logger.info("passwords.item_saved", { itemId: id, kind: "secret", legacy: true });

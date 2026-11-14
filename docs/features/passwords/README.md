@@ -191,8 +191,11 @@ that project when it opens and on each account sync
 - Each old copy is removed only once the new place holds its value: an account
   secret once the relay holds it at the same or a newer version. Until then,
   processes still read it from the old store.
+- An old account row is removed only while it is still the one the move read;
+  a row another computer changed since stays for the next run.
 - `ade secrets delete` removes the old copies of the name too (the file entry
-  and live old account rows), so it cannot come back from them.
+  and live old account rows), so it cannot come back from them. A delete and
+  the move run one at a time.
 
 `ade secrets get` is the person's (the desktop app); an agent calling it is
 refused. Agents use secrets with

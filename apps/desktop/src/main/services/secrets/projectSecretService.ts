@@ -41,7 +41,8 @@ type Logger = {
 export type LegacySecretVault = {
   list(scope?: string | null): Promise<AccountStoreResult<AccountVaultItem[]>>;
   get(scope: string, kind: string, key: string): Promise<AccountStoreResult<string | null>>;
-  remove(scope: string, kind: string, key: string): Promise<unknown>;
+  /** With `expectedRevision`, removes the row only while it is still the one read; `ok: false` when not removed. */
+  remove(scope: string, kind: string, key: string, options?: { expectedRevision?: string }): Promise<{ ok: boolean }>;
   /** Pull the account's rows; the value is the sync status. Until a pull succeeds, the old rows count as unread. */
   sync?(options?: { maxAgeMs?: number }): Promise<AccountStoreResult<string | null>>;
 };
@@ -97,7 +98,7 @@ type LegacyEntry = { name: string; value: string; deviceOnly: boolean; updatedAt
  */
 type LegacyFileEntry = LegacyEntry & { storage: "account" | "device"; source: string | null; accountUserId: string | null };
 type LegacyVaultRead = {
-  live: Array<LegacyEntry & { scope: string }>;
+  live: Array<LegacyEntry & { scope: string; revision?: string }>;
   /** When each deleted name was deleted, newest across both keys. */
   deletedAt: Map<string, string>;
 };
@@ -151,22 +152,30 @@ export function createProjectSecretService(projectRoot: string, options: Project
     const service = passwords();
     // Only the runtime that owns the project syncs: the machine's shared
     // service in another process would write the same Passwords cache.
-    if (options.getPasswordService && Date.now() - lastAccountCheckAt >= FRESH_READ_MAX_AGE_MS) {
-      lastAccountCheckAt = Date.now();
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      await Promise.race([
-        service.sync().catch((error: unknown) => {
+    const shouldSync = Boolean(options.getPasswordService) && Date.now() - lastAccountCheckAt >= FRESH_READ_MAX_AGE_MS;
+    if (shouldSync) lastAccountCheckAt = Date.now();
+    // One deadline for the sync and the read (which can wait on the relay for
+    // the vault key): past it, the answer is what this computer holds.
+    const read = (async () => {
+      if (shouldSync) {
+        await service.sync().catch((error: unknown) => {
           logger?.warn?.("project_secret.fresh_sync_failed", { error: errorText(error) });
-        }),
-        new Promise<void>((resolve) => {
-          timer = setTimeout(resolve, FRESH_READ_WAIT_MS);
-          timer.unref?.();
-        }),
-      ]).finally(() => {
-        if (timer) clearTimeout(timer);
-      });
-    }
-    return await service.secretsForProject(accountScope());
+        });
+      }
+      return await service.secretsForProject(accountScope());
+    })();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timedOut = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), FRESH_READ_WAIT_MS);
+      timer.unref?.();
+    });
+    const settled = await Promise.race([read, timedOut]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    if (settled) return settled;
+    // The read keeps going for the next call; a late failure is only logged.
+    read.catch((error: unknown) => logger?.warn?.("project_secret.fresh_read_failed", { error: errorText(error) }));
+    return snapshot();
   };
   const snapshot = () => passwords().secretsSnapshot(accountScope());
 
@@ -283,13 +292,24 @@ export function createProjectSecretService(projectRoot: string, options: Project
           if (!fetched.ok) return null;
           value = fetched.value;
         }
-        if (value) read.live.push({ scope, name: item.key, value, deviceOnly: false, updatedAt: item.updatedAt });
+        if (value) read.live.push({ scope, name: item.key, value, deviceOnly: false, updatedAt: item.updatedAt, revision: item.revision });
       }
     }
     return read;
   };
 
   let migrating: Promise<LegacySecretMoveResult> | null = null;
+  /**
+   * The move and a delete run one at a time: a delete during a move could
+   * otherwise remove an old copy the move already read, and the move would
+   * bring the name back.
+   */
+  let exclusive: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = exclusive.then(run, run);
+    exclusive = next.catch(() => undefined);
+    return next;
+  };
 
   /**
    * Move the old store's secrets into Passwords & Secrets, without a word to
@@ -301,7 +321,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
    * secrets wait for sign-in; this-computer-only ones move at once.
    */
   const migrateLegacy = (): Promise<LegacySecretMoveResult> => {
-    migrating ??= (async (): Promise<LegacySecretMoveResult> => {
+    migrating ??= oneAtATime(async (): Promise<LegacySecretMoveResult> => {
       // Only the runtime that owns this project moves it: two processes
       // writing the same Passwords cache would lose each other's writes.
       const service = options.getPasswordService?.() ?? null;
@@ -339,7 +359,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       const scope = canonical ?? `path:${path.resolve(projectRoot)}`;
       // A project with no repository has no key shared across computers: its secrets stay here.
       const shared = Boolean(canonical);
-      type Candidate = LegacyEntry & { vaultScope: string | null };
+      type Candidate = LegacyEntry & { vaultScope: string | null; revision?: string };
       const candidates: Candidate[] = [];
       /** File names to remove without moving: deleted in the account, or another account's copy. */
       const dropped: string[] = [];
@@ -359,10 +379,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
         candidates.push({ ...entry, deviceOnly: entry.deviceOnly || !shared, vaultScope: null });
       }
       /** Old account rows a newer deletion (under either key) replaced: removed, never moved. */
-      const supersededRows: Array<{ scope: string; name: string }> = [];
+      const supersededRows: Array<{ scope: string; name: string; revision?: string }> = [];
       for (const entry of vaultRead?.live ?? []) {
         const deletedAt = vaultRead?.deletedAt.get(entry.name);
-        if (deletedAt && deletedAt > entry.updatedAt) supersededRows.push({ scope: entry.scope, name: entry.name });
+        if (deletedAt && deletedAt > entry.updatedAt) supersededRows.push({ scope: entry.scope, name: entry.name, revision: entry.revision });
         else candidates.push({ ...entry, deviceOnly: !shared, vaultScope: entry.scope });
       }
       if (accountReady) await service.sync().catch((error: unknown) => {
@@ -391,21 +411,28 @@ export function createProjectSecretService(projectRoot: string, options: Project
       // Signed out or switched account while this ran: leave every old copy for the next run.
       if (service.accountUserId() !== accountId) return { moved, waiting: waiting + adopted.length, done: false };
 
-      for (const row of supersededRows) await vault?.remove(row.scope, LEGACY_VAULT_KIND, row.name);
+      /** Remove one old account row only while it is the one read; a row changed since stays for the next run. */
+      const removeVaultRow = async (scope: string, name: string, revision: string | undefined): Promise<boolean> => {
+        const removed = await vault?.remove(scope, LEGACY_VAULT_KIND, name, revision ? { expectedRevision: revision } : undefined);
+        return removed?.ok === true;
+      };
+      for (const row of supersededRows) {
+        if (!(await removeVaultRow(row.scope, row.name, row.revision))) waiting += 1;
+      }
       const doneFileNames = new Set(dropped);
       for (const { entry, result } of adopted) {
         if (result.id !== null && !uploaded.has(result.id)) {
           waiting += 1;
           continue;
         }
-        if (entry.vaultScope) await vault?.remove(entry.vaultScope, LEGACY_VAULT_KIND, entry.name);
-        else doneFileNames.add(entry.name);
+        if (!entry.vaultScope) doneFileNames.add(entry.name);
+        else if (!(await removeVaultRow(entry.vaultScope, entry.name, entry.revision))) waiting += 1;
       }
       if (file?.length && file.every((entry) => doneFileNames.has(entry.name))) removeLegacyFile();
       else for (const name of doneFileNames) removeLegacyName(name);
       if (moved || waiting) logger?.info?.("project_secret.legacy_moved", { moved, waiting });
       return { moved, waiting, done: waiting === 0 && vaultChecked };
-    })().catch((error: unknown): LegacySecretMoveResult => {
+    }).catch((error: unknown): LegacySecretMoveResult => {
       logger?.warn?.("project_secret.legacy_move_failed", { error: errorText(error) });
       return { moved: 0, waiting: 0, done: false };
     }).finally(() => {
@@ -555,23 +582,28 @@ export function createProjectSecretService(projectRoot: string, options: Project
       if (confirmName !== name) throw new AdeExpectedError(`Deleting ${name} needs confirmName set to the same name.`, "user");
       const service = passwords();
       const scope = accountScope();
-      // The old store's copies first (its file and its account rows), or the
-      // name would come back from them. A failure here stops the delete before
-      // anything else changes, so it is never reported done while one remains.
-      let deleted = removeLegacyName(name);
-      const vault = options.getAccountVault?.() ?? null;
-      if (vault && service.accountUserId()) {
-        for (const legacyScope of legacyVaultScopes(repoScopeForRoot(projectRoot))) {
-          const listed = await vault.list(legacyScope);
-          if (!listed.ok) throw new AdeExpectedError(`ADE couldn't check the account's old copies of ${name}. Try again in a moment.`, "environment");
-          const live = listed.value.some((item) => item.scope === legacyScope && item.kind === LEGACY_VAULT_KIND && item.key === name && !item.deleted);
-          if (live) await vault.remove(legacyScope, LEGACY_VAULT_KIND, name);
+      return await oneAtATime(async () => {
+        // The old store's copies first (its file and its account rows), or the
+        // name would come back from them. A failure here stops the delete before
+        // anything else changes, so it is never reported done while one remains.
+        let deleted = removeLegacyName(name);
+        const vault = options.getAccountVault?.() ?? null;
+        if (vault && service.accountUserId()) {
+          for (const legacyScope of legacyVaultScopes(repoScopeForRoot(projectRoot))) {
+            const listed = await vault.list(legacyScope);
+            if (!listed.ok) throw new AdeExpectedError(`ADE couldn't check the account's old copies of ${name}. Try again in a moment.`, "environment");
+            const live = listed.value.find((item) => item.scope === legacyScope && item.kind === LEGACY_VAULT_KIND && item.key === name && !item.deleted);
+            if (live) {
+              const removed = await vault.remove(legacyScope, LEGACY_VAULT_KIND, name, live.revision ? { expectedRevision: live.revision } : undefined);
+              if (!removed.ok) throw new AdeExpectedError(`ADE couldn't remove the account's old copy of ${name}: it changed. Try again.`, "environment");
+            }
+          }
         }
-      }
-      for (const entry of await service.allSecretEntries()) {
-        if (entry.name === name && entry.projectScope === scope) deleted = (await service.remove(entry.id)) || deleted;
-      }
-      return { deleted, name };
+        for (const entry of await service.allSecretEntries()) {
+          if (entry.name === name && entry.projectScope === scope) deleted = (await service.remove(entry.id)) || deleted;
+        }
+        return { deleted, name };
+      });
     },
 
     /** The values a process this project starts gets, from what this computer already holds. */
