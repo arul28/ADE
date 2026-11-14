@@ -773,7 +773,9 @@ made for (`cloudLaneNameSync.ts`), and renames the computer and its account
 machine to it (cleaned of control characters and cut to 60 characters by
 `normalizeCloudMachineName`), whoever started the launch. Only its own
 computer (`ADE_CLOUD_INSTANCE_ID`) and the machine key on it; the server checks
-both are the account's. The writes go through the account server and wake
+both are the account's, and cleans every computer name and custom machine name
+it is sent (`boundedDisplayText`: control and format characters out, 60 and 80
+characters). The writes go through the account server and wake
 nothing; a failed one is tried twice more with a doubling wait, never for a
 computer that is gone.
 

@@ -177,7 +177,10 @@ describe("machine directory", () => {
     expect(await otherUserList.json()).toEqual({ machines: [] });
   });
 
-  it("renames an owned machine with customName and prefers it over the reported hostname", async () => {
+  it.each([
+    ["spaces around it", "  Studio Mac  "],
+    ["control and bidi characters in it", "Studio\u202e\u0007\n Mac"],
+  ])("renames an owned machine with customName (%s cleaned) and prefers it over the reported hostname", async (_label, customName) => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
     await register(env, token, "machine-a");
@@ -186,7 +189,7 @@ describe("machine directory", () => {
       "PATCH",
       "/account/machines/machine-a",
       token,
-      { customName: "  Studio Mac  " },
+      { customName },
     ), env);
 
     expect(renamed.status).toBe(200);
