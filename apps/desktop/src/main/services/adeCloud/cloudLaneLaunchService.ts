@@ -371,6 +371,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       }
       runtime.unsubscribe = unsubscribe;
       runtime.resubscribeAttempts = 0;
+      // One read once subscribed: a change between the hand-off's read (or
+      // the last stream) and this subscribe never comes as an event.
+      void refreshFromBrain(record);
     } catch (error) {
       logger.warn("cloud_lane_launch.follow_failed", { launchId, error: getErrorMessage(error) });
       scheduleFollowAgain(launchId);
@@ -607,8 +610,16 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const cleanUp = async (record: CloudLaneLaunchRecord): Promise<void> => {
     const launchId = record.snapshot.launchId;
     try {
-      // The server's cancel first: it deletes the computer, also one its create is still making.
-      if (!isHandedOff(record) && record.via === "server") await cancelOnServer(record);
+      // The server's cancel first: it deletes the computer, also one its create
+      // is still making. `cancel` already asked; this is ADE opening again on a
+      // cancel whose delete didn't finish, which the server tries once more.
+      if (!isHandedOff(record) && record.via === "server" && await cancelOnServer(record) === "started") {
+        // Its agent runs there (a cancel from before the server was asked first): that computer stays.
+        logger.warn("cloud_lane_launch.cancelled_launch_running", { launchId });
+        record.cleanupDone = true;
+        publish(record);
+        return;
+      }
       const { found, deleted } = await deleteOwnComputers(record);
       if (found > deleted) {
         record.snapshot.error = cantDeleteComputer(record.computerName);
@@ -806,6 +817,12 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       const brain = await deps.callChatAction(binding, "cancelLaunch", { args: { launchId } }) as ChatLaunchSnapshot | null;
       if (!brain) throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
       adoptBrainSnapshot(record, brain);
+    } else if (record.via === "server") {
+      // The server's word first: the computer can start its agent before this
+      // app has paired and read it, and then its work is never deleted here.
+      const answer = await cancelOnServer(record);
+      if (answer === "started") throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
+      if (answer === "unreached") throw new Error("ADE can't reach ADE Cloud to cancel this launch. Try again in a moment.");
     }
     const runtime = runtimeFor(launchId);
     const pipeline = runtime.pipeline;

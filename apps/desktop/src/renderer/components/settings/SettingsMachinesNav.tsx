@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
+  MACHINE_SCOPE_DOMAINS,
   machineScopeDomainAnswered,
   machineScopePin,
   machineScopeUpdateMessage,
@@ -66,9 +67,9 @@ export type SettingsMachinePage = SettingsMachineScope & {
    */
   machineRouteOutdated: boolean;
   /**
-   * The domains the route's brain answers (`machineScopeDomains`). Null for
-   * This computer (its brain is this app's) and for a brain of the route's
-   * first version (`machineScopeDomainAnswered`).
+   * The domains the route's brain answers (`machineScopeDomains`). This
+   * computer's brain is this app's, so it answers every one this ADE has.
+   * Null for a brain of the route's first version (`machineScopeDomainAnswered`).
    */
   machineRouteDomains: readonly string[] | null;
   hasRepo: boolean;
@@ -115,7 +116,7 @@ export function settingsMachinePageFor(machine: ProjectMachine): SettingsMachine
     }),
     machineRoute: machineRouteFor(machine),
     machineRouteOutdated: !machine.isThisMachine && machine.machineScope === false,
-    machineRouteDomains: machine.isThisMachine ? null : machine.machineScopeDomains ?? null,
+    machineRouteDomains: machine.isThisMachine ? MACHINE_SCOPE_DOMAINS : machine.machineScopeDomains ?? null,
     hasRepo: machine.hasRepo,
     version: machine.version,
   };

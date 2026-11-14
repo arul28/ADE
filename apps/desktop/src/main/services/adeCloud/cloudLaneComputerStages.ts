@@ -360,6 +360,17 @@ export function createCloudLaneComputerStages(
         persist(record);
       }
       showServerRecord(record, server);
+      if (server.state === "failed" && record.snapshot.cloud.instanceId && server.stages.some((stage) => stage.id === "agent" && stage.status !== "pending")) {
+        // The computer's own launch failed after its agent began: that launch
+        // is the one to hold, so Retry reaches the computer's retry instead
+        // of a server that leaves a started launch as it is.
+        const snapshot = await bindToComputer(record, server, signal).catch((error: unknown) => {
+          logger.info("cloud_lane_launch.failed_launch_bind_failed", { launchId, error: getErrorMessage(error) });
+          return null;
+        });
+        assertActive(record, signal);
+        if (snapshot) return snapshot;
+      }
       if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
       const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";
       if (signedIn && record.snapshot.cloud.instanceId) {
@@ -426,13 +437,22 @@ export function createCloudLaneComputerStages(
     return brain?.launchId === launchId ? brain : null;
   };
 
-  /** The server's cancel: before the agent starts it deletes the computer. Its refusal is logged; this app's own delete follows. */
-  const cancelOnServer = async (record: CloudLaneLaunchRecord): Promise<void> => {
+  /**
+   * The server's cancel: before the agent starts it deletes the computer.
+   * `started`: the server refused, because the computer's agent already runs
+   * (it can start before this app has paired and read it), so nothing here
+   * may delete it. `unreached`: no answer, so nobody knows yet. Any other
+   * answer (no launch there, or one it closed but couldn't delete yet) leaves
+   * this app's own delete to follow.
+   */
+  const cancelOnServer = async (record: CloudLaneLaunchRecord): Promise<"cancelled" | "started" | "unreached"> => {
     try {
       await launcher().cancelLaunch(record.snapshot.launchId);
+      return "cancelled";
     } catch (error) {
-      // No launch there (it never started) or an agent that already runs: nothing more for the server to do.
       logger.info("cloud_lane_launch.server_cancel_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      if (!(error instanceof CloudApiError) || error.status === 0) return "unreached";
+      return error.status === 409 && error.code === "launch_started" ? "started" : "cancelled";
     }
   };
 
@@ -460,23 +480,32 @@ export function createCloudLaneComputerStages(
         logger.info("cloud_lane_launch.computer_deleted", { launchId, instanceId: instance.id });
       }
     }
-    const machineKey = record.snapshot.cloud.machineKey;
-    if (machineKey && deleted === own.size && own.size > 0) {
-      await deps.removeAccountMachine(machineKey).catch((error: unknown) => {
-        logger.warn("cloud_lane_launch.account_row_left", { launchId, error: getErrorMessage(error) });
-      });
-    }
-    if (deleted === own.size && own.size > 0) {
+    // Every computer is gone, including one the server's cancel already
+    // deleted (then none is found here): its account row and saved
+    // connections go too. The machine key is kept until its row is removed,
+    // so a later cleanup tries again.
+    if (deleted === own.size) {
+      const machineKey = record.snapshot.cloud.machineKey;
+      if (machineKey) {
+        const removed = await deps.removeAccountMachine(machineKey).then(() => true, (error: unknown) => {
+          logger.warn("cloud_lane_launch.account_row_left", { launchId, error: getErrorMessage(error) });
+          return false;
+        });
+        if (removed) record.snapshot.cloud.machineKey = null;
+      }
       // A saved connection left behind points at a computer that is gone,
       // and the Connections list shows it as a machine that never answers.
-      for (const instance of own.values()) {
-        try {
-          deps.forgetMachineConnections?.({ machineKey, instanceId: instance.id });
-        } catch (error) {
-          logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
+      const gone = new Set([...own.keys(), ...(known ? [known] : [])]);
+      if (gone.size > 0) {
+        for (const instanceId of gone) {
+          try {
+            deps.forgetMachineConnections?.({ machineKey, instanceId });
+          } catch (error) {
+            logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
+          }
         }
+        record.targetId = null;
       }
-      record.targetId = null;
     }
     return { found: own.size, deleted };
   };

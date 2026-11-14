@@ -99,7 +99,12 @@ const UUID = UUID_PATTERN;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** `AgentChatPermissionMode` (the desktop's chat types): the modes a chat on the computer accepts. */
 const CHAT_PERMISSION_MODES: ReadonlySet<string> = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
-const SHORT_ID = /^[A-Za-z0-9_.:/-]{1,200}$/;
+/**
+ * An ADE model registry id, as the desktop sends it: OpenCode and Pi ids carry
+ * the provider's own model name `encodeURIComponent`-escaped
+ * (`opencode/openrouter/anthropic%2Fclaude-…`), so that alphabet too.
+ */
+const MODEL_ID = /^[A-Za-z0-9_.:/%!~*'()-]{1,300}$/;
 const STAGE_ID = /^[a-z][a-z0-9_-]{0,39}$/;
 const STAGE_STATUSES: ReadonlySet<CloudLaunchStageStatus> = new Set(["pending", "running", "done", "failed", "skipped", "warning"]);
 /** Branch names: what git allows that is safe to carry, at a sane length. */
@@ -225,7 +230,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
   if (kind === "chat") {
     const raw = body.chat && typeof body.chat === "object" ? body.chat as Record<string, unknown> : null;
     const provider = typeof raw?.provider === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.provider) ? raw.provider : null;
-    const modelId = typeof raw?.modelId === "string" && SHORT_ID.test(raw.modelId) ? raw.modelId : null;
+    const modelId = typeof raw?.modelId === "string" && MODEL_ID.test(raw.modelId) ? raw.modelId : null;
     const permissions = typeof raw?.permissions === "string" && CHAT_PERMISSION_MODES.has(raw.permissions) ? raw.permissions : null;
     const effort = raw?.effort == null ? null : typeof raw.effort === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.effort) ? raw.effort : undefined;
     const prompt = typeof raw?.prompt === "string" ? raw.prompt : null;
@@ -358,27 +363,44 @@ function agentStartedIn(row: LaunchRow): boolean {
 
 /**
  * A Retry of a launch whose computer failed before its agent started (it
- * couldn't join in time, clone or start): that computer is deleted, and the
- * launch goes back to `making` with no computer, which the start below then
- * makes again, under the same id. Anything else (still running, finished, an
- * agent that started) is left as it is, and the start answers it. A refusal
- * to delete answers here.
+ * couldn't join in time, clone or start): the launch goes back to `making`
+ * with no computer, which the start below then makes again, under the same
+ * id, and the failed computer is deleted. Anything else (still running,
+ * finished, an agent that started) is left as it is, and the start answers
+ * it.
+ *
+ * The retry is claimed before anything is deleted, and only against the row
+ * this read saw: a join or a report that landed since wins, and its computer
+ * is kept. Once claimed, the old computer's reports are refused (the row
+ * holds no computer), and the record's deadline starts again. A delete the
+ * provider refuses puts the launch back as it failed, so a later Retry
+ * deletes that computer instead of leaving it on the account.
  */
 async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: string, deps: LaunchRouteDeps): Promise<Response | null> {
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return null;
   const failed = row.state === "failed" || joinNeverFinished(row, deps.now);
   if (!failed || agentStartedIn(row)) return null;
-  if (row.instance_id) {
-    if (!deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
-    await deleteLaunchComputer(env, deps.provider, row, deps.now, { who: "launch_retry", reason: "launch_retried" });
-  }
-  // Only the row this read saw: a start or a report that landed since keeps what it wrote.
-  await env.DB.prepare(`
+  if (row.instance_id && !deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+  const claimed = await env.DB.prepare(`
     update cloud_launches set state = 'making', instance_id = null, join_expires_at = null, join_used_at = null, join_rejoins = 0,
-      join_user_code = null, approval_url = null, stages_json = null, error = null, session_id = null, updated_at = ?
+      join_user_code = null, approval_url = null, stages_json = null, error = null, session_id = null, updated_at = ?, expires_at = ?
     where launch_id = ? and user_id = ? and updated_at = ? and state = ?
-  `).bind(deps.now, launchId, userId, row.updated_at, row.state).run();
+  `).bind(deps.now, deps.now + CLOUD_LAUNCH_RECORD_TTL_MS, launchId, userId, row.updated_at, row.state).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return null;
+  if (row.instance_id) {
+    try {
+      await deleteLaunchComputer(env, deps.provider!, row, deps.now, { who: "launch_retry", reason: "launch_retried" });
+    } catch (error) {
+      // Back as it failed, holding its computer, unless a start already made the new one.
+      await env.DB.prepare(`
+        update cloud_launches set state = 'failed', instance_id = ?, error = ?, updated_at = ?
+        where launch_id = ? and user_id = ? and state = 'making' and instance_id is null
+      `).bind(row.instance_id, row.error ?? "The launch's computer failed.", deps.now, launchId, userId).run();
+      reportCloudFailure("cloud.launch_retry_delete_failed", { launchId, code: error instanceof Error ? error.name : "unknown" });
+      return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+    }
+  }
   logCloud("cloud.launch_retried", { userId, launchId, instanceId: row.instance_id });
   return null;
 }

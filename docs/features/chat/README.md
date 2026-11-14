@@ -3460,12 +3460,23 @@ hand-off the brain owns the launch and finishes it with the desktop closed.
 - **Failures.** A failed stage shows one sentence (the server's or the
   computer's own when it has one). Retry asks the server again with
   `retry: true`: a launch whose computer failed before its agent started
-  begins again on a new computer under the same id (the failed one is
-  deleted); anything else goes on where it was. Cancel before the hand-off is
-  the server's cancel (it deletes the computer, also one its create is still
-  making), then this app's own delete of computers whose `ade_request_id` is
-  this launch, and the account row. After the hand-off, Cancel goes to the
-  brain first, and the brain refuses once the agent has started.
+  begins again on a new computer under the same id. The server claims the
+  retry before it deletes the failed computer (a join or report that landed
+  since keeps that computer; the old computer's later reports are refused),
+  restarts the record's 7-day deadline, and puts the launch back as failed
+  when the provider refuses the delete. A launch whose computer failed after
+  its agent began is bound and handed off as it is, so Retry goes to the
+  computer's own retry. Cancel before the hand-off asks the server first: its
+  `launch_started` refusal (the agent can start before this app has paired)
+  refuses the Cancel and nothing is deleted, and no answer at all refuses it
+  too. Otherwise the server deletes the computer, also one its create is
+  still making, then this app deletes computers whose `ade_request_id` is
+  this launch, the account row and saved connections (also when the server
+  already deleted the computer; the machine key stays until its row is
+  removed). After the hand-off, Cancel goes to the brain first, and the
+  brain refuses once the agent has started. Each new subscription to the
+  brain's events reads its snapshot once, so a change between the hand-off's
+  read and the stream is never missed.
 - **Restarts.** Records live in `<userData>/cloud-lane-launches/`. When ADE
   opens again, a launch that was setting up reads the server again (the same
   id answers the same launch). A handed-off one is read and followed again,

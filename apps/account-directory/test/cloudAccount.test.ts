@@ -2077,6 +2077,39 @@ describe("ADE Cloud server launcher", () => {
     expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: "GHJK-6789" }) }));
   });
 
+  it("a Retry claims the failed launch before deleting its computer: that computer's late report is refused, the launch starts again with a new deadline", async () => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", LAUNCH);
+    clock = NOW + 2 * HOUR;
+    // The failed computer reports while its delete is in flight, where a real one lands.
+    let lateReport = 0;
+    harness.net.after.push({ match: /DELETE .*\/instances\/madenew12345$/, run: async () => {
+      lateReport = (await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "joined" })).status;
+    } });
+
+    const retried = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true });
+
+    expect(retried.status).toBe(201);
+    expect(lateReport).toBe(409);
+    expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
+    expect(madeCalls()).toHaveLength(2);
+    expect(harness.row("select state, expires_at from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "joining", expires_at: clock + 7 * DAY });
+  });
+
+  it("a Retry whose delete the provider refuses keeps the launch failed with its computer, so the next Retry deletes it", async () => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", LAUNCH);
+    harness.net.once.push({ match: /DELETE .*\/instances\/madenew12345$/, reply: harness.net.reply({ error: { code: "upstream" } }, 500) });
+
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(503);
+    expect(harness.row("select state, instance_id from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "failed", instance_id: "madenew12345" });
+    expect(madeCalls()).toHaveLength(1);
+
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(201);
+    expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(2);
+    expect(madeCalls()).toHaveLength(2);
+  });
+
   it.each<[string, Record<string, string>, number, string | null]>([
     ["a preflight from the web client", { origin: WEB, "access-control-request-method": "POST", "access-control-request-headers": "authorization, content-type" }, 204, WEB],
     ["a preflight from another site", { origin: "https://evil.test", "access-control-request-method": "POST" }, 403, null],

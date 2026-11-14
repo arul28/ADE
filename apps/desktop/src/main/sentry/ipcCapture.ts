@@ -233,12 +233,21 @@ function personFailureRepeats(key: string, now: number): boolean {
   return true;
 }
 
+/**
+ * What failed, as fixed words only: the error's own code (ADE's or an errno)
+ * or its type, and the expected kind. Never its message, which can name the
+ * person's machine ("Can't reach Mac Studio …") or files.
+ */
+function personFailureKind(error: unknown): [string, string] {
+  const direct = (error as { code?: unknown } | null)?.code;
+  const code = typeof direct === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(direct.trim()) ? direct.trim() : null;
+  return [code ?? (error instanceof Error ? error.name : "unknown"), expectedErrorKind(error) ?? "unexpected"];
+}
+
 function reportRepeatedPersonFailure(channel: string, label: string, error: unknown): void {
-  // What failed, the way a runtime action's issue groups it: an ADE code, or
-  // the error type and its message with ids and names taken out.
-  const failure = runtimeActionFingerprint(error, label).slice(1);
+  const failure = personFailureKind(error);
   if (!personFailureRepeats([label, ...failure].join("\u0000"), Date.now())) return;
-  const failureClass = failure[0] ?? "unknown";
+  const failureClass = failure[0];
   // No message: it can name the person's machine or files. The Sentry Log
   // `ipc.expected.<label>` beside it has the scrubbed text.
   captureProblem(`${label} keeps failing for a person: ${failureClass}`, {
