@@ -2367,9 +2367,10 @@ suggested plan records the matching `choose_plan_*` CTA at position
 `plan_finder`, so a finder-led choice is told apart from a plan card's.
 
 On the home page, the hero's ADE Cloud link records `view_ade_cloud`, the ADE
-Cloud section's "Start free" opens the install dialog and records the
-`get_started_free` CTA at position `home_cloud`, and the feature wall's "See every feature" button records
-`view_all_features`.
+Cloud section's four plan tiles open the web app at that plan (`?cloudPlan=`)
+and record the matching `choose_plan_*` CTA at position `home_cloud`, and the
+feature wall's "See every feature" button records `view_all_features`. The
+section's price comparison (its tabs and hours slider) records nothing.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

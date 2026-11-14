@@ -67,12 +67,12 @@ export function ToolsSection() {
           className="font-serif font-normal text-white"
           style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.02em" }}
         >
-          Your machines.
+          Your machines, or ours.
           <br />
           <em className="italic text-[color:var(--color-violet-bright)]">Full control.</em>
         </h2>
         <p className="mx-auto mt-4 max-w-[44rem] text-[clamp(15px,1.2vw,17px)] leading-[1.6] text-white/60">
-          Agents use everything on your computers, and check their own work.
+          Agents get full control of every computer, yours or a cloud one, and check their own work.
         </p>
       </div>
 
