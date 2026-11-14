@@ -525,7 +525,8 @@ describe("chatLaunchService", () => {
     const h = harness({ hasEnvironment: true, templateName: "npm packages" });
     // The grow is asked for, then the computer restarts before the disk reads bigger.
     const makeRoom = vi.fn(async () => ({ state: "growing" as const, detail: "Growing the disk to 8 GB", ready: new Promise<boolean>(() => {}) }));
-    const service = createChatLaunchService({ ...h.deps, makeRoomForEnvironment: makeRoom });
+    const environmentDisk = { setupStarting: vi.fn(), setupEnded: vi.fn(), diskFull: vi.fn(() => ({ grow: true as const })), makeRoom };
+    const service = createChatLaunchService({ ...h.deps, environmentDisk });
     await service.start(chatArgs());
     h.laneCreate.resolve(laneSummary());
     h.environment.resolve({
@@ -541,7 +542,7 @@ describe("chatLaunchService", () => {
     const events: ChatLaunchEvent[] = [];
     const reloaded = createChatLaunchService({
       ...h.deps,
-      makeRoomForEnvironment: makeRoom,
+      environmentDisk,
       runEnvironment: vi.fn(async () => ({ laneId: LANE_ID, overallStatus: "completed", steps: [{ kind: "setup-script", label: "Setup script", status: "completed" }] } as never)),
       emit: (event) => events.push(event),
     });
@@ -552,6 +553,23 @@ describe("chatLaunchService", () => {
     expect(snapshot.agentStarted).toBe(true);
     expect(makeRoom).toHaveBeenCalledTimes(1);
     reloaded.dispose();
+  });
+
+  it.each([
+    ["a file-watcher limit", "Error: ENOSPC: System limit for number of file watchers reached, watch '/work/src'", /file watchers/],
+    ["an inotify limit", "inotify watch limit reached: ENOSPC", /inotify/],
+  ])("%s's ENOSPC is not a full disk: setup fails as itself and no room is asked for", async (_label, error, shown) => {
+    const h = harness({ hasEnvironment: true, templateName: "npm packages" });
+    const environmentDisk = { setupStarting: vi.fn(), setupEnded: vi.fn(), diskFull: vi.fn(() => ({ grow: true as const })), makeRoom: vi.fn() };
+    const service = createChatLaunchService({ ...h.deps, environmentDisk });
+    await service.start(chatArgs());
+    h.laneCreate.resolve(laneSummary());
+    h.environment.resolve({ laneId: LANE_ID, overallStatus: "failed", steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error }] } as never);
+    await h.waitFor((snapshot) => snapshot.phase === "failed");
+    expect(h.latest().error).toMatch(shown);
+    expect(environmentDisk.diskFull).not.toHaveBeenCalled();
+    expect(environmentDisk.makeRoom).not.toHaveBeenCalled();
+    service.dispose();
   });
 
   it("Retry after a restart never resends an opening prompt the chat already received", async () => {

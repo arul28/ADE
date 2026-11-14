@@ -102,6 +102,13 @@ type BootState = {
   projectId?: string | null;
   /** A setup failure's last report that never landed: a later boot sends it before anything else. */
   unsent?: CloudLaunchStagesUpdate | null;
+  /**
+   * The last report that landed, by its shape (phase, then each stage's id,
+   * status and detail). A failed launch is followed across boots (a Retry on
+   * this computer goes on after a restart its disk grow brings), and a boot
+   * doesn't send the same failure again.
+   */
+  reported?: string | null;
 };
 
 /** A just-booted computer's device sign-in is tried this many times (each one retries the network itself). */
@@ -178,6 +185,16 @@ const doneStage = (id: string, detail: string | null = null): CloudLaunchStage =
 /** The brain's stage rows as the server keeps them. */
 function stagesOf(snapshot: ChatLaunchSnapshot): CloudLaunchStage[] {
   return snapshot.stages.map((stage) => ({ id: stage.id, status: stage.status, detail: stage.detail, error: stage.error }));
+}
+
+/**
+ * What a report says, for "has it changed": the phase and each stage's id
+ * and status, plus a running stage's detail (a disk grow says "growing it to
+ * N GB" there, for the phone and MCP). Never progress: a detail changes only
+ * when a stage's step does, a handful of writes per launch.
+ */
+function reportShapeOf(phase: ChatLaunchPhase, stages: CloudLaunchStage[]): string {
+  return `${phase}|${stages.map((stage) => `${stage.id}:${stage.status}${stage.status === "running" ? `:${stage.detail ?? ""}` : ""}`).join(",")}`;
 }
 
 /**
@@ -297,7 +314,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
   const report = stageReporter(deps);
 
   if (known?.phase === "handed_off" && known.projectId) {
-    await follow(deps, known.projectId, report);
+    await follow(deps, known.projectId, report, known.reported ?? "");
     await reportAutomationRunEnd(deps, known.projectId);
     return;
   }
@@ -377,7 +394,7 @@ export async function runCloudBootLaunch(deps: CloudBootLaunchDeps): Promise<voi
 
   const after = readState(deps.stateFile, logger);
   if (after?.launchId === launchId && after.phase === "handed_off" && after.projectId) {
-    await follow(deps, after.projectId, report);
+    await follow(deps, after.projectId, report, after.reported ?? "");
     await reportAutomationRunEnd(deps, after.projectId);
   }
 }
@@ -568,22 +585,26 @@ async function reportFinal(report: ReportStages, update: CloudLaunchStagesUpdate
 
 /**
  * Reports the brain's own launch until it ends: a write when a stage's status
- * changes or the launch ends, never on a timer, one after another so a later
- * write never lands before an earlier one.
+ * (or a running stage's detail) changes or the launch ends, never on a timer,
+ * one after another so a later write never lands before an earlier one. A
+ * failed launch is followed on, here and after a restart (opening its
+ * project at boot): a Retry on this computer, and the restart a disk grow
+ * brings it, go on and are reported with nobody watching.
  */
 async function follow(
   deps: CloudBootLaunchDeps,
   projectId: string,
   report: ReportStages,
+  reported: string,
 ): Promise<void> {
   const { launchId, logger } = deps;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const launches = await deps.launches(projectId);
-  let last = "";
+  let last = reported;
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
     const stages = stagesOf(snapshot);
     const terminal = TERMINAL.has(snapshot.phase);
-    const shape = `${snapshot.phase}|${stages.map((stage) => `${stage.id}:${stage.status}`).join(",")}`;
+    const shape = reportShapeOf(snapshot.phase, stages);
     if (shape === last) return terminal;
     last = shape;
     const error = snapshot.phase === "cancelled" ? STOPPED_ON_COMPUTER : snapshot.phase === "failed" ? snapshot.error : null;
@@ -598,7 +619,10 @@ async function follow(
       return false;
     }
     if (await reportFinal(report, update, sleep)) {
-      writeState(deps.stateFile, { launchId, phase: "ended", projectId });
+      // Failed: followed on after a restart too, for a Retry (one launch's state file, one write).
+      writeState(deps.stateFile, snapshot.phase === "failed"
+        ? { launchId, phase: "handed_off", projectId, reported: shape }
+        : { launchId, phase: "ended", projectId });
       return true;
     }
     // Still unsent: the state stays `handed_off`, so the next boot follows the
@@ -618,6 +642,17 @@ async function follow(
       unsubscribe?.();
       resolve();
     };
+    /** The launch is gone here (removed, or expired after it failed): nothing more to follow at a later boot. */
+    const gone = () => {
+      if (ended) return;
+      queue = queue.then(() => {
+        const current = readState(deps.stateFile, logger);
+        if (current?.launchId === launchId && current.phase === "handed_off" && !current.unsent) {
+          writeState(deps.stateFile, { launchId, phase: "ended", projectId });
+        }
+      }).catch((error: unknown) => logger.warn("cloud_boot_launch.state_write_failed", { launchId, error: errorText(error) }));
+      void queue.then(end);
+    };
     // A failed launch waits for a retry on this computer; it is reported once and followed on.
     const onSnapshot = (snapshot: ChatLaunchSnapshot) => {
       queue = queue.then(() => send(snapshot)).then(
@@ -629,12 +664,12 @@ async function follow(
     };
     unsubscribe = launches.subscribe((event) => {
       if (event.type === "launch-updated" && event.launch.launchId === launchId) onSnapshot(event.launch);
-      if (event.type === "launch-removed" && event.launchId === launchId) end();
+      if (event.type === "launch-removed" && event.launchId === launchId) gone();
     });
     launches.get(launchId).then(
       (snapshot) => {
         if (snapshot) onSnapshot(snapshot);
-        else end();
+        else gone();
       },
       (error: unknown) => {
         logger.warn("cloud_boot_launch.follow_read_failed", { launchId, error: errorText(error) });

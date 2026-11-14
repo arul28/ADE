@@ -1085,7 +1085,7 @@ export async function createAdeRuntime(args: {
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /** An ADE Cloud computer's way to grow its disk when a lane launch's setup fills it (`cloudDiskGrow.ts`). */
-  makeRoomForLaneSetup?: ChatLaunchServiceDeps["makeRoomForEnvironment"];
+  laneSetupDisk?: ChatLaunchServiceDeps["environmentDisk"];
   /**
    * The clock that times this open, when a caller times a larger open around
    * it (the brain's scope registry, which also tells the freeze guard each
@@ -3090,6 +3090,10 @@ export async function createAdeRuntime(args: {
       cloudLaneNameSyncRef.current = createCloudLaneNameSync({
         instanceId: process.env.ADE_CLOUD_INSTANCE_ID.trim(),
         client: async () => laneNameClient,
+        // This computer's own machine, as the signed-in account (the directory scopes it to the account).
+        renameMachine: async (machineKey, name) => await new AccountMachineDirectoryService(accountAuthService, {
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+        }).renameMachine(machineKey, name),
         logger,
       });
     }
@@ -3533,7 +3537,7 @@ export async function createAdeRuntime(args: {
         abortEnvironment: ({ laneId, worktreePath }) => {
           laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath);
         },
-        ...(typeof args !== "string" && args.makeRoomForLaneSetup ? { makeRoomForEnvironment: args.makeRoomForLaneSetup } : {}),
+        ...(typeof args !== "string" && args.laneSetupDisk ? { environmentDisk: args.laneSetupDisk } : {}),
         emit: (event) => pushEvent("runtime", { type: "chat_launch_event", event }),
         onOutcome: ({ outcome, provider }) => captureNewLaneLaunchAnalytics({
           analytics: productAnalyticsService,

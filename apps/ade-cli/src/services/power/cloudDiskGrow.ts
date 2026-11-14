@@ -29,7 +29,10 @@ import {
   cloudDiskGrowRefusedWayOut,
 } from "../../../../desktop/src/shared/adeCloud";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
-import type { ChatLaunchEnvironmentRoom } from "../../../../desktop/src/main/services/chat/chatLaunchService";
+import type {
+  ChatLaunchEnvironmentDisk,
+  ChatLaunchEnvironmentRoom,
+} from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeCloud/cloudInstanceOps";
 import {
@@ -37,7 +40,11 @@ import {
   diskPressureThresholdsForSize,
   type DiskPressureState,
 } from "../../../../desktop/src/main/services/storage/diskPressure";
-import { isUrgentDiskPressure } from "../../../../desktop/src/shared/types/storage";
+import {
+  diskFullLine,
+  isUrgentDiskPressure,
+  LANE_SETUP_NO_ROOM_TO_SAVE_ERROR,
+} from "../../../../desktop/src/shared/types/storage";
 import {
   CLOUD_DISK_GROW_STARTED_COOLDOWN_MS,
   cloudDiskGrowStatePath,
@@ -64,7 +71,36 @@ const SETUP_GROW_RACE_RETRY_MS = [2_000, 6_000];
 /** The filesystem reads this much bigger once a grow landed (a step is whole GB; the filesystem keeps a little of it). */
 const GREW_MARGIN_BYTES = 512 * 1024 * 1024;
 
+/**
+ * Really short, for a setup that said ENOSPC: under this much free, or under
+ * the fraction, or past the guard's own warning. Above it the error came
+ * from something else (a quota, a full inode table, a tool's own limit), and
+ * a bigger disk wouldn't help.
+ */
+const SETUP_SHORT_FREE_BYTES = 1024 * 1024 * 1024;
+const SETUP_SHORT_FREE_FRACTION = 0.1;
+/** Kept on the disk while a setup runs and freed just before the launch writes its grow mark, so a full disk can still take it. */
+const SETUP_RESERVE_BYTES = 32 * 1024 * 1024;
+/** One launch's setup grows at most this often, however much more each run used. */
+const SETUP_MAX_GROWS = 4;
+/** A launch's grow history goes after this long (no launch's setup waits a day). */
+const SETUP_HISTORY_TTL_MS = 24 * 60 * 60_000;
+
 type DiskSpace = { freeBytes: number; totalBytes: number };
+
+/** One launch's setup grows so far, and how much its last grown run used (bytes it took from the free space). */
+type SetupGrowHistory = Record<string, { grows: number; usedBytes: number; at: number }>;
+
+/** A short line of command output for the log: token-like runs and home paths cut. */
+function safeExcerpt(text: string | null): string | null {
+  if (!text) return null;
+  return text
+    .replace(/[A-Za-z0-9_+/=-]{24,}/g, "…")
+    .replace(/\/(?:home|Users|root)\/[^\s/]+/g, "~")
+    .slice(0, 160);
+}
+
+const gb = (bytes: number): string => `${Math.max(0, bytes / 1024 ** 3).toFixed(1)} GB`;
 
 /** One step's ask: started, refused by the server, held back because something runs, or no way to ask. */
 type GrowStep =
@@ -73,6 +109,8 @@ type GrowStep =
   | { state: "changed" }
   | { state: "refused"; reason: string; wayOut: string; diskGb: number }
   | { state: "busy" }
+  /** The note that a grow is under way couldn't be written (a full disk): no grow without it. */
+  | { state: "unsaved" }
   | { state: "unavailable" };
 
 function readDiskSpace(target: string): DiskSpace | null {
@@ -105,6 +143,10 @@ export function createCloudDiskGrower(deps: {
 }) {
   const now = deps.now ?? (() => Date.now());
   const stateFile = cloudDiskGrowStatePath(deps.adeHome);
+  const historyFile = path.join(path.dirname(stateFile), "setup-disk-grows.json");
+  const reserveDir = path.join(path.dirname(stateFile), "setup-reserve");
+  // No setup runs before the brain starts: a reserve left by the last boot goes.
+  try { fs.rmSync(reserveDir, { recursive: true, force: true }); } catch { /* nothing to free */ }
   // A grow restarts the computer, so the last boot's grow or refusal is read
   // back from the state file it wrote: the cooldown and the refusal's wait
   // hold across that restart instead of growing again at the first check.
@@ -138,20 +180,82 @@ export function createCloudDiskGrower(deps: {
     shown = reason;
   };
 
-  const writeState = (state: CloudDiskGrowState | null): void => {
+  /** Writes (or clears) the state file whole; false when it couldn't (a full disk), and the old copy stays. */
+  const writeState = (state: CloudDiskGrowState | null): boolean => {
+    const tmp = `${stateFile}.${process.pid}.tmp`;
     try {
       if (!state) {
         if (stateWritten || fs.existsSync(stateFile)) fs.rmSync(stateFile, { force: true });
         stateWritten = false;
-        return;
+        return true;
       }
       fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-      const tmp = `${stateFile}.${process.pid}.tmp`;
       fs.writeFileSync(tmp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
       fs.renameSync(tmp, stateFile);
       stateWritten = true;
+      return true;
     } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       deps.logger?.warn("cloud.disk_grow_state_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+
+  const readHistory = (): SetupGrowHistory => {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(historyFile, "utf8")) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+      const out: SetupGrowHistory = {};
+      for (const [launchId, entry] of Object.entries(parsed as Record<string, unknown>)) {
+        const e = entry as { grows?: unknown; usedBytes?: unknown; at?: unknown };
+        if (typeof e?.grows !== "number" || typeof e.usedBytes !== "number" || typeof e.at !== "number") continue;
+        if (now() - e.at > SETUP_HISTORY_TTL_MS) continue;
+        out[launchId] = { grows: e.grows, usedBytes: e.usedBytes, at: e.at };
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  };
+
+  const writeHistory = (history: SetupGrowHistory): boolean => {
+    const tmp = `${historyFile}.${process.pid}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(historyFile), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(history), { mode: 0o600 });
+      fs.renameSync(tmp, historyFile);
+      return true;
+    } catch (error) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      deps.logger?.warn("cloud.disk_grow_history_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
+
+  /** The free space each running setup started with, by launch (this boot only: a resumed run starts again). */
+  const setupRuns = new Map<string, number | null>();
+  const reservePath = (launchId: string): string => path.join(reserveDir, `${launchId.replace(/[^A-Za-z0-9_-]/g, "_")}.bin`);
+  const freeReserve = (launchId: string): void => {
+    try { fs.rmSync(reservePath(launchId), { force: true }); } catch { /* nothing to free */ }
+  };
+  const keepReserve = (launchId: string): void => {
+    const target = reservePath(launchId);
+    const space = readDiskSpace(deps.path);
+    // Too little room to set any aside: the launch's mark may not land, and then it doesn't grow.
+    if (!space || space.freeBytes < SETUP_RESERVE_BYTES * 4) return;
+    let fd: number | null = null;
+    try {
+      fs.mkdirSync(reserveDir, { recursive: true });
+      fd = fs.openSync(target, "w", 0o600);
+      // Real blocks: a sparse file holds no room.
+      const chunk = Buffer.alloc(1024 * 1024);
+      for (let written = 0; written < SETUP_RESERVE_BYTES; written += chunk.length) fs.writeSync(fd, chunk);
+    } catch (error) {
+      deps.logger?.warn("cloud.setup_reserve_failed", { error: error instanceof Error ? error.message : String(error) });
+      if (fd != null) { try { fs.closeSync(fd); } catch { /* ignore */ } fd = null; }
+      freeReserve(launchId);
+    } finally {
+      if (fd != null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
     }
   };
 
@@ -183,8 +287,11 @@ export function createCloudDiskGrower(deps: {
     if (!(await stillIdle())) return { state: "busy" };
     const { cpu, memory, disk: diskGb } = instance.resources;
     const toGb = diskGb + catalog.diskStepGb;
+    // The note is what holds the cooldown and the pending grow across the restart: no grow without it.
+    if (!writeState({ v: 1, state: "growing", toGb, at: now(), instanceId: deps.instanceId, fromBytes: disk.space.totalBytes })) {
+      return { state: "unsaved" };
+    }
     try {
-      writeState({ v: 1, state: "growing", toGb, at: now(), instanceId: deps.instanceId, fromBytes: disk.space.totalBytes });
       await client.resizeInstance(deps.instanceId, { cpu, memory, disk: toGb }, { computerIdle: true, origin: "auto" });
     } catch (error) {
       // The server's "the disk changed while this ran" (409, no reason): room may be there, so it isn't a refusal.
@@ -246,7 +353,9 @@ export function createCloudDiskGrower(deps: {
       return false;
     }
     if (holding()) return false;
-    return (await growOneStep(stillIdle, disk)).state === "growing";
+    const step = await growOneStep(stillIdle, disk);
+    if (step.state === "unsaved") failedAt = now();
+    return step.state === "growing";
   };
 
   /** Resolves true once the filesystem reads bigger than `fromBytes`, false at the wait's end or on abort. */
@@ -274,7 +383,7 @@ export function createCloudDiskGrower(deps: {
   const growingDetail = (toGb: number): string =>
     `The disk filled up during setup. ADE is growing it to ${toGb} GB: the computer restarts for a moment, then setup runs again.`;
 
-  return {
+  const grower = {
     /**
      * At the idle point: grows the disk if it's near full. True when a grow
      * started; the computer restarts and the idle sleep waits for that.
@@ -293,12 +402,7 @@ export function createCloudDiskGrower(deps: {
       }
     },
     /**
-     * Whether the disk is close enough to the guard's stop line that the grow
-     * shouldn't wait for the idle point: a local `statfs`, no server call.
-     * False while a refused, started or failed grow still holds.
-     */
-    /**
-     * A lane launch's setup filled the disk (`makeRoomForEnvironment`): one
+     * A lane launch's setup filled the disk (`setupDisk().makeRoom`): one
      * more step now, whatever the near-full line says (a failed install can
      * leave the disk roomy again) and past an earlier refusal's wait (the
      * server is asked; it holds every rule). Only while nothing else runs:
@@ -336,6 +440,8 @@ export function createCloudDiskGrower(deps: {
             return { state: "refused", error: "Setup filled this computer's disk, and ADE can't grow it while something else runs there (a grow restarts the computer). Retry once that's done." };
           case "changed":
             return { state: "refused", error: "Setup filled this computer's disk, and your computers' disk kept changing while ADE grew it. Retry in a moment." };
+          case "unsaved":
+            return { state: "refused", error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
           case "unavailable":
             return null;
         }
@@ -348,10 +454,68 @@ export function createCloudDiskGrower(deps: {
         inFlight = false;
       }
     },
+    /**
+     * Whether the disk is close enough to the guard's stop line that the grow
+     * shouldn't wait for the idle point: a local `statfs`, no server call.
+     * False while a refused, started or failed grow still holds.
+     */
     growDueNow(): boolean {
       if (inFlight || holding()) return false;
       const disk = measure();
       return disk != null && isUrgentDiskPressure(disk.pressure);
     },
+    /**
+     * The lane launches' side of a setup that fills the disk
+     * (`ChatLaunchEnvironmentDisk`). Each run keeps a small reserve on the
+     * disk, freed just before the launch writes its grow mark, so the mark
+     * lands even on a full disk. An ENOSPC grows only when this disk really
+     * ran short, and a launch grows again only when its run used more than
+     * the run before it (a grow that didn't help won't help twice).
+     */
+    setupDisk(stillIdle: () => boolean | Promise<boolean>): ChatLaunchEnvironmentDisk {
+      return {
+        setupStarting({ launchId }) {
+          setupRuns.set(launchId, readDiskSpace(deps.path)?.freeBytes ?? null);
+          keepReserve(launchId);
+        },
+        setupEnded({ launchId }) {
+          setupRuns.delete(launchId);
+          freeReserve(launchId);
+        },
+        diskFull({ launchId, error }) {
+          const space = readDiskSpace(deps.path);
+          const startFree = setupRuns.get(launchId) ?? null;
+          const line = safeExcerpt(diskFullLine(error));
+          if (!space) return { grow: false, error };
+          const pressure = pressureOf(space);
+          const short = space.freeBytes < SETUP_SHORT_FREE_BYTES
+            || space.freeBytes / space.totalBytes < SETUP_SHORT_FREE_FRACTION
+            || pressure !== "normal";
+          const usedBytes = startFree == null ? null : Math.max(0, startFree - space.freeBytes);
+          const history = readHistory();
+          const before = history[launchId];
+          const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), grows: before?.grows ?? 0, line };
+          if (!short) {
+            deps.logger?.info("cloud.setup_disk_full_not_short", log);
+            return { grow: false, error: `Setup said there's no space left on the device, but this computer's disk has ${gb(space.freeBytes)} free, so ADE didn't grow it (a tool's own limit or a full inode table says the same).${line ? ` Last error: ${line}` : ""} Fix that, then retry.` };
+          }
+          if (before && (before.grows >= SETUP_MAX_GROWS || usedBytes == null || usedBytes <= before.usedBytes)) {
+            deps.logger?.info("cloud.setup_disk_full_no_regrow", log);
+            return { grow: false, error: `Setup filled this computer's disk again after it grew to ${gb(space.totalBytes)}, and another step wouldn't help. Free some space (or use Clear caches in Settings > ADE Cloud), or make the setup lighter, then retry.` };
+          }
+          // The reserve goes now, so the launch's mark (and the grow's own note) have room on a full disk.
+          freeReserve(launchId);
+          if (!writeHistory({ ...history, [launchId]: { grows: (before?.grows ?? 0) + 1, usedBytes: usedBytes ?? 0, at: now() } })) {
+            return { grow: false, error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
+          }
+          deps.logger?.info("cloud.setup_disk_full_grow", log);
+          return { grow: true };
+        },
+        makeRoom({ signal }) {
+          return grower.makeRoomForSetup({ stillIdle, signal });
+        },
+      };
+    },
   };
+  return grower;
 }

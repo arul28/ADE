@@ -82,20 +82,48 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   return record;
 }
 
+/**
+ * Whether a launch in `launchesDir` waits for room on the disk (its setup
+ * filled it, and the host grew it: `awaitingRoom`). A brain opens such a
+ * project at start, so the launch goes on after the restart with nobody
+ * watching. A read of a few small files, once per brain start.
+ */
+export function hasChatLaunchAwaitingRoom(launchesDir: string): boolean {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(launchesDir);
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(launchesDir, entry), "utf8")) as Partial<ChatLaunchRecord>;
+      if (record.awaitingRoom === true && record.snapshot?.phase === "running") return true;
+    } catch {
+      // Unreadable: the service's own load says so.
+    }
+  }
+  return false;
+}
+
 export function createChatLaunchRecordStore(args: { launchesDir: string; logger: Logger }) {
   const { launchesDir, logger } = args;
   const recordPath = (launchId: string) => path.join(launchesDir, `${launchId}.json`);
 
-  const persist = (record: ChatLaunchRecord): void => {
+  /** Writes the record (whole, by rename); false when it couldn't (a full disk), and the old copy stays. */
+  const persist = (record: ChatLaunchRecord): boolean => {
     const target = recordPath(record.snapshot.launchId);
     const tmp = `${target}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(launchesDir, { recursive: true });
       fs.writeFileSync(tmp, JSON.stringify(record));
       fs.renameSync(tmp, target);
+      return true;
     } catch (error) {
       try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       logger.warn("chat_launch.persist_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      return false;
     }
   };
 

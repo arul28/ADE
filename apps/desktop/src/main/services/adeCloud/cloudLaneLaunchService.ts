@@ -28,7 +28,6 @@ import type {
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { getErrorMessage } from "../shared/utils";
 import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineCreator";
-import { CloudProviderError } from "./cloudProvider";
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
 import { createCloudLaneLaunchRecordStore, type CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
@@ -97,10 +96,6 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  * connecting repeat. Nothing runs while no cloud launch is live.
  */
 
-/** A computer rename that failed is tried this often at most, with a doubling wait from this first one. */
-const NAME_WRITE_ATTEMPTS = 3;
-const NAME_WRITE_BACKOFF_MS = 30_000;
-
 export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const { logger } = deps;
   const now = () => deps.now?.() ?? new Date();
@@ -136,7 +131,6 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   };
 
   const disposeRuntime = (launchId: string): void => {
-    nameFailures.delete(launchId);
     const runtime = runtimes.get(launchId);
     if (!runtime) return;
     runtime.unsubscribe?.();
@@ -285,73 +279,27 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
    * write at a time per launch, and a write a newer name replaced is skipped,
    * so a slow placeholder write can never land after the AI-named branch.
    */
-  const computerWrites = new Map<string, Promise<void>>();
-  const queueComputerWrite = (launchId: string, run: () => Promise<void>, onError: (error: unknown) => void): void => {
-    const write = (computerWrites.get(launchId) ?? Promise.resolve()).then(run).catch(onError);
-    computerWrites.set(launchId, write);
-    void write.finally(() => {
-      if (computerWrites.get(launchId) === write) computerWrites.delete(launchId);
-    });
-  };
+  const branchWrites = new Map<string, Promise<void>>();
   const recordBranch = (record: CloudLaneLaunchRecord): void => {
     const branchRef = record.snapshot.branchRef?.trim() || null;
     const instanceId = record.snapshot.cloud.instanceId;
     if (!branchRef || !instanceId || record.branchRecorded === branchRef || record.snapshot.phase === "cancelled") return;
     record.branchRecorded = branchRef;
     const launchId = record.snapshot.launchId;
-    queueComputerWrite(launchId, async () => {
+    const write = (branchWrites.get(launchId) ?? Promise.resolve()).then(async () => {
       if (record.branchRecorded !== branchRef) return;
       const client = await providerClient();
       const instance = await client.getInstance(instanceId);
       if (instance.metadata[CLOUD_LANE_BRANCH_METADATA] === branchRef) return;
       await client.setInstanceMetadata(instanceId, { ...instance.metadata, [CLOUD_LANE_BRANCH_METADATA]: branchRef });
-    }, (error: unknown) => {
+    }).catch((error: unknown) => {
       // Tried again on the next snapshot that names it.
       if (record.branchRecorded === branchRef) record.branchRecorded = null;
       logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId, error: getErrorMessage(error) });
     });
-  };
-
-  /**
-   * One lane, one name: once the brain renames the lane (its AI name), the
-   * computer and its account machine take the new name too, as a moved
-   * lane's computer does. Same one-at-a-time queue as the branch write, and a
-   * write a newer name replaced is skipped, as is one for a launch cancelled
-   * meanwhile. The name is the lane's, cleaned and cut to the server's 60
-   * characters (`normalizeCloudMachineName`); the server checks the computer
-   * and the machine are this account's. A failed write is tried again on a
-   * later snapshot after a backoff, three times at most, never for a computer
-   * that is gone.
-   */
-  const nameFailures = new Map<string, { name: string; attempts: number; retryAt: number }>();
-  const recordName = (record: CloudLaneLaunchRecord): void => {
-    const laneName = record.snapshot.laneName?.trim();
-    const instanceId = record.snapshot.cloud.instanceId;
-    if (!laneName || !instanceId || record.snapshot.phase === "cancelled") return;
-    const name = normalizeCloudMachineName(laneName);
-    if (name === record.computerName) return;
-    const launchId = record.snapshot.launchId;
-    const failed = nameFailures.get(launchId);
-    if (failed?.name === name && (failed.attempts >= NAME_WRITE_ATTEMPTS || Date.now() < failed.retryAt)) return;
-    const previous = record.computerName;
-    record.computerName = name;
-    queueComputerWrite(launchId, async () => {
-      if (record.computerName !== name || record.snapshot.phase === "cancelled") return;
-      const client = await providerClient();
-      await client.setInstanceName(instanceId, name);
-      const machineKey = record.snapshot.cloud.machineKey;
-      if (machineKey) await deps.creator.renameMachine(machineKey, name);
-      nameFailures.delete(launchId);
-    }, (error: unknown) => {
-      if (record.computerName === name) record.computerName = previous;
-      const attempts = (failed?.name === name ? failed.attempts : 0) + 1;
-      const gone = error instanceof CloudProviderError && error.status === 404;
-      nameFailures.set(launchId, {
-        name,
-        attempts: gone ? NAME_WRITE_ATTEMPTS : attempts,
-        retryAt: Date.now() + NAME_WRITE_BACKOFF_MS * 2 ** (attempts - 1),
-      });
-      logger.warn("cloud_lane_launch.computer_rename_failed", { launchId, attempts, gone, error: getErrorMessage(error) });
+    branchWrites.set(launchId, write);
+    void write.finally(() => {
+      if (branchWrites.get(launchId) === write) branchWrites.delete(launchId);
     });
   };
 
@@ -390,7 +338,6 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (event.launch.launchId !== launchId) return;
     adoptBrainSnapshot(record, event.launch);
     recordBranch(record);
-    recordName(record);
     // Progress ticks are many; only settled changes are written down.
     const settled = !event.launch.stages.some((stage) => stage.status === "running") || isChatLaunchTerminal(event.launch.phase);
     publish(record, { persist: settled });
@@ -477,7 +424,6 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (isStaleRead(launchId, brain)) return;
       adoptBrainSnapshot(record, brain);
       recordBranch(record);
-      recordName(record);
       publish(record);
     } catch (error) {
       // The follow loop reads each few seconds: one warn for each outage.

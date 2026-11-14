@@ -277,7 +277,7 @@ export class ProjectScopeRegistry {
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
       /** An ADE Cloud computer grows its disk when a lane launch's setup fills it (the brain owns the grower). */
-      makeRoomForLaneSetup?: ChatLaunchServiceDeps["makeRoomForEnvironment"];
+      laneSetupDisk?: ChatLaunchServiceDeps["environmentDisk"];
       /** The brain's phone input ledger, shared with each project's sync host. */
       terminalInputDedupeLedger?: TerminalInputDedupeLedger;
       onDisposeProject?: (projectId: ProjectId) => void;
@@ -646,8 +646,8 @@ export class ProjectScopeRegistry {
         ...(this.options.keepAwakeService
           ? { keepAwakeService: this.options.keepAwakeService }
           : {}),
-        ...(this.options.makeRoomForLaneSetup
-          ? { makeRoomForLaneSetup: this.options.makeRoomForLaneSetup }
+        ...(this.options.laneSetupDisk
+          ? { laneSetupDisk: this.options.laneSetupDisk }
           : {}),
         openClock,
       });

@@ -32,9 +32,34 @@ export function isUrgentDiskPressure(state: DiskPressureState): boolean {
  */
 export const LANE_SETUP_DISK_FULL_ERROR = "Setup ran out of disk space (no space left on device). Free up space on the computer the lane is on, then retry.";
 
-/** Whether a command's output or an error says the disk is full (`ENOSPC`). The sentence above says so too. */
+/**
+ * Linux reports a full file-watcher table with the same code as a full disk
+ * ("ENOSPC: System limit for number of file watchers reached"): webpack, vite,
+ * jest and next all hit it. More disk never helps it.
+ */
+const WATCHER_LIMIT = /file watchers|inotify|max_user_watches|watch(?:er)? limit/i;
+const DISK_FULL_LINE = /\bENOSPC\b|no space left on device/i;
+
+/** The first line of `text` that says the disk is full, never a file-watcher limit; null when none does. */
+export function diskFullLine(text: string | null | undefined): string | null {
+  if (!text || !DISK_FULL_LINE.test(text)) return null;
+  for (const line of text.split(/\r?\n/)) {
+    if (DISK_FULL_LINE.test(line) && !WATCHER_LIMIT.test(line)) return line.trim().slice(0, 200);
+  }
+  return null;
+}
+
+/** A setup filled the disk, and the note that a grow is under way couldn't be saved: no grow without it. */
+export const LANE_SETUP_NO_ROOM_TO_SAVE_ERROR = "Setup filled this computer's disk, and ADE couldn't save its place to grow it. Free some space (or use Clear caches in Settings > ADE Cloud), then retry.";
+
+/** The setup's disk-full sentence with the line that said so (`diskFullLine`), for the person and for the host's own check. */
+export function laneSetupDiskFullError(line: string | null): string {
+  return line ? `${LANE_SETUP_DISK_FULL_ERROR} Last error: ${line}` : LANE_SETUP_DISK_FULL_ERROR;
+}
+
+/** Whether a command's output or an error says the disk is full (`ENOSPC`, not a watcher limit). The sentence above says so too. */
 export function isDiskFullText(text: string | null | undefined): boolean {
-  return Boolean(text) && /\bENOSPC\b|no space left on device/i.test(text!);
+  return diskFullLine(text) !== null;
 }
 
 export type StorageCategoryId =
