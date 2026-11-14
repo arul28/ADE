@@ -79,18 +79,15 @@ export function PricingPage() {
   useDocumentTitle("ADE Cloud Pricing");
   return (
     <Page>
-      <div className="overflow-x-clip bg-[color:var(--color-bg)] text-white">
+      <div
+        className="overflow-x-clip text-white"
+        style={{ background: "linear-gradient(180deg, var(--color-night) 0%, #1b1440 24%, #120e2b 46%, #0c0a1a 72%, #0a0a0f 100%)" }}
+      >
         <PricingHero />
-        <section aria-labelledby="soon-title" className={cn(wrap, "pt-[clamp(48px,6vw,80px)]")}>
-          <SectionTitle id="soon-title" title="Coming soon">
-            Two more kinds of computer for your agents.
-          </SectionTitle>
-          <ComingSoon className="mt-8" />
-        </section>
         <PlanFinder />
         <DetailsSection />
         <FaqSection />
-        <section className={cn(wrap, "pb-[clamp(90px,11vw,150px)] pt-10 text-center")}>
+        <section className={cn(wrap, "pb-[clamp(72px,8vw,112px)] pt-[clamp(56px,6vw,88px)] text-center")}>
           <h2 className={serifHeading} style={{ fontSize: "clamp(36px, 4.6vw, 60px)", lineHeight: 1.02 }}>
             The ADE app is free today.
           </h2>
@@ -110,11 +107,10 @@ function PricingHero() {
       aria-labelledby="plans-title"
       id="plans"
       className="relative overflow-hidden"
-      style={{ background: "linear-gradient(180deg, var(--color-night) 0%, #1b1440 58%, #0a0a0f 100%)" }}
     >
       <NightSky seed={21} />
       <Moon className="right-[8%] top-[clamp(36px,6vw,80px)] h-[clamp(40px,4.4vw,64px)] w-[clamp(40px,4.4vw,64px)]" />
-      <div className={cn(wrap, "relative pb-[clamp(40px,5vw,64px)] pt-[clamp(40px,5vw,72px)]")}>
+      <div className={cn(wrap, "relative pb-4 pt-[clamp(36px,4.4vw,64px)]")}>
         <div className="text-center">
           <div className="flex items-center justify-center gap-3">
             <CloudLockup className="text-[16px] text-white" markClassName="h-6" />
@@ -140,20 +136,14 @@ function PricingHero() {
           </p>
         </div>
 
-        <div className="mt-[160px] grid gap-x-4 gap-y-[150px] sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-[136px] grid gap-x-4 gap-y-[150px] sm:grid-cols-2 lg:grid-cols-4">
           {PRICING_PLANS.map((plan) => (
             <PlanCard key={plan.id} plan={plan} />
           ))}
         </div>
 
-        <div className="mt-10 flex flex-col items-center gap-3 text-center">
-          <p className="text-[14px] text-white/55">
-            Prices are monthly, in US dollars.
-          </p>
-          <PlanButton cta={MARKETING_CTA_LABELS.GET_STARTED_FREE} position={MARKETING_CTA_POSITIONS.PRICING_PAGE} tone="white">
-            Start free
-          </PlanButton>
-        </div>
+        <p className="mt-6 text-center text-[14px] text-white/45">Prices are monthly, in US dollars.</p>
+        <ComingSoon compact className="mt-8" />
       </div>
     </section>
   );
@@ -278,7 +268,7 @@ function PlanFinder() {
   };
 
   return (
-    <section aria-labelledby="finder-title" className={cn(wrap, "pt-[clamp(72px,9vw,120px)]")}>
+    <section aria-labelledby="finder-title" className={cn(wrap, "pt-[clamp(64px,7vw,96px)]")}>
       <SectionTitle id="finder-title" title="Not sure which plan?">
         Tell us how your agents work.
       </SectionTitle>
@@ -441,7 +431,7 @@ function DetailsSection() {
   const [tab, setTab] = useState<DetailTab>("sizes");
   const baseId = useId();
   return (
-    <section aria-labelledby="details-title" className={cn(wrap, "pt-[clamp(80px,10vw,130px)]")}>
+    <section aria-labelledby="details-title" className={cn(wrap, "pt-[clamp(64px,7vw,96px)]")}>
       <SectionTitle id="details-title" title="The details" />
       <div role="tablist" aria-label="Plan details" className="mt-6 flex gap-2 overflow-x-auto pb-1">
         {DETAIL_TABS.map((entry) => {
@@ -595,10 +585,10 @@ function FreePanel() {
 
 function FaqSection() {
   return (
-    <section aria-labelledby="faq-title" className={cn(wrap, "pb-10 pt-[clamp(80px,10vw,130px)]")}>
-      <div className="grid gap-10 lg:grid-cols-[0.7fr_1.3fr] lg:gap-16">
+    <section aria-labelledby="faq-title" className={cn(wrap, "pb-10 pt-[clamp(64px,7vw,96px)]")}>
+      <div className="mx-auto max-w-[820px]">
         <SectionTitle id="faq-title" title="Questions" />
-        <div className="divide-y divide-white/[0.08] border-y border-white/[0.08]">
+        <div className="mt-6 divide-y divide-white/[0.08] border-y border-white/[0.08]">
           <FaqItem question="How do I pick a plan?">
             Get ADE, sign in, and pick a plan in Settings, under ADE Cloud. Free needs no credit card.
           </FaqItem>
