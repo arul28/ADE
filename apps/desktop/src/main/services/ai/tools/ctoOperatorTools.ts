@@ -1002,8 +1002,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         .default("subagent")
         .describe(
           "How this chat reports back. 'subagent' (the default) wakes you with a summary when it finishes a turn — "
-          + "use it whenever you will need, join, or review the result. 'peer' is fire-and-forget: completions are "
-          + "recorded as quiet notes and never wake you.",
+          + "use it whenever you will need, join, or review the result. 'peer' starts a chat that does not report back: "
+          + "nothing is posted to you when it finishes, and it never wakes you.",
         ),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
       instanceId: z

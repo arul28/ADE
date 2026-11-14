@@ -123,7 +123,8 @@ From an agent this is your subagent. It runs in your lane, under your chat,
 and reports back after every turn it finishes: ADE steers you if you are busy
 and wakes you if you are idle. Two opt-outs, used only when the user asks:
 
-- `--type peer`: linked to you, leaves only a quiet note when it finishes.
+- `--no-report`: linked to you, but it does not report back. Nothing is posted
+  to you when it finishes.
 - `--no-parent`: a separate top-level chat that does not report back.
 
 ADE is a mesh. You can read, message, interrupt, or stop any chat, whoever
@@ -279,7 +280,7 @@ Never poll and never block on a long wait. Match the thing you wait on:
 | A subagent chat | Nothing. Its report wakes you. |
 | A PR the user asked you to watch or land | `ade prs watch <pr>` (or `ade prs ship <pr>` to land it) |
 | A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
-| A peer (it does not report back) | `ade chat wait <id> --async [--for idle]` |
+| A chat that does not report back (`--no-report`) | `ade chat wait <id> --async [--for idle]` |
 | A chat, from a script or outside ADE | `ade chat events <id> --since <cursor> --json` answers at once; `ade chat notify <id> --url https://…` POSTs when it goes idle, needs input or fails |
 
 Scratch files belong in the lane's `.ade/tmp` (git-ignored). Apps connected
@@ -352,7 +353,7 @@ They are two separate signals on the row the user is looking at:
 - **Take the hand down when you moved on without an answer.**
   `ade chat ask --clear` drops the marker this chat raised (alias
   `ade chat unask`, TUI `/chat unask`). Use it the moment the question stops
-  being the thing you are waiting on: a coordinator or peer sent new
+  being the thing you are waiting on: a coordinator or another chat sent new
   instructions, or you decided and kept working. Otherwise the row keeps saying
   **Needs you** for the rest of the run, and the person reads a live "blocked on
   you" badge about a decision that was already made. It clears only an

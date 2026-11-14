@@ -31,7 +31,9 @@ import {
   TextT,
   Trash,
   ArrowClockwise,
+  ArrowSquareOut,
 } from "@phosphor-icons/react";
+import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import type {
   AgentChatSessionMetadataField,
   AutomationRuleSummary,
@@ -156,6 +158,12 @@ export type SessionContextMenuState = {
 
 type SessionContextMenuProps = {
   menu: SessionContextMenuState;
+  /**
+   * Title of the chat that started this one, when it is known here. The
+   * report items and the "Open" item name it; without it they say "the chat
+   * that started it".
+   */
+  parentSessionTitle?: string | null;
   onClose: () => void;
   onStopRuntime: (
     args: { ptyId: string; sessionId: string },
@@ -310,6 +318,7 @@ function SessionContextMenuPanel({
   onRemoveFromGrid,
   onManageLane,
   onOpenAutoHandoff,
+  parentSessionTitle = null,
 }: Omit<SessionContextMenuProps, "menu"> & {
   menu: NonNullable<SessionContextMenuState>;
   onManageLane: (
@@ -371,6 +380,7 @@ function SessionContextMenuPanel({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  const parentName = parentSessionTitle?.trim() || "the chat that started it";
   // An agent CLI (Claude Code, Codex, …) hands off, archives and deletes like a chat.
   const isAgentCli = !isChat && Boolean(session.tracked) && isTrackedAgentCliToolType(session.toolType ?? null);
   const canRename = !cursorOwnsSessionName(session);
@@ -898,30 +908,45 @@ function SessionContextMenuPanel({
           </MenuSubmenu>
         ) : null}
 
+        {/* A chat started by another chat either reports back to it or not.
+            The stored kinds stay `subagent` / `peer`; the menu says what they do. */}
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "subagent" ? (
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { void setChatSpawnKind(session, "peer", binding); onClose(); }}
+            data-testid="session-menu-stop-reports"
+            onClick={() => { void setChatSpawnKind(session, "peer", binding, parentName); onClose(); }}
           >
             <MenuRowIcon icon={ArrowDown} />
-            Demote to peer
+            <span className="min-w-0 truncate">Stop reports to {parentName}</span>
           </button>
         ) : null}
         {isChat && session.orchestrationParentSessionId && session.spawnKind === "peer" ? (
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { void setChatSpawnKind(session, "subagent", binding); onClose(); }}
+            data-testid="session-menu-report-back"
+            onClick={() => { void setChatSpawnKind(session, "subagent", binding, parentName); onClose(); }}
           >
             <MenuRowIcon icon={ArrowUp} />
-            Promote to subagent
+            <span className="min-w-0 truncate">Report back to {parentName}</span>
           </button>
         ) : null}
 
         {/* ── Go to: the surfaces outside this menu that show the same session. ── */}
         <MenuSeparator />
         <MenuSectionLabel>Go to</MenuSectionLabel>
+        {session.orchestrationParentSessionId && session.parentIdentityKey !== "cto" ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            data-testid="session-menu-open-parent"
+            onClick={() => { navigateToSpawnedChat(session.orchestrationParentSessionId, null); onClose(); }}
+          >
+            <MenuRowIcon icon={ArrowSquareOut} />
+            <span className="min-w-0 truncate">Open {parentName}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           className={MENU_ITEM_CLASS}

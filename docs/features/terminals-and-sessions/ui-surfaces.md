@@ -362,13 +362,14 @@ reads **needs you**. A row opens its child chat on the parent's machine (the
 chat's pin). A subagent of a tracked CLI or a shell is never filed: a terminal
 has no subagent list, so that child stays a top-level row.
 
-Filing has not changed. Peers stay top-level. Grandchildren count toward the
+Filing has not changed. A chat that does not report back (`spawnKind: "peer"`) stays top-level. Grandchildren count toward the
 root parent. A quiet parent (snoozed or settled) pulls not-done children
 (working, needs you, failed, stale, starting) up to full top-level cards. A
 child whose parent is hidden (by search, or deleted) stays top-level. Status,
 time, and Kanban stay flat. Foreign by-lane rows file the same way.
-Demote-to-peer un-nests; promote files again. Cross-lane children stay
-top-level in their own lane with the existing lineage chip. The old drawer
+**Stop reports to <parent>** un-nests; **Report back to <parent>** files again. Cross-lane children stay
+top-level in their own lane; a subagent keeps its **Subagent** chip, and a chat that does not report
+back has no chip. Its hover card says **Started by <parent>**, which opens the parent. The old drawer
 keys (`chat-subagents:<parentId>`, `drawer-open:`) do nothing now. `ade chat list` stays a flat table.
 
 Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
@@ -2018,7 +2019,13 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   text input, `manuallyNamed: true`), alongside optional Set tag, pin, and grid
   removal.
 - **Lifecycle** carries runtime stop, Snooze/Wake, and Settle/Un-settle.
-- **Go to** carries lane and optional web navigation.
+- **Go to** carries lane and optional web navigation. A child chat also gets
+  **Open <parent>**. A chat child gets **Stop reports to <parent>** (a subagent)
+  or **Report back to <parent>** (a chat that does not report back); the toast
+  repeats the same words.
+- Keyboard: Shift+F10 or the Menu key on a focused row opens the menu. The menu
+  takes focus; the arrow keys, Home and End move between rows, Enter runs one,
+  and Escape closes it and gives focus back (`ContextMenuSurface`).
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
 - Destructive Stop & delete / Delete chat / Delete session actions are fenced
   into the final red block.

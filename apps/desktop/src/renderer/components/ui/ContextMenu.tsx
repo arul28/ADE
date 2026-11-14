@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { Icon } from "@phosphor-icons/react";
 
 import type { OpenPathInEditorRemote } from "../../../shared/editorTargets";
@@ -238,6 +238,28 @@ export function ContextMenu({
   );
 }
 
+/** Arrow keys, Home and End move focus between the menu's enabled rows. */
+function moveMenuFocus(event: React.KeyboardEvent<HTMLDivElement>): void {
+  const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+  if (!keys.includes(event.key)) return;
+  // A field inside the menu (rename, tag) keeps its own caret keys.
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+  const rows = Array.from(
+    event.currentTarget.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([aria-disabled='true'])"),
+  ).filter((row) => row.offsetParent !== null);
+  if (rows.length === 0) return;
+  event.preventDefault();
+  const at = rows.indexOf(document.activeElement as HTMLElement);
+  const next = event.key === "Home"
+    ? 0
+    : event.key === "End"
+      ? rows.length - 1
+      : event.key === "ArrowDown"
+        ? (at + 1) % rows.length
+        : at <= 0 ? rows.length - 1 : at - 1;
+  rows[next]?.focus();
+}
+
 /**
  * The context-menu overlay itself: a click-away backdrop and the glass panel
  * at a clamped position, on the context-menu layer. `ContextMenu` builds its
@@ -273,6 +295,31 @@ export function ContextMenuSurface({
 }) {
   // The overlay host is click-through; the menu's own layers opt back in.
   const pointerEvents = portal ? ("auto" as const) : undefined;
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const setPanelRef = useCallback((node: HTMLDivElement | null) => {
+    panelRef.current = node;
+    if (typeof menuRef === "function") menuRef(node);
+    else if (menuRef) (menuRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+  }, [menuRef]);
+  // The menu takes focus when it opens, so the keyboard can reach its rows
+  // (arrow keys, Home, End, Enter), and gives it back when it closes. A row
+  // that already took focus (an inline rename field) keeps it. Focus that
+  // moved on (an action opened a chat) is left where it went.
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => {
+      const active = document.activeElement;
+      const focusStayedInMenu = !active || active === document.body || Boolean(panel?.contains(active));
+      if (focusStayedInMenu && previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, []);
+  // A hidden panel cannot take focus, so this waits for the clamp to place it.
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    if (!positioned || !panel || panel.contains(document.activeElement)) return;
+    panel.focus({ preventScroll: true });
+  }, [positioned]);
   const content = (
     <>
       <div
@@ -289,11 +336,11 @@ export function ContextMenuSurface({
         }}
       />
       <div
-        ref={menuRef}
+        ref={setPanelRef}
         role={role}
         aria-label={label}
         data-testid={testId}
-        className={`ade-liquid-glass-menu fixed py-1 ${className ?? ""}`}
+        className={`ade-liquid-glass-menu fixed py-1 outline-none ${className ?? ""}`}
         style={{
           zIndex: Z_LAYERS.contextMenu,
           left,
@@ -302,7 +349,9 @@ export function ContextMenuSurface({
           WebkitAppRegion: "no-drag",
           pointerEvents,
         } as React.CSSProperties}
+        tabIndex={-1}
         onPointerDown={(event) => event.stopPropagation()}
+        onKeyDown={moveMenuFocus}
       >
         {children}
       </div>

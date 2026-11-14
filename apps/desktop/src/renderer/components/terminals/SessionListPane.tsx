@@ -1662,6 +1662,20 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return map;
   }, [foreignRows]);
+  // The same parent-title lookup for another machine's rows: a child names
+  // its parent from that machine's own chats, in any of its lanes.
+  const foreignSessionTitleByMachine = useMemo(() => {
+    const byMachine = new Map<string, Map<string, string>>();
+    for (const row of foreignRows) {
+      let titles = byMachine.get(row.machineId);
+      if (!titles) {
+        titles = new Map<string, string>();
+        byMachine.set(row.machineId, titles);
+      }
+      for (const session of row.sessions) titles.set(session.id, primarySessionLabel(session));
+    }
+    return byMachine;
+  }, [foreignRows]);
   const selectedSettleableSessions = useMemo(() => {
     // Bulk settle stays scoped to the host roster's rows; each machine's
     // share goes to that machine (see `settleSessions`).
@@ -2725,9 +2739,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
         subagentBusy={busySubagentParentIds.has(session.id)}
         parentSessionTitle={
-          !foreignRow && session.orchestrationParentSessionId
-            ? sessionTitleById.get(session.orchestrationParentSessionId) ?? null
-            : null
+          !session.orchestrationParentSessionId
+            ? null
+            : foreignRow
+              ? foreignSessionTitleByMachine.get(foreignRow.machineId)?.get(session.orchestrationParentSessionId) ?? null
+              : sessionTitleById.get(session.orchestrationParentSessionId) ?? null
         }
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}

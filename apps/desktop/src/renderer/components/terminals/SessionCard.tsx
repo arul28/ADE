@@ -975,17 +975,15 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
      fact that tells the rows apart — and until now it lived only in a small
      glyph next to the provider mark and in the hover card.
 
-     It names ADE's OWN spawn primitive (Subagent / Peer) rather than the
-     parent's title. The parent is very often not in the visible list, so the
-     title branch degraded to the literal string "another chat" for most real
-     users — a label that says nothing. `spawnKind` is projected onto every
-     summary, so it is always known locally and always specific.
+     Only a subagent (a chat that reports back) gets a chip. A chat started by
+     another chat that does not report back looks like any other chat: its
+     hover card says "Started by <parent>", and the context menu opens the
+     parent from the keyboard.
 
      The chip is also the keyboard path to the parent thread. The hover card
-     repeats that action for pointer users, but a hover-only action would make
-     lineage navigation undiscoverable to keyboard and assistive-tech users. */
+     repeats that action for pointer users. */
   if (isCtoChild) {
-    /* A CTO child REPLACES the Subagent/Peer chip rather than sitting beside
+    /* A CTO child REPLACES the Subagent chip rather than sitting beside
        it. Both answer "who spawned this", and the CTO answer is strictly more
        specific — "Subagent · CTO" spends two chips on one fact, on the line
        that is already the most crowded in the card.
@@ -1003,7 +1001,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         data-session-parent-identity="cto"
         aria-label="Open the CTO"
         title={ctoChipTitle}
-        // Same neutral pill as the Subagent/Peer chip below — lineage is
+        // Same neutral pill as the Subagent chip below — lineage is
         // identity, and identity never spends a status hue.
         className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
         onClick={(event) => {
@@ -1016,14 +1014,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         <span className="truncate">CTO</span>
       </button>,
     );
-  } else if (session.orchestrationParentSessionId) {
-    const lineageLabel =
-      session.spawnKind === "subagent"
-        ? "Subagent"
-        : session.spawnKind === "peer"
-          ? "Peer"
-          // No spawn kind recorded: "Spawned" is the honest floor.
-          : "Spawned";
+  } else if (session.orchestrationParentSessionId && session.spawnKind === "subagent") {
     whereParts.push(
       <button
         type="button"
@@ -1046,7 +1037,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           color={chatSubagentColor(session.id)}
           size={10}
         />
-        <span className="truncate">{lineageLabel}</span>
+        <span className="truncate">Subagent</span>
       </button>,
     );
   }
@@ -1223,10 +1214,10 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
           size={12}
         />
       ),
-      // "From <parent>": only the parent's title truncates, never the label.
+      // "Started by <parent>": only the parent's title truncates, never the label.
       value: (
         <span>
-          <span className="text-muted-fg/60">From </span>
+          <span className="text-muted-fg/60">Started by </span>
           <span className="text-fg/90">{parentSessionTitle ?? "another chat"}</span>
         </span>
       ),
@@ -1235,14 +1226,13 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       testId: "session-hover-parent-thread",
     });
   }
-  // A CTO child's spawn kind is suppressed for the same reason its chip
-  // replaces the Subagent/Peer pill: "Spawned by the CTO" already said it, more
-  // specifically, one row above.
-  if (session.spawnKind && !isCtoChild) {
+  // A subagent says it reports back. A chat that does not report back has the
+  // "Started by" line only. A CTO child's "Spawned by the CTO" already said it.
+  if (session.spawnKind === "subagent" && !isCtoChild) {
     hoverRows.push({
       id: "spawn",
       icon: <TreeStructure size={13} className="text-muted-fg/60" />,
-      value: session.spawnKind === "subagent" ? "Subagent" : "Peer",
+      value: "Subagent",
     });
   }
   if (liveChildrenCount > 0) {
@@ -1530,7 +1520,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         <Brain size={11} weight="duotone" />
       </button>
     );
-  } else if (session.orchestrationParentSessionId) {
+  } else if (session.orchestrationParentSessionId && session.spawnKind === "subagent") {
     compactLineageGlyph = (
       <button
         type="button"
@@ -1619,6 +1609,19 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         // Only the row itself — a key pressed inside a nested control (settle,
         // snooze, a preview link) belongs to that control.
         if (event.target !== event.currentTarget) return;
+        if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+          // The keyboard way to the row's menu, and so to "Open <parent>":
+          // the hover card is pointer-only.
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          event.currentTarget.dispatchEvent(new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: rect.left + 16,
+            clientY: rect.bottom,
+          }));
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         event.currentTarget.click();
