@@ -668,6 +668,13 @@ export function createPasswordService(args: {
      */
     async setEnabled(enabled: boolean): Promise<PasswordsStatus> {
       if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords & Secrets.");
+      // Before turning off, send what is still waiting (a save made offline),
+      // while the switch still allows it. Offline, the purge still runs: off means off.
+      if (!enabled && isEnabled() && args.getAccountUserId()) {
+        await sync().catch((error: unknown) => {
+          logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
+      }
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
       fs.writeFileSync(statePath, JSON.stringify({ enabled }), { mode: 0o600 });
       enabledHere = enabled;

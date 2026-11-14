@@ -241,14 +241,6 @@ export function createProjectSecrets(ctx: ProjectSecretsContext) {
         return summarizePasswordItem(saved!.id, saved!, true);
       }
       const { opened } = await ctx.ensureOpened();
-      // Saved to the account on purpose: this computer's own copy of the name
-      // would keep winning over it here, so it goes.
-      if (!input.id && input.deviceOnly === false) {
-        await device.update((items) => {
-          const kept = items.filter((item) => !(item.name === name && item.projectScope === input.projectScope));
-          return kept.length === items.length ? undefined : kept;
-        });
-      }
       const existingEntry = input.id
         ? [input.id, opened.get(input.id)] as const
         : findSecret(opened, name, input.projectScope);
@@ -256,6 +248,15 @@ export function createProjectSecrets(ctx: ProjectSecretsContext) {
       if (input.id && existing?.kind !== "secret") throw new Error("That secret no longer exists.");
       const id = existingEntry?.[0] ?? newPasswordItemId();
       const secret = await saveInAccount(id, { ...input, name, updatedAt }, existing?.kind === "secret" ? existing : undefined);
+      // Saved to the account on purpose: this computer's own copy of the name
+      // would keep winning over it here, so it goes, once the account copy is
+      // written (a failed write keeps it).
+      if (!input.id && input.deviceOnly === false) {
+        await device.update((items) => {
+          const kept = items.filter((item) => !(item.name === name && item.projectScope === input.projectScope));
+          return kept.length === items.length ? undefined : kept;
+        });
+      }
       logger.info("passwords.item_saved", { itemId: id, kind: "secret" });
       return summarizePasswordItem(id, secret);
     }),
