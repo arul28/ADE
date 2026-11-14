@@ -20,10 +20,13 @@ describe("ADE Cloud agent actions: approvals", () => {
     spendUnreadable?: boolean;
     /** A lane launch this brain holds, already in this phase. */
     launchPhase?: "failed" | "running";
+    /** The size that launch was started with. */
+    savedSize?: string;
+    maxShape?: string;
   } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
-    let limits: CloudAgentLimits = { unattendedSpend: options.unattendedSpend ?? true, machinesPerDay: 3, maxShape: "4x16" };
+    let limits: CloudAgentLimits = { unattendedSpend: options.unattendedSpend ?? true, machinesPerDay: 3, maxShape: (options.maxShape ?? "4x16") as CloudAgentLimits["maxShape"] };
     const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", hoursRate: 1 };
     const deps = {
       machines: {
@@ -55,7 +58,7 @@ describe("ADE Cloud agent actions: approvals", () => {
       }),
       laneLaunch: () => ({
         status: async (launchId: string) => (options.launchPhase
-          ? { launch: { launchId, phase: options.launchPhase, cloud: { handedOff: false } }, madeByChat: "chat_1" }
+          ? { launch: { launchId, kind: "chat", phase: options.launchPhase, cloud: { handedOff: false, sizeId: options.savedSize ?? "small" } }, madeByChat: "chat_1" }
           : null),
         start: async () => {
           ran.push("lane_launch");
@@ -109,6 +112,8 @@ describe("ADE Cloud agent actions: approvals", () => {
     ["with unattended spending off, a full-auto agent's retry of a failed launch replaces nothing", agent, { level: "full-auto", unattendedSpend: false, launchPhase: "failed" }, "lane_launch", laneLaunchArgs, null, 0],
     ["at the day's limit, a full-auto agent's retry of a failed launch replaces nothing", agent, { level: "full-auto", madeToday: 3, launchPhase: "failed" }, "lane_launch", laneLaunchArgs, null, 0],
     ["within the limits, a full-auto agent's retry of a failed launch goes on", agent, { level: "full-auto", launchPhase: "failed" }, "lane_launch", laneLaunchArgs, "lane_launch", 0],
+    ["a full-auto agent's retry is checked at the size the launch starts again, not the one it names", agent, { level: "full-auto", launchPhase: "failed", savedSize: "xlarge", maxShape: "2x4" }, "lane_launch", laneLaunchArgs, null, 0],
+    ["a retry needs no first message: the launch has its own", person, { launchPhase: "failed" }, "lane_launch", { ...laneLaunchArgs, launch: { launchId: laneLaunchArgs.launch.launchId, kind: "chat" } }, "lane_launch", 0],
     ["a launch still running is only read again, asking nothing", agent, { level: "full-auto", unattendedSpend: false, launchPhase: "running" }, "lane_launch", laneLaunchArgs, "lane_launch", 0],
     ["a full-auto agent may not loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 0],
     ["any agent may tighten the limits", agent, { level: "full-auto" }, "set_limits", { preset: "ask" }, "limits", 0],

@@ -279,6 +279,14 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     return account;
   };
 
+  /** A retry's account check: the hours only, as its replacement's disk is checked by the server once the failed computer is gone. */
+  const retryCheck = async (): Promise<CloudAccountState | null> => {
+    const account = await readAccount();
+    const block = cloudLaneStartBlock(account, { newLane: false });
+    if (block) throw new Error(block.message);
+    return account;
+  };
+
   /**
    * The person's saved default lane size. Small when nothing is saved (the
    * app's default); null when it can't be read, or names a size this ADE
@@ -729,20 +737,28 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         // Already approved and counted when it started.
         if (!replaces) return (await host.start(startArgs)).status;
       }
+      // A retry is checked as the launch it starts again: its saved size and
+      // kind, its saved first message. Its failed computer is deleted before
+      // the replacement is made, so the server checks the disk after that;
+      // the hours are checked here.
+      const saved = replaces ? existing!.launch : null;
+      const savedSize = saved?.cloud?.sizeId;
+      const startSize = isCloudTierId(savedSize) ? savedSize : sizeId;
+      const startsLaneOnly = saved ? saved.kind === "lane" : laneOnly;
       // Refused before the question, never after a yes: the launch itself,
       // then the account (hours, computers, disk), with the sentences
       // `cloud.status` and the composer show.
-      const problem = cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
+      const problem = saved ? null : cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
       if (problem) throw new AdeExpectedError(problem, "user");
-      const account = await newComputerCheck();
-      const tier = cloudTier(cloudCatalogOf(account), sizeId);
+      const account = saved ? await retryCheck() : await newComputerCheck();
+      const tier = cloudTier(cloudCatalogOf(account), startSize);
       if (!tier) throw new Error("ADE Cloud doesn't offer that size right now. Pick another one.");
       const kind: CloudMachineKind = tier.type === "vm" ? "vm" : "box";
       const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${laneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
