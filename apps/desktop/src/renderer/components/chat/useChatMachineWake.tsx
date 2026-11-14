@@ -145,7 +145,11 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
 
   const wake = useCallback(async (): Promise<boolean> => {
     const connect = window.ade?.remoteRuntime?.connect;
-    if (!targetId || !connect || inFlightTargetRef.current === targetId) return false;
+    // An ADE Cloud computer wakes through the account connect, the same call
+    // a list's wake uses: on ADE Web a plain connect only dials, and a
+    // sleeping computer does not answer it.
+    const connectCloud = machineKey ? window.ade?.machines?.connect : undefined;
+    if (!targetId || (!connect && !connectCloud) || inFlightTargetRef.current === targetId) return false;
     inFlightTargetRef.current = targetId;
     const fail = (message: string) => setFailure({ targetId, message });
     try {
@@ -153,7 +157,12 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       setFailure(null);
       if (machineKey) clearCloudMachineWakeFailure(machineKey);
       try {
-        await connect(targetId);
+        if (machineKey && connectCloud) {
+          const result = await connectCloud(machineKey);
+          if (!result.ok) throw new Error(result.message);
+        } else if (connect) {
+          await connect(targetId);
+        }
       } catch (connectFailure) {
         console.warn("[cloud] waking the chat's machine failed", connectFailure);
         fail(`ADE couldn't wake ${machineName}. Try again.`);

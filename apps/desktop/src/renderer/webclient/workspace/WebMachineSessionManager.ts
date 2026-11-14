@@ -201,6 +201,8 @@ function remoteProject(project: SyncMobileProjectSummary): RemoteRuntimeProjectR
 export class WebMachineSessionManager {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly userDisconnected = readUserDisconnected();
+  /** Clients taken by account pairings that are not sessions yet. */
+  private pairingClients = 0;
   private readonly environments = new Map<string, WebClientEnvironmentRecord>();
   private readonly listeners = new Set<(snapshot: WebMachineWorkspaceSnapshot) => void>();
   private readonly invalidationListeners = new Set<(
@@ -478,7 +480,9 @@ export class WebMachineSessionManager {
         return existing;
       }
       // The person may have pressed Disconnect while this waited for its turn.
-      if (background && this.userDisconnected.has(targetId)) throw new WebMachineConnectSkipped("user_disconnected");
+      // A connect someone asked for cleared the mark when it started, so a
+      // mark now is a newer Disconnect, and it wins over that connect too.
+      if (this.userDisconnected.has(targetId)) throw new WebMachineConnectSkipped("user_disconnected");
       if (background && !existing?.client && !this.hasRoom()) throw new WebMachineConnectSkipped("no_room");
       await this.makeRoom(targetId);
       const admitted = existing ?? this.createSession(environment);
@@ -558,8 +562,17 @@ export class WebMachineSessionManager {
       // exists to activate. A background pairing leaves the screen's machine
       // armed.
       if (activate) bindProjectHostRecoveryClient(taken);
+      // Held for this pairing until it becomes a session or fails, so a second
+      // pairing meanwhile sees no room instead of failing to take a client.
+      this.pairingClients += 1;
       return taken;
     });
+    let reserved = true;
+    const releaseReservation = () => {
+      if (!reserved) return;
+      reserved = false;
+      this.pairingClients -= 1;
+    };
     let pairedSession: SessionRecord | null = null;
     try {
       const accessToken = await this.accountClient.getAccessToken();
@@ -576,6 +589,7 @@ export class WebMachineSessionManager {
       });
       this.environments.set(environment.envId, environment);
       const session = this.createSession(environment, client);
+      releaseReservation();
       pairedSession = session;
       session.projects = (await client.getProjectCatalog()).projects;
       session.lastStatus = client.getStatus();
@@ -597,6 +611,8 @@ export class WebMachineSessionManager {
       }
       this.bindRecoveryToActiveSession();
       throw error;
+    } finally {
+      releaseReservation();
     }
   }
 
@@ -778,16 +794,16 @@ export class WebMachineSessionManager {
     const available = this.availableClients.pop();
     if (available) return available;
     if (this.allClients.size >= WEB_MACHINE_SESSION_LIMIT) {
-      throw new Error("All four browser machine sessions are currently active.");
+      throw new Error(`All ${WEB_MACHINE_SESSION_LIMIT} browser machine sessions are currently active.`);
     }
     const client = this.clientFactory();
     this.allClients.add(client);
     return client;
   }
 
-  /** A live connection can start without parking another one. */
+  /** A live connection can start without parking another one. A pairing in progress holds a client too. */
   private hasRoom(): boolean {
-    let live = 0;
+    let live = this.pairingClients;
     for (const session of this.sessions.values()) if (session.client !== null) live += 1;
     return live < WEB_MACHINE_SESSION_LIMIT;
   }
@@ -796,7 +812,7 @@ export class WebMachineSessionManager {
     const liveSessions = [...this.sessions.values()].filter(
       (session) => session.client !== null,
     );
-    if (liveSessions.length < WEB_MACHINE_SESSION_LIMIT) return;
+    if (liveSessions.length + this.pairingClients < WEB_MACHINE_SESSION_LIMIT) return;
     const candidate = liveSessions
       .filter((session) => (
         session.targetId !== this.activeTargetId

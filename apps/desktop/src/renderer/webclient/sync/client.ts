@@ -1128,11 +1128,16 @@ export class AdeSyncClient {
           this.connection.disconnect({ reconnect: false, code: 1000, reason: "Project switch" });
           this.currentCatalog = null;
         }
-        this.invalidateGeneration(new AdeSyncError("Project connection changed.", "disconnected"));
         // The project in front did not change (the brain was asked to host
         // this browser's project again): its chat and terminal streams stay,
-        // and the next hello subscribes them again.
-        if (this.activeProjectId !== previousProjectId) this.retireActiveProjectStreams();
+        // and the next hello subscribes them again. Typed terminal input waits
+        // for that reconnect too, instead of failing.
+        const sameProject = this.activeProjectId === previousProjectId;
+        this.invalidateGeneration(
+          new AdeSyncError("Project connection changed.", "disconnected"),
+          { preserveTerminalInputs: sameProject && envId != null },
+        );
+        if (!sameProject) this.retireActiveProjectStreams();
         await this.persistCurrentEnvironment((environment) => ({
           ...environment,
           port: result.connection?.port ?? environment.port,

@@ -80,7 +80,7 @@ import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from
 import { useStableBinding } from "./laneMachineRouting";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
-import { adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -2263,6 +2263,12 @@ function attach(): void {
   if (unsubscribeSnapshot) runtime.disposers.push(unsubscribeSnapshot);
   // The first read is dropped when the access answer lands after its debounce.
   runtime.disposers.push(subscribeAdeCloudAccess(() => {
+    if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+  }));
+  // A lane computer with no saved chat gets its row from the lane index. The
+  // index can arrive after the first read, so its change reads again (forced:
+  // that first read is usually inside the 30 s wait). It changes rarely.
+  runtime.disposers.push(subscribeAdeCloudLaneComputers(() => {
     if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
   }));
   retargetTabFeed();
