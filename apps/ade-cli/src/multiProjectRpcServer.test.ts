@@ -1744,7 +1744,7 @@ describe("multi-project RPC server", () => {
     } as unknown as ProjectScopeRegistry;
     const personalChatScope = {
       capabilities: vi.fn(() => ({ version: 1 as const, actions: [] })),
-      call: vi.fn(async () => null),
+      call: vi.fn(async () => { throw new Error("not a personal chat call"); }),
       streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false, eventEpoch: "e", gap: false, oldestCursor: null })),
       dispose: vi.fn(async () => undefined),
       runtimeForDelivery: vi.fn(async () => machineRuntime as never),
