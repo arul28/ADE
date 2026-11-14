@@ -601,6 +601,10 @@ async function follow(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const launches = await deps.launches(projectId);
   let last = reported;
+  // A failure's shape is saved so a restart doesn't report it twice; once a Retry reports a
+  // new attempt it's cleared, or a restart that fails the same step again would match it
+  // (the shape leaves out errors and times) and never be reported.
+  let savedFailure = reported !== "";
   const send = async (snapshot: ChatLaunchSnapshot): Promise<boolean> => {
     const stages = stagesOf(snapshot);
     const terminal = TERMINAL.has(snapshot.phase);
@@ -616,6 +620,10 @@ async function follow(
     };
     if (!terminal) {
       await report(update);
+      if (savedFailure) {
+        writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+        savedFailure = false;
+      }
       return false;
     }
     if (await reportFinal(report, update, sleep)) {
@@ -623,6 +631,7 @@ async function follow(
       writeState(deps.stateFile, snapshot.phase === "failed"
         ? { launchId, phase: "handed_off", projectId, reported: shape }
         : { launchId, phase: "ended", projectId });
+      savedFailure = snapshot.phase === "failed";
       return true;
     }
     // Still unsent: the state stays `handed_off`, so the next boot follows the
@@ -630,6 +639,7 @@ async function follow(
     last = "";
     logger.warn("cloud_boot_launch.final_report_unsent", { launchId, phase: snapshot.phase });
     writeState(deps.stateFile, { launchId, phase: "handed_off", projectId });
+    savedFailure = false;
     return true;
   };
   await new Promise<void>((resolve) => {

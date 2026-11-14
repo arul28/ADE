@@ -1487,7 +1487,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         // Once: written down before setup runs again, so a restart during this
         // run reads as interrupted (with Retry) instead of resuming in a loop.
         record.awaitingRoom = false;
-        store.persist(record);
+        if (!store.persist(record)) {
+          // Not written down (the disk is still full): running setup now could repeat on
+          // every restart, so it stops here with the free-space sentence and Retry.
+          logger.warn("chat_launch.environment_resume_unsaved", { launchId: record.snapshot.launchId });
+          failLaunch(record, "environment", LANE_SETUP_NO_ROOM_TO_SAVE_ERROR);
+          continue;
+        }
         logger.info("chat_launch.environment_resumed_after_room", { launchId: record.snapshot.launchId });
         void runPipeline(record);
       }
