@@ -105,8 +105,9 @@ type MachineScopeRule = { all: true; except: readonly string[] } | { only: reado
 /**
  * What a machine scope answers: a computer's own settings (Providers, the
  * Machines page's Restarts, Update track, Shell and load, Behaviour's Terminal
- * shell). Passwords is not here: the machine-owned runtime holds no account
- * stores, and This computer's machine pin reaches its brain's `passwords.call`.
+ * shell). Passwords is not here: the machine-owned runtime is lent only the
+ * account settings store (for account-saved sign-ins), not the vault, and
+ * This computer's machine pin reaches its brain's `passwords.call`.
  */
 const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, MachineScopeRule>> = {
   ai: { all: true, except: [PROJECT_AI_CONFIG_ACTION.action] },

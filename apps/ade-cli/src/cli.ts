@@ -31556,6 +31556,7 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
+      machineScopeAccountSettings: syncEnabled ? () => machineAccountStoresForRecords().settings : null,
       projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,

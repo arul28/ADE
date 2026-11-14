@@ -418,6 +418,13 @@ export type MultiProjectRpcHandlerOptions = {
    */
   machineAccountDomains?: MachineAccountDomains;
   /**
+   * The account settings store the machine scope writes through, so a
+   * provider's account-saved entries (OpenCode's cloud logins) reach the
+   * account the same way a project copy's do. Null on a brain with sync off,
+   * whose project runtimes have no account store either.
+   */
+  machineScopeAccountSettings?: (() => NonNullable<AdeRuntime["accountSettingsStore"]>) | null;
+  /**
    * The shared project record (a repository's name and icon on every machine
    * of the account). Without it, names and icons come from this machine only.
    */
@@ -1954,7 +1961,15 @@ export function createMultiProjectRpcRequestHandler(
     if (typeof personalChatScope.runtimeForDelivery !== "function") {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime has no machine scope.");
     }
-    return await personalChatScope.runtimeForDelivery();
+    const runtime = await personalChatScope.runtimeForDelivery();
+    const settings = options.machineScopeAccountSettings?.();
+    if (!settings) return runtime;
+    // The machine-owned runtime runs with sync off, so it opens no account
+    // store of its own; this brain's are lent to it here, for this route only.
+    // A prototype overlay keeps the runtime's getters and methods live.
+    const scoped = Object.create(runtime) as AdeRuntime;
+    Object.defineProperty(scoped, "accountSettingsStore", { value: settings, enumerable: true });
+    return scoped;
   };
 
   /**
