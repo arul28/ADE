@@ -26,7 +26,15 @@ import { stashCloudLink, type WebCloudLink } from "../shell/cloudPlanLink";
  * comes back to the page (a checkout to its plan's checkout).
  */
 
-type CloudBillingAccountClient = Pick<BrowserAccountClient, "cloudRequest" | "startSignIn">;
+export type CloudBillingAccountClient = Pick<BrowserAccountClient, "cloudRequest" | "startSignIn" | "getSnapshot">;
+
+/**
+ * The server's access answer, kept a minute per browser account: every
+ * ADE Cloud surface asks on mount and on window focus, and each machine's
+ * adapter has its own namespace. The server's own answer changes rarely.
+ */
+const ACCESS_CACHE_MS = 60_000;
+const accessCache = new WeakMap<object, { at: number; userId: string | null; answer: Promise<boolean> }>();
 
 const UNREACHABLE = "ADE couldn't reach ADE Cloud. Try again in a moment.";
 const BAD_ANSWER = "ADE Cloud answered with something ADE could not read.";
@@ -107,6 +115,20 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
     /** Whether ADE Cloud lets this account in, from the server itself (no computer needed). */
     async accessEnabled(): Promise<boolean> {
       return record((await ask("GET", CLOUD_PATHS.access, undefined, null)).body)?.enabled === true;
+    },
+
+    /** The same answer, read at most once a minute; a failed read is not kept. */
+    async accessEnabledCached(): Promise<boolean> {
+      const userId = accountClient.getSnapshot().userId;
+      const kept = accessCache.get(accountClient);
+      if (kept && kept.userId === userId && Date.now() - kept.at < ACCESS_CACHE_MS) return await kept.answer;
+      const answer = (async () => record((await ask("GET", CLOUD_PATHS.access, undefined, null)).body)?.enabled === true)();
+      const entry = { at: Date.now(), userId, answer };
+      accessCache.set(accountClient, entry);
+      answer.catch(() => {
+        if (accessCache.get(accountClient) === entry) accessCache.delete(accountClient);
+      });
+      return await answer;
     },
 
     /** The account's plan and hours, from the server itself. */

@@ -110,8 +110,13 @@ that stops (see Sleep and busy rules).
   Sizes, Invite friends, Sign-ins and what agents may do alone, with the
   80% / 95% / out-of-hours banners and computers due for deletion. Settings
   entries are `integrations.ade-cloud*`.
-- **The web app:** the same page (`web: "account"` in the manifest). It reads
-  through a connected computer; the plan and billing calls go from the
+- **The web app:** the same page (`web: "account"` in the manifest), reached
+  from the top bar's Settings with no project or computer, as on the desktop.
+  Whether ADE Cloud is on comes from `GET /cloud/access` (kept a minute). The
+  computers come from a connected computer's brain; with none online the
+  page reads the plan and hours from `GET /cloud/account` and says the
+  computers show once one is online (`CloudMachinesResult.computersUnread`).
+  The plan and billing calls go from the
   browser to the account server with the browser's own account token
   (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`,
   only `GET /cloud/access`, `GET /cloud/account` and the `/cloud/billing/*`

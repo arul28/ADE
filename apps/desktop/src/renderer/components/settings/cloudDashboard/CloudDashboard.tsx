@@ -117,6 +117,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const [now, setNow] = useState(() => Date.now());
   const result = machines.result?.state === "ok" ? machines.result : null;
   const list = (result?.machines ?? NO_MACHINES) as CloudLaneMachine[];
+  // The web app with none of the account's computers online: the plan is read, the computers are not.
+  const computersUnread = result?.computersUnread === true;
   const refresh = machines.refresh;
 
   useEffect(() => {
@@ -255,6 +257,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         onSelect={selectFromCity}
         onOpen={openInside}
         now={now}
+        computersUnread={computersUnread}
       />
 
       {banner ? (
@@ -305,6 +308,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           ) : (
             <LaneTable
               lanes={lanes}
+              computersUnread={computersUnread}
               now={now}
               selectedKey={selected?.key ?? null}
               onSelect={(key) => setSelectedKey((current) => (current === key ? null : key))}
@@ -363,6 +367,7 @@ function CloudHero({
   onSelect,
   onOpen,
   now,
+  computersUnread,
 }: {
   account: CloudAccountState;
   lanes: readonly DashLane[];
@@ -371,6 +376,7 @@ function CloudHero({
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
   now: number;
+  computersUnread: boolean;
 }) {
   const hours = account.hours;
   const earned = cloudEarnedHoursOf(account).leftMilli;
@@ -444,6 +450,12 @@ function CloudHero({
               />
               <span className="adecd-city-cap">Height is disk. Lit windows are awake.</span>
             </>
+          ) : computersUnread ? (
+            <div className="adecd-city-empty">
+              <EmptyPlot />
+              <b>Your cloud lanes show when a computer is online</b>
+              <span>Listing them goes through one of your computers. Your plan, hours and billing work without one.</span>
+            </div>
           ) : (
             <div className="adecd-city-empty">
               <EmptyPlot />
@@ -502,6 +514,7 @@ function laneDetail(lane: DashLane, now: number): string[] {
 /** Every lane and every computer the account pays for, one row each; the selected row opens its actions under it. */
 function LaneTable({
   lanes,
+  computersUnread = false,
   now,
   selectedKey,
   onSelect,
@@ -511,6 +524,8 @@ function LaneTable({
   menuActions,
 }: {
   lanes: readonly DashLane[];
+  /** The computers weren't read (the web app with none online): say so, not "nothing here". */
+  computersUnread?: boolean;
   now: number;
   selectedKey: string | null;
   onSelect: (key: string) => void;
@@ -541,6 +556,9 @@ function LaneTable({
     event.preventDefault();
     if (lanes[next]!.key !== selectedKey) onSelect(lanes[next]!.key);
   };
+  if (!lanes.length && computersUnread) {
+    return <p className="adecd-empty">None of your computers is online, so ADE can't list your cloud lanes and computers here. They show when one is.</p>;
+  }
   if (!lanes.length) {
     return <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
   }
