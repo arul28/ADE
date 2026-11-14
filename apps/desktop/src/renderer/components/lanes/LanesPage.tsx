@@ -88,6 +88,7 @@ import { useLanesPageMachines } from "./useLanesPageMachines";
 import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine, type LaneRebaseScanMachine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
+import { RestingCloudLaneDetail } from "./RestingCloudLaneDetail";
 import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
 import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
 import { originUrlForBinding } from "./laneMachines";
@@ -272,6 +273,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     machineByLaneId,
     disabledReasonByLaneId,
     foreignLaneIdSet,
+    restingMachineIds,
   } = useLanesPageMachines({
     active,
     projectStateKey: activeProjectStateKey,
@@ -2316,7 +2318,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               />
             ) : null}
             {detailForeignRow ? (
-              machineBlockedReason(detailForeignRow) ? (
+              restingMachineIds.has(detailForeignRow.machineId) && !detailForeignRow.online ? (
+                <RestingCloudLaneDetail laneName={detailForeignRow.lane.name} machine={detailForeignRow} />
+              ) : machineBlockedReason(detailForeignRow) ? (
                 <div
                   className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
                   data-testid="lane-detail-machine-unavailable"

@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
+import { Banner } from "../ui/notice";
 
 export type ChatMachineWake = {
   /** The chat's machine is an ADE Cloud computer that is asleep, stopped, or coming up. */
@@ -91,7 +93,12 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // show this machine's wake or its late failure.
   const [wakingTargetId, setWakingTargetId] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ targetId: string; message: string } | null>(null);
-  const waking = targetId != null && wakingTargetId === targetId;
+  // Opening the chat from a list wakes its computer (`wakeRestingCloudMachine`);
+  // the computer reads "starting" while any wake runs. Either is this chat's
+  // wake too, so the view shows the progress.
+  const listWaking = useCloudMachineWakeInFlight(box?.machineKey ?? null);
+  const waking = (targetId != null && wakingTargetId === targetId)
+    || (resting && (listWaking || box?.state === "starting"));
   const error = failure && failure.targetId === targetId ? failure.message : null;
   const machineName = scope.machineName;
   // `scope.online` follows the connection snapshot: main pushes
@@ -172,4 +179,38 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
 /** The chat's machine as `ChatMachineWakeProvider` found it; outside a chat, never resting. */
 export function useChatMachineWake(): ChatMachineWake {
   return useContext(ChatMachineWakeContext) ?? NOT_RESTING;
+}
+
+/**
+ * The opened chat's own progress line while its ADE Cloud computer wakes, and
+ * why the last wake failed. Nothing for a machine that is up or not a cloud
+ * computer. The list row stays as it is; the progress lives here.
+ */
+export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
+  const machine = useChatMachineWake();
+  const scope = useChatRuntimeScope();
+  if (machine.gone || !machine.resting) return null;
+  if (machine.waking) {
+    return (
+      <Banner
+        layout="inline"
+        style={style}
+        model={{ id: "chat-machine-waking", tone: "info", busy: true, title: `Waking ${scope.machineName}…` }}
+      />
+    );
+  }
+  if (!machine.error) return null;
+  return (
+    <Banner
+      layout="inline"
+      style={style}
+      model={{
+        id: "chat-machine-wake-failed",
+        tone: "error",
+        title: machine.error,
+        report: false,
+        actions: [{ label: "Try again", onClick: () => void machine.wake() }],
+      }}
+    />
+  );
 }

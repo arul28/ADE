@@ -239,7 +239,7 @@ import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
-import { ChatMachineWakeProvider } from "./useChatMachineWake";
+import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
@@ -20454,6 +20454,7 @@ export function AgentChatPane({
             }}
           />
         ) : null}
+        <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
         {replayForkDisclosure ? (
           <Banner
             layout="inline"

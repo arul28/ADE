@@ -24,6 +24,7 @@ import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRou
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
+import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import {
   MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
@@ -1304,10 +1305,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return key;
   });
+  // A machine that is offline after its short reconnect window is not listed
+  // at all; it comes back with its rows when it reconnects. An ADE Cloud
+  // computer that is only asleep stays listed (`rowShowsConnected`).
   const foreignRows = useMemo(() => {
-    if (!goneMachineIds) return unionForeignRows;
-    const gone = new Set(goneMachineIds.split("\u0000").filter(Boolean));
-    return unionForeignRows.filter((row) => !gone.has(row.machineId));
+    const gone = goneMachineIds ? new Set(goneMachineIds.split("\u0000").filter(Boolean)) : null;
+    return unionForeignRows.filter((row) => rowShowsConnected(row) && !gone?.has(row.machineId));
   }, [goneMachineIds, unionForeignRows]);
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
@@ -2706,9 +2709,11 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    // A saved chat on a computer that isn't connected can still be read.
+    // Work of an ADE Cloud computer that is only asleep opens normally, and
+    // opening it wakes the computer; a saved chat reads meanwhile.
+    const cloudResting = foreignRow != null && !foreignRow.online && foreignRow.cloudResting === true;
     const savedCopyReadable = session.cloudSavedCopy === true && foreignRow != null && !foreignRow.online;
-    const disabledReason = (foreignRow && !savedCopyReadable
+    const disabledReason = (foreignRow && !savedCopyReadable && !cloudResting
       ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
       : null)
       ?? (laneDeleteProgress ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane` : null);
@@ -2743,6 +2748,13 @@ export const SessionListPane = React.memo(function SessionListPane({
           const rangeIds = event?.shiftKey && !options?.boardCard && !boardReplacesList ? onScreenSessionIds() : null;
           if (!foreignRow) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
+          }
+          if (cloudResting) {
+            wakeRestingCloudMachine({
+              machineId: foreignRow.machineId,
+              machineName: foreignRow.machineName,
+              hostname: foreignRow.binding?.kind === "remote" ? foreignRow.binding.hostname ?? null : null,
+            });
           }
           if (isChatToolType(session.toolType)) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds, foreignRow.binding);

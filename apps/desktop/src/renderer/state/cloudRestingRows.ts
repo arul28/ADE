@@ -1,5 +1,6 @@
 import type { TerminalSessionSummary } from "../../shared/types";
 import type { CrossMachineMachineLanes } from "./appStore";
+import { adeCloudLaneComputerForMachine } from "./adeCloudLaneIndex";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 
 /**
@@ -41,24 +42,29 @@ export function claimSessionsLiveFirst<E extends { sessions: readonly TerminalSe
 }
 
 /**
- * An ADE Cloud computer that is asleep or stopped and still exists: not
- * connected, and its chats are saved copies (`cloudSavedChatsSync.ts`). A
- * deleted computer is never resting: its saved chats live under a
- * `cloud-saved:` machine id, or on a kept connection's slice marked
- * `computerGone`.
+ * An ADE Cloud computer that is not connected here and still exists: asleep,
+ * stopped, or never connected in this window. Its work is listed as normal
+ * rows, and opening one wakes the computer. Three signs, any one is enough:
+ * a `cloud-saved:` slice, a saved chat copy, or a machine the ADE Cloud lane
+ * index knows. A deleted computer (`computerGone`) is never resting.
  */
 export function machineIsCloudResting(
-  entry: Pick<CrossMachineMachineLanes, "machineId" | "online" | "sessions" | "computerGone">,
+  entry: Pick<CrossMachineMachineLanes, "machineId" | "online" | "sessions" | "computerGone" | "binding">,
 ): boolean {
-  return !entry.online
-    && entry.computerGone !== true
-    && !isSavedChatsMachineId(entry.machineId)
-    && entry.sessions.some((session) => session.cloudSavedCopy === true);
+  if (entry.online || entry.computerGone === true) return false;
+  if (isSavedChatsMachineId(entry.machineId)) return true;
+  if (entry.sessions.some((session) => session.cloudSavedCopy === true)) return true;
+  const hostname = entry.binding?.kind === "remote" ? entry.binding.hostname ?? null : null;
+  return adeCloudLaneComputerForMachine({ hostname }) != null;
 }
 
-/** Whether the machine looks connected: online, or a cloud computer that is only asleep. Looks only. */
+/**
+ * Whether the machine's work is listed: online (a machine in its short
+ * reconnect window still reads online), or an ADE Cloud computer that is only
+ * asleep. Any other machine that is offline is not listed at all.
+ */
 export function machineShowsConnected(
-  entry: Pick<CrossMachineMachineLanes, "machineId" | "online" | "sessions" | "computerGone">,
+  entry: Pick<CrossMachineMachineLanes, "machineId" | "online" | "sessions" | "computerGone" | "binding">,
 ): boolean {
   return entry.online || machineIsCloudResting(entry);
 }

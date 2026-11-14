@@ -443,16 +443,22 @@ cards use the same collapsed quiet tails as local lanes. A fully quiet foreign
 lane starts as the same minimal header with inline counts and uses
 `lane-open:<machineId>:<laneId>` for explicit expansion. When active work
 returns, `SessionListPane` clears that marker so the next all-quiet state starts
-collapsed — except on an offline machine, whose chats only look active because
-that is the last thing it reported. Card selection and context actions still
-carry the owning runtime binding. **Manage lane** opens the shared dialog with
-every read and mutation pinned to that machine. An offline machine's lane group
-is dimmed and folds shut like a quiet one; expanding it is allowed, but every
-card in it is disabled and reads "<machine> is offline". The other disabled
-foreign row is one whose reachable machine has not resolved a project binding
-yet. A one-session reachable foreign lane is allowed to use the same headerless
-shape as a local singleton; an offline machine remains grouped so its folded,
-dimmed state has a header to live on.
+collapsed. Card selection and context actions still carry the owning runtime
+binding. **Manage lane** opens the shared dialog with every read and mutation
+pinned to that machine.
+
+Rows never name their machine: no machine chip, glyph or lane-header marker.
+The machine shows in the row's hover card, in the composer of an open chat, and
+in the Start on picker for new work. A machine that drops keeps its rows through
+the short reconnect window (`applyReachability` in `crossMachineLanes.ts`, 45 s
+to 2 min). After that its rows are not listed at all, and they come back when it
+reconnects. An ADE Cloud computer that is asleep is the exception
+(`machineIsCloudResting` in `cloudRestingRows.ts`): its work stays listed as
+normal rows, and opening one wakes the computer (`wakeRestingCloudMachine` in
+`lib/cloudMachineWake.ts`). The opened chat shows "Waking <machine>…"
+(`ChatMachineWakeBanner`), and the opened lane in the Lanes tab shows the same
+progress (`RestingCloudLaneDetail`). The only disabled foreign row left is one
+whose reachable machine has not resolved a project binding yet.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
