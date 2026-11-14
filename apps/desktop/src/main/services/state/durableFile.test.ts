@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { injectFsFault } from "../../../test/faultInjection";
 import {
   cleanupAbandonedTempFiles,
+  createFileVersionTracker,
   createStampedJsonCache,
   readJsonWithRecovery,
   writeFileAtomic,
@@ -274,6 +275,45 @@ describe("durableFile", () => {
           value: { version: 1, sessionId: "s", value: 2 },
           source: "primary",
         });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("createFileVersionTracker", () => {
+    it("sees a rewrite that keeps the file stamp, a clock step back, a delete and a re-create", () => {
+      // Two writes in one timestamp tick, or a rewrite after the clock went
+      // back, leave the stamp the tracker already holds. The stat is frozen
+      // here so that only the content compare can report the change.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        fs.writeFileSync(filePath, "one");
+        const tracker = createFileVersionTracker(filePath);
+        expect(tracker.changed(), "nothing read yet").toBe(true);
+        expect(tracker.read()).toBe("one");
+        expect(tracker.changed(), "same bytes").toBe(false);
+
+        const stamped = fs.statSync(filePath, { bigint: true });
+        const frozenStat = vi.spyOn(fs, "statSync").mockReturnValue(stamped);
+        fs.writeFileSync(filePath, "two");
+        expect(tracker.changed(), "new bytes under the old stamp, before the file settled").toBe(true);
+        expect(tracker.read()).toBe("two");
+
+        vi.setSystemTime(Date.now() + 10_000);
+        expect(tracker.changed(), "settled, same bytes").toBe(false);
+        fs.writeFileSync(filePath, "six");
+        vi.setSystemTime(Date.now() - 5_000);
+        expect(tracker.changed(), "new bytes under the old stamp, after the clock went back").toBe(true);
+        expect(tracker.read()).toBe("six");
+
+        frozenStat.mockRestore();
+        fs.rmSync(filePath);
+        expect(tracker.changed(), "file deleted").toBe(true);
+        expect(() => tracker.read()).toThrow(/ENOENT/);
+        expect(tracker.changed(), "still missing").toBe(false);
+        fs.writeFileSync(filePath, "six");
+        expect(tracker.changed(), "file created again").toBe(true);
       } finally {
         vi.useRealTimers();
       }
