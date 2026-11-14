@@ -121,6 +121,10 @@ export function useToolHandoff(args: {
 
   const takeOver = useCallback((tile: CatalogCardView) => {
     if (!sessionId) return;
+    // One hold at a time: the tool held before is handed back first (with its
+    // note), so the agent is never left waiting on a tool nobody holds.
+    const previous = heldRef.current;
+    if (previous && (previous.sessionId !== sessionId || previous.tool !== tile.tool)) handBackRef.current();
     const noun = toolNoun(tile);
     const tell = canTellRef.current && turnRunningRef.current;
     setHeld({ sessionId, tool: tile.tool, noun, pin: pinRef.current, told: tell });

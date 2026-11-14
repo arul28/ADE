@@ -798,6 +798,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       keepDeviceInUse?: boolean;
       onlyIfUnusedBefore?: number;
       onKeptUnsynced?: (reason: string) => void;
+      /**
+       * Its chat ended: a copy kept for unpushed work still gives back what it
+       * drove (its app, simulator, emulator, screen). Only its files stay.
+       */
+      releaseDevicesWhenKept?: boolean;
     } = {},
   ): Promise<boolean> =>
     await withLock(owner, async () => {
@@ -821,6 +826,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         if (reason) {
           logger?.info("remote_work.kept_unsynced", { owner, reason });
           releaseOptions.onKeptUnsynced?.(reason);
+          if (releaseOptions.releaseDevicesWhenKept) {
+            if (appShells.size) await stopCopyApps(owner, busyError);
+            notifyCopyReleased(projectRoot, owner, logger);
+          }
           return false;
         }
       }
@@ -1105,7 +1114,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           })
           : null;
         // An archived chat can come back: its unpushed work stays until a person deletes it.
-        if (answer?.gone && await releaseIfIdle(copy.owner, answer.archived ? { keepUnsynced: true } : {})) {
+        if (answer?.gone && await releaseIfIdle(copy.owner, answer.archived ? { keepUnsynced: true, releaseDevicesWhenKept: true } : {})) {
           released += 1;
           logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
         }
@@ -1160,7 +1169,7 @@ export async function releaseChatRemoteWork(args: {
       }
     }
     try {
-      if (await service.release(owner, { keepUnsynced })) removed.push({ projectRoot: root, path: copyPath });
+      if (await service.release(owner, { keepUnsynced, releaseDevicesWhenKept: ended })) removed.push({ projectRoot: root, path: copyPath });
       else if (service.get(owner)) kept.push({ projectRoot: root, path: copyPath });
     } catch (error) {
       if (!(ended && error instanceof RemoteWorkError && error.code === "copy_busy")) throw error;

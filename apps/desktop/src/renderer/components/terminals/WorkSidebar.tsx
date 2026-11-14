@@ -53,6 +53,7 @@ import {
 import { useDeviceMachinePin } from "../apple/useDeviceMachinePin";
 import { useToolMachines } from "./useToolMachines";
 import { useChatToolActivity } from "./useChatToolActivity";
+import { useRemoteShellCount } from "./useRemoteShellCount";
 import { useRemoteDeviceProbes } from "./useRemoteDeviceProbes";
 import { WorkToolPanelBar, type PanelBarMode } from "./WorkToolPanelBar";
 import { agentActivityLine, useWorkToolCatalog } from "./useWorkToolCatalog";
@@ -245,6 +246,12 @@ export function WorkSidebar({
   const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(chosenRemote.screen?.platform);
   const hasRemoteAppControl = Boolean(chosenRemote.app);
   const toolActivity = useChatToolActivity(panelChatSessionId, chatPin, active, catalogState.refreshDeviceSources);
+  const remoteShellCount = useRemoteShellCount({
+    active,
+    remoteWork: activeSession && activeSession.id === panelChatSessionId ? activeSession.remoteWork : null,
+    refreshKey: toolActivity.byTool.terminal?.at ?? null,
+    fallback: toolActivity.remoteShellsRunning,
+  });
   const toolContext = useMemo<WorkToolContext>(
     () => ({
       ...feedsToolContext,
@@ -394,9 +401,9 @@ export function WorkSidebar({
     activeTool: tool,
     appleDeviceRefreshKey,
     androidDeviceRefreshKey,
-    // Live commands only: a one-shot `--no-code` command that finished is
-    // not one of this chat's shells (the chat's own tool calls say which run).
-    remoteShellCount: toolActivity.remoteShellsRunning,
+    // Live shells only, read on their machine: a one-shot `--no-code` command
+    // that finished is not one of this chat's shells.
+    remoteShellCount,
   });
   const remoteWork = activeSession?.remoteWork;
   const {

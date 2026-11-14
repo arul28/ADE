@@ -93,6 +93,23 @@ function unwrapShell(command: string): string {
   return text;
 }
 
+/**
+ * An ADE CLI call followed by `rest`: `ade …`, `ade.exe …`, a path to it, or
+ * the path variable agents are told to use (`"$ADE_CLI_PATH" …`,
+ * `& "$env:ADE_CLI_PATH" …`, `"%ADE_CLI_PATH%" …`).
+ */
+function adeCommand(rest: string): RegExp {
+  return new RegExp(String.raw`(?:\bade(?:\.exe|\.cmd|\.ps1)?|ADE_CLI_PATH\}?%?)["']?\s+` + rest, "i");
+}
+
+const ADE_SHELL_START = adeCommand(String.raw`shell\s+start\b`);
+const ADE_DEVICE_CHOICE = adeCommand(String.raw`devices\s+use\b`);
+/** The agent's own status reports and device choices: not tool use. */
+const ADE_NOT_TOOL_USE = adeCommand(String.raw`(?:chat\s+(?:activity|note|ask)|devices)\b`);
+const ADE_GIT = adeCommand(String.raw`git\s`);
+const ADE_PRS = adeCommand(String.raw`prs?\s`);
+const ADE_LINEAR = adeCommand(String.raw`linear\b`);
+
 function machineFlag(command: string): string | null {
   const match = command.match(/--machine(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))/);
   return (match?.[1] ?? match?.[2] ?? match?.[3] ?? null)?.trim() || null;
@@ -107,7 +124,8 @@ function shortCommand(command: string): string {
 
 /** A command after `--` in `ade shell start … -- npm test`, or the command itself. */
 function innerCommand(text: string): string {
-  const shellStart = text.match(/\bade(?:\.exe|\.cmd)?\s+shell\s+start\b[\s\S]*?\s--\s+([\s\S]+)$/);
+  const start = ADE_SHELL_START.exec(text);
+  const shellStart = start ? text.slice(start.index).match(/\s--\s+([\s\S]+)$/) : null;
   return shellStart?.[1]?.trim() ?? text;
 }
 
@@ -126,20 +144,19 @@ function classifyToolCommand(
     const tool = DOMAIN_TOOL[summary.domain];
     return tool ? { tool, text: computerUseActionText(summary), remoteShell: false } : null;
   }
-  // The agent's own status reports and device choices are not tool use.
-  if (/\bade(?:\.exe|\.cmd)?\s+(?:chat\s+(?:activity|note|ask)|devices)\b/.test(text)) return null;
-  const isAdeShell = /\bade(?:\.exe|\.cmd)?\s+shell\s+start\b/.test(text);
+  if (ADE_NOT_TOOL_USE.test(text)) return null;
+  const isAdeShell = ADE_SHELL_START.test(text);
   const run = shortCommand(isAdeShell ? innerCommand(text) : text);
   const said = status === "running" ? `${run} running` : status === "failed" ? `${run} failed` : `Ran ${run}`;
-  if (/^(?:\S*[\\/])?git\s/.test(text) || /\bade\s+git\s/.test(text)) return { tool: "git", text: said, remoteShell: false };
-  if (/^gh\s+pr\b|\bade\s+prs?\s/.test(text)) return { tool: "pr", text: said, remoteShell: false };
-  if (/^gh\s+issue\b|\bade\s+linear\b/.test(text)) return { tool: "issues", text: said, remoteShell: false };
+  if (/^(?:\S*[\\/])?git\s/.test(text) || ADE_GIT.test(text)) return { tool: "git", text: said, remoteShell: false };
+  if (/^gh\s+pr\b/.test(text) || ADE_PRS.test(text)) return { tool: "pr", text: said, remoteShell: false };
+  if (/^gh\s+issue\b/.test(text) || ADE_LINEAR.test(text)) return { tool: "issues", text: said, remoteShell: false };
   return { tool: "terminal", text: said, remoteShell: isAdeShell && machineFlag(text) != null };
 }
 
 /** True for `ade devices use …`: the chat's device choice may have changed. */
 export function isDeviceChoiceCommand(command: string): boolean {
-  return /\bade(?:\.exe|\.cmd)?\s+devices\s+use\b/.test(unwrapShell(command));
+  return ADE_DEVICE_CHOICE.test(unwrapShell(command));
 }
 
 type Pending = { tool: ToolActivityTool; command: string; remoteShell: boolean };
