@@ -182,42 +182,42 @@
         "darwin-arm64": {
           "format": "file",
           "package": "muse-code-darwin-arm64",
-          "version": "1.4.7-R6101.1",
-          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-macos",
-          "sha256": "87ff5a31b63e30b6ac04d3e8298285517e753c126fb6f3aee80accf28c4562f1",
-          "size": 358892272
+          "version": "1.4.20-R8619.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.20-R8619.1&file=muse-aarch64-macos",
+          "sha256": "89964f68f7f020896fc75679dc2f3975e5e15a6efe8537d91512a1b45ffb37aa",
+          "size": 481584720
         },
         "darwin-x64": {
           "format": "file",
           "package": "muse-code-darwin-x64",
-          "version": "1.4.7-R6101.1",
-          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-macos",
-          "sha256": "6d766da6601a0aae8bd22294c0854970286e1b9ade3009f0d0289b7875a10c58",
-          "size": 380381680
+          "version": "1.4.20-R8619.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.20-R8619.1&file=muse-x86-macos",
+          "sha256": "53f06739fb8b4afd80f67fd474d639b3f17cd3737566a2edff43c98b292866fc",
+          "size": 506745296
         },
         "linux-arm64": {
           "format": "file",
           "package": "muse-code-linux-arm64",
-          "version": "1.4.7-R6101.1",
-          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-aarch64-linux",
-          "sha256": "48db3c7468cd4f401eff9b415fb7e0cdfe0351fb1730649ceae2a0f766e23b85",
-          "size": 325916776
+          "version": "1.4.20-R8619.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.20-R8619.1&file=muse-aarch64-linux",
+          "sha256": "7159d6431fc5ff4c9dea32c62d0b771f5089d14389ec672ae903755bd39374dc",
+          "size": 429332712
         },
         "linux-x64": {
           "format": "file",
           "package": "muse-code-linux-x64",
-          "version": "1.4.7-R6101.1",
-          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-linux",
-          "sha256": "36e3dac91f56c15572b95be55d70ee9fd9685cd9ab49f747bab4746c8d7c2518",
-          "size": 363518168
+          "version": "1.4.20-R8619.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.20-R8619.1&file=muse-x86-linux",
+          "sha256": "3685b023d45a1a07c8c559da00088bdf59564920b13a85adad11e13ad6f4d181",
+          "size": 480565592
         },
         "win32-x64": {
           "format": "file",
           "package": "muse-code-win32-x64",
-          "version": "1.4.7-R6101.1",
-          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.7-R6101.1&file=muse-x86-windows.exe",
-          "sha256": "2d1ac7af0a9ea77643cb8690eee70f52f0f8476c46b194f143c831f481aea59d",
-          "size": 467174136
+          "version": "1.4.20-R8619.1",
+          "url": "https://lookaside.facebook.com/lookaside/muse/download/?channel=muse&version=1.4.20-R8619.1&file=muse-x86-windows.exe",
+          "sha256": "2d223f7f992f02c313225ed47adf3dda24e7361b6b8389f2c19f7c12f026618a",
+          "size": 505040632
         }
       }
     },
