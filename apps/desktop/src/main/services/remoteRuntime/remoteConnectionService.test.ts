@@ -1789,11 +1789,21 @@ describe("RemoteConnectionService", () => {
       get: vi.fn((id: string) => (id === computer.id ? computer : null)),
     } as unknown as RemoteTargetRegistry;
     let frozen = false;
+    // Up per the provider, but ADE there does not answer yet: one dial fails.
+    let starting = false;
+    const notUpYet = () => new PairedRuntimeTransportUnavailableError("Can't reach cloud-computer — it may be asleep or ADE may be stopped there.");
     const pool = {
-      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => {
+        if (starting) {
+          starting = false;
+          throw notUpYet();
+        }
+        return connectResult(target);
+      }),
       disconnect: vi.fn(),
       callActionForTarget: vi.fn(async (_target: RemoteRuntimeTarget, _projectId: string, request: { domain: string; action: string }) => {
         if (frozen) throw new Error("Remote ADE service timed out waiting for method ade/actions/call (25000ms).");
+        if (starting) throw notUpYet();
         return { domain: request.domain, action: request.action, result: { ok: true }, statusHints: {} };
       }),
       onHostStorageWait: vi.fn(() => () => {}),
@@ -1846,6 +1856,25 @@ describe("RemoteConnectionService", () => {
     asleep = false;
     wokenElsewhere = true;
     await service.callAction(computer.id, "project-1", { domain: "lane", action: "create" });
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+
+    // Asleep again, then woken elsewhere and still starting: the write waits
+    // for its link, as after its own wake, instead of failing on the first dial.
+    asleep = true;
+    frozen = true;
+    await expect(read()).rejects.toThrow(/timed out/i);
+    await vi.waitFor(() => expect(service.snapshot().connections[0]?.state).toBe("idle"));
+    frozen = false;
+    asleep = false;
+    starting = true;
+    vi.useFakeTimers();
+    try {
+      const settle = service.callAction(computer.id, "project-1", { domain: "session", action: "settleSession" });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(settle).resolves.toMatchObject({ action: "settleSession" });
+    } finally {
+      vi.useRealTimers();
+    }
     expect(service.snapshot().connections[0]?.state).toBe("connected");
   });
 

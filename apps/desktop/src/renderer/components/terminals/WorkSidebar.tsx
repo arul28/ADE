@@ -70,6 +70,7 @@ import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels"
 import { CloudToolGate, type WorkToolOpen } from "./cloudToolGate";
 import { useSideChatView } from "../chat/sideChatState";
 import { withChatPin } from "../chat/chatMachinePin";
+import { machineErrorText } from "../../lib/machineErrorText";
 
 /** Escape returns to the picker, but only from inside the pane — see `work.tools.picker`. */
 const TOOLS_PICKER_BINDING_ID = "work.tools.picker";
@@ -518,7 +519,7 @@ export function WorkSidebar({
       .catch((error: unknown) => {
         showToast({
           title: "Resume failed",
-          message: error instanceof Error ? error.message : String(error),
+          message: machineErrorText(error),
           tone: "error",
         });
       })
