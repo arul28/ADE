@@ -171,7 +171,7 @@ runs:
           for i in $(seq 1 30); do
             sleep 20
             echo "--- $(date +%T) busiest processes (log lines: $(wc -l < "$log" 2>/dev/null || echo 0))"
-            ps -Ao pcpu,etime,comm -r | head -8 | sed -E "s#/private/var/run/com.apple.security.cryptexd/mnt/[^/]*/#SIMRT/#; s#/Applications/Xcode_27.2.app/Contents/#XCODE/#" | cut -c1-140; uptime
+            ps -Ao pcpu,etime,comm -r | sed 1d | head -14 | awk '{ n = split($0, a, "/"); printf "%s %s %s\n", $1, $2, a[n] }'; echo "processes: $(ps -A | wc -l)"; uptime
             if [ "$i" = 4 ] || [ "$i" = 12 ]; then
               pid=$(pgrep -x xcodebuild | head -1 || true)
               if [ -n "$pid" ]; then
@@ -217,7 +217,7 @@ runs:
           for i in $(seq 1 18); do
             sleep 20
             echo "--- $(date +%T) busiest processes"
-            ps -Ao pcpu,etime,comm -r | head -8 | sed -E "s#/private/var/run/com.apple.security.cryptexd/mnt/[^/]*/#SIMRT/#; s#/Applications/Xcode_27.2.app/Contents/#XCODE/#" | cut -c1-140; uptime
+            ps -Ao pcpu,etime,comm -r | sed 1d | head -14 | awk '{ n = split($0, a, "/"); printf "%s %s %s\n", $1, $2, a[n] }'; echo "processes: $(ps -A | wc -l)"; uptime
           done
         ) &
         sampler=$!
