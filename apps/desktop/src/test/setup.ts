@@ -71,12 +71,6 @@ function installTrackedTempCleanup(): void {
 
 installTrackedTempCleanup();
 
-// Tests run on people's real computers. Code that defaults to this machine's
-// ADE home (the account stores, Passwords & Secrets) must never reach the
-// real ~/.ade from a test: a test that wants a home sets ADE_HOME itself.
-if (!process.env.ADE_HOME?.trim()) {
-  process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-test-home-"));
-}
 afterAll(() => {
   cleanupTrackedTempDirs();
 });
@@ -90,6 +84,12 @@ afterAll(() => {
 for (const key of Object.keys(process.env)) {
   if (key.startsWith("ADE_")) delete process.env[key];
 }
+
+// Tests run on people's real computers. Code that defaults to this machine's
+// ADE home (the account stores, Passwords & Secrets) must never reach the
+// real ~/.ade from a test: every run gets a fresh home, set after the cleanup
+// above so it is the last word; a test that wants another home sets it itself.
+process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-test-home-"));
 
 const claudeConfigDir = path.join(os.tmpdir(), "ade-vitest-claude-config");
 

@@ -212,11 +212,10 @@ import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
-import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { projectSecretScopeForRoot, type createProjectSecretService } from "../secrets/projectSecretService";
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
 import { parseProjectSecretEnv, PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
-import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
-import type { PasswordsProject } from "../../../shared/types/passwords";
+import { PASSWORDS_PERSON_CHECK_DECLINED, type PasswordEnvFile, type PasswordsProject } from "../../../shared/types/passwords";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import type {
   AdeCleanupResult,
@@ -6353,8 +6352,12 @@ export function registerIpc({
   // clone on every computer shares them).
   handle(IPC.passwordsProjects, async (): Promise<PasswordsProject[]> => {
     const out = new Map<string, PasswordsProject>();
+    const refusalPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
     for (const root of localRecentRoots()) {
-      const scope = accountRepoScopeKey(readGitOriginUrl(root)) ?? `path:${path.resolve(root)}`;
+      // A project the brain refused as too slow to open is left out: reading
+      // its git config here could freeze this process's main thread.
+      if (refusalPool?.isKnownRefused(root)) continue;
+      const scope = projectSecretScopeForRoot(root);
       if (!out.has(scope)) out.set(scope, { scope, name: path.basename(root), rootPath: root });
     }
     return [...out.values()];
@@ -6363,7 +6366,7 @@ export function registerIpc({
   // Passwords & Secrets › Import .env: the person picks a file on this
   // computer; its entries come back to pick from, and are saved through
   // `passwords.importSecrets`.
-  handle(IPC.passwordsChooseEnvFile, async (event): Promise<{ fileName: string; entries: Array<{ name: string; value: string }> } | null> => {
+  handle(IPC.passwordsChooseEnvFile, async (event): Promise<PasswordEnvFile | null> => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
       title: "Import secrets from a .env file",
@@ -12884,7 +12887,7 @@ export function registerIpc({
     return await callLocalMachineDomain("providerLogins.call", "provider_logins", action, args);
   });
 
-  // Passwords with no project bound: this computer's brain, through its
+  // Settings › Passwords & Secrets: always this computer's brain, through its
   // machine route (`passwords.call`). Summaries and the person's own writes
   // only — the value reads (`resolveForFill`, `loginsForPage`) are refused
   // here, so a renderer can never ask for one.
@@ -12912,11 +12915,11 @@ export function registerIpc({
     // Starting over deletes every saved item on every computer: the person
     // proves it is them first (Touch ID / Windows Hello, else a confirm).
     if (action === "reset" && !(await checkPerson("reset Passwords & Secrets and delete every saved login and secret in your account", "Reset"))) {
-      throw new AdeExpectedError("Reset cancelled.", "user");
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     // An export writes every value unencrypted to Downloads: the person proves it is them.
     if (action === "exportSecrets" && !(await checkPerson("export secrets to a plain .env file", "Export"))) {
-      throw new AdeExpectedError("Export cancelled.", "user");
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     return await callLocalMachineDomain("passwords.call", "passwords", action, args);
   });
@@ -12924,7 +12927,7 @@ export function registerIpc({
   // Settings › Passwords & Secrets › Reveal / Copy. The person proves it is them first;
   // a copy goes to the clipboard here in main (the value never reaches the
   // renderer) and is cleared after 90 s if it is still there. This computer's
-  // own brain answers, whatever machine the page follows: values are the account's.
+  // own brain answers: the page always shows this computer's vault.
   let clearCopiedTimer: ReturnType<typeof setTimeout> | null = null;
   handle(IPC.passwordsReveal, async (_event, arg: unknown): Promise<{ value?: string; copied?: true }> => {
     const request = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
@@ -12935,7 +12938,7 @@ export function registerIpc({
     if (!itemId) throw new Error("passwords.reveal needs an itemId.");
     // A username is not a secret: no prompt for it.
     if (field !== "username" && !(await checkPerson(`${copy ? "copy" : "show"} the saved ${field === "value" ? "secret" : field} for ${label}`, copy ? "Copy" : "Show"))) {
-      throw new AdeExpectedError("Cancelled.", "user");
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     const revealed = await callLocalMachineDomain("passwords.call", "passwords", "revealValue", { itemId, field });
     const value = typeof revealed === "string" ? revealed : null;

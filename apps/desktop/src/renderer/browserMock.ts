@@ -6441,9 +6441,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openPathInEditor: resolvedArg(undefined),
       logDebugEvent: () => {},
     },
-    // Sample project secrets so the Secrets page renders its list in the preview.
+    // The project-shaped view of Passwords & Secrets (agents' secret cards use it).
     projectSecrets: {
-      list: resolved({ secrets: [], storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" as const } }),
+      list: resolved({ secrets: [] }),
       set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" as const }),
     },
     // Sample Passwords items so Settings › Passwords & Secrets renders its lists in the
@@ -6530,6 +6530,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           const secondsLeft = 30 - (Math.floor(Date.now() / 1000) % 30);
           return { code: String(Math.floor(Date.now() / 30_000) % 1_000_000).padStart(6, "0"), secondsLeft };
         },
+        reveal: async (args: { copy?: boolean }) => (args.copy ? { copied: true as const } : { value: "preview-value" }),
         saveLogin: async (args: { id?: string; title?: string; origins: string[]; username: string }) => {
           const saved: PasswordItemSummary = {
             id: args.id ?? `pw-login-${items.length + 1}`,

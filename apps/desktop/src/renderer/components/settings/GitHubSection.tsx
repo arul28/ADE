@@ -359,7 +359,14 @@ export function GitHubSection() {
           showToast({ tone: "success", title: verification.message });
           return;
         }
-        showToast({ tone: "error", title: "GitHub token not accepted", message: verification.message });
+        // Only a token GitHub refused is "not accepted"; a paused or failed check is not the token's fault.
+        const failureKind = status.credentialVerification.failure?.kind;
+        const rejected = failureKind === "invalid_token" || failureKind === "permission_denied";
+        showToast({
+          tone: rejected ? "error" : "warning",
+          title: rejected ? "GitHub token not accepted" : "Token saved, not verified yet",
+          message: verification.message,
+        });
       })
       .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
       .finally(() => setGithubBusy(false));

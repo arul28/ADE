@@ -12,15 +12,8 @@ export type ProjectSecretSummary = {
   storage: ProjectSecretStorage;
 };
 
-export type ProjectSecretsStorageInfo = {
-  path: string;
-  encrypted: boolean;
-  scope: "project";
-};
-
 export type ProjectSecretsListResult = {
   secrets: ProjectSecretSummary[];
-  storage: ProjectSecretsStorageInfo;
 };
 
 export type ProjectSecretValueResult = ProjectSecretSummary & {
@@ -39,5 +32,6 @@ export type ProjectSecretGetArgs = {
 
 export type ProjectSecretDeleteArgs = {
   name: string;
-  confirmName?: string;
+  /** The name again; a delete without it is refused. */
+  confirmName: string;
 };

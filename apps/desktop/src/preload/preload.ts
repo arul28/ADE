@@ -32,7 +32,10 @@ import type {
   PasswordItemSummary,
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
+  PasswordEnvFile,
+  PasswordSecretsExportResult,
   PasswordSecretsImportInput,
+  PasswordSecretsImportResult,
   PasswordsProject,
   PasswordsStatus, PasswordUseRecord,
 } from "../shared/types/passwords";
@@ -2623,17 +2626,12 @@ function callProviderLogins<T>(action: string, args: Record<string, unknown>, pi
 }
 
 /**
- * Passwords: the account's saved logins and secrets on the pinned machine,
- * else the tab's bound runtime, else this computer's brain with no project
- * (`passwords.call`). Only summaries and person-only writes cross this
- * boundary: no method here returns a saved value, and `resolveForFill` is
- * never wired (the browser fills pages in main, not in a renderer).
- */
-/**
  * Passwords & Secrets is the account's vault, read and written on this
  * computer's own brain through main (`passwords.call`), whatever project tab
  * the window is on: it syncs to every other computer from here, and a secret
- * kept on this computer only lives here.
+ * kept on this computer only lives here. Only summaries and person-only
+ * writes cross this boundary: no method here returns a saved value, and
+ * `resolveForFill` is never wired (the browser fills pages in main).
  */
 function callPasswords<T>(action: string, args: Record<string, unknown> = {}): Promise<T> {
   return ipcRenderer.invoke(IPC.passwordsCall, { action, args: { ...args } }) as Promise<T>;
@@ -12206,12 +12204,12 @@ const adeBridge = {
       callPasswords<PasswordImportResult>("importCsv", args),
     sync: (args: Record<string, never> = {}): Promise<void> =>
       callPasswords<void>("sync", args),
-    importSecrets: (args: PasswordSecretsImportInput): Promise<{ imported: string[]; replaced: string[] }> =>
-      callPasswords<{ imported: string[]; replaced: string[] }>("importSecrets", args),
+    importSecrets: (args: PasswordSecretsImportInput): Promise<PasswordSecretsImportResult> =>
+      callPasswords<PasswordSecretsImportResult>("importSecrets", args),
     /** Writes to this computer's Downloads, after Touch ID / Windows Hello. */
-    exportSecrets: (args: { projectScope: string | null }): Promise<{ filePath: string; secretCount: number }> =>
-      callPasswords<{ filePath: string; secretCount: number }>("exportSecrets", args),
-    chooseEnvFile: (): Promise<{ fileName: string; entries: Array<{ name: string; value: string }> } | null> =>
+    exportSecrets: (args: { projectScope: string | null }): Promise<PasswordSecretsExportResult> =>
+      callPasswords<PasswordSecretsExportResult>("exportSecrets", args),
+    chooseEnvFile: (): Promise<PasswordEnvFile | null> =>
       ipcRenderer.invoke(IPC.passwordsChooseEnvFile),
     projects: (): Promise<PasswordsProject[]> =>
       ipcRenderer.invoke(IPC.passwordsProjects),

@@ -89,7 +89,7 @@ describe("password service", () => {
       ["secret", "OPENAI_API_KEY", [], null],
     ]);
     expect(JSON.stringify(summaries)).not.toMatch(/s3cret|key-value/);
-    expect(await laptop.resolveSecretValue({ name: "OPENAI_API_KEY", projectScope: "repo:x" })).toBe("key-value-xyz");
+    expect((await laptop.secretsForProject("repo:x")).get("OPENAI_API_KEY")?.value).toBe("key-value-xyz");
   });
 
   it("fills a login only into a page on its own site", async () => {
@@ -235,20 +235,20 @@ describe("password service", () => {
     await mac.sync();
     expect(JSON.stringify([...rows.values()])).not.toContain("local-value");
     // The deliberate this-computer value wins here.
-    expect(await mac.resolveSecretValue({ name: "DEPLOY_TOKEN", projectScope: "repo:acme/app" })).toBe("local-value-456");
+    expect((await mac.secretsForProject("repo:acme/app")).get("DEPLOY_TOKEN")?.value).toBe("local-value-456");
 
     const laptop = await machine(relay, "laptop");
     await laptop.sync();
     expect((await laptop.listSummaries()).map((s) => [s.title, s.deviceOnly])).toEqual([["DEPLOY_TOKEN", false]]);
-    expect(await laptop.resolveSecretValue({ name: "DEPLOY_TOKEN", projectScope: "repo:acme/app" })).toBe("account-value-123");
+    expect((await laptop.secretsForProject("repo:acme/app")).get("DEPLOY_TOKEN")?.value).toBe("account-value-123");
 
     await mac.reset();
     expect((await mac.listSummaries()).map((s) => [s.title, s.deviceOnly])).toEqual([["DEPLOY_TOKEN", true]]);
 
     await mac.setEnabled(false);
-    expect(await mac.secretValuesForProject("repo:acme/app")).toEqual({});
+    expect((await mac.secretsForProject("repo:acme/app")).size).toBe(0);
     await mac.setEnabled(true);
-    expect(await mac.resolveSecretValue({ name: "DEPLOY_TOKEN", projectScope: "repo:acme/app" })).toBe("local-value-456");
+    expect((await mac.secretsForProject("repo:acme/app")).get("DEPLOY_TOKEN")?.value).toBe("local-value-456");
   });
 });
 

@@ -91,7 +91,7 @@ function makeContext(overrides: Partial<AccountMigrationContext> = {}): AccountM
       purgeAccountCredentials: vi.fn(),
     },
     projectSecretService: {
-      migrateLegacy: vi.fn(async () => {}),
+      migrateLegacy: vi.fn(async () => ({ done: true })),
     },
     ...overrides,
   };

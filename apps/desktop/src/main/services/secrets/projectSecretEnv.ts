@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import type { PasswordSecretsExportResult } from "../../../shared/types/passwords";
 
 export type ParsedProjectSecretEnvEntry = {
   name: string;
@@ -142,7 +143,7 @@ export const PROJECT_SECRET_ENV_MAX_ENTRIES = MAX_ENV_ENTRIES;
 export function writeSecretsEnvFile(
   secrets: ParsedProjectSecretEnvEntry[],
   downloadsDir = path.join(os.homedir(), "Downloads"),
-): { filePath: string; secretCount: number } {
+): PasswordSecretsExportResult {
   const sorted = [...secrets].sort((a, b) => a.name.localeCompare(b.name));
   fs.mkdirSync(downloadsDir, { recursive: true, mode: 0o700 });
   let filePath = path.join(downloadsDir, "ade-secrets.env");

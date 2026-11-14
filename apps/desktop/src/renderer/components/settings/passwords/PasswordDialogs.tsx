@@ -9,23 +9,11 @@
  */
 import { useRef, useState } from "react";
 import { CaretRight, Eye, EyeSlash, FileText, Key, Password, ShieldWarning } from "@phosphor-icons/react";
-import type { PasswordItemSummary, PasswordsProject, PasswordsStatus } from "../../../../shared/types/passwords";
+import { SECRET_NAME_PATTERN, SECRET_NAME_RULE, type PasswordItemSummary, type PasswordsProject, type PasswordsStatus } from "../../../../shared/types/passwords";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { ipcErrorMessage } from "../../../lib/format";
+import { errorText, personCheckDeclined, scopeLabel } from "./passwordsFormat";
 
-/** The brain's own rule for a secret's name (`passwordService.SECRET_NAME_PATTERN`). */
-const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
-
-/** "Every project", or one project, as the person reads it. */
-export function scopeLabel(scope: string | null, projects: readonly PasswordsProject[]): string {
-  if (scope === null) return "Every project";
-  const known = projects.find((project) => project.scope === scope);
-  if (known) return known.name;
-  if (scope.startsWith("repo:")) return scope.slice("repo:".length).replace(/^[^/]+\//, "");
-  if (scope.startsWith("path:")) return scope.split(/[\\/]/).filter(Boolean).pop() ?? scope;
-  return scope;
-}
 
 /** The project picker of a secret: every project, then this computer's projects. */
 function ProjectSelect({
@@ -127,8 +115,13 @@ function SecretField({
   );
 }
 
-function errorText(error: unknown, fallback: string): string {
-  return ipcErrorMessage(error) || fallback;
+/**
+ * The project a dialog saves for: the open project until the person picks
+ * one, also when this computer's projects arrive after the dialog opened.
+ */
+function useScopeChoice(defaultScope: string | null): [string | null, (next: string | null) => void] {
+  const [picked, setPicked] = useState<{ scope: string | null } | null>(null);
+  return [picked ? picked.scope : defaultScope, (next) => setPicked({ scope: next })];
 }
 
 export function NewLoginDialog({
@@ -281,7 +274,7 @@ export function NewSecretDialog({
 }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
-  const [scope, setScope] = useState<string | null>(defaultScope);
+  const [scope, setScope] = useScopeChoice(defaultScope);
   const [moreOpen, setMoreOpen] = useState(false);
   const [deviceOnly, setDeviceOnly] = useState(false);
   const [nameError, setNameError] = useState<string | null>(null);
@@ -292,8 +285,8 @@ export function NewSecretDialog({
   const submit = async () => {
     if (saving) return;
     const trimmed = name.trim();
-    if (!SECRET_NAME.test(trimmed)) {
-      setNameError("Use letters, digits, _, . or -, starting with a letter or _ (like STRIPE_API_KEY).");
+    if (!SECRET_NAME_PATTERN.test(trimmed)) {
+      setNameError(SECRET_NAME_RULE);
       nameRef.current?.focus();
       return;
     }
@@ -401,7 +394,7 @@ export function ImportEnvDialog({
   onClose: () => void;
   onImported: (result: { imported: string[]; replaced: string[] }, scope: string | null) => void;
 }) {
-  const [scope, setScope] = useState<string | null>(defaultScope);
+  const [scope, setScope] = useScopeChoice(defaultScope);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(file.entries.map((entry) => entry.name)));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -582,7 +575,7 @@ export function ResetPasswordsDialog({
       const next = await window.ade.passwords.reset({ confirm: "reset" });
       onReset(next);
     } catch (err) {
-      setError(errorText(err, "ADE couldn't reset Passwords."));
+      if (!personCheckDeclined(err)) setError(errorText(err, "ADE couldn't reset Passwords."));
     } finally {
       setBusy(false);
     }

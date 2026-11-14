@@ -218,7 +218,7 @@ describe("runAccountMigration", () => {
       getContexts: () => [{
         project: { rootPath: makeReceiptDir() },
         // The project's old-secret move is still running.
-        projectSecretService: { migrateLegacy: () => moveGate },
+        projectSecretService: { migrateLegacy: () => moveGate.then(() => ({ done: true })) },
       }],
       getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
       getReceiptDir: () => receiptDir,
@@ -325,7 +325,7 @@ describe("runAccountMigration", () => {
     const receiptDir = makeReceiptDir();
     const makeContext = () => ({
       project: { rootPath: makeReceiptDir() },
-      projectSecretService: { migrateLegacy: vi.fn(async () => {}) },
+      projectSecretService: { migrateLegacy: vi.fn(async () => ({ done: true })) },
     });
     const contextOne = makeContext();
     const contextTwo = makeContext();

@@ -57,7 +57,7 @@ function fakeRelay(): PasswordsRelay {
 }
 
 /** This computer's Passwords & Secrets, on a real encrypted file store (a new process can open it). */
-function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?: () => boolean } = {}) {
+function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?: () => boolean; now?: () => Date } = {}) {
   const adeDir = options.adeDir ?? tempDir("ade-home-");
   const relay = options.relay ?? fakeRelay();
   const store: CredentialStore = new EncryptedFileCredentialStore({
@@ -72,6 +72,7 @@ function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?:
     getDeviceId: () => "mac",
     machineKind: "desktop",
     store,
+    ...(options.now ? { now: options.now } : {}),
   });
   return { adeDir, relay, passwords };
 }
@@ -123,8 +124,8 @@ describe("a project's secrets in Passwords & Secrets", () => {
       { name: "LOCAL_TOKEN", value: "old-local", storage: "device", updatedAt: "2026-11-01T00:00:00.000Z" },
       { name: "NEWER_HERE", value: "old-value", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" },
     ]);
-    const mac = computer();
-    await mac.passwords.saveSecret({ name: "NEWER_HERE", value: "kept-value", projectScope: SCOPE, updatedAt: "2026-11-05T00:00:00.000Z" });
+    const mac = computer({ now: () => new Date("2026-11-05T00:00:00.000Z") });
+    await mac.passwords.saveSecret({ name: "NEWER_HERE", value: "kept-value", projectScope: SCOPE });
     const secrets = createProjectSecretService(root, { getPasswordService: () => mac.passwords });
 
     await secrets.migrateLegacy();
@@ -230,7 +231,7 @@ describe("a project's secrets in Passwords & Secrets", () => {
     await mac.passwords.saveSecret({ name: "OTHER", value: "other-project", projectScope: "repo:github.com/acme/other" });
     const secrets = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => mac.passwords });
 
-    expect(Object.fromEntries(Object.entries(await mac.passwords.secretValuesForProject(SCOPE)))).toEqual({
+    expect(Object.fromEntries([...(await mac.passwords.secretsForProject(SCOPE)).values()].map((entry) => [entry.name, entry.value]))).toEqual({
       SHARED: "this-project",
       TOKEN: "local-token",
     });

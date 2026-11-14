@@ -4288,13 +4288,13 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   const agentChatService = runtime.agentChatService;
   return {
     ...(projectSecretService as unknown as OpaqueService),
-    // Callers by name (agents, `ade secrets`, the Secrets page) get the copy
-    // the account holds now, not whatever the last heartbeat brought in.
+    // Callers by name (agents, `ade secrets`) get the copy the account holds
+    // now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
     // `ade secrets exec -- <command>`: this runtime runs the command with the
-    // project's secrets (and Passwords' secrets for it) in its environment,
-    // and returns its output masked. No value is ever returned.
+    // project's secrets in its environment, and returns its output masked.
+    // No value is ever returned.
     exec: async (args?: unknown) => {
       const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
       const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
@@ -4303,13 +4303,7 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
         runtime.logger.warn("project_secret.exec_lanes_failed", { error: getErrorMessage(error) });
         return [];
       });
-      const scope = projectSecretService.accountScope();
-      const fromPasswords = await runtime.passwordService?.secretValuesForProject(scope).catch((error: unknown) => {
-        runtime.logger.warn("project_secret.exec_passwords_secrets_failed", { error: getErrorMessage(error) });
-        return {};
-      }) ?? {};
-      // A project secret of the same name wins: it is the one this project set.
-      const secrets = { ...fromPasswords, ...projectSecretService.valuesForProcess() };
+      const secrets = await projectSecretService.valuesForProcessFresh();
       const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
       const chosen = only?.length ? Object.fromEntries(Object.entries(secrets).filter(([name]) => only.includes(name))) : secrets;
       const missing = only?.filter((name) => !(name in secrets)) ?? [];

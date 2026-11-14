@@ -471,11 +471,15 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.projectChooseDirectory:
     case IPC.projectChooseIcon:
     case IPC.passwordsChooseEnvFile:
-    // Reset and .env export wait on Touch ID / Windows Hello first.
-    case IPC.passwordsCall:
     case IPC.machineResetChooseRescueDir:
     case IPC.historyExportOperations:
       return 10 * 60_000;
+    // Reset and .env export wait on Touch ID / Windows Hello first; every
+    // other call gets the brain action's own budget.
+    case IPC.passwordsCall: {
+      const action = isRecord(args[0]) && typeof args[0].action === "string" ? args[0].action : "";
+      return action === "reset" || action === "exportSecrets" ? 10 * 60_000 : localRuntimeActionIpcTimeoutMs("passwords", action);
+    }
     // Dialog, then the same project switch projectSwitchToPath budgets for.
     case IPC.projectOpenRepo:
       return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS + 10 * 60_000;

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { expectedErrorKind, markExpected } from "../../../../desktop/src/shared/expectedError";
-import { createProjectSecretService, SIGN_IN_CONFIG_SECRET_NAMES } from "../../../../desktop/src/main/services/secrets/projectSecretService";
+import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
+import { SIGN_IN_CONFIG_SECRET_NAMES } from "../../../../desktop/src/shared/types/passwords";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_JWKS_URL,

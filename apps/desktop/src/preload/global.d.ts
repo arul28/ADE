@@ -36,7 +36,10 @@ import type {
   PasswordItemSummary,
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
+  PasswordEnvFile,
+  PasswordSecretsExportResult,
   PasswordSecretsImportInput,
+  PasswordSecretsImportResult,
   PasswordsProject,
   PasswordsStatus,
 } from "../shared/types/passwords";
@@ -4372,11 +4375,11 @@ declare global {
       /**
        * Settings › Passwords & Secrets: the account's saved logins and secrets.
        *
-       * Every method takes the machine's pin from
-       * `useSettingsMachineScope().pin`; with none it reaches the tab's bound
-       * runtime, or this computer's brain through `passwords.call`. Only
-       * summaries cross this boundary. No method returns a saved value, and
-       * `resolveForFill` is not exposed to a renderer.
+       * No method takes a pin: the vault is the account's, so every call goes
+       * to this computer's brain through its machine route
+       * (`passwords.call`). Only summaries cross this boundary, except Reveal
+       * after Touch ID / Windows Hello, and `resolveForFill` is not exposed
+       * to a renderer.
        */
       passwords: {
         status: (args?: Record<string, never>) => Promise<PasswordsStatus>;
@@ -4386,16 +4389,16 @@ declare global {
         reset: (args: { confirm: "reset" }) => Promise<PasswordsStatus>;
         list: (args?: Record<string, never>) => Promise<PasswordItemSummary[]>;
         activity: (args?: Record<string, never>) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
-        code?: (args: { itemId: string }) => Promise<{ code: string; secondsLeft: number } | null>;
-        reveal?: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }) => Promise<{ value?: string; copied?: true }>;
+        code: (args: { itemId: string }) => Promise<{ code: string; secondsLeft: number } | null>;
+        reveal: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }) => Promise<{ value?: string; copied?: true }>;
         saveLogin: (args: PasswordLoginSaveInput) => Promise<PasswordItemSummary>;
         saveSecret: (args: PasswordSecretSaveInput) => Promise<PasswordItemSummary>;
         remove: (args: { id: string }) => Promise<boolean>;
         importCsv: (args: { text: string }) => Promise<PasswordImportResult>;
         sync: (args?: Record<string, never>) => Promise<void>;
-        importSecrets: (args: PasswordSecretsImportInput) => Promise<{ imported: string[]; replaced: string[] }>;
-        exportSecrets: (args: { projectScope: string | null }) => Promise<{ filePath: string; secretCount: number }>;
-        chooseEnvFile: () => Promise<{ fileName: string; entries: Array<{ name: string; value: string }> } | null>;
+        importSecrets: (args: PasswordSecretsImportInput) => Promise<PasswordSecretsImportResult>;
+        exportSecrets: (args: { projectScope: string | null }) => Promise<PasswordSecretsExportResult>;
+        chooseEnvFile: () => Promise<PasswordEnvFile | null>;
         projects: () => Promise<PasswordsProject[]>;
       };
       providerInstances: {

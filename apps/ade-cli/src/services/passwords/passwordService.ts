@@ -12,7 +12,7 @@
  * What it gives out, and to whom:
  * - `listSummaries()`: sites, usernames and which kinds of value an item has.
  *   Safe for agents; never a value.
- * - `resolveForFill()` and `resolveSecretValue()`: the values, for desktop
+ * - `resolveForFill()` and `secretsForProject()`: the values, for desktop
  *   main to fill a page or for ADE to inject a secret into a process it
  *   starts. These are never wired to an agent-reachable action; the action
  *   layer exposes them only to the person's own client (see `passwords`
@@ -21,7 +21,6 @@
  * Nothing here logs a value, a site or a username: log lines carry item ids
  * and counts only.
  */
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,12 +30,11 @@ import type {
   PasswordItemSummary,
   PasswordLoginSecret,
   PasswordPasskeySecret,
-  PasswordSecretSecret,
   PasswordsStatus,
   PasswordUseRecord,
 } from "../../../../desktop/src/shared/types/passwords";
 import { createStoreRegistry } from "../account/accountCacheStore";
-import { EncryptedFileCredentialStore, type CredentialStore } from "../credentials/credentialStore";
+import { EncryptedFileCredentialStore, type CredentialStore, type SyncCredentialStore } from "../credentials/credentialStore";
 import type {
   PasswordMachineKind,
   PasswordRelayItem,
@@ -49,8 +47,11 @@ import {
   sealPasswordItem,
 } from "./passwordCrypto";
 import { dedupeImportedLogins, parsePasswordCsv } from "./passwordCsvImport";
+import { createDeviceSecretStore, isDeviceId } from "./passwordDeviceSecrets";
+import { newPasswordItemId, savedForExactOrigin, summarizePasswordItem as summarize, totpOrThrow } from "./passwordItems";
 import { matchLoginsForOrigin, normalizeLoginOrigin } from "./passwordMatching";
-import { normalizeTotpInput, parseTotp, totpCode } from "./passwordTotp";
+import { createProjectSecrets } from "./passwordProjectSecrets";
+import { parseTotp, totpCode } from "./passwordTotp";
 
 export type PasswordsRelay = {
   /** `epoch`: the account's current key epoch (a newer one means another computer reset Passwords). */
@@ -67,32 +68,11 @@ export type PasswordsLogger = {
 type StoredItem = { id: string; revision: string | null; deleted: boolean; envelope: string | null };
 type PendingWrite = { id: string; envelope: string | null; deleted: boolean; ifRevision: string | null };
 type CacheShape = { v: 1; accountId: string; cursor: string | null; items: StoredItem[]; pending: PendingWrite[] };
-type DeviceSecret = PasswordSecretSecret & { id: string };
-
-/** A secret a project's processes get, from the account vault or this computer's own store. */
-export type ProjectSecretEntry = {
-  id: string;
-  name: string;
-  value: string;
-  projectScope: string | null;
-  deviceOnly: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-/** A secret's name: what a process sees as its variable. Old project secrets also allowed `.` and `-`. */
-export const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
-
 const CACHE_KEY = "passwords.items.v1";
 const KEY_CACHE_KEY = "passwords.key.v1";
 const ACTIVITY_KEY = "passwords.activity.v1";
-/** Secrets kept on this computer only. Machine-sealed like the cache, never sent anywhere. */
-const DEVICE_SECRETS_KEY = "passwords.device-secrets.v1";
-/** Ids of this-computer-only secrets, so a call by id knows which store holds it. */
-const DEVICE_ID_PREFIX = "dev_";
 /** Newest uses kept on this computer, for Settings › Passwords & Secrets › Activity. */
 const ACTIVITY_LIMIT = 500;
-const ITEM_ID_BYTES = 12;
 const SYNC_INTERVAL_MS = 60_000;
 /** The most items the relay takes in one write (`MAX_ITEMS_PER_WRITE` there). */
 const RELAY_WRITE_BATCH = 200;
@@ -102,87 +82,6 @@ export class PasswordsUnavailableError extends Error {
     super(message);
     this.name = "PasswordsUnavailableError";
   }
-}
-
-function totpOrThrow(value: string | null, label: string): string | null {
-  if (value === null || !value.trim()) return null;
-  const normalized = normalizeTotpInput(value, label);
-  if (!normalized) throw new Error("That authenticator key isn't one ADE can read. Paste the otpauth:// link or the key the site shows.");
-  return normalized;
-}
-
-/** Whether a login was saved for this page's exact origin (scheme, host and port). */
-function savedForExactOrigin(secret: PasswordLoginSecret, pageUrl: string): boolean {
-  const page = normalizeLoginOrigin(pageUrl)?.origin;
-  return Boolean(page) && secret.origins.includes(page!);
-}
-
-function newItemId(prefix = "pw_"): string {
-  return `${prefix}${crypto.randomBytes(ITEM_ID_BYTES).toString("base64url")}`;
-}
-
-function isDeviceId(id: string): boolean {
-  return id.startsWith(DEVICE_ID_PREFIX);
-}
-
-/**
- * The secrets one project's processes get, by name: those for every project,
- * then the project's own over them; within each, this computer's own over the
- * account's (a this-computer-only value is the deliberate one here).
- */
-function secretsForScope(entries: readonly ProjectSecretEntry[], projectScope: string | null): Map<string, ProjectSecretEntry> {
-  const rank = (entry: ProjectSecretEntry) => (entry.projectScope === null ? 0 : 2) + (entry.deviceOnly ? 1 : 0);
-  const out = new Map<string, ProjectSecretEntry>();
-  for (const entry of [...entries].sort((a, b) => rank(a) - rank(b))) {
-    if (entry.projectScope !== null && entry.projectScope !== projectScope) continue;
-    out.set(entry.name, entry);
-  }
-  return out;
-}
-
-function summarize(id: string, secret: PasswordItemSecret, deviceOnly = false): PasswordItemSummary {
-  if (secret.kind === "login") {
-    const sites = [...new Set(secret.origins.map((origin) => normalizeLoginOrigin(origin)?.site).filter((site): site is string => Boolean(site)))];
-    return {
-      id,
-      kind: "login",
-      title: secret.title || sites[0] || "Login",
-      sites,
-      username: secret.username || null,
-      hasPassword: Boolean(secret.password),
-      hasTotp: Boolean(secret.totpUri),
-      projectScope: null,
-      deviceOnly: false,
-      updatedAt: secret.updatedAt,
-    };
-  }
-  if (secret.kind === "passkey") {
-    const site = normalizeLoginOrigin(`https://${secret.rpId}`)?.site ?? secret.rpId;
-    return {
-      id,
-      kind: "passkey",
-      title: site,
-      sites: [site],
-      username: secret.userName || secret.userDisplayName || null,
-      hasPassword: false,
-      hasTotp: false,
-      projectScope: null,
-      deviceOnly: false,
-      updatedAt: secret.updatedAt,
-    };
-  }
-  return {
-    id,
-    kind: "secret",
-    title: secret.name,
-    sites: [],
-    username: null,
-    hasPassword: Boolean(secret.value),
-    hasTotp: false,
-    projectScope: secret.projectScope,
-    deviceOnly,
-    updatedAt: secret.updatedAt,
-  };
 }
 
 export function createPasswordService(args: {
@@ -197,6 +96,12 @@ export function createPasswordService(args: {
    */
   getCloudEnabled?: () => boolean | null;
   setCloudEnabled?: (enabled: boolean) => void;
+  /**
+   * Whether this computer has read the account's settings at least once. On
+   * an ADE Cloud computer, an unset switch counts as off until then: a fresh
+   * cloud computer must not open the vault before it can see "off".
+   */
+  cloudSwitchSynced?: () => boolean;
   logger?: PasswordsLogger;
   /** Tests inject a store; production uses the machine's encrypted file store. */
   store?: CredentialStore;
@@ -204,7 +109,7 @@ export function createPasswordService(args: {
 }) {
   const logger = args.logger ?? { info: () => {}, warn: () => {} };
   const now = args.now ?? (() => new Date());
-  const store: CredentialStore = args.store ?? new EncryptedFileCredentialStore({
+  const store: CredentialStore & Partial<SyncCredentialStore> = args.store ?? new EncryptedFileCredentialStore({
     credentialsPath: path.join(args.adeDir, "passwords", "passwords.v1.enc"),
     machineKeyPath: path.join(args.adeDir, "secrets", ".machine-key"),
     lockPath: path.join(args.adeDir, "passwords", "passwords.v1.enc.lock"),
@@ -226,7 +131,11 @@ export function createPasswordService(args: {
     }
     return enabledHere;
   };
-  const cloudEnabled = (): boolean => args.getCloudEnabled?.() !== false;
+  const cloudEnabled = (): boolean => {
+    const value = args.getCloudEnabled?.() ?? null;
+    if (value === null && args.cloudSwitchSynced && !args.cloudSwitchSynced()) return false;
+    return value !== false;
+  };
   /** Passwords is on unless turned off: per computer, or by the one ADE Cloud switch. */
   const isEnabled = (): boolean => (isCloud ? cloudEnabled() : readEnabledHere());
 
@@ -309,6 +218,14 @@ export function createPasswordService(args: {
     if (keepKeyOnDisk) await store.delete(KEY_CACHE_KEY);
   }
 
+  /** Each item's current envelope (null: deleted); local writes not yet on the relay win over the mirrored copy. */
+  function liveEnvelopes(cache: Pick<CacheShape, "items" | "pending">): Map<string, string | null> {
+    const live = new Map<string, string | null>();
+    for (const item of cache.items) live.set(item.id, item.deleted ? null : item.envelope);
+    for (const write of cache.pending ?? []) live.set(write.id, write.deleted ? null : write.envelope);
+    return live;
+  }
+
   /**
    * Open every live item into memory. An item sealed under a NEWER key epoch
    * means Passwords was reset on another machine: this machine's cached key is
@@ -325,11 +242,7 @@ export function createPasswordService(args: {
     const { key, epoch } = await vaultKey(accountId);
     const next = new Map<string, PasswordItemSecret>();
     let unopenable = 0;
-    const live = new Map<string, string | null>();
-    for (const item of cache.items) live.set(item.id, item.deleted ? null : item.envelope);
-    // Local writes not yet on the relay win over the mirrored copy.
-    for (const write of cache.pending) live.set(write.id, write.deleted ? null : write.envelope);
-    for (const [id, raw] of live) {
+    for (const [id, raw] of liveEnvelopes(cache)) {
       if (!raw) continue;
       const envelope = parsePasswordEnvelope(raw);
       if (!envelope) {
@@ -577,42 +490,7 @@ export function createPasswordService(args: {
     logger.info("passwords.purged", {});
   }
 
-  /**
-   * This computer's own secrets: saved here, never synced, and kept whatever
-   * the account does (a sign-out, a reset, Passwords off). They are the
-   * person's deliberate "this computer only", so nothing here deletes them;
-   * while Passwords & Secrets is off here, nothing uses them either.
-   */
-  let deviceSecrets: DeviceSecret[] | null = null;
-  function parseDeviceSecrets(raw: string | null): DeviceSecret[] {
-    let parsed: unknown = null;
-    try {
-      parsed = JSON.parse(raw ?? "null");
-    } catch {
-      logger.warn("passwords.device_secrets_unreadable", {});
-    }
-    const items = parsed && typeof parsed === "object" && Array.isArray((parsed as { items?: unknown }).items)
-      ? (parsed as { items: unknown[] }).items
-      : [];
-    return items.filter((item): item is DeviceSecret => {
-      const candidate = item as Partial<DeviceSecret> | null;
-      return Boolean(candidate && typeof candidate.id === "string" && isDeviceId(candidate.id)
-        && typeof candidate.name === "string" && typeof candidate.value === "string");
-    }).map((item) => ({
-      ...item,
-      kind: "secret",
-      projectScope: typeof item.projectScope === "string" ? item.projectScope : null,
-      notes: typeof item.notes === "string" ? item.notes : "",
-    }));
-  }
-  async function readDevice(): Promise<DeviceSecret[]> {
-    deviceSecrets ??= parseDeviceSecrets(await store.get(DEVICE_SECRETS_KEY));
-    return deviceSecrets;
-  }
-  async function writeDevice(next: DeviceSecret[]): Promise<void> {
-    await store.set(DEVICE_SECRETS_KEY, JSON.stringify({ v: 1, items: next }));
-    deviceSecrets = next;
-  }
+  const device = createDeviceSecretStore(store, logger);
 
   /** Is the account vault usable here right now (signed in, on)? Opens it when so. */
   async function accountVaultOpen(): Promise<boolean> {
@@ -628,20 +506,16 @@ export function createPasswordService(args: {
    * relay, and skips anything sealed under a newer key (the next sync's job).
    */
   function openFromDiskSync(accountId: string): void {
-    const syncStore = store as CredentialStore & { getSync?: (key: string) => string | null };
-    if (!keepKeyOnDisk || typeof syncStore.getSync !== "function") return;
+    if (!keepKeyOnDisk || typeof store.getSync !== "function") return;
     try {
-      const keyRaw = JSON.parse(syncStore.getSync(KEY_CACHE_KEY) ?? "null") as { accountId?: string; dek?: string; epoch?: number } | null;
+      const keyRaw = JSON.parse(store.getSync(KEY_CACHE_KEY) ?? "null") as { accountId?: string; dek?: string; epoch?: number } | null;
       if (keyRaw?.accountId !== accountId || typeof keyRaw.dek !== "string" || typeof keyRaw.epoch !== "number") return;
-      const cache = JSON.parse(syncStore.getSync(CACHE_KEY) ?? "null") as CacheShape | null;
+      const cache = JSON.parse(store.getSync(CACHE_KEY) ?? "null") as CacheShape | null;
       if (cache?.v !== 1 || cache.accountId !== accountId || !Array.isArray(cache.items)) return;
       const key = Buffer.from(keyRaw.dek, "base64");
       const epoch = keyRaw.epoch;
-      const live = new Map<string, string | null>();
-      for (const item of cache.items) live.set(item.id, item.deleted ? null : item.envelope);
-      for (const write of cache.pending ?? []) live.set(write.id, write.deleted ? null : write.envelope);
       const next = new Map<string, PasswordItemSecret>();
-      for (const [id, raw] of live) {
+      for (const [id, raw] of liveEnvelopes(cache)) {
         const envelope = raw ? parsePasswordEnvelope(raw) : null;
         if (!envelope || envelope.epoch !== epoch) continue;
         try {
@@ -657,40 +531,84 @@ export function createPasswordService(args: {
       logger.warn("passwords.open_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
     }
   }
-  function readDeviceSync(): void {
-    const syncStore = store as CredentialStore & { getSync?: (key: string) => string | null };
-    if (deviceSecrets || typeof syncStore.getSync !== "function") return;
-    try {
-      deviceSecrets = parseDeviceSecrets(syncStore.getSync(DEVICE_SECRETS_KEY));
-    } catch (error) {
-      logger.warn("passwords.device_secrets_unreadable", { error: error instanceof Error ? error.name : "unknown" });
-    }
+  /** The account's opened items without waiting (from disk when it can), or null while locked. */
+  function openedNow(): ReadonlyMap<string, PasswordItemSecret> | null {
+    const accountId = args.getAccountUserId();
+    if (!accountId) return null;
+    if (openedFor !== accountId) openFromDiskSync(accountId);
+    return openedFor === accountId ? opened : null;
   }
 
-  function accountSecretEntries(): ProjectSecretEntry[] {
+  const projectSecrets = createProjectSecrets({
+    logger,
+    now,
+    device,
+    isEnabled,
+    accountUserId: () => args.getAccountUserId(),
+    openedNow,
+    ensureOpened: async () => {
+      const accountId = await ensureOpened();
+      return { accountId, opened };
+    },
+    writeItem,
+    vaultKey,
+    cacheView: (accountId) => withCache(() => readCache(accountId)),
+  });
+
+  /** Whether Passwords is on here, and what this computer holds. Never a value. */
+  async function status(): Promise<PasswordsStatus> {
     const accountId = args.getAccountUserId();
-    if (!accountId || !isEnabled()) return [];
-    if (openedFor !== accountId) openFromDiskSync(accountId);
-    if (openedFor !== accountId) return [];
-    const out: ProjectSecretEntry[] = [];
-    for (const [id, secret] of opened) {
-      if (secret.kind !== "secret") continue;
-      out.push({ id, name: secret.name, value: secret.value, projectScope: secret.projectScope, deviceOnly: false, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+    const enabled = isEnabled();
+    let itemCount: number | null = null;
+    if (accountId && enabled) {
+      try {
+        await ensureOpened();
+        itemCount = opened.size;
+      } catch (error) {
+        logger.warn("passwords.status_open_failed", { error: error instanceof Error ? error.message : String(error) });
+        itemCount = null;
+      }
     }
-    return out;
+    return {
+      signedIn: Boolean(accountId),
+      enabled,
+      machineKind: args.machineKind,
+      cloudEnabled: args.getCloudEnabled?.() ?? null,
+      itemCount,
+    };
   }
-  /** This computer's own secrets, while Passwords & Secrets is on here (off means off). */
-  function deviceSecretEntries(): ProjectSecretEntry[] {
-    if (!isEnabled()) return [];
-    return (deviceSecrets ?? []).map((secret) => ({
-      id: secret.id,
-      name: secret.name,
-      value: secret.value,
-      projectScope: secret.projectScope,
-      deviceOnly: true,
-      createdAt: secret.createdAt,
-      updatedAt: secret.updatedAt,
-    }));
+
+  /**
+   * Add a login, or change one by id. A change keeps whatever it does not
+   * name: its exact sites, username, title, notes and code.
+   */
+  async function saveLogin(input: { id?: string; title?: string; origins?: string[]; username?: string; password: string; notes?: string; totpUri?: string | null }): Promise<PasswordItemSummary> {
+    await ensureOpened();
+    const existingItem = input.id ? opened.get(input.id) : undefined;
+    if (input.id && existingItem?.kind !== "login") throw new Error("That saved login no longer exists.");
+    const existing = existingItem?.kind === "login" ? existingItem : undefined;
+    const named = input.origins?.length ? input.origins : existing?.origins ?? [];
+    const origins = [...new Set(named.map((origin) => normalizeLoginOrigin(origin)?.origin).filter((origin): origin is string => Boolean(origin)))];
+    if (origins.length === 0) throw new Error("A saved login needs an https site.");
+    if (!input.password) throw new Error("A saved login needs a password.");
+    const id = input.id ?? newPasswordItemId();
+    const stamp = now().toISOString();
+    const secret: PasswordLoginSecret = {
+      kind: "login",
+      title: input.title?.trim() || existing?.title || normalizeLoginOrigin(origins[0]!)?.site || "Login",
+      origins,
+      username: input.username ?? existing?.username ?? "",
+      password: input.password,
+      notes: input.notes ?? existing?.notes ?? "",
+      // A bare key a site shows ("can't scan?") is kept as a standard URI; a
+      // value that is neither is refused rather than saved broken.
+      totpUri: input.totpUri !== undefined ? totpOrThrow(input.totpUri, input.title?.trim() || existing?.title || "") : existing?.totpUri ?? null,
+      createdAt: existing?.createdAt ?? stamp,
+      updatedAt: stamp,
+    };
+    await writeItem(id, secret);
+    logger.info("passwords.item_saved", { itemId: id, kind: "login" });
+    return summarize(id, secret);
   }
 
   return {
@@ -738,28 +656,10 @@ export function createPasswordService(args: {
       }
     },
 
-    /** Whether Passwords is on here, and what this computer holds. Never a value. */
-    async status(): Promise<PasswordsStatus> {
-      const accountId = args.getAccountUserId();
-      const enabled = isEnabled();
-      let itemCount: number | null = null;
-      if (accountId && enabled) {
-        try {
-          await ensureOpened();
-          itemCount = opened.size;
-        } catch (error) {
-          logger.warn("passwords.status_open_failed", { error: error instanceof Error ? error.message : String(error) });
-          itemCount = null;
-        }
-      }
-      return {
-        signedIn: Boolean(accountId),
-        enabled,
-        machineKind: args.machineKind,
-        cloudEnabled: args.getCloudEnabled?.() ?? null,
-        itemCount,
-      };
-    },
+    status,
+
+    /** Who this computer is signed in as, or null. */
+    accountUserId: (): string | null => args.getAccountUserId(),
 
     /**
      * Turn Passwords on or off for this computer. Off forgets the key and every
@@ -782,7 +682,7 @@ export function createPasswordService(args: {
         await purgeLocal();
       }
       logger.info("passwords.enabled_changed", { enabled });
-      return await this.status();
+      return await status();
     },
 
     /** The account-wide switch for ADE Cloud computers. */
@@ -791,7 +691,7 @@ export function createPasswordService(args: {
       args.setCloudEnabled(enabled);
       if (isCloud && !enabled) await purgeLocal();
       logger.info("passwords.cloud_enabled_changed", { enabled });
-      return await this.status();
+      return await status();
     },
 
     /**
@@ -810,14 +710,19 @@ export function createPasswordService(args: {
       if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
       logger.info("passwords.reset", { epoch: released.epoch });
       await sync();
-      return await this.status();
+      return await status();
     },
 
     /** Everything an agent or a list may see. Never a value. */
     async listSummaries(): Promise<PasswordItemSummary[]> {
-      const device = isEnabled() ? (await readDevice()).map((secret) => summarize(secret.id, secret, true)) : [];
-      const account = (await accountVaultOpen()) ? [...opened.entries()].map(([id, secret]) => summarize(id, secret)) : [];
-      return [...account, ...device].sort((a, b) => a.title.localeCompare(b.title));
+      const own = isEnabled() ? (await device.read()).map((secret) => summarize(secret.id, secret, true)) : [];
+      // A vault that can't be opened now still lists this computer's own secrets.
+      const accountOpen = await accountVaultOpen().catch((error: unknown) => {
+        logger.warn("passwords.account_open_failed", { error: error instanceof Error ? error.name : "unknown" });
+        return false;
+      });
+      const account = accountOpen ? [...opened.entries()].map(([id, secret]) => summarize(id, secret)) : [];
+      return [...account, ...own].sort((a, b) => a.title.localeCompare(b.title));
     },
 
     /** The site and exact origin Passwords would fill a page on, or null (not https, not a site). */
@@ -826,8 +731,8 @@ export function createPasswordService(args: {
       return normalized ? { site: normalized.site, origin: normalized.origin } : null;
     },
 
-    /** Saved logins for the site a page is on, best match first. Summaries only. */
     /**
+     * Saved logins for the site a page is on, best match first. Summaries only.
      * `exactOrigin`: only logins saved for this exact address (scheme, host,
      * port). An agent's fill asks for that, so a login is never typed into
      * another subdomain of its site; the person's key button matches the site.
@@ -885,51 +790,7 @@ export function createPasswordService(args: {
       return { itemId: entry[0], site: summarize(entry[0], entry[1]).sites[0] ?? entry[1].title, username: entry[1].username || null, code, secondsLeft };
     },
 
-    /**
-     * The Passwords secrets a project's processes get: those for every project,
-     * then the project's own over them. Empty when Passwords is off or locked.
-     */
-    async secretValuesForProject(projectScope: string | null): Promise<Record<string, string>> {
-      return Object.fromEntries([...(await this.secretsForProject(projectScope)).values()].map((entry) => [entry.name, entry.value]));
-    },
-
-    /**
-     * The secrets one project sees, by name (see `secretsForScope` for which
-     * wins). Opens the account vault when it is usable; this computer's own
-     * secrets come either way.
-     */
-    async secretsForProject(projectScope: string | null): Promise<Map<string, ProjectSecretEntry>> {
-      await readDevice();
-      await accountVaultOpen();
-      return secretsForScope([...accountSecretEntries(), ...deviceSecretEntries()], projectScope);
-    },
-
-    /** Every secret this computer can use, unmerged: the account's and its own. */
-    async allSecretEntries(): Promise<ProjectSecretEntry[]> {
-      await readDevice();
-      await accountVaultOpen();
-      return [...accountSecretEntries(), ...deviceSecretEntries()];
-    },
-
-    /**
-     * The same, from what this computer already holds in memory: for a caller
-     * that cannot wait (a webhook signature check). The periodic sync keeps it
-     * current; before the first open it holds only this computer's secrets.
-     */
-    /**
-     * Only this computer's own secrets, without waiting and without asking
-     * who is signed in: for what is read before anyone is (sign-in's account
-     * server, see `SIGN_IN_CONFIG_SECRET_NAMES`).
-     */
-    deviceSecretsSnapshot(projectScope: string | null): Map<string, ProjectSecretEntry> {
-      readDeviceSync();
-      return secretsForScope(deviceSecretEntries(), projectScope);
-    },
-
-    secretsSnapshot(projectScope: string | null): Map<string, ProjectSecretEntry> {
-      readDeviceSync();
-      return secretsForScope([...accountSecretEntries(), ...deviceSecretEntries()], projectScope);
-    },
+    ...projectSecrets,
 
     /**
      * One saved value for the person's own eyes (Settings' Reveal / Copy, after
@@ -938,7 +799,8 @@ export function createPasswordService(args: {
      */
     async revealValue(input: { itemId: string; field: "password" | "username" | "value" | "notes" }): Promise<string | null> {
       if (isDeviceId(input.itemId)) {
-        const secret = (await readDevice()).find((item) => item.id === input.itemId);
+        if (!isEnabled()) return null;
+        const secret = (await device.read()).find((item) => item.id === input.itemId);
         if (!secret) return null;
         return input.field === "value" ? secret.value : input.field === "notes" ? secret.notes : null;
       }
@@ -987,155 +849,23 @@ export function createPasswordService(args: {
         createdAt: input.createdAt ?? stamp,
         updatedAt: stamp,
       };
-      const id = newItemId();
+      const id = newPasswordItemId();
       await writeItem(id, secret);
       logger.info("passwords.item_saved", { itemId: id, kind: "passkey" });
       return summarize(id, secret);
     },
 
-    /** A secret's value by name, for injecting into a process ADE starts. Never returned to an agent. */
-    async resolveSecretValue(input: { name: string; projectScope: string | null }): Promise<string | null> {
-      return (await this.secretsForProject(input.projectScope)).get(input.name)?.value ?? null;
-    },
-
-    /**
-     * Add a login, or change one by id. A change keeps whatever it does not
-     * name: its exact sites, username, title, notes and code.
-     */
-    async saveLogin(input: { id?: string; title?: string; origins?: string[]; username?: string; password: string; notes?: string; totpUri?: string | null }): Promise<PasswordItemSummary> {
-      await ensureOpened();
-      const existingItem = input.id ? opened.get(input.id) : undefined;
-      if (input.id && existingItem?.kind !== "login") throw new Error("That saved login no longer exists.");
-      const existing = existingItem?.kind === "login" ? existingItem : undefined;
-      const named = input.origins?.length ? input.origins : existing?.origins ?? [];
-      const origins = [...new Set(named.map((origin) => normalizeLoginOrigin(origin)?.origin).filter((origin): origin is string => Boolean(origin)))];
-      if (origins.length === 0) throw new Error("A saved login needs an https site.");
-      if (!input.password) throw new Error("A saved login needs a password.");
-      const id = input.id ?? newItemId();
-      const stamp = now().toISOString();
-      const secret: PasswordLoginSecret = {
-        kind: "login",
-        title: input.title?.trim() || existing?.title || normalizeLoginOrigin(origins[0]!)?.site || "Login",
-        origins,
-        username: input.username ?? existing?.username ?? "",
-        password: input.password,
-        notes: input.notes ?? existing?.notes ?? "",
-        // A bare key a site shows ("can't scan?") is kept as a standard URI; a
-        // value that is neither is refused rather than saved broken.
-        totpUri: input.totpUri !== undefined ? totpOrThrow(input.totpUri, input.title?.trim() || existing?.title || "") : existing?.totpUri ?? null,
-        createdAt: existing?.createdAt ?? stamp,
-        updatedAt: stamp,
-      };
-      await writeItem(id, secret);
-      logger.info("passwords.item_saved", { itemId: id, kind: "login" });
-      return summarize(id, secret);
-    },
-
-    /**
-     * Save a secret. Without an id, a secret with the same name for the same
-     * project (in the same place: the account, or this computer) is updated
-     * rather than doubled. `deviceOnly` keeps it on this computer, never synced.
-     */
-    async saveSecret(input: { id?: string; name: string; value: string; projectScope: string | null; notes?: string; deviceOnly?: boolean; updatedAt?: string }): Promise<PasswordItemSummary> {
-      const name = input.name.trim();
-      if (!SECRET_NAME_PATTERN.test(name)) throw new Error("A secret's name is letters, digits, _, . or -, starting with a letter or _ (like STRIPE_API_KEY).");
-      if (!input.value) throw new Error(`${name} needs a value.`);
-      const stamp = input.updatedAt ?? now().toISOString();
-      const deviceOnly = input.id ? isDeviceId(input.id) : input.deviceOnly === true;
-      if (deviceOnly) {
-        return await withCache(async () => {
-          const items = await readDevice();
-          const existing = input.id
-            ? items.find((item) => item.id === input.id)
-            : items.find((item) => item.name === name && item.projectScope === input.projectScope);
-          if (input.id && !existing) throw new Error("That secret no longer exists.");
-          const secret: DeviceSecret = {
-            id: existing?.id ?? newItemId(DEVICE_ID_PREFIX),
-            kind: "secret",
-            name,
-            value: input.value,
-            projectScope: input.projectScope,
-            notes: input.notes ?? existing?.notes ?? "",
-            createdAt: existing?.createdAt ?? stamp,
-            updatedAt: stamp,
-          };
-          await writeDevice([...items.filter((item) => item.id !== secret.id), secret]);
-          logger.info("passwords.item_saved", { itemId: secret.id, kind: "secret", deviceOnly: true });
-          return summarize(secret.id, secret, true);
-        });
-      }
-      await ensureOpened();
-      const existingEntry = input.id
-        ? [input.id, opened.get(input.id)] as const
-        : [...opened.entries()].find(([, item]) => item.kind === "secret" && item.name === name && item.projectScope === input.projectScope);
-      const existing = existingEntry?.[1];
-      if (input.id && existing?.kind !== "secret") throw new Error("That secret no longer exists.");
-      const id = existingEntry?.[0] ?? newItemId();
-      const secret: PasswordSecretSecret = {
-        kind: "secret",
-        name,
-        value: input.value,
-        projectScope: input.projectScope,
-        notes: input.notes ?? (existing?.kind === "secret" ? existing.notes : ""),
-        createdAt: existing?.createdAt ?? stamp,
-        updatedAt: stamp,
-      };
-      await writeItem(id, secret);
-      logger.info("passwords.item_saved", { itemId: id, kind: "secret" });
-      return summarize(id, secret);
-    },
-
-    /**
-     * One secret from the old per-project store, moved in. A copy already here
-     * that is as new or newer stays. An account secret with no copy here gets
-     * an id derived from its project and name under the vault key (the relay
-     * cannot read names from it): two computers that move the same old secret
-     * write the same item, and the relay keeps the first. A secret the account
-     * has since deleted stays deleted.
-     */
-    async adoptLegacySecret(input: { name: string; value: string; projectScope: string; deviceOnly: boolean; updatedAt: string }): Promise<"saved" | "kept" | "deleted"> {
-      if (input.deviceOnly) {
-        const existing = (await readDevice()).find((item) => item.name === input.name && item.projectScope === input.projectScope);
-        if (existing && existing.updatedAt >= input.updatedAt) return "kept";
-        await this.saveSecret({ ...input, deviceOnly: true });
-        return "saved";
-      }
-      const accountId = await ensureOpened();
-      const existing = [...opened.entries()].find(([, item]) => item.kind === "secret" && item.name === input.name && item.projectScope === input.projectScope);
-      if (existing) {
-        if (existing[1].kind === "secret" && existing[1].updatedAt >= input.updatedAt) return "kept";
-        await this.saveSecret({ id: existing[0], name: input.name, value: input.value, projectScope: input.projectScope, updatedAt: input.updatedAt });
-        return "saved";
-      }
-      const { key } = await vaultKey(accountId);
-      const id = `pw_${crypto.createHmac("sha256", key).update(`legacy-secret\0${input.projectScope}\0${input.name}`).digest("base64url").slice(0, 32)}`;
-      const deleted = await withCache(async () => {
-        const cache = await readCache(accountId);
-        return cache.items.some((item) => item.id === id && item.deleted) || cache.pending.some((write) => write.id === id && write.deleted);
-      });
-      if (deleted) return "deleted";
-      await writeItem(id, {
-        kind: "secret",
-        name: input.name,
-        value: input.value,
-        projectScope: input.projectScope,
-        notes: "",
-        createdAt: input.updatedAt,
-        updatedAt: input.updatedAt,
-      });
-      logger.info("passwords.item_saved", { itemId: id, kind: "secret", legacy: true });
-      return "saved";
-    },
+    saveLogin,
 
     async remove(id: string): Promise<boolean> {
       if (isDeviceId(id)) {
-        return await withCache(async () => {
-          const items = await readDevice();
-          if (!items.some((item) => item.id === id)) return false;
-          await writeDevice(items.filter((item) => item.id !== id));
-          logger.info("passwords.item_removed", { itemId: id, deviceOnly: true });
-          return true;
+        let removed = false;
+        await device.update((items) => {
+          removed = items.some((item) => item.id === id);
+          return removed ? items.filter((item) => item.id !== id) : undefined;
         });
+        if (removed) logger.info("passwords.item_removed", { itemId: id, deviceOnly: true });
+        return removed;
       }
       await ensureOpened();
       if (!opened.has(id)) return false;
@@ -1153,7 +883,7 @@ export function createPasswordService(args: {
         .map((secret) => ({ origins: secret.origins, username: secret.username, password: secret.password }));
       const { fresh, skippedDuplicate } = dedupeImportedLogins(parsed.rows, existing);
       for (const row of fresh) {
-        await this.saveLogin({
+        await saveLogin({
           title: row.title,
           origins: row.origins,
           username: row.username,
@@ -1171,7 +901,6 @@ export function createPasswordService(args: {
     /** Keep this computer's copy in step with the account, once per service (unref'd). */
     startPeriodicSync(): void {
       if (periodicSync) return;
-      void readDevice();
       void sync().catch((error: unknown) => {
         logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
       });
@@ -1200,9 +929,14 @@ const registry = createStoreRegistry<PasswordService>();
 const PASSWORDS_CLOUD_SETTING_KEY = "passwords.cloudEnabled";
 
 /** The ADE Cloud switch, read and written as an ordinary account setting (it holds no secret). */
-export function passwordsCloudSwitch(settings: { get(scope: string, key: string): unknown; set(scope: string, key: string, value: unknown): boolean } | null): {
+export function passwordsCloudSwitch(settings: {
+  get(scope: string, key: string): unknown;
+  set(scope: string, key: string, value: unknown): boolean;
+  health?(): { lastSyncedAt: string | null };
+} | null): {
   getCloudEnabled: () => boolean | null;
   setCloudEnabled: (enabled: boolean) => void;
+  cloudSwitchSynced: () => boolean;
 } {
   return {
     getCloudEnabled: () => {
@@ -1212,6 +946,7 @@ export function passwordsCloudSwitch(settings: { get(scope: string, key: string)
     setCloudEnabled: (enabled) => {
       settings?.set("all", PASSWORDS_CLOUD_SETTING_KEY, enabled);
     },
+    cloudSwitchSynced: () => Boolean(settings?.health?.().lastSyncedAt),
   };
 }
 

@@ -5304,8 +5304,8 @@ app.whenReady().then(async () => {
       getAutomationPlannerService: () => automationPlannerService,
       getUsageService: () => usageTrackingService,
       getBudgetService: () => budgetCapService,
-      // Names and metadata only. `projectSecretService.get`/`exportEnv` are
-      // deliberately NOT reachable from any CTO tool.
+      // Names and metadata only. `projectSecretService.get` and every other
+      // value read are deliberately NOT reachable from any CTO tool.
       getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down

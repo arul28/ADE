@@ -3,15 +3,13 @@ import path from "node:path";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { getMachineAccountStores } from "../../../../../ade-cli/src/services/account/machineAccountStores";
-import {
-  SECRET_NAME_PATTERN,
-  type PasswordService,
-  type ProjectSecretEntry,
-} from "../../../../../ade-cli/src/services/passwords/passwordService";
+import type { PasswordService } from "../../../../../ade-cli/src/services/passwords/passwordService";
+import type { LegacySecretAdoption, ProjectSecretEntry } from "../../../../../ade-cli/src/services/passwords/passwordProjectSecrets";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { AccountStoreResult } from "../../../shared/types/accountStore";
 import type { AccountVaultItem } from "../../../shared/types/accountVault";
+import { SECRET_NAME_PATTERN, SECRET_NAME_RULE, SIGN_IN_CONFIG_SECRET_NAMES } from "../../../shared/types/passwords";
 import type {
   ProjectSecretDeleteArgs,
   ProjectSecretGetArgs,
@@ -31,7 +29,7 @@ import { readGitConfigOriginUrl, readGitOriginUrl } from "../projects/recentProj
  * it keeps none of its own.
  *
  * It also moves secrets saved by the old per-project store (and its account
- * vault rows) into Passwords & Secrets, once, without saying anything.
+ * vault rows) into Passwords & Secrets, without saying anything.
  */
 
 type Logger = {
@@ -44,15 +42,37 @@ export type LegacySecretVault = {
   list(scope?: string | null): Promise<AccountStoreResult<AccountVaultItem[]>>;
   get(scope: string, kind: string, key: string): Promise<AccountStoreResult<string | null>>;
   remove(scope: string, kind: string, key: string): Promise<unknown>;
+  /** Pull the account's rows; the value is the sync status. Until a pull succeeds, the old rows count as unread. */
+  sync?(options?: { maxAgeMs?: number }): Promise<AccountStoreResult<string | null>>;
 };
 
 export type ProjectSecretServiceOptions = {
-  /** This computer's Passwords service; defaults to the machine's shared one. */
+  /**
+   * The Passwords service of the runtime that owns this project. Only that
+   * runtime moves old secrets in; without it, reads use the machine's shared
+   * service and the move is left to the runtime.
+   */
   getPasswordService?: () => PasswordService | null;
   /** The account vault, only to move old account rows across. */
   getAccountVault?: () => LegacySecretVault | null | undefined;
   logger?: Logger | null;
 };
+
+/** What one move did: secrets saved in the new place, and old ones still waiting. */
+export type LegacySecretMoveResult = { moved: number; waiting: number; done: boolean };
+
+/**
+ * A project's key in Passwords & Secrets: its repository (so every clone on
+ * every computer shares it), or, with no remote, this folder.
+ */
+export function projectSecretScopeForRoot(projectRoot: string): string {
+  return repoScopeForRoot(projectRoot) ?? `path:${path.resolve(projectRoot)}`;
+}
+
+/** The project's repository key, or null for a folder with no remote. */
+function repoScopeForRoot(projectRoot: string): string | null {
+  return accountRepoScopeKey(readGitOriginUrl(projectRoot));
+}
 
 /** The old store's files, under the project's `.ade/secrets`. */
 const LEGACY_STORE_FILE = "project-secrets.v1.enc";
@@ -60,30 +80,36 @@ const LEGACY_KEY_FILE = ".project-secrets-key";
 const LEGACY_INDEX_KEY = "__ade_project_secrets_index_v1";
 const LEGACY_VALUE_PREFIX = "secret:";
 const LEGACY_VAULT_KIND = "project_secret";
+/** A pull of the account's rows this recent is fresh enough to read the old rows from. */
+const LEGACY_VAULT_PULL_MAX_AGE_MS = 60_000;
 
+/** How long a read by name or a list waits for the account before answering from this computer's copy. */
+const FRESH_READ_WAIT_MS = 3_000;
+/** Reads within this long of the last account check answer from this computer's copy (a burst of reads asks once). */
+const FRESH_READ_MAX_AGE_MS = 10_000;
+
+/** One secret the old store held, from its file or the account's old rows. */
 type LegacyEntry = { name: string; value: string; deviceOnly: boolean; updatedAt: string };
-
 /**
- * The secrets that say which account server this computer signs in to (a
- * development Clerk project, a private account directory). They are read
- * before anyone is signed in, so they live on this computer: the move keeps
- * them this-computer-only, and sign-in reads only these names this way.
+ * A file entry, with where the old store said it came from: `source:
+ * "account"` was pulled from `accountUserId`'s rows, so it is that account's
+ * copy, not a secret this computer made.
  */
-export const SIGN_IN_CONFIG_SECRET_NAMES: ReadonlySet<string> = new Set([
-  "CLERK_ISSUER",
-  "CLERK_OAUTH_CLIENT_ID",
-  "CLERK_JWKS_URL",
-  "ADE_ACCOUNT_DIRECTORY_URL",
-]);
+type LegacyFileEntry = LegacyEntry & { storage: "account" | "device"; source: string | null; accountUserId: string | null };
+type LegacyVaultRead = {
+  live: Array<LegacyEntry & { scope: string }>;
+  /** When each deleted name was deleted, newest across both keys. */
+  deletedAt: Map<string, string>;
+};
 
 const noopLogger = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} };
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 function normalizeSecretName(name: string | undefined | null): string {
   const normalized = typeof name === "string" ? name.trim() : "";
   if (!normalized) throw new AdeExpectedError("A secret needs a name.", "user");
-  if (!SECRET_NAME_PATTERN.test(normalized)) {
-    throw new AdeExpectedError("A secret's name is letters, digits, _, . or -, starting with a letter or _ (like STRIPE_API_KEY).", "user");
-  }
+  if (!SECRET_NAME_PATTERN.test(normalized)) throw new AdeExpectedError(SECRET_NAME_RULE, "user");
   return normalized;
 }
 
@@ -98,10 +124,7 @@ function toSummary(entry: ProjectSecretEntry): ProjectSecretSummary {
 }
 
 function listResult(entries: Map<string, ProjectSecretEntry>): ProjectSecretsListResult {
-  return {
-    secrets: [...entries.values()].map(toSummary).sort((a, b) => a.name.localeCompare(b.name)),
-    storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" },
-  };
+  return { secrets: [...entries.values()].map(toSummary).sort((a, b) => a.name.localeCompare(b.name)) };
 }
 
 function notFound(name: string): Error {
@@ -116,14 +139,35 @@ export function createProjectSecretService(projectRoot: string, options: Project
     return service;
   };
 
-  /**
-   * The project's key in Passwords & Secrets: its repository (so every clone
-   * on every computer shares it), or, with no remote, this folder.
-   */
-  const accountScope = (): string => accountRepoScopeKey(readGitOriginUrl(projectRoot))
-    ?? `path:${path.resolve(projectRoot)}`;
+  const accountScope = (): string => projectSecretScopeForRoot(projectRoot);
 
-  const fresh = async () => await passwords().secretsForProject(accountScope());
+  let lastAccountCheckAt = 0;
+  /**
+   * The project's secrets after asking the account what changed, so a secret
+   * added on another computer a moment ago is there. A slow relay never holds
+   * a read past `FRESH_READ_WAIT_MS`; the sync keeps going for the next read.
+   */
+  const fresh = async (): Promise<Map<string, ProjectSecretEntry>> => {
+    const service = passwords();
+    // Only the runtime that owns the project syncs: the machine's shared
+    // service in another process would write the same Passwords cache.
+    if (options.getPasswordService && Date.now() - lastAccountCheckAt >= FRESH_READ_MAX_AGE_MS) {
+      lastAccountCheckAt = Date.now();
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      await Promise.race([
+        service.sync().catch((error: unknown) => {
+          logger?.warn?.("project_secret.fresh_sync_failed", { error: errorText(error) });
+        }),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, FRESH_READ_WAIT_MS);
+          timer.unref?.();
+        }),
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+    }
+    return await service.secretsForProject(accountScope());
+  };
   const snapshot = () => passwords().secretsSnapshot(accountScope());
 
   const valueResult = (entries: Map<string, ProjectSecretEntry>, name: string): ProjectSecretValueResult => {
@@ -136,41 +180,51 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
   const legacyPaths = () => {
     const secretsDir = resolveAdeLayout(projectRoot).secretsDir;
-    return {
-      credentialsPath: path.join(secretsDir, LEGACY_STORE_FILE),
-      machineKeyPath: path.join(secretsDir, LEGACY_KEY_FILE),
-    };
+    const credentialsPath = path.join(secretsDir, LEGACY_STORE_FILE);
+    return { credentialsPath, machineKeyPath: path.join(secretsDir, LEGACY_KEY_FILE), lockPath: `${credentialsPath}.lock` };
   };
 
+  // One store object while the file exists: its reads are cached by the file's stat.
+  let legacyStore: EncryptedFileCredentialStore | null = null;
   const openLegacyStore = (): EncryptedFileCredentialStore | null => {
-    const { credentialsPath, machineKeyPath } = legacyPaths();
-    if (!fs.existsSync(credentialsPath)) return null;
-    return new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath, lockPath: `${credentialsPath}.lock` });
+    const paths = legacyPaths();
+    if (!fs.existsSync(paths.credentialsPath)) {
+      legacyStore = null;
+      return null;
+    }
+    legacyStore ??= new EncryptedFileCredentialStore(paths);
+    return legacyStore;
   };
 
   /** Everything the old store holds on this computer, or null when there is no old store. */
-  const readLegacyFile = (): LegacyEntry[] | null => {
+  const readLegacyFile = (): LegacyFileEntry[] | null => {
     const store = openLegacyStore();
     if (!store) return null;
     const indexRaw = store.getSync(LEGACY_INDEX_KEY);
     // The store answers an unreadable file as empty; that is a failed read, not "no secrets".
     if (store.getLastReadState() === "unreadable") throw new Error("ADE couldn't read this project's old secrets file.");
-    const index = JSON.parse(indexRaw ?? "null") as { entries?: Record<string, { storage?: string; updatedAt?: string }> } | null;
-    const out: LegacyEntry[] = [];
+    const index = JSON.parse(indexRaw ?? "null") as {
+      entries?: Record<string, { storage?: string; updatedAt?: string; source?: string; accountUserId?: string | null }>;
+    } | null;
+    const out: LegacyFileEntry[] = [];
     for (const [name, entry] of Object.entries(index?.entries ?? {})) {
       const value = store.getSync(`${LEGACY_VALUE_PREFIX}${name}`);
       if (!value || !SECRET_NAME_PATTERN.test(name)) continue;
+      const storage = entry?.storage === "device" ? "device" : "account";
       out.push({
         name,
         value,
-        deviceOnly: entry?.storage === "device" || SIGN_IN_CONFIG_SECRET_NAMES.has(name),
+        storage,
+        deviceOnly: storage === "device" || SIGN_IN_CONFIG_SECRET_NAMES.has(name),
         updatedAt: typeof entry?.updatedAt === "string" ? entry.updatedAt : new Date(0).toISOString(),
+        source: typeof entry?.source === "string" ? entry.source : null,
+        accountUserId: typeof entry?.accountUserId === "string" ? entry.accountUserId : null,
       });
     }
     return out;
   };
 
-  /** One name out of the old store: a secret still waiting there, deleted before it moved. */
+  /** One name out of the old store: moved in, deleted before it moved, or another account's copy. */
   const removeLegacyName = (name: string): boolean => {
     let removed = false;
     openLegacyStore()?.updateSync((values) => {
@@ -186,134 +240,203 @@ export function createProjectSecretService(projectRoot: string, options: Project
   };
 
   const removeLegacyFile = (): void => {
-    const { credentialsPath, machineKeyPath } = legacyPaths();
-    for (const file of [credentialsPath, machineKeyPath, `${credentialsPath}.lock`]) fs.rmSync(file, { force: true });
+    const { credentialsPath, machineKeyPath, lockPath } = legacyPaths();
+    for (const file of [credentialsPath, machineKeyPath, lockPath]) fs.rmSync(file, { force: true });
+    legacyStore = null;
   };
 
-  /** The account's old rows for this repository (and the SSH-alias key older ADE wrote). */
-  const readLegacyVault = async (vault: LegacySecretVault): Promise<Array<LegacyEntry & { scope: string }> | null> => {
+  /** The keys the old account rows for this repository sit under: its repository key and the SSH-alias key older ADE wrote. */
+  const legacyVaultScopes = (canonical: string | null): Set<string> => {
     const scopes = new Set<string>();
-    const canonical = accountRepoScopeKey(readGitOriginUrl(projectRoot));
     const alias = accountRepoScopeKey(readGitConfigOriginUrl(projectRoot));
     if (canonical) scopes.add(canonical);
     if (alias) scopes.add(alias);
-    const out: Array<LegacyEntry & { scope: string }> = [];
+    return scopes;
+  };
+
+  /**
+   * The account's old rows for this repository (and the SSH-alias key older
+   * ADE wrote), deleted ones included. Null while they cannot be read, or
+   * when the account's rows could not be pulled just now: a stale copy could
+   * miss a deletion another computer made.
+   */
+  const readLegacyVault = async (vault: LegacySecretVault, canonical: string | null): Promise<LegacyVaultRead | null> => {
+    if (vault.sync) {
+      const synced = await vault.sync({ maxAgeMs: LEGACY_VAULT_PULL_MAX_AGE_MS });
+      if (!synced.ok || synced.value !== "ready") return null;
+    }
+    const scopes = legacyVaultScopes(canonical);
+    const read: LegacyVaultRead = { live: [], deletedAt: new Map() };
     for (const scope of scopes) {
       const listed = await vault.list(scope);
       if (!listed.ok) return null;
       for (const item of listed.value) {
-        if (item.scope !== scope || item.kind !== LEGACY_VAULT_KIND || item.deleted || !SECRET_NAME_PATTERN.test(item.key)) continue;
+        if (item.scope !== scope || item.kind !== LEGACY_VAULT_KIND || !SECRET_NAME_PATTERN.test(item.key)) continue;
+        if (item.deleted) {
+          const known = read.deletedAt.get(item.key);
+          if (!known || item.updatedAt > known) read.deletedAt.set(item.key, item.updatedAt);
+          continue;
+        }
         let value = item.value;
         if (typeof value !== "string") {
           const fetched = await vault.get(scope, LEGACY_VAULT_KIND, item.key);
           if (!fetched.ok) return null;
           value = fetched.value;
         }
-        if (value) out.push({ scope, name: item.key, value, deviceOnly: false, updatedAt: item.updatedAt });
+        if (value) read.live.push({ scope, name: item.key, value, deviceOnly: false, updatedAt: item.updatedAt });
       }
     }
-    return out;
+    return read;
   };
 
-  let migrating: Promise<void> | null = null;
-  /** Nothing old was left at the last look (no file, the account's rows read and empty). */
-  let legacyGone = false;
+  let migrating: Promise<LegacySecretMoveResult> | null = null;
 
   /**
-   * Move the old store's secrets into Passwords & Secrets. Safe to run every
-   * start and on several computers at once (`adoptLegacySecret`): a name
-   * already there with a newer value is left alone, one the account deleted
-   * stays deleted, and each old copy is removed only once its value is saved
-   * in the new place. Account secrets wait until the account vault is usable
-   * (read from the old file until then); this-computer-only ones move at once.
+   * Move the old store's secrets into Passwords & Secrets, without a word to
+   * anyone. Safe to run every start and on several computers at once
+   * (`adoptLegacySecret`): a name already there with a newer value is left
+   * alone, one the account deleted stays deleted, and each old copy is removed
+   * only once the new place holds its value (an account secret: once the
+   * relay has it). Until then, processes read it from the old store. Account
+   * secrets wait for sign-in; this-computer-only ones move at once.
    */
-  const migrateLegacy = (): Promise<void> => {
-    if (legacyGone) return Promise.resolve();
-    migrating ??= (async () => {
-      let fileEntries: LegacyEntry[] | null = null;
+  const migrateLegacy = (): Promise<LegacySecretMoveResult> => {
+    migrating ??= (async (): Promise<LegacySecretMoveResult> => {
+      // Only the runtime that owns this project moves it: two processes
+      // writing the same Passwords cache would lose each other's writes.
+      const service = options.getPasswordService?.() ?? null;
+      // Not done: the owning runtime still has to move them (reads use the old store until then).
+      if (!service) return { moved: 0, waiting: 0, done: false };
+      let file: LegacyFileEntry[] | null = null;
       try {
-        fileEntries = readLegacyFile();
+        file = readLegacyFile();
       } catch (error) {
-        logger?.warn?.("project_secret.legacy_unreadable", { error: error instanceof Error ? error.message : String(error) });
+        logger?.warn?.("project_secret.legacy_unreadable", { error: errorText(error) });
+        return { moved: 0, waiting: 0, done: false };
       }
       const vault = options.getAccountVault?.() ?? null;
-      const service = passwords();
+      const accountId = service.accountUserId();
       const status = await service.status();
-      const accountReady = status.signedIn && status.enabled;
-      let vaultEntries: Array<LegacyEntry & { scope: string }> | null = null;
+      // Off means nothing moves: what moved would stop reaching processes.
+      if (!status.enabled) return { moved: 0, waiting: file?.length ?? 0, done: !file?.length };
+      const accountReady = Boolean(accountId) && status.signedIn;
+      let vaultRead: LegacyVaultRead | null = null;
+      const canonical = repoScopeForRoot(projectRoot);
       if (accountReady && vault) {
-        vaultEntries = await readLegacyVault(vault).catch((error: unknown) => {
-          logger?.warn?.("project_secret.legacy_vault_unreadable", { error: error instanceof Error ? error.message : String(error) });
+        vaultRead = await readLegacyVault(vault, canonical).catch((error: unknown) => {
+          logger?.warn?.("project_secret.legacy_vault_unreadable", { error: errorText(error) });
           return null;
         });
       }
-      if (!fileEntries?.length && !vaultEntries?.length) {
-        if (fileEntries && !fileEntries.length) removeLegacyFile();
-        // Nothing old here, and the account's rows were read (or there is no account vault).
-        legacyGone = !vault || vaultEntries !== null;
-        return;
+      if (!file?.length && !vaultRead?.live.length) {
+        if (file) removeLegacyFile();
+        return { moved: 0, waiting: 0, done: !accountReady || !vault || vaultRead !== null };
       }
 
-      const scope = accountScope();
-      // What other computers moved or deleted first, so this one neither
-      // duplicates nor brings back a secret.
+      const scope = canonical ?? `path:${path.resolve(projectRoot)}`;
+      // A project with no repository has no key shared across computers: its secrets stay here.
+      const shared = Boolean(canonical);
+      type Candidate = LegacyEntry & { vaultScope: string | null };
+      const candidates: Candidate[] = [];
+      /** File names to remove without moving: deleted in the account, or another account's copy. */
+      const dropped: string[] = [];
+      let waiting = 0;
+      for (const entry of file ?? []) {
+        if (entry.storage === "account") {
+          if (!accountReady || (vault && !vaultRead)) {
+            waiting += 1;
+            continue;
+          }
+          const deletedAt = vaultRead?.deletedAt.get(entry.name);
+          if ((entry.source === "account" && entry.accountUserId !== accountId) || (deletedAt && deletedAt > entry.updatedAt)) {
+            dropped.push(entry.name);
+            continue;
+          }
+        }
+        candidates.push({ ...entry, deviceOnly: entry.deviceOnly || !shared, vaultScope: null });
+      }
+      for (const entry of vaultRead?.live ?? []) candidates.push({ ...entry, deviceOnly: !shared, vaultScope: entry.scope });
       if (accountReady) await service.sync().catch((error: unknown) => {
-        logger?.warn?.("project_secret.legacy_pull_failed", { error: error instanceof Error ? error.message : String(error) });
+        // What other computers moved or deleted first, so this one neither duplicates nor brings back a secret.
+        logger?.warn?.("project_secret.legacy_pull_failed", { error: errorText(error) });
       });
 
       let moved = 0;
-      let waiting = 0;
+      const adopted: Array<{ entry: Candidate; result: LegacySecretAdoption }> = [];
       // Newest first, so a name in both the file and the account lands with its latest value.
-      const all = [...(fileEntries ?? []), ...(vaultEntries ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-      for (const entry of all) {
+      for (const entry of candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))) {
         if (!entry.deviceOnly && !accountReady) {
           waiting += 1;
           continue;
         }
-        const outcome = await service.adoptLegacySecret({
-          name: entry.name,
-          value: entry.value,
-          projectScope: scope,
-          deviceOnly: entry.deviceOnly,
-          updatedAt: entry.updatedAt,
-        });
-        if (outcome === "saved") moved += 1;
+        if (service.accountUserId() !== accountId) return { moved, waiting: waiting + 1, done: false };
+        const result = await service.adoptLegacySecret({ name: entry.name, value: entry.value, projectScope: scope, deviceOnly: entry.deviceOnly, updatedAt: entry.updatedAt });
+        if (result.outcome === "saved") moved += 1;
+        adopted.push({ entry, result });
       }
-      if (moved) await service.sync().catch((error: unknown) => {
-        logger?.warn?.("project_secret.legacy_sync_failed", { error: error instanceof Error ? error.message : String(error) });
+      const accountItems = adopted.flatMap(({ entry, result }) => (result.id ? [{ id: result.id, updatedAt: entry.updatedAt }] : []));
+      if (accountItems.length) await service.sync().catch((error: unknown) => {
+        logger?.warn?.("project_secret.legacy_sync_failed", { error: errorText(error) });
       });
-      // Old copies go only once everything they held is in the new place.
-      if (fileEntries && waiting === 0) removeLegacyFile();
-      if (vault && vaultEntries) {
-        for (const entry of vaultEntries) await vault.remove(entry.scope, LEGACY_VAULT_KIND, entry.name);
+      const uploaded = await service.uploadedIds(accountItems);
+      // Signed out or switched account while this ran: leave every old copy for the next run.
+      if (service.accountUserId() !== accountId) return { moved, waiting: waiting + adopted.length, done: false };
+
+      const doneFileNames = new Set(dropped);
+      for (const { entry, result } of adopted) {
+        if (result.id !== null && !uploaded.has(result.id)) {
+          waiting += 1;
+          continue;
+        }
+        if (entry.vaultScope) await vault?.remove(entry.vaultScope, LEGACY_VAULT_KIND, entry.name);
+        else doneFileNames.add(entry.name);
       }
+      if (file?.length && file.every((entry) => doneFileNames.has(entry.name))) removeLegacyFile();
+      else for (const name of doneFileNames) removeLegacyName(name);
       if (moved || waiting) logger?.info?.("project_secret.legacy_moved", { moved, waiting });
-    })().catch((error: unknown) => {
-      logger?.warn?.("project_secret.legacy_move_failed", { error: error instanceof Error ? error.message : String(error) });
+      return { moved, waiting, done: waiting === 0 };
+    })().catch((error: unknown): LegacySecretMoveResult => {
+      logger?.warn?.("project_secret.legacy_move_failed", { error: errorText(error) });
+      return { moved: 0, waiting: 0, done: false };
     }).finally(() => {
       migrating = null;
     });
     return migrating;
   };
 
+  /**
+   * What the old store still holds that this computer may use now: an entry
+   * pulled from an account is that account's, and only while it is signed in.
+   * `accountFree` leaves those out without asking who is signed in (sign-in's
+   * own config, which that question would read again).
+   */
+  const usableLegacy = (accountFree = false): LegacyFileEntry[] | null => {
+    const entries = readLegacyFile();
+    if (!entries?.some((entry) => entry.source === "account")) return entries;
+    const accountId = accountFree ? null : passwords().accountUserId();
+    return entries.filter((entry) => entry.source !== "account" || entry.accountUserId === accountId);
+  };
+
   let warnedUnreadable = false;
   /**
-   * `current`, plus every name only the old store still holds: until it has
-   * moved in (account secrets wait for sign-in), a process still gets them. A
-   * file that cannot be read adds nothing, and is said once.
+   * `current`, plus what only the old store still holds: until it has moved
+   * in (account secrets wait for sign-in), a process still gets it. An old
+   * entry is this project's own, so it wins over a secret for every project,
+   * never over this project's. A file that cannot be read adds nothing, and
+   * is said once.
    */
   const withLegacy = (current: Map<string, ProjectSecretEntry>): Map<string, ProjectSecretEntry> => {
     let legacy: LegacyEntry[] | null = null;
     try {
-      legacy = readLegacyFile();
+      legacy = usableLegacy();
     } catch (error) {
-      if (!warnedUnreadable) logger?.warn?.("project_secret.legacy_unreadable", { error: error instanceof Error ? error.message : String(error) });
+      if (!warnedUnreadable) logger?.warn?.("project_secret.legacy_unreadable", { error: errorText(error) });
       warnedUnreadable = true;
     }
     if (!legacy?.length) return current;
     const out = new Map(current);
     for (const entry of legacy) {
-      if (out.has(entry.name)) continue;
+      if (out.has(entry.name) && out.get(entry.name)!.projectScope !== null) continue;
       out.set(entry.name, {
         id: `legacy:${entry.name}`,
         name: entry.name,
@@ -328,12 +451,16 @@ export function createProjectSecretService(projectRoot: string, options: Project
   };
 
   /** A name from what this computer holds, else from the old store while it still exists. */
-  const valueOrLegacy = (current: Map<string, ProjectSecretEntry>, name: string): ProjectSecretValueResult => {
-    if (current.has(name)) return valueResult(current, name);
+  const valueOrLegacy = (current: Map<string, ProjectSecretEntry>, name: string, accountFree = false): ProjectSecretValueResult => {
     // A read that fails is thrown as itself, never as "not found": a caller
     // that remembers answers must not remember "none" for a disk hiccup.
-    const legacy = readLegacyFile()?.find((entry) => entry.name === name);
-    if (!legacy) throw notFound(name);
+    const known = current.get(name);
+    if (known && known.projectScope !== null) return valueResult(current, name);
+    const legacy = usableLegacy(accountFree)?.find((entry) => entry.name === name);
+    if (!legacy) {
+      if (known) return valueResult(current, name);
+      throw notFound(name);
+    }
     return {
       name,
       value: legacy.value,
@@ -343,6 +470,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
       storage: legacy.deviceOnly ? "device" : "account",
     };
   };
+
+  const processValues = (entries: Map<string, ProjectSecretEntry>): Record<string, string> =>
+    Object.fromEntries([...withLegacy(entries).values()].map((entry) => [entry.name, entry.value]));
 
   return {
     accountScope,
@@ -368,10 +498,10 @@ export function createProjectSecretService(projectRoot: string, options: Project
      * signed in would read it again.
      */
     getSignInConfig(args: ProjectSecretGetArgs): ProjectSecretValueResult {
-      return valueOrLegacy(passwords().deviceSecretsSnapshot(accountScope()), normalizeSecretName(args?.name));
+      return valueOrLegacy(passwords().deviceSecretsSnapshot(accountScope()), normalizeSecretName(args?.name), true);
     },
 
-    /** The same after opening the account's current copy. */
+    /** The same after asking the account what changed. */
     async listFresh(): Promise<ProjectSecretsListResult> {
       return listResult(withLegacy(await fresh()));
     },
@@ -381,36 +511,69 @@ export function createProjectSecretService(projectRoot: string, options: Project
       return valueOrLegacy(await fresh(), name);
     },
 
-    /** Save for this project: in the account by default, or on this computer only. */
+    /**
+     * Save for this project. `storage` picks the place; without it, a name
+     * this computer already keeps for itself stays there, and anything else
+     * goes to the account (or this computer while nobody is signed in).
+     */
     async set(args: ProjectSecretSetArgs): Promise<ProjectSecretSummary> {
       const name = normalizeSecretName(args?.name);
       const value = typeof args?.value === "string" ? args.value : "";
       if (!value.length) throw new AdeExpectedError(`${name} needs a value.`, "user");
-      const deviceOnly = args?.storage === "device";
-      await passwords().saveSecret({ name, value, projectScope: accountScope(), deviceOnly });
-      const saved = (await fresh()).get(name);
+      const service = passwords();
+      const status = await service.status();
+      if (!status.enabled) {
+        throw new AdeExpectedError("Passwords & Secrets is off here. The person can turn it on in Settings › Passwords & Secrets.", "user");
+      }
+      const deviceOnly = args?.storage === "device" ? true : args?.storage === "account" ? false : status.signedIn ? undefined : true;
+      await service.saveSecret({ name, value, projectScope: accountScope(), deviceOnly });
+      // From what this computer holds: the save just put it there, and a read
+      // that asks the account could fail after the save worked.
+      const saved = snapshot().get(name);
       if (!saved) throw notFound(name);
       return toSummary(saved);
     },
 
-    /** Delete this project's own secret by name (a secret for every project is left alone). */
+    /**
+     * Delete this project's own secret by name: its account copy and this
+     * computer's copy (a secret for every project is left alone).
+     * `confirmName` repeats the name, so a stray call can't delete one.
+     */
     async delete(args: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> {
       const name = normalizeSecretName(args?.name);
-      const entry = (await fresh()).get(name);
-      if (!entry) return { deleted: removeLegacyName(name), name };
-      if (entry.projectScope !== accountScope()) return { deleted: false, name };
-      // The old store's copy goes too, or the name would come back from it.
-      const deleted = await passwords().remove(entry.id);
+      const confirmName = typeof args?.confirmName === "string" ? args.confirmName.trim() : "";
+      if (confirmName !== name) throw new AdeExpectedError(`Deleting ${name} needs confirmName set to the same name.`, "user");
+      const service = passwords();
+      const scope = accountScope();
+      let deleted = false;
+      for (const entry of await service.allSecretEntries()) {
+        if (entry.name === name && entry.projectScope === scope) deleted = (await service.remove(entry.id)) || deleted;
+      }
+      // The old store's copies go too (its file and its account rows), or the name would come back from them.
       try {
-        removeLegacyName(name);
+        deleted = removeLegacyName(name) || deleted;
+        const vault = options.getAccountVault?.() ?? null;
+        if (vault && service.accountUserId()) {
+          for (const legacyScope of legacyVaultScopes(repoScopeForRoot(projectRoot))) {
+            const listed = await vault.list(legacyScope);
+            const live = listed.ok && listed.value.some((item) => item.scope === legacyScope && item.kind === LEGACY_VAULT_KIND && item.key === name && !item.deleted);
+            if (live) await vault.remove(legacyScope, LEGACY_VAULT_KIND, name);
+          }
+        }
       } catch (error) {
-        logger?.warn?.("project_secret.legacy_remove_failed", { error: error instanceof Error ? error.message : String(error) });
+        logger?.warn?.("project_secret.legacy_remove_failed", { error: errorText(error) });
       }
       return { deleted, name };
     },
 
+    /** The values a process this project starts gets, from what this computer already holds. */
     valuesForProcess(): Record<string, string> {
-      return Object.fromEntries([...withLegacy(snapshot()).values()].map((entry) => [entry.name, entry.value]));
+      return processValues(snapshot());
+    },
+
+    /** The same after asking the account what changed (`ade secrets exec`). */
+    async valuesForProcessFresh(): Promise<Record<string, string>> {
+      return processValues(await fresh());
     },
 
     migrateLegacy,

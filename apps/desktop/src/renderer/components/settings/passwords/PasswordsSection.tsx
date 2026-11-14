@@ -31,13 +31,13 @@ import {
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react";
-import type { PasswordItemSummary, PasswordsProject, PasswordsStatus, PasswordUseRecord } from "../../../../shared/types/passwords";
+import type { PasswordEnvFile, PasswordItemSummary, PasswordsProject, PasswordsStatus, PasswordUseRecord } from "../../../../shared/types/passwords";
 import { useAppStore } from "../../../state/appStore";
 import { showToast } from "../../app/toast/toastStore";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { ipcErrorMessage } from "../../../lib/format";
+import { relativeWhen } from "../../../lib/format";
 import { ModernPage } from "../primitives";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import {
@@ -46,8 +46,8 @@ import {
   NewLoginDialog,
   NewSecretDialog,
   ResetPasswordsDialog,
-  scopeLabel,
 } from "./PasswordDialogs";
+import { errorText, loginHint, personCheckDeclined, plural, scopeLabel } from "./passwordsFormat";
 import "./passwords.css";
 
 /** The largest CSV the page reads. The brain never needs a bigger one to import. */
@@ -59,48 +59,20 @@ const TAB_ANCHORS: Record<string, TabId> = {
   "passwords-logins": "logins",
   "passwords-secrets": "secrets",
   "passwords-activity": "activity",
+  // The removed Secrets page's links (`/settings#secrets`).
+  secrets: "secrets",
 };
 
 type DialogState =
   | { kind: "new-login" }
   | { kind: "new-secret" }
-  | { kind: "import-env"; file: { fileName: string; entries: Array<{ name: string; value: string }> } }
+  | { kind: "import-env"; file: PasswordEnvFile }
   | { kind: "change-value"; item: PasswordItemSummary }
   | { kind: "reset" }
   | null;
 
 function tabFromHash(hash: string): TabId | null {
   return TAB_ANCHORS[hash.replace(/^#/, "")] ?? null;
-}
-
-function errorText(error: unknown, fallback: string): string {
-  return ipcErrorMessage(error) || fallback;
-}
-
-function cancelled(error: unknown): boolean {
-  return /cancel/i.test(errorText(error, ""));
-}
-
-function relativeTime(value: string): string {
-  const at = new Date(value).getTime();
-  if (Number.isNaN(at)) return value;
-  const minutes = Math.round((Date.now() - at) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(value).toLocaleDateString();
-}
-
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-function loginHint(item: PasswordItemSummary): string {
-  const parts = [item.kind === "passkey" ? "Passkey" : null, item.username, item.sites.join(", ")].filter((part): part is string => Boolean(part));
-  return parts.join(" · ") || "No username";
 }
 
 /** A page-sized "nothing here yet", with what to do about it. */
@@ -210,7 +182,10 @@ export function PasswordsSection() {
 
   useEffect(() => {
     void load();
-    void window.ade.passwords.projects?.().then(setProjects).catch(() => setProjects([]));
+    void window.ade.passwords.projects().then(setProjects).catch((err: unknown) => {
+      setProjects([]);
+      showToast({ tone: "error", title: "Couldn't list this computer's projects", message: errorText(err, "Secrets can still be saved for every project.") });
+    });
   }, [load]);
 
   // A deeplink (`#passwords-secrets`, an old `?tab=secrets`) opens the view it
@@ -291,7 +266,9 @@ export function PasswordsSection() {
     setDialog(null);
     setTab(saved.kind === "secret" ? "secrets" : "logins");
     showToast({ tone: "success", title: `Saved ${saved.title}` });
-    await loadItems().catch(() => undefined);
+    await loadItems().catch((err: unknown) => {
+      showToast({ tone: "error", title: "Saved, but the list didn't refresh", message: errorText(err, "Reopen this page to see it.") });
+    });
     refreshStatus();
   }, [loadItems, refreshStatus]);
 
@@ -366,7 +343,7 @@ export function PasswordsSection() {
         durationMs: 18_000,
       });
     } catch (err) {
-      if (!cancelled(err)) showToast({ tone: "error", title: "Couldn't export", message: errorText(err, "Try again in a moment.") });
+      if (!personCheckDeclined(err)) showToast({ tone: "error", title: "Couldn't export", message: errorText(err, "Try again in a moment.") });
     } finally {
       setBusy(null);
     }
@@ -684,17 +661,17 @@ function LoginsView({
             ) : (
               <>
                 <dt>Password</dt>
-                <dd><RevealValue key={selected.id} itemId={selected.id} field="password" label={selected.title} /></dd>
+                <dd><RevealValue key={`${selected.id}:${selected.updatedAt}`} itemId={selected.id} field="password" label={selected.title} /></dd>
               </>
             )}
             {selected.hasTotp ? (
               <>
                 <dt>2FA code</dt>
-                <dd><LiveCode itemId={selected.id} /></dd>
+                <dd><LiveCode key={selected.id} itemId={selected.id} /></dd>
               </>
             ) : null}
             <dt>Updated</dt>
-            <dd>{relativeTime(selected.updatedAt)}</dd>
+            <dd>{relativeWhen(selected.updatedAt)}</dd>
           </dl>
           <div className="ade-pw-detail-actions">
             {selected.kind === "passkey" ? null : (
@@ -795,14 +772,14 @@ function SecretsView({
             {list.map((secret) => (
               <div key={secret.id} className="ade-pw-row">
                 <span className="ade-pw-row-name">{secret.title}</span>
-                <span className="ade-pw-row-value"><RevealValue key={secret.id} itemId={secret.id} field="value" label={secret.title} /></span>
+                <span className="ade-pw-row-value"><RevealValue key={`${secret.id}:${secret.updatedAt}`} itemId={secret.id} field="value" label={secret.title} /></span>
                 <span className="ade-pw-row-meta">
                   {secret.deviceOnly ? (
                     <span className="kit-tag" title="Kept on this computer only, never synced"><Desktop size={10} weight="bold" /> This computer</span>
                   ) : (
                     <span className="ade-pw-row-synced" title="Synced to every computer you sign in to"><CloudArrowUp size={12} /></span>
                   )}
-                  <span className="ade-pw-row-time">{relativeTime(secret.updatedAt)}</span>
+                  <span className="ade-pw-row-time">{relativeWhen(secret.updatedAt)}</span>
                 </span>
                 <span className="ade-pw-row-actions">
                   <button type="button" className="ade-pw-icon-btn" aria-label={`Change ${secret.title}`} title="Change value" onClick={() => onChange(secret)}>
@@ -843,7 +820,7 @@ function ActivityView({ uses, items }: { uses: PasswordUseRecord[]; items: Passw
               {item?.username ? <span className="ade-pw-activity-sub"> as {item.username}</span> : null}
             </span>
             <span className="ade-pw-activity-where">{use.machineName ?? ""}</span>
-            <time className="ade-pw-activity-when" dateTime={use.at} title={new Date(use.at).toLocaleString()}>{relativeTime(use.at)}</time>
+            <time className="ade-pw-activity-when" dateTime={use.at} title={new Date(use.at).toLocaleString()}>{relativeWhen(use.at)}</time>
           </li>
         );
       })}
@@ -862,7 +839,7 @@ function LiveCode({ itemId }: { itemId: string }) {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const fetchCode = async () => {
-      const next = await window.ade.passwords.code?.({ itemId }).catch(() => null) ?? null;
+      const next = await window.ade.passwords.code({ itemId }).catch(() => null);
       if (stopped) return;
       setState(next ? { code: next.code, expiresAt: Date.now() + next.secondsLeft * 1000 } : null);
       timer = setTimeout(() => void fetchCode(), Math.max(1_000, (next?.secondsLeft ?? 30) * 1000));
@@ -887,8 +864,9 @@ function LiveCode({ itemId }: { itemId: string }) {
 
 /**
  * Show / Copy one saved value after the person check (Touch ID / Windows
- * Hello in main). Keyed by item where it is used, so an answer that arrives
- * after the selection moved on lands in the old (unmounted) row. A copy never
+ * Hello in main). Keyed by item and its last change where it is used, so an
+ * answer that arrives after the selection moved on lands in the old
+ * (unmounted) row, and a new value never shows the old one. A copy never
  * passes through this page; the clipboard is cleared after 90 s.
  */
 function RevealValue({ itemId, field, label }: { itemId: string; field: "password" | "value"; label: string }) {
@@ -899,17 +877,15 @@ function RevealValue({ itemId, field, label }: { itemId: string; field: "passwor
     const timer = setTimeout(() => setShown(null), 30_000);
     return () => clearTimeout(timer);
   }, [shown]);
-  const reveal = window.ade.passwords.reveal;
-  if (!reveal) return <span>saved</span>;
   const run = async (copy: boolean) => {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await reveal({ itemId, field, copy, label });
+      const result = await window.ade.passwords.reveal({ itemId, field, copy, label });
       if (copy) showToast({ tone: "success", title: `Copied ${label}`, message: "The clipboard clears in 90 seconds." });
       else setShown(result.value ?? null);
     } catch (err) {
-      if (!cancelled(err)) showToast({ tone: "error", title: `Couldn't read ${label}`, message: errorText(err, "Try again in a moment.") });
+      if (!personCheckDeclined(err)) showToast({ tone: "error", title: `Couldn't read ${label}`, message: errorText(err, "Try again in a moment.") });
     } finally {
       setBusy(false);
     }

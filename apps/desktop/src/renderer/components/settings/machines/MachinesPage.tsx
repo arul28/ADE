@@ -62,7 +62,7 @@ function MachinesList() {
   // its copy of this repository, else its machine route.
   const statsRequests = useMemo<MachineStatsRequest[]>(() => machines.flatMap((machine) => {
     if (!machine.online && !machine.isThisMachine) return [];
-    const page = routedPageFor("machine", settingsMachinePageFor(machine));
+    const page = routedPageFor(settingsMachinePageFor(machine));
     return page && page.online ? [{ id: machine.machineId, pin: page.pin }] : [];
   }), [machines]);
   const { stats } = useMachineStatsMap(statsRequests, true);

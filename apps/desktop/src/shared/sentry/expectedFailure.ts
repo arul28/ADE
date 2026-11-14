@@ -21,7 +21,7 @@ import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
-import { PROJECT_SECRET_NAME_RULE } from "../projectSecretRequest";
+import { SECRET_NAME_RULE } from "../types/passwords";
 import { LINEAR_NOT_CONNECTED_MESSAGE } from "../types/automations";
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -154,7 +154,7 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   /^ADE's account service did not answer in time\.$/,
   // Added from Sentry traffic, 2026-11-02.
   // Answers to a caller (often an agent) that fixes its input and retries.
-  new RegExp(`^${escapeRegExp(PROJECT_SECRET_NAME_RULE)}$`),
+  new RegExp(`^${escapeRegExp(SECRET_NAME_RULE)}$`),
   /^(?:Path|Attachment source) is not a file\.$/,
   /^This Codex chat does not have a thread to rewind yet\.$/,
   /^This message is no longer queued\.$/,

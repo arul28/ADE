@@ -35,7 +35,7 @@ export type AccountMigrationContext = {
   } | null;
   /** Moves the old per-project secrets into Passwords & Secrets. */
   projectSecretService?: {
-    migrateLegacy(): Promise<void>;
+    migrateLegacy(): Promise<{ done: boolean }>;
   } | null;
 };
 
@@ -231,13 +231,14 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
   /**
    * Secrets this project saved in the old per-project store, moved into
    * Passwords & Secrets (`projectSecretService.migrateLegacy`). Safe to run
-   * again; it is a no-op once nothing old is left.
+   * again; it is a no-op once nothing old is left. Not complete while an old
+   * secret still waits (for sign-in, or for the relay to take it).
    */
   const migrateProjectSecrets = async (context: AccountMigrationContext): Promise<AccountMigrationSourceResult> => {
     const service = context.projectSecretService;
     if (!service) return { moved: 0, skipped: 0, complete: false };
-    await service.migrateLegacy();
-    return { moved: 0, skipped: 0 };
+    const { done } = await service.migrateLegacy();
+    return done ? { moved: 0, skipped: 0 } : { moved: 0, skipped: 0, complete: false };
   };
 
   /**
