@@ -12,7 +12,7 @@ export function ProjectConfigNote({ machineName, sentence }: { machineName: stri
       data-testid="providers-project-config-note"
       style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}
     >
-      {sentence} {machineName} has no copy of this repository, so open it on {machineName} to change this from here.
+      {sentence} {machineName} has no copy of this repository, so this window can't change it there.
     </div>
   );
 }

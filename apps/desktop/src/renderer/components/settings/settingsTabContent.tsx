@@ -57,6 +57,7 @@ import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
+  accountRoutedPage,
   machineRoutedPage,
   machineSectionAvailable,
   type MachineSectionKind,
@@ -575,11 +576,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // account directory); edits of a share go to the machine that holds it.
   sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  // Passwords is the account's and shows with no project open (this
-  // computer's brain answers through `passwords.call`). A machine picked on
-  // the page pins every call to that machine, through the machine route when
-  // the open project has no copy there.
-  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "machine", title: "Passwords" }],
+  // Passwords is the account's and shows with no project open: This
+  // computer's brain answers through `passwords.call` whichever project
+  // window is open. Another machine picked on the page is read through its
+  // copy of this repository.
+  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "account", title: "Passwords" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 
@@ -597,7 +598,7 @@ const AGENTS_TAB_KIND: MachineSectionKind = "machine";
  * a computer's own settings (the machine route needs no project).
  */
 function standaloneSection(section: TabSection): boolean {
-  return section.machine === undefined || section.machine === "local" || section.machine === "machine";
+  return section.machine === undefined || section.machine === "local" || section.machine === "machine" || section.machine === "account";
 }
 
 /**
@@ -676,8 +677,19 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
  * closures and feeds bound to the old one. A machine whose brain is too old
  * for the machine route gets the sentence that says to update it.
  */
-function MachineRouted({ page, titles, children }: { page: SettingsMachinePage; titles: string[]; children: React.ReactNode }) {
-  const routed = useMemo(() => machineRoutedPage(page), [page]);
+function MachineRouted({
+  page,
+  titles,
+  account = false,
+  children,
+}: {
+  page: SettingsMachinePage;
+  titles: string[];
+  /** An `account` section: the machine route only for This computer. */
+  account?: boolean;
+  children: React.ReactNode;
+}) {
+  const routed = useMemo(() => (account ? accountRoutedPage(page) : machineRoutedPage(page)), [account, page]);
   if (!routed) return <MachineUnavailableNotice machine={page} unavailableTitles={titles} />;
   return (
     <SettingsMachineScopeProvider key={routed.pin?.key ?? routed.machineId} scope={routed}>
@@ -740,8 +752,10 @@ function MachineTabContent({
       entryIds,
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-          {section.machine === "machine" && machine ? (
-            <MachineRouted page={machine} titles={[section.title ?? "These settings"]}>{section.render()}</MachineRouted>
+          {(section.machine === "machine" || section.machine === "account") && machine ? (
+            <MachineRouted page={machine} titles={[section.title ?? "These settings"]} account={section.machine === "account"}>
+              {section.render()}
+            </MachineRouted>
           ) : section.render()}
         </WebSettingsSection>
       ),

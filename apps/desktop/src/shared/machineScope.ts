@@ -30,8 +30,13 @@ export const MACHINE_SCOPE_PROJECT_ID = "ade-machine-scope";
 /** The root path that names This computer's machine scope. Never a real folder. */
 export const MACHINE_SCOPE_ROOT_PATH = "ade:machine-scope";
 
-/** Key of This computer's machine pin. */
-export const THIS_MACHINE_SCOPE_KEY = "machine-scope:this";
+/**
+ * Key of This computer's machine pin. It has the shape every local pin's key
+ * has (`local:<rootPath>`), because main pushes a local root's runtime events
+ * (a sign-in terminal's output) under that key and the preload delivers them
+ * to the pin with the same key.
+ */
+export const THIS_MACHINE_SCOPE_KEY = `local:${MACHINE_SCOPE_ROOT_PATH}`;
 
 export type MachineScopePin = OpenProjectBinding & { machineScope: true };
 
@@ -90,8 +95,9 @@ export function isMachineScopeRootPath(rootPath: string | null | undefined): boo
 /**
  * What a machine scope answers: a computer's own settings (Providers, the
  * Machines page's Restarts, Update track, Shell and load, Behaviour's Terminal
- * shell, Passwords). `all` means every action of the domain except those in
- * `except`.
+ * shell). `all` means every action of the domain except those in `except`.
+ * Passwords is not here: the machine-owned runtime holds no account stores,
+ * and This computer's machine pin reaches its brain's `passwords.call`.
  */
 const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, { all: true; except?: readonly string[] } | readonly string[]>> = {
   // A project copy saves its AI config (disabled providers, local model
@@ -106,10 +112,6 @@ const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, { all: true; except?: reado
   usage: ["getAdeUsageStats"],
   chat: ["listCodexPlugins"],
   machine_stats: ["get"],
-  // Settings › Passwords: the summaries and person-only writes its page
-  // sends to the machine it shows (`callPasswords` in preload). Never a
-  // value read (`revealValue`, passkeys, a browser fill).
-  passwords: ["status", "setEnabled", "setCloudEnabled", "reset", "list", "activity", "code", "saveLogin", "saveSecret", "remove", "importCsv", "sync"],
 };
 
 export function machineScopeActionAllowed(domain: string, action: string): boolean {

@@ -13,11 +13,12 @@ import "./machines/machinesPage.css";
  * The machines whose brain a setting can be read and changed through from
  * here. `kind` is how the page's sections reach a machine: `machine` (Providers)
  * reaches every online computer and This computer, with or without this
- * repository; `routed` only those it reaches through a copy of it.
+ * repository; `account` (Passwords) This computer and the others it reaches
+ * through a copy of it; `routed` only those it reaches through a copy of it.
  */
 export function reachableMachines(
   machines: readonly ProjectMachine[],
-  kind: Extract<MachineSectionKind, "routed" | "machine"> = "routed",
+  kind: Extract<MachineSectionKind, "routed" | "machine" | "account"> = "routed",
 ): ProjectMachine[] {
   return machines.filter((machine) => machineSectionAvailable(kind, settingsMachinePageFor(machine)));
 }
@@ -47,7 +48,7 @@ export function MachinePicker({
   variant?: "inline" | "title";
   adeCloud?: { selected: boolean; onPick: () => void } | null;
   /** How the page reaches a machine (`reachableMachines`). */
-  kind?: Extract<MachineSectionKind, "routed" | "machine">;
+  kind?: Extract<MachineSectionKind, "routed" | "machine" | "account">;
 }) {
   const reachable = useMemo(() => reachableMachines(machines, kind), [kind, machines]);
   const update = useAutoUpdateSnapshot();

@@ -28,8 +28,11 @@ import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTa
  *    one, else through the machine route (`shared/machineScope.ts`), so every
  *    online computer and This computer show up whichever project window is
  *    open. A section of this kind renders under `machineRoutedPage`.
+ *  - `account`: the account's settings as one computer holds them
+ *    (Passwords). This computer always, through its brain with no project;
+ *    another computer through its copy of this repository.
  */
-export type MachineSectionKind = "routed" | "local" | "bound" | "machine";
+export type MachineSectionKind = "routed" | "local" | "bound" | "machine" | "account";
 
 /** A Machines page's machine: its scope plus what the page header shows. */
 export type SettingsMachinePage = SettingsMachineScope & {
@@ -109,6 +112,12 @@ export function machineRoutedPage(page: SettingsMachinePage): SettingsMachinePag
   return { ...page, target: { kind: "pinned", binding: page.machineRoute }, pin: page.machineRoute };
 }
 
+/** `machineRoutedPage` for an `account` section: the machine route only for This computer. */
+export function accountRoutedPage(page: SettingsMachinePage): SettingsMachinePage | null {
+  if (page.target) return page;
+  return page.isThisMachine ? machineRoutedPage(page) : null;
+}
+
 /**
  * The page scope for `machine`, with a pin that keeps its identity until its
  * key changes. The machine list re-derives with fresh pin objects on every
@@ -133,6 +142,7 @@ export function machineSectionAvailable(kind: MachineSectionKind, page: Settings
   if (kind === "local") return page.isThisMachine;
   if (kind === "bound") return page.isActiveBinding;
   if (kind === "machine") return page.target != null || ("machineRoute" in page && page.machineRoute != null);
+  if (kind === "account") return page.target != null || page.isThisMachine;
   return page.target != null;
 }
 
