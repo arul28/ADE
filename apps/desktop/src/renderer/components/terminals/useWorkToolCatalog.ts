@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import type { AppControlSession, BuiltInBrowserStatus } from "../../../shared/types";
+import type { AppControlSession, BuiltInBrowserStatus, IosSimulatorSession } from "../../../shared/types";
 import type { ChatDeviceSources, DeviceKind } from "../../../shared/types/deviceSources";
 import { deviceKindRunsOnPlatform } from "../../../shared/types/deviceSources";
 import type { WorkSidebarTab } from "../../state/appStore";
@@ -35,6 +35,10 @@ export type CatalogCardView = {
   markColor: string;
   /** The one status line: the agent's action while it works, else what the tool is doing. */
   line: string | null;
+  /** A second, quieter line of facts (the branch, the PR's checks, the device's origin). */
+  detail: string | null;
+  /** The person took this tool over from the agent and holds it now. */
+  heldByPerson: boolean;
   /** The tile opens its tool. */
   available: boolean;
   /** Something of this chat's is running in it now. */
@@ -99,8 +103,15 @@ export type WorkToolCatalogInputs = {
   panelSessionId: string | null;
   hasSideChat: boolean;
   appControlSession: AppControlSession | null;
+  iosSession: IosSimulatorSession | null;
   browserStatus: BuiltInBrowserStatus | null;
+  /** The tool the person took over from the agent, if any (`WorkToolPanelBar`). */
+  heldTool: WorkSidebarTab | null;
 };
+
+function heldBy(otherChat: string | null | undefined, panelSessionId: string | null): boolean {
+  return Boolean(otherChat && panelSessionId && otherChat !== panelSessionId);
+}
 
 /** "Tapping “General”…" as the tile says it: "Agent: tapping “General”…". */
 export function agentActivityLine(activity: ToolActivity): string {
@@ -127,7 +138,9 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
     panelSessionId,
     hasSideChat,
     appControlSession,
+    iosSession,
     browserStatus,
+    heldTool,
   } = inputs;
   return useMemo(() => {
     const chatMachine = machines.find((machine) => machine.isChat) ?? null;
@@ -152,12 +165,21 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
 
       let running = false;
       let line: string | null = availability.available ? status?.line ?? definition?.hint ?? null : availability.reason;
+      let detail: string | null = availability.available ? status?.detail ?? null : null;
       if (remote && kind) {
         const probe = probes[kind] ?? null;
         running = probe === "running";
-        line = !workCopyUseOn(remoteWork, remote.key)
-          ? "Starts with the agent's next command there"
-          : probe === "running" ? "Running" : probe === "off" ? "Off" : "Ready";
+        detail = null;
+        if (!remote.online) {
+          line = `${remote.name} is offline`;
+          detail = "The tool opens there when it is back";
+        } else if (!workCopyUseOn(remoteWork, remote.key)) {
+          line = "Ready there";
+          detail = "Starts with the agent's next command";
+        } else {
+          line = probe === "running" ? "Running" : probe === "off" ? "Off" : "Ready";
+          detail = "This chat's code is there";
+        }
       } else if (card === "ios" || card === "android" || card === "screen" || card === "terminal") {
         running = Boolean(status?.live);
       } else if (card === "app-control") {
@@ -166,8 +188,29 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
         running = browserOwnedHere;
       }
       // A device this machine cannot run: the tool opens on a machine that can.
-      if (cannotRunHere || (!remote && availability.reason === IOS_RUNTIME_UNSUPPORTED_REASON)) line = "Runs on a Mac";
-      if (agentNow && act) line = agentActivityLine(act);
+      if (cannotRunHere || (!remote && availability.reason === IOS_RUNTIME_UNSUPPORTED_REASON)) {
+        line = "Runs on a Mac";
+        detail = machines.some((entry) => !entry.isChat && entry.online && entry.platform === "darwin")
+          ? "Open it to pick one"
+          : "No Mac on this account is online";
+      }
+      // Another chat holds the lane's device here.
+      if (!remote && card === "ios" && heldBy(iosSession?.chatSessionId, panelSessionId)) detail = "In use by another chat";
+      if (!remote && card === "app-control" && heldBy(appControlSession?.chatSessionId, panelSessionId) && status?.live) {
+        detail = "In use by another chat";
+      }
+      const heldByPerson = heldTool === tool;
+      if (heldByPerson) {
+        // The person holds it: the agent was asked to wait.
+        detail = line;
+        line = "You took over; the agent waits";
+      } else if (agentNow && act) {
+        // The agent's call first, what the tool shows under it. A command the
+        // agent runs in its own shell is not one of the chat's open shells, so
+        // "No shells" under it would only contradict it.
+        detail = card === "terminal" && !running ? "In the agent's own shell" : line;
+        line = agentActivityLine(act);
+      }
 
       return {
         id: card,
@@ -176,9 +219,11 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
         color: CARD_COLOR[card] ?? definition?.color ?? "var(--color-accent)",
         markColor: MONO_MARKS.has(card) ? "var(--color-fg)" : CARD_COLOR[card] ?? definition?.color ?? "var(--color-accent)",
         line,
+        detail: detail && detail !== line ? detail : null,
+        heldByPerson,
         available: availability.available,
-        live: running || agentNow,
-        agentNow,
+        live: running || agentNow || heldByPerson,
+        agentNow: agentNow && !heldByPerson,
         activity: act,
         error: availability.available && workToolHasError(status),
         attention: availability.available && status?.attention === true,
@@ -196,6 +241,8 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
     context,
     deviceMachines,
     hasSideChat,
+    heldTool,
+    iosSession,
     machines,
     panelSessionId,
     probes,

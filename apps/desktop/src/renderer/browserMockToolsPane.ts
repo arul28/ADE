@@ -8,8 +8,9 @@
  * Mac" (connected) and "build-box" (Linux, online, not connected).
  *  - `idle`: no device choice, nothing running.
  *  - `live`: this chat's iPhone is on Studio Mac (`ade devices use
- *    ios@"Studio Mac"`), booted there; the agent is tapping in it, and a
- *    test run is going here.
+ *    ios@"Studio Mac"`), booted there; the agent is tapping in it, a test
+ *    run is going here, and the chat has a side chat (eleven tiles). The
+ *    account also has "MacBook Pro (97)", online, to ask the agent to move to.
  *  - `leftover`: as `idle`, and the chat left code and an emulator on
  *    build-box: one Clean up line.
  */
@@ -76,6 +77,8 @@ export function applyBrowserMockToolsPane(
     if (!isChatRow(row)) continue;
     row.remoteWork = live ? [studioUse] : leftover ? [buildBoxUse] : [];
     row.remoteWorkActiveMachineKeys = live ? [STUDIO.machineKey] : [];
+    // `live` has a side chat too: eleven tiles, the last one on a row of its own.
+    if (live) row.sideChatSessionId = `${row.id}-side`;
     if (live) {
       row.status = "running";
       row.runtimeState = "running";
@@ -110,6 +113,7 @@ export function applyBrowserMockToolsPane(
       machines: [
         { machineKey: THIS_PC.machineKey, deviceId: "dev_this_pc", name: THIS_PC.name, platform: "win32", deviceType: "desktop", reachableEndpoints: [], lastSeenAt: Date.now(), online: true },
         { machineKey: STUDIO.machineKey, deviceId: "mock-studio", name: STUDIO.name, platform: "darwin", deviceType: "desktop", reachableEndpoints: [], lastSeenAt: Date.now(), online: true },
+        { machineKey: "mk_mbp_97", deviceId: "dev_mbp_97", name: "MacBook Pro (97)", platform: "darwin", deviceType: "laptop", reachableEndpoints: [], lastSeenAt: Date.now() - 30_000, online: true },
         { machineKey: BUILD_BOX.machineKey, deviceId: "dev_build_box", name: BUILD_BOX.name, platform: "linux", deviceType: "desktop", reachableEndpoints: [], lastSeenAt: Date.now() - 60_000, online: true },
       ],
     }),

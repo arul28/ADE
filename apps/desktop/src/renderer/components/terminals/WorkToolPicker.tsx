@@ -2,11 +2,10 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Reac
 import { Broom } from "@phosphor-icons/react";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
 import { joinNames, railMachineName, type LeftoverMachine } from "./workToolCatalog";
 import type { CatalogCardView } from "./useWorkToolCatalog";
-import { WorkToolTileMark } from "./workToolTileMarks";
+import { MachineOsMark, WorkToolTileMark } from "./workToolTileMarks";
 
 /** Two equal columns, always: ten or eleven tiles read as one block. */
 const TILE_COLUMNS = 2;
@@ -27,8 +26,9 @@ export type WorkToolCatalogProps = {
  * container that drops its secondary text and tightens as it gets shorter
  * (`.ade-tool-tile` in index.css), so the whole catalogue always fits.
  *
- * A tile is a logo, a name and one status line, plus the machine a device
- * runs on as plain text. Choices (which machine, which device) live in the
+ * A tile is a logo beside its name, a status line and a quieter line of
+ * facts, plus the machine a device runs on as plain text. An odd last tile
+ * takes the whole row. Choices (which machine, which device) live in the
  * tool the tile opens. A tool the agent is driving says so with a moving
  * ring in its own colour and "Agent: …" as its line; a live one has a still
  * ring. Nothing changes size.
@@ -111,12 +111,13 @@ export function WorkToolPicker({
             gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
           }}
         >
-          {tiles.map((tile) => {
+          {tiles.map((tile, index) => {
             if (tile.available) openableIndex += 1;
             return (
               <ToolTile
                 key={tile.id}
                 tile={tile}
+                fillsRow={tiles.length % TILE_COLUMNS === 1 && index === tiles.length - 1}
                 isActive={activeTool === tile.tool}
                 highlighted={tile.available && highlight === openableIndex}
                 skeleton={loading && tile.available && tile.line == null}
@@ -136,6 +137,7 @@ export function WorkToolPicker({
 
 function ToolTile({
   tile,
+  fillsRow,
   isActive,
   highlighted,
   skeleton,
@@ -143,13 +145,18 @@ function ToolTile({
   action,
 }: {
   tile: CatalogCardView;
+  /** The last of an odd number: it takes the whole row, so no cell is empty. */
+  fillsRow: boolean;
   isActive: boolean;
   highlighted: boolean;
   skeleton: boolean;
   onOpen: () => void;
   action: ReactNode;
 }) {
-  const style = { ["--tool-color" as string]: tile.color } as CSSProperties;
+  const style = {
+    ["--tool-color" as string]: tile.color,
+    ...(fillsRow ? { gridColumn: "1 / -1" } : {}),
+  } as CSSProperties;
   const machine = tile.kind && tile.machine ? tile.machine : null;
   return (
     <div
@@ -158,23 +165,15 @@ function ToolTile({
       data-tool-card={tile.id}
       data-live={tile.live ? "true" : undefined}
       data-agent={tile.agentNow ? "true" : undefined}
+      data-held={tile.heldByPerson ? "true" : undefined}
       data-highlighted={highlighted ? "true" : undefined}
     >
       {tile.agentNow ? <span aria-hidden="true" className="ade-tool-tile-ring"><span /></span> : null}
       <div className="ade-tool-tile-body">
-        <div className="ade-tool-tile-top">
+        <div className="ade-tool-tile-head">
           <span className="ade-tool-tile-mark" style={{ color: tile.markColor }} aria-hidden="true">
             <WorkToolTileMark card={tile.id} machine={tile.machine} size="100%" />
           </span>
-          {machine ? (
-            <span className="ade-tool-tile-machine" title={`Runs on ${machine.name}`}>
-              <MachinePlatformLogo platform={machine.platform} size={11} weight="fill" fallback />
-              <span className="truncate">{railMachineName(machine)}</span>
-            </span>
-          ) : null}
-          <TileStateMark tile={tile} />
-        </div>
-        <div className="ade-tool-tile-text">
           {/* The tile's one open control; its `::after` covers the tile. */}
           <button
             type="button"
@@ -187,22 +186,36 @@ function ToolTile({
           >
             {tile.label}
           </button>
-          {skeleton ? (
-            <span aria-hidden="true" className="ade-tool-skeleton ade-tool-tile-line mt-1 h-[10px] w-3/5 rounded-full" />
-          ) : tile.line ? (
-            <span
-              id={`tool-tile-line-${tile.id}`}
-              className={cn("ade-tool-tile-line", tile.agentNow && "ade-tool-tile-line-agent", tile.stale && "opacity-50")}
-              title={tile.line}
-              data-tool-activity={tile.agentNow ? tile.id : undefined}
-            >
-              {tile.line}
+          {machine ? (
+            <span className="ade-tool-tile-machine" title={`Runs on ${machine.name}`}>
+              <MachineOsMark machine={machine} />
+              <span className="truncate">{railMachineName(machine)}</span>
             </span>
           ) : null}
+          <TileStateMark tile={tile} />
         </div>
+        {skeleton ? (
+          <span aria-hidden="true" className="ade-tool-skeleton ade-tool-tile-line mt-1 h-[10px] w-3/5 rounded-full" />
+        ) : tile.line ? (
+          <span
+            id={`tool-tile-line-${tile.id}`}
+            className={cn(
+              "ade-tool-tile-line",
+              (tile.agentNow || tile.heldByPerson) && "ade-tool-tile-line-agent",
+              tile.stale && "opacity-50",
+            )}
+            title={tile.line}
+            data-tool-activity={tile.agentNow ? tile.id : undefined}
+          >
+            {tile.line}
+          </span>
+        ) : null}
+        {!skeleton && tile.detail ? (
+          <span className="ade-tool-tile-detail" title={tile.detail}>{tile.detail}</span>
+        ) : null}
       </div>
       {action ? (
-        <div className="pointer-events-none absolute bottom-1.5 right-1.5 z-[2] opacity-0 transition-opacity duration-[120ms] ease-out group-hover/card:pointer-events-auto group-hover/card:opacity-100 group-focus-within/card:pointer-events-auto group-focus-within/card:opacity-100">
+        <div className="pointer-events-none absolute right-1.5 top-1.5 z-[2] opacity-0 transition-opacity duration-[120ms] ease-out group-hover/card:pointer-events-auto group-hover/card:opacity-100 group-focus-within/card:pointer-events-auto group-focus-within/card:opacity-100">
           {action}
         </div>
       ) : null}

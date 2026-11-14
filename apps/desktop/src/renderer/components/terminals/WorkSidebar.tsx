@@ -56,8 +56,7 @@ import { setChatDeviceSource, useChatDeviceSources } from "./chatDeviceSources";
 import { useToolMachines, type ToolMachine } from "./useToolMachines";
 import { useChatToolActivity } from "./useChatToolActivity";
 import { useRemoteDeviceProbes } from "./useRemoteDeviceProbes";
-import { WorkToolPanelBar } from "./WorkToolPanelBar";
-import { requireChatPin } from "../chat/chatMachinePin";
+import { DEVICE_NOUN, toolNoun, WorkToolPanelBar, type PanelBarMode } from "./WorkToolPanelBar";
 import { deviceSourceErrorText } from "./chatDeviceSources";
 import { useWorkToolCatalog } from "./useWorkToolCatalog";
 import { currentRemoteDeviceMachines, leftoverMachines } from "./workToolCatalog";
@@ -395,6 +394,7 @@ export function WorkSidebar({
   const {
     browserStatus: feedsBrowserStatus,
     appControlSession: feedsAppControlSession,
+    iosSession: feedsIosSession,
   } = useNativeToolFeeds();
   // The chosen remote device's live state, read through the pin this window
   // already holds for that machine; re-read when the agent's call there answers.
@@ -407,6 +407,13 @@ export function WorkSidebar({
   }), [activityByTool]);
   const pickerVisible = active && !effectiveTool;
   const remoteProbes = useRemoteDeviceProbes({ active: pickerVisible, remoteWork, chosenRemote, rereadKeys });
+  /*
+   * A tool the person took over from the agent: which chat, which tool, and
+   * that chat's machine, so the hand-back note goes where the take-over went
+   * even after the pane moved on.
+   */
+  const [held, setHeld] = useState<{ sessionId: string; tool: WorkSidebarTab; noun: string; pin: OpenProjectBinding | null } | null>(null);
+  const heldTool = held && held.sessionId === panelChatSessionId ? held.tool : null;
   const tiles = useWorkToolCatalog({
     context: toolContext,
     statuses: laneStatuses,
@@ -419,7 +426,9 @@ export function WorkSidebar({
     panelSessionId: panelChatSessionId,
     hasSideChat,
     appControlSession: feedsAppControlSession,
+    iosSession: feedsIosSession,
     browserStatus: feedsBrowserStatus,
+    heldTool,
   });
   // The header's dots say what the cards say for a device on another machine.
   const statuses = useMemo<WorkToolStatusMap>(() => {
@@ -660,35 +669,110 @@ export function WorkSidebar({
   }), [cleanUp, cleaningUp, leftovers, panelChatSessionId, tiles]);
 
   /*
-   * The row above an open tool: what the agent is doing with it (Stop, Take
-   * over), or, when nobody is, the machine a device runs on. Take over holds
-   * for the agent call it was pressed on.
+   * The rows above an open tool (`WorkToolPanelBar`).
+   *
+   * Notes to the agent go on the chat's own path for a person's message while
+   * it works: `agentChat.steer` on the chat's pin, which steers a provider
+   * that takes input mid-turn and queues it for the next turn otherwise. A
+   * note is only sent while a turn runs: with no turn there is nobody to tell,
+   * and a note would start one.
    */
   const openTile = effectiveTool ? tiles.find((tile) => tile.tool === effectiveTool) ?? null : null;
-  const [takenOverAt, setTakenOverAt] = useState<number | null>(null);
-  const openActivityAt = openTile?.activity?.at ?? null;
-  const stopAgent = useCallback(async (): Promise<boolean> => {
-    if (!panelChatSessionId) return false;
+  const turnRunning = Boolean(
+    (activeSession?.id === panelChatSessionId && activeSession?.runtimeState === "running")
+    || Object.values(toolActivity.byTool).some((entry) => entry?.running),
+  );
+  const turnRunningRef = useRef(turnRunning);
+  turnRunningRef.current = turnRunning;
+  const [sentNote, setSentNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sentNote) return undefined;
+    const timer = window.setTimeout(() => setSentNote(null), 3_500);
+    return () => window.clearTimeout(timer);
+  }, [sentNote]);
+  const noteToAgent = useCallback(async (
+    sessionId: string,
+    pin: OpenProjectBinding | null,
+    text: string,
+    options: { onlyDuringTurn: boolean },
+  ): Promise<boolean> => {
+    if (options.onlyDuringTurn && !turnRunningRef.current) return false;
     try {
-      await window.ade.agentChat.interrupt({ sessionId: panelChatSessionId }, requireChatPin(chatPinRef.current));
+      const result = await withChatPin(pin, (chatPin) => window.ade.agentChat.steer({ sessionId, text }, chatPin));
+      if (result.reason === "queue_full") {
+        showToast({ tone: "warning", title: "The agent's queue is full", message: "Send it again once the queue clears.", report: false });
+        return false;
+      }
       return true;
     } catch (error) {
-      showToast({ tone: "error", title: "Couldn't stop the agent", message: deviceSourceErrorText(error), report: false });
+      showToast({ tone: "error", title: "Couldn't reach the agent", message: deviceSourceErrorText(error), report: false });
       return false;
     }
-  }, [panelChatSessionId]);
+  }, []);
+  const askMachine = useCallback((kind: DeviceKind, machine: ToolMachine) => {
+    if (!panelChatSessionId) return;
+    const noun = DEVICE_NOUN[kind];
+    const id = `${kind}@${machine.isChat ? "here" : machine.name}`;
+    void noteToAgent(
+      panelChatSessionId,
+      chatPinRef.current,
+      `Please switch the ${noun} to ${machine.name} (ade devices use "${id}").`,
+      { onlyDuringTurn: false },
+    ).then((sent) => { if (sent) setSentNote("Sent to the agent"); });
+  }, [noteToAgent, panelChatSessionId]);
   const takeOver = useCallback(() => {
-    void stopAgent().then((stopped) => { if (stopped) setTakenOverAt(openActivityAt); });
-  }, [openActivityAt, stopAgent]);
+    if (!panelChatSessionId || !openTile) return;
+    const noun = toolNoun(openTile);
+    setHeld({ sessionId: panelChatSessionId, tool: openTile.tool, noun, pin: chatPinRef.current });
+    void noteToAgent(
+      panelChatSessionId,
+      chatPinRef.current,
+      `The person took over the ${noun}; leave it alone until they hand it back.`,
+      { onlyDuringTurn: true },
+    );
+  }, [noteToAgent, openTile, panelChatSessionId]);
+  const handBack = useCallback(() => {
+    const current = heldRef.current;
+    if (!current) return;
+    setHeld(null);
+    void noteToAgent(
+      current.sessionId,
+      current.pin,
+      `The person is done with the ${current.noun}; you can use it again.`,
+      { onlyDuringTurn: true },
+    );
+  }, [noteToAgent]);
+  const heldRef = useRef(held);
+  heldRef.current = held;
+  // Closing the tool's tab, the pane, or moving to another chat hands it back
+  // (with its note). Looking at the tiles meanwhile keeps the hold.
+  const handBackRef = useRef(handBack);
+  handBackRef.current = handBack;
+  const heldToolOpen = held ? availableOpenTools.includes(held.tool) || effectiveTool === held.tool : false;
+  useEffect(() => {
+    if (!held) return;
+    if (!active || !heldToolOpen || panelChatSessionId !== held.sessionId) handBackRef.current();
+  }, [active, held, heldToolOpen, panelChatSessionId]);
+  useEffect(() => () => { if (heldRef.current) handBackRef.current(); }, []);
+
+  const barMode: PanelBarMode = openTile?.heldByPerson ? "held" : openTile?.agentNow ? "agent" : "free";
+  const chooseUnavailableReason = !panelChatSessionId
+    ? "A terminal session picks the machine on each command (--machine)."
+    : deviceSources.unsupported
+      ? "This chat's machine can't keep a device choice here."
+      : null;
   const panelBar = openTile ? (
     <WorkToolPanelBar
       tile={openTile}
+      mode={barMode}
       machines={toolMachines.machines}
-      takenOver={takenOverAt != null && takenOverAt === openActivityAt}
       canChoose={Boolean(panelChatSessionId) && !deviceSources.unsupported}
+      chooseUnavailableReason={chooseUnavailableReason}
+      sentNote={sentNote}
       onChooseMachine={chooseDeviceMachine}
-      onStopAgent={panelChatSessionId ? () => { void stopAgent(); } : null}
+      onAskMachine={askMachine}
       onTakeOver={panelChatSessionId ? takeOver : null}
+      onHandBack={handBack}
     />
   ) : null;
   const content = ToolPanel && effectiveTool ? (

@@ -80,6 +80,11 @@ export type WorkToolStatus = {
    */
   attention?: boolean;
   /**
+   * A second, quieter line of facts the pane already holds (the branch and
+   * its sync, a PR's checks, the device's origin). Null when there is none.
+   */
+  detail?: string | null;
+  /**
    * The line repeats numbers that were not measured within their freshness
    * window (a lane's ahead/behind while its status read is out, or after one
    * failed). The card shows them quietly, never as current.
@@ -133,9 +138,64 @@ export function openPullRequestCount(
   laneId: string,
   sessionId?: string | null,
 ): number {
+  return openPullRequests(prs, lane, laneId, sessionId).length;
+}
+
+/** The open and draft pull requests the PR tool shows, in its order. */
+function openPullRequests(
+  prs: readonly PrSummary[],
+  lane: Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef"> | null,
+  laneId: string,
+  sessionId?: string | null,
+): PrSummary[] {
   const scoped = selectPrsForChatInLane(prs, laneId, sessionId);
   const visible = lane ? selectChatPrs(lane, scoped, sessionId) : scoped;
-  return visible.filter((pr) => isOpenPullRequest(pr.state)).length;
+  return visible.filter((pr) => isOpenPullRequest(pr.state));
+}
+
+const PR_CHECKS_WORDS: Record<PrSummary["checksStatus"], string | null> = {
+  passing: "Checks passing",
+  failing: "Checks failing",
+  pending: "Checks running",
+  none: null,
+  not_run: null,
+};
+
+const PR_REVIEW_WORDS: Record<PrSummary["reviewStatus"], string | null> = {
+  approved: "Approved",
+  changes_requested: "Changes requested",
+  requested: "Review requested",
+  none: null,
+};
+
+/** "#212 · Checks passing · Approved": the open PR's number and where it stands. */
+export function pullRequestDetail(pr: PrSummary | null): string | null {
+  if (!pr) return null;
+  return [`#${pr.githubPrNumber}`, PR_CHECKS_WORDS[pr.checksStatus], PR_REVIEW_WORDS[pr.reviewStatus]]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** "main · 2 ahead · 1 behind": the branch, and its sync when the line is about something else. */
+export function gitDetail(lane: LaneSummary | null, line: string | null): string | null {
+  const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
+  if (!branch) return null;
+  const ahead = nonNegativeCount(lane?.status?.ahead);
+  const behind = nonNegativeCount(lane?.status?.behind);
+  const sync = [ahead > 0 ? `${ahead} ahead` : null, behind > 0 ? `${behind} behind` : null].filter(Boolean).join(" · ");
+  return sync && !line?.includes("ahead") && !line?.includes("behind") ? `${branch} · ${sync}` : branch;
+}
+
+/** Which simulator or emulator it is: ADE's own for this lane, or the person's. */
+function deviceOriginDetail(origin: string | null | undefined): string | null {
+  if (origin === "created" || origin === "clone") return "Made for this lane";
+  if (origin === "attached") return "Your own device";
+  return null;
+}
+
+/** Fills a status's second line without touching the first. */
+function withDetail(status: WorkToolStatus, detail: string | null | undefined): WorkToolStatus {
+  return detail ? { ...status, detail } : status;
 }
 
 /**
@@ -451,6 +511,25 @@ export function appControlAppName(
   return label;
 }
 
+/** App Control's second line: how the app is attached, in a word or two. */
+function appControlDetail(session: AppControlSession | null): string | null {
+  if (!session) return null;
+  switch (session.status) {
+    case "connected":
+    case "running":
+      return isAppControlSessionAttached(session) ? "Attached" : "Launching";
+    case "starting":
+      return "Starting";
+    case "stopping":
+      return "Stopping";
+    case "failed":
+      return "Crashed";
+    case "exited":
+    case "stopped":
+      return "Stopped";
+  }
+}
+
 function looksLikeLaunchCommand(text: string): boolean {
   return /(?:^|[\s'"=])(?:sh|bash|zsh|cmd(?:\.exe)?|powershell)\b/i.test(text)
     || /\bADE_[A-Z0-9_]+=/.test(text)
@@ -577,6 +656,7 @@ export function useWorkToolStatuses(args: {
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [prCount, setPrCount] = useState<number | null>(null);
+  const [firstOpenPr, setFirstOpenPr] = useState<PrSummary | null>(null);
   const [settled, setSettled] = useState(false);
 
   const runtimePinKey = runtimePin?.key ?? null;
@@ -686,12 +766,16 @@ export function useWorkToolStatuses(args: {
         return;
       }
       const read = typeof prs.listAll === "function"
-        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey }).then((all: PrSummary[]) => openPullRequestCount(all, lane, laneId, prSessionId))
-        : withChatPin(runtimePinRef.current, (chatPin) => prs.getForLane(laneId, chatPin)).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? 1 : 0));
-      void read.then((count) => {
-        if (!cancelled) setPrCount(count);
+        ? listPrsCached({ projectRoot: prListProjectRoot, pin: runtimePinRef.current, bindingKey: tabBindingKey }).then((all: PrSummary[]) => openPullRequests(all, lane, laneId, prSessionId))
+        : withChatPin(runtimePinRef.current, (chatPin) => prs.getForLane(laneId, chatPin)).then((one: PrSummary | null) => (one && isOpenPullRequest(one.state) ? [one] : []));
+      void read.then((open) => {
+        if (cancelled) return;
+        setPrCount(open.length);
+        setFirstOpenPr(open[0] ?? null);
       }).catch(() => {
-        if (!cancelled) setPrCount(null);
+        if (cancelled) return;
+        setPrCount(null);
+        setFirstOpenPr(null);
       });
     };
     load();
@@ -711,7 +795,11 @@ export function useWorkToolStatuses(args: {
   }, [enabled, lane, laneId, tabBindingKey, prListProjectRoot, prSessionId, runtimePinKey]);
 
   const issueTabsProjectRoot = useActiveProjectRoot();
-  const openIssueTabCount = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs.length;
+  const openIssueRefs = useIssueTabs(issueTabsScopeKey(issueTabsProjectRoot, laneId)).refs;
+  const openIssueTabCount = openIssueRefs.length;
+  const issuesDetail = useMemo(() => openIssueRefs.slice(0, 3).map((ref) => (
+    ref.provider === "linear" ? ref.identifier : ref.provider === "jira" ? ref.key : `#${ref.number}`
+  )).join(", ") || null, [openIssueRefs]);
 
   // One read, but each card says its own product's name: while the host's
   // platform is unknown (an asleep or unreachable cloud computer) both desktop
@@ -751,23 +839,29 @@ export function useWorkToolStatuses(args: {
         workToolBrowserErrorCount(browserErrors, browserStatus),
         devServerPorts,
       );
+    const browserFacts = asBuiltInBrowserStatus(browserStatus);
+    const activeBrowserTab = browserFacts?.tabs.find((tab) => tab.id === browserFacts.activeTabId) ?? null;
+    const gitLine = gitStatusLine(lane, laneStatusStale);
+    const prLine = prToolStatusLine(prCount);
     return {
-      terminal: terminalStatusLine(terminalTitles, panelShellCount, remoteShellCount),
-      browser: !offline && remoteChatMachineName
+      terminal: withDetail(terminalStatusLine(terminalTitles, panelShellCount, remoteShellCount), terminalTitles?.[0] ?? null),
+      browser: withDetail(!offline && remoteChatMachineName
         ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
-        : browserLine,
-      git: gitStatusLine(lane, laneStatusStale),
-      files: filesStatusLine(lane),
-      ios: offline ? IDLE : iosStatusLine(appleDevice),
-      android: offline ? IDLE : androidStatusLine(androidDevice),
-      "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
+        : browserLine, (browserFacts?.tabs.length ?? 0) > 1 ? activeBrowserTab?.title?.trim() || null : null),
+      git: withDetail(gitLine, gitDetail(lane, gitLine.line)),
+      files: withDetail(filesStatusLine(lane), lane?.name ?? null),
+      ios: offline ? IDLE : withDetail(iosStatusLine(appleDevice), deviceOriginDetail(appleDevice?.origin)),
+      android: offline ? IDLE : withDetail(androidStatusLine(androidDevice), androidDevice ? [androidDevice.avdName, deviceOriginDetail(androidDevice.origin)].filter(Boolean).join(" · ") : null),
+      "app-control": offline ? IDLE : withDetail(appControlStatusLine(appControlSession), appControlDetail(appControlSession)),
       // No `offline ? IDLE` arm: an unreachable machine leaves the last known
       // answer standing rather than claiming the lane has no screen, and the
       // hook already stops reading.
       "mac-desktop": macDesktopStatus,
       "windows-desktop": windowsDesktopStatus,
-      pr: prToolStatusLine(prCount),
-      issues: issuesToolStatusLine(openIssueTabCount),
+      pr: firstOpenPr && prCount === 1
+        ? { ...prLine, line: firstOpenPr.title, detail: pullRequestDetail(firstOpenPr) }
+        : withDetail(prLine, pullRequestDetail(firstOpenPr)),
+      issues: withDetail(issuesToolStatusLine(openIssueTabCount), issuesDetail),
     };
   }, [
     appControlSession,
@@ -784,6 +878,8 @@ export function useWorkToolStatuses(args: {
     offline,
     panelShellCount,
     prCount,
+    firstOpenPr,
+    issuesDetail,
     openIssueTabCount,
     remoteChatMachineName,
     terminalTitles,

@@ -50,7 +50,9 @@ function Picker({
     panelSessionId: "chat-1",
     hasSideChat,
     appControlSession: null,
+    iosSession: null,
     browserStatus: null,
+    heldTool: null,
   });
   return (
     <WorkToolPicker

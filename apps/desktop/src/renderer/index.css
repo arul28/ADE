@@ -2768,9 +2768,10 @@ button, [role="button"] {
 }
 
 /* Work tools tiles. Every tool is one equal tile in a grid whose rows share
-   the pane's height, and each tile is a SIZE container: as the pane gets
-   shorter a tile tightens and drops its secondary text instead of the page
-   scrolling. Marks are sized from the tile's own height (`cqh`). */
+   the pane's height, and each tile is a SIZE container: the mark and the
+   name grow with the tile's height (`cqh`), so a tall tile is full rather
+   than airy, and a short one tightens and drops its quieter line instead of
+   the page scrolling. */
 .ade-tool-tile {
   container: tool-tile / size;
   display: flex;
@@ -2785,66 +2786,38 @@ button, [role="button"] {
   flex: 1 1 auto;
   min-width: 0;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 12px 14px 12px;
+  justify-content: center;
+  gap: clamp(2px, 3cqh, 6px);
+  padding: clamp(8px, 9cqh, 14px) 14px;
 }
 
-.ade-tool-tile-top {
+.ade-tool-tile-head {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: clamp(8px, 7cqh, 12px);
+  margin-bottom: clamp(0px, 3cqh, 6px);
 }
 
 .ade-tool-tile-mark {
   display: block;
   flex: 0 0 auto;
-  width: clamp(20px, 30cqh, 38px);
-  height: clamp(20px, 30cqh, 38px);
-}
-
-.ade-tool-tile-machine {
-  display: inline-flex;
-  min-width: 0;
-  max-width: 62%;
-  margin-left: auto;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--color-muted-fg);
-}
-
-.ade-tool-tile-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  margin-top: 5px;
-  margin-left: auto;
-  border-radius: 999px;
-}
-
-.ade-tool-tile-machine + .ade-tool-tile-dot {
-  margin-left: 0;
-}
-
-.ade-tool-tile-text {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
+  width: clamp(20px, 24cqh, 34px);
+  height: clamp(20px, 24cqh, 34px);
 }
 
 .ade-tool-tile-name {
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   border: 0;
   background: transparent;
   padding: 0;
   font-family: var(--font-sans, inherit);
-  font-size: 14.5px;
+  font-size: clamp(14px, 12cqh, 17px);
   font-weight: 600;
-  line-height: 20px;
-  letter-spacing: -0.005em;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2869,14 +2842,42 @@ button, [role="button"] {
   cursor: default;
 }
 
-.ade-tool-tile-line {
+.ade-tool-tile-machine {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 45%;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-muted-fg);
+}
+
+.ade-tool-tile-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.ade-tool-tile-line,
+.ade-tool-tile-detail {
   display: block;
   overflow: hidden;
-  margin-top: 1px;
-  font-size: 12px;
-  line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ade-tool-tile-line {
+  font-size: clamp(12px, 9cqh, 13px);
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--color-fg) 78%, var(--color-muted-fg));
+}
+
+.ade-tool-tile-detail {
+  font-size: 11.5px;
+  line-height: 1.35;
   color: var(--color-muted-fg);
 }
 
@@ -2885,69 +2886,26 @@ button, [role="button"] {
   color: color-mix(in srgb, var(--tool-color) 55%, var(--color-fg));
 }
 
-/* Roomy: a bigger name under a bigger mark. */
-@container tool-tile (min-height: 132px) {
-  .ade-tool-tile-body {
-    padding: 16px 16px 14px;
-  }
-  .ade-tool-tile-name {
-    font-size: 15.5px;
-    line-height: 22px;
-  }
-  .ade-tool-tile-line {
-    font-size: 12.5px;
+/* Short: the quieter line steps out. */
+@container tool-tile (max-height: 84px) {
+  .ade-tool-tile-detail {
+    display: none;
   }
 }
 
-/* Short: the mark moves beside the name and the padding tightens. */
-@container tool-tile (max-height: 92px) {
-  .ade-tool-tile-body {
-    flex-direction: row;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 10px;
-    padding: 8px 12px;
-  }
-  .ade-tool-tile-top {
-    display: contents;
-  }
-  .ade-tool-tile-mark {
-    order: 0;
-    width: 24px;
-    height: 24px;
-  }
-  .ade-tool-tile-text {
-    order: 1;
-    flex: 1 1 auto;
-  }
-  .ade-tool-tile-machine {
-    position: absolute;
-    top: 6px;
-    right: 10px;
-    max-width: 55%;
-  }
-  .ade-tool-tile-dot {
-    position: absolute;
-    top: 3px;
-    right: 5px;
-    margin: 0;
-  }
-}
-
-/* Very short: name only, the line and the machine step out. */
-@container tool-tile (max-height: 58px) {
+/* Very short: the name alone, with its mark. */
+@container tool-tile (max-height: 56px) {
   .ade-tool-tile-line,
   .ade-tool-tile-machine {
     display: none;
   }
-  .ade-tool-tile-mark {
-    width: 20px;
-    height: 20px;
+  .ade-tool-tile-head {
+    margin-bottom: 0;
   }
 }
 
-/* Narrow: the machine keeps its logo, its name goes. */
-@container tool-tile (max-width: 170px) {
+/* Narrow: the machine keeps its mark, its name goes. */
+@container tool-tile (max-width: 215px) {
   .ade-tool-tile-machine > span {
     display: none;
   }
@@ -7099,4 +7057,30 @@ button, [role="button"] {
 .pr-md-root li:has(> p > .pr-md-task-checkbox) {
   list-style: none;
   margin-inline-start: -1.1em;
+}
+
+/* The agent is using the open tool: its dot breathes, in two steps a second
+   rather than a smooth fade, so it costs almost nothing while it runs. */
+@keyframes ade-tool-agent-dot {
+  0% {
+    opacity: 1;
+    animation-timing-function: steps(1);
+  }
+  50% {
+    opacity: 0.35;
+    animation-timing-function: steps(1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-tool-agent-dot {
+  animation: ade-tool-agent-dot 1.2s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-agent-dot {
+    animation: none;
+  }
 }

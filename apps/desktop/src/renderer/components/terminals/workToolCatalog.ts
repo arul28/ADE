@@ -117,7 +117,9 @@ export function currentRemoteDeviceMachines(
   for (const kind of Object.keys(DEVICE_FLAG) as DeviceKind[]) {
     if (sources?.[kind]) {
       const chosen = chosenMachineFor(kind, sources, machines);
-      if (chosen && !chosen.isChat) out[kind] = chosen;
+      // A choice of a machine that cannot run the kind (an iPhone on a PC)
+      // is not where the device is; the tool asks for one that can.
+      if (chosen && !chosen.isChat && deviceKindRunsOnPlatform(kind, chosen.platform)) out[kind] = chosen;
       continue;
     }
     const use = [...activeUses]
