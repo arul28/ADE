@@ -211,6 +211,8 @@ export function useProjectMachines(active = true): ProjectMachinesState {
       machines: unionMachines ?? {},
       connections: snapshot?.connections ?? [],
       thisMachineDeviceId: local.deviceId,
+      // A cloud lane's computer reads "Cloud · <lane>".
+      adeCloud: { computers: laneComputers },
     });
     const withRepo = [...all.machines];
     // This computer leads the list wherever it sits in the union.
@@ -223,8 +225,6 @@ export function useProjectMachines(active = true): ProjectMachinesState {
       ...withRepo,
       ...withoutRepo.filter((machine) => !machine.isThisMachine),
     ];
-    // `laneComputers`: a cloud lane's computer reads "Cloud · <lane>".
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [laneComputers, local.deviceId, projectBinding, snapshot, unionMachines]);
 
   const connectedRemoteCount = useMemo(

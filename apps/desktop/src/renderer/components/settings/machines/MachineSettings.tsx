@@ -29,7 +29,7 @@ import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { freeSpaceLevel } from "../storage/storageView";
 import { SingleMachineUpdateRow } from "../general/MachineUpdateRows";
-import { machineRoutedPage, machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
+import { routedPageFor, machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
 import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
@@ -63,8 +63,10 @@ export function MachineSettings({
   // The machine's own values (providers, restarts, update track, shell, load)
   // also reach it through its machine route when this window's project has
   // no copy there.
-  const machineScope = useMemo(() => machineRoutedPage(scope), [scope]);
+  const machineScope = useMemo(() => routedPageFor("machine", scope), [scope]);
   const machineReach = machineScope != null && scope.online;
+  // The machine-route rows run on the routed scope, else on the page as it is.
+  const machineRowScope = machineScope ?? scope;
   const mac = fact?.platform === "mac";
   const elsewhere = <UnreachableHint isThis={isThis} />;
   const connection = fact?.connection ?? null;
@@ -81,7 +83,7 @@ export function MachineSettings({
       <MachineGroup title="Updates">
         <MachineRow icon={<ArrowsClockwise size={14} />} title="Version"
           control={machine ? <SingleMachineUpdateRow machine={machine} name={name} /> : <RowValue>Unknown</RowValue>} />
-        <TrackRow scope={machineScope ?? scope} fact={fact} reach={machineReach} onOpen={() => openTab("general", "update-track")} />
+        <TrackRow scope={machineRowScope} fact={fact} reach={machineReach} onOpen={() => openTab("general", "update-track")} />
         <AutoInstallRow isThis={isThis} onOpen={() => openTab("general", "auto-updates")} />
       </MachineGroup>
 
@@ -92,8 +94,8 @@ export function MachineSettings({
           value="Sign-ins and models"
           control={machineSectionAvailable("machine", scope) ? <RowLink onClick={() => openMachine(scope.machineId, "agents")} /> : elsewhere}
         />
-        <ContinueRow scope={machineScope ?? scope} reach={machineReach} />
-        <ShellRow scope={machineScope ?? scope} reach={machineReach} />
+        <ContinueRow scope={machineRowScope} reach={machineReach} />
+        <ShellRow scope={machineRowScope} reach={machineReach} />
       </MachineGroup>
 
       <MachineGroup title={isThis ? "This machine" : "Machine"}>
@@ -164,7 +166,7 @@ export function MachineSettings({
 
       {/* How busy the machine is and what it can run, from its own brain,
           and the copies of other machines' work it holds. */}
-      <MachineCapabilitiesArea pin={machineScope?.pin ?? scope.pin} reach={machineReach || (reach && isThis)} isThisMachine={isThis} />
+      <MachineCapabilitiesArea pin={machineRowScope.pin} reach={machineReach || (reach && isThis)} isThisMachine={isThis} />
       <MachineWorkCopies pin={scope.pin} reach={reach} isThisMachine={isThis} />
     </div>
   );

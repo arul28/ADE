@@ -57,10 +57,12 @@ import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
-  accountRoutedPage,
-  machineRoutedPage,
+  isRoutedSectionKind,
+  routedPageFor,
   machineSectionAvailable,
   type MachineSectionKind,
+  type PickableSectionKind,
+  type RoutedSectionKind,
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
 import { WebSettingsSection } from "./WebScopePill";
@@ -588,10 +590,20 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
  * Providers is about the computer, not the project: every runtime call, the
  * key store, provider accounts, login terminals and auth-status feeds take the
  * machine's pin, which is the copy of this repository on it when there is one
- * and the machine route otherwise (`machineRoutedPage`). What stays on This
+ * and the machine route otherwise (`routedPageFor`). What stays on This
  * computer (opening a config file in the OS) is disabled in place.
  */
-const AGENTS_TAB_KIND: MachineSectionKind = "machine";
+const AGENTS_TAB_KIND: RoutedSectionKind = "machine";
+
+/**
+ * How a tab whose title names its machine reaches one, for the title's
+ * machine picker: Providers by the machine route, else its section's kind.
+ */
+export function settingsTabPickerKind(tab: SettingsTabId): PickableSectionKind {
+  if (tab === "agents") return AGENTS_TAB_KIND;
+  const kind = TAB_SECTIONS[tab]?.[0]?.machine;
+  return isRoutedSectionKind(kind) ? kind : "routed";
+}
 
 /**
  * A section that loads with no project: this desktop's own, the account's, or
@@ -670,8 +682,8 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
 }
 
 /**
- * A `machine` section: rendered under the machine's routed scope
- * (`machineRoutedPage`), so its pin is the copy of this repository there or
+ * A `machine` or `account` section: rendered under the machine's routed
+ * scope (`routedPageFor`), so its pin is the copy of this repository there or
  * else the machine's own route. Keyed on that route: a machine that gains or
  * loses its copy remounts the section on the new route instead of keeping
  * closures and feeds bound to the old one. A machine whose brain is too old
@@ -679,17 +691,16 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
  */
 function MachineRouted({
   page,
+  kind,
   titles,
-  account = false,
   children,
 }: {
   page: SettingsMachinePage;
+  kind: RoutedSectionKind;
   titles: string[];
-  /** An `account` section: the machine route only for This computer. */
-  account?: boolean;
   children: React.ReactNode;
 }) {
-  const routed = useMemo(() => (account ? accountRoutedPage(page) : machineRoutedPage(page)), [account, page]);
+  const routed = useMemo(() => routedPageFor(kind, page), [kind, page]);
   if (!routed) return <MachineUnavailableNotice machine={page} unavailableTitles={titles} />;
   return (
     <SettingsMachineScopeProvider key={routed.pin?.key ?? routed.machineId} scope={routed}>
@@ -730,7 +741,7 @@ function MachineTabContent({
     if (!machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
       return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
     }
-    return <MachineRouted page={machine} titles={["Providers"]}>{content}</MachineRouted>;
+    return <MachineRouted page={machine} kind={AGENTS_TAB_KIND} titles={["Providers"]}>{content}</MachineRouted>;
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;
@@ -752,8 +763,8 @@ function MachineTabContent({
       entryIds,
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-          {(section.machine === "machine" || section.machine === "account") && machine ? (
-            <MachineRouted page={machine} titles={[section.title ?? "These settings"]} account={section.machine === "account"}>
+          {isRoutedSectionKind(section.machine) && machine ? (
+            <MachineRouted page={machine} kind={section.machine} titles={[section.title ?? "These settings"]}>
               {section.render()}
             </MachineRouted>
           ) : section.render()}

@@ -842,19 +842,14 @@ export function TopBar({
       );
       // A machine that froze says so when it is reached again; once per freeze.
       for (const connection of snapshot.connections) {
+        if (!connection.hostStorageWait && !connection.hostStall) continue;
+        const machineName = machineLabelForMachine({ hostname: connection.target.hostname, name: connection.target.name?.trim() || connection.target.hostname });
         if (connection.hostStorageWait) {
-          announceHostStorageWait({
-            wait: connection.hostStorageWait,
-            machineKey: connection.target.id,
-            machineName: machineLabelForMachine({ hostname: connection.target.hostname, name: connection.target.name?.trim() || connection.target.hostname }),
-          });
+          announceHostStorageWait({ wait: connection.hostStorageWait, machineKey: connection.target.id, machineName });
         }
-        if (!connection.hostStall) continue;
-        announceHostStall({
-          stall: connection.hostStall,
-          machineKey: connection.target.id,
-          machineName: machineLabelForMachine({ hostname: connection.target.hostname, name: connection.target.name?.trim() || connection.target.hostname }),
-        });
+        if (connection.hostStall) {
+          announceHostStall({ stall: connection.hostStall, machineKey: connection.target.id, machineName });
+        }
       }
     },
     [],

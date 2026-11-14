@@ -27,12 +27,22 @@ import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTa
  *    Reaches the machine through its copy of the repository when there is
  *    one, else through the machine route (`shared/machineScope.ts`), so every
  *    online computer and This computer show up whichever project window is
- *    open. A section of this kind renders under `machineRoutedPage`.
+ *    open. A section of this kind renders under `routedPageFor`.
  *  - `account`: the account's settings as one computer holds them
  *    (Passwords). This computer always, through its brain with no project;
  *    another computer through its copy of this repository.
  */
 export type MachineSectionKind = "routed" | "local" | "bound" | "machine" | "account";
+
+/** The kinds a page can pick its machine for: each reaches a machine through a pin. */
+export type PickableSectionKind = Extract<MachineSectionKind, "routed" | "machine" | "account">;
+
+/** The kinds whose sections run under a routed scope (`routedPageFor`). */
+export type RoutedSectionKind = Extract<MachineSectionKind, "machine" | "account">;
+
+export function isRoutedSectionKind(kind: MachineSectionKind | null | undefined): kind is RoutedSectionKind {
+  return kind === "machine" || kind === "account";
+}
 
 /** A Machines page's machine: its scope plus what the page header shows. */
 export type SettingsMachinePage = SettingsMachineScope & {
@@ -101,21 +111,17 @@ export function settingsMachinePageFor(machine: ProjectMachine): SettingsMachine
 }
 
 /**
- * The scope a `machine` section runs under: the page as it is when the
- * repository route reaches the machine, else the page with its machine route
- * as the pin. Null when neither reaches it, or the route's brain is too old
- * to answer (`MachineUnavailableNotice` says which).
+ * The scope a `machine` or `account` section runs under: the page as it is
+ * when the repository route reaches the machine, else the page with its
+ * machine route as the pin (for an `account` section, This computer's only).
+ * Null when neither reaches it, or the route's brain is too old to answer
+ * (`MachineUnavailableNotice` says which).
  */
-export function machineRoutedPage(page: SettingsMachinePage): SettingsMachinePage | null {
+export function routedPageFor(kind: RoutedSectionKind, page: SettingsMachinePage): SettingsMachinePage | null {
   if (page.target) return page;
+  if (kind === "account" && !page.isThisMachine) return null;
   if (!page.machineRoute || page.machineRouteOutdated) return null;
   return { ...page, target: { kind: "pinned", binding: page.machineRoute }, pin: page.machineRoute };
-}
-
-/** `machineRoutedPage` for an `account` section: the machine route only for This computer. */
-export function accountRoutedPage(page: SettingsMachinePage): SettingsMachinePage | null {
-  if (page.target) return page;
-  return page.isThisMachine ? machineRoutedPage(page) : null;
 }
 
 /**
@@ -137,11 +143,11 @@ export function useSettingsMachinePage(machine: ProjectMachine | null): Settings
  * Whether a Machines page section can be shown for a machine without any of
  * its calls landing on a different one.
  */
-export function machineSectionAvailable(kind: MachineSectionKind, page: SettingsMachineScope): boolean {
+export function machineSectionAvailable(kind: MachineSectionKind, page: SettingsMachinePage): boolean {
   if (!page.online) return false;
   if (kind === "local") return page.isThisMachine;
   if (kind === "bound") return page.isActiveBinding;
-  if (kind === "machine") return page.target != null || ("machineRoute" in page && page.machineRoute != null);
+  if (kind === "machine") return page.target != null || page.machineRoute != null;
   if (kind === "account") return page.target != null || page.isThisMachine;
   return page.target != null;
 }

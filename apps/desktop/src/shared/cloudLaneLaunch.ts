@@ -1,6 +1,6 @@
 /**
  * Facts an ADE Cloud lane's computer carries in its metadata, so any list
- * (desktop, phone, the server's own) can show "ADE Cloud · <lane name>" and
+ * (desktop, phone, the server's own) can show "Cloud · <lane name>" and
  * find the lane's project without waking the computer. The launch writes
  * them when it makes the computer (`cloudLaneLaunchService.ts`), beside
  * `ade_request_id`, which is the launch id.

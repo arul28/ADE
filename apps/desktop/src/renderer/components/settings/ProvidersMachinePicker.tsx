@@ -3,7 +3,7 @@ import { CaretDown, Check } from "@phosphor-icons/react";
 import type { ProjectMachine } from "../../state/projectMachines";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MachineAvatar, machineFormFactor } from "../remoteTargets/MachineIdentity";
-import { machineSectionAvailable, settingsMachinePageFor, type MachineSectionKind } from "./SettingsMachinesNav";
+import { machineSectionAvailable, settingsMachinePageFor, type PickableSectionKind } from "./SettingsMachinesNav";
 import { useMachineFacts, type MachineFacts } from "./machines/machineFacts";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
@@ -18,7 +18,7 @@ import "./machines/machinesPage.css";
  */
 export function reachableMachines(
   machines: readonly ProjectMachine[],
-  kind: Extract<MachineSectionKind, "routed" | "machine" | "account"> = "routed",
+  kind: PickableSectionKind = "routed",
 ): ProjectMachine[] {
   return machines.filter((machine) => machineSectionAvailable(kind, settingsMachinePageFor(machine)));
 }
@@ -48,7 +48,7 @@ export function MachinePicker({
   variant?: "inline" | "title";
   adeCloud?: { selected: boolean; onPick: () => void } | null;
   /** How the page reaches a machine (`reachableMachines`). */
-  kind?: Extract<MachineSectionKind, "routed" | "machine" | "account">;
+  kind?: PickableSectionKind;
 }) {
   const reachable = useMemo(() => reachableMachines(machines, kind), [kind, machines]);
   const update = useAutoUpdateSnapshot();

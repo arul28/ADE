@@ -178,6 +178,13 @@ export function adeCloudLaneLabel(laneName: string): string {
  * for an ADE Cloud lane computer, else the machine's own (device) name or
  * "This computer" (`machineNameForBinding`). A label only: routing keeps the
  * binding itself.
+ *
+ * For code outside React and for event-time reads (a callback, a toast),
+ * which read the index as it is then. A component that renders the label
+ * uses `useMachineLabelForBinding`, or the label goes stale when the lane
+ * computers are read after it rendered. The machine-row sibling is
+ * `useMachineLabelForMachine` (`components/cloudLane`, apart from here
+ * because it reads the app store, which imports this module).
  */
 export function machineLabelForBinding(
   binding: OpenProjectBinding | null | undefined,
@@ -202,6 +209,18 @@ export function machineLabelForMachine(
   machine: { hostname?: string | null; machineKey?: string | null; name: string },
   computers: readonly AdeCloudLaneComputer[] = state.computers,
 ): string {
+  return adeCloudLaneLabelForMachine(machine, computers) ?? machine.name;
+}
+
+/**
+ * "Cloud · <lane>" when the machine is an ADE Cloud lane computer, else null:
+ * for a row that shows the machine's own name too (as the tooltip) only when
+ * the label replaced it.
+ */
+export function adeCloudLaneLabelForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string | null {
   const computer = adeCloudLaneComputerForMachine(machine, computers);
-  return computer ? adeCloudLaneLabel(computer.laneName) : machine.name;
+  return computer ? adeCloudLaneLabel(computer.laneName) : null;
 }

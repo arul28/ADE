@@ -654,6 +654,7 @@ export function ChatBuiltInBrowserPanel({
     if (!pin) return { ok: true, tunnel: null, reason: null };
     const parsed = parseLoopbackUrl(url);
     if (!parsed) return { ok: true, tunnel: null, reason: null };
+    // Read when the navigation runs, so it is the lane index as it is now.
     const machineLabel = machineLabelForBinding(pin);
     const approved = await ensureTunnelApproval(parsed.port, machineLabel, options);
     if (!approved) {

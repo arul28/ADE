@@ -1,7 +1,7 @@
 import React from "react";
 import { ArrowSquareOut, Globe } from "@phosphor-icons/react";
 import type { DevServerRecord, OpenProjectBinding } from "../../../shared/types";
-import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
+import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { refreshDevServersForMachine, useSessionDevServers } from "../../lib/laneDevServers";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { showToast } from "../app/toast/toastStore";
@@ -59,6 +59,8 @@ export function SessionDevServerBadge({
   const pinRef = React.useRef(runtimePin);
   pinRef.current = runtimePin;
 
+  const machine = useMachineLabelForBinding(runtimePin);
+
   React.useEffect(() => {
     if (servers.length === 0) setOpen(false);
   }, [servers.length]);
@@ -102,7 +104,6 @@ export function SessionDevServerBadge({
 
   if (servers.length === 0) return null;
   const labels = servers.map(devServerLabel);
-  const machine = machineLabelForBinding(runtimePin);
   const title = servers.length === 1
     ? `${labels[0]} is running, started by this chat`
     : `${servers.length} servers running, started by this chat: ${labels.join(", ")}`;

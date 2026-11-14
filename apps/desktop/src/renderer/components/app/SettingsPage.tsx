@@ -75,6 +75,7 @@ import {
   decodeSettingsHash,
   integrationPageForAnchor,
   openIntegrationFromUrl,
+  settingsTabPickerKind,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
 
@@ -673,10 +674,8 @@ export function SettingsPage({
   // Providers also offers ADE Cloud (`?machine=ade-cloud`), even beside one machine.
   const offersAdeCloud = section === "agents" && machinesEnabled && cloudEnabled;
   const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
-  // Providers reaches a computer with or without this repository (the
-  // machine route); Passwords reaches This computer always and another
-  // computer through its copy; Android devices only through a copy.
-  const titlePickerKind = section === "agents" ? "machine" : section === "passwords" ? "account" : "routed";
+  // How the tab reaches a machine (`settingsTabPickerKind`).
+  const titlePickerKind = settingsTabPickerKind(section);
   const titlePicker = (section === "agents" || section === "android" || section === "passwords") && machinesEnabled && !standalone
     && (reachableMachines(machines, titlePickerKind).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.

@@ -292,21 +292,22 @@ export function buildAllMachineLanes(input: {
   connections?: readonly RemoteRuntimeConnectionStatus[];
   thisMachineDeviceId?: string | null;
   /**
-   * The account's ADE Cloud lane computers (`useAdeCloudLaneComputers`) and
-   * lanes without a computer (`useCloudLanesWithoutComputer`), with the repo's
-   * normalized origin. When passed, the result carries `adeCloud`; nothing
-   * else changes.
+   * The account's ADE Cloud lane computers (`useAdeCloudLaneComputers`), which
+   * name the cloud machines; a hook passes the ones it renders from, so its
+   * memo follows them. With the lanes without a computer
+   * (`useCloudLanesWithoutComputer`) and the repo's normalized origin too, the
+   * result also carries `adeCloud`.
    */
   adeCloud?: {
     computers: readonly AdeCloudLaneComputer[];
-    withoutComputer: readonly CloudLaneWithoutComputer[];
-    repoOriginIdentity: string | null;
+    withoutComputer?: readonly CloudLaneWithoutComputer[];
+    repoOriginIdentity?: string | null;
   };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
   // What a person sees: a cloud lane computer reads "Cloud · <lane>" (from the
-  // lane computers passed, else the ones last read); every other machine keeps
-  // its own name. Callers re-run this when the lane computers change.
+  // lane computers passed, else, for a caller outside React, the ones last
+  // read); every other machine keeps its own name.
   const laneComputers = input.adeCloud?.computers ?? adeCloudLaneComputersNow();
   const labelFor = (hostname: string | null, machineId: string, name: string): string =>
     machineLabelForMachine({ hostname, machineKey: machineId, name }, laneComputers);
@@ -446,14 +447,16 @@ export function buildAllMachineLanes(input: {
     lanesByMachineId,
     prsByMachineId,
     sessionsByMachineId,
-    ...(input.adeCloud ? { adeCloud: buildAdeCloudLaneGroup(machines, lanes, input.adeCloud) } : {}),
+    ...(input.adeCloud?.withoutComputer
+      ? { adeCloud: buildAdeCloudLaneGroup(machines, lanes, { ...input.adeCloud, withoutComputer: input.adeCloud.withoutComputer }) }
+      : {}),
   };
 }
 
 function buildAdeCloudLaneGroup(
   machines: readonly LaneMachine[],
   lanes: readonly MachineLane[],
-  input: NonNullable<Parameters<typeof buildAllMachineLanes>[0]["adeCloud"]>,
+  input: NonNullable<Parameters<typeof buildAllMachineLanes>[0]["adeCloud"]> & { withoutComputer: readonly CloudLaneWithoutComputer[] },
 ): AdeCloudLaneGroup {
   const origin = input.repoOriginIdentity?.trim().toLowerCase() || null;
   // A computer with no recorded origin is kept: the union only lists machines
@@ -488,9 +491,7 @@ export function useAllMachineLanes(active = true): AllMachineLanes {
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const { computers } = useAdeCloudLaneComputers();
   return useMemo(
-    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {} }),
-    // `computers`: the machine names read the lane computers as last read.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {}, adeCloud: { computers } }),
     [activeBinding, activeLanes, machines, computers],
   );
 }
