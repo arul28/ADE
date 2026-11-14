@@ -86,6 +86,8 @@ function props(): WorkToolPanelProps {
     onAddIosContext: undefined,
     onAddContextAttachment: undefined,
     onInsertDraft: undefined,
+    deviceChoice: { machines: [], read: "ok", viewOnly: false, choose: null },
+    onAskAgent: null,
     onResumeEndedSession: vi.fn(),
     onToolChange: vi.fn(),
     onClose: vi.fn(),

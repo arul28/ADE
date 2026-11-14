@@ -1055,8 +1055,16 @@ Renderer surfaces:
   recent history once, so a call already running shows; a tool stays the
   agent's while any call on it runs), and the row above an open tool: the
   agent's action with Take over, the person's hold with Hand back, or the
-  machine it runs on. Take over and hand-back notes go only inline, only
-  while that chat's own turn runs, never to a queue-only provider.
+  machine it runs on (only machines that can run it, plus ADE Cloud as
+  "soon"). Take over and hand-back notes go only inline, only while that
+  chat's own turn runs, never to a queue-only provider.
+- `apps/desktop/src/renderer/components/terminals/workToolStartState.tsx` —
+  an open device tool with nothing running. On a chosen machine with no
+  device yet, buttons ask the agent ("Boot a simulator", "Run this app on
+  it") as the person's message (`useToolHandoff.askAgent`: a new turn when
+  idle, inline or queued mid-turn). When the chat's machine can't run the
+  device and none is chosen, the machines that can are one press each (the
+  chat's device choice, as `ade devices use`).
 - `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
   `WorkToolPickerBackdrop.tsx` is only the React shell. It paints the
