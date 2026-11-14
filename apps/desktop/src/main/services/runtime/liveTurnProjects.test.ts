@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { recordCliSessionsToReopen, takeCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
 import {
   closeLiveTurnProjectsRecord,
@@ -12,11 +13,24 @@ import {
   plannedStopRecordedFor,
   recordPlannedBrainStop,
   registerPlannedStopCliSource,
+  stoppedForGoodListWriters,
   takeCarriedCliSessionsToReopen,
   takeLiveTurnProjectsFromStoppedBrains,
 } from "./liveTurnProjects";
 
 const SIX_HOURS_MS = 6 * 60 * 60_000;
+// Past any platform's pid range: another brain's list, never this process.
+const OTHER_BRAIN_PID = 99_999_903;
+
+/** A list another brain (another endpoint, such as the machine brain) wrote for the project. */
+function writeOtherBrainList(projectRoot: string, sessions: Array<Record<string, unknown>>): void {
+  const cacheDir = resolveAdeLayout(projectRoot).cacheDir;
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(cacheDir, `reopen-cli-after-restart.${OTHER_BRAIN_PID}.json`),
+    JSON.stringify({ version: 1, writtenAt: new Date().toISOString(), sessions }),
+  );
+}
 
 describe("a brain stop someone asked for", () => {
   let dir = "";
@@ -139,8 +153,10 @@ describe("a brain stop someone asked for", () => {
     expect(takeCliSessionsToReopen(cliProject, SIX_HOURS_MS)).toEqual(expected.clis);
   });
 
-  it("a stop for good also takes the continues from projects an earlier stop left unopened", () => {
+  it("a stop for good also takes the continues from projects an earlier stop left unopened, and only this brain's", () => {
     stopWithWorkInFlight();
+    // Another brain's work in the same project is not this brain's to stop.
+    writeOtherBrainList(chatProject, [{ sessionId: "chat-of-other-brain", midTurn: true, kind: "chat" }]);
     // The next brain takes the record, then is stopped for good before it opens them.
     expect(takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath, maxStoppedAgeMs: SIX_HOURS_MS })).toHaveLength(2);
     enableLiveTurnProjectsRecord({ runtimeDir, socketPath });
@@ -149,11 +165,38 @@ describe("a brain stop someone asked for", () => {
     expect(recordPlannedBrainStop({ runtimeDir, socketPath })).toMatchObject({ intent: "stop_for_good", projects: 0 });
 
     expect(takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath, maxStoppedAgeMs: SIX_HOURS_MS })).toEqual([]);
-    expect(takeCliSessionsToReopen(chatProject, SIX_HOURS_MS)).toEqual([]);
+    expect(takeCliSessionsToReopen(chatProject, SIX_HOURS_MS)).toEqual([
+      { sessionId: "chat-of-other-brain", midTurn: true, kind: "chat" },
+    ]);
     expect(takeCliSessionsToReopen(cliProject, SIX_HOURS_MS)).toEqual([
       { sessionId: "cli-at-work", midTurn: false },
       { sessionId: "cli-idle", midTurn: false },
     ]);
+  });
+
+  it("keeps a stop for good whose list cannot be rewritten, so a later take continues nothing", () => {
+    stopWithWorkInFlight();
+    expect(takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath, maxStoppedAgeMs: SIX_HOURS_MS })).toHaveLength(2);
+    enableLiveTurnProjectsRecord({ runtimeDir, socketPath });
+    // The list cannot be claimed (a folder holds the claim's name), as in a
+    // read-only or locked cache.
+    const listPath = path.join(resolveAdeLayout(cliProject).cacheDir, `reopen-cli-after-restart.${process.pid}.json`);
+    const blockedClaim = `${listPath}.claimed-${process.pid}`;
+    fs.mkdirSync(path.join(blockedClaim, "held"), { recursive: true });
+    noteBrainStopIntent("stop_for_good", { runtimeDir, socketPath });
+
+    expect(recordPlannedBrainStop({ runtimeDir, socketPath })).toMatchObject({ intent: "stop_for_good", failed: 1 });
+
+    // The next start still cannot rewrite it, so the decision stays.
+    expect(takeLiveTurnProjectsFromStoppedBrains({ runtimeDir, socketPath, maxStoppedAgeMs: SIX_HOURS_MS })).toEqual([]);
+    expect(stoppedForGoodListWriters(cliProject)).toEqual(new Set([process.pid]));
+    // The folder writes again: the project's take reopens the CLIs and continues nothing.
+    fs.rmSync(blockedClaim, { recursive: true, force: true });
+    expect(takeCliSessionsToReopen(cliProject, SIX_HOURS_MS, undefined, undefined, undefined, stoppedForGoodListWriters(cliProject)))
+      .toEqual([
+        { sessionId: "cli-at-work", midTurn: false },
+        { sessionId: "cli-idle", midTurn: false },
+      ]);
   });
 
   it.each([

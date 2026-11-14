@@ -11,6 +11,7 @@ import {
   resetCliCrashReopenCount,
   takeCliSessionsToReopen,
 } from "./cliReopenAfterRestart";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 
 const DAY_MS = 24 * 60 * 60_000;
 const HOUR_MS = 60 * 60_000;
@@ -66,6 +67,23 @@ describe("CLI reopen after restart", () => {
       ]);
     expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater)).toEqual([
       { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+    ]);
+
+    // The left entries cannot be written back (the temp file's name is
+    // taken by a folder): the list goes back whole, and this runtime takes
+    // nothing from it, least of all the entry left for the other runtime.
+    recordCliSessionsToReopen(root, [
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+      { sessionId: "cli-f", midTurn: false },
+    ], () => stoppedAt);
+    const blockedWrite = path.join(resolveAdeLayout(root).cacheDir, `reopen-cli-after-restart.${process.pid}.json.${process.pid}.tmp`);
+    fs.mkdirSync(blockedWrite);
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater, undefined, (entry) => entry.sessionId === "chat-machine"))
+      .toEqual([]);
+    fs.rmdirSync(blockedWrite);
+    expect(takeCliSessionsToReopen(root, DAY_MS, aMinuteLater)).toEqual([
+      { sessionId: "chat-machine", midTurn: true, kind: "chat" },
+      { sessionId: "cli-f", midTurn: false },
     ]);
 
     // A project removed from the machine forgets its list.

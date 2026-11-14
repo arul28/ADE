@@ -95,6 +95,29 @@ describe("DiagnosticsSharingSection manual send", () => {
     expect(revealReport).toHaveBeenCalledWith("/tmp/report.md");
   });
 
+  it("keeps a send that runs when Settings closes, and shows its reference on return", async () => {
+    let answer: (result: DiagnosticsManualSendResult) => void = () => undefined;
+    const { unmount, sendReport, discardReport } = mountSection({
+      sendReport: () => new Promise((resolve) => { answer = resolve; }),
+    });
+    await prepareAndSend();
+    await waitFor(() => {
+      expect(sendReport).toHaveBeenCalledTimes(1);
+    });
+
+    // The person leaves Settings while the report is on its way.
+    unmount();
+    answer({ ok: true, reference: "late1234", reportPath: "/tmp/report.md" });
+    await Promise.resolve();
+    render(<DiagnosticsSharingSection />);
+
+    expect((await screen.findByRole("status")).textContent).toContain("Sent. Reference late1234");
+    // The report that reached ADE is not offered again.
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(discardReport).not.toHaveBeenCalled();
+    expect(sendReport).toHaveBeenCalledTimes(1);
+  });
+
   it("says something different for each refusal, and never a status code", async () => {
     const results: DiagnosticsManualSendResult[] = [
       { ok: false, reason: "local_limit", limit: 5 },

@@ -624,6 +624,8 @@ describe("ProjectScopeRegistry", () => {
       expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
       expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
       expect(scopeRegistry.getIfBooted(second.projectId)).toBeNull();
+      // The abandoned scope booted, but it is being torn down: never ready.
+      expect(scopeRegistry.getIfReady(second.projectId)).toBeNull();
     } finally {
       vi.useRealTimers();
     }

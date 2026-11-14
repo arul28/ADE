@@ -1200,6 +1200,11 @@ export class ProjectScopeRegistry {
   ): void {
     if (!pending || this.scopes.get(projectId) !== pending) return;
     this.scopes.delete(projectId);
+    // A scope that finished its boot is in `readyScopes` too (only the attempt
+    // that owns the cache entry is ever put there, so this entry is this
+    // scope's). Left there, `resolveReadySyncScope` would hand out a runtime
+    // that is being torn down.
+    this.readyScopes.delete(projectId);
     // The scope this project failed to boot is gone, so the phases recorded
     // against it describe a host that no longer exists. Same reason `dispose`
     // clears them.

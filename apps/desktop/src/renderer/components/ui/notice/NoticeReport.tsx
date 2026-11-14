@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretRight, Check, PaperPlaneTilt } from "@phosphor-icons/react";
 import { forwardSignalToSentry } from "../../../../shared/sentry/logBridge";
+import { useAppStore } from "../../../state/appStore";
 import {
   REPORT_ERROR_LABEL,
   reportControlTitle,
@@ -29,6 +30,8 @@ export type NoticeReport = {
   technicalDetail?: string | null;
   /** Defaults to the notice's title. */
   headline?: string | null;
+  /** The project the failure is in. Defaults to the project open when the notice was first shown. */
+  projectRoot?: string | null;
 };
 
 type ResolvedNoticeReport = NoticeReport & { headline: string };
@@ -110,11 +113,16 @@ export function useNoticeFailure(notice: {
 }): { report: ResolvedNoticeReport | null; action: NoticeAction | null; body: ReactNode } {
   const report = resolveNoticeReport(notice);
   useNoticeSentryLog(notice.logged ? null : report);
+  // Read once, when the notice is first shown, and kept: the same error in
+  // two projects is two failures (each has its own note and sent state), and
+  // a toast that stays up after a project switch is still about the first.
+  const [shownInProjectRoot] = useState(() => useAppStore.getState().project?.rootPath ?? null);
   const state = useIssueReport({
     surface: report?.surface ?? "notice",
     headline: report?.headline ?? null,
     code: report?.code ?? null,
     technicalDetail: report?.technicalDetail?.trim() || null,
+    projectRoot: report?.projectRoot ?? shownInProjectRoot,
   });
   if (!report) return { report: null, action: null, body: null };
   const detail = report.technicalDetail?.trim() || null;

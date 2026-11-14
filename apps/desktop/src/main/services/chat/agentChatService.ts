@@ -1878,7 +1878,13 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
-import { forgetLiveTurnProject, noteLiveTurn, takeCarriedCliSessionsToReopen } from "../runtime/liveTurnProjects";
+import {
+  forgetLiveTurnProject,
+  noteLiveTurn,
+  settleStoppedForGood,
+  stoppedForGoodListWriters,
+  takeCarriedCliSessionsToReopen,
+} from "../runtime/liveTurnProjects";
 import { noteRestartContinuation } from "../runtime/brainUnplannedRestart";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
@@ -67294,39 +67300,60 @@ export function createAgentChatService(args: {
       // A steer on a dead runtime finds no active turn on the new one and
       // sends as a new turn below.
       const droppedDeadRuntime = dropDeadCodexRuntime(managed, "turn_imminent");
-      const runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
-      await runtime.collaborationModesReady?.catch(() => {});
-      await runtime.acceptedSteersHydrationReady;
-
-      const preparedSteer = prepareSendMessage({
-        sessionId,
-        text: trimmed,
-        displayText: displayText ?? trimmed,
-        attachments,
-        contextAttachments,
-        metadata,
-        allowPendingInput: options?.allowPendingInput,
-      });
-      if (!preparedSteer) {
-        // The dead runtime's turn ended above, and no turn follows it now.
-        if (
-          droppedDeadRuntime
-          && managed.session.status === "active"
-          && !runtime.activeTurnId
-          && !runtime.awaitingTurnStart
-          && !runtime.turnStartReserved
-        ) {
-          markSessionIdleWithFreshCache(managed);
-          persistChatState(managed);
+      // The dead runtime's turn ended above and left the chat active for the
+      // turn that should follow. When no turn follows (nothing to send, or the
+      // replacement runtime or the new turn fails to start), the chat settles
+      // here, or it stays active with no runtime and no turn.
+      const settleAfterDeadDrop = (): void => {
+        if (!droppedDeadRuntime || managed.session.status !== "active") return;
+        const current = managed.runtime?.kind === "codex" ? managed.runtime : null;
+        if (current && (current.activeTurnId || current.awaitingTurnStart || current.turnStartReserved)) return;
+        markSessionIdleWithFreshCache(managed);
+        persistChatState(managed);
+      };
+      const sendAsNewTurn = async (prepared: PreparedSendMessage): Promise<void> => {
+        try {
+          await executePreparedSendMessage(prepared);
+        } catch (error) {
+          settleAfterDeadDrop();
+          throw error;
         }
+      };
+      let runtime: CodexRuntime;
+      try {
+        runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
+        await runtime.collaborationModesReady?.catch(() => {});
+        await runtime.acceptedSteersHydrationReady;
+      } catch (error) {
+        settleAfterDeadDrop();
+        throw error;
+      }
+
+      let preparedSteer: PreparedSendMessage | null;
+      try {
+        preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: displayText ?? trimmed,
+          attachments,
+          contextAttachments,
+          metadata,
+          allowPendingInput: options?.allowPendingInput,
+        });
+      } catch (error) {
+        settleAfterDeadDrop();
+        throw error;
+      }
+      if (!preparedSteer) {
+        settleAfterDeadDrop();
         return { steerId, queued: false };
       }
       if (isCodexGoalSlashInput(trimmed)) {
-        await executePreparedSendMessage(preparedSteer);
+        await sendAsNewTurn(preparedSteer);
         return { steerId, queued: false };
       }
       if (!managed.session.threadId || !runtime.activeTurnId) {
-        await executePreparedSendMessage(preparedSteer);
+        await sendAsNewTurn(preparedSteer);
         return { steerId, queued: false };
       }
 
@@ -69454,7 +69481,15 @@ export function createAgentChatService(args: {
       // A dead app-server has nothing left to stop: settle the chat (its turn
       // ends as interrupted, the chat goes idle) and do not start a new
       // process just to find no turn on it.
-      if (dropDeadCodexRuntime(managed, "settle")) {
+      const deadRuntime = managed.runtime?.kind === "codex" && !isCodexRuntimeProcessAlive(managed.runtime)
+        ? managed.runtime
+        : null;
+      if (deadRuntime) {
+        // The teardown keeps an unanswered plan card (a crash must leave it
+        // answerable). A clearing Stop discards it, as on a live runtime
+        // below; `stop_only` leaves it for the user.
+        if (stopModeClearsQueue(mode)) settleCodexPendingInputs(managed, deadRuntime);
+        dropDeadCodexRuntime(managed, "settle");
         persistChatState(managed);
         return result;
       }
@@ -72364,6 +72399,9 @@ export function createAgentChatService(args: {
       logger.info("agent_chat.update_resume_dropped", { sessionId, reason, cause: "planned_stop" });
     };
     let planned: ReturnType<typeof takeCliSessionsToReopen> = [];
+    // A brain of this endpoint stopped for good and could not rewrite its
+    // lists here: those lists only reopen their CLIs and continue nothing.
+    const forGoodWriters = stoppedForGoodListWriters(projectRoot);
     try {
       planned = takeCliSessionsToReopen(projectRoot, RESTART_RESUME_MAX_AGE_MS, undefined, (stale) => {
         // A list older than 6 h: its work is stale, as for any restart.
@@ -72379,7 +72417,8 @@ export function createAgentChatService(args: {
         if (entry.kind !== "chat" || !chatLeftForMachineBrain(entry.sessionId)) return false;
         logger.info("agent_chat.planned_stop_chat_left", { sessionId: entry.sessionId, reason: "machine_brain" });
         return true;
-      });
+      }, forGoodWriters);
+      if (forGoodWriters) settleStoppedForGood(projectRoot);
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_read_failed", { source: "planned", error: errorText(error) });
     }

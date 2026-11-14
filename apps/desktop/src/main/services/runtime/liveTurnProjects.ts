@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { RESTART_RESUME_MAX_AGE_MS } from "../../../shared/chatAutoResume";
 import { captureError } from "../../../shared/sentry/capture";
 import {
   neutralizeCliSessionsToReopen,
@@ -37,6 +38,14 @@ import { brainRunEndpointKey, pidRuns } from "./brainUnplannedRestart";
  * "Stop and quit ADE", `ade brain stop`) deletes the record as before, and its
  * CLIs are saved to reopen only: nothing tells them to continue.
  *
+ * Every project list names the runtime that wrote it (its pid), and a record
+ * carries the pids whose lists it vouches for (`listPids`), so a stop for good
+ * changes only the lists of this endpoint's brains, never a sibling brain's.
+ * When a list cannot be rewritten (a read-only or locked folder), the
+ * decision is kept in `<endpoint>.for-good.json` beside the records, and
+ * this endpoint's next brain applies it whenever it takes that project's
+ * lists, until the lists are rewritten or older than their 6 h bound.
+ *
  * Process-global (`globalThis`) because the chat and terminal services are
  * bundled more than once.
  */
@@ -66,6 +75,16 @@ type RecordFile = {
   opening?: string;
   stoppedAt?: string;
   lists?: Record<string, CliReopenEntry[]>;
+  /** Besides `pid`: the brains whose project lists this record took over (`Holder.pending.listPids`). */
+  listPids?: number[];
+};
+
+/** `<endpoint>.for-good.json`: per project, the writers whose lists continue nothing. */
+const FOR_GOOD_SUFFIX = ".for-good.json";
+
+type ForGoodFile = {
+  version: 1;
+  projects: Record<string, { pids: number[]; at: string }>;
 };
 
 /** Why the brain is stopped on purpose, said by whoever stops it (`noteBrainStopIntent`). */
@@ -100,6 +119,12 @@ type Holder = {
   pending: {
     filePath: string;
     roots: string[];
+    /**
+     * The pids whose project lists these roots hold: the stopped brains, and
+     * the brains they had taken over from. A stop for good of this brain
+     * neutralizes only those lists.
+     */
+    listPids: number[];
     opening: string | null;
     /**
      * The crashed brains' claimed files, kept while the pending file could
@@ -107,6 +132,12 @@ type Holder = {
      */
     claimed: string[];
   } | null;
+  /**
+   * Stops for good whose lists could not be rewritten: per project, the
+   * writers whose lists continue nothing (`ForGoodFile`), and where it lives.
+   */
+  forGood: Map<string, { pids: number[]; atMs: number }>;
+  forGoodPath: string | null;
 };
 
 const HOLDER_KEY = Symbol.for("ade.liveTurnProjects");
@@ -124,6 +155,8 @@ function holder(): Holder {
       writing: false,
       dirty: false,
       pending: null,
+      forGood: new Map(),
+      forGoodPath: null,
     };
     scope[HOLDER_KEY] = value;
   }
@@ -183,7 +216,94 @@ async function flush(): Promise<void> {
 export function enableLiveTurnProjectsRecord(args: { runtimeDir: string; socketPath: string }): void {
   const state = holder();
   state.filePath = path.join(recordDir(args.runtimeDir), `${brainRunEndpointKey(args.socketPath)}.${process.pid}.json`);
+  state.forGoodPath = forGoodPath(args.runtimeDir, args.socketPath);
   if (state.turns.size > 0) void flush();
+}
+
+function forGoodPath(runtimeDir: string, socketPath: string): string {
+  return path.join(recordDir(runtimeDir), `${brainRunEndpointKey(socketPath)}${FOR_GOOD_SUFFIX}`);
+}
+
+/** Saves the stops for good still owed (or removes the file when none are). False when it could not. */
+function writeForGood(state: Holder): boolean {
+  const filePath = state.forGoodPath;
+  if (!filePath) return false;
+  try {
+    if (state.forGood.size === 0) {
+      fs.rmSync(filePath, { force: true });
+      return true;
+    }
+    const file: ForGoodFile = {
+      version: 1,
+      projects: Object.fromEntries([...state.forGood].map(([root, entry]) => [
+        root,
+        { pids: entry.pids, at: new Date(entry.atMs).toISOString() },
+      ])),
+    };
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(file));
+    fs.renameSync(tmpPath, filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Reads the stops for good still owed on this endpoint, drops the ones past
+ * the lists' 6 h bound, and tries each rewrite again; what still fails stays.
+ */
+function loadForGood(state: Holder, runtimeDir: string, socketPath: string, nowMs: number): void {
+  state.forGoodPath = forGoodPath(runtimeDir, socketPath);
+  let parsed: Partial<ForGoodFile> | null = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(state.forGoodPath, "utf8")) as Partial<ForGoodFile>;
+  } catch {
+    // None owed.
+  }
+  const before = state.forGood.size;
+  for (const [root, entry] of Object.entries(parsed?.version === 1 ? parsed.projects ?? {} : {})) {
+    const atMs = typeof entry?.at === "string" ? Date.parse(entry.at) : Number.NaN;
+    const pids = Array.isArray(entry?.pids)
+      ? entry.pids.filter((pid): pid is number => Number.isInteger(pid) && pid > 0)
+      : [];
+    if (!root.trim() || pids.length === 0 || !Number.isFinite(atMs)) continue;
+    const resolved = path.resolve(root);
+    const known = state.forGood.get(resolved);
+    state.forGood.set(resolved, {
+      pids: [...new Set([...(known?.pids ?? []), ...pids])],
+      atMs: Math.max(known?.atMs ?? 0, atMs),
+    });
+  }
+  let changed = state.forGood.size !== before;
+  for (const [root, entry] of [...state.forGood]) {
+    if (nowMs - entry.atMs > RESTART_RESUME_MAX_AGE_MS
+      || neutralizeCliSessionsToReopen(root, new Set(entry.pids)).held) {
+      state.forGood.delete(root);
+      changed = true;
+    }
+  }
+  if (changed || parsed) writeForGood(state);
+}
+
+/**
+ * The writers whose lists in this project continue nothing: a stop for good
+ * that could not rewrite them. Passed to `takeCliSessionsToReopen`.
+ */
+export function stoppedForGoodListWriters(projectRoot: string): ReadonlySet<number> | undefined {
+  const entry = holder().forGood.get(path.resolve(projectRoot));
+  return entry ? new Set(entry.pids) : undefined;
+}
+
+/** The project took its lists: once none of those writers' lists can continue, the decision is done. */
+export function settleStoppedForGood(projectRoot: string): void {
+  const state = holder();
+  const root = path.resolve(projectRoot);
+  const entry = state.forGood.get(root);
+  if (!entry || !neutralizeCliSessionsToReopen(root, new Set(entry.pids)).held) return;
+  state.forGood.delete(root);
+  writeForGood(state);
 }
 
 function stopIntentPath(runtimeDir: string, socketPath: string): string {
@@ -292,7 +412,10 @@ export function recordPlannedBrainStop(args: {
   const state = holder();
   const nowMs = args.nowMs ?? Date.now();
   const intent = takeBrainStopIntent(args.runtimeDir, args.socketPath, nowMs);
-  if (intent === "stop_for_good") return keepNothingForGood(state);
+  if (intent === "stop_for_good") {
+    state.forGoodPath ??= forGoodPath(args.runtimeDir, args.socketPath);
+    return keepNothingForGood(state, nowMs);
+  }
   const filePath = state.filePath;
   if (!filePath) return null;
   const acceptedUpdate = intent === "accepted_update";
@@ -357,12 +480,14 @@ export function recordPlannedBrainStop(args: {
   if (projects.length > 0) {
     const stoppedPath = filePath.replace(/\.json$/, ".stopped.json");
     try {
+      const listPids = (pending?.listPids ?? []).filter((pid) => pid !== process.pid);
       const file: RecordFile = {
         version: 1,
         pid: process.pid,
         projects,
         stoppedAt: new Date(nowMs).toISOString(),
         ...(Object.keys(lists).length > 0 ? { lists } : {}),
+        ...(listPids.length > 0 ? { listPids } : {}),
       };
       fs.mkdirSync(path.dirname(stoppedPath), { recursive: true });
       const tmpPath = `${stoppedPath}.tmp`;
@@ -394,22 +519,36 @@ export function recordPlannedBrainStop(args: {
 /**
  * A stop for good: no chat is kept, and every open CLI is saved to reopen
  * only, so its teardown saves nothing more. The projects an earlier stop left
- * and this brain had not opened yet keep their CLIs but lose their continues.
+ * and this brain had not opened yet keep their CLIs but lose their continues:
+ * only the lists of the brains this one took them from, never another
+ * brain's. A list that cannot be rewritten keeps the decision in
+ * `<endpoint>.for-good.json`, so a later take still continues nothing.
  */
-function keepNothingForGood(state: Holder): PlannedBrainStopSummary {
+function keepNothingForGood(state: Holder, nowMs: number): PlannedBrainStopSummary {
   const summary: PlannedBrainStopSummary = { intent: "stop_for_good", projects: 0, chats: 0, midTurnClis: 0, failed: 0 };
+  const owed = (root: string, pids: readonly number[]): void => {
+    const known = state.forGood.get(root);
+    state.forGood.set(root, { pids: [...new Set([...(known?.pids ?? []), ...pids])], atMs: nowMs });
+  };
   for (const [root, source] of state.plannedCliSources) {
     try {
       recordCliSessionsToReopen(root, source().map((entry) => ({ sessionId: entry.sessionId, midTurn: false })));
       state.plannedRecordedRoots.add(root);
     } catch {
-      // The teardown writes the list as before.
+      // The teardown writes the list as before, with its continues; this
+      // brain's next start rewrites it, and a take before that ignores them.
       summary.failed += 1;
+      owed(root, [process.pid]);
     }
   }
-  for (const root of state.pending?.roots ?? []) {
-    if (!neutralizeCliSessionsToReopen(root)) summary.failed += 1;
+  const pending = state.pending;
+  const listPids = new Set(pending?.listPids ?? []);
+  for (const root of pending?.roots ?? []) {
+    const outcome = neutralizeCliSessionsToReopen(root, listPids);
+    summary.failed += outcome.failed;
+    if (!outcome.held) owed(root, [...listPids]);
   }
+  if (state.forGood.size > 0 && !writeForGood(state)) summary.failed += 1;
   state.carriedLists.clear();
   closeLiveTurnProjectsRecord();
   return summary;
@@ -438,6 +577,8 @@ export function closeLiveTurnProjectsRecord(): void {
   state.pending = null;
   state.turns.clear();
   state.carriedLists.clear();
+  // The stops for good stay on disk; this process applies none after its stop.
+  state.forGood.clear();
   // A file left behind only opens those projects early at the next start.
   if (filePath) removeQuietly(filePath);
   if (pending) {
@@ -530,6 +671,7 @@ function writePending(state: Holder): void {
         projects: pending.roots,
         ...(pending.opening ? { opening: pending.opening } : {}),
         ...(Object.keys(lists).length > 0 ? { lists } : {}),
+        ...(pending.listPids.length > 0 ? { listPids: pending.listPids } : {}),
       };
       const tmpPath = `${pending.filePath}.tmp`;
       fs.writeFileSync(tmpPath, JSON.stringify(file));
@@ -573,6 +715,7 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
   const dir = recordDir(args.runtimeDir);
   const prefix = `${brainRunEndpointKey(args.socketPath)}.`;
   const nowMs = args.nowMs ?? Date.now();
+  loadForGood(state, args.runtimeDir, args.socketPath, nowMs);
   let names: string[];
   try {
     names = fs.readdirSync(dir);
@@ -581,6 +724,7 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
   }
   const roots = new Set<string>();
   const lists = new Map<string, CliReopenEntry[]>();
+  const listPids = new Set<number>();
   const claimedPaths: string[] = [];
   for (const name of names) {
     if (!name.startsWith(prefix)) continue;
@@ -608,6 +752,10 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
     try {
       const parsed = JSON.parse(fs.readFileSync(claimed, "utf8")) as Partial<RecordFile>;
       if (parsed?.version === 1 && Array.isArray(parsed.projects)) {
+        // The brains whose project lists these roots hold: the writer, and
+        // the brains it had taken over from.
+        const writers = [Number(match[1]), parsed.pid, ...(Array.isArray(parsed.listPids) ? parsed.listPids : [])];
+        const recordPids = writers.filter((pid): pid is number => typeof pid === "number" && Number.isInteger(pid) && pid > 0);
         if (stopped) {
           const stoppedMs = typeof parsed.stoppedAt === "string" ? Date.parse(parsed.stoppedAt) : Number.NaN;
           const stale = !Number.isFinite(stoppedMs)
@@ -615,6 +763,7 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
           args.onStoppedRecord?.({ projects: parsed.projects.length, stale });
           if (stale) continue;
         }
+        for (const pid of recordPids) listPids.add(pid);
         const skipped = typeof parsed.opening === "string" ? path.resolve(parsed.opening) : null;
         for (const root of parsed.projects.slice(0, MAX_PROJECTS)) {
           if (typeof root !== "string" || !root.trim()) continue;
@@ -643,6 +792,7 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
   state.pending = {
     filePath: path.join(dir, `${prefix}${process.pid}.pending.json`),
     roots: taken,
+    listPids: [...listPids],
     opening: null,
     claimed: claimedPaths,
   };

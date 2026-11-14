@@ -141,6 +141,14 @@ export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 18_000;
  */
 export const ATTENTION_PRESENCE_BUDGET_MS = 8_000;
 
+/**
+ * The longest one away or back change may hold the queue. Each leg of the
+ * send already ends sooner (the relay's foreground deadline, the brain's
+ * {@link ATTENTION_IPC_BUDGET_MS}); this only frees the queue from a send
+ * that never settles.
+ */
+export const ATTENTION_PRESENCE_CHANGE_DEADLINE_MS = ATTENTION_IPC_BUDGET_MS + 5_000;
+
 /** First pause after the relay could not be reached; doubles to the max. */
 const RELAY_BACKOFF_BASE_MS = 5_000;
 const RELAY_BACKOFF_MAX_MS = 5 * 60_000;
@@ -587,6 +595,26 @@ export class AttentionAccountCoordinator {
    * the relay's presence window).
    */
   async reportPresence(input: unknown): Promise<AttentionPresenceReceipt> {
+    const { presence, userActive } = this.preparePresence(input);
+    // A late send finishes on its own (its relay or brain state is still
+    // recorded); the window gets its receipt now.
+    let timedOut = false;
+    await withDeadline(this.sendPresence(presence), ATTENTION_PRESENCE_BUDGET_MS, () => {
+      timedOut = true;
+      return new Error("presence send passed its budget");
+    }).catch((error: unknown) => {
+      if (!timedOut) throw error;
+    });
+    if (timedOut) this.notePresenceSlow();
+    else this.presenceSlowLogged = false;
+    return { userActive };
+  }
+
+  /**
+   * Check a reported presence, put the OS clock's "in use" on it, and keep it
+   * as the last report (what away and back re-send).
+   */
+  private preparePresence(input: unknown): { presence: Record<string, unknown>; userActive: boolean | null } {
     const reported = isRecord(input) ? input : null;
     if (!reported || typeof reported.deviceId !== "string" || !reported.deviceId.trim()) {
       throw new Error("A valid Activity presence payload is required.");
@@ -601,18 +629,7 @@ export class AttentionAccountCoordinator {
     const { userActive: _callerClaim, ...rest } = reported;
     const presence: Record<string, unknown> = userActive === null ? rest : { ...rest, userActive };
     this.lastPresence = rest;
-    // A late send finishes on its own (its relay or brain state is still
-    // recorded); the window gets its receipt now.
-    let timedOut = false;
-    await withDeadline(this.sendPresence(presence), ATTENTION_PRESENCE_BUDGET_MS, () => {
-      timedOut = true;
-      return new Error("presence send passed its budget");
-    }).catch((error: unknown) => {
-      if (!timedOut) throw error;
-    });
-    if (timedOut) this.notePresenceSlow();
-    else this.presenceSlowLogged = false;
-    return { userActive };
+    return { presence, userActive };
   }
 
   /** One info line per slow stretch; the next send in time re-arms it. */
@@ -647,17 +664,28 @@ export class AttentionAccountCoordinator {
     return this.queuePresenceChange("back", async () => {
       const last = this.lastPresence;
       if (!last) return;
-      await this.reportPresence({ ...last, observedAt: new Date().toISOString() });
+      // The real send, not the window's 8 s receipt: the next change waits
+      // for this one to reach the relay or the brain.
+      const { presence } = this.preparePresence({ ...last, observedAt: new Date().toISOString() });
+      await this.sendPresence(presence);
     });
   }
 
   /**
    * Away and back go out one after the other, in the order they happened: a
    * quick lock and unlock must not let the "away" land last and release the
-   * phone while the person is at the computer.
+   * phone while the person is at the computer. The relay keeps the report
+   * that arrives last, so each change waits for the previous send itself.
+   * Both legs of a send have their own deadline; the queue's own deadline is
+   * a backstop, so a send that never settles cannot hold every later change.
    */
   private queuePresenceChange(change: "away" | "back", send: () => Promise<void>): Promise<void> {
-    const next = this.presenceChanges.then(send).catch((error) => this.warnPresenceFailed(change, error));
+    const bounded = (): Promise<void> => withDeadline(
+      send(),
+      ATTENTION_PRESENCE_CHANGE_DEADLINE_MS,
+      () => new Error(`presence ${change} did not finish in ${ATTENTION_PRESENCE_CHANGE_DEADLINE_MS} ms`),
+    );
+    const next = this.presenceChanges.then(bounded).catch((error) => this.warnPresenceFailed(change, error));
     this.presenceChanges = next;
     return next;
   }
@@ -720,10 +748,16 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (this.options.localRuntimeConnectionPool) {
-      await this.options.localRuntimeConnectionPool.callAttention<void>(
-        "reportPresence",
-        presence as AttentionPresence & Record<string, unknown>,
-        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+      // The connect in front of the call is not covered by the transport
+      // timeout, so the deadline wraps both (as in `getPreferences`).
+      await withDeadline(
+        this.options.localRuntimeConnectionPool.callAttention<void>(
+          "reportPresence",
+          presence as AttentionPresence & Record<string, unknown>,
+          { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+        ),
+        ATTENTION_IPC_BUDGET_MS,
+        () => new Error("This computer's ADE brain did not take the presence report in time."),
       );
     }
   }

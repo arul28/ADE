@@ -5526,14 +5526,18 @@ export function registerIpc({
       // The team sees every report that arrived: one User Feedback entry per
       // successful send, with the person's words or a fixed line when they
       // wrote none. A failed upload with a note still sends the note, so a
-      // report that arrives on "Try again" finds it. Skipped when this
-      // computer's own guard refused the send, so the daily limit holds. From
-      // this app's main process only (`userFeedback.ts`).
+      // report that arrives on "Try again" finds it. From this app's main
+      // process only (`userFeedback.ts`).
+      // No claim on the manual ledger means no upload was tried: the daily
+      // limit, a ledger that could not be read or locked, or a busy wait that
+      // ran out. Such a send files no note either, so the limit holds for
+      // notes too.
+      const tried = sent.claimed === true;
       const refusedHere = !result.ok && result.reason === "local_limit";
       // A second Send that joined a send already running gets its answer, but
       // the note and the count belong to the first call only.
       const firstCall = sent.joined !== true;
-      if (firstCall && !refusedHere && (result.ok || note)) {
+      if (firstCall && tried && (result.ok || note)) {
         sendSentryUserFeedback({
           onError: (error) => getCtx().logger.warn("diagnostics.user_feedback_failed", {
             errorKind: error instanceof Error ? error.name : "unknown",
@@ -5561,7 +5565,9 @@ export function registerIpc({
       }
       // One coarse fact per send from an error screen: `success` is a report
       // ADE received. Settings' send (no screen) is not counted here.
-      if (firstCall && surface !== "settings_manual") {
+      // A send that tried nothing for a reason other than the daily limit is
+      // not counted: nothing was sent, and the person was not refused.
+      if (firstCall && (tried || refusedHere) && surface !== "settings_manual") {
         const outcome = result.ok ? "success" : "failed";
         productAnalyticsService?.capture({
           event: "ade_feature_used",

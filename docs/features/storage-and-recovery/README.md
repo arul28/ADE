@@ -310,6 +310,24 @@ another pid, or older than 2 minutes, does not count.
 | Idle exit, socket lost, parent app gone, a failed start | none, not requested | Nothing kept, as before |
 | Crash, kill, power loss | — | The crash path: the live record stays |
 
+A stop for good changes only this endpoint's lists. Each list names its
+writer in its file name (the pid), and each record carries the pids of the
+brains whose lists it took over (`listPids`). The lists of another brain (the
+machine brain, a sibling dev brain) keep their continues. When a list cannot
+be claimed (a read-only or locked folder), the decision stays in
+`runtime/live-turns/<endpoint>.for-good.json`: the project and the writer
+pids. This endpoint's next brain reads it at start and tries the rewrite
+again. Until the rewrite works, each take of that project's lists reopens
+those CLIs at their prompt and continues nothing
+(`stoppedForGoodListWriters`). An entry older than 6 h goes, because the
+lists it names are stale by then. A brain on another endpoint does not read
+this file.
+
+A take that leaves entries for another runtime (the machine brain's chats)
+writes them back before it deletes the claimed list. When that write fails,
+the whole list goes back under its own name, and this runtime takes nothing
+from it.
+
 A brain an app started keeps no record of its own; its terminals still write
 their CLI list at teardown.
 

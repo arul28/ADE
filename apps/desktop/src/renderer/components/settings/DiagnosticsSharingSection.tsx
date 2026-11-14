@@ -2,7 +2,13 @@ import { useEffect, useState } from "react";
 import { describeManualSendFailure } from "../../../shared/diagnosticsUpload";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { openPublicIssue, ReportPreview } from "../app/ReportIssueDialog";
-import { canRetryReport, createReportDraft, reportBridge, useReportDraftState } from "../app/reportDraft";
+import {
+  canRetryReport,
+  createReportDraft,
+  reportBridge,
+  useReportDraftState,
+  type ReportDraft,
+} from "../app/reportDraft";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 
 /**
@@ -33,6 +39,45 @@ export function DiagnosticsSharingSection() {
 }
 
 /**
+ * Settings' draft, kept outside the section while a send runs or after it
+ * answered: leaving Settings during a send must not drop the reference of a
+ * report that reached ADE, nor offer the same report again on return. A sent
+ * report's answer is shown for `SENT_REPORT_TTL_MS`, as for an error screen's.
+ */
+const SENT_REPORT_TTL_MS = 10 * 60_000;
+let keptDraft: { draft: ReportDraft; sentAtMs: number | null } | null = null;
+
+function settingsDraft(): ReportDraft {
+  const kept = keptDraft;
+  if (kept) {
+    const { phase } = kept.draft.getState();
+    const sentRecently = phase === "sent" && kept.sentAtMs !== null && Date.now() - kept.sentAtMs < SENT_REPORT_TTL_MS;
+    // A send that answered while Settings was closed shows its answer too.
+    if (phase === "sending" || phase === "send_failed" || sentRecently) return kept.draft;
+    kept.draft.discard();
+  }
+  const holder: { draft: ReportDraft; sentAtMs: number | null } = {
+    draft: createReportDraft(undefined, {
+      onSent: () => {
+        holder.sentAtMs = Date.now();
+      },
+    }),
+    sentAtMs: null,
+  };
+  keptDraft = holder;
+  return holder.draft;
+}
+
+/** Leaving Settings drops a report nobody sent; a send running or answered stays. */
+function releaseSettingsDraft(draft: ReportDraft): void {
+  if (keptDraft?.draft !== draft) return;
+  const { phase } = draft.getState();
+  if (phase === "sending" || phase === "sent") return;
+  keptDraft = null;
+  draft.discard();
+}
+
+/**
  * "Send a report to ADE", for when nothing is visibly broken.
  *
  * Everything that matters happens in the main process — building the report,
@@ -43,12 +88,11 @@ export function DiagnosticsSharingSection() {
  */
 function ManualDiagnosticsSend() {
   const bridge = reportBridge();
-  const [draft] = useState(() => createReportDraft(undefined));
+  const [draft] = useState(settingsDraft);
   const state = useReportDraftState(draft);
   const { copy, copied } = useCopyToClipboard();
   const [issueFailed, setIssueFailed] = useState(false);
-  // Leaving Settings drops a report nobody sent.
-  useEffect(() => () => draft.discard(), [draft]);
+  useEffect(() => () => releaseSettingsDraft(draft), [draft]);
 
   // An older preload has no report bridge; offering a button that cannot
   // work is worse than offering none.

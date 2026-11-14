@@ -114,6 +114,12 @@ export type PreparedSendAnswer = {
   context: ManualDiagnosticsContext | null;
   /** True for a second call that joined a send already running for the same id. */
   joined?: boolean;
+  /**
+   * True once this send claimed a slot in the manual ledger, so an upload was
+   * tried. Absent when nothing was tried: an unknown id, a busy wait that ran
+   * out, a daily limit, or a ledger that could not be read or locked.
+   */
+  claimed?: true;
 };
 
 type PreparedManualReport = {
@@ -451,13 +457,13 @@ export function createAutoDiagnosticsService(
               : result.reason === "too_large"
                 ? "too_large"
                 : "failed";
-        return { result: { ok: false, reason, ...(reportPath ? { reportPath } : {}) }, context };
+        return { result: { ok: false, reason, ...(reportPath ? { reportPath } : {}) }, context, claimed: true };
       }
 
       // One use: the same text is never stored twice under two references.
       prepared.delete(id);
       deps.logger?.info?.("diagnostics.manual_sent", { reference: result.reference });
-      return { result: { ok: true, reference: result.reference, reportPath: reportPath ?? "" }, context };
+      return { result: { ok: true, reference: result.reference, reportPath: reportPath ?? "" }, context, claimed: true };
     } finally {
       release();
     }

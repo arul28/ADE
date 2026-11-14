@@ -307,6 +307,7 @@ describe("createAutoDiagnosticsService.prepareManual and sendPrepared", () => {
         reportPath: "/tmp/reports/report.md",
       },
       context: { surface: "settings_manual" },
+      claimed: true,
     });
 
     expect(writeReportFile).toHaveBeenCalledWith("/tmp/reports/report.md", prepared.report);
@@ -423,15 +424,39 @@ describe("createAutoDiagnosticsService.prepareManual and sendPrepared", () => {
     expect(upload.mock.calls[1]?.[0].report).toBe(prepared.report);
   });
 
+  // The IPC handler files the person's note for a send that was tried and
+  // failed, and for no other: a send that tried nothing must not file notes
+  // past the daily limit.
+  it.each([
+    ["an upload that failed", "upload_failed", true],
+    ["a ledger that cannot be read", "ledger_unreadable", undefined],
+  ] as const)("says whether a failed send was tried: %s", async (_label, failure, claimed) => {
+    const stateFilePath = stateFile();
+    const upload = vi.fn(async () => ({ ok: false as const, reason: "network" as const }));
+    const { service } = harness({ stateFilePath, ...(failure === "upload_failed" ? { upload } : {}) });
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+    if (failure === "ledger_unreadable") {
+      fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+      fs.writeFileSync(stateFilePath, "not json");
+    }
+
+    const answer = await service.sendPrepared(prepared.id);
+
+    expect(answer.result).toMatchObject({ ok: false, reason: "failed" });
+    expect(answer.claimed).toBe(claimed);
+  });
+
   it("refuses past the fifth send of the day, in the user's own words", async () => {
     const { service, upload } = harness();
 
     for (let i = 0; i < 5; i += 1) {
       await expect(prepareAndSend(service)).resolves.toMatchObject({ result: { ok: true } });
     }
-    await expect(prepareAndSend(service)).resolves.toMatchObject({
-      result: { ok: false, reason: "local_limit", limit: 5 },
-    });
+    const refused = await prepareAndSend(service);
+    expect(refused.result).toEqual({ ok: false, reason: "local_limit", limit: 5 });
+    // Nothing was tried, so no note is filed for it either.
+    expect(refused.claimed).toBeUndefined();
     // Refused HERE, so the request never reaches the account directory.
     expect(upload).toHaveBeenCalledTimes(5);
   });

@@ -872,6 +872,48 @@ describe("AttentionAccountCoordinator", () => {
     }
   });
 
+  it("sends an away only after a slow back reached the relay", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseBack: () => void = () => undefined;
+      const sent: Array<Record<string, unknown>> = [];
+      const reportAttentionPresence = vi.fn(async (presence: Record<string, unknown>) => {
+        sent.push(presence);
+        // The second report is the "back": the relay holds it past the
+        // window's 8 s receipt budget.
+        if (sent.length === 2) await new Promise<void>((resolve) => { releaseBack = resolve; });
+      });
+      const coordinator = new AttentionAccountCoordinator({
+        getLogger: logger,
+        getCurrentAccountOwnerId: () => "owner-a",
+        readUserActive: () => true,
+        accountAttentionClient: {
+          getAttentionSnapshot: vi.fn(),
+          acknowledgeAttention: vi.fn(),
+          reportAttentionPresence,
+          getAttentionPreferences: vi.fn(),
+          putAttentionPreferences: vi.fn(),
+        },
+      });
+      await coordinator.reportPresence({ deviceId: "desktop-1", platform: "macOS" });
+
+      const back = coordinator.reportUserBack();
+      const away = coordinator.reportUserAway();
+      await vi.advanceTimersByTimeAsync(9_000);
+      // The back is still in flight, so the away has not gone out.
+      expect(sent).toHaveLength(2);
+
+      releaseBack();
+      await back;
+      await away;
+      expect(sent).toHaveLength(3);
+      expect(sent[1]?.userActive).toBe(true);
+      expect(sent[2]?.userActive).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("routes proven machine-fallback mutations through machine Attention", async () => {
     const callAttention = vi.fn(async (action: string) => {
       if (action === "getPreferences") return DEFAULT_ATTENTION_PREFERENCES;
