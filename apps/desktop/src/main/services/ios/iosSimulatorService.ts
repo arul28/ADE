@@ -8134,7 +8134,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const recordDelete = async (recordArgs: AppleRecordDeleteArgs): Promise<{ deleted: string; proofArtifactId: string | null; note: string }> => {
     const runtime = requireLaneScope(recordArgs);
-    const record = (await recordings.list({ laneId: runtime.key }).catch(() => [] as SimRecording[]))
+    // Read only to name the proof it filed; the delete goes ahead without it.
+    const record = (await recordings.list({ laneId: runtime.key }).catch((error: unknown) => {
+      args.logger.warn("apple.record_delete_list_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [] as SimRecording[];
+    }))
       .find((entry) => entry.id === recordArgs.id) ?? null;
     await recordings.remove({
       laneId: runtime.key,
