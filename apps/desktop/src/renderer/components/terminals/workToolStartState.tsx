@@ -74,7 +74,17 @@ function startStyle(kind: DeviceKind): CSSProperties {
   return { ["--start-color" as string]: kind === "ios" ? "var(--color-fg)" : color } as CSSProperties;
 }
 
-const START_ROOT = "flex h-full min-h-0 flex-col items-center justify-center gap-6 overflow-hidden px-6 text-center";
+/**
+ * The screen's frame: centred while it fits, and scrolls only when it does
+ * not (many Macs in a short pane), with the first choice still reachable.
+ */
+function StartFrame({ kind, testId, children }: { kind: DeviceKind; testId: string; children: ReactNode }) {
+  return (
+    <div data-testid={testId} style={startStyle(kind)} className="flex h-full min-h-0 flex-col overflow-y-auto px-6 [scrollbar-width:thin]">
+      <div className="m-auto flex w-full flex-col items-center gap-6 py-6 text-center">{children}</div>
+    </div>
+  );
+}
 
 const START_CHOICE = cn(
   "group flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left",
@@ -223,7 +233,7 @@ export function WorkToolStartState({
   else footer = `Ask the agent to start the ${noun}, and it shows up here.`;
 
   return (
-    <div data-testid="remote-work-no-code-there" style={startStyle(kind)} className={START_ROOT}>
+    <StartFrame kind={kind} testId="remote-work-no-code-there">
       <StartHero kind={kind} machine={machine} glowing={Boolean(asked)} />
       <StartText
         title={asked ? `Starting the ${noun}…` : `No ${noun} running yet`}
@@ -248,7 +258,7 @@ export function WorkToolStartState({
         </div>
       ) : null}
       <p className="max-w-[320px] font-sans text-[11.5px] text-muted-fg/80">{footer}</p>
-    </div>
+    </StartFrame>
   );
 }
 
@@ -284,7 +294,7 @@ export function WorkToolPickMachineState({
   else if (viewOnly) line = `Pick ${somewhere} to show its ${noun} here, then ask the agent to start one.`;
   else line = `Pick where this chat's ${noun}s run. Then ask the agent to start one.`;
   return (
-    <div data-testid="work-tool-pick-machine" style={startStyle(kind)} className={START_ROOT}>
+    <StartFrame kind={kind} testId="work-tool-pick-machine">
       <StartHero kind={kind} machine={null} glowing={false} />
       <StartText title={title} line={line} />
       {onChoose && machines.length ? (
@@ -301,6 +311,6 @@ export function WorkToolPickMachineState({
           ))}
         </div>
       ) : null}
-    </div>
+    </StartFrame>
   );
 }
