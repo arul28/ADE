@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createArchiveService, type ArchiveServiceDeps } from "./archiveService";
 
 /**
@@ -28,7 +29,7 @@ afterEach(async () => {
   }
 });
 
-type Db = Awaited<ReturnType<typeof openKvDb>>;
+type Db = AdeDb;
 
 function insertSession(db: Db, id: string, toolType: string, archivedAt: string | null, chatSessionId: string | null = null): void {
   db.run(
@@ -64,7 +65,7 @@ async function createHarness(overrides: {
   laneDelete?: (args: { laneId: string; deleteBranch: boolean; deleteRemoteBranch: boolean; force?: boolean }) => Promise<unknown>;
 } = {}) {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-archive-service-"));
-  const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+  const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
   activeDisposers.push(async () => db.close());
 
   db.run(

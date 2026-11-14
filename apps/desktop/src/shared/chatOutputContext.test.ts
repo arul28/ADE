@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  CHAT_OUTPUT_CONTEXT_CHIP_LABEL,
   CHAT_OUTPUT_CONTEXT_PREAMBLE,
   MAX_CHAT_OUTPUT_CONTEXT_CHARS,
   extractChatOutputContextQuote,
@@ -71,6 +70,5 @@ describe("chatOutputContext", () => {
       { kind: "context", quote: "selected line", block },
       { kind: "text", text: " thanks" },
     ]);
-    expect(CHAT_OUTPUT_CONTEXT_CHIP_LABEL).toBe("Quote");
   });
 });

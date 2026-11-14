@@ -89,7 +89,3 @@ export function appleDeviceModel(
 ): AppleDeviceModelSource {
   return MODELS[resolveAppleDeviceModelId(family, hint)];
 }
-
-export function appleDeviceModelById(id: AppleDeviceModelId): AppleDeviceModelSource {
-  return MODELS[id];
-}

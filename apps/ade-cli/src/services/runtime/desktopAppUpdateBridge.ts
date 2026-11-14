@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
+import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.
@@ -25,6 +26,11 @@ export const DESKTOP_APP_UPDATE_INSTALL_METHOD = `${DESKTOP_APP_UPDATE_BRIDGE_PR
 export type DesktopAppUpdateInstallRequest = {
   /** What the asking client believes is newest. Null means "whatever is latest". */
   targetVersion: string | null;
+  /**
+   * Who asked the brain for the update, sanitized. Absent from an older
+   * brain; an older app ignores it.
+   */
+  requestedBy?: UpdateRequestedBy | null;
 };
 
 export type DesktopAppUpdateInstallOutcome =
@@ -97,6 +103,7 @@ function readResult(value: unknown): DesktopAppUpdateInstallResult | null {
 export async function requestDesktopAppUpdate(args: {
   socketPath: string;
   targetVersion: string | null;
+  requestedBy?: UpdateRequestedBy | null;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
 }): Promise<DesktopAppUpdateRouting> {
@@ -125,7 +132,7 @@ export async function requestDesktopAppUpdate(args: {
     try {
       raw = await client.request(
         DESKTOP_APP_UPDATE_INSTALL_METHOD,
-        { targetVersion: args.targetVersion },
+        { targetVersion: args.targetVersion, ...(args.requestedBy ? { requestedBy: args.requestedBy } : {}) },
         { timeoutMs: args.requestTimeoutMs ?? INSTALL_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {
@@ -251,6 +258,7 @@ export async function requestUpdateThroughClosedApp(args: {
   appPath: string;
   socketPath: string;
   targetVersion: string | null;
+  requestedBy?: UpdateRequestedBy | null;
 }): Promise<DesktopAppUpdateRouting> {
   const refuse = (detail: string): DesktopAppUpdateRouting => ({
     attached: true,
@@ -273,6 +281,7 @@ export async function requestUpdateThroughClosedApp(args: {
     const routing = await requestDesktopAppUpdate({
       socketPath: args.socketPath,
       targetVersion: args.targetVersion,
+      requestedBy: args.requestedBy ?? null,
       connectTimeoutMs: CLOSED_APP_POLL_MS,
     });
     if (routing.attached) {

@@ -1159,7 +1159,7 @@ before merging. If the gate is non-empty or unavailable, exit
 and disclose deferred findings afterwards.
 
 For a Windows-relevant diff, the bound head must have a terminal-green native
-`windows-foundation` check. That job runs on a pull request only with the
+`windows-foundation` checks (one per matrix group, `windows-foundation (<group>)`). That job runs on a pull request only with the
 `windows` label: add it (`gh pr edit <n> --add-label windows`) when you open
 the PR, so the first push runs it. Added later, it takes effect on the next
 push; a re-run replays the old event and its old labels, so push (an empty

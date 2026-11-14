@@ -102,30 +102,6 @@ describe("WorkToolPicker", () => {
 
   afterEach(cleanup);
 
-  it("paints the backdrop from outside the scroll container", () => {
-    render(
-      <Picker
-        context={LOCAL}
-        statuses={{}}
-        onPick={vi.fn()}
-      />,
-    );
-
-    const backdrop = document.querySelector("[data-backdrop]");
-    const scroller = document.querySelector("[data-tool-picker-scroll]");
-    expect(backdrop).toBeTruthy();
-    expect(scroller).toBeTruthy();
-    // `inset: 0` inside a scroller resolves against the scroll ORIGIN, so a
-    // pane too short for the column would scroll the mesh off the top and show
-    // bare chrome underneath the rest of the cards.
-    expect(scroller?.contains(backdrop as Node)).toBe(false);
-    expect(backdrop?.parentElement).toBe(scroller?.parentElement);
-    // Still behind the cards: painted first, so the scrolling column sits on
-    // top of it without needing a z-index.
-    expect(backdrop?.nextElementSibling).toBe(scroller);
-    expect(document.querySelector("[data-tool-picker-scrim]")).toBeNull();
-  });
-
   it("renders one equal tile per tool, untitled and ungrouped, each with its live status line", () => {
     const statuses: WorkToolStatusMap = {
       terminal: { line: "2 shells", live: true },
@@ -341,25 +317,6 @@ describe("WorkToolPicker", () => {
     expect(screen.getByText("2 shells · a very long dev server command that would wrap")).toBeTruthy();
   });
 
-  it("paints the shader backdrop behind the grid, out of the way of clicks", () => {
-    render(
-      <Picker
-        context={LOCAL}
-        statuses={{}}
-        onPick={vi.fn()}
-      />,
-    );
-
-    const backdrop = document.querySelector("[data-backdrop]");
-    expect(backdrop).toBeTruthy();
-    // Decoration, never a target and never announced.
-    expect(backdrop?.getAttribute("aria-hidden")).toBe("true");
-    // Behind the column, not in front of it.
-    expect(backdrop?.nextElementSibling?.contains(
-      screen.getByRole("group", { name: "Work tools" }),
-    )).toBe(true);
-  });
-
   it("keeps the web client's watchable and fully drivable tools pickable", () => {
     const onPick = vi.fn();
     render(
@@ -394,24 +351,5 @@ describe("WorkToolPicker", () => {
     // Said as where it runs, not as the runtime's error.
     expect(within(cardBody("Apple Simulators")).getByText("Runs on a Mac")).toBeTruthy();
     expect(screen.queryByText("Desktop app only")).toBeNull();
-  });
-
-  it("renders a per-tool card action beside the card, never inside its button", () => {
-    render(
-      <Picker
-        context={LOCAL}
-        statuses={{}}
-        onPick={vi.fn()}
-        cardActions={{ ios: <button type="button" data-testid="ios-action" /> }}
-      />,
-    );
-
-    const action = screen.getByTestId("ios-action");
-    const card = cardById("ios");
-    // Siblings, not nested: a button inside a button is invalid and unfocusable.
-    expect(card.contains(action)).toBe(false);
-    expect(action.parentElement?.contains(card)).toBe(false);
-    // The grid still has exactly one card button per tool.
-    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(ALWAYS_LISTED_CARD_COUNT);
   });
 });

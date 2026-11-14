@@ -5,7 +5,7 @@
 // Only the network edge is faked: `fetchImpl` is the relay, and the wake
 // WebSocket (a network boundary the drain opens) is replaced with a no-op so
 // the test never dials the real relay. The database is a real temp sqlite via
-// openKvDb, the same helper sibling automation tests use.
+// openFreshKvDb, the same helper sibling automation tests use.
 
 import { createHmac } from "node:crypto";
 import fs from "node:fs";
@@ -26,7 +26,8 @@ import type {
   AutomationWebhookPreset,
   AutomationWebhookSignatureConfig,
 } from "../../../shared/types";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import type { Logger } from "../logging/logger";
 import {
   createCustomWebhookService,
@@ -158,7 +159,7 @@ describe("customWebhookService", () => {
 
   beforeEach(async () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-custom-webhook-"));
-    db = await openKvDb(path.join(tempRoot, "ade.db"), makeLogger());
+    db = await openFreshKvDb(path.join(tempRoot, "ade.db"), makeLogger());
     // The runtime creates this alongside the automation service; the webhook
     // service reads it to link a delivery to its still-running run.
     db.run(`

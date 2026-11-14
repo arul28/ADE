@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createLaneService } from "./laneService";
 
 vi.mock("../git/git", async (importOriginal) => ({
@@ -142,7 +143,7 @@ function installGitStub(args: {
 async function fixture(options: { status?: "active" | "archived"; worktreePath?: string } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-storage-lifecycle-"));
   roots.push(root);
-  const db = await openKvDb(path.join(root, ".ade", "ade.db"), logger as any);
+  const db = await openFreshKvDb(path.join(root, ".ade", "ade.db"), logger as any);
   const seeded = seed(db, root, options);
   const service = createLaneService({
     db,
@@ -770,7 +771,7 @@ describe("reclaim accepts either spelling of the managed worktrees folder", () =
   async function caseDivergentFixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-storage-case-"));
     roots.push(root);
-    const db = await openKvDb(path.join(root, ".ade", "ade.db"), logger as any);
+    const db = await openFreshKvDb(path.join(root, ".ade", "ade.db"), logger as any);
     const seeded = seed(db, root);
     fs.mkdirSync(seeded.worktreePath, { recursive: true });
     // The service is handed a differently-cased spelling of the very folder the

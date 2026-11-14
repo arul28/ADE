@@ -151,6 +151,24 @@ jobs:
           [ -n "$PREVIEW_REF" ] && args+=(--preview-ref "$PREVIEW_REF")
           node scripts/beta/resolve.mjs "${args[@]}"
 
+      # A person who dispatched a beta must never read a green run as a beta
+      # that shipped: a skip says so in a warning and at the top of the summary.
+      # Not a failure: that would open the "Beta build failed" issue for a beta
+      # that was never due.
+      - name: Say loudly that nothing was built
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.resolve.outputs.skip == 'true' }}
+        env:
+          REASON: ${{ steps.resolve.outputs.reason }}
+        run: |
+          echo "::warning title=No beta was built::$REASON"
+          {
+            echo "## No beta was built by this run"
+            echo
+            echo "> $REASON"
+            echo
+            echo "Nothing was published and no machine is offered an update."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     needs: resolve
     if: ${{ needs.resolve.outputs.skip == 'false' }}
@@ -220,9 +238,16 @@ jobs:
           node-version: 24
 
       # Only for the pure-JS yaml package, as release-publish.yml's manifest
-      # merge does; --ignore-scripts skips Electron's postinstall.
+      # merge does: that one package at the version and integrity
+      # apps/desktop/package-lock.json pins. If that fails, the full npm ci
+      # (scripts skipped) installs it instead, with the same integrity check,
+      # and the warning shows that the fast path broke.
       - name: Install the yaml parser
-        run: cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund
+        run: |
+          node scripts/release-tools/install-locked-package.mjs apps/desktop/package-lock.json yaml || {
+            echo "::warning::install-locked-package.mjs failed; installing yaml with the full npm ci."
+            (cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund)
+          }
 
       - name: Build the feed from the published beta
         run: |

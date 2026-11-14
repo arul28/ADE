@@ -187,9 +187,11 @@ import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
   createLaneDeviceMaintenance,
   describeDevicePowerOff,
+  takeLaneMemoryNotices,
   type AppleDevicePowerOffRecord,
   type LaneDeviceMaintenance,
 } from "./laneDeviceMaintenance";
+import type { SimulatorReclaimFacts, SimulatorReclaimLaneDevice } from "./simulatorMemoryReclaim";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -854,7 +856,7 @@ export function clampStreamFps(value: number | null | undefined): number {
 }
 
 /** There is one backend now; the name is kept so a status read still says which. */
-export const IOS_SIMULATOR_STREAM_BACKEND: IosSimulatorStreamBackend = "helper-h264";
+const IOS_SIMULATOR_STREAM_BACKEND: IosSimulatorStreamBackend = "helper-h264";
 
 function encodeMcpMessage(message: JsonRpcMessage): Buffer {
   return Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
@@ -8198,6 +8200,30 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     laneMaintenance().start();
   }
 
+  /**
+   * This service's lane devices, with what only this process knows about each
+   * (`simulatorMemoryReclaim.ts`, run by the machine brain when memory is low).
+   */
+  const memoryReclaimLaneDevices = (): SimulatorReclaimLaneDevice[] => laneDevices.list().map((device) => ({
+    udid: device.udid,
+    name: device.name,
+    laneId: device.laneId,
+    adeOwned: isAdeOwnedLaneDevice(device.origin),
+    // A stream counts only while someone watches it, as for the idle timer.
+    busyHere: isBusyHere(device.udid, { onlyWatchedStreams: true }),
+    bootedByChat: laneMaintenance().readBootedBy(device.udid),
+  }));
+
+  /** Shut one of this service's lane devices down for memory. Its power-off record, or null when it is not one. */
+  const powerOffLaneDeviceForMemory = async (
+    udid: string,
+    facts: SimulatorReclaimFacts,
+  ): Promise<AppleDevicePowerOffRecord | null> => {
+    const device = laneDevices.list().find((entry) => entry.udid === udid);
+    if (!device) return null;
+    return await laneMaintenance().powerOffForMemory(device, facts);
+  };
+
   /* ───────────────────────── simulator runtimes ───────────────────────── */
 
   let runtimeManagerInstance: AppleRuntimeManager | null = null;
@@ -8266,6 +8292,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         if (!actionArgs || actionArgs.agentCaller !== true) {
           return (original as (...params: unknown[]) => unknown)(actionArgs, ...rest);
         }
+        return await withMemoryNotice(actionArgs, mode, () => guardedCall(actionArgs, rest));
+      };
+      const guardedCall = async (actionArgs: Record<string, unknown>, rest: unknown[]): Promise<unknown> => {
         const { agentCaller: _agent, ...callArgs } = actionArgs;
         const runtime = resolveRuntime(callArgs as { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null });
         if (!runtime.key) {
@@ -8331,6 +8360,55 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         const pinned = mode === "drive" && laneDevice ? { ...callArgs, deviceUdid: laneDevice.udid } : callArgs;
         return (original as (...params: unknown[]) => unknown)(pinned, ...rest);
       };
+    };
+    /**
+     * What the machine's low-memory pass left for this lane's devices
+     * (`takeLaneMemoryNotices`), added to the answer as `deviceNotice`, which
+     * `ade apple` prints. A call that fails keeps the warning for the next one.
+     */
+    const withMemoryNotice = async (
+      actionArgs: Record<string, unknown>,
+      mode: "drive" | "check",
+      call: () => Promise<unknown>,
+    ): Promise<unknown> => {
+      const runtime = (() => {
+        try {
+          return resolveRuntimeUntracked(actionArgs as { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null });
+        } catch {
+          return null;
+        }
+      })();
+      const devices = runtime?.key ? laneDevices.list().filter((device) => device.laneId === runtime.key) : [];
+      if (!devices.length) return await call();
+      const { notices, restore } = await takeLaneMemoryNotices({
+        files: laneMaintenance().files(),
+        devices,
+        mode,
+        bootedUdids: async () => {
+          const listed = await listDevices();
+          return new Set(listed.filter((device) => device.state === "Booted").map((device) => device.udid));
+        },
+      });
+      let result: unknown;
+      try {
+        result = await call();
+      } catch (error) {
+        restore();
+        throw error;
+      }
+      if (!notices.length) return result;
+      if (!isPlainResultObject(result)) {
+        restore();
+        return result;
+      }
+      const shown = new Set<string>([
+        ...(typeof result.deviceNotice === "string" ? [result.deviceNotice] : []),
+        ...(Array.isArray(result.deviceNotices) ? result.deviceNotices.filter((entry): entry is string => typeof entry === "string") : []),
+      ]);
+      const added = notices.filter((notice) => !shown.has(notice));
+      if (!added.length) return result;
+      const existing = typeof result.deviceNotice === "string" && result.deviceNotice.trim() ? [result.deviceNotice.trim()] : [];
+      return { ...result, deviceNotice: [...existing, ...added].join(" ") };
     };
     for (const action of AGENT_DEVICE_DRIVING_ACTIONS) wrap(action, "drive");
     for (const action of AGENT_DEVICE_CHECKED_ACTIONS) wrap(action, "check");
@@ -8428,6 +8506,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
     deviceCleanup,
     powerOffChatStartedDevices,
+    /* Low memory on this computer (`simulatorMemoryReclaim.ts`): the machine brain's pass, not an action. */
+    memoryReclaimLaneDevices,
+    powerOffLaneDeviceForMemory,
 
     /* Simulator runtimes: list, install the one this Xcode expects, remove old ones. */
     runtimeList: async () => darwinRuntimeManager().runtimeList(),

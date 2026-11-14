@@ -53,6 +53,9 @@ export const AGENT_REMOTE_MACHINE_METHODS: ReadonlySet<string> = new Set([
   "usage.getUsageRollup",
   // Live quota windows and accounts only, for the cross-machine limits view.
   "usage.getLiveQuota",
+  // Spends one of this machine's own banked resets, for a login the calling
+  // machine shows but cannot read itself.
+  "usage.consumeResetCredit",
 ]);
 
 /**

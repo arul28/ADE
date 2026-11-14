@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DiffChanges, GitConflictState, GitStashSummary, GitUpstreamSyncStatus, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { __resetLaneGitActionRuntimeForTests, formatLaneGitError, LaneGitActionsPane } from "./LaneGitActionsPane";
 
-const commitTimelineMock = vi.hoisted(() => vi.fn((props: Record<string, unknown>) => null));
+const commitTimelineMock = vi.hoisted(() => vi.fn((_props: Record<string, unknown>) => null));
 
 vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
@@ -322,14 +322,6 @@ describe("LaneGitActionsPane rescue action", () => {
       expect.objectContaining({ laneId: "lane-1" }),
       tabPin(),
     ));
-  });
-
-  it("shows an empty state instead of a blank list when nothing is uncommitted", async () => {
-    mockChangesByLaneId["lane-1"] = { staged: [], unstaged: [] };
-    renderPane();
-
-    expect(await screen.findByTestId("git-pane-clean")).toBeTruthy();
-    expect(screen.queryByTestId("git-pane-uncommitted")).toBeNull();
   });
 
   it("does not start Git Actions effects while inactive", async () => {

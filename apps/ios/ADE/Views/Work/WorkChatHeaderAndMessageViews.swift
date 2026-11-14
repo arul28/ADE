@@ -488,6 +488,8 @@ struct WorkChatMessageBubble: View, Equatable {
   var body: some View {
     if message.role == "assistant" {
       assistantRow
+    } else if let adeReason = message.adeReason {
+      WorkAdeMessageRow(reason: adeReason, hostLabel: message.adeReasonLabel, text: message.markdown)
     } else {
       userRow
     }
@@ -1109,7 +1111,7 @@ private struct WorkMachineChipFactsSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Label(machine.displayName, systemImage: "desktopcomputer").font(.headline)
+      Label(machine.presentedName, systemImage: "desktopcomputer").font(.headline)
       Text(status).font(.subheadline).foregroundStyle(.secondary)
       if let install = machine.installLabel { Text(install).font(.caption).foregroundStyle(.secondary) }
       if let endpoint = machine.preferredEndpoint {
@@ -2290,5 +2292,87 @@ extension View {
         WorkMessageLinkMenuItems(source: .assistant(linkTexts))
       }
     }
+  }
+}
+
+/// Why ADE wrote a message into the chat (`metadata.hostContinuation.reason`),
+/// for an older host that sends no `label`. A current host stamps the line
+/// itself (desktop `HOST_CONTINUATION_REASON_LABEL`), so a new reason needs no
+/// change here.
+func workAdeMessageReasonLabel(_ reason: String) -> String {
+  switch reason {
+  case "interrupted_turn_recovery": return "Resuming your last request after a restart"
+  case "stall_nudge": return "Asked for a status check"
+  case "continuity_recovery": return "Rebuilt this chat's thread from ADE history"
+  case "plan_followup": return "Sent your plan decision"
+  case "background_work_ended": return "A background job it was waiting on finished"
+  case "background_work_lost": return "Background work it was waiting on was lost"
+  case "chat_wait": return "A chat it was waiting on is ready"
+  case "subagent_question": return "A subagent has a question"
+  case "subagent_awaiting_user": return "A subagent is waiting on you"
+  case "provider_schedule_cleanup": return "Cleaning up old provider schedules"
+  case "cto_intro": return "Started the CTO's introduction"
+  case "cto_handoff_note": return "Asked for a hand-off note"
+  default: return "Sent a message for you"
+  }
+}
+
+/// A message ADE wrote into the chat (a recovery resume, a status check, a
+/// wake). Never the reader's bubble: one quiet "ADE" line with the reason, and
+/// a tap opens the words the agent read (desktop `FoldedMessageRow`, source
+/// `ade`).
+struct WorkAdeMessageRow: View {
+  let reason: String
+  /// The host's line (`metadata.hostContinuation.label`); nil from an older host.
+  var hostLabel: String? = nil
+  let text: String
+  @State private var isExpanded = false
+
+  var body: some View {
+    let label = hostLabel.flatMap { $0.isEmpty ? nil : $0 } ?? workAdeMessageReasonLabel(reason)
+    VStack(alignment: .leading, spacing: 6) {
+      Button {
+        withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: "info.circle")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+          Text("ADE")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+          Text(label)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+          Spacer(minLength: 4)
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+        }
+        .frame(minHeight: 32)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Message ADE sent: \(label)")
+      .accessibilityHint(isExpanded ? "Hides what the agent was told." : "Shows what the agent was told.")
+      if isExpanded {
+        Text(text)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .background(ADEColor.textPrimary.opacity(0.03), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.textPrimary.opacity(0.08), lineWidth: 0.8)
+    )
+    .frame(maxWidth: .infinity, alignment: .trailing)
+    .adeInspectable("Work.Chat.AdeMessageRow", metadata: ["reason": reason])
   }
 }

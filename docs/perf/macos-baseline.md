@@ -3015,6 +3015,40 @@ change. One earlier branch run read 5.8 ms/s on Providers after a longer
 session with Work visits; the same-steps pair above is the comparison.
 The sync pass runs on the brain's existing 30 s tick; it adds no timer.
 
+### Providers on every computer from any window (Cloud 8, 2026-11-13)
+
+Dev app (own socket, sync off) on `ade/cloud-8-providers` at `d58d97ce9`
+against `origin/ade/cloud-8` at `dbaeb1533`, on the Mac Studio M4 Max (not the
+baseline machine, other agents running). The other computer is the dev test
+machine "dev" (`npm run dev:machine`, same Mac, over its paired connection).
+Three project windows: the ADE repository (a copy on both computers),
+`local-only` (a copy here only) and `remote-only` (a copy on "dev" only, the
+tab bound there). Each number is navigation to Settings › Providers until all
+13 tiles are drawn and none says Checking (`measure-providers.js` over CDP; the
+first open after a fresh launch includes Vite's compile).
+
+| Window → computer | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| ADE → This computer | 659 ms first (compile), then 35–42 ms | 37–46 ms | 150 ms |
+| ADE → "dev" (through its copy) | 138 ms after a brain restart; warm 409–616 ms | 59–115 ms | 750 ms |
+| `local-only` → This computer | 36 ms | 46–47 ms | 150 ms |
+| `local-only` → "dev" (no copy there; machine route) | not reachable ("through its copy of this repository") | 1,189 ms first after a fresh launch, 227 ms warm; after a brain restart 63–117 ms | 750 ms (first open after a brain start: 1.5 s) |
+| `remote-only` → This computer (machine route on this computer) | not reachable, and the page title named the other computer | 53–88 ms | 150 ms |
+| `remote-only` → "dev" (the tab's machine) | 37 ms | 29 ms | 150 ms |
+
+The minute-long wait in the report was not the page. The installed brain's
+log (`~/.ade/runtime/brain.jsonl`) has `project_root.not_answering` for every
+project on the external `/Volumes/Dev` drive at 20:14–20:17 that day, with
+`waitedMs` up to 48,233: the drive stalled, and every call routed through a
+project on it waited for the drive. The machine route reads only `~/.ade` on
+the internal disk, so a computer's own settings no longer wait on a project
+folder. A read through a copy (the tab's bound remote, or a remote that holds
+this repository) still waits when that copy's drive stalls; that is open.
+
+No timer, poll or subscription is added. A machine route's first call starts
+the computer's personal-chat runtime when nothing has started it yet (the
+first-open row); the brain's start warms it otherwise.
+
 ### Events for many machines (S3, 2026-11-12)
 
 Dev app on `ade/account-projects-08-desktop-s3` (the S3 preload) against the

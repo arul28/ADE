@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { fileRecordTimeMs, processStartTimeReader, recordIsOwn, recordWriterGone } from "../processes/processStartTime";
 
 /**
  * The tracked agent CLIs (Claude Code, Codex, ...) a runtime had open when it
@@ -49,6 +50,11 @@ export type CliReopenEntry = {
   kind?: "chat";
   /** The stop was an update the user accepted: the continue cap starts again. */
   acceptedUpdate?: true;
+  /**
+   * The runtime was stopped for good: the CLI reopens at its prompt and gets
+   * no restart message at all. Older runtimes ignore it.
+   */
+  stoppedForGood?: true;
 };
 
 type CliReopenFile = {
@@ -75,15 +81,21 @@ function listFileWriterPid(name: string): number {
   return Number(name.slice(FILE_PREFIX.length, -FILE_SUFFIX.length));
 }
 
-/** A stop for good: CLIs reopen at their prompt, chats are not continued. */
+/** A stop for good: CLIs reopen at their prompt with no message, chats are not continued. */
 function withoutContinues(entries: readonly CliReopenEntry[]): CliReopenEntry[] {
   return entries
     .filter((entry) => entry.kind !== "chat")
-    .map((entry) => ({ sessionId: entry.sessionId, midTurn: false }));
+    .map((entry) => ({ sessionId: entry.sessionId, midTurn: false, stoppedForGood: true as const }));
 }
 
+/**
+ * Whether a list still makes the next runtime say or continue anything:
+ * every entry does, except one stopped for good (a chat, a mid-turn CLI and
+ * an idle CLI all get a message; `mergeEntries` keeps a stop for good free
+ * of continues).
+ */
 function hasContinues(entries: readonly CliReopenEntry[]): boolean {
-  return entries.some((entry) => entry.kind === "chat" || entry.midTurn || entry.acceptedUpdate);
+  return entries.some((entry) => !entry.stoppedForGood);
 }
 
 function isMissing(error: unknown): boolean {
@@ -111,6 +123,7 @@ function parseEntries(value: unknown): CliReopenEntry[] {
       midTurn: record.midTurn === true,
       ...(record.kind === "chat" ? { kind: "chat" as const } : {}),
       ...(record.acceptedUpdate === true ? { acceptedUpdate: true as const } : {}),
+      ...(record.stoppedForGood === true ? { stoppedForGood: true as const } : {}),
     });
   }
   return entries;
@@ -126,21 +139,33 @@ function readFile(filePath: string): CliReopenFile | null {
   }
 }
 
-/** Two lists of one session: chat and accepted update if either says so, mid-turn likewise. */
+/**
+ * Two lists of one session: chat and accepted update if either says so,
+ * mid-turn likewise. Stopped for good if either says so, and then it wins:
+ * the entry continues nothing (no mid-turn, no accepted update), and a chat
+ * is dropped, as `withoutContinues` does.
+ */
 function mergeEntries(lists: Iterable<readonly CliReopenEntry[]>): CliReopenEntry[] {
   const merged = new Map<string, CliReopenEntry>();
   for (const list of lists) {
     for (const entry of list) {
       const earlier = merged.get(entry.sessionId);
-      merged.set(entry.sessionId, {
-        sessionId: entry.sessionId,
-        midTurn: entry.midTurn || earlier?.midTurn === true,
-        ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
-        ...(entry.acceptedUpdate || earlier?.acceptedUpdate ? { acceptedUpdate: true as const } : {}),
-      });
+      merged.set(entry.sessionId, entry.stoppedForGood || earlier?.stoppedForGood
+        ? {
+          sessionId: entry.sessionId,
+          midTurn: false,
+          ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
+          stoppedForGood: true as const,
+        }
+        : {
+          sessionId: entry.sessionId,
+          midTurn: entry.midTurn || earlier?.midTurn === true,
+          ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
+          ...(entry.acceptedUpdate || earlier?.acceptedUpdate ? { acceptedUpdate: true as const } : {}),
+        });
     }
   }
-  return [...merged.values()];
+  return [...merged.values()].filter((entry) => !(entry.stoppedForGood && entry.kind === "chat"));
 }
 
 /**
@@ -578,7 +603,10 @@ export function pruneCliCrashReopenState(projectRoot: string, options: { keepMs:
     try {
       if (name.startsWith(TURNS_PREFIX) && name.endsWith(TURNS_SUFFIX)) {
         const pid = Number(name.slice(TURNS_PREFIX.length, -TURNS_SUFFIX.length));
-        if (Number.isInteger(pid) && pid !== process.pid && !isProcessRunning(pid)) fs.rmSync(filePath, { force: true });
+        // A running pid can name a new process with a reused id, and this
+        // process's own pid an earlier run's file (`recordWriterGone`).
+        const gone = recordWriterGone(pid, fileRecordTimeMs(filePath), isProcessRunning, nowMs);
+        if (Number.isInteger(pid) && gone) fs.rmSync(filePath, { force: true });
         continue;
       }
       if (nowMs - fs.statSync(filePath).mtimeMs > options.keepMs) fs.rmSync(filePath, { force: true });
@@ -619,8 +647,11 @@ export type CliKnownOwner = { pid: number; startedAt: string; lastSeen: string }
  *   machines and the registry does not, so this is the boundary that keeps a
  *   row another machine owns from being reopened here (the stale-row sweep
  *   uses it the same way);
- * - is not this process, and does not run (a live peer, or a reused pid: the
- *   safe side);
+ * - is not this process, and does not run (a live peer: the safe side). A
+ *   running pid whose process started after the owner was last seen is a new
+ *   process with a reused id, so that owner is gone; so is an owner with this
+ *   process's pid that was last seen before this process started
+ *   (`recordIsOwn`, `recordWriterGone`);
  * - was last seen within `maxAgeMs`: its last heartbeat is close to when it
  *   stopped. Older ones only count as `stale`.
  */
@@ -642,18 +673,31 @@ export function findCliSessionsCutOffByCrash(args: {
   }
   const cutOff: CliCutOffByCrash[] = [];
   const seen = new Set<string>();
+  // Many sessions have the same owner: one `ps` and one liveness check for
+  // each owner pid, not for each session.
+  const startTimeOf = processStartTimeReader();
+  const runsByPid = new Map<number, boolean>();
+  const ownerRuns = (pid: number): boolean => {
+    let runs = runsByPid.get(pid);
+    if (runs === undefined) runsByPid.set(pid, (runs = isProcessRunning(pid)));
+    return runs;
+  };
   let stale = 0;
   for (const row of args.rows) {
     if (seen.has(row.id) || args.exclude?.has(row.id)) continue;
     seen.add(row.id);
     if ((row.status !== "running" && row.status !== "detached") || row.archivedAt) continue;
     const ownerPid = row.ownerPid;
-    if (ownerPid == null || ownerPid === args.ownPid) continue;
+    if (ownerPid == null) continue;
     const ownerStartedAt = row.ownerProcessStartedAt?.trim() || null;
     const lastSeenMs = ownerStartedAt
       ? lastSeenByIdentity.get(ownerKey(ownerPid, ownerStartedAt))
       : lastSeenByPid.get(ownerPid);
-    if (lastSeenMs === undefined || isProcessRunning(ownerPid)) continue;
+    if (lastSeenMs === undefined) continue;
+    // This runtime's own pid: its current run, unless last seen before it
+    // started (an earlier process with the same pid, often before a reboot).
+    if (ownerPid === args.ownPid && recordIsOwn(lastSeenMs)) continue;
+    if (!recordWriterGone(ownerPid, lastSeenMs, ownerRuns, nowMs, startTimeOf)) continue;
     if (nowMs - lastSeenMs > args.maxAgeMs) {
       stale += 1;
       continue;

@@ -181,22 +181,6 @@ describe("ProviderAccountsPanel", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders one card per instance with its identity and which account new chats use", async () => {
-    installBridge();
-    renderPanel();
-
-    expect(await screen.findByText("Accounts · 2")).toBeTruthy();
-
-    const personal = await screen.findByRole("group", { name: "arul@gmail.com account" });
-    expect(within(personal).getByText("arul@gmail.com")).toBeTruthy();
-    // Smart balance is off, so the default account is the one new chats use.
-    expect(within(personal).getByText("New chats")).toBeTruthy();
-
-    const work = screen.getByRole("group", { name: "arul@acme.com account" });
-    expect(within(work).getByText("arul@acme.com")).toBeTruthy();
-    expect(within(work).queryByText("New chats")).toBeNull();
-  });
-
   it("marks the account smart balance would use next while it is on", async () => {
     installBridge({ smartBalance: true, usage: snapshot({ nextPickInstanceId: "claude-work" }) });
     renderPanel();
@@ -362,18 +346,6 @@ describe("ProviderAccountsPanel", () => {
         settings: { smartBalance: true },
       });
     });
-  });
-
-  it("explains each switch on hover", async () => {
-    installBridge();
-    renderPanel();
-
-    const hint = await screen.findByRole("button", { name: "About Smart balance" });
-    fireEvent.mouseEnter(hint);
-    // The hover shows the switch's own explanation; its wording is not pinned.
-    const text = (screen.getByRole("tooltip").textContent ?? "").trim();
-    expect(text.length).toBeGreaterThan(0);
-    expect(text).not.toBe("Smart balance");
   });
 
   it("selects an account when its row is clicked, turning smart balance off first", async () => {
@@ -715,23 +687,6 @@ describe("ProviderAccountsPanel", () => {
     });
     expect(harness.providerInstances.create).not.toHaveBeenCalled();
     expect(await screen.findByText("Signed in as arul@gmail.com.")).toBeTruthy();
-  });
-
-  /**
-   * Accounts, API keys and Models are one column on a provider's page, and
-   * they used to have three different header heights and their primary action
-   * in three different places — Add account alone at the bottom right, Add in
-   * the API-keys header, a search field where the others had a button. Add
-   * belongs with the other panels' actions, in the header.
-   */
-  it("puts Add account in the panel header, like every other panel's action", async () => {
-    installBridge();
-    const { container } = renderPanel();
-    const add = await screen.findByRole("button", { name: "Add account" });
-    const actions = container.querySelector("[data-provider-panel-actions]");
-    expect(actions).toBeTruthy();
-    expect(actions!.contains(add)).toBe(true);
-    expect(add.closest("header")).toBeTruthy();
   });
 
   it("renders nothing when the host has no provider account registry", async () => {

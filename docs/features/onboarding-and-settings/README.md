@@ -293,7 +293,7 @@ Main process:
   account, preset or credential id cannot escape the directory ADE owns.
 - `apps/desktop/src/shared/providerColors.ts` — the one provider colour table
   (usage light/dark pairs, picker badge tokens), so a second hex map cannot
-  drift from the iOS mirror.
+  drift from it.
 - `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
   — live detail for one account-directory machine row. Asks only machines
   already online and already connected in the paired pool, so expanding a row
@@ -1697,8 +1697,9 @@ Renderer — settings:
   provider limits link), edge-anchored so it cannot overhang the 420px popover.
   A row carrying a banked reset credit also offers **Use reset**
   (`ade.usage.consumeResetCredit`, sent to the machine that produced the row).
-  A login read on another machine carries a `via <machine>` tag, and one signed
-  in only elsewhere reads **Not signed in here**. Full behaviour in
+  A login signed in only elsewhere reads **Not signed in here**. When only
+  another machine can read a login's banked resets, the row shows them and
+  **Use reset** spends one on that machine. Full behaviour in
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
   balance selector for new Claude/Codex chats. It picks the signed-in account
@@ -3052,8 +3053,11 @@ under the status chip instead.
   own machine under another machine's accounts.
 - **Replaced login**: when a config home's email changes to another email — a
   `claude /login` in a shell for the default account — the store records the old
-  one as `replacedAccount`. The card says it was replaced outside ADE, with
-  **Sign it back in** (into a `Copy` slot when there is one, so the accounts
+  one as `replacedAccount`. The card says "<old email> is signed out on this
+  computer": a sign-in to the new email took its place, for example `/login` in
+  a terminal, and a running CLI changes account from its actions pane. A login
+  that several cards lost shows one notice, on the card that lost it last, and
+  **Dismiss** forgets it on every card. The notice offers **Sign it back in** (into a `Copy` slot when there is one, so the accounts
   shift instead of doubling; otherwise, or when the only copy is the machine's
   own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own

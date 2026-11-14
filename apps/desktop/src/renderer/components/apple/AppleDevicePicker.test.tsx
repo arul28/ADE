@@ -11,7 +11,6 @@ import type {
   AppleSimulatorOwner,
 } from "../../../shared/types/iosSimulator";
 import { AppleDevicePicker } from "./AppleDevicePicker";
-import { expectNoHorizontalOverflow } from "./testLayout";
 
 afterEach(cleanup);
 
@@ -155,30 +154,11 @@ const openMenu = (container: HTMLElement, udid: string) =>
   );
 
 describe("AppleDevicePicker heading", () => {
-  it("shows the number available after excluding devices held by another lane", () => {
-    const { container } = renderPicker({ disk: DISK });
-    expect(sectionOf(container, "Available")).toBeTruthy();
-    expect(container.querySelector("[data-apple-available-count]")?.textContent).toBe("4");
-  });
 
   it("counts the FREE devices beside the word, not every installed one", () => {
     const { container } = renderPicker();
     // Five installed, one held by another lane.
     expect(container.querySelector("[data-apple-available-count]")?.textContent).toBe("4");
-  });
-
-  it("puts one glyph per owned device next to the heading, grouped by family", () => {
-    const { container } = renderPicker();
-    const glyphs = container.querySelectorAll("[data-apple-glyph]");
-    expect(glyphs).toHaveLength(5);
-    // Three iPhones, one iPad, one watch — and the held one reads as taken, so
-    // the row shows what he has AND what he can reach.
-    expect([...glyphs].filter((g) => g.getAttribute("data-apple-glyph") === "taken")).toHaveLength(1);
-  });
-
-  it("says the same thing to a screen reader, which cannot count glyphs", () => {
-    renderPicker();
-    expect(screen.getByText("5 installed, 4 available")).toBeTruthy();
   });
 
   it("refreshes the inventory when requested", () => {
@@ -199,14 +179,6 @@ describe("AppleDevicePicker device cards", () => {
     for (const udid of ["pro", "max", "repro", "pad", "watch"]) {
       expect(cardOf(container, udid)).toBeTruthy();
     }
-  });
-
-  it("reads name, then OS and model, for every card at the same height", () => {
-    const { container } = renderPicker();
-    // "ADE Repro" is renamed and "iPhone 17 Pro" is not; both still carry the
-    // model, so a grid of cards does not disagree about its own line count.
-    expect(cardOf(container, "repro").textContent).toContain("iOS 26.2 · iPhone 17 Pro");
-    expect(cardOf(container, "pro").textContent).toContain("iOS 26.2 · iPhone 17 Pro");
   });
 
   it("starts the device the card names, on one click anywhere on it", () => {

@@ -203,10 +203,13 @@ const WOKEN_MACHINE_CONNECT_RETRY_MS = 90_000;
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
-/** The usage reads another machine answers for this brain's account-wide merge. */
-export type AgentUsageMethod = "usage.getUsageRollup" | "usage.getLiveQuota";
+/**
+ * The usage calls another machine answers for this brain: the reads for the
+ * account-wide merge, and the spend of a reset banked there.
+ */
+export type AgentUsageMethod = "usage.getUsageRollup" | "usage.getLiveQuota" | "usage.consumeResetCredit";
 export function isAgentUsageMethod(method: string): method is AgentUsageMethod {
-  return method === "usage.getUsageRollup" || method === "usage.getLiveQuota";
+  return method === "usage.getUsageRollup" || method === "usage.getLiveQuota" || method === "usage.consumeResetCredit";
 }
 
 export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
@@ -655,26 +658,31 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
    *
    * A usage read is optional background work, so it only rides a connection
    * that is already open: it never dials, pairs or re-pairs a machine. One
-   * without an open connection keeps its last durable rollup.
+   * without an open connection keeps its last durable rollup. A reset spend is
+   * the exception: it may open the paired connection again.
    */
   const fetchUsageMethod = async (
     machineKey: string,
     method: AgentUsageMethod,
     timeoutMs: number,
+    params: Record<string, unknown> = {},
   ): Promise<unknown> => {
     const machines = await pool.listAccountMachines();
     const machine = machines.find((candidate) => candidate.machineKey === machineKey);
     if (!machine) throw new Error("This computer is no longer on your ADE account.");
     if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
-    const entry = pool.liveConnection(machineKey);
+    // A spend is a user's click, not background work, so it may open the
+    // paired connection when the idle one closed.
+    const entry = pool.liveConnection(machineKey)
+      ?? (method === "usage.consumeResetCredit" ? await pool.acquire(machine) : null);
     if (!entry) throw new Error(`${machineName(machine)} is not connected from here right now.`);
     return await pool.request(
       machine,
       entry,
       method,
       method,
-      {},
+      params,
       clampMachineCallTimeout(timeoutMs),
     );
   };

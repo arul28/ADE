@@ -3399,7 +3399,11 @@ export async function createAdeRuntime(args: {
       restartProviderRuntimesWhenIdle: (provider, options) => {
         chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider, options);
       },
-      notifyChanged: () => pushEvent("runtime", { type: "provider_logins_changed" }),
+      notifyChanged: () => {
+        pushEvent("runtime", { type: "provider_logins_changed" });
+        // The phone hears it too: an open sign-ins card reads again at once.
+        syncService?.notifyProviderLoginsChanged();
+      },
     }));
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({

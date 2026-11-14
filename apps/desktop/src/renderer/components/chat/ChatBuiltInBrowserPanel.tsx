@@ -6,7 +6,7 @@ import {
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useReducedMotion } from "motion/react";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { AgentChatFileRef, BrowserLinkOpenMode, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
@@ -654,7 +654,8 @@ export function ChatBuiltInBrowserPanel({
     if (!pin) return { ok: true, tunnel: null, reason: null };
     const parsed = parseLoopbackUrl(url);
     if (!parsed) return { ok: true, tunnel: null, reason: null };
-    const machineLabel = machineNameForBinding(pin);
+    // Read when the navigation runs, so it is the lane index as it is now.
+    const machineLabel = machineLabelForBinding(pin);
     const approved = await ensureTunnelApproval(parsed.port, machineLabel, options);
     if (!approved) {
       return {

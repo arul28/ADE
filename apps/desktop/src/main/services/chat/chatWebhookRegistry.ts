@@ -7,7 +7,7 @@ import net from "node:net";
 import { isLocalHostname, isPrivateIpAddress, isPublicIpAddress, pinnedLookup } from "../net/publicHostGuard";
 import { chatWaitTargetMatches } from "../../../shared/chatWait";
 import type { Logger } from "../logging/logger";
-import { writeFileAtomic } from "../state/durableFile";
+import { createFileVersionTracker, writeFileAtomic } from "../state/durableFile";
 import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 /**
@@ -141,6 +141,8 @@ export function createChatWebhookRegistry(deps: {
 }) {
   const now = Date.now;
   const filePath = path.join(deps.secretsDir, FILE_NAME);
+  /** What this brain last read or wrote, so it sees another brain's write even in the same timestamp tick. */
+  const fileVersion = createFileVersionTracker(filePath);
   const warn = (event: string, error: unknown, data: Record<string, unknown> = {}) =>
     deps.logger.warn(event, { ...data, error: error instanceof Error ? error.message : String(error) });
   /**
@@ -150,7 +152,7 @@ export function createChatWebhookRegistry(deps: {
    */
   const load = (): { hooks: StoredChatWebhook[]; removed: Record<string, number> } | null => {
     try {
-      const raw: unknown = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      const raw: unknown = JSON.parse(fileVersion.read());
       // The first version of the file was a bare list.
       const record = Array.isArray(raw) ? { hooks: raw } : (raw ?? {}) as { hooks?: unknown; removed?: unknown };
       const list = Array.isArray(record.hooks) ? (record.hooks as StoredChatWebhook[]).filter((entry) => typeof entry?.id === "string") : [];
@@ -179,16 +181,12 @@ export function createChatWebhookRegistry(deps: {
   const changedHere = new Set<string>();
   const checksHook = (hook: StoredChatWebhook): boolean =>
     deps.runsHere(hook.sessionId) || (hook.deliveries.length > 0 && !deps.ownedElsewhere(hook.sessionId));
-  let fileMtimeMs = 0;
   let fileCheckedAt = 0;
   /** Another brain wrote the file since this one last looked (checked at most once a second). */
   const fileChanged = (): boolean => {
     if (now() - fileCheckedAt < 1_000) return false;
     fileCheckedAt = now();
-    const mtime = fs.statSync(filePath, { throwIfNoEntry: false })?.mtimeMs ?? 0;
-    if (mtime === fileMtimeMs) return false;
-    fileMtimeMs = mtime;
-    return true;
+    return fileVersion.changed();
   };
   /** Sessions with an event since the last check; the backstop checks every hook. */
   const signalled = new Set<string>();
@@ -214,9 +212,11 @@ export function createChatWebhookRegistry(deps: {
     for (const [id, at] of removed) if (at < cutoff) removed.delete(id);
     try {
       fs.mkdirSync(deps.secretsDir, { recursive: true, mode: 0o700 });
-      writeFileAtomic(filePath, JSON.stringify({ hooks, removed: Object.fromEntries(removed) }), { mode: 0o600 });
+      const text = JSON.stringify({ hooks, removed: Object.fromEntries(removed) });
+      writeFileAtomic(filePath, text, { mode: 0o600 });
+      // After the ACL: on Windows that changes the file's ctime.
       securePrivatePath(filePath);
-      fileMtimeMs = fs.statSync(filePath, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+      fileVersion.wrote(text);
     } catch (error) {
       warn("agent_chat.webhooks_persist_failed", error);
     }
@@ -319,7 +319,8 @@ export function createChatWebhookRegistry(deps: {
     checking = true;
     try {
       // The full check also picks up webhooks another brain on this project armed for chats this one runs.
-      if (sessions === null) {
+      // Any other check reads a changed file first, so it never posts a webhook another brain cancelled.
+      if (sessions === null || fileVersion.changed()) {
         const onDisk = load();
         if (onDisk) absorb(onDisk);
       }

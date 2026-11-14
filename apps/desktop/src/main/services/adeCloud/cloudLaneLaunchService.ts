@@ -186,7 +186,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!stage) return;
     const at = nowIso();
     if (status === "running") {
-      stage.startedAt = at;
+      // A step resumed after ADE restarted keeps the start it had (`resume`
+      // left it on the pending row); a new or retried step starts now.
+      stage.startedAt = stage.status === "pending" && stage.startedAt ? stage.startedAt : at;
       stage.endedAt = null;
       stage.error = null;
       stage.percent = null;
@@ -233,6 +235,14 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     isChatLaunchTerminal(record.snapshot.phase) || record.snapshot.phase === "failed";
 
   /**
+   * Whether the brain's event stream is followed: a launch still running, or
+   * a finished one whose AI lane name has not landed yet (the name can arrive
+   * after the chat started). Following stops once the record expires.
+   */
+  const followed = (record: CloudLaneLaunchRecord): boolean =>
+    !isSettled(record) || (record.snapshot.laneNaming && isChatLaunchTerminal(record.snapshot.phase));
+
+  /**
    * The brain's snapshot, served as this launch: its sequence above the local
    * one, the `cloud` block on it, and any message still waiting here behind
    * the ones the brain already holds.
@@ -259,22 +269,31 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   /**
    * Writes the lane's branch into its computer's metadata once the brain
    * named it, so a lane that outlives its computer (the 30-day rule) knows
-   * where to start again. Metadata writes replace, so it merges first.
+   * where to start again. Metadata writes replace, so it merges first. One
+   * write at a time per launch, and a write a newer name replaced is skipped,
+   * so a slow placeholder write can never land after the AI-named branch.
    */
+  const branchWrites = new Map<string, Promise<void>>();
   const recordBranch = (record: CloudLaneLaunchRecord): void => {
     const branchRef = record.snapshot.branchRef?.trim() || null;
     const instanceId = record.snapshot.cloud.instanceId;
     if (!branchRef || !instanceId || record.branchRecorded === branchRef || record.snapshot.phase === "cancelled") return;
     record.branchRecorded = branchRef;
-    void (async () => {
+    const launchId = record.snapshot.launchId;
+    const write = (branchWrites.get(launchId) ?? Promise.resolve()).then(async () => {
+      if (record.branchRecorded !== branchRef) return;
       const client = await providerClient();
       const instance = await client.getInstance(instanceId);
       if (instance.metadata[CLOUD_LANE_BRANCH_METADATA] === branchRef) return;
       await client.setInstanceMetadata(instanceId, { ...instance.metadata, [CLOUD_LANE_BRANCH_METADATA]: branchRef });
-    })().catch((error: unknown) => {
+    }).catch((error: unknown) => {
       // Tried again on the next snapshot that names it.
       if (record.branchRecorded === branchRef) record.branchRecorded = null;
-      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId, error: getErrorMessage(error) });
+    });
+    branchWrites.set(launchId, write);
+    void write.finally(() => {
+      if (branchWrites.get(launchId) === write) branchWrites.delete(launchId);
     });
   };
 
@@ -316,7 +335,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // Progress ticks are many; only settled changes are written down.
     const settled = !event.launch.stages.some((stage) => stage.status === "running") || isChatLaunchTerminal(event.launch.phase);
     publish(record, { persist: settled });
-    if (isSettled(record)) stopFollowing(launchId);
+    // A finished launch is followed until its AI name lands (`followed`), so
+    // the lane's name and renamed branch reach the card and the computer's
+    // metadata.
+    if (!followed(record)) stopFollowing(launchId);
   };
 
   const stopFollowing = (launchId: string): void => {
@@ -333,7 +355,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const launchId = record.snapshot.launchId;
     const binding = record.snapshot.cloud.binding;
     const runtime = runtimeFor(launchId);
-    if (disposed || !binding || runtime.unsubscribe || runtime.subscribing || isSettled(record)) return;
+    if (disposed || !binding || runtime.unsubscribe || runtime.subscribing || !followed(record)) return;
     runtime.subscribing = true;
     try {
       const unsubscribe = await deps.subscribeChatLaunchEvents(
@@ -344,7 +366,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
           scheduleFollowAgain(launchId);
         },
       );
-      if (records.get(launchId) !== record || disposed || isSettled(record)) {
+      if (records.get(launchId) !== record || disposed || !followed(record)) {
         unsubscribe();
         return;
       }
@@ -361,7 +383,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const scheduleFollowAgain = (launchId: string): void => {
     const record = records.get(launchId);
     const runtime = runtimes.get(launchId);
-    if (disposed || !record || !runtime || runtime.timer || isSettled(record)) return;
+    if (disposed || !record || !runtime || runtime.timer || !followed(record)) return;
     if (runtime.resubscribeAttempts >= RESUBSCRIBE_ATTEMPTS) {
       // `get` still reads the brain on demand.
       logger.warn("cloud_lane_launch.follow_gave_up", { launchId });
@@ -370,7 +392,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     runtime.resubscribeAttempts += 1;
     runtime.timer = setTimeout(() => {
       runtime.timer = null;
-      if (isSettled(record)) return;
+      if (!followed(record)) return;
       void refreshFromBrain(record).finally(() => void follow(record));
     }, RESUBSCRIBE_MS);
     runtime.timer.unref?.();
@@ -463,6 +485,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
               text: next.text,
               ...(next.displayText ? { displayText: next.displayText } : {}),
               ...(attachments?.length ? { attachments } : {}),
+              // A retried hand-off (the reply was lost) is queued and sent once.
+              clientSendId: next.id,
             },
           }) as ChatLaunchSnapshot;
           record.pendingMessageIds = record.pendingMessageIds.filter((id) => id !== next.id);
@@ -783,7 +807,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const get = async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
     const record = recordFor(args);
     if (!record) return null;
-    if (isHandedOff(record) && !isSettled(record)) await refreshFromBrain(record);
+    // Followed launches only: a finished one still naming its lane is read too, so the final name lands.
+    if (isHandedOff(record) && followed(record)) await refreshFromBrain(record);
     const current = records.get(record.snapshot.launchId);
     return current ? served(current) : null;
   };
@@ -953,7 +978,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (isHandedOff(record)) {
         if (isChatLaunchTerminal(record.snapshot.phase) && record.pendingMessageIds.length === 0) {
           scheduleExpiry(record);
-          continue;
+          // A finished launch still waiting on its AI lane name is followed again.
+          if (!followed(record)) continue;
         }
         // A failed launch waits for Retry, which reads and follows the brain again.
         if (record.snapshot.phase === "failed") continue;
@@ -972,7 +998,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (record.snapshot.phase !== "running") continue;
       // The step that was running when ADE quit runs again; each one checks what it already did.
       for (const stage of record.snapshot.stages) {
-        if (stage.status === "running") setStage(record, stage.id, "pending");
+        if (stage.status === "running") setStage(record, stage.id, "pending", { startedAt: stage.startedAt });
       }
       logger.info("cloud_lane_launch.resumed", { launchId });
       publish(record);

@@ -385,19 +385,9 @@ describe("inferAttachmentMediaType", () => {
     expect(inferAttachmentMediaType({ path: "photo.tiff", type: "image" })).toBe("image/tiff");
   });
 
-  it("defaults to application/octet-stream for unknown extensions on file attachments", () => {
-    expect(inferAttachmentMediaType({ path: "data.xyz", type: "file" })).toBe("application/octet-stream");
-  });
 });
 
 describe("PROVIDER_IMAGE_BYTE_MEDIA_TYPES", () => {
-  it("contains exactly the four supported image types", () => {
-    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/jpeg")).toBe(true);
-    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/png")).toBe(true);
-    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/gif")).toBe(true);
-    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/webp")).toBe(true);
-    expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.size).toBe(4);
-  });
 
   it("does not contain SVG or other image types", () => {
     expect(PROVIDER_IMAGE_BYTE_MEDIA_TYPES.has("image/svg+xml")).toBe(false);

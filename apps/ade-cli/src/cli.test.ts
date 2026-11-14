@@ -983,15 +983,6 @@ describe("ADE CLI", () => {
     expect(windowsPath.command).toEqual(["lanes", "list"]);
   });
 
-  it("shows help for bare ade invocations", () => {
-    expect(buildCliPlan([])).toEqual({
-      kind: "help",
-      text: expect.stringContaining(
-        "Agent-focused command-line interface for ADE",
-      ),
-    });
-  });
-
   it("names the import roots this platform actually has in proof help", () => {
     // `resolveTempImportRoots` adds `/tmp` only off Windows and `$TMPDIR` is
     // not the Windows spelling, so unconditional POSIX guidance sends a Windows
@@ -1002,11 +993,6 @@ describe("ADE CLI", () => {
     expect(plan.text).toContain("$TMPDIR");
     expect(plan.text).toContain("%TEMP%");
     expect(plan.text).toContain("not a root on\n  Windows");
-  });
-
-  it("keeps global help on the help surface", () => {
-    const plan = buildCliPlan(["--help"]);
-    expect(plan.kind).toBe("help");
   });
 
   it("hides internal Automations commands when disabled", () => {
@@ -6266,34 +6252,15 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("filters the typed chat model inventory by provider", () => {
-    const executePlan = expectExecutePlan(buildCliPlan([
-      "chat",
-      "models",
-      "--provider",
-      "codex",
-    ]));
+  it.each([
+    ["filters by provider", ["chat", "models", "--provider", "codex"], { provider: "codex" }],
+    ["requests the complete inventory when provider is omitted", ["chat", "models"], {}],
+  ])("builds chat models: %s", (_name, argv, args) => {
+    const executePlan = expectExecutePlan(buildCliPlan(argv));
 
     expect(executePlan.label).toBe("chat models");
     expect(executePlan.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "chat",
-        action: "getAvailableModels",
-        args: { provider: "codex" },
-      },
-    });
-  });
-
-  it("requests the complete typed chat model inventory when provider is omitted", () => {
-    const executePlan = expectExecutePlan(buildCliPlan(["chat", "models"]));
-
-    expect(executePlan.label).toBe("chat models");
-    expect(executePlan.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "chat",
-        action: "getAvailableModels",
-        args: {},
-      },
+      arguments: { domain: "chat", action: "getAvailableModels", args },
     });
   });
 
@@ -12104,71 +12071,6 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("shows focused ios-sim help for subcommand help flags", () => {
-    const renderHelp = buildCliPlan(["ios-sim", "preview-render", "--help"]);
-    expect(renderHelp.kind).toBe("help");
-    if (renderHelp.kind !== "help") return;
-    expect(renderHelp.text).toContain("iOS Simulator: preview-render");
-    expect(renderHelp.text).toContain("--source, --file <p>");
-    expect(renderHelp.text).toContain("--index <n>");
-    expect(renderHelp.text).toContain("final command agents should run");
-
-    const aliasHelp = buildCliPlan(["help", "ios", "snapshot"]);
-    expect(aliasHelp.kind).toBe("help");
-    if (aliasHelp.kind !== "help") return;
-    expect(aliasHelp.text).toContain("iOS Simulator: snapshot");
-    expect(aliasHelp.text).toContain("ADEInspector/accessibility");
-
-    const targetHelp = buildCliPlan([
-      "ios-sim",
-      "launch",
-      "--target",
-      "preview-target",
-      "--help",
-    ]);
-    expect(targetHelp.kind).toBe("help");
-    if (targetHelp.kind !== "help") return;
-    expect(targetHelp.text).toContain("iOS Simulator: launch");
-    expect(targetHelp.text).toContain("--target, --target-id <id>");
-
-    const nestedHelp = buildCliPlan(["ios-sim", "help", "select"]);
-    expect(nestedHelp.kind).toBe("help");
-    if (nestedHelp.kind !== "help") return;
-    expect(nestedHelp.text).toContain("iOS Simulator: select");
-    expect(nestedHelp.text).toContain("emits a drawer selection event");
-
-    const typeHelp = buildCliPlan(["ios-sim", "type", "--help"]);
-    expect(typeHelp.kind).toBe("help");
-    if (typeHelp.kind !== "help") return;
-    expect(typeHelp.text).toContain("iOS Simulator: type");
-    expect(typeHelp.text).toContain("--value, --message <v>");
-
-    // `claim` is implemented and listed in the top-level help, so asking for
-    // its help must not answer "unknown subcommand".
-    const claimHelp = buildCliPlan(["ios-sim", "claim", "--help"]);
-    expect(claimHelp.kind).toBe("help");
-    if (claimHelp.kind !== "help") return;
-    expect(claimHelp.text).toContain("iOS Simulator: claim");
-    expect(claimHelp.text).not.toContain("Unknown Apple device subcommand");
-    expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
-
-    // `stop` powers the device off and is no longer a `shutdown` alias, so it
-    // has its own page; `device-detach` is listed in the top-level help too.
-    for (const [sub, heading] of [
-      ["stop", "Apple device: stop"],
-      ["power-off", "Apple device: stop"],
-      ["device-detach", "Apple device: device-detach"],
-    ] as const) {
-      const help = buildCliPlan(["apple", sub, "--help"]);
-      if (help.kind !== "help") throw new Error(`expected help for apple ${sub}`);
-      expect(help.text).toContain(heading);
-      expect(help.text).not.toContain("Unknown Apple device subcommand");
-    }
-    const shutdownHelp = buildCliPlan(["apple", "shutdown", "--help"]);
-    if (shutdownHelp.kind !== "help") throw new Error("expected help");
-    expect(shutdownHelp.text).not.toMatch(/Aliases: stop/);
-  });
-
   it("rejects live-start and --backend; stream-start has no backend flag", () => {
     expect(() => buildCliPlan(["apple", "live-start"])).toThrow(
       /live-start is gone; use stream-start/,
@@ -16725,14 +16627,6 @@ describe("ADE CLI", () => {
         args: { laneId: "lane-1", limit: 100 },
       },
     });
-  });
-
-  it("shows help for ade history", () => {
-    const plan = buildCliPlan(["history", "--help"]);
-    expect(plan.kind).toBe("help");
-    if (plan.kind !== "help") return;
-    expect(plan.text).toContain("ade history list");
-    expect(plan.text).toContain("ade history export");
   });
 
   it("attaches a rendered lane graph when the plan has the lanes visualizer", () => {

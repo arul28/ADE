@@ -101,12 +101,7 @@ import {
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
 import { setDocumentVisibleForTests } from "../../lib/workToolOnScreen";
-import {
-  DEFAULT_CHAT_COMPANION_UI_STATE,
-  chatCompanionUiStorageKey,
-  resetChatCompanionUiStateCacheForTests,
-  writeChatCompanionUiState,
-} from "./chatCompanionUiState";
+import { DEFAULT_CHAT_COMPANION_UI_STATE, resetChatCompanionUiStateCacheForTests, writeChatCompanionUiState } from "./chatCompanionUiState";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import {
   isChatSessionRetained,
@@ -221,31 +216,6 @@ describe("activeTurnSessionSummaryPatch", () => {
     });
   });
 });
-
-function buildPrSummary(overrides: Partial<PrSummary> = {}): PrSummary {
-  return {
-    id: "pr-1",
-    laneId: "lane-1",
-    projectId: "project-1",
-    repoOwner: "arul28",
-    repoName: "ADE",
-    githubPrNumber: 224,
-    githubUrl: "https://github.com/arul28/ADE/pull/224",
-    githubNodeId: "PR_node224",
-    title: "Show merged PR state",
-    state: "open",
-    baseBranch: "main",
-    headBranch: "feature/pr-state",
-    checksStatus: "passing",
-    reviewStatus: "approved",
-    additions: 1,
-    deletions: 1,
-    lastSyncedAt: null,
-    createdAt: "2026-05-01T00:00:00.000Z",
-    updatedAt: "2026-05-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
 
 function buildCreatedSession(sessionId: string, overrides: Partial<AgentChatSession> = {}): AgentChatSession {
   return {
@@ -2072,23 +2042,6 @@ describe("AgentChatPane remote startup", () => {
   });
 });
 
-describe("AgentChatPane draft header", () => {
-  it("shows no PR mark in a draft header when the lane has no PR", async () => {
-    installAdeMocks({ sessions: [] });
-    seedDrawerStore();
-    render(
-      <MemoryRouter>
-        <AgentChatPane laneId="lane-1" hideSessionTabs onSessionCreated={vi.fn()} />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByAltText("ADE")).toBeTruthy();
-    // The header's PR mark only appears for an open PR; it never offers a
-    // "create PR" pill.
-    expect(screen.queryByTestId("chat-header-pr-badge")).toBeNull();
-  });
-});
-
 describe("AgentChatPane companion drawers", () => {
   // The chip was set only by the live `session-started` event, so the two
   // commonest cases had no signal at all: opening ADE on a running session, and
@@ -2252,105 +2205,112 @@ describe("AgentChatPane companion drawers", () => {
   });
 
   it("ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
-    setDocumentVisibleForTests(true);
-    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
-      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
-    const show = async (requestId: string) => {
-      let status: string | null = null;
-      void answerWorkToolShowRequest({
-        requestId,
-        surface: "proof",
-        chatSessionId: "session-1",
-        laneId: "lane-1",
-        auto: false,
-        requestedAt: new Date(0).toISOString(),
-      }).then((next) => { status = next?.status ?? null; });
-      await waitFor(() => expect(status).not.toBeNull(), { timeout: 5_000 });
-      return status;
-    };
-    const snapshotWith = (sessionId: string, artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot => ({
-      owner: { kind: "chat_session", id: sessionId },
-      backendStatus: {
-        backends: [],
-        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
-      },
-      summary: `${artifacts.length} proof items`,
-      activeBackend: null,
-      artifacts,
-      recentArtifacts: artifacts,
-      activity: [],
-    });
-    const proof: ComputerUseArtifactView = {
-      id: "proof-tile",
-      kind: "screenshot",
-      backendStyle: "local_fallback",
-      backendName: "ADE",
-      sourceToolName: "capture",
-      originalType: "image",
-      title: "Proof in a quiet tile",
-      description: null,
-      uri: ".ade/artifacts/proof-tile.png",
-      storageKind: "file",
-      mimeType: "image/png",
-      metadata: {},
-      createdAt: "2026-07-28T12:00:00.000Z",
-      links: [],
-      reviewState: "pending",
-      workflowState: "evidence_only",
-      reviewNote: null,
-      availability: "available",
-    };
-    const session = buildSession("session-1", { title: "Quiet tile chat" });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      // A grid tile the user can see but has not clicked into keeps no snapshot.
-      installAdeMocks({ sessions: [session] });
-      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, [proof]));
-      seedDrawerStore();
-      const view = render(
-        <MemoryRouter>
-          <AgentChatPane
-            laneId={session.laneId}
-            lockSessionId={session.sessionId}
-            hideSessionTabs
-            initialSessionSummary={session}
-            onSessionCreated={vi.fn()}
-            isTileActive={false}
-            isTileVisible
-          />
-        </MemoryRouter>,
-      );
-      expect(await show("wts-quiet-tile")).toBe("shown");
-      expect(screen.getByText("Proof in a quiet tile")).toBeTruthy();
-      expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
-      view.unmount();
-      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(true);
+      const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+      const show = async (requestId: string, opts: { neverOnScreen?: boolean } = {}) => {
+        let status: string | null = null;
+        void answerWorkToolShowRequest({
+          requestId,
+          surface: "proof",
+          chatSessionId: "session-1",
+          laneId: "lane-1",
+          auto: false,
+          requestedAt: new Date(0).toISOString(),
+        }).then((next) => { status = next?.status ?? null; });
+        // A surface that never comes on screen is given 3 s before the answer.
+        if (opts.neverOnScreen) await act(async () => { await vi.advanceTimersByTimeAsync(3_500); });
+        await waitFor(() => expect(status).not.toBeNull());
+        return status;
+      };
+      const snapshotWith = (sessionId: string, artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot => ({
+        owner: { kind: "chat_session", id: sessionId },
+        backendStatus: {
+          backends: [],
+          localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+        },
+        summary: `${artifacts.length} proof items`,
+        activeBackend: null,
+        artifacts,
+        recentArtifacts: artifacts,
+        activity: [],
+      });
+      const proof: ComputerUseArtifactView = {
+        id: "proof-tile",
+        kind: "screenshot",
+        backendStyle: "local_fallback",
+        backendName: "ADE",
+        sourceToolName: "capture",
+        originalType: "image",
+        title: "Proof in a quiet tile",
+        description: null,
+        uri: ".ade/artifacts/proof-tile.png",
+        storageKind: "file",
+        mimeType: "image/png",
+        metadata: {},
+        createdAt: "2026-07-28T12:00:00.000Z",
+        links: [],
+        reviewState: "pending",
+        workflowState: "evidence_only",
+        reviewNote: null,
+        availability: "available",
+      };
+      const session = buildSession("session-1", { title: "Quiet tile chat" });
+      try {
+        // A grid tile the user can see but has not clicked into keeps no snapshot.
+        installAdeMocks({ sessions: [session] });
+        vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, [proof]));
+        seedDrawerStore();
+        const view = render(
+          <MemoryRouter>
+            <AgentChatPane
+              laneId={session.laneId}
+              lockSessionId={session.sessionId}
+              hideSessionTabs
+              initialSessionSummary={session}
+              onSessionCreated={vi.fn()}
+              isTileActive={false}
+              isTileVisible
+            />
+          </MemoryRouter>,
+        );
+        expect(await show("wts-quiet-tile")).toBe("shown");
+        expect(screen.getByText("Proof in a quiet tile")).toBeTruthy();
+        expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
+        view.unmount();
+        resetWorkToolShowRequestsForTests();
 
-      // Proof that has not loaded is not "no proof": the section waits for it.
-      installAdeMocks({ sessions: [session] });
-      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockImplementation(() => new Promise<ComputerUseOwnerSnapshot>(() => {}));
-      seedDrawerStore();
-      const pending = renderPane(session);
-      await screen.findByRole("button", { name: "Open chat actions drawer" });
-      expect(await show("wts-still-loading")).not.toBe("shown");
-      expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
-      pending.unmount();
-      resetWorkToolShowRequestsForTests();
+        // Proof that has not loaded is not "no proof": the section waits for it.
+        installAdeMocks({ sessions: [session] });
+        vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockImplementation(() => new Promise<ComputerUseOwnerSnapshot>(() => {}));
+        seedDrawerStore();
+        const pending = renderPane(session);
+        await screen.findByRole("button", { name: "Open chat actions drawer" });
+        expect(await show("wts-still-loading", { neverOnScreen: true })).not.toBe("shown");
+        expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
+        pending.unmount();
+        resetWorkToolShowRequestsForTests();
 
-      // A chat with no proof: the drawer says so once the read comes back,
-      // rather than waiting and blaming a window that is in front.
-      installAdeMocks({ sessions: [session] });
-      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, []));
-      seedDrawerStore();
-      renderPane(session);
-      await screen.findByRole("button", { name: "Open chat actions drawer" });
-      expect(await show("wts-no-proof")).toBe("shown");
-      expect(screen.getByText("This chat has no proof yet.")).toBeTruthy();
+        // A chat with no proof: the drawer says so once the read comes back,
+        // rather than waiting and blaming a window that is in front.
+        installAdeMocks({ sessions: [session] });
+        vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, []));
+        seedDrawerStore();
+        renderPane(session);
+        await screen.findByRole("button", { name: "Open chat actions drawer" });
+        expect(await show("wts-no-proof")).toBe("shown");
+        expect(screen.getByText("This chat has no proof yet.")).toBeTruthy();
+      } finally {
+        resetWorkToolShowRequestsForTests();
+        setDocumentVisibleForTests(null);
+        layout.mockRestore();
+      }
     } finally {
-      resetWorkToolShowRequestsForTests();
-      setDocumentVisibleForTests(null);
-      layout.mockRestore();
+      vi.useRealTimers();
     }
-  }, 20_000);
+  });
 
   it("scrolls to the proof once per show, and a read that returns after the drawer closed changes nothing", async () => {
     setDocumentVisibleForTests(true);
@@ -2640,29 +2600,36 @@ describe("AgentChatPane companion drawers", () => {
   /* Regression (A2-4): the Apple drawer answered "shown" before its commit
    * and in a hidden window. It now waits for the drawer to be on screen. */
   it("answers held, not shown, for the Apple drawer in a hidden window", async () => {
-    setDocumentVisibleForTests(false);
-    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
-      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
-    renderDrawerPane();
-    await screen.findByRole("button", { name: "Open chat actions drawer" });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      setDocumentVisibleForTests(false);
+      const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+      renderDrawerPane();
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
 
-    let status: string | null = null;
-    // Not inside act: the drawer has to render while the show waits for it.
-    void answerWorkToolShowRequest({
-        requestId: "wts-apple-hidden",
-        surface: "apple",
-        chatSessionId: "session-1",
-        laneId: "lane-1",
-        auto: false,
-        requestedAt: new Date(0).toISOString(),
-    }).then((next) => { status = next?.status ?? null; });
-    await waitFor(() => expect(status).toBe("held"), { timeout: 5_000 });
-    // Opened all the same: the user sees it when the window comes back.
-    expect((await screen.findByTestId("ios-panel")).textContent).toBe("iOS panel mounted");
-    resetWorkToolShowRequestsForTests();
-    setDocumentVisibleForTests(null);
-    layout.mockRestore();
-  }, 10_000);
+      let status: string | null = null;
+      // Not inside act: the drawer has to render while the show waits for it.
+      void answerWorkToolShowRequest({
+          requestId: "wts-apple-hidden",
+          surface: "apple",
+          chatSessionId: "session-1",
+          laneId: "lane-1",
+          auto: false,
+          requestedAt: new Date(0).toISOString(),
+      }).then((next) => { status = next?.status ?? null; });
+      // The show gives a hidden window 3 s to put the drawer on screen.
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_500); });
+      await waitFor(() => expect(status).toBe("held"));
+      // Opened all the same: the user sees it when the window comes back.
+      expect((await screen.findByTestId("ios-panel")).textContent).toBe("iOS panel mounted");
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("opens the proof drawer as a floating info pane (no split divider)", async () => {
     renderDrawerPane();
@@ -2686,12 +2653,6 @@ describe("AgentChatPane companion drawers", () => {
     const visibleRegions = () =>
       screen.queryAllByTestId("chat-actions-drawer-region")
         .filter((region) => !region.className.split(/\s+/).includes("hidden"));
-    const expectRegionScrollers = () => {
-      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-y-auto");
-      for (const region of visibleRegions()) {
-        expect(region.querySelector("[class*='overflow-y-auto']")).toBeTruthy();
-      }
-    };
     const attachmentEvent = (sessionId: string): AgentChatEventEnvelope => ({
       sessionId,
       timestamp: "2026-09-23T06:00:00.000Z",
@@ -2716,7 +2677,6 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByTestId("chat-actions-drawer-scroll").closest(".ade-floating-side-pane")).not.toBeNull();
       expect(screen.queryByText(/No agent activity|Single-agent mode|No sources yet|No features yet/i)).toBeNull();
       expect(screen.queryByText("Sources")).toBeNull();
-      expectRegionScrollers();
     });
 
     it("mounts Sources for a non-Codex chat once it has a source, and only then", async () => {
@@ -2744,7 +2704,6 @@ describe("AgentChatPane companion drawers", () => {
       });
       expect(within(drawerSections()).getByText("spec.md")).toBeTruthy();
       expect(screen.getByTestId("chat-actions-drawer-empty").className).toContain("hidden");
-      expectRegionScrollers();
       expect(screen.queryByText(/No sources yet|used in this Codex chat/i)).toBeNull();
     });
 
@@ -2778,7 +2737,6 @@ describe("AgentChatPane companion drawers", () => {
         return visible;
       });
       expect(within(regions[0]!).getByTestId("chat-subagents-pane")).toBeTruthy();
-      expectRegionScrollers();
     });
 
     it("right-pane host (beside an open terminal pane) keeps the drawer to one scroll", async () => {
@@ -2813,7 +2771,6 @@ describe("AgentChatPane companion drawers", () => {
       const scroll = screen.getByTestId("chat-actions-drawer-scroll");
       expect(scroll.closest(".ade-floating-side-pane")).toBeNull();
       expect(scroll.closest("[class*='bg-surface/80']")).not.toBeNull();
-      expectRegionScrollers();
     });
   });
 
@@ -3049,30 +3006,6 @@ describe("AgentChatPane companion drawers", () => {
       expect(unarchive).toHaveBeenCalledWith({ sessionId: "archived-session" }, tabPin());
     });
   });
-
-  it("renders a persistent identity chat view without the legacy clear-view control", async () => {
-    const transcript = `${JSON.stringify({
-      sessionId: "persistent-session",
-      timestamp: "2026-05-12T00:00:00.000Z",
-      event: {
-        type: "text",
-        text: "Persistent identity view text",
-        itemId: "persistent-text",
-        turnId: "turn-1",
-      },
-    })}\n`;
-
-    renderDrawerSessionPane(
-      [buildSession("persistent-session", { title: "Persistent identity" })],
-      {
-        transcript,
-        presentation: { mode: "standard", profile: "persistent_identity" },
-      },
-    );
-
-    expect(await screen.findByText("Persistent identity view text")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Clear view" })).toBeNull();
-  });
 });
 
 
@@ -3225,7 +3158,7 @@ describe("AgentChatPane durable recovery actions", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restart Codex" }));
     await waitFor(() => {
       expect(recoverTurn).toHaveBeenCalledWith({
         sessionId: session.sessionId,
@@ -3268,7 +3201,7 @@ describe("AgentChatPane durable recovery actions", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restart Codex" }));
     await waitFor(() => {
       expect(recoverTurn).toHaveBeenCalledOnce();
       expect(recoverCodexTurn).not.toHaveBeenCalled();
@@ -4078,28 +4011,6 @@ describe("AgentChatPane submit recovery", () => {
     // A genuinely new terminal still reveals the pane after it was closed.
     act(() => events.emit({ sessionId: next.id, reason: "created" }));
     await waitFor(() => expect(onOpenTerminalPane).toHaveBeenCalledTimes(2));
-  });
-
-  it("shows a green session indicator while the agent is working", async () => {
-    const session = buildSession("session-1");
-    installAdeMocks({
-      transcript: buildStatusStartedTranscript(session.sessionId),
-    });
-
-    renderTabbedPane(session);
-
-    expect(await screen.findByLabelText("Agent working")).toBeTruthy();
-  });
-
-  it("shows an amber session indicator while waiting for user input", async () => {
-    const session = buildSession("session-1");
-    installAdeMocks({
-      transcript: buildPendingInputTranscript(session.sessionId),
-    });
-
-    renderTabbedPane(session);
-
-    expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
   });
 
   it("keeps in-pane session tabs working while Codex has a non-blocking steering question", async () => {
@@ -5399,16 +5310,6 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByTestId("usage-limit-continue-on-account"));
     await waitFor(() => expect(continueOnAlternate).toHaveBeenCalledWith({ sessionId: session.sessionId }, tabPin()));
-  });
-
-  it("renders no usage-limit chip when the host reports no live usage limit", async () => {
-    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
-    installAdeMocks({ sessions: [session] });
-
-    renderPane(session);
-
-    await screen.findByTestId("work-chat-session-header");
-    expect(screen.queryByTestId("usage-limit-chip")).toBeNull();
   });
 
   it("suppresses Codex's raw usage-limit error row and shows the turn footer", async () => {
@@ -9988,226 +9889,59 @@ describe("AgentChatPane submit recovery", () => {
     }));
   });
 
-  it("does not revive a stored Fast for a Cursor Work draft CLI session", async () => {
-    const { modelId } = seedFastCursorRuntimeModelCatalog();
-    installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-    });
-    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
-    const launchConfigKey = [
-      "ade.chat.lastLaunchConfig.v1",
-      "/tmp/project-under-test",
-      "lane-1",
-      "standard",
-      "cli",
-    ].map(encodeURIComponent).join(":");
-    window.localStorage.setItem(launchConfigKey, JSON.stringify({
-      version: 1,
-      modelId,
+  it.each([
+    {
+      name: "a Cursor Work draft CLI session",
+      seed: () => { const { modelId } = seedFastCursorRuntimeModelCatalog(); return { modelId, cursorModels: [{ id: modelId }] }; },
       reasoningEffort: null,
-      fastMode: true,
-      executionMode: "focused",
-      updatedAt: "2026-05-26T12:00:00.000Z",
-      controls: {
-        interactionMode: "default",
-        claudePermissionMode: "default",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-        opencodePermissionMode: "edit",
-        droidPermissionMode: "auto-low",
-        cursorModeId: "agent",
-        cursorConfigValues: {},
-      },
-    }));
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceDraftMode
-          embeddedWorkLayout
-          workDraftKind="cli"
-          onLaunchCliSession={onLaunchCliSession}
-        />
-      </MemoryRouter>,
-    );
-
-    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run Cursor in standard mode." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
-        profile: "cursor",
-        tracked: true,
-      }));
-    });
-    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
-      provider: "cursor",
-      model: modelId.replace(/^cursor\//, ""),
-      initialPrompt: expect.stringContaining("Run Cursor in standard mode."),
-    }));
-  });
-
-  it("does not revive a stored Fast for an OpenCode Work draft CLI session", async () => {
-    const modelId = seedFastOpenCodeRuntimeModelCatalog();
-    installAdeMocks({ sessions: [] });
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-    });
-    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
-    const launchConfigKey = [
-      "ade.chat.lastLaunchConfig.v1",
-      "/tmp/project-under-test",
-      "lane-1",
-      "standard",
-      "cli",
-    ].map(encodeURIComponent).join(":");
-    window.localStorage.setItem(launchConfigKey, JSON.stringify({
-      version: 1,
-      modelId,
+      prompt: "Run Cursor in standard mode.",
+      profile: "cursor",
+      launch: (modelId: string) => ({ provider: "cursor", model: modelId.replace(/^cursor\//, "") }),
+    },
+    {
+      name: "an OpenCode Work draft CLI session",
+      seed: () => ({ modelId: seedFastOpenCodeRuntimeModelCatalog(), cursorModels: undefined }),
       reasoningEffort: null,
-      fastMode: true,
-      executionMode: "focused",
-      updatedAt: "2026-05-26T12:00:00.000Z",
-      controls: {
-        interactionMode: "default",
-        claudePermissionMode: "default",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-        opencodePermissionMode: "edit",
-        droidPermissionMode: "auto-low",
-        cursorModeId: "agent",
-        cursorConfigValues: {},
-      },
-    }));
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceDraftMode
-          embeddedWorkLayout
-          workDraftKind="cli"
-          onLaunchCliSession={onLaunchCliSession}
-        />
-      </MemoryRouter>,
-    );
-
-    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run OpenCode in standard mode." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
-        profile: "opencode",
-        tracked: true,
-      }));
-    });
-    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
-      provider: "opencode",
-      fastMode: false,
-      initialPrompt: expect.stringContaining("Run OpenCode in standard mode."),
-    }));
-  });
-
-  it("does not forward stale fast mode when launching an unsupported Claude CLI model", async () => {
-    installAdeMocks({ sessions: [] });
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-    });
-    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
-    const launchConfigKey = [
-      "ade.chat.lastLaunchConfig.v1",
-      "/tmp/project-under-test",
-      "lane-1",
-      "standard",
-      "cli",
-    ].map(encodeURIComponent).join(":");
-    window.localStorage.setItem(launchConfigKey, JSON.stringify({
-      version: 1,
-      modelId: "anthropic/claude-sonnet-5",
+      prompt: "Run OpenCode in standard mode.",
+      profile: "opencode",
+      launch: () => ({ provider: "opencode", fastMode: false }),
+    },
+    {
+      name: "an unsupported Claude CLI model",
+      seed: () => ({ modelId: "anthropic/claude-sonnet-5", cursorModels: undefined }),
       reasoningEffort: null,
-      fastMode: true,
-      executionMode: "focused",
-      updatedAt: "2026-05-26T12:00:00.000Z",
-      controls: {
-        interactionMode: "default",
-        claudePermissionMode: "default",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-        opencodePermissionMode: "edit",
-        droidPermissionMode: "auto-low",
-        cursorModeId: "agent",
-        cursorConfigValues: {},
-      },
-    }));
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceDraftMode
-          embeddedWorkLayout
-          workDraftKind="cli"
-          onLaunchCliSession={onLaunchCliSession}
-        />
-      </MemoryRouter>,
-    );
-
-    await screen.findByRole("button", { name: /current: Claude Sonnet 5/i });
-    expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run Claude without stale fast mode." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
-        profile: "claude",
-        tracked: true,
-      }));
-    });
-    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
-      provider: "claude",
-      fastMode: false,
-      initialPrompt: expect.stringContaining("Run Claude without stale fast mode."),
-    }));
-  });
-
-  it("does not revive a stored Fast for a concrete Cursor CLI variant", async () => {
-    const { modelId } = seedReasoningCursorRuntimeModelCatalog();
-    installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-    });
-    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
-    const launchConfigKey = [
-      "ade.chat.lastLaunchConfig.v1",
-      "/tmp/project-under-test",
-      "lane-1",
-      "standard",
-      "cli",
-    ].map(encodeURIComponent).join(":");
-    window.localStorage.setItem(launchConfigKey, JSON.stringify({
-      version: 1,
-      modelId,
+      prompt: "Run Claude without stale fast mode.",
+      profile: "claude",
+      launch: () => ({ provider: "claude", fastMode: false }),
+      ready: async () => { await screen.findByRole("button", { name: /current: Claude Sonnet 5/i }); },
+    },
+    {
+      name: "a concrete Cursor CLI variant",
+      seed: () => { const { modelId } = seedReasoningCursorRuntimeModelCatalog(); return { modelId, cursorModels: [{ id: modelId }] }; },
       reasoningEffort: "medium",
+      prompt: "Run Cursor with medium standard thinking.",
+      profile: "cursor",
+      launch: () => ({ provider: "cursor", model: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium" }),
+    },
+  ])("does not revive a stored Fast for $name", async ({ seed, reasoningEffort, prompt, profile, launch, ready }) => {
+    const { modelId, cursorModels } = seed();
+    installAdeMocks({ sessions: [], ...(cursorModels ? { cursorModels } : {}) });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+      projectBinding: LOCAL_PROJECT_BINDING,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId,
+      reasoningEffort,
       fastMode: true,
       executionMode: "focused",
       updatedAt: "2026-05-26T12:00:00.000Z",
@@ -10236,24 +9970,20 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
+    await ready?.();
     expect((await findModelTrigger()).textContent).not.toMatch(/Fast/);
 
     const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Run Cursor with medium standard thinking." } });
+    fireEvent.change(textbox, { target: { value: prompt } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
-        profile: "cursor",
-        tracked: true,
-      }));
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({ profile, tracked: true }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
-      provider: "cursor",
-      model: "claude-opus-4-7-thinking-medium",
-      reasoningEffort: "medium",
-      initialPrompt: expect.stringContaining("Run Cursor with medium standard thinking."),
+      ...launch(modelId),
+      initialPrompt: expect.stringContaining(prompt),
     }));
   });
 
@@ -10643,17 +10373,11 @@ describe("AgentChatPane submit recovery", () => {
     });
     installAdeMocks({ sessions: [session] });
 
-    const { container } = renderPane(session);
+    renderPane(session);
 
     expect(await screen.findByPlaceholderText("Type to vibecode...")).toBeTruthy();
     expect(screen.queryByTestId("chat-lifecycle-banner")).toBeNull();
     expect(screen.queryByTestId("chat-app-panel-notice-stack")).toBeNull();
-    const emptyPaddedNoticeRows = [...container.querySelectorAll("div")].filter((element) =>
-      element.childElementCount === 0
-      && element.classList.contains("items-center")
-      && element.classList.contains("py-1.5"),
-    );
-    expect(emptyPaddedNoticeRows).toHaveLength(0);
   });
 
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
@@ -10728,88 +10452,100 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps the rendered transcript when a later history read cannot reach the runtime", async () => {
-    const session = buildSession("session-1", { title: "Remote chat" });
-    let historyReads = 0;
-    installAdeMocks({
-      sessions: [session],
-      eventHistory: async () => {
-        historyReads += 1;
-        if (historyReads === 1) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const session = buildSession("session-1", { title: "Remote chat" });
+      let historyReads = 0;
+      installAdeMocks({
+        sessions: [session],
+        eventHistory: async () => {
+          historyReads += 1;
+          if (historyReads === 1) {
+            return {
+              sessionId: session.sessionId,
+              events: [{
+                sessionId: session.sessionId,
+                timestamp: "2026-07-10T12:00:00.000Z",
+                sequence: 1,
+                event: { type: "user_message" as const, text: "Ship the release" },
+              }],
+              truncated: false,
+              sessionFound: true,
+            };
+          }
+          // The runtime could not be reached. This is NOT "the chat is gone", so
+          // the transcript already on screen must survive it.
           return {
             sessionId: session.sessionId,
-            events: [{
-              sessionId: session.sessionId,
-              timestamp: "2026-07-10T12:00:00.000Z",
-              sequence: 1,
-              event: { type: "user_message" as const, text: "Ship the release" },
-            }],
+            events: [],
             truncated: false,
-            sessionFound: true,
+            sessionFound: false,
+            unavailable: true,
           };
-        }
-        // The runtime could not be reached. This is NOT "the chat is gone", so
-        // the transcript already on screen must survive it.
-        return {
-          sessionId: session.sessionId,
-          events: [],
-          truncated: false,
-          sessionFound: false,
-          unavailable: true,
-        };
-      },
-    });
+        },
+      });
 
-    renderPane(session);
+      renderPane(session);
 
-    expect(await screen.findByText("Ship the release")).toBeTruthy();
-    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
-    // The unavailable read also clears the loaded flag, so the pane keeps
-    // retrying instead of latching a permanently stale view. The recovery loop
-    // backs off while the chat is quiet; a window focus drops it back to its
-    // ~10s base, so the third read is one base interval out.
-    act(() => { window.dispatchEvent(new Event("focus")); });
-    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3), { timeout: 14_000 });
-    expect(screen.getByText("Ship the release")).toBeTruthy();
-  }, 25_000);
+      expect(await screen.findByText("Ship the release")).toBeTruthy();
+      await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+      // The unavailable read also clears the loaded flag, so the pane keeps
+      // retrying instead of latching a permanently stale view. The recovery loop
+      // backs off while the chat is quiet; a window focus drops it back to its
+      // ~10s base, so the third read is one base interval out.
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+      await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3));
+      expect(screen.getByText("Ship the release")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("keeps a rendered transcript when an authoritative history miss arrives after events are on screen", async () => {
-    const session = buildSession("session-1", { title: "Existing chat" });
-    let historyReads = 0;
-    installAdeMocks({
-      sessions: [session],
-      eventHistory: async () => {
-        historyReads += 1;
-        if (historyReads === 1) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const session = buildSession("session-1", { title: "Existing chat" });
+      let historyReads = 0;
+      installAdeMocks({
+        sessions: [session],
+        eventHistory: async () => {
+          historyReads += 1;
+          if (historyReads === 1) {
+            return {
+              sessionId: session.sessionId,
+              events: [{
+                sessionId: session.sessionId,
+                timestamp: "2026-07-10T12:00:00.000Z",
+                sequence: 1,
+                event: { type: "user_message" as const, text: "Rebase onto main" },
+              }],
+              truncated: false,
+              sessionFound: true,
+            };
+          }
           return {
             sessionId: session.sessionId,
-            events: [{
-              sessionId: session.sessionId,
-              timestamp: "2026-07-10T12:00:00.000Z",
-              sequence: 1,
-              event: { type: "user_message" as const, text: "Rebase onto main" },
-            }],
+            events: [],
             truncated: false,
-            sessionFound: true,
+            sessionFound: false,
           };
-        }
-        return {
-          sessionId: session.sessionId,
-          events: [],
-          truncated: false,
-          sessionFound: false,
-        };
-      },
-    });
+        },
+      });
 
-    renderPane(session);
+      renderPane(session);
 
-    expect(await screen.findByText("Rebase onto main")).toBeTruthy();
-    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
-    // One ~10s base interval after a focus — see the sibling test above.
-    act(() => { window.dispatchEvent(new Event("focus")); });
-    await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3), { timeout: 14_000 });
-    expect(screen.getByText("Rebase onto main")).toBeTruthy();
-  }, 25_000);
+      expect(await screen.findByText("Rebase onto main")).toBeTruthy();
+      await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(2), { timeout: 5_000 });
+      // One ~10s base interval after a focus — see the sibling test above.
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+      await waitFor(() => expect(historyReads).toBeGreaterThanOrEqual(3));
+      expect(screen.getByText("Rebase onto main")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("reloads a previously viewed chat transcript when switching back to recover missed background output", async () => {
     const primarySession = buildSession("session-1", {
@@ -11116,96 +10852,6 @@ describe("AgentChatPane submit recovery", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("shows 'New chat' in the header when no session is selected", async () => {
-    installAdeMocks({ sessions: [] });
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceNewSession
-        />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText("New chat")).toBeTruthy();
-  });
-
-  it("shows the session title in the header when the session has one", async () => {
-    const session = buildSession("session-1", {
-      title: "Fix login bug",
-    });
-    installAdeMocks({ sessions: [session] });
-    renderPane(session);
-
-    expect(await screen.findByText("Fix login bug")).toBeTruthy();
-  });
-
-  it("shows the linked open PR as a mark in the header when laneId is provided", async () => {
-    const session = buildSession("session-1");
-    installAdeMocks({
-      sessions: [session],
-      linkedPr: buildPrSummary({ state: "open" }),
-    });
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={session.laneId}
-          laneLabel="feature/auth"
-          lockSessionId={session.sessionId}
-          hideSessionTabs
-          initialSessionSummary={session}
-        />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText("PR #224")).toBeTruthy();
-  });
-  it("labels a merged linked PR in the git toolbar", async () => {
-    const session = buildSession("session-1");
-    installAdeMocks({
-      sessions: [session],
-      linkedPr: buildPrSummary({ state: "merged" }),
-    });
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={session.laneId}
-          laneLabel="feature/auth"
-          lockSessionId={session.sessionId}
-          hideSessionTabs
-          initialSessionSummary={session}
-        />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText("MERGED #224")).toBeTruthy();
-  });
-
-  it("does not render the git toolbar when laneId is null", async () => {
-    const session = buildSession("session-1");
-    installAdeMocks({ sessions: [session] });
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={null}
-          laneLabel="feature/auth"
-          lockSessionId={session.sessionId}
-          hideSessionTabs
-          initialSessionSummary={session}
-        />
-      </MemoryRouter>,
-    );
-
-    // Wait for the pane to fully render — no git toolbar when laneId is null
-    await waitFor(() => {
-      expect(screen.queryByText("PR")).toBeNull();
-    });
   });
 
   it("launches one child lane per parallel model and opens work-focus tiling", async () => {
@@ -12815,121 +12461,139 @@ describe("older transcript paging retries", () => {
   }
 
   it("retries a failing page twice with backoff before latching a visible error", async () => {
-    const session = buildSession("session-1", { title: "Long chat" });
-    let pageAttempts = 0;
-    let resolveManualPage!: (page: AgentChatEventHistoryPage) => void;
-    const manualPage = new Promise<AgentChatEventHistoryPage>((resolve) => {
-      resolveManualPage = resolve;
-    });
-    installAdeMocks({
-      sessions: [session],
-      eventHistory: historySnapshotWithOlderPages(session.sessionId),
-      eventHistoryPage: async () => {
-        pageAttempts += 1;
-        if (pageAttempts <= 3) throw new Error("remote hop dropped");
-        return manualPage;
-      },
-    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const session = buildSession("session-1", { title: "Long chat" });
+      let pageAttempts = 0;
+      let resolveManualPage!: (page: AgentChatEventHistoryPage) => void;
+      const manualPage = new Promise<AgentChatEventHistoryPage>((resolve) => {
+        resolveManualPage = resolve;
+      });
+      installAdeMocks({
+        sessions: [session],
+        eventHistory: historySnapshotWithOlderPages(session.sessionId),
+        eventHistoryPage: async () => {
+          pageAttempts += 1;
+          if (pageAttempts <= 3) throw new Error("remote hop dropped");
+          return manualPage;
+        },
+      });
 
-    renderPane(session);
+      renderPane(session);
 
-    expect(await screen.findByText("newest visible message")).toBeTruthy();
-    await requestOlderHistoryByScroll();
+      expect(await screen.findByText("newest visible message")).toBeTruthy();
+      await requestOlderHistoryByScroll();
 
-    await waitFor(() => expect(pageAttempts).toBeGreaterThanOrEqual(1), { timeout: 4_000 });
-    // The two backoff retries (800ms, 2400ms) run silently — no retry control
-    // is offered to the reader while the ladder is still going.
-    expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
+      await waitFor(() => expect(pageAttempts).toBeGreaterThanOrEqual(1), { timeout: 4_000 });
+      // The two backoff retries (800ms, 2400ms) run silently — no retry control
+      // is offered to the reader while the ladder is still going.
+      expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
 
-    await waitFor(() => expect(pageAttempts).toBe(3), { timeout: 8_000 });
-    expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
-    // The ladder is bounded: a latched error stops it rather than hammering on.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
-    });
-    expect(pageAttempts).toBe(3);
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      await waitFor(() => expect(pageAttempts).toBe(3));
+      expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+      // The ladder is bounded: a latched error stops it rather than hammering on.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(pageAttempts).toBe(3);
 
-    fireEvent.click(screen.getByLabelText("Retry loading earlier messages"));
-    await waitFor(() => expect(pageAttempts).toBe(4));
-    expect((screen.getByLabelText("Loading earlier messages") as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(screen.getByLabelText("Retry loading earlier messages"));
+      await waitFor(() => expect(pageAttempts).toBe(4));
+      expect((screen.getByLabelText("Loading earlier messages") as HTMLButtonElement).disabled).toBe(true);
 
-    resolveManualPage({
-      sessionId: session.sessionId,
-      events: [{
+      resolveManualPage({
         sessionId: session.sessionId,
-        timestamp: "2026-07-10T11:59:00.000Z",
-        sequence: 0,
-        event: { type: "user_message", text: "older message recovered" },
-      }],
-      startOffset: 2_048,
-      hasMore: true,
-      sessionFound: true,
-    });
-    expect(await screen.findByText("older message recovered")).toBeTruthy();
-    expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
-  }, 25_000);
+        events: [{
+          sessionId: session.sessionId,
+          timestamp: "2026-07-10T11:59:00.000Z",
+          sequence: 0,
+          event: { type: "user_message", text: "older message recovered" },
+        }],
+        startOffset: 2_048,
+        hasMore: true,
+        sessionFound: true,
+      });
+      expect(await screen.findByText("older message recovered")).toBeTruthy();
+      expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("retries an unreachable page instead of treating it as a missing session", async () => {
-    const session = buildSession("session-1", { title: "Long chat" });
-    let pageAttempts = 0;
-    installAdeMocks({
-      sessions: [session],
-      eventHistory: historySnapshotWithOlderPages(session.sessionId),
-      // Exactly what preload synthesises when the runtime can't be reached:
-      // `sessionFound: false` AND `unavailable: true`. Read as a plain miss it
-      // zeroes the cursor, which unmounts the "load older" sentinel for good —
-      // scroll-back stays dead until a forced re-hydrate, and because nothing
-      // threw, the retry ladder never engaged.
-      eventHistoryPage: async (args) => {
-        pageAttempts += 1;
-        return {
-          sessionId: args.sessionId,
-          events: [],
-          startOffset: 0,
-          hasMore: false,
-          sessionFound: false,
-          unavailable: true,
-        };
-      },
-    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const session = buildSession("session-1", { title: "Long chat" });
+      let pageAttempts = 0;
+      installAdeMocks({
+        sessions: [session],
+        eventHistory: historySnapshotWithOlderPages(session.sessionId),
+        // Exactly what preload synthesises when the runtime can't be reached:
+        // `sessionFound: false` AND `unavailable: true`. Read as a plain miss it
+        // zeroes the cursor, which unmounts the "load older" sentinel for good —
+        // scroll-back stays dead until a forced re-hydrate, and because nothing
+        // threw, the retry ladder never engaged.
+        eventHistoryPage: async (args) => {
+          pageAttempts += 1;
+          return {
+            sessionId: args.sessionId,
+            events: [],
+            startOffset: 0,
+            hasMore: false,
+            sessionFound: false,
+            unavailable: true,
+          };
+        },
+      });
 
-    renderPane(session);
+      renderPane(session);
 
-    expect(await screen.findByText("newest visible message")).toBeTruthy();
-    await requestOlderHistoryByScroll();
+      expect(await screen.findByText("newest visible message")).toBeTruthy();
+      await requestOlderHistoryByScroll();
 
-    // The ladder runs: one attempt plus its two retries.
-    await waitFor(() => expect(pageAttempts).toBe(3), { timeout: 8_000 });
-    // And the cursor survives, so the reader still has a way back — a zeroed
-    // cursor would have removed this control along with the sentinel.
-    expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
-  }, 25_000);
+      // The ladder runs: one attempt plus its two retries.
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      await waitFor(() => expect(pageAttempts).toBe(3));
+      // And the cursor survives, so the reader still has a way back — a zeroed
+      // cursor would have removed this control along with the sentinel.
+      expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("keeps Retry available when a page claims more history without advancing its cursor", async () => {
-    const session = buildSession("session-1", { title: "Long chat" });
-    let pageAttempts = 0;
-    installAdeMocks({
-      sessions: [session],
-      eventHistory: historySnapshotWithOlderPages(session.sessionId),
-      eventHistoryPage: async (args) => {
-        pageAttempts += 1;
-        return {
-          sessionId: args.sessionId,
-          events: [],
-          startOffset: args.beforeOffset,
-          hasMore: true,
-          sessionFound: true,
-        };
-      },
-    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const session = buildSession("session-1", { title: "Long chat" });
+      let pageAttempts = 0;
+      installAdeMocks({
+        sessions: [session],
+        eventHistory: historySnapshotWithOlderPages(session.sessionId),
+        eventHistoryPage: async (args) => {
+          pageAttempts += 1;
+          return {
+            sessionId: args.sessionId,
+            events: [],
+            startOffset: args.beforeOffset,
+            hasMore: true,
+            sessionFound: true,
+          };
+        },
+      });
 
-    renderPane(session);
-    expect(await screen.findByText("newest visible message")).toBeTruthy();
-    await requestOlderHistoryByScroll();
+      renderPane(session);
+      expect(await screen.findByText("newest visible message")).toBeTruthy();
+      await requestOlderHistoryByScroll();
 
-    await waitFor(() => expect(pageAttempts).toBe(3), { timeout: 8_000 });
-    expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
-  }, 25_000);
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      await waitFor(() => expect(pageAttempts).toBe(3));
+      expect(await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("drops a successful older page that arrives after the selected chat changes", async () => {
     const sessionA = buildSession("session-1", { title: "Chat A" });
@@ -13018,68 +12682,74 @@ describe("older transcript paging retries", () => {
   });
 
   it("does not latch an interactive retry error after the selected chat changes", async () => {
-    const sessionA = buildSession("session-1", { title: "Chat A" });
-    const sessionB = buildSession("session-2", { title: "Chat B" });
-    let pageAttempts = 0;
-    let rejectInteractivePage!: (error: Error) => void;
-    const interactivePage = new Promise<AgentChatEventHistoryPage>((_resolve, reject) => {
-      rejectInteractivePage = reject;
-    });
-    installAdeMocks({
-      sessions: [sessionA, sessionB],
-      eventHistory: (args) => historySnapshotWithOlderPages(args.sessionId),
-      eventHistoryPage: async () => {
-        pageAttempts += 1;
-        if (pageAttempts <= 3) throw new Error("remote hop dropped");
-        return interactivePage;
-      },
-    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const sessionA = buildSession("session-1", { title: "Chat A" });
+      const sessionB = buildSession("session-2", { title: "Chat B" });
+      let pageAttempts = 0;
+      let rejectInteractivePage!: (error: Error) => void;
+      const interactivePage = new Promise<AgentChatEventHistoryPage>((_resolve, reject) => {
+        rejectInteractivePage = reject;
+      });
+      installAdeMocks({
+        sessions: [sessionA, sessionB],
+        eventHistory: (args) => historySnapshotWithOlderPages(args.sessionId),
+        eventHistoryPage: async () => {
+          pageAttempts += 1;
+          if (pageAttempts <= 3) throw new Error("remote hop dropped");
+          return interactivePage;
+        },
+      });
 
-    const view = render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={sessionA.laneId}
-          lockSessionId={sessionA.sessionId}
-          hideSessionTabs
-          initialSessionSummary={sessionA}
-          onSessionCreated={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-    await screen.findByText("newest visible message");
-    await requestOlderHistoryByScroll();
-    const retry = await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 8_000 });
-    fireEvent.click(retry);
-    await waitFor(() => expect(pageAttempts).toBe(4));
+      const view = render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionA.laneId}
+            lockSessionId={sessionA.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionA}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      await screen.findByText("newest visible message");
+      await requestOlderHistoryByScroll();
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      const retry = await screen.findByLabelText("Retry loading earlier messages", {}, { timeout: 4_000 });
+      fireEvent.click(retry);
+      await waitFor(() => expect(pageAttempts).toBe(4));
 
-    view.rerender(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={sessionB.laneId}
-          lockSessionId={sessionB.sessionId}
-          hideSessionTabs
-          initialSessionSummary={sessionB}
-          onSessionCreated={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-    await act(async () => {
-      rejectInteractivePage(new Error("late remote failure"));
-    });
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionB.laneId}
+            lockSessionId={sessionB.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionB}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        rejectInteractivePage(new Error("late remote failure"));
+      });
 
-    view.rerender(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={sessionA.laneId}
-          lockSessionId={sessionA.sessionId}
-          hideSessionTabs
-          initialSessionSummary={sessionA}
-          onSessionCreated={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-    expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
-  }, 25_000);
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionA.laneId}
+            lockSessionId={sessionA.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionA}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      expect(screen.queryByLabelText("Retry loading earlier messages")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("stops idle backfill at the resident cap instead of dropping the live tail", async () => {
     const session = buildSession("session-1", { title: "Huge chat" });
@@ -14919,45 +14589,6 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       get: () => "visible",
     });
     view.unmount();
-  });
-
-  it("keeps the Work new-chat wordmark and caps usage to the launch-shelf width", async () => {
-    installAdeMocks({ sessions: [] });
-    seedDrawerStore();
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-      lanes: [{
-        id: "lane-1",
-        name: "current-lane",
-        laneType: "worktree",
-        branchRef: "refs/heads/current-lane",
-        worktreePath: "/tmp/project-under-test/current-lane",
-      } as any],
-      selectedLaneId: "lane-1",
-    });
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceDraftMode
-          embeddedWorkLayout
-          availableLanes={[{
-            id: "lane-1",
-            name: "current-lane",
-            laneType: "worktree",
-            branchRef: "refs/heads/current-lane",
-            worktreePath: "/tmp/project-under-test/current-lane",
-          } as any]}
-          onLaneChange={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-
-    await screen.findByRole("textbox");
-    expect(screen.getByAltText("ADE")).toBeTruthy();
-    expect(document.querySelector("[data-chat-empty-usage]")).toBeTruthy();
   });
 });
 

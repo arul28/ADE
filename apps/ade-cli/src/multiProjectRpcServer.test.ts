@@ -36,6 +36,8 @@ import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtoco
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { JsonRpcErrorCode } from "./jsonrpc";
+import { MACHINE_SCOPE_PROJECT_ID } from "../../desktop/src/shared/machineScope";
+import { AGENT_REMOTE_CLIENT_NAME } from "../../desktop/src/shared/runtimeClientNames";
 import { buildMachineAccountDomainServices } from "../../desktop/src/main/services/adeActions/registry";
 
 const originalAdeHome = process.env.ADE_HOME;
@@ -1730,6 +1732,65 @@ describe("multi-project RPC server", () => {
     expect(providerStatus.status).toHaveBeenLastCalledWith({ refresh: true });
 
     handler.dispose();
+  });
+
+  it("answers a computer's own settings on the machine scope, and nothing a project owns", async () => {
+    const { registry } = createRegistry();
+    const machineRuntime = makeRuntime("machine");
+    const scopeRegistry = {
+      get: vi.fn(async () => { throw new Error("a machine-scope call must not open a project"); }),
+      getIfBooted: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({ version: 1 as const, actions: [] })),
+      call: vi.fn(async () => { throw new Error("not a personal chat call"); }),
+      streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false, eventEpoch: "e", gap: false, oldestCursor: null })),
+      dispose: vi.fn(async () => undefined),
+      runtimeForDelivery: vi.fn(async () => machineRuntime as never),
+    };
+    const makeHandler = async (clientName: string) => {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        scopeRegistry,
+        personalChatScope,
+      });
+      const init = await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { clientInfo: { name: clientName } } });
+      return { handler, init };
+    };
+    const action = (domain: string, name: string) => ({
+      jsonrpc: "2.0" as const,
+      id: 2,
+      method: "ade/actions/call",
+      params: { projectId: MACHINE_SCOPE_PROJECT_ID, name: "run_ade_action", arguments: { domain, action: name, args: {} } },
+    });
+
+    const { handler, init } = await makeHandler("ade-desktop");
+    expect(init).toMatchObject({ capabilities: { machineScope: true } });
+    await expect(handler(action("lane", "list"))).resolves.toMatchObject({ result: [{ id: "machine-lane" }] });
+    expect(machineRuntime.laneService.list).toHaveBeenCalledTimes(1);
+
+    for (const [domain, name] of [["lane", "create"], ["ai", "updateConfig"], ["chat", "send"], ["git", "status"]] as const) {
+      await expect(handler(action(domain, name))).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    }
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "ade/actions/call",
+      params: { projectId: MACHINE_SCOPE_PROJECT_ID, name: "list_lanes", arguments: {} },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    // Another machine's agents act through a project they were given, never
+    // through this computer's settings.
+    const agent = await makeHandler(AGENT_REMOTE_CLIENT_NAME);
+    await expect(agent.handler(action("lane", "list"))).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidRequest });
+
+    expect(machineRuntime.laneService.list).toHaveBeenCalledTimes(1);
+    expect(scopeRegistry.get).not.toHaveBeenCalled();
+    handler.dispose();
+    agent.handler.dispose();
   });
 
   it("exposes machine personal chats without a project id", async () => {

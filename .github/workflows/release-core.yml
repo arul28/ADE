@@ -218,10 +218,13 @@ jobs:
     env:
       ADE_RUNTIME_TARGET: darwin-${{ matrix.arch }}
     steps:
+      # One commit is enough: nothing in this job reads git history. The
+      # release notes step fetches main on its own, and the verify job, which
+      # does need history, keeps the full clone.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-node@v4
         with:
@@ -256,32 +259,26 @@ jobs:
       # The transcribe.cpp binary and the five Swift helpers are universal and
       # depend only on their own sources, yet compiling them took 16 minutes of
       # every release. warm-release-caches.yml builds them on main; a release
-      # restores them here and builds from source only on a miss.
+      # restores them here, from the cache or else from that workflow's
+      # artifact, and builds from source only when both miss or the
+      # attestation check in .github/actions/restore-release-build rejects
+      # what they hold.
       - name: Resolve release cache keys
         id: cache-keys
         uses: ./.github/actions/release-cache-keys
 
       - name: Restore transcribe-cli
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: apps/desktop/resources/whisper/transcribe-cli
           key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+          paths: apps/desktop/resources/whisper/transcribe-cli
 
       - name: Restore native helpers
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
           key: ${{ steps.cache-keys.outputs.native-helpers }}
-
-      - name: Verify cached native builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          scripts/verify-cached-release-builds.sh - apps/desktop/resources/whisper/transcribe-cli
-          # One path per line, none with spaces; split them into arguments.
-          # shellcheck disable=SC2086
-          scripts/verify-cached-release-builds.sh ADE_NATIVE_HELPERS_CACHED $HELPER_PATHS
+          paths: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          flag: ADE_NATIVE_HELPERS_CACHED
 
       # Only this job's own target. Downloading every ade-runtime-* artifact is
       # what let foreign-platform payloads into the bundle in the first place.
@@ -458,6 +455,20 @@ jobs:
       - name: Enforce macOS update artifact size budget
         run: cd apps/desktop && npm run assert:artifact-size
 
+      # smoke-mac-x64 runs the same validator, which reads the list of bundled
+      # CLI files from the CLI build output. These are the files this build
+      # packaged, so the smoke does not install and build the CLI again.
+      # Never fails the build: without it, the smoke builds the CLI itself.
+      - name: Upload the packaged ADE CLI files for the x64 smoke
+        if: ${{ matrix.arch == 'x64' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-cli-dist-${{ inputs.release_tag }}-x64
+          path: apps/ade-cli/dist/*.cjs
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Rename per-arch updater manifest
         run: cd apps/desktop && mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
 
@@ -522,10 +533,11 @@ jobs:
       ADE_RELEASE_REPOSITORY: ${{ github.repository }}
       ADE_RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
+      # One commit; see build-mac-release.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -634,10 +646,11 @@ jobs:
     env:
       ADE_RUNTIME_TARGET: win32-x64
     steps:
+      # One commit; see build-mac-release.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-node@v4
         with:
@@ -690,16 +703,10 @@ jobs:
         uses: ./.github/actions/release-cache-keys
 
       - name: Restore transcribe-cli
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: apps/desktop/resources/whisper/transcribe-cli.exe
           key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
-
-      - name: Verify cached transcribe-cli
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/verify-cached-release-builds.sh - apps/desktop/resources/whisper/transcribe-cli.exe
+          paths: apps/desktop/resources/whisper/transcribe-cli.exe
 
       - name: Wait for the win32-x64 runtime binary
         shell: bash
@@ -1010,10 +1017,11 @@ jobs:
       group: release-${{ inputs.release_tag }}-runtime-${{ matrix.target }}
       cancel-in-progress: true
     steps:
+      # One commit; see build-mac-release.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: actions/setup-node@v4
         with:
@@ -1113,18 +1121,11 @@ jobs:
         uses: ./.github/actions/release-cache-keys
       - name: Restore native helpers
         if: ${{ startsWith(matrix.target, 'darwin-') }}
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
           key: ${{ steps.cache-keys.outputs.native-helpers }}
-      - name: Verify cached native helpers
-        if: ${{ startsWith(matrix.target, 'darwin-') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          # shellcheck disable=SC2086
-          scripts/verify-cached-release-builds.sh ADE_NATIVE_HELPERS_CACHED $HELPER_PATHS
+          paths: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          flag: ADE_NATIVE_HELPERS_CACHED
       - name: Build the brain's macOS helpers
         if: ${{ startsWith(matrix.target, 'darwin-') }}
         shell: bash
@@ -1307,6 +1308,8 @@ jobs:
     # exact zip that will be published. It installs only what the validator
     # imports, so it adds a few minutes after the x64 build. It starts after
     # that build rather than waiting on a macOS runner; see build-mac-release.
+    # The CLI files the validator lists come from that build (the
+    # ade-cli-dist artifact), not from a second CLI install and build here.
     needs: build-mac-release
     runs-on: macos-15-intel
     env:
@@ -1350,9 +1353,20 @@ jobs:
           asar="$(node -p 'require("./package-lock.json").packages["node_modules/@electron/asar"].version')"
           npm install --prefix "$GITHUB_WORKSPACE/apps" --no-save --no-package-lock --no-audit --no-fund --ignore-scripts "@electron/asar@$asar"
 
-      # The validator compares the bundled ADE CLI against the CLI built from
-      # this commit, so build it the same way the release job does.
+      # The validator reads which CLI files the app must bundle from the CLI
+      # build output (packaged-ade-cli-resources.cjs). The x64 build job
+      # uploads the exact files it packaged. Without that artifact, build the
+      # CLI from this commit the way the release job does.
+      - name: Download the packaged ADE CLI files
+        id: cli_dist
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ade-cli-dist-${{ inputs.release_tag }}-x64
+          path: apps/ade-cli/dist
+
       - name: Build the ADE CLI
+        if: ${{ steps.cli_dist.outcome != 'success' }}
         run: |
           cd apps/ade-cli && npm ci
           cd ../desktop && npm run ade:build

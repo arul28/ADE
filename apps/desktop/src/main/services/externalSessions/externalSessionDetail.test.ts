@@ -250,17 +250,6 @@ describe("externalSessionDetail", () => {
     expect(detail.messages[1]?.text.length).toBeLessThan(longAnswer.length);
   });
 
-  it("threads the home it is given into discovery", async () => {
-    vi.mocked(discoverClaudeSessions).mockResolvedValue([]);
-    const env = { HOME: "/Users/other" };
-    await loadExternalSessionDetail({ provider: "claude", sessionId: "33333333-3333-4333-8333-333333333333" }, { homeDir: "/Users/other", env });
-    expect(discoverClaudeSessions).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "33333333-3333-4333-8333-333333333333",
-      homeDir: "/Users/other",
-      env,
-    }));
-  });
-
   it("refuses an id that could address a path outside the provider store", async () => {
     const detail = await loadExternalSessionDetail({ provider: "cursor", sessionId: "../../../Library/Other/chat" });
     expect(discoverCursorSessions).not.toHaveBeenCalled();

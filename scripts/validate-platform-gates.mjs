@@ -477,6 +477,43 @@ export function parseCiWorkflow(yamlText) {
   return jobs;
 }
 
+/**
+ * A matrix job whose steps run by `if: matrix.group == '<name>'`
+ * (windows-foundation) passes green while it tests nothing when a condition
+ * names a group that the matrix does not list, or a listed group has no step.
+ * Returns one message for each such problem. Reads the two-space job headers
+ * of ci.yml and ignores comment lines.
+ */
+function matrixGroupProblems(yamlText) {
+  const lines = yamlText.split(/\r?\n/).filter((line) => !line.trim().startsWith("#"));
+  const jobsAt = lines.findIndex((line) => /^jobs:\s*$/.test(line));
+  if (jobsAt < 0) return [];
+  const blocks = [];
+  for (const line of lines.slice(jobsAt + 1)) {
+    const header = /^ {2}([A-Za-z0-9_.-]+):\s*$/.exec(line);
+    if (header) blocks.push({ job: header[1], text: [] });
+    else blocks.at(-1)?.text.push(line);
+  }
+  const problems = [];
+  for (const { job, text } of blocks) {
+    const body = text.join("\n");
+    const used = new Set([...body.matchAll(/matrix\.group\s*==\s*'([^']*)'/g)].map((match) => match[1]));
+    const listed = /^\s+group:\s*\[([^\]]*)\]\s*$/m.exec(body);
+    if (!listed) {
+      if (used.size > 0) problems.push(`${job}: steps test matrix.group, but the job lists no matrix groups`);
+      continue;
+    }
+    const groups = listed[1].split(",").map((name) => name.trim().replace(/^["'](.*)["']$/, "$1")).filter(Boolean);
+    for (const name of used) {
+      if (!groups.includes(name)) problems.push(`${job}: a step runs only for group '${name}', which the matrix does not list`);
+    }
+    for (const name of groups) {
+      if (!used.has(name)) problems.push(`${job}: matrix group '${name}' has no step that runs for it`);
+    }
+  }
+  return problems;
+}
+
 /** Maps a GitHub `runs-on` label onto the `process.platform` it reports. */
 export function runnerPlatform(runsOnLabel) {
   const label = runsOnLabel.toLowerCase();
@@ -772,8 +809,17 @@ async function main(argv) {
 
   const { gates, scannedFiles } = await buildRegistry();
   const workflowPath = path.join(repoRoot, ".github", "workflows", "ci.yml");
-  const jobs = parseCiWorkflow(await fs.readFile(workflowPath, "utf8"));
+  const workflowText = await fs.readFile(workflowPath, "utf8");
+  const jobs = parseCiWorkflow(workflowText);
   const coverage = coverageByPlatform(jobs);
+
+  // A step that never runs for any group would still count as coverage below.
+  const groupProblems = matrixGroupProblems(workflowText);
+  if (groupProblems.length > 0) {
+    console.error("Matrix group validation failed:");
+    for (const problem of groupProblems) console.error(`- .github/workflows/ci.yml: ${problem}`);
+    process.exit(1);
+  }
 
   if (wantsRegistry) {
     console.log(

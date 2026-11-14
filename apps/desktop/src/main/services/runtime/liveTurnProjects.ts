@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { RESTART_RESUME_MAX_AGE_MS } from "../../../shared/chatAutoResume";
 import { captureError } from "../../../shared/sentry/capture";
+import { fileRecordTimeMs, recordWriterGone } from "../processes/processStartTime";
 import {
   neutralizeCliSessionsToReopen,
   recordCliSessionsToReopen,
@@ -532,7 +533,11 @@ function keepNothingForGood(state: Holder, nowMs: number): PlannedBrainStopSumma
   };
   for (const [root, source] of state.plannedCliSources) {
     try {
-      recordCliSessionsToReopen(root, source().map((entry) => ({ sessionId: entry.sessionId, midTurn: false })));
+      recordCliSessionsToReopen(root, source().map((entry) => ({
+        sessionId: entry.sessionId,
+        midTurn: false,
+        stoppedForGood: true as const,
+      })));
       state.plannedRecordedRoots.add(root);
     } catch {
       // The teardown writes the list as before, with its continues; this
@@ -734,7 +739,11 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
     // The process that may still act on the file: its reader, else its
     // writer. A planned stop's record is final, so only a reader counts.
     const actor = match[4] != null ? Number(match[4]) : stopped ? null : Number(match[1]);
-    if (actor != null && (actor === process.pid || pidRuns(actor))) continue;
+    // A running pid whose process started after the file was written (or
+    // claimed) is another process with a reused id, and a file under this
+    // brain's own pid from before it started is an earlier run's
+    // (`recordWriterGone`).
+    if (actor != null && !recordWriterGone(actor, fileRecordTimeMs(path.join(dir, name)), pidRuns)) continue;
     if (match[3]) {
       // A half-written file: its writer is gone (or, for a planned stop,
       // finished writing another way). Only a dead writer's goes.

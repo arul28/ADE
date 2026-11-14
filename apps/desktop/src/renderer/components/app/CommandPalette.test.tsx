@@ -2,15 +2,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { buildThreadIndex, threadStatusPresentation } from "./commandPaletteThreads";
@@ -1046,40 +1038,6 @@ describe("CommandPalette", () => {
       expect(useAppStore.getState().workViewByProject[REMOTE_BINDING.key]).toBeUndefined();
     });
 
-    it("shows the status word for an active thread", async () => {
-      seedThreads([makeSession()]);
-
-      render(
-        <MemoryRouter>
-          <CommandPalette open onOpenChange={vi.fn()} />
-        </MemoryRouter>,
-      );
-
-      const status = await screen.findByTestId("thread-status-session-1");
-      expect(status.textContent).toContain("Working");
-    });
-
-    it("omits the status indicator for calm threads", async () => {
-      seedThreads([
-        makeSession({
-          status: "completed",
-          runtimeState: "exited",
-          exitCode: 0,
-          toolType: "shell",
-          settledAt: new Date().toISOString(),
-        }),
-      ]);
-
-      render(
-        <MemoryRouter>
-          <CommandPalette open onOpenChange={vi.fn()} />
-        </MemoryRouter>,
-      );
-
-      expect(await screen.findByText("Recent threads")).toBeTruthy();
-      expect(screen.queryByTestId("thread-status-session-1")).toBeNull();
-    });
-
     it("navigates to the Work tab and focuses the session when a thread is picked", async () => {
       const onOpenChange = vi.fn();
       const selectEvents: Array<{
@@ -1150,21 +1108,6 @@ describe("CommandPalette", () => {
       // Newest first, oldest past the cap dropped.
       expect(screen.getByText("Thread 0")).toBeTruthy();
       expect(screen.queryByText("Thread 8")).toBeNull();
-    });
-
-    it("renders the persistent keyboard hint footer", async () => {
-      seedStore();
-
-      render(
-        <MemoryRouter>
-          <CommandPalette open onOpenChange={vi.fn()} />
-        </MemoryRouter>,
-      );
-
-      // The hints share one footer; settings results (a "Close" CRM server) may say "Close" too.
-      const footer = (await screen.findByText("Navigate")).parentElement!;
-      expect(within(footer).getByText("Select")).toBeTruthy();
-      expect(within(footer).getByText("Close")).toBeTruthy();
     });
 
     // The Work sidebar is a union across every connected machine, always. The

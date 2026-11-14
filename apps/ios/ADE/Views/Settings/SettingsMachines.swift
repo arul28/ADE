@@ -199,7 +199,7 @@ func settingsMachines(
     let detail = [route, power].compactMap { $0 }.joined(separator: " · ")
     result.append(SettingsMachine(
       id: "account-\(machine.machineKey)",
-      name: machine.rowLabel,
+      name: CloudLaneComputerLabels.label(machineKey: machine.machineKey, hostName: machine.name) ?? machine.rowLabel,
       symbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
       machineKey: key,
       account: machine,
@@ -211,7 +211,7 @@ func settingsMachines(
       detail: detail.isEmpty ? nil : detail,
       projects: projects(for: key),
       appVersion: appVersion(for: key, identity: identity),
-      computerName: machine.installLabel == nil ? nil : machine.rowComputerName,
+      computerName: machine.installLabel == nil ? nil : CloudLaneComputerLabels.label(machineKey: machine.machineKey, hostName: machine.name) ?? machine.rowComputerName,
       install: machine.installLabel
     ))
   }

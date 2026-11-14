@@ -21,7 +21,7 @@ import {
   writePersistedChatState,
 } from "./agentChatService.testHarness";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createDraft } from "./draftService";
 import { noteProviderModelsChanged } from "../ai/providerLoginChanged";
 
@@ -622,7 +622,7 @@ describe("acp chat runtime", () => {
     ["a guest's draft that the owner sends", "ownerSendsGuestDraft"],
   ] as const)("queues %s made while a Grok turn runs, and runs it next", async (_label, route) => {
     const db = route === "ownerSendsGuestDraft"
-      ? await openKvDb(path.join(tmpRoot, "guest-draft.db"), { debug() {}, info() {}, warn() {}, error() {} } as never)
+      ? await openFreshKvDb(path.join(tmpRoot, "guest-draft.db"), { debug() {}, info() {}, warn() {}, error() {} } as never)
       : null;
     const harness = await openAcpHarness({ provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6", ...(db ? { db } : {}) });
     if (db) acpTeardown.push(() => db.close());

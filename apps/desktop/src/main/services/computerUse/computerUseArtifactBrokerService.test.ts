@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createComputerUseArtifactBrokerService, resolveTempImportRoots } from "./computerUseArtifactBrokerService";
 import { createHash } from "node:crypto";
 import { isIsoMediaExtension, readMp4CreationTime, readMp4CreationTimeFromFile } from "./mediaCreationTime";
@@ -29,7 +30,7 @@ describe("computerUseArtifactBrokerService", () => {
 
   beforeEach(async () => {
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-computer-use-broker-"));
-    db = await openKvDb(path.join(projectRoot, ".ade.db"), createLogger());
+    db = await openFreshKvDb(path.join(projectRoot, ".ade.db"), createLogger());
     db.run(
       `
         insert into projects(
@@ -1597,7 +1598,7 @@ describe("proof provenance", () => {
 
     beforeEach(async () => {
       projectRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-provenance-")));
-      db = await openKvDb(path.join(projectRoot, ".ade.db"), createLogger());
+      db = await openFreshKvDb(path.join(projectRoot, ".ade.db"), createLogger());
       db.run(
         `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
          values (?, ?, ?, ?, ?, ?)`,

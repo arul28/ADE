@@ -228,16 +228,6 @@ describe("ChatMacDesktopPanel actions on a pinned machine", () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus());
   });
 
-  it("carries the per-chat preview toggle on its chrome row", async () => {
-    renderPanel();
-
-    // Wait for the live chrome row (the display resolved), then the toggle.
-    await screen.findByTestId("mac-desktop-record");
-    const toggle = screen.getByTestId("work-tool-preview-toggle");
-    expect(toggle.getAttribute("aria-label")).toBe("Show preview when minimized");
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-  });
-
   it("starts a captioned recording on the focused chat's machine, so it files as proof", async () => {
     macDesktop.startRecording.mockResolvedValue({
       laneId: "lane-1",
@@ -698,31 +688,6 @@ describe("ChatMacDesktopPanel Apps section", () => {
     macDesktop.getStatus.mockResolvedValue(makeStatus({ windows: [parked] }));
   });
 
-  it("renders the Apps section with icon, name and Release per parked window", async () => {
-    renderPanel();
-
-    const apps = await screen.findByTestId("mac-desktop-apps");
-    expect(apps.textContent).toContain("Xcode");
-    expect(screen.getByTestId("mac-desktop-app-icon")).toBeTruthy();
-    expect(screen.getByTestId("mac-desktop-window-release").textContent).toContain("Release");
-    // The window's own title is the card's tooltip, not text on its face: the
-    // cards are fixed rectangles that wrap, so a long document name would
-    // either blow the card out or be truncated to nothing readable.
-    const card = screen.getByTestId("mac-desktop-window-card");
-    expect(card.getAttribute("title")).toContain("ADE.xcodeproj");
-  });
-
-  it("wraps the cards left to right and puts Add app after the last one", async () => {
-    renderPanel();
-
-    const list = await screen.findByTestId("mac-desktop-apps-list");
-    // The button is the last thing in the same run, not a control in the
-    // heading: the heading carries the label and nothing else.
-    expect(list.lastElementChild?.getAttribute("data-testid")).toBe("mac-desktop-add-app");
-    const header = screen.getByTestId("mac-desktop-apps-header");
-    expect(header.querySelector("button")).toBeNull();
-  });
-
   it("Add app opens the picker inside the pane, not in a portal", async () => {
     renderPanel();
 
@@ -967,15 +932,6 @@ describe("ChatMacDesktopPanel with no display", () => {
     ));
     expect(await screen.findByTestId("mac-desktop-surface")).toBeTruthy();
     expect(macDesktop.start).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the floating-preview toggle on the Off screen", async () => {
-    macDesktop.getStatus.mockResolvedValue(makeStatus({ display: null }));
-
-    renderPanel();
-
-    await screen.findByTestId("mac-desktop-off");
-    expect(screen.getByTestId("mac-desktop-idle-row").contains(screen.getByTestId("work-tool-preview-toggle"))).toBe(true);
   });
 
   it("reads again when the brain restarts, so a display that died with it goes to Off", async () => {

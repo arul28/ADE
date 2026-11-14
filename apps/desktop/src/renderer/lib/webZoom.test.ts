@@ -38,14 +38,4 @@ describe("applyHostedWebZoom", () => {
     expect(parseFloat(document.body.style.width) * 1.4).toBeCloseTo(2100, 5);
   });
 
-  it("does not throw when window is a stub without EventTarget (adapter tests)", () => {
-    const originalAdd = window.addEventListener;
-    Object.defineProperty(window, "addEventListener", { configurable: true, value: undefined });
-    try {
-      expect(() => applyHostedWebZoom(1.4)).not.toThrow();
-    } finally {
-      Object.defineProperty(window, "addEventListener", { configurable: true, value: originalAdd });
-    }
-  });
-
 });

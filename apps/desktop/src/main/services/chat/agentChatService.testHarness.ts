@@ -22,7 +22,6 @@ import type * as AcpHostModule from "./acpHost";
 import type * as TurnUsageReconcilersModule from "../usage/turnUsageReconcilers";
 import type * as PiSdkPoolModule from "./piSdkPool";
 import type * as PiInstallationModule from "../ai/piInstallation";
-import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "../cto/ctoStateService";
 import { createCtoMemoryService } from "../cto/ctoMemoryService";
 import {
@@ -229,6 +228,8 @@ const mockState = vi.hoisted(() => ({
   piInstallation: null as null | Record<string, unknown>,
   cursorSendPromptGate: null as Promise<void> | null,
   cursorSendPromptError: null as unknown,
+  /** How many sends have thrown `cursorSendPromptError`. */
+  cursorSendPromptErrorThrows: 0,
   cursorSendPromptResult: null as unknown,
   onCursorSendPrompt: null as ((pooled: any) => void) | null,
   cursorAcquireErrorOnCall: null as number | null,
@@ -951,7 +952,12 @@ vi.mock("./cursorSdkPool", () => ({
         }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
-        if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
+        // Only this test's sends fail: a send leaked by an earlier test that
+        // read it would recycle too and take an acquire slot this test armed.
+        if (mockState.cursorSendPromptError && acquiredGeneration === mockState.generation) {
+          mockState.cursorSendPromptErrorThrows += 1;
+          throw mockState.cursorSendPromptError;
+        }
         if (mockState.cursorSendPromptResult) return mockState.cursorSendPromptResult;
         return { id: "cursor-sdk-run-1", status: "finished" };
       }),
@@ -2316,6 +2322,7 @@ beforeEach(() => {
   mockState.cursorSendParks = [];
   mockState.cursorSendPromptGate = null;
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptErrorThrows = 0;
   mockState.cursorSendPromptResult = null;
   mockState.onCursorSendPrompt = null;
   mockState.cursorAcquireErrorOnCall = null;
@@ -2384,6 +2391,7 @@ afterEach(async () => {
   // next test (the recycle-copy cancel notice becomes "turn failed").
   vi.useRealTimers();
   mockState.cursorSendPromptError = null;
+  mockState.cursorSendPromptErrorThrows = 0;
   mockState.cursorSteerError = null;
   mockState.cursorSteerOutcome = "complete_delivered";
   mockState.releaseCursorSendPrompt?.();
@@ -2514,7 +2522,6 @@ export {
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openKvDb,
   os,
   parkCursorSend,
   parseAgentChatTranscript,

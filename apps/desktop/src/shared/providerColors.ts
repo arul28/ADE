@@ -4,7 +4,7 @@
  * Keep role-specific colors together here: usage bars need a light/dark pair,
  * picker badges need one token, and model descriptors have a few provider
  * variants. Consumers should select a value from this table rather than grow a
- * second hex map that can drift from the iOS mirror.
+ * second hex map that can drift from it.
  */
 export type ProviderColorPair = { light: string; dark: string };
 
@@ -147,25 +147,6 @@ export const PROVIDER_COLOR_TABLE = {
       fallback: "#71717A",
     },
   },
-  ios: {
-    claude: "#D97757",
-    codex: "#2DD4BF",
-    pi: "#F97316",
-    muse: "#4A9BFF",
-    cursor: "#93A6C4",
-    opencode: "#A78BFA",
-    google: "#5B93F5",
-    mistral: "#FF7A1A",
-    deepseek: "#6C86FF",
-    xai: "#B4B4BD",
-    groq: "#06B6D4",
-    cto: "#C4B5FD",
-    qwen: "#6D4AFF",
-    kimi: "#1F1F1F",
-    copilot: "#3FB950",
-    devin: "#A1A1AA",
-    antigravity: "#3186FF",
-  },
   defaults: {
     badge: "#A78BFA",
     emptyOpenCodeBadge: "#6B7280",
@@ -181,6 +162,5 @@ export const LOCAL_PROVIDER_MODEL_COLORS = PROVIDER_COLOR_TABLE.localModel;
 export const OPENCODE_PROVIDER_MODEL_COLORS: Record<string, string> = PROVIDER_COLOR_TABLE.openCodeProvider;
 export const ACP_PROVIDER_MODEL_COLORS = PROVIDER_COLOR_TABLE.acp;
 export const DYNAMIC_MODEL_COLORS = PROVIDER_COLOR_TABLE.dynamic;
-export const PROVIDER_IOS_COLORS = PROVIDER_COLOR_TABLE.ios;
 export const PROVIDER_BADGE_FALLBACK_COLOR = PROVIDER_COLOR_TABLE.defaults.badge;
 export const EMPTY_OPENCODE_BADGE_FALLBACK_COLOR = PROVIDER_COLOR_TABLE.defaults.emptyOpenCodeBadge;

@@ -114,6 +114,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import { isMachineScopePin } from "../shared/machineScope";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -2629,6 +2630,9 @@ const PASSWORDS_THIS_COMPUTER_ACTIONS = new Set(["saveLogin", "saveSecret", "imp
 
 async function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   const local = (name: string, input: Record<string, unknown>) => ipcRenderer.invoke(IPC.passwordsCall, { action: name, args: { ...input } }) as Promise<T>;
+  // This computer's machine route (Settings from a window whose project has
+  // no copy here): its brain answers with no project, never the tab's machine.
+  if (pin?.kind === "local" && isMachineScopePin(pin)) return await local(action, args);
   if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
     return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
   }
