@@ -10,8 +10,7 @@ import {
   type LaneInspectorTab,
 } from "../../state/appStore";
 import { isTypingTarget } from "../../lib/typingTarget";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
-import { extractError } from "../../lib/format";
+import { machineErrorText } from "../../lib/machineErrorText";
 import { COLORS, primaryButton } from "./laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
@@ -779,7 +778,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           }
         })
         .catch((err) => {
-          setLaneActionError({ message: `Lane was deleted, but refresh failed: ${extractError(err)}`, kind: "failure" });
+          setLaneActionError({ message: `Lane was deleted, but refresh failed: ${machineErrorText(err)}`, kind: "failure" });
         });
     }, LANE_DELETE_REFRESH_DEBOUNCE_MS);
   }, [refreshLanes]);
@@ -1174,7 +1173,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       .then((result) => {
         if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
       })
-      .catch((error: unknown) => showRefusal(stripElectronErrorWrapper(extractError(error))));
+      .catch((error: unknown) => showRefusal(machineErrorText(error)));
   }, [foreignRowByKeyRef]);
 
   // The overview's "…" button opens the same menu, just under the button.
@@ -1263,7 +1262,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setManageOpen(false);
       return true;
     } catch (err) {
-      setLaneActionError({ message: extractError(err), kind: "failure" });
+      setLaneActionError({ message: machineErrorText(err), kind: "failure" });
       return false;
     } finally {
       setLaneActionBusy(false);
@@ -1293,7 +1292,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           await window.ade.lanes.archive({ laneId: target.laneId }, target.pin);
           if (target.machineId && target.pin) touchedMachineIds.add(target.machineId);
         } catch (err) {
-          errors.push(`${lane.name}: ${extractError(err)}`);
+          errors.push(`${lane.name}: ${machineErrorText(err)}`);
         }
       }
       for (const machineId of touchedMachineIds) requestCrossMachineLanesForMachine(machineId);
@@ -1480,7 +1479,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       results.forEach((result) => {
         if (result.status === "fulfilled") return;
         const lane = result.lane;
-        errors.push(`${lane.name}: ${stripElectronErrorWrapper(extractError(result.reason))}`);
+        errors.push(`${lane.name}: ${machineErrorText(result.reason)}`);
         setDeleteProgressByLaneId((prev) => {
           const next = { ...prev };
           delete next[lane.id];
@@ -2078,7 +2077,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       return true;
     } catch (err) {
-      setLaneActionError({ message: extractError(err), kind: "failure" });
+      setLaneActionError({ message: machineErrorText(err), kind: "failure" });
       return false;
     } finally {
       setLaneActionBusy(false);
@@ -2153,7 +2152,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         }
         showToast({
           title: `Could not delete ${target.lane.name}`,
-          message: stripElectronErrorWrapper(extractError(error)),
+          message: machineErrorText(error),
           tone: "error",
           durationMs: 0,
         });

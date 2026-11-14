@@ -19,7 +19,7 @@ import {
   type SnoozeDurationKey,
 } from "../../lib/sessionSnooze";
 import { isAdeAvailable } from "../../lib/adeAvailability";
-import { extractError, ipcErrorMessage } from "../../lib/format";
+import { machineErrorText } from "../../lib/machineErrorText";
 import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
@@ -64,7 +64,7 @@ function reportFailure(action: string, sessionId: string, error: unknown, retry?
     // A retry that fails again replaces this toast instead of stacking a second.
     id: `session-lifecycle-failed:${action}:${sessionId}`,
     title: `${action} failed`,
-    message: ipcErrorMessage(error) || extractError(error),
+    message: machineErrorText(error),
     tone: "error",
     ...(retry ? { actions: [{ label: "Try again", onClick: retry }] } : {}),
   });

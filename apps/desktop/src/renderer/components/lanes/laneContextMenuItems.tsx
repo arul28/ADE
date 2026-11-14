@@ -41,6 +41,7 @@ import { branchNameProblem } from "../../../shared/laneBranchName";
 import { captureLaneSetupAnalytics } from "../../lib/laneSetupAnalytics";
 import type { LaneMenuShareArgs } from "../laneShare/useLaneShareMenu";
 import { requirePin } from "../../state/repositoryScope";
+import { machineErrorText } from "../../lib/machineErrorText";
 
 export function LaneMenuGlyph({ icon: Icon }: { icon: Icon }) {
   return (
@@ -524,8 +525,6 @@ async function renameLaneBranch(
   runtimePin: OpenProjectBinding | null,
   onRenamed?: () => void | Promise<void>,
 ): Promise<void> {
-  const errorText = (error: unknown) =>
-    (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
   try {
     const check = await window.ade.lanes.renameBranch({ laneId: lane.id, dryRun: true }, requirePin(runtimePin, "No computer with this lane is online."));
     if (check.blocked) {
@@ -555,7 +554,7 @@ async function renameLaneBranch(
     captureLaneSetupAnalytics({ action: "branch_renamed", outcome: "completed" });
     await onRenamed?.();
   } catch (error) {
-    showToast({ title: "Couldn't rename the branch", message: errorText(error), tone: "error" });
+    showToast({ title: "Couldn't rename the branch", message: machineErrorText(error), tone: "error" });
   }
 }
 
@@ -598,7 +597,7 @@ export function ColorSwatchRow({
       await window.ade.lanes.updateAppearance({ laneId: ctxLane.id, color: next }, requirePin(runtimePin, "No computer with this lane is online."));
       await onChanged?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to set color");
+      setError(machineErrorText(err) || "Failed to set color");
     } finally {
       setBusy(false);
     }
@@ -651,7 +650,7 @@ function LaneEmojiRow({
     } catch (err) {
       showToast({
         title: "Could not set the lane emoji",
-        message: err instanceof Error ? err.message : "Failed to set emoji",
+        message: machineErrorText(err) || "Failed to set emoji",
         tone: "error",
       });
     } finally {

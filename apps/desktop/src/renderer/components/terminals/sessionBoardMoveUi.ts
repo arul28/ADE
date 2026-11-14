@@ -2,7 +2,7 @@ import { showToast } from "../app/toast/toastStore";
 import { WORK_BOARD_COLUMN_LABEL, type WorkBoardMoveTarget } from "../../../shared/types/chat";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { withChatPin } from "../chat/chatMachinePin";
-import { extractError, ipcErrorMessage } from "../../lib/format";
+import { machineErrorText } from "../../lib/machineErrorText";
 
 /**
  * Apply a board move and own its whole user-visible result: the toast, the
@@ -106,7 +106,7 @@ export function moveSessionOnBoard(args: {
               .catch((error: unknown) => {
                 showToast({
                   title: "Undo failed",
-                  message: ipcErrorMessage(error) || extractError(error),
+                  message: machineErrorText(error),
                   tone: "error",
                 });
               });
@@ -119,7 +119,7 @@ export function moveSessionOnBoard(args: {
         title: "Move failed",
         // The host reverses its own status write when the move cannot
         // complete, so the card genuinely did not move.
-        message: ipcErrorMessage(error) || extractError(error),
+        message: machineErrorText(error),
         tone: "error",
       });
     });
