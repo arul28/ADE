@@ -3325,3 +3325,51 @@ catalog. Home and the top bar's copies menu build their
 copies from the snapshot and recents they already hold. The computers tag on
 the project page reads the copies sources once on mount and on window focus
 (one `listRecent`).
+
+### One tab, every machine (one-tab-all-machines, 2026-11-13)
+
+Dev app on `ade/one-tab-all-machines` at `01f73282e`, against the `origin/main`
+renderer (`e13e36cc6`) checked out over the same tree, so both share the app,
+the brains and the load. Mac Studio M4 Max (not the baseline machine), an
+isolated home (own `HOME`, `ADE_HOME`, user data, socket and CDP port, sync
+off), a loopback account directory and a local tunnel relay. Four dev test
+brains: this computer's, "Alpha" and "Beta" (copies of the open project) and
+a third with another project, all connected. One project tab open, nothing
+streaming. The desktop rows are `route-sweep.mjs /work,/lanes 12` in a perf
+run, four passes, the first pass left out. The web rows count the bytes each
+machine's route carried through the relay, 3 minutes after a 60 s settle, with
+the web page on the same project tab; the desktop page was idle on Work.
+
+| Row | Before (`e13e36cc6`) | After | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 3 machines with the project connected | 46 / 53 / 47 calls; 0.74–0.96 s | 52 / 48 / 53 calls; 0.77–0.89 s | 70 calls (Lanes row) |
+| Work: IPC on open (perf run), same | 21 / 24 / 21 calls | 26 / 29 / 23 calls | — |
+| Idle IPC per minute, Work / Lanes open (perf run) | 175–255 / 235 | 170–225 / 220–250 | — |
+| Idle main-thread work, Work / Lanes | 3.2–3.9 / 5.2–8.0 ms/s | 3.8–4.8 / 5.1–5.5 ms/s | 30 ms/s |
+| ADE Web, idle, N machines connected: KB down per minute (new row) | 3.1 KB down, 1.2 up (1 machine read; the tab showed the other project's lane) | 5.7 KB down, 2.8 up (4 machines, 0.9–2.4 KB each) | not set (new row; ceilings are the owner's call) |
+| ADE Web, idle, 2 and 8 machines connected: KB down / up per minute | — | 2: 9.0 / 4.4; 8: 9.4 / 5.3 | not set |
+
+No row is more than 25% worse or over a ceiling. The Lanes and Work counts
+stay in the same range: the Lanes union already read every connected machine,
+and the branch adds no timer or poll on the desktop. The desktop reaches the
+test brains on this Mac directly, so its relay bytes stay at 0 and the web is
+the only surface whose bytes move.
+
+ADE Web connects to every account machine that has a copy of the open project
+(the product rule: every machine's work shows in one tab). Each connected
+machine costs about 1–2 KB a minute down while idle, and 8 machines cost 9.4
+KB a minute in all. The 2- and 8-machine row is an earlier run of the same
+branch on the 16-brain rig (`9.0` with the web tab on one project's two
+copies). The base row is not a like-for-like pair: on the base the web tab
+read one machine and showed the other project's lane under this project's
+tab, the bug that this branch fixes.
+
+What adds work, and when it runs:
+
+- A background connect, once per account machine with a copy of the open
+  project that is online and not connected (`useConnectRepositoryCopies`). It
+  never wakes a sleeping cloud computer and stops at the person's Disconnect.
+- The no-computer page tries one connect per computer, once, and reads the
+  account machine list on mount and on window focus (desktop; 15 s cache).
+- ADE Web asks its brain to host its own project again after a restart, at
+  most once every 15 s.
