@@ -407,6 +407,19 @@ impl Lane {
 
     pub fn display_json(&self) -> Value {
         let windows = self.x.lock().unwrap().list_windows().len();
+        // What a process the brain starts itself (an App Control launch in an
+        // ADE terminal) needs to open its windows here, as `app_env` gives
+        // the apps this helper launches.
+        let mut env = serde_json::Map::new();
+        let mut unset_env: Vec<&str> = Vec::new();
+        for (key, value) in self.screen_env() {
+            match value {
+                Some(value) => {
+                    env.insert(key.to_string(), json!(value));
+                }
+                None => unset_env.push(key),
+            }
+        }
         json!({
             "laneId": self.lane_id,
             "displayId": self.display_num,
@@ -424,21 +437,37 @@ impl Lane {
                 "windowManager": self.has_wm,
                 "accessibility": self.a11y.is_some(),
                 "accessibilityError": self.a11y_error,
+                "env": env,
+                "unsetEnv": unset_env,
             },
         })
     }
 
+    /// The variables that put a process on this lane's screen and its session
+    /// bus, and (`None`) the ones to clear so it does not reach another
+    /// screen or session instead. The accessibility bus is found through the
+    /// lane's session bus when `AT_SPI_BUS_ADDRESS` is unset; a value
+    /// inherited from the brain's own environment would be another session's.
+    fn screen_env(&self) -> Vec<(&'static str, Option<String>)> {
+        vec![
+            ("DISPLAY", Some(format!(":{}", self.display_num))),
+            ("XAUTHORITY", Some(self.xauth.to_string_lossy().into_owned())),
+            ("WAYLAND_DISPLAY", None),
+            ("DESKTOP_STARTUP_ID", None),
+            ("DBUS_SESSION_BUS_ADDRESS", self.dbus_addr.clone()),
+            ("AT_SPI_BUS_ADDRESS", None),
+        ]
+    }
+
     fn app_env(&self, cmd: &mut Command) {
-        cmd.env("DISPLAY", format!(":{}", self.display_num))
-            .env("XAUTHORITY", &self.xauth)
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("DESKTOP_STARTUP_ID");
-        match self.dbus_addr.as_ref() {
-            Some(addr) => {
-                cmd.env("DBUS_SESSION_BUS_ADDRESS", addr);
-            }
-            None => {
-                cmd.env_remove("DBUS_SESSION_BUS_ADDRESS");
+        for (key, value) in self.screen_env() {
+            match value {
+                Some(value) => {
+                    cmd.env(key, value);
+                }
+                None => {
+                    cmd.env_remove(key);
+                }
             }
         }
         if let Some(a11y) = self.dbus_addr.as_ref().and_then(|addr| A11y::bus_address(addr).ok()) {

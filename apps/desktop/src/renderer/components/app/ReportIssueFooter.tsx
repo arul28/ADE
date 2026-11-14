@@ -1,13 +1,13 @@
 import type { DiagnosticReportRequestPayload } from "../../../shared/types/diagnostics";
-import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { ReportIssueButton } from "./ReportIssueButton";
+import { reportBridge } from "./reportDraft";
 
-const SEND_HINT = "Sends ADE what went wrong and gives you a reference.";
+const SEND_HINT = "You see the report before it goes.";
 
 /**
  * The last row of a failure card (the project recovery screen, the crash
- * boundaries): a rule, then Report issue with its hint. The report sits inside
+ * boundaries): a rule, then "Report this error to ADE…" with its hint. The report sits inside
  * the card it is about rather than under it.
  *
  * `errorReportReceived` is a crash boundary's word that Sentry confirmed its
@@ -21,10 +21,10 @@ export function ReportIssueFooter({
   context: DiagnosticReportRequestPayload;
   errorReportReceived?: boolean;
 }) {
-  const canReport = isAdeAvailable(window.ade?.diagnostics?.openIssue);
+  const canReport = reportBridge().prepare !== null;
   if (!canReport && !errorReportReceived) return null;
   const hint = errorReportReceived && !isWebClientMode()
-    ? "Adds ADE's logs and gives you a reference."
+    ? "Adds ADE's logs. You see the report before it goes."
     : SEND_HINT;
   return (
     <>

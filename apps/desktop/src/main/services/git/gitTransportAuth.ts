@@ -1,4 +1,4 @@
-import { GIT_ENGLISH_MESSAGES_ENV } from "./gitReadEnv";
+import { GIT_ENGLISH_MESSAGES_ENV, GIT_HEADLESS_PROMPT_ENV } from "./gitReadEnv";
 import type { GitHubGitTransportStatus } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import { gitCommonDirFor, gitStdoutOrThrow, runGit, runGitOrThrow, type GitRunOptions, type GitRunResult } from "./git";
@@ -75,13 +75,6 @@ export function githubAuthHeaderGitEnv(authHeader: string): NodeJS.ProcessEnv {
   };
 }
 
-/**
- * No prompt of any kind. `GIT_TERMINAL_PROMPT=0` stops only the terminal one;
- * an askpass helper ADE inherited (an editor's, a GUI's) would still open, and
- * git would wait on it until the time limit. Git skips askpass when the
- * variable is set but empty.
- */
-const GIT_HEADLESS_PROMPT_ENV: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "" };
 
 /** Git had no credential, or GitHub rejected the one it sent. */
 const GIT_SIGN_IN_FAILURE_PATTERNS = [

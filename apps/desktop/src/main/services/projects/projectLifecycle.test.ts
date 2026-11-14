@@ -12,6 +12,7 @@ import { writeGlobalState } from "../state/globalState";
 import { inspectRecentProject, toRecentProjectSummary, toShallowRecentProjectSummary } from "./recentProjectSummary";
 import { openKvDb } from "../state/kvDb";
 import { createProjectConfigService } from "../config/projectConfigService";
+import { expectedErrorKind } from "../../../shared/expectedError";
 
 const { parseLastCommitLine, parseAheadBehind } = __internal;
 
@@ -737,5 +738,55 @@ describe("getProjectDetail recent metadata", () => {
     const detail = await getProjectDetail(rootPath, { globalStatePath });
 
     expect(detail.lastOpenedAt).toBe("2026-05-09T00:00:00.000Z");
+  });
+});
+
+describe("initializeOrRepairAdeProject when the OS refuses the write", () => {
+  it.each(["EPERM", "EACCES"])(
+    "rethrows the original %s error when the project folder itself is writable",
+    (code) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-refused-"));
+      tempDirs.push(root);
+      const refusal = Object.assign(new Error(`${code}: operation not permitted`), { code });
+      const mkdir = vi.spyOn(fs, "mkdirSync").mockImplementation(() => {
+        throw refusal;
+      });
+      try {
+        let thrown: unknown = null;
+        try {
+          initializeOrRepairAdeProject(root);
+        } catch (error) {
+          thrown = error;
+        }
+        // One locked file also gives EPERM; the folder is writable, so the
+        // original error is the answer and no "read-only" message replaces it.
+        expect(thrown).toBe(refusal);
+        expect(expectedErrorKind(thrown)).toBeNull();
+      } finally {
+        mkdir.mockRestore();
+      }
+    },
+  );
+
+  it("names the folder and marks the refusal environment when the volume is read-only", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-readonly-"));
+    tempDirs.push(root);
+    const refusal = Object.assign(new Error("EROFS: read-only file system"), { code: "EROFS" });
+    const mkdir = vi.spyOn(fs, "mkdirSync").mockImplementation(() => {
+      throw refusal;
+    });
+    try {
+      let thrown: unknown = null;
+      try {
+        initializeOrRepairAdeProject(root);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(expectedErrorKind(thrown)).toBe("environment");
+      expect((thrown as Error).message).toContain(root);
+      expect((thrown as Error & { cause?: unknown }).cause).toBe(refusal);
+    } finally {
+      mkdir.mockRestore();
+    }
   });
 });

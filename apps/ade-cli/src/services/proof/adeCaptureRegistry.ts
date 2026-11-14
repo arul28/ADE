@@ -136,6 +136,10 @@ export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, AdeCaptureAction> =
     ["built_in_browser.stopRecording", resultField("path", "ade-recorder")],
     // `ade mac-desktop proof` files the frame its own `screenshot` step wrote.
     ["mac_desktop.screenshot", resultField("filePath", "ade-capture")],
+    // `ade screen record stop --machine` / `ade app-control record stop
+    // --machine`: run there with `proof: false`, filed in the caller's drawer.
+    ["mac_desktop.stopRecording", resultField("filePath", "ade-recorder")],
+    ["app_control.stopRecording", resultField("filePath", "ade-recorder")],
     ["android_emulator.screenshot", resultField("path", "ade-capture")],
     // P1 agent suite: every MP4 part of a recording (a rotation starts a new one).
     ["android_emulator.recordStop", {

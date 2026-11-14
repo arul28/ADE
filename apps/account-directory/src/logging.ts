@@ -30,6 +30,12 @@ export function logActivityRelayFailure(args: {
   }));
 }
 
+/** Register refusals that describe the client's state, not a Worker fault. */
+const CLIENT_STATE_REGISTER_REFUSALS: ReadonlySet<string> = new Set([
+  "machine_revoked",
+  "pairing_authentication_required",
+]);
+
 /**
  * One line per refused machine-membership change.
  *
@@ -47,10 +53,12 @@ export function logActivityRelayFailure(args: {
  * carries a full key, a token, or a grant in any form.
  *
  * Workers observability keeps only a sample of requests, so the line alone
- * can be gone. Each refusal is also a Sentry warning, one issue per event and
- * code, with the correlation id and the prefixes but no account id (the
- * client's own log holds the same correlation id). The Worker's Sentry budget
- * (`admitEvent`) bounds a burst.
+ * can be gone. Each refused register or remove is also a Sentry warning (a
+ * kept duplicate, a removed machine and a re-pair with no fresh sign-in are
+ * only the line, see below), one issue per event and code, with the
+ * correlation id and the prefixes but no account id (the client's own log
+ * holds the same correlation id). The Worker's Sentry budget (`admitEvent`)
+ * bounds a burst.
  */
 export function logDirectoryRefusal(args: {
   event: "directory.register_refused" | "directory.remove_refused" | "directory.supersede_refused";
@@ -73,6 +81,16 @@ export function logDirectoryRefusal(args: {
     correlationId: args.correlationId,
     ...(args.reason ? { reason: args.reason.slice(0, 300) } : {}),
   }));
+  // A kept duplicate is not a refusal: the machine registered, and the line
+  // above answers "why is my Mac listed twice". Registration rides the
+  // heartbeat, so a warning per call made one issue per minute per machine.
+  // The line stays; Sentry gets only the refusals a user is actually stuck
+  // behind.
+  if (args.event === "directory.supersede_refused") return;
+  // A removed machine that keeps registering on its heartbeat, and a re-pair
+  // that has no fresh sign-in yet, are the client's own state: the client
+  // shows "sign in again" and the line above keeps the reason for support.
+  if (args.event === "directory.register_refused" && CLIENT_STATE_REGISTER_REFUSALS.has(args.code)) return;
   Sentry.captureMessage(`${args.event}: ${args.code}`, {
     level: "warning",
     fingerprint: [args.event, args.code],

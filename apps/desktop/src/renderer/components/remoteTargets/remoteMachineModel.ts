@@ -472,6 +472,10 @@ export function formatMachineEndpoint(
   return detail ? `${endpoint.kind} · ${detail}` : endpoint.kind;
 }
 
+/** A saved machine whose link another ADE app on this computer holds: its state, and the press that takes it back. */
+export const HELD_ELSEWHERE_STATE_LABEL = "In use by another ADE app";
+export const HELD_ELSEWHERE_ACTION_LABEL = "Use it here";
+
 export function connectionStateLabel(
   connection: RemoteRuntimeConnectionStatus | null,
   connectedFallback: boolean,
@@ -481,7 +485,7 @@ export function connectionStateLabel(
   if (connection?.state === "connecting") return "Connecting";
   if (connection?.state === "error") {
     if (connection.recovery === "reconnecting") return "Reconnecting";
-    if (connection.recovery === "held_elsewhere") return "In use by another ADE app";
+    if (connection.recovery === "held_elsewhere") return HELD_ELSEWHERE_STATE_LABEL;
     return "Connection failed";
   }
   return "Not connected";

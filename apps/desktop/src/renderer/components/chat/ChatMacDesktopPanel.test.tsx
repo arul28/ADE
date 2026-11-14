@@ -958,6 +958,8 @@ describe("ChatMacDesktopPanel with no display", () => {
     expect(await screen.findByTestId("mac-desktop-off")).toBeTruthy();
     expect(macDesktop.start).not.toHaveBeenCalled();
 
+    // Once started, the brain reports the display it made.
+    macDesktop.getStatus.mockResolvedValue(makeStatus());
     fireEvent.click(screen.getByTestId("mac-desktop-start"));
     await waitFor(() => expect(macDesktop.start).toHaveBeenCalledWith(
       { laneId: "lane-1", laneName: "docs-fix", chatSessionId: "chat-1" },

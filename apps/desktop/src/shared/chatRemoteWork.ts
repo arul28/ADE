@@ -20,30 +20,55 @@ export function activeRemoteWork(
     !Number.isFinite(turnStart) || Date.parse(use.lastStartedAt) >= turnStart);
 }
 
-/**
- * The machines whose simulator this chat drives through its work copy, newest
- * first. Only those whose machine told us the copy's lane (current ADE there).
- */
-export function remoteSimulatorUses(
-  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
-  return (session?.remoteWork ?? [])
-    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
-      use.usesSimulator && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
-    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+/** A remote-work entry whose machine told us the work copy's lane. */
+export type RemoteWorkCopyUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
+
+/** The machines a chat used in the turn that just settled, so their devices can be let go. */
+export type RemoteWorkTurnRelease = {
+  sessionId: string;
+  /** The turn that ended (`RemoteCallerClaim.turnId` of its calls); null when unknown. */
+  turnId: string | null;
+  uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
+};
+
+/** The `remoteWork` flags that say an entry drives a device on its machine. */
+export type RemoteWorkDeviceFlag = "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl";
+
+/** Whether this entry drives any device on its machine (simulator, emulator, screen or App Control). */
+export function remoteWorkUsesDevice(
+  use: Pick<AgentChatRemoteWorkUse, RemoteWorkDeviceFlag>,
+): boolean {
+  return use.usesSimulator === true || use.usesAndroidEmulator === true || use.usesDesktop === true || use.usesAppControl === true;
 }
 
 /**
- * The machines whose Android emulator this chat drives through its work copy,
- * newest first. Only those whose machine told us the copy's lane.
+ * The machines whose simulator (`usesSimulator`), Android emulator
+ * (`usesAndroidEmulator`), desktop screen (`usesDesktop`) or App Control
+ * session (`usesAppControl`) this chat drives through its work copy, newest
+ * first. Only those whose machine told us the copy's lane (current ADE there).
  */
+export function remoteWorkUsesOf(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+  kind: RemoteWorkDeviceFlag,
+): RemoteWorkCopyUse[] {
+  return (session?.remoteWork ?? [])
+    .filter((use): use is RemoteWorkCopyUse =>
+      use[kind] === true && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
+    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+}
+
+/** The machines whose simulator this chat drives through its work copy, newest first. */
+export function remoteSimulatorUses(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+): RemoteWorkCopyUse[] {
+  return remoteWorkUsesOf(session, "usesSimulator");
+}
+
+/** The machines whose Android emulator this chat drives through its work copy, newest first. */
 export function remoteAndroidEmulatorUses(
   session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
-  return (session?.remoteWork ?? [])
-    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
-      use.usesAndroidEmulator === true && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
-    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+): RemoteWorkCopyUse[] {
+  return remoteWorkUsesOf(session, "usesAndroidEmulator");
 }
 
 /**

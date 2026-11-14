@@ -144,7 +144,7 @@ export function explicitTargetRefusal(toolName: string, projects: ReadonlyArray<
   const choices = projects.length
     ? `Projects here, last opened first: ${projects.map((project) => `${project.displayName} (${project.projectId})`).join(", ")}. `
       + "Use the one the person named; if they named none, the first."
-    : "No project is open on this computer; projects_clone adds one.";
+    : "No project is open on this machine; projects_clone adds one.";
   return `${toolName} needs \`project\`, because the default changes as the person works. ${choices}`;
 }
 
@@ -300,7 +300,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "projects_list",
     title: "List projects",
-    description: "Projects on this computer, last opened first.",
+    description: "Projects on this machine, last opened first.",
     machineWide: true,
     fanOut: true,
     properties: {
@@ -325,7 +325,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "projects_clone",
     title: "Clone a repository",
-    description: "Clones a GitHub repository here, with this computer's GitHub sign-in, as a new project.",
+    description: "Clones a GitHub repository here, with this machine's GitHub sign-in, as a new project.",
     machineWide: true,
     write: true,
     properties: {
@@ -832,7 +832,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "usage_limits",
     title: "Usage limits",
-    description: "Subscription usage left on this computer, per account: percent left per window (5-hour, weekly, "
+    description: "Subscription usage left on this machine, per account: percent left per window (5-hour, weekly, "
       + "monthly), reset time, whether the pace lasts, and the account id to start a chat on.",
     machineWide: true,
     fanOut: true,
@@ -1286,7 +1286,7 @@ export async function readToolImage(
     real = await fs.promises.realpath(filePath);
     root = await fs.promises.realpath(projectRoot);
   } catch {
-    return { error: "The picture is no longer on this computer." };
+    return { error: "The picture is no longer on this machine." };
   }
   const allowed = [path.join(root, ".ade", "cache"), path.join(root, ".ade", "artifacts")];
   if (!allowed.some((dir) => pathIsWithinRoot(dir, real))) return { error: "The picture is outside the project's proof folders." };
@@ -1294,7 +1294,7 @@ export async function readToolImage(
   const mimeType = IMAGE_MIME_TYPES[path.extname(real).toLowerCase()];
   if (!mimeType) return { error: "The file is not a picture ADE MCP sends." };
   const stat = await fs.promises.stat(real).catch(() => null);
-  if (!stat?.isFile()) return { error: "The picture is no longer on this computer." };
+  if (!stat?.isFile()) return { error: "The picture is no longer on this machine." };
   if (stat.size > MAX_TOOL_IMAGE_BYTES) {
     return { error: `The picture is ${(stat.size / 1_000_000).toFixed(1)} MB, more than ADE MCP sends (${MAX_TOOL_IMAGE_BYTES / 1_000_000} MB).` };
   }

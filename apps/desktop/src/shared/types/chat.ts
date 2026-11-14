@@ -3410,6 +3410,10 @@ export type AgentChatRemoteWorkUse = {
   usesSimulator: boolean;
   /** The chat drove an Android emulator there through its work copy (`ade android … --machine`). */
   usesAndroidEmulator?: boolean;
+  /** The chat drove that machine's desktop screen (Mac, Windows or Linux Desktop) through its work copy (`ade screen … --machine`). */
+  usesDesktop?: boolean;
+  /** The chat drove an App Control session there through its work copy (`ade app-control … --machine`). */
+  usesAppControl?: boolean;
   lastStartedAt: string;
 };
 
@@ -6195,12 +6199,24 @@ export type AgentChatListInterruptedChatsResult = {
   continueAfterRestart?: boolean;
 };
 
+/**
+ * Why a chat the update asked to resume will not get a continue row, decided
+ * for good: the continue rule holds it (`held`), the row exists but scheduled
+ * work is paused and fires on resume (`paused`), this brain's own recovery
+ * already continued it (`already_continued`), or the session cannot take
+ * scheduled work at all (`not_schedulable`). The desktop drops these from the
+ * owed list. Anything not armed and not listed is retried.
+ */
+export type AgentChatUpdateResumeSettledReason = "held" | "paused" | "already_continued" | "not_schedulable";
+
 export type AgentChatArmUpdateResumeResult = {
   /**
    * The chats actually armed, re-read at arm time. A chat that finished its
    * turn while the confirmation dialog was open is absent here.
    */
   chats: AgentChatInterruptedChatRef[];
+  /** Requested chats that will not be armed, and why. Absent from older brains. */
+  settled?: Array<{ sessionId: string; reason: AgentChatUpdateResumeSettledReason }>;
 };
 
 export type AgentChatCancelScheduledWorkArgs = {

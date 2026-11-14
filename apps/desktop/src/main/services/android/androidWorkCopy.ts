@@ -55,7 +55,7 @@ export function createAndroidLaneScope(input: {
       throw new AndroidEmulatorFailure(
         "ANDROID_NOT_RUNNING",
         projectRoot
-          ? "This chat has no work copy on this machine, so it has no Android device here. `ade android start --machine` makes the copy and its device."
+          ? "This chat has no copy of its code on this machine, so it has no Android device here. `ade android start --machine` makes the copy and its device."
           : "This ADE cannot find work copies of chats on other machines, so it has no Android device for one.",
       );
     },

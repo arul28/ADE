@@ -72,8 +72,19 @@ async function missingStartBranchError(projectRoot: string, refs: readonly strin
     return new AdeExpectedError("This repository has no commits yet. Make a first commit, then create a lane.", "user");
   }
   const named = await runGit(["for-each-ref", "--format=%(refname)", ...refs], { cwd: projectRoot, timeoutMs: 10_000 });
-  const confirmedMissing = named.exitCode === 0 && !named.stdout.trim();
-  return confirmedMissing ? new AdeExpectedError(message, "user") : new Error(message);
+  if (named.exitCode !== 0) return branchListingError(named);
+  const listed = named.stdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
+  if (!listed) return new AdeExpectedError(message, "user");
+  // The branch is there, but its commit did not read ("wasn't found" would
+  // be wrong). Ask once more without --quiet, so the message carries git's
+  // reason; this stays reported, because the cause is not known.
+  const retry = await runGit(["rev-parse", "--verify", `${listed}^{commit}`], { cwd: projectRoot, timeoutMs: 10_000 });
+  const reason = retry.timedOut
+    ? "Git took too long to answer"
+    : retry.exitCode === 0
+      ? "Git answered only on a second try"
+      : (retry.stderr.trim().split(/\r?\n/, 1)[0] ?? "").slice(0, 300) || `git exited with code ${retry.exitCode}`;
+  return new Error(`ADE found ${listed} but couldn't read its commit (${reason}). Try again.`);
 }
 
 /**

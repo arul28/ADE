@@ -28,6 +28,8 @@ import {
 import { resolveSelectedUpdateTrack } from "../services/runtime/updateTrackStore";
 import { applyWindowsDesktopUpdate } from "./windowsDesktopRescue";
 import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath } from "../services/projects/machineLayout";
+import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
+import { clearBrainStopIntent, noteBrainStopIntent } from "../../../desktop/src/main/services/runtime/liveTurnProjects";
 
 type BrainUpdateExecFile = (
   file: string,
@@ -695,6 +697,18 @@ async function applyStagedBrainUpdate(
     ...runtimeSidecarEnv(baseEnv, manifest.runtimeTargetDir),
     ADE_HOME: manifest.adeHome,
   });
+  /**
+   * Each stop of the brain below is this update, which the person (or their
+   * remote request) accepted: the brain keeps its work for the next start,
+   * and the continue cap starts again (`recordPlannedBrainStop`).
+   */
+  const updatedBrainIntentTarget = {
+    runtimeDir: path.dirname(lastFailurePathForMachine({ ADE_HOME: manifest.adeHome })),
+    socketPath: resolveMachineAdeLayout({ ...baseEnv, ADE_HOME: manifest.adeHome }, platform).socketPath,
+  };
+  const noteAcceptedUpdateStop = () => noteBrainStopIntent("accepted_update", updatedBrainIntentTarget);
+  /** The stop did not happen: a later plain restart must not start the cap again. */
+  const clearAcceptedUpdateStop = () => clearBrainStopIntent(updatedBrainIntentTarget);
   const restartRolledBackWindowsService = (): string | null => {
     if (!windowsServiceStopped || !windowsServiceWasInstalled || platform !== "win32") return null;
     const rollbackRestart = requestBrainServiceRestart(
@@ -752,7 +766,9 @@ async function applyStagedBrainUpdate(
           });
         },
         stopService: () => {
+          noteAcceptedUpdateStop();
           const stop = requestBrainServiceStop(stagedServiceCommand, deps.runCommand ?? runCommand);
+          if (stop.status !== 0) clearAcceptedUpdateStop();
           return { ok: stop.status === 0, message: stop.stderr || stop.stdout || `exit ${stop.status}` };
         },
         writeStatus,
@@ -777,7 +793,9 @@ async function applyStagedBrainUpdate(
         env: baseEnv,
         downloadFile: deps.downloadFile ?? defaultDownloadFile,
         stopService: () => {
+          noteAcceptedUpdateStop();
           const stop = requestBrainServiceStop(stagedServiceCommand, deps.runCommand ?? runCommand);
+          if (stop.status !== 0) clearAcceptedUpdateStop();
           return { ok: stop.status === 0, message: stop.stderr || stop.stdout || `exit ${stop.status}` };
         },
         writeStatus,
@@ -798,8 +816,10 @@ async function applyStagedBrainUpdate(
         );
       }
       windowsServiceWasInstalled = statusResult.installed;
+      noteAcceptedUpdateStop();
       const stopResult = requestBrainServiceStop(stagedServiceCommand, deps.runCommand ?? runCommand);
       if (stopResult.status !== 0) {
+        clearAcceptedUpdateStop();
         throw new Error(
           stopResult.stderr || stopResult.stdout || "ADE brain service could not be stopped before replacing the Windows runtime.",
         );
@@ -900,6 +920,7 @@ async function applyStagedBrainUpdate(
 
     await writeStatus("restarting", "Restarting ADE brain service with the updated runtime.");
     const env = serviceEnv();
+    noteAcceptedUpdateStop();
     const restart = requestBrainServiceRestart(
       {
         command: manifest.binaryPath,
@@ -909,6 +930,7 @@ async function applyStagedBrainUpdate(
       deps.runCommand ?? runCommand,
     );
     if (restart.status !== 0) {
+      clearAcceptedUpdateStop();
       const message = serviceCommandFailure(restart, "ADE brain service restart failed.");
       let rollbackMessage = "Update was rolled back.";
       try {

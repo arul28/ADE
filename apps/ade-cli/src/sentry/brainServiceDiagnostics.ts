@@ -185,7 +185,8 @@ export function readFileTail(filePath: string, maxBytes: number): string | null 
   }
 }
 
-function readStateFile(filePath: string): Record<string, unknown> | null {
+/** A small JSON object from a runtime state file (size-capped, BOM stripped), or null. */
+export function readStateFile(filePath: string): Record<string, unknown> | null {
   try {
     if (fs.statSync(filePath).size > STATE_FILE_MAX_BYTES) return null;
     const parsed: unknown = JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^﻿/, ""));

@@ -8,6 +8,7 @@ import {
   UNKNOWN_SYSTEM_ERRNO_PATTERN,
 } from "../../desktop/src/shared/codedError";
 import { carryExpected, expectedErrorKind, type ExpectedErrorKind } from "../../desktop/src/shared/expectedError";
+import { brainStackFrames } from "../../desktop/src/shared/runtimeActionReplyError";
 
 export type JsonRpcId = string | number | null;
 
@@ -187,6 +188,34 @@ function messageBody(error: Error, rootPath: string | undefined): string {
  * message quoting a path, or a runtime fault carrying a stack — the class of
  * message that produced "Unknown system error -11: … read" on a user's screen.
  */
+/**
+ * What a caller's report needs to tell one internal error from another
+ * without this machine's log: the error's type, its errno code and syscall
+ * (`EACCES`, `mkdir`), and up to three of ADE's own frames as
+ * `function:line`. Never the message or a path, which can name the person's
+ * files. A desktop on another machine sees only this envelope, so without it
+ * every brain fault read the same "Internal error in X (ref …)".
+ */
+function internalErrorShape(error: unknown): {
+  errorName?: string;
+  errorCode?: string;
+  syscall?: string;
+  frames?: string[];
+} {
+  if (!(error instanceof Error)) return { errorName: typeof error };
+  const raw = error as Error & { code?: unknown; syscall?: unknown };
+  const name = /^[A-Za-z0-9_$]{1,60}$/.test(error.name) ? error.name : "Error";
+  const code = typeof raw.code === "string" && /^[A-Za-z0-9_ -]{1,40}$/.test(raw.code) ? raw.code : null;
+  const syscall = typeof raw.syscall === "string" && /^[a-z_]{1,30}$/.test(raw.syscall) ? raw.syscall : null;
+  const frames = brainStackFrames(error);
+  return {
+    errorName: name,
+    ...(code ? { errorCode: code } : {}),
+    ...(syscall ? { syscall } : {}),
+    ...(frames.length ? { frames } : {}),
+  };
+}
+
 function isInternalRuntimeError(error: unknown): boolean {
   if (!(error instanceof Error)) return true;
   const raw = error as Error & { code?: unknown; errno?: unknown; syscall?: unknown };
@@ -301,7 +330,7 @@ function buildErrorResponse(
       error: {
         code: JsonRpcErrorCode.internalError,
         message: `Internal error in ${context.method} (ref ${errorId})`,
-        data: { errorId },
+        data: { errorId, ...internalErrorShape(error) },
       }
     };
   }

@@ -69,7 +69,7 @@ export function CloudLaneConnectionRow({
             onClick={() => setOpen((value) => !value)}
           >
             {open ? <CaretDown size={11} /> : <CaretRight size={11} />}
-            Details
+            <span className="adecl-cx-details-label">Details</span>
           </button>
         </div>
       </div>

@@ -15,7 +15,7 @@ import type { MachineResetOptions, MachineResetPlan } from "../../../shared/type
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
 import type { IpcMainInvokeEvent } from "electron";
 import { isUnsupportedAdeActionError, stripElectronErrorWrapper } from "../../../shared/codedError";
-import { AdeExpectedError, carryExpected, expectedErrorKind } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected, expectedErrorKind, markExpected } from "../../../shared/expectedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import { withoutCrossMachineCallerFields } from "../../../shared/crossMachineHandoff";
 import {
@@ -101,7 +101,6 @@ import { createSyncStatusReaders } from "../sync/syncStatusReaders";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { normalizeAppPackageChannel, resolveReleaseChannel } from "../../../shared/packageChannel";
-import { loadMachineTelemetryId } from "../analytics/machineTelemetryId";
 import { reportsAsPackagedRelease } from "../../sentry/releaseBuild";
 import {
   findProjectCopyOnMachineForRepo,
@@ -205,7 +204,7 @@ import {
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
-import { sendSentryUserFeedback } from "../../sentry/userFeedback";
+import { NO_NOTE_FEEDBACK_MESSAGE, sendSentryUserFeedback } from "../../sentry/userFeedback";
 import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
 import { armDeadline } from "../../../shared/deadlineTimer";
 import { noteRendererMemory } from "../../rendererMemoryLedger";
@@ -1057,7 +1056,7 @@ import {
   getSharedAccountAuthService,
   setSharedAccountRefreshBroker,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { DevToolsCheckResult } from "../../../shared/types/devTools";
@@ -1155,10 +1154,8 @@ import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
 import {
-  collectDiagnosticReport,
   diagnosticReportRoots,
   resolveRevealableDiagnosticReport,
-  writeDiagnosticReportFile,
 } from "../diagnostics/diagnosticReportService";
 import type { AutoDiagnosticsService } from "../diagnostics/autoDiagnosticsService";
 import {
@@ -1166,13 +1163,14 @@ import {
   MAX_MANUAL_DIAGNOSTICS_PER_WINDOW,
 } from "../diagnostics/autoDiagnosticsStore";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
+import { buildPublicIssueUrl, osFamilyOf } from "../../../shared/publicIssueLink";
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -1622,9 +1620,10 @@ function redactedCliAuthFromStatuses(
 }
 
 /**
- * How long the no-project status read may take before the window gets the
- * "unavailable" status instead of an IPC timeout. A cold Windows machine took
- * all 30 s here; the read keeps going and fills the cache for the next call.
+ * How long a plain status read may take, with or without a project, before
+ * the window gets a fallback status instead of an IPC timeout. A cold Windows
+ * machine took all 30 s here; the read keeps going and fills the cache for the
+ * next call.
  */
 const GLOBAL_AI_STATUS_BUDGET_MS = 20_000;
 
@@ -2782,7 +2781,9 @@ export function registerIpc({
   const ensureAndroidEmulator = (): AndroidEmulatorServiceApi => {
     const service = getCtx().androidEmulatorService;
     if (!service) {
-      throw new Error("The Android emulator service is not available. Open a project so ADE can reach the machine that runs its emulators.");
+      // Expected, like Mac Desktop above: the emulator service lives in the
+      // project's brain, and no project is open yet.
+      throw new AdeExpectedError("The Android emulator service is not available. Open a project so ADE can reach the machine that runs its emulators.", "environment");
     }
     return service;
   };
@@ -4068,6 +4069,22 @@ export function registerIpc({
         }
       }) || getCtx().fileService?.isExternalWorkspaceRoot(rootPath) === true;
       if (!rootAllowed) {
+        // No path in the line: which case it was is enough. A root that does
+        // not exist here is another machine's folder (a lane that lives on a
+        // paired computer); one that matches an allowed root only when case
+        // is ignored is a path-spelling mismatch (a Windows drive letter).
+        const loweredRoot = rootPath.toLowerCase();
+        getCtx().logger?.warn("editor.open_root_refused", {
+          platform: process.platform,
+          allowedRootCount: allowedRoots.length,
+          windowHasProject: Boolean(getCtx().project?.rootPath?.trim()),
+          rootExists: fs.existsSync(rootPath),
+          caseOnlyMismatch: allowedRoots.some((dir) => {
+            const allowed = path.resolve(dir).toLowerCase();
+            return loweredRoot === allowed || loweredRoot.startsWith(`${allowed}${path.sep}`);
+          }),
+          laneWorktreeShape: /[\\/]\.ade[\\/]worktrees[\\/]/.test(rootPath),
+        });
         throw new Error("rootPath is outside allowed directories.");
       }
 
@@ -4077,8 +4094,9 @@ export function registerIpc({
         targetPath = resolvePathWithinRoot(rootPath, candidatePath, { allowMissing: true });
       } catch (resolveError: unknown) {
         // Only translate containment errors; rethrow unexpected failures.
+        // The relative path is the renderer's (a file the person picked).
         if (isPathEscapeError(resolveError)) {
-          throw new Error("relativePath escapes rootPath.");
+          throw markExpected(new Error("relativePath escapes rootPath."), "user");
         }
         throw resolveError;
       }
@@ -5425,78 +5443,6 @@ export function registerIpc({
   };
 
   /**
-   * Assembles the redacted diagnostic report for whichever error screen asked.
-   * Read-only and best effort: a missing log, a wedged brain or a runtime mode
-   * without a recovery service must never stop someone from filing an issue,
-   * so every optional input degrades to "unknown" rather than throwing.
-   */
-  const buildDiagnosticsReport = async (
-    arg: DiagnosticReportRequestPayload | undefined,
-  ) => {
-    return await collectDiagnosticReport(
-      {
-        appVersion: app.getVersion(),
-        packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
-        releaseChannel: resolveReleaseChannel({
-          env: process.env,
-          packaged: reportsAsPackagedRelease(app.isPackaged),
-          version: app.getVersion(),
-        }),
-        isPackaged: app.isPackaged,
-        machineId: await loadMachineTelemetryId(resolveMachineAdeDir()),
-        userDataPath: app.getPath("userData"),
-        reportsDir: path.join(app.getPath("userData"), "diagnostic-reports"),
-        installId: productAnalyticsService?.getDistinctId() ?? null,
-        accountUserId: getCurrentAccountOwnerId?.() ?? null,
-        getLocalRuntimeStatus: () => localRuntimeConnectionPool?.getStatusAfterServiceProbe() ?? null,
-        getRemoteRuntimeSnapshot: () => runtimeBridge.snapshot(),
-        diagnoseProject: projectRecoveryService
-          ? (root: string) => projectRecoveryService.diagnose(root)
-          : undefined,
-      },
-      readDiagnosticReportContext(arg),
-    );
-  };
-
-  handle(
-    IPC.diagnosticsOpenIssue,
-    async (_event, arg: DiagnosticReportRequestPayload): Promise<DiagnosticReportPayload> => {
-      const result = await buildDiagnosticsReport(arg);
-      const written = writeDiagnosticReportFile(result.filePath, result.report);
-      let copied = false;
-      try {
-        await clipboard.writeText(result.report);
-        copied = true;
-      } catch {
-        copied = false;
-      }
-      let opened = false;
-      try {
-        await openExternalUrl(result.issueUrl);
-        opened = true;
-      } catch {
-        opened = false;
-      }
-      productAnalyticsService?.capture({
-        event: "ade_feature_used",
-        surface: "desktop",
-        properties: { feature: "connections", action: "issue_report", outcome: opened ? "opened" : "failed" },
-        projectId: null,
-        dedupeKey: `issue_report:${opened ? "opened" : "failed"}`,
-        minimumIntervalMs: 60 * 60 * 1_000,
-      });
-      return {
-        report: result.report,
-        filePath: written ? result.filePath : "",
-        issueUrl: result.issueUrl,
-        installId: result.installId,
-        copied,
-        opened,
-      };
-    },
-  );
-
-  /**
    * The renderer's failure surfaces (the crash boundaries) asking for one
    * automatic send. Main decides: the setting, the budget and the send all live
    * there, so a renderer that fires this repeatedly changes nothing.
@@ -5505,8 +5451,9 @@ export function registerIpc({
    * project's log directory gets read into the report, and a renderer is the
    * one participant here that must not choose that — the callers (the window
    * and page crash boundaries) never send one anyway. Main uses the project it
-   * already has open, or none. The manual `openIssue` path is unchanged: there
-   * a person is choosing to file about the screen they are looking at.
+   * already has open, or none. The manual report path differs: there a person
+   * is choosing to file about the screen they are looking at, and reads the
+   * report before it goes.
    */
   handle(
     IPC.diagnosticsAutoReport,
@@ -5526,55 +5473,106 @@ export function registerIpc({
   );
 
   /**
-   * "Send a report to ADE" from the Settings section of that name, and
-   * "Report issue" on an error screen.
+   * Step one of "Send a report to ADE" (Settings) and of an error screen's
+   * "Report this error to ADE…" dialog: build and redact the report for the
+   * person to read. Nothing is sent and no budget is claimed.
    *
    * Settings passes no argument: that report is about nothing in particular,
    * so main names the surface itself (`settings_manual`). An error screen
-   * passes its context, read exactly as `openIssue` reads it — same caps, and
-   * a project root only when main recognises it — so the report it sends is
-   * about the screen the person is looking at, and a renderer still cannot
+   * passes its context, read by `readDiagnosticReportContext` — same caps, and
+   * a project root only when main recognises it — so a renderer still cannot
    * choose an arbitrary folder's logs.
+   *
+   * Always this computer and this window, whichever machine the screen was
+   * showing: the report describes the app the person is looking at, so it is
+   * never routed through a pin.
+   */
+  handle(
+    IPC.diagnosticsPrepareReport,
+    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<DiagnosticsPrepareResult> => {
+      const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
+      return (await autoDiagnosticsService?.prepareManual(context)) ?? { ok: false, reason: "failed" };
+    },
+  );
+
+  handle(IPC.diagnosticsDiscardReport, async (_event, id: unknown): Promise<void> => {
+    if (typeof id === "string") autoDiagnosticsService?.discardPrepared(id);
+  });
+
+  /**
+   * Step two: upload the prepared report the person read, by its id. An id
+   * main no longer holds answers `expired` and sends nothing; the surface
+   * prepares again and shows the new text.
    *
    * A `failed` answer rather than a throw when the service is absent (a
    * runtime mode without it): the caller renders a plain sentence instead of
    * an exception it would have to translate.
    */
   handle(
-    IPC.diagnosticsSendManual,
+    IPC.diagnosticsSendReport,
     async (
       _event,
-      arg: DiagnosticReportRequestPayload | undefined,
+      id: unknown,
       options?: DiagnosticsManualSendOptions,
     ): Promise<DiagnosticsManualSendResult> => {
-      const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
-      const result = (await autoDiagnosticsService?.sendManual(context)) ?? { ok: false, reason: "failed" };
-      // The person's own note goes to Sentry as User Feedback, from this app's
-      // main process (the report is about this computer, whatever machine the
-      // screen showed). The R2 report above stays as it was. Skipped when this
-      // computer's own guard refused the send, so the daily limit holds.
-      if (typeof options?.userMessage === "string" && !(!result.ok && result.reason === "local_limit")) {
+      if (!autoDiagnosticsService) return { ok: false, reason: "failed" };
+      const sent = await autoDiagnosticsService.sendPrepared(typeof id === "string" ? id : "");
+      let result = sent.result;
+      const context = sent.context;
+      // Nothing was attempted for an id main no longer holds: no note, no event.
+      if (!result.ok && result.reason === "expired") return result;
+      const surface = context?.surface ?? "settings_manual";
+      const note = typeof options?.userMessage === "string" ? options.userMessage.trim() : "";
+      // The team sees every report that arrived: one User Feedback entry per
+      // successful send, with the person's words or a fixed line when they
+      // wrote none. A failed upload with a note still sends the note, so a
+      // report that arrives on "Try again" finds it. From this app's main
+      // process only (`userFeedback.ts`).
+      // No claim on the manual ledger means no upload was tried: the daily
+      // limit, a ledger that could not be read or locked, or a busy wait that
+      // ran out. Such a send files no note either, so the limit holds for
+      // notes too.
+      const tried = sent.claimed === true;
+      const refusedHere = !result.ok && result.reason === "local_limit";
+      // A second Send that joined a send already running gets its answer, but
+      // the note and the count belong to the first call only.
+      const firstCall = sent.joined !== true;
+      if (firstCall && tried && (result.ok || note)) {
         sendSentryUserFeedback({
           onError: (error) => getCtx().logger.warn("diagnostics.user_feedback_failed", {
             errorKind: error instanceof Error ? error.name : "unknown",
           }),
-          message: options.userMessage,
+          message: note || NO_NOTE_FEEDBACK_MESSAGE,
           tags: {
-            "report.surface": context?.surface ?? "settings_manual",
+            "report.surface": surface,
             "report.code": context?.code ?? null,
             "report.reference": result.ok ? result.reference : null,
           },
         });
       }
-      // "Report issue" sends here first now, so its one coarse fact moved with
-      // it: `success` is a report ADE received, next to `opened` for the GitHub
-      // path. Settings' send (no context) is not a Report issue press.
-      if (context) {
+      if (result.ok) {
+        const publicIssueUrl = buildPublicIssueUrl({
+          reference: result.reference,
+          appVersion: app.getVersion(),
+          channel: resolveReleaseChannel({
+            env: process.env,
+            packaged: reportsAsPackagedRelease(app.isPackaged),
+            version: app.getVersion(),
+          }),
+          osFamily: osFamilyOf(process.platform),
+        });
+        if (publicIssueUrl) result = { ...result, publicIssueUrl };
+      }
+      // One coarse fact per send from an error screen: `success` is a report
+      // ADE received. Settings' send (no screen) is not counted here.
+      // A send that tried nothing for a reason other than the daily limit is
+      // not counted: nothing was sent, and the person was not refused.
+      if (firstCall && (tried || refusedHere) && surface !== "settings_manual") {
         const outcome = result.ok ? "success" : "failed";
         productAnalyticsService?.capture({
           event: "ade_feature_used",
           surface: "desktop",
-          properties: { feature: "connections", action: "issue_report", outcome },
+          properties: { feature: "issue_report", action: "issue_report", outcome },
           projectId: null,
           dedupeKey: `issue_report:${outcome}`,
           minimumIntervalMs: 60 * 60 * 1_000,
@@ -5735,13 +5733,36 @@ export function registerIpc({
       }
     }
     try {
-      const status = await aiIntegrationService.getStatus({
-        force: arg?.force === true,
-        refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
-      });
+      // A plain read gets the same budget as the no-project read: past it the
+      // window gets this project's last good status (or "unavailable")
+      // instead of the 30 s IPC timeout. A forced read is the user asking for
+      // a fresh check and keeps its own longer IPC limit.
+      let status: Awaited<ReturnType<typeof aiIntegrationService.getStatus>>;
+      if (arg?.force === true) {
+        status = await aiIntegrationService.getStatus({
+          force: true,
+          refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
+        });
+      } else {
+        const answer = await aiIntegrationService.getStatusWithinBudget({
+          budgetMs: GLOBAL_AI_STATUS_BUDGET_MS,
+          refreshOpenCodeInventory: arg?.refreshOpenCodeInventory === true,
+        });
+        if (answer.slow) {
+          // Which step was still running, for the next report of a slow machine.
+          ctx.logger.warn("ai.get_status.open_project_slow", {
+            phase: answer.slow.phase,
+            budgetMs: GLOBAL_AI_STATUS_BUDGET_MS,
+            elapsedMs: answer.slow.elapsedMs,
+            servedLastGood: answer.status != null,
+          });
+        }
+        if (!answer.status) return getUnavailableAiStatus();
+        status = answer.status;
+      }
       // Single query for all feature daily usage instead of N individual queries
       const usageBatch = aiIntegrationService.getDailyUsageBatch(AI_USAGE_FEATURE_KEYS);
-      return {
+      const result: AiSettingsStatus = {
         mode: status.mode,
         availableProviders: status.availableProviders,
         models: status.models,
@@ -5766,6 +5787,7 @@ export function registerIpc({
           dailyLimit: aiIntegrationService.getDailyBudgetLimit(feature)
         }))
       };
+      return result;
     } catch (error) {
       if (isDatabaseClosedError(error)) {
         ctx.logger.info("ai.get_status.unavailable_during_shutdown", {

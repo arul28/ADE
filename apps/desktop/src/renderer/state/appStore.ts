@@ -425,6 +425,16 @@ export type NoMachineRepositoryTab = {
   id: string;
   displayName: string;
   iconDataUrl: string | null;
+  /**
+   * The copy the tab showed before its computer left (a binding key). When
+   * that computer is back, the tab opens this copy again, not another one.
+   */
+  lastCopyKey?: string | null;
+  /**
+   * The repository, when `id` is a copy's own key: a second folder of one
+   * repository on one computer has its own tab, keyed by that folder.
+   */
+  repositoryId?: string | null;
 };
 
 /**
@@ -442,7 +452,13 @@ function readNoMachineTabs(): NoMachineRepositoryTab[] {
       if (!entry || typeof entry !== "object") return [];
       const row = entry as Record<string, unknown>;
       if (typeof row.id !== "string" || !row.id || typeof row.displayName !== "string") return [];
-      return [{ id: row.id, displayName: row.displayName, iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null }];
+      return [{
+        id: row.id,
+        displayName: row.displayName,
+        iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null,
+        lastCopyKey: typeof row.lastCopyKey === "string" && row.lastCopyKey ? row.lastCopyKey : null,
+        repositoryId: typeof row.repositoryId === "string" && row.repositoryId ? row.repositoryId : null,
+      }];
     });
   } catch {
     return [];
@@ -454,7 +470,12 @@ function writeNoMachineTabs(tabs: readonly NoMachineRepositoryTab[]): void {
     // No icons: a data URL can be large, and the tab reads the icon again from the account.
     window.sessionStorage.setItem(
       NO_MACHINE_TABS_STORAGE_KEY,
-      JSON.stringify(tabs.map((tab) => ({ id: tab.id, displayName: tab.displayName }))),
+      JSON.stringify(tabs.map((tab) => ({
+        id: tab.id,
+        displayName: tab.displayName,
+        lastCopyKey: tab.lastCopyKey ?? null,
+        repositoryId: tab.repositoryId ?? null,
+      }))),
     );
   } catch {
     // Storage unavailable: the tabs still hold until the window reloads.

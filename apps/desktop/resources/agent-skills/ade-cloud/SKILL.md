@@ -103,6 +103,6 @@ Use `ade cloud update <machine>` only to update now or to retry a failed one.
 Your chat needs Android but runs on a standard computer (`ade android start`
 says so): tell the person, then `ade cloud create --kind vm --shape <the size
 the message names> --name "<name>"`, then `ade chat handoff
-"$ADE_CHAT_SESSION_ID" --machine "<name>" --fork --include-changes --clone
+"$ADE_CHAT_SESSION_ID" --to "<name>" --fork --include-changes --clone
 --when-turn-ends --note "<the task>"`, and end your turn. The old computer
 stays; offer to delete it from the new chat.

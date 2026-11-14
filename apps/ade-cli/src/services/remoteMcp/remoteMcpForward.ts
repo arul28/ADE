@@ -253,7 +253,7 @@ export function createRemoteMcpMachineRouter(deps: {
       const isThisMachine = machineKey === self.key;
       const name = isThisMachine
         ? self.name
-        : directoryRow?.name?.trim() || entry?.name || `Computer ${machineKey.slice(0, 6)}`;
+        : directoryRow?.name?.trim() || entry?.name || `Machine ${machineKey.slice(0, 6)}`;
       const supported = isThisMachine || Boolean(entry?.endpointKey);
       const included = entry?.included ?? true;
       const online = isThisMachine ? true : directoryRow ? directoryRow.online : listed ? false : null;
@@ -304,10 +304,10 @@ export function createRemoteMcpMachineRouter(deps: {
     const matches = byName.length ? byName : looseMachineNameMatches(machines, wanted, (machine) => [machine.name]);
     const names = machines.map((machine) => machine.name).join(", ") || "none";
     if (matches.length > 1) {
-      return { kind: "error", message: `More than one computer is called "${wanted}". Pass its key from machines_list instead.` };
+      return { kind: "error", message: `More than one machine is called "${wanted}". Pass its key from machines_list instead.` };
     }
     const match = matches[0];
-    if (!match) return { kind: "error", message: `No computer "${wanted}" on this ADE account. Computers: ${names}.` };
+    if (!match) return { kind: "error", message: `No machine "${wanted}" on this ADE account. Machines: ${names}.` };
     if (match.isThisMachine) return { kind: "here", machine: self };
     return { kind: "remote", machine: match };
   };
@@ -323,7 +323,7 @@ export function createRemoteMcpMachineRouter(deps: {
 
   const forward: RemoteMcpMachineRouter["forward"] = async (machine, call, context, timeoutMs) => {
     const relay = deps.relayUrl()?.replace(/\/+$/, "");
-    if (!relay) return toolError(`This computer has no relay address yet, so it can't reach ${machine.name}.`);
+    if (!relay) return toolError(`This machine has no relay address yet, so it can't reach ${machine.name}.`);
     if (!context.bearer) return toolError(`This call has no token to send on to ${machine.name}.`);
     if (!machine.endpointKey) return toolError(unavailableReason(machine) ?? `${machine.name} can't take calls.`);
     // A read-only typed tool may be sent twice; anything else is tried again
@@ -396,7 +396,7 @@ export function createRemoteMcpMachineRouter(deps: {
     }
     const result = parsed?.result;
     if (!result || typeof result !== "object" || !Array.isArray((result as { content?: unknown }).content)) {
-      return toolError(`ADE on ${machine.name} sent an answer this computer can't read.`);
+      return toolError(`ADE on ${machine.name} sent an answer this machine can't read.`);
     }
     return result as RemoteMcpToolResult;
   };

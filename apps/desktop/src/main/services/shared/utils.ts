@@ -11,7 +11,7 @@ import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, terminateProcessTree } from "./processExecution";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
 import { writeFileAtomic } from "../state/durableFile";
 
@@ -540,6 +540,26 @@ export const PATH_ESCAPES_ROOT_MESSAGE = "Path escapes root";
  */
 export function isPathEscapeError(error: unknown): boolean {
   return error instanceof Error && error.message === PATH_ESCAPES_ROOT_MESSAGE;
+}
+
+/**
+ * Marks a containment refusal `user` and returns the error unchanged. Only for
+ * a caller whose path came from a person or an agent: there the refusal is
+ * the answer. A path ADE computed itself stays unmarked, so a bad one is still
+ * reported as a defect. Every other error passes through as it was.
+ */
+export function markUserPathRefusal<E>(error: E): E {
+  if (isPathEscapeError(error)) markExpected(error as Error, "user");
+  return error;
+}
+
+/** Runs `run` on a path from a person or an agent; a containment refusal from it is marked `user`. */
+export function withUserPath<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (error) {
+    throw markUserPathRefusal(error);
+  }
 }
 
 const PATH_NOT_A_DIRECTORY_PREFIX = "Path is not a directory: ";

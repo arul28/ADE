@@ -769,7 +769,8 @@ async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
     return await call();
   } catch (error) {
     if (error instanceof LaneShareError) {
-      throw codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode);
+      // Keeps the "expected" mark of an unreachable account directory.
+      throw carryExpected(error, codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode));
     }
     throw error;
   }
@@ -1049,8 +1050,15 @@ function requireCallerSessionId(value: unknown): string {
   return sessionId;
 }
 
+/**
+ * A send or steer may carry attachments with no words (the composer allows it,
+ * and the chat service routes it), so only a send with nothing at all needs
+ * text.
+ */
 function readSendText(record: Record<string, unknown>): string {
-  if (record.includeThreadComments === true) return typeof record.text === "string" ? record.text : "";
+  const hasAttachments = (Array.isArray(record.attachments) && record.attachments.length > 0)
+    || (Array.isArray(record.contextAttachments) && record.contextAttachments.length > 0);
+  if (record.includeThreadComments === true || hasAttachments) return typeof record.text === "string" ? record.text : "";
   return requireNonEmptyString(record.text, "text");
 }
 
@@ -4025,7 +4033,7 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
       if (!owner) throw new Error("remote_work.delete requires owner.");
       const projectId = isRecord(args) && typeof args.projectId === "string" ? args.projectId.trim() : "";
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
-        throw new Error("That work copy belongs to another project here; delete it through that project.");
+        throw new Error("That copy of a chat's code belongs to another project here; delete it through that project.");
       }
       // Refused while a command runs in it (RemoteWorkError "copy_busy").
       return { deleted: await here().release(owner) };

@@ -9,7 +9,8 @@ import type { DiagnosticsManualSendResult } from "./types/diagnostics";
  * directory Worker's `POST /diagnostics/upload`.
  *
  * ONE home for the upload, shared by every surface that offers it — the desktop
- * main process (Settings and every "Report issue" button send through it) and
+ * main process (Settings and every "Report this error to ADE…" dialog send
+ * through it) and
  * `ade report-issue --send`. It lives under `apps/desktop/src/shared` because
  * that is the only directory both can import, and the renderer reads its
  * failure copy from here too. The renderer never uploads itself: its CSP's
@@ -22,7 +23,8 @@ import type { DiagnosticsManualSendResult } from "./types/diagnostics";
  * Everything private is stripped by `redactDiagnosticText` before a report
  * exists at all, so this module deliberately does nothing to the text: it posts
  * the exact bytes the user could have pasted themselves. Any transformation
- * here would mean the thing that was sent is not the thing that was shown.
+ * here would mean the thing that was sent is not the thing that was shown,
+ * and the report dialog shows the person this exact text before it sends.
  *
  * Surface-specific concerns stay with their surface: the CLI reads an account
  * token out of the machine's credential store in `sendDiagnosticReport`, and
@@ -246,7 +248,8 @@ export async function uploadDiagnosticReport(
 
 /**
  * One short sentence per manual-send outcome, and never a status code. Shared
- * by Settings' "Send a report to ADE" and every error screen's "Report issue".
+ * by Settings' "Send a report to ADE" and every error screen's "Report this
+ * error to ADE…" dialog.
  * On desktop both send through the main process; the web client sends its
  * Report issue as Sentry User Feedback and answers in the same shape.
  *
@@ -276,8 +279,10 @@ export function describeManualSendFailure(result: Extract<DiagnosticsManualSendR
       // without a path, and telling someone to open a file that is not there
       // sends them looking for it. The offer is made only when it is real.
       return result.reportPath
-        ? "This report is too big to send. It's saved on this computer — open it and attach it to a GitHub issue."
+        ? "This report is too big to send. A copy is saved on this computer."
         : "This report is too big to send, and ADE couldn't save a copy on this computer.";
+    case "expired":
+      return "This report is out of date. ADE made a new one. Check it, then press Send again.";
     default:
       // `failed` covers more than the network (the bridge threw, the service
       // is absent, a send was already running), so the sentence does not
