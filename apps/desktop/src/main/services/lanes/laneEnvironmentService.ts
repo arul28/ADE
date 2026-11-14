@@ -16,6 +16,7 @@ import type {
   LaneSummary
 } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
+import { isDiskFullText, LANE_SETUP_DISK_FULL_ERROR } from "../../../shared/types/storage";
 import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
 
@@ -325,16 +326,17 @@ export function createLaneEnvironmentService({
     try {
       const errorMessage = await action();
       if (errorMessage) {
-        updateStep(progress, kind, { status: "failed", error: errorMessage, durationMs: Date.now() - startTime });
+        updateStep(progress, kind, { status: "failed", error: isDiskFullText(errorMessage) ? LANE_SETUP_DISK_FULL_ERROR : errorMessage, durationMs: Date.now() - startTime });
         markFailed(progress, laneId);
         return false;
       }
       updateStep(progress, kind, { status: "completed", durationMs: Date.now() - startTime });
       return true;
     } catch (err: any) {
+      const message = err?.message ?? String(err);
       updateStep(progress, kind, {
         status: "failed",
-        error: err?.message ?? String(err),
+        error: isDiskFullText(message) || err?.code === "ENOSPC" ? LANE_SETUP_DISK_FULL_ERROR : message,
         durationMs: Date.now() - startTime
       });
       markFailed(progress, laneId);
@@ -484,7 +486,8 @@ export function createLaneEnvironmentService({
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
       const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
       if (result.exitCode !== 0) {
-        failures.push(`${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
+        // The excerpt is the output's start; a full disk is often said only at its end.
+        failures.push(isDiskFullText(result.stderr) || isDiskFullText(result.stdout) ? LANE_SETUP_DISK_FULL_ERROR : `${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
         logger.warn("lane_env_init.dependency_install_failed", {
           command: dep.command.join(" "),
           exitCode: result.exitCode,
@@ -618,6 +621,11 @@ export function createLaneEnvironmentService({
     for (const step of steps) {
       const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
       if (result.exitCode !== 0) {
+        // npm says ENOSPC after pages of warnings, past the excerpt: the whole output is read for it.
+        if (isDiskFullText(result.stderr) || isDiskFullText(result.stdout)) {
+          logger.warn("lane_env_init.setup_script_disk_full", { laneId, command: step.label, exitCode: result.exitCode });
+          return LANE_SETUP_DISK_FULL_ERROR;
+        }
         const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, 500);
         logger.warn("lane_env_init.setup_script_failed", {
           laneId,

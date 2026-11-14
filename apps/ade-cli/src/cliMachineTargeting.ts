@@ -6,6 +6,7 @@ import { chatLaunchStatusLine } from "../../desktop/src/shared/chatLaunch";
 import { CLOUD_LANE_MACHINE, followCloudLaneLaunch } from "../../desktop/src/shared/cloudLaneLaunch";
 import { CLOUD_TIER_IDS, isCloudTierId } from "../../desktop/src/shared/cloudTiers";
 import { parseLaneLinearIssueValue } from "../../desktop/src/shared/laneLinearIssue";
+import { quoteShellArg } from "../../desktop/src/shared/shell";
 import {
   pullFileFromWorkCopy,
   pushFileToWorkCopy,
@@ -1610,7 +1611,7 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
           throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
             launchId,
             phase: "failed",
-            nextAction: `ade chat create --machine cloud --launch-id ${launchId} (the prompt and choices are kept) goes on from the failed step.`,
+            nextAction: cloudLaneRetryCommand(launchId, launch, status?.launch.laneName ?? null),
           });
         case "cancelled":
           throw new CliExecutionError("The lane launch was cancelled, and its computer deleted.", { launchId, phase: "cancelled" });
@@ -1624,6 +1625,20 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   } finally {
     process.removeListener("SIGINT", onInterrupt);
   }
+}
+
+/**
+ * The command that goes on from a failed launch's failed step: the same
+ * `--launch-id` on the command that started it. A lane alone came from
+ * `lanes create`, which needs a name; a known launch keeps the choices it
+ * started with, so the name only completes the command.
+ */
+function cloudLaneRetryCommand(launchId: string, launch: JsonObject, laneName: string | null): string {
+  if (launch.kind === "lane") {
+    const name = laneName?.trim() || asString(launch.laneName) || "lane";
+    return `ade lanes create --machine cloud --launch-id ${launchId} --name ${quoteShellArg(name, { platform: process.platform })} (the lane's choices are kept) goes on from the failed step.`;
+  }
+  return `ade chat create --machine cloud --launch-id ${launchId} (the prompt and choices are kept) goes on from the failed step.`;
 }
 
 /** `--machine cloud` on an execute plan: `chat create`, or a launch's status or cancel. */

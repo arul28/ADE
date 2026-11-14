@@ -81,7 +81,7 @@ import {
   runDefaultLaneEnvironmentSetup,
   runLaneEnvironmentSetup,
 } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
-import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
+import { createChatLaunchService, type ChatLaunchService, type ChatLaunchServiceDeps } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { fetchLaneStartBranch } from "../../desktop/src/main/services/chat/chatLaunchStartFetch";
 import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
@@ -1084,6 +1084,8 @@ export async function createAdeRuntime(args: {
   releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
+  /** An ADE Cloud computer's way to grow its disk when a lane launch's setup fills it (`cloudDiskGrow.ts`). */
+  makeRoomForLaneSetup?: ChatLaunchServiceDeps["makeRoomForEnvironment"];
   /**
    * The clock that times this open, when a caller times a larger open around
    * it (the brain's scope registry, which also tells the freeze guard each
@@ -3531,6 +3533,7 @@ export async function createAdeRuntime(args: {
         abortEnvironment: ({ laneId, worktreePath }) => {
           laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath);
         },
+        ...(typeof args !== "string" && args.makeRoomForLaneSetup ? { makeRoomForEnvironment: args.makeRoomForLaneSetup } : {}),
         emit: (event) => pushEvent("runtime", { type: "chat_launch_event", event }),
         onOutcome: ({ outcome, provider }) => captureNewLaneLaunchAnalytics({
           analytics: productAnalyticsService,

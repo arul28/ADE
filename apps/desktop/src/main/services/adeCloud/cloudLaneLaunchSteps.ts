@@ -170,7 +170,8 @@ export function githubClone(originUrl: string | null): { identity: string; clone
  * the project's pattern, and the brain there renames both with the AI name.
  * The name the person chose is kept. A rename follows the lane to its
  * computer's metadata (cloudLaneNameSync.ts), so the ADE Cloud page shows the
- * new name; the computer's own name is internal.
+ * new name, and the launcher renames the computer and its account machine to
+ * it (`recordName` in cloudLaneLaunchService.ts).
  */
 export function cloudLaneConfig(config: ChatLaunchLaneConfig | null | undefined): ChatLaunchLaneConfig {
   if (config?.mode === "existing") return config;

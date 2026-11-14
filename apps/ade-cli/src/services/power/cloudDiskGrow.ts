@@ -8,6 +8,12 @@
  * chat's refusal. The card reads the exact reason; builds before plans read
  * the older key.
  *
+ * A lane launch's setup that fills the disk (every size starts with the same
+ * small disk, and a big repository's install outgrows it) asks for a step at
+ * once (`makeRoomForSetup`): the launch waits, the computer restarts, and the
+ * launch's setup runs again on the bigger disk, a step at a time up to the
+ * size's limit, inside every rule the server checks.
+ *
  * The lines come from this computer's own disk (`diskPressureThresholdsForSize`):
  * the guard stops agent turns at "exhausted", the grow comes at "critical" or
  * earlier, so on any disk size the grow is asked for before a turn is refused.
@@ -23,6 +29,7 @@ import {
   cloudDiskGrowRefusedWayOut,
 } from "../../../../desktop/src/shared/adeCloud";
 import type { CloudProvider } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
+import type { ChatLaunchEnvironmentRoom } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
 import { patchCloudMetadata } from "../../../../desktop/src/main/services/adeCloud/cloudInstanceOps";
 import {
@@ -49,7 +56,20 @@ const REFUSED_RETRY_MS = 60 * 60_000;
 /** A grow that failed for another reason (out of hours, the server or network) waits this long before the next try. */
 const FAILED_RETRY_MS = 5 * 60_000;
 
+/** A lane setup's grow is waited on this long while this brain still runs (the restart a grow brings ends the wait sooner). */
+const SETUP_GROW_WAIT_MS = 10 * 60_000;
+const SETUP_GROW_POLL_MS = 5_000;
+/** The filesystem reads this much bigger once a grow landed (a step is whole GB; the filesystem keeps a little of it). */
+const GREW_MARGIN_BYTES = 512 * 1024 * 1024;
+
 type DiskSpace = { freeBytes: number; totalBytes: number };
+
+/** One step's ask: started, refused by the server, held back because something runs, or no way to ask. */
+type GrowStep =
+  | { state: "growing"; toGb: number }
+  | { state: "refused"; reason: string; wayOut: string; diskGb: number }
+  | { state: "busy" }
+  | { state: "unavailable" };
 
 function readDiskSpace(target: string): DiskSpace | null {
   try {
@@ -144,6 +164,50 @@ export function createCloudDiskGrower(deps: {
     || (grewAt != null && now() - grewAt < CLOUD_DISK_GROW_STARTED_COOLDOWN_MS)
     || (failedAt != null && now() - failedAt < FAILED_RETRY_MS);
 
+  /** Asks the server for one more step of disk. A grow restarts the computer, so `stillIdle` is asked right before. */
+  const growOneStep = async (stillIdle: () => boolean | Promise<boolean>, disk: { space: DiskSpace; pressure: DiskPressureState }): Promise<GrowStep> => {
+    const client = await deps.client();
+    if (!client) return { state: "unavailable" };
+    const instance = await client.getInstance(deps.instanceId);
+    if (!instance.resources) return { state: "unavailable" };
+    const account = await client.getAccount().catch((error: unknown) => {
+      deps.logger?.warn("cloud.disk_catalog_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
+    const catalog = cloudCatalogOf(account);
+    // A grow restarts the computer, and work may have started during those reads.
+    if (!(await stillIdle())) return { state: "busy" };
+    const { cpu, memory, disk: diskGb } = instance.resources;
+    const toGb = diskGb + catalog.diskStepGb;
+    try {
+      writeState({ v: 1, state: "growing", toGb, at: now(), instanceId: deps.instanceId, fromBytes: disk.space.totalBytes });
+      await client.resizeInstance(deps.instanceId, { cpu, memory, disk: toGb }, { computerIdle: true, origin: "auto" });
+    } catch (error) {
+      if (error instanceof CloudProviderError && (error.code === "needs_paid_plan" || error.code === "disk_limit")) {
+        refusedAt = now();
+        // A server before plans sends no reason: its two codes map onto the nearest exact one.
+        const reason = error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit");
+        const wayOut = cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.";
+        writeState({ v: 1, state: "refused", reason, wayOut, at: now(), instanceId: deps.instanceId });
+        // The card says "full" once the guard stops heavy work; the chat's refusal says it at once.
+        if (isUrgentDiskPressure(disk.pressure)) await setNotice(client, reason);
+        deps.logger?.info("cloud.disk_grow_refused", { code: error.code, reason });
+        return { state: "refused", reason, wayOut, diskGb };
+      }
+      // Not refused, just failed: the caller holds the next try back a little.
+      writeState(null);
+      throw error;
+    }
+    grewAt = now();
+    failedAt = null;
+    deps.logger?.info("cloud.disk_grown", { instanceId: deps.instanceId, toGb, pressure: disk.pressure });
+    // The restart is on its way; a notice left from before goes once it can.
+    await setNotice(client, null).catch((error: unknown) => {
+      deps.logger?.warn("cloud.disk_notice_clear_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+    return { state: "growing", toGb };
+  };
+
   const grow = async (stillIdle: () => boolean | Promise<boolean>): Promise<boolean> => {
     const disk = measure();
     if (!disk) return false;
@@ -164,43 +228,33 @@ export function createCloudDiskGrower(deps: {
       return false;
     }
     if (holding()) return false;
-    const client = await deps.client();
-    if (!client) return false;
-    const instance = await client.getInstance(deps.instanceId);
-    if (!instance.resources) return false;
-    const account = await client.getAccount().catch((error: unknown) => {
-      deps.logger?.warn("cloud.disk_catalog_read_failed", { error: error instanceof Error ? error.message : String(error) });
-      return null;
-    });
-    const catalog = cloudCatalogOf(account);
-    // A grow restarts the computer, and work may have started during those reads.
-    if (!(await stillIdle())) return false;
-    const { cpu, memory, disk: diskGb } = instance.resources;
-    const toGb = diskGb + catalog.diskStepGb;
-    try {
-      writeState({ v: 1, state: "growing", toGb, at: now(), instanceId: deps.instanceId });
-      await client.resizeInstance(deps.instanceId, { cpu, memory, disk: toGb }, { computerIdle: true, origin: "auto" });
-      grewAt = now();
-      failedAt = null;
-      deps.logger?.info("cloud.disk_grown", { instanceId: deps.instanceId, toGb, pressure: disk.pressure });
-      await setNotice(client, null);
-      return true;
-    } catch (error) {
-      if (error instanceof CloudProviderError && (error.code === "needs_paid_plan" || error.code === "disk_limit")) {
-        refusedAt = now();
-        // A server before plans sends no reason: its two codes map onto the nearest exact one.
-        const reason = error.detail.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : "account_limit");
-        writeState({ v: 1, state: "refused", reason, wayOut: cloudDiskGrowRefusedWayOut(null, catalog, reason) ?? "It can't grow right now.", at: now(), instanceId: deps.instanceId });
-        // The card says "full" once the guard stops heavy work; the chat's refusal says it at once.
-        if (isUrgentDiskPressure(disk.pressure)) await setNotice(client, reason);
-        deps.logger?.info("cloud.disk_grow_refused", { code: error.code, reason });
-        return false;
-      }
-      // Not refused, just failed: `growIfNeeded` holds the next try back a little.
-      writeState(null);
-      throw error;
-    }
+    return (await growOneStep(stillIdle, disk)).state === "growing";
   };
+
+  /** Resolves true once the filesystem reads bigger than `fromBytes`, false at the wait's end or on abort. */
+  const waitForGrowth = (fromBytes: number, signal: AbortSignal): Promise<boolean> => new Promise((resolve) => {
+    const startedAt = now();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (grew: boolean) => {
+      if (timer) clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      resolve(grew);
+    };
+    const onAbort = () => finish(false);
+    const check = () => {
+      const space = readDiskSpace(deps.path);
+      if (space && space.totalBytes > fromBytes + GREW_MARGIN_BYTES) return finish(true);
+      if (now() - startedAt >= SETUP_GROW_WAIT_MS) return finish(false);
+      timer = setTimeout(check, SETUP_GROW_POLL_MS);
+      timer.unref?.();
+    };
+    if (signal.aborted) return resolve(false);
+    signal.addEventListener("abort", onAbort, { once: true });
+    check();
+  });
+
+  const growingDetail = (toGb: number): string =>
+    `The disk filled up during setup. ADE is growing it to ${toGb} GB: the computer restarts for a moment, then setup runs again.`;
 
   return {
     /**
@@ -225,6 +279,49 @@ export function createCloudDiskGrower(deps: {
      * shouldn't wait for the idle point: a local `statfs`, no server call.
      * False while a refused, started or failed grow still holds.
      */
+    /**
+     * A lane launch's setup filled the disk (`makeRoomForEnvironment`): one
+     * more step now, whatever the near-full line says (a failed install can
+     * leave the disk roomy again) and past an earlier refusal's wait (the
+     * server is asked; it holds every rule). Only while nothing else runs:
+     * the grow restarts the computer. A grow already asked for whose disk
+     * hasn't grown yet is waited on, not asked again.
+     */
+    async makeRoomForSetup(args: { stillIdle: () => boolean | Promise<boolean>; signal: AbortSignal }): Promise<ChatLaunchEnvironmentRoom | null> {
+      const disk = measure();
+      if (!disk) return null;
+      const asked = readCloudDiskGrowState(stateFile, deps.instanceId);
+      if (
+        asked?.state === "growing"
+        && asked.fromBytes != null
+        && disk.space.totalBytes <= asked.fromBytes + GREW_MARGIN_BYTES
+        && now() - asked.at < CLOUD_DISK_GROW_STARTED_COOLDOWN_MS
+      ) {
+        return { state: "growing", detail: growingDetail(asked.toGb), ready: waitForGrowth(asked.fromBytes, args.signal) };
+      }
+      if (inFlight) return { state: "refused", error: "Setup filled this computer's disk while ADE was already growing it. Retry in a minute or two." };
+      inFlight = true;
+      try {
+        const step = await growOneStep(args.stillIdle, disk);
+        switch (step.state) {
+          case "growing":
+            return { state: "growing", detail: growingDetail(step.toGb), ready: waitForGrowth(disk.space.totalBytes, args.signal) };
+          case "refused":
+            return { state: "refused", error: `Setup filled this computer's ${step.diskGb} GB disk, and it can't grow: ${step.wayOut} Then retry.` };
+          case "busy":
+            return { state: "refused", error: "Setup filled this computer's disk, and ADE can't grow it while something else runs there (a grow restarts the computer). Retry once that's done." };
+          case "unavailable":
+            return null;
+        }
+      } catch (error) {
+        failedAt = now();
+        const message = error instanceof Error ? error.message : String(error);
+        deps.logger?.warn("cloud.disk_grow_for_setup_failed", { error: message });
+        return { state: "refused", error: `Setup filled this computer's disk, and ADE couldn't grow it right now (${message.replace(/[.\s]+$/, "")}). Retry to try again.` };
+      } finally {
+        inFlight = false;
+      }
+    },
     growDueNow(): boolean {
       if (inFlight || holding()) return false;
       const disk = measure();

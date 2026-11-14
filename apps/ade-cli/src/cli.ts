@@ -30219,24 +30219,45 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
+  const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? async () => {
+        const sources = { projectRegistry, scopeRegistry };
+        const [facts, nextWakeAt] = await Promise.all([
+          readMachineBusyFacts({ ...sources, personalChatScope }),
+          readMachineNextScheduledWakeAt(sources),
+        ]);
+        const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
+          ...facts,
+          setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+          holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+        }, Date.now());
+        // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+        // one goes to the account server, which wakes the machine for it.
+        return { busy, reasons, nextWakeAt, waitingOnPerson };
+      }
+    : null;
+  // A lane launch's setup filled the disk: grow it now, while nothing else
+  // runs, and the launch's setup runs again after the restart. The launch
+  // itself still reads as `lane_setup` while it waits, and a cloud computer
+  // holds one lane, so that reason alone doesn't hold the grow back.
+  const makeRoomForLaneSetup = cloudDiskGrower && readCloudBusy
+    ? async ({ signal }: { signal: AbortSignal }) => await cloudDiskGrower.makeRoomForSetup({
+        signal,
+        stillIdle: async () => {
+          const busy = await readCloudBusy();
+          const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+          if (others.length || busy.waitingOnPerson) {
+            headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", { reasons: others, waitingOnPerson: Boolean(busy.waitingOnPerson) });
+            return false;
+          }
+          return true;
+        },
+      })
+    : null;
+  const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
-        readBusy: async () => {
-          const sources = { projectRegistry, scopeRegistry };
-          const [facts, nextWakeAt] = await Promise.all([
-            readMachineBusyFacts({ ...sources, personalChatScope }),
-            readMachineNextScheduledWakeAt(sources),
-          ]);
-          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
-            ...facts,
-            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
-            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
-          }, Date.now());
-          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
-          // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt, waitingOnPerson };
-        },
+        readBusy: readCloudBusy,
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
@@ -31044,6 +31065,7 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    ...(makeRoomForLaneSetup ? { makeRoomForLaneSetup } : {}),
     // Older clones saved the GitHub sign-in header in .git/config: take it out
     // once per project, off the open path (one file read when there is none).
     onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),

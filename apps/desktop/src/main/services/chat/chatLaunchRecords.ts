@@ -29,6 +29,12 @@ export type ChatLaunchRecord = {
   startNowRequested: boolean;
   /** A checkout already ran once, so a retry must first clear its leftovers. */
   checkoutAttempted: boolean;
+  /**
+   * The setup filled the disk and the host is making room (an ADE Cloud
+   * computer grows its disk, which restarts it). Revived still running, and
+   * its setup runs again (`makeRoomForEnvironment` in chatLaunchService.ts).
+   */
+  awaitingRoom?: boolean;
 };
 
 /**
@@ -42,14 +48,17 @@ const RELOAD_SEQUENCE_JUMP = 1_000_000;
 /**
  * Bring a persisted record back after a restart, or return null to drop it.
  * Finished launches are dropped unless they still owe the chat a queued
- * message; one that was mid-flight is marked failed ("interrupted").
+ * message; one that was mid-flight is marked failed ("interrupted"), except
+ * one waiting for room on the disk, which goes on.
  */
 function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatLaunchRecord | null {
   const snapshot = record?.snapshot;
   if (!snapshot || typeof snapshot.launchId !== "string") return null;
   const owesMessages = snapshot.phase === "completed" && (snapshot.queuedMessages?.length ?? 0) > 0;
   if (isChatLaunchTerminal(snapshot.phase) && !owesMessages) return null;
-  if (snapshot.phase === "running" || snapshot.phase === "awaiting-client") {
+  const awaitingRoom = record.awaitingRoom === true && snapshot.phase === "running";
+  record.awaitingRoom = awaitingRoom;
+  if (!awaitingRoom && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")) {
     // The process that ran it is gone. Say so instead of spinning forever.
     const running = snapshot.stages.find((stage) => stage.status === "running");
     if (running) {

@@ -51,6 +51,7 @@ import type { ChatLaunchEnvironmentPlan } from "../lanes/laneEnvironmentSetup";
 import { createChatLaunchRecordStore, type ChatLaunchRecord as LaunchRecord } from "./chatLaunchRecords";
 import { createQueuedMessageDelivery, type QueuedDeliveryState } from "./chatLaunchDelivery";
 import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLaunchTranscriptCard";
+import { isDiskFullText, LANE_SETUP_DISK_FULL_ERROR } from "../../../shared/types/storage";
 
 /**
  * Brain-owned "launch a chat into a new lane".
@@ -140,6 +141,18 @@ export type ChatLaunchBaseProgress = {
   onWaitingForStaleFetch?: (info: { remoteRef: string; lastFetchedAtMs: number | null }) => void;
 };
 
+/**
+ * What a host does once a launch's setup filled the disk
+ * (`makeRoomForEnvironment`). `growing`: the stage keeps running with
+ * `detail` while the host makes room, and setup runs again once `ready`
+ * resolves true (the disk grew in place) or after the restart the grow brings
+ * (the record says so, and the reloaded launch goes on by itself). `refused`:
+ * the stage fails with the host's own sentence.
+ */
+export type ChatLaunchEnvironmentRoom =
+  | { state: "growing"; detail: string; ready: Promise<boolean> }
+  | { state: "refused"; error: string };
+
 export type ChatLaunchServiceDeps = {
   launchesDir: string;
   logger: Logger;
@@ -168,6 +181,13 @@ export type ChatLaunchServiceDeps = {
   onEnvironmentEvent: (listener: (event: LaneEnvInitEvent) => void) => () => void;
   /** Stop a lane's in-flight environment setup and kill its running commands (Cancel). */
   abortEnvironment?: (args: { laneId: string; worktreePath: string | null }) => void;
+  /**
+   * The lane's setup filled the disk. An ADE Cloud computer grows its own
+   * disk (`cloudDiskGrow.ts`), as long as nothing else runs there. Unset, or
+   * null: the launch fails with the disk-full sentence, as anywhere else.
+   * `signal` aborts on Cancel.
+   */
+  makeRoomForEnvironment?: (args: { launchId: string; laneId: string; signal: AbortSignal }) => Promise<ChatLaunchEnvironmentRoom | null>;
   /**
    * A launch reached an outcome (once per outcome per launch in this process).
    * Product analytics hangs off this; the service itself stays analytics-free.
@@ -734,8 +754,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   const environmentFailureStatus = (record: LaunchRecord): ChatLaunchStageStatus =>
     record.startNowRequested ? "warning" : "failed";
 
-  /** Resolves when the environment settles (ok or failed); never throws. */
-  const runEnvironmentStage = async (record: LaunchRecord): Promise<EnvironmentOutcome> => {
+  /** One run of the lane's setup: its outcome, or the disk filling up (the stage is still running then). */
+  const runEnvironmentOnce = async (record: LaunchRecord): Promise<EnvironmentOutcome | { diskFull: LaneEnvInitProgress["steps"] }> => {
     const laneId = record.snapshot.laneId;
     setStage(record, "environment", "running", { detail: record.snapshot.templateName, steps: [] });
     publish(record, { persist: false });
@@ -756,9 +776,11 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       }
       if (progress.overallStatus === "failed") {
         const failedStep = progress.steps.find((step) => step.status === "failed");
+        const steps = progress.steps.map((step) => ({ ...step }));
+        if (isDiskFullText(failedStep?.error)) return { diskFull: steps };
         const message = failedStep ? `${failedStep.label}: ${failedStep.error ?? "failed"}` : "Lane environment setup failed.";
         setStage(record, "environment", environmentFailureStatus(record), {
-          steps: progress.steps.map((step) => ({ ...step })),
+          steps,
           error: message,
           ...(record.startNowRequested ? { detail: message } : {}),
         });
@@ -771,6 +793,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     } catch (error) {
       if (record.snapshot.phase === "cancelled") return "failed";
       const message = getErrorMessage(error);
+      if (isDiskFullText(message)) return { diskFull: stageOf(record, "environment")?.steps ?? [] };
       setStage(record, "environment", environmentFailureStatus(record), {
         error: message,
         ...(record.startNowRequested ? { detail: message } : {}),
@@ -779,6 +802,59 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       return "failed";
     } finally {
       unsubscribe();
+    }
+  };
+
+  /**
+   * The setup filled the disk. A host that can make room keeps the stage
+   * running while it does: true when setup should run again now. The record
+   * says so before the host is asked, so the restart an ADE Cloud disk grow
+   * brings goes on by itself after it instead of reading as interrupted.
+   * Otherwise the sentence the stage fails with (the host's own when it refused).
+   */
+  const waitForRoom = async (record: LaunchRecord, steps: LaneEnvInitProgress["steps"]): Promise<true | string> => {
+    const make = deps.makeRoomForEnvironment;
+    // Started anyway: the agent already runs, so nothing restarts under it.
+    if (!make || record.startNowRequested) return LANE_SETUP_DISK_FULL_ERROR;
+    const launchId = record.snapshot.launchId;
+    const signal = runtimeFor(launchId).abort.signal;
+    record.awaitingRoom = true;
+    setStage(record, "environment", "running", { detail: "The disk filled up during setup. Making room…", steps });
+    publish(record);
+    let room: ChatLaunchEnvironmentRoom | null = null;
+    try {
+      room = await make({ launchId, laneId: record.snapshot.laneId, signal });
+      if (room?.state === "growing") {
+        const stage = stageOf(record, "environment");
+        if (stage) stage.detail = room.detail;
+        publish(record);
+        logger.info("chat_launch.environment_making_room", { launchId });
+        if (await room.ready.catch(() => false)) return true;
+        return "ADE asked for a bigger disk, but it didn't grow in time. Retry to set up again.";
+      }
+    } catch (error) {
+      logger.warn("chat_launch.environment_room_failed", { launchId, error: getErrorMessage(error) });
+    } finally {
+      record.awaitingRoom = false;
+    }
+    return room?.state === "refused" ? room.error : LANE_SETUP_DISK_FULL_ERROR;
+  };
+
+  /** Resolves when the environment settles (ok or failed); never throws. */
+  const runEnvironmentStage = async (record: LaunchRecord): Promise<EnvironmentOutcome> => {
+    for (;;) {
+      const outcome = await runEnvironmentOnce(record);
+      if (typeof outcome === "string") return outcome;
+      const room = await waitForRoom(record, outcome.diskFull);
+      if (record.snapshot.phase === "cancelled") return "failed";
+      if (room === true) continue;
+      setStage(record, "environment", environmentFailureStatus(record), {
+        steps: outcome.diskFull,
+        error: room,
+        detail: record.startNowRequested ? room : record.snapshot.templateName,
+      });
+      publish(record);
+      return "failed";
     }
   };
 
@@ -1042,6 +1118,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       messageSent: false,
       startNowRequested: false,
       checkoutAttempted: false,
+      awaitingRoom: false,
     };
     records.set(launchId, record);
     publish(record);
@@ -1328,8 +1405,11 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
   };
 
+  /** Launches whose setup waited for room when the host restarted (an ADE Cloud disk grow): their setup runs again. */
+  const resumeAfterRoom: LaunchRecord[] = [];
   for (const record of store.loadAll(nowIso())) {
     records.set(record.snapshot.launchId, record);
+    if (record.awaitingRoom && record.snapshot.phase === "running") resumeAfterRoom.push(record);
     // An outcome reached before the restart was already reported.
     const reloadedPhase = record.snapshot.phase;
     if (reloadedPhase === "completed" || reloadedPhase === "cancelled" || reloadedPhase === "failed") {
@@ -1350,6 +1430,17 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       if (record?.snapshot.sessionId === envelope.sessionId) adoptStartedChat(record);
     })
     : () => {};
+
+  if (resumeAfterRoom.length) {
+    // After this constructor returns, so the host's wiring is in place first.
+    setTimeout(() => {
+      for (const record of resumeAfterRoom) {
+        if (disposed || record.snapshot.phase !== "running") continue;
+        logger.info("chat_launch.environment_resumed_after_room", { launchId: record.snapshot.launchId });
+        void runPipeline(record);
+      }
+    }, 0).unref?.();
+  }
 
   const subscribe = (listener: (event: ChatLaunchEvent) => void): (() => void) => {
     listeners.add(listener);

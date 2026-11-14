@@ -23,6 +23,20 @@ export function isUrgentDiskPressure(state: DiskPressureState): boolean {
   return state === "critical" || state === "exhausted";
 }
 
+/**
+ * A lane's setup ran out of disk: the sentence its step shows instead of the
+ * tool's own output (npm's is pages of warnings before the one line that
+ * matters). Every ADE Cloud size starts with the same disk, so it never says
+ * to pick a bigger size; a cloud computer grows its disk and runs setup again
+ * (`makeRoomForEnvironment` in chatLaunchService.ts).
+ */
+export const LANE_SETUP_DISK_FULL_ERROR = "Setup ran out of disk space (no space left on device). Free up space on the computer the lane is on, then retry.";
+
+/** Whether a command's output or an error says the disk is full (`ENOSPC`). The sentence above says so too. */
+export function isDiskFullText(text: string | null | undefined): boolean {
+  return Boolean(text) && /\bENOSPC\b|no space left on device/i.test(text!);
+}
+
 export type StorageCategoryId =
   | "chats_history"
   | "lanes_worktrees"

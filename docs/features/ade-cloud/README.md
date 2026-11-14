@@ -1331,6 +1331,17 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   names the cloud computer's disk (not the disk of the computer the person is
   on), then the grow under way, or the refusal's reason and way out (a bigger
   size, extra disk, a plan, Clear caches).
+- A lane launch's setup that fills the disk (every size starts at 4 GB, and a
+  big repository's install, such as ADE's own npm packages, outgrows it): the
+  setup step reads `ENOSPC` anywhere in the command's output and says so in
+  one sentence (`LANE_SETUP_DISK_FULL_ERROR`) instead of npm's warnings. On a
+  cloud computer the launch's brain asks for one more step at once
+  (`makeRoomForSetup`, the same server rules, only while nothing else runs),
+  keeps the environment stage running with "growing it to N GB", and marks
+  the launch record `awaitingRoom`. The grow restarts the computer; the
+  reloaded record is not "interrupted": its setup runs again by itself, a
+  step at a time up to the size's `diskMaxGb`. A refused grow fails the stage
+  with the refusal's way out (extra disk, a bigger size, a plan) and Retry.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer
