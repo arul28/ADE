@@ -296,7 +296,8 @@ describe("a project's secrets in Passwords & Secrets", () => {
   });
 
   it("`ade secrets set` keeps a this-computer-only secret on this computer, and delete needs the name twice and removes every copy", async () => {
-    const mac = computer();
+    const relay = fakeRelay();
+    const mac = computer({ relay });
     const projectRoot = makeProjectRoot();
     writeLegacyStore(projectRoot, [{ name: "TOKEN", value: "old-file", storage: "device", updatedAt: "2026-10-01T00:00:00.000Z" }]);
     const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords });
@@ -305,7 +306,7 @@ describe("a project's secrets in Passwords & Secrets", () => {
     expect(await secrets.set({ name: "TOKEN", value: "local-2" })).toMatchObject({ name: "TOKEN", storage: "device" });
     expect((await mac.passwords.allSecretEntries()).map((entry) => [entry.value, entry.deviceOnly])).toEqual([["local-2", true]]);
     await mac.passwords.sync();
-    expect(JSON.stringify([...mac.relay.rows.values()])).toBe("[]");
+    expect(relay.rows.size).toBe(0);
 
     await mac.passwords.saveSecret({ name: "TOKEN", value: "account", projectScope: SCOPE, deviceOnly: false });
     await expect(secrets.delete({ name: "TOKEN", confirmName: "OTHER" })).rejects.toThrow(/confirmName/);

@@ -258,16 +258,22 @@ export function createProjectSecrets(ctx: ProjectSecretsContext) {
      * cannot read names from it): two computers that move the same old secret
      * write the same item, and the relay keeps the first. A secret the account
      * has since deleted stays deleted. A value too big for the relay stays on
-     * this computer only.
+     * this computer only, unless the account already holds a newer value.
      */
     adoptLegacySecret: (input: { name: string; value: string; projectScope: string; deviceOnly: boolean; updatedAt: string }): Promise<LegacySecretAdoption> => oneAtATime(async () => {
-      const deviceOnly = input.deviceOnly || input.value.length > LEGACY_ACCOUNT_VALUE_MAX_CHARS || SIGN_IN_CONFIG_SECRET_NAMES.has(input.name);
-      if (deviceOnly) {
+      if (input.deviceOnly || SIGN_IN_CONFIG_SECRET_NAMES.has(input.name)) {
         const saved = await saveOnDevice({ ...input, deviceOnly: true, skipIfNotOlder: true });
         return { outcome: saved ? "saved" : "kept", id: null };
       }
       const { accountId, opened } = await ctx.ensureOpened();
       const existing = findSecret(opened, input.name, input.projectScope);
+      // Too big for the relay: kept on this computer, unless the account
+      // already holds a newer value (a local copy would win over it here).
+      if (input.value.length > LEGACY_ACCOUNT_VALUE_MAX_CHARS) {
+        if (existing && existing[1].updatedAt >= input.updatedAt) return { outcome: "kept", id: existing[0] };
+        const saved = await saveOnDevice({ ...input, deviceOnly: true, skipIfNotOlder: true });
+        return { outcome: saved ? "saved" : "kept", id: null };
+      }
       if (existing) {
         if (existing[1].updatedAt >= input.updatedAt) return { outcome: "kept", id: existing[0] };
         await saveInAccount(existing[0], input, existing[1]);

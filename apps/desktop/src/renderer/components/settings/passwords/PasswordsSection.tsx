@@ -349,10 +349,10 @@ export function PasswordsSection() {
     }
   };
 
+  // Every name an import would replace, this computer's own copies included (the import updates those in place).
   const existingByScope = useMemo(() => {
     const out = new Map<string | null, Set<string>>();
     for (const secret of secrets) {
-      if (secret.deviceOnly) continue;
       const names = out.get(secret.projectScope) ?? new Set<string>();
       names.add(secret.title);
       out.set(secret.projectScope, names);
