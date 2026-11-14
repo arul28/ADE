@@ -663,6 +663,7 @@ const RUNTIME_METHODS = new Set([
   "providers.status",
   "usage.getUsageRollup",
   "usage.getLiveQuota",
+  "usage.consumeResetCredit",
   "personalChats.call",
   "providerAccounts.call",
   "credentials.call",
@@ -3758,6 +3759,23 @@ export function createMultiProjectRpcRequestHandler(
     // percentages and reset times, no token or credential.
     if (method === "usage.getLiveQuota") {
       return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getOwnLiveQuota() ?? null;
+    }
+
+    // Another machine spends a reset banked here: it shows this machine's
+    // credits for a login it cannot read itself. It spends one of this
+    // machine's own credits only, so a claim never travels on to a third
+    // machine. Agents may spend, matching the `usage.consumeResetCredit` action.
+    if (method === "usage.consumeResetCredit") {
+      if (!callerHasRoleAtLeast(callerRole(), "agent")) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "usage.consumeResetCredit requires the agent role.");
+      }
+      const accountId = typeof params.accountId === "string" ? params.accountId.trim() : "";
+      const service = peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir);
+      if (!service) {
+        return { ok: false, status: "failure", message: "Usage tracking has not started on this computer yet." };
+      }
+      const email = typeof params.email === "string" ? params.email.trim() : "";
+      return await service.consumeOwnResetCredit({ accountId, ...(email ? { email } : {}) });
     }
 
     if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {

@@ -208,6 +208,63 @@ describe("poolPeerQuota", () => {
     ]);
   });
 
+  it.each([
+    {
+      name: "lends a peer's credits to a dead login here, with no peer windows to show",
+      localLogin: "expired" as const,
+      localCredits: undefined,
+      peers: [{ key: "studio", minutesAgo: 1, count: 2 }],
+      lent: { count: 2, machineKey: "studio" },
+    },
+    {
+      name: "keeps this machine's own credits on a working login",
+      localLogin: "ok" as const,
+      localCredits: 1,
+      peers: [{ key: "studio", minutesAgo: 1, count: 4 }],
+      lent: null,
+    },
+    {
+      name: "lends nothing when the newest report says none are left",
+      localLogin: "expired" as const,
+      localCredits: undefined,
+      peers: [{ key: "old", minutesAgo: 30, count: 3 }, { key: "new", minutesAgo: 1, count: 0 }],
+      lent: null,
+    },
+  ])("$name", ({ localLogin, localCredits, peers, lent }) => {
+    const local = {
+      windows: [window({ windowType: "weekly", accountId: "claude:claude", percentUsed: 10, resetsAt: later(40) })],
+      accounts: [account({
+        id: "claude:claude",
+        email: "a@example.com",
+        login: localLogin,
+        machines: [{ label: "laptop", checkedAt: at(1) }],
+        ...(localCredits !== undefined ? { resetCredits: { availableCount: localCredits } } : {}),
+      })],
+    };
+    const others = peers.map((entry) => peer({
+      machineKey: entry.key,
+      // No windows: only the credit count crosses.
+      accounts: [account({
+        id: "claude:x",
+        email: "a@example.com",
+        login: "ok",
+        machines: [{ label: entry.key, checkedAt: at(entry.minutesAgo) }],
+        resetCredits: { availableCount: entry.count },
+      })],
+    }));
+
+    const shown = poolPeerQuota(local, others, NOW).forPicking.accounts?.find((entry) => entry.id === "claude:claude");
+
+    expect(shown?.email).toBe("a@example.com");
+    if (lent) {
+      expect(shown?.resetCredits?.availableCount).toBe(lent.count);
+      expect(shown?.resetCreditsOn).toEqual({ machineKey: lent.machineKey, label: lent.machineKey, accountId: "claude:x" });
+    } else {
+      expect(shown?.resetCreditsOn).toBeUndefined();
+      expect(shown?.resetCredits?.availableCount).toBe(localCredits);
+    }
+  });
+
   it("shows a login only another machine holds, but never offers it for picking", () => {
     const local = {
       windows: [window({ windowType: "weekly", accountId: "claude:claude", percentUsed: 10, resetsAt: later(40) })],
