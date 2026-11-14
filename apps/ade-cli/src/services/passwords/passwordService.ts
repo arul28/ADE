@@ -149,7 +149,12 @@ export function createPasswordService(args: {
    * computer forgot the key and the values.
    */
   let purgeCount = 0;
-  const purgedSince = (count: number): boolean => purgeCount !== count;
+  /**
+   * True when what started at `count` for `accountId` must not install what it
+   * got: a purge ran since, Passwords is off now, or another account signed in.
+   */
+  const purgedSince = (count: number, accountId?: string): boolean =>
+    purgeCount !== count || (accountId !== undefined && (!isEnabled() || args.getAccountUserId() !== accountId));
   const purgedError = (): Error => new PasswordsUnavailableError("Passwords & Secrets was signed out or turned off here while it opened.");
   let syncing: Promise<void> | null = null;
   let periodicSync: ReturnType<typeof setInterval> | null = null;
@@ -183,12 +188,16 @@ export function createPasswordService(args: {
     await store.set(CACHE_KEY, JSON.stringify(cache));
   }
 
-  async function vaultKey(accountId: string): Promise<{ key: Buffer; epoch: number }> {
+  async function vaultKey(
+    accountId: string,
+    /** The purge count when the caller started (a sync's start, not this call's). */
+    startedAt = purgeCount,
+  ): Promise<{ key: Buffer; epoch: number }> {
+    if (purgedSince(startedAt, accountId)) throw purgedError();
     if (memoryKey?.accountId === accountId) return memoryKey;
-    const startedAt = purgeCount;
     if (keepKeyOnDisk) {
       const cached = await store.get(KEY_CACHE_KEY);
-      if (purgedSince(startedAt)) throw purgedError();
+      if (purgedSince(startedAt, accountId)) throw purgedError();
       if (cached) {
         try {
           const parsed = JSON.parse(cached) as { accountId: string; dek: string; epoch: number };
@@ -205,7 +214,7 @@ export function createPasswordService(args: {
     if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
     const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind });
     if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
-    if (purgedSince(startedAt)) throw purgedError();
+    if (purgedSince(startedAt, accountId)) throw purgedError();
     memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
     if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
     logger.info("passwords.key_ready", { epoch: released.epoch, source: "relay" });
@@ -248,10 +257,11 @@ export function createPasswordService(args: {
     cache: CacheShape,
     /** Unsent saves opened with the previous key, on the pass after a key change. */
     carried: Map<string, PasswordItemSecret> | null = null,
+    /** The purge count when the caller started: a sync that a purge overtook installs nothing. */
+    startedAt = purgeCount,
   ): Promise<void> {
     const retried = carried !== null;
-    const startedAt = purgeCount;
-    const { key, epoch } = await vaultKey(accountId);
+    const { key, epoch } = await vaultKey(accountId, startedAt);
     const next = new Map<string, PasswordItemSecret>();
     let unopenable = 0;
     for (const [id, raw] of liveEnvelopes(cache)) {
@@ -276,7 +286,7 @@ export function createPasswordService(args: {
           }
         }
         await dropKey();
-        return await openAll(accountId, cache, unsent);
+        return await openAll(accountId, cache, unsent, startedAt);
       }
       const carriedSecret = envelope.epoch !== epoch ? carried?.get(id) : undefined;
       if (carriedSecret) {
@@ -290,14 +300,17 @@ export function createPasswordService(args: {
       }
     }
     if (unopenable) logger.warn("passwords.items_unopenable", { count: unopenable });
-    if (purgedSince(startedAt)) throw purgedError();
+    if (purgedSince(startedAt, accountId)) throw purgedError();
     opened = next;
     openedFor = accountId;
   }
 
   async function ensureOpened(): Promise<string> {
     const accountId = accountOrThrow();
-    if (openedFor !== accountId) await openAll(accountId, await readCache(accountId));
+    if (openedFor !== accountId) {
+      const startedAt = purgeCount;
+      await openAll(accountId, await readCache(accountId), null, startedAt);
+    }
     return accountId;
   }
 
@@ -370,6 +383,9 @@ export function createPasswordService(args: {
         if (memoryKey || openedFor) await purgeLocal();
         return;
       }
+      // A purge (off, sign-out, reset) after this point stops the sync: it
+      // writes, fetches and opens nothing more, so off stays off.
+      const startedAt = purgeCount;
       // Pull, outside the queue: the network can be slow, saves must not wait on it.
       const startCursor = (await withCache(() => readCache(accountId))).cursor;
       let cursor = startCursor;
@@ -392,19 +408,21 @@ export function createPasswordService(args: {
       if (keyIsStale) {
         logger.info("passwords.key_epoch_advanced", { from: known.epoch, to: relayEpoch });
         // Kept to open unsent saves made under it (it is cached here: no network).
-        pulledOldKey = await vaultKey(accountId);
+        pulledOldKey = await vaultKey(accountId, startedAt);
         await dropKey();
       }
       const toPush = await withCache(async () => {
+        if (purgedSince(startedAt, accountId)) return null;
         const cache = await readCache(accountId);
         const byId = new Map(cache.items.map((item) => [item.id, item]));
         for (const [id, row] of pulled) byId.set(id, row);
         cache.items = [...byId.values()];
         cache.cursor = cursor;
-        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId), pulledOldKey);
+        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId, startedAt), pulledOldKey);
         await writeCache(cache);
         return cache.pending.map((write) => ({ ...write }));
       });
+      if (!toPush) return;
       // Push, also outside the queue.
       if (toPush.length) {
         // In batches the relay accepts (a big import made offline is many);
@@ -430,10 +448,11 @@ export function createPasswordService(args: {
           const staleKey = results.some((result) => result.status === "stale_key");
           let refusedKey: { key: Buffer; epoch: number } | null = null;
           if (staleKey) {
-            refusedKey = await vaultKey(accountId);
+            refusedKey = await vaultKey(accountId, startedAt);
             await dropKey();
           }
           await withCache(async () => {
+            if (purgedSince(startedAt, accountId)) return;
             const cache = await readCache(accountId);
             const recordAccepted = (accepted: { id: string; deleted: boolean; envelope: string | null }, revision: string | null): void => {
               const updated: StoredItem = { id: accepted.id, revision, deleted: accepted.deleted, envelope: accepted.envelope };
@@ -466,16 +485,17 @@ export function createPasswordService(args: {
               return false;
             });
             // Kept writes are sealed again under the current key; the next sync sends them.
-            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId), refusedKey);
+            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId, startedAt), refusedKey);
             await writeCache(cache);
           });
         }
       }
+      if (purgedSince(startedAt, accountId)) return;
       openedFor = null;
       // Open what the sync brought in now, so a caller that cannot wait (a
       // webhook check) reads today's secrets, not the last open's.
       try {
-        await openAll(accountId, await withCache(() => readCache(accountId)));
+        await openAll(accountId, await withCache(() => readCache(accountId)), null, startedAt);
       } catch (error) {
         logger.warn("passwords.reopen_failed", { error: error instanceof Error ? error.name : "unknown" });
       }

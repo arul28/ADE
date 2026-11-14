@@ -48,6 +48,9 @@ sync store for ADE's own account data.
   computers can use it** (the ⋯ menu; the account setting
   `passwords.cloudEnabled`, on unless set off). A cloud brain checks it before
   every use and forgets the key when it goes off.
+- **Off, sign-out and Reset win over a sync in flight.** A sync or an open
+  that started before one of them writes, fetches and opens nothing after it,
+  and stops when Passwords is off or another account is signed in.
 - **Reset Passwords & Secrets** (⋯ menu) starts a new, empty vault under a new
   key, for every computer. The person types `reset`, then confirms with Touch ID
   or Windows Hello (a confirm dialog on a computer with neither). Secrets kept

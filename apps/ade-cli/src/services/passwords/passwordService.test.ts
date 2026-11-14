@@ -188,6 +188,41 @@ describe("password service", () => {
     expect(await laptop.resolveForFill({ itemId: during.id, pageUrl: "https://during.example/" })).toMatchObject({ password: "during-pass-2" });
   });
 
+  it("keeps nothing on an ADE Cloud computer turned off while a sync is pulling", async () => {
+    const { relay, control } = fakeRelay();
+    let cloudOn = true;
+    let keyRequests = 0;
+    const counted: PasswordsRelay = { ...relay, requestPasswordKey: (input) => { keyRequests += 1; return relay.requestPasswordKey(input); } };
+    const values = new Map<string, string>();
+    const cloud = createPasswordService({
+      adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")),
+      relay: counted,
+      getAccountUserId: () => "user_a",
+      getDeviceId: () => "cloud",
+      machineKind: "cloud",
+      getCloudEnabled: () => cloudOn,
+      setCloudEnabled: (enabled) => { cloudOn = enabled; },
+      store: { get: async (k) => values.get(k) ?? null, set: async (k, v) => void values.set(k, v), delete: async (k) => void values.delete(k) },
+    });
+    await cloud.saveLogin({ origins: ["https://cloud.example"], username: "a", password: "cloud-pass-1" });
+    await cloud.sync();
+
+    let releasePull!: () => void;
+    let pullStarted!: () => void;
+    const started = new Promise<void>((resolve) => { pullStarted = resolve; });
+    control.beforePull = () => new Promise<void>((resolve) => { pullStarted(); releasePull = resolve; });
+    const syncing = cloud.sync();
+    await started;
+    await cloud.setCloudEnabled(false);
+    const requestsAtOff = keyRequests;
+    releasePull();
+    await syncing;
+
+    // The sync that the switch overtook asks for no key and writes no items back.
+    expect(keyRequests).toBe(requestsAtOff);
+    expect(values.has("passwords.items.v1")).toBe(false);
+  });
+
   it("sends a backlog bigger than one relay write once the relay is back", async () => {
     const { relay, rows, control } = fakeRelay();
     const mac = await machine(relay, "mac");
