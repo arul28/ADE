@@ -32,6 +32,7 @@ import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleU
 import { CLOUD_PATHS, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
+import { boundedDisplayText } from "../displayText";
 import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
@@ -319,6 +320,9 @@ const shortText = (value: unknown, max: number): string | null => {
   return trimmed ? trimmed.slice(0, max) : null;
 };
 
+/** A computer's name, as the dashboard, the machine list and the provider show it: control and format characters out (`boundedDisplayText`). */
+const computerName = (value: unknown): string | null => boundedDisplayText(value, 60);
+
 function providerFor(env: CloudEnv): CloudProvider | null {
   const key = env.AGENT37_API_KEY?.trim();
   return key ? createCloudProvider(key) : null;
@@ -524,7 +528,7 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const resources = body.resources && typeof body.resources === "object" ? body.resources as Record<string, unknown> : null;
   const size = cloudSizeFor(body.type, resources?.cpu, resources?.memory);
   if (!size) return refused(badRequest("That size isn't one ADE Cloud offers."));
-  const name = shortText(body.name, 60) ?? "ADE computer";
+  const name = computerName(body.name) ?? "ADE computer";
   const clientMetadata = stringMap(body.metadata, MAX_METADATA_ENTRIES);
   const requestedEnv = stringMap(body.env, MAX_ENV_ENTRIES);
   const publicPorts = onlyWakePorts(body.publicPorts);
@@ -666,7 +670,7 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   if (!room.ok) return refuse(room);
 
   const { metadata, requestId } = withRequestId(metadataIn);
-  const name = shortText(body.name, 60);
+  const name = computerName(body.name);
   const reservation = await reserveComputer(env, account, {
     size,
     diskGb: requestedDisk,
@@ -1160,7 +1164,7 @@ const instanceRoutes: Record<string, (request: Request, env: CloudEnv, computer:
   },
   "PUT name": async (request, env, computer, provider) => {
     const body = await readJson(request);
-    const name = shortText(body?.name, 60);
+    const name = computerName(body?.name);
     if (!name) return badRequest("That name isn't valid.");
     await provider.setInstanceName(computer.instance_id, name);
     await env.DB.prepare("update cloud_computers set name = ? where instance_id = ?").bind(name, computer.instance_id).run();

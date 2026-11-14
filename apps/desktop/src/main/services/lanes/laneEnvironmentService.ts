@@ -16,6 +16,30 @@ import type {
   LaneSummary
 } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
+import { diskFullLine, LANE_SETUP_DISK_FULL_ERROR, laneSetupDiskFullError } from "../../../shared/types/storage";
+
+/** What a command's output keeps past its 10 MB start: the end, where a tool says why it stopped. */
+const OUTPUT_TAIL_CHARS = 64 * 1024;
+
+/** A setup error, or the disk-full sentence with the line that said so. Already that sentence: kept. */
+function setupStepError(message: string, code?: unknown): string {
+  if (message.startsWith(LANE_SETUP_DISK_FULL_ERROR)) return message;
+  const line = diskFullLine(message) ?? (code === "ENOSPC" ? message.split(/\r?\n/)[0]!.trim().slice(0, 200) : null);
+  return line ? laneSetupDiskFullError(line) : message;
+}
+
+/**
+ * Why a command failed, from its whole output (start and end): the disk-full
+ * sentence when it ran out of disk, else the ENOSPC line that isn't the disk
+ * (a file-watcher limit, said after pages of warnings), else the start.
+ */
+function commandFailure(result: { stdout: string; stderr: string; tail: string }, fallback: string): { diskFull: boolean; text: string } {
+  const all = `${result.stderr}\n${result.stdout}\n${result.tail}`;
+  const line = diskFullLine(all);
+  if (line) return { diskFull: true, text: laneSetupDiskFullError(line) };
+  const enospc = all.split(/\r?\n/).find((entry) => /\bENOSPC\b/.test(entry))?.trim().slice(0, 300);
+  return { diskFull: false, text: enospc || fallback };
+}
 import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
 
@@ -325,16 +349,17 @@ export function createLaneEnvironmentService({
     try {
       const errorMessage = await action();
       if (errorMessage) {
-        updateStep(progress, kind, { status: "failed", error: errorMessage, durationMs: Date.now() - startTime });
+        updateStep(progress, kind, { status: "failed", error: setupStepError(errorMessage), durationMs: Date.now() - startTime });
         markFailed(progress, laneId);
         return false;
       }
       updateStep(progress, kind, { status: "completed", durationMs: Date.now() - startTime });
       return true;
     } catch (err: any) {
+      const message = err?.message ?? String(err);
       updateStep(progress, kind, {
         status: "failed",
-        error: err?.message ?? String(err),
+        error: setupStepError(message, err?.code),
         durationMs: Date.now() - startTime
       });
       markFailed(progress, laneId);
@@ -347,7 +372,7 @@ export function createLaneEnvironmentService({
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeoutMs: number
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
     return new Promise((resolve) => {
       const child = spawn(invocation.command, invocation.args, {
         cwd,
@@ -363,6 +388,8 @@ export function createLaneEnvironmentService({
       processes.trackChild(child, cwd);
       let stdout = "";
       let stderr = "";
+      // Both streams' last 64 KB together, so a reason said past the 10 MB cap is still read.
+      let tail = "";
       let settled = false;
       const maxBuffer = 10 * 1024 * 1024;
       const timer = setTimeout(() => {
@@ -373,19 +400,23 @@ export function createLaneEnvironmentService({
         current.length >= maxBuffer
           ? current
           : current + chunk.toString("utf8").slice(0, maxBuffer - current.length);
-      child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
-      child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+      const keepTail = (chunk: Buffer) => {
+        tail += chunk.toString("utf8");
+        if (tail.length > OUTPUT_TAIL_CHARS * 2) tail = tail.slice(-OUTPUT_TAIL_CHARS);
+      };
+      child.stdout?.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); keepTail(chunk); });
+      child.stderr?.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); keepTail(chunk); });
       child.on("error", (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ exitCode: 1, stdout, stderr: error instanceof Error ? error.message : String(error) });
+        resolve({ exitCode: 1, stdout, stderr: error instanceof Error ? error.message : String(error), tail: tail.slice(-OUTPUT_TAIL_CHARS) });
       });
       child.on("close", (code) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ exitCode: code ?? 1, stdout, stderr });
+        resolve({ exitCode: code ?? 1, stdout, stderr, tail: tail.slice(-OUTPUT_TAIL_CHARS) });
       });
     });
   }
@@ -394,10 +425,10 @@ export function createLaneEnvironmentService({
     command: string[],
     cwd: string,
     timeoutMs = 120_000
-  ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
     const [cmd, ...args] = command;
     if (!cmd) {
-      return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command" });
+      return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command", tail: "" });
     }
     const env = laneSetupProcessEnv();
     return runSpawn(resolveCliSpawnInvocation(cmd, args, env), cwd, env, timeoutMs);
@@ -441,15 +472,15 @@ export function createLaneEnvironmentService({
     worktreePath: string,
     docker: LaneDockerConfig,
     laneId: string
-  ): Promise<{ exitCode: number; stderr: string }> {
+  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
     if (!docker.composePath?.trim()) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath ?? "" });
-      return { exitCode: 0, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "", tail: "" };
     }
     const composePath = resolveCheckedPath(projectRoot, docker.composePath, logger, "lane_env_init.docker_compose_escape", { path: docker.composePath, projectRoot }, { allowMissing: true });
     if (!fs.existsSync(composePath)) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath });
-      return { exitCode: 0, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "", tail: "" };
     }
 
     const projectName = buildDockerProjectName(laneId, docker.projectPrefix);
@@ -484,7 +515,9 @@ export function createLaneEnvironmentService({
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
       const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
       if (result.exitCode !== 0) {
-        failures.push(`${dep.command.join(" ")}: ${result.stderr.slice(0, 500)}`);
+        // The excerpt is the output's start; a full disk is often said only at its end.
+        const failure = commandFailure(result, result.stderr.slice(0, 500));
+        failures.push(failure.diskFull ? failure.text : `${dep.command.join(" ")}: ${failure.text}`);
         logger.warn("lane_env_init.dependency_install_failed", {
           command: dep.command.join(" "),
           exitCode: result.exitCode,
@@ -618,7 +651,13 @@ export function createLaneEnvironmentService({
     for (const step of steps) {
       const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
       if (result.exitCode !== 0) {
-        const detail = (result.stderr.trim() || result.stdout.trim()).slice(0, 500);
+        // npm says ENOSPC after pages of warnings, past the excerpt: the whole output is read for it.
+        const failure = commandFailure(result, (result.stderr.trim() || result.stdout.trim()).slice(0, 500));
+        if (failure.diskFull) {
+          logger.warn("lane_env_init.setup_script_disk_full", { laneId, exitCode: result.exitCode, line: failure.text.slice(LANE_SETUP_DISK_FULL_ERROR.length).trim().slice(0, 160) });
+          return failure.text;
+        }
+        const detail = failure.text;
         logger.warn("lane_env_init.setup_script_failed", {
           laneId,
           command: step.label,
@@ -797,7 +836,8 @@ export function createLaneEnvironmentService({
           label: "Start Docker services",
           run: async () => {
             const result = await startDocker(lane.worktreePath, docker, lane.id);
-            return result.exitCode !== 0 ? result.stderr.slice(0, 500) : null;
+            // A pull that fills the disk says so after pages of progress: the whole output is read for it.
+            return result.exitCode !== 0 ? commandFailure(result, result.stderr.slice(0, 500)).text : null;
           },
         });
       }

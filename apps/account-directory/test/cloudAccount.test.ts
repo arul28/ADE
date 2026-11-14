@@ -358,6 +358,19 @@ describe("ADE Cloud account", () => {
     expect(access.enabled).toBe(false);
   });
 
+  it("a computer's new name reaches the provider and the dashboard without control or bidi characters", async () => {
+    const data = harness;
+    seedAccount(data, OWNER);
+    seedComputer(data);
+    provide(data);
+
+    const response = await data.send(OWNER, "PUT", `${instancePath}/name`, { name: "  Fix\u202e the\u0007\nlogin  " });
+
+    expect(response.status).toBe(200);
+    expect(providerCalls(data, /^PATCH /).map((call) => call.body)).toEqual([{ name: "Fix the login" }]);
+    expect(computer(data).name).toBe("Fix the login");
+  });
+
   it.each<[string, () => Promise<void>, number]>([
     ["a sleep and a status read racing it", async () => {
       // The computer asks to be slept, and a status read sees it asleep while that call is out.
