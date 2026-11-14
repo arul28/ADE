@@ -167,10 +167,11 @@ runs:
         status=0
         # DIAGNOSTIC: what is busy while xcodebuild prints nothing.
         (
+          set +e +o pipefail
           for i in $(seq 1 30); do
             sleep 20
             echo "--- $(date +%T) busiest processes (log lines: $(wc -l < "$log" 2>/dev/null || echo 0))"
-            ps -Ao pcpu,pmem,etime,comm -r | head -7 | cut -c1-150
+            ps -Ao pcpu,etime,comm -r | head -8 | sed -E "s#/private/var/run/com.apple.security.cryptexd/mnt/[^/]*/#SIMRT/#; s#/Applications/Xcode_27.2.app/Contents/#XCODE/#" | cut -c1-140; uptime
             if [ "$i" = 4 ] || [ "$i" = 12 ]; then
               pid=$(pgrep -x xcodebuild | head -1 || true)
               if [ -n "$pid" ]; then
@@ -212,10 +213,11 @@ runs:
         xcrun simctl bootstatus "$IOS_SIM_ID" -b > /dev/null
         echo "Simulator ready at $(date +%T)"
         (
+          set +e +o pipefail
           for i in $(seq 1 18); do
             sleep 20
             echo "--- $(date +%T) busiest processes"
-            ps -Ao pcpu,pmem,etime,comm -r | head -7 | cut -c1-150
+            ps -Ao pcpu,etime,comm -r | head -8 | sed -E "s#/private/var/run/com.apple.security.cryptexd/mnt/[^/]*/#SIMRT/#; s#/Applications/Xcode_27.2.app/Contents/#XCODE/#" | cut -c1-140; uptime
           done
         ) &
         sampler=$!
