@@ -1772,6 +1772,7 @@ function browserMockFirstRun(): boolean {
  *   cooldown, so only the named ones can show. Name two to see the cooldown
  *   hold the second back. Reloads keep the state (the seed is per tab).
  * - `?mockOneMachine`: no other machine is connected (the phone suggestion).
+ * - `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane computer is paired under its generated name.
  * - `?mockRunningChats`: Activity reports three running chats (the grid).
  * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
  * - `?mockGithubOff` / `?mockJiraOff`: GitHub or Jira is not connected
@@ -3002,6 +3003,41 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
     notifyBrowserMockSessionsChanged(row.id);
   }, 3_000);
 })();
+
+/**
+ * `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane
+ * computer paired like any machine, under its generated internal name, so the
+ * surfaces that list machines can show "Cloud · <lane>" instead.
+ */
+const MOCK_CLOUD_LANE_ORIGIN = "git@github.com:acme-labs/browser-preview.git";
+
+/** The lane and chat the cloud computer of `?mockCloudLaneMachine=1` reports. */
+function mockCloudLaneRows(): { lanes: any[]; sessions: any[] } {
+  const base = MOCK_LANES.find((lane) => lane.laneType === "primary") ?? MOCK_LANES[0];
+  const lane = { ...base, id: "cloud-lane-checkout", name: "checkout-redesign", branchRef: "checkout-redesign", laneType: "worktree", parentLaneId: base?.id ?? null, worktreePath: "/home/ade/work/browser-preview/.ade/worktrees/checkout-redesign" };
+  const template = MOCK_SESSIONS.find((row) => row.id === "mock-session-codex-1");
+  const session = template
+    ? { ...template, id: "cloud-chat-1", chatSessionId: "cloud-chat-1", laneId: lane.id, laneName: lane.name, title: "Checkout redesign", status: "running", runtimeState: "idle", endedAt: null, currentTurnStartedAt: null }
+    : null;
+  return { lanes: [lane], sessions: session ? [session] : [] };
+}
+
+function mockCloudLaneTargets(): any[] {
+  if (!browserMockFlag("mockCloudLaneMachine")) return [];
+  return [{
+    id: "mock-cloud-lane",
+    name: "ade-cloud-k3j9x0a1",
+    hostname: "k3j9x0a1",
+    transport: "paired",
+    pairedMachine: { hostIdentity: "mock-cloud-k3j9x0a1", machineKey: "mock-k3j9x0a1" },
+    sshUser: null,
+    port: null,
+    sshKeyPath: null,
+    lastSeenArch: "linux-x64",
+    runtimeBinaryVersion: "0.0.0-browser",
+    lastConnectedAt: Date.now(),
+  }];
+}
 
 /** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */
 function createBrowserMockDemoChat(args: any): any {
@@ -4946,6 +4982,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   });
   const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
     { rootPath: "/Users/ada/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/acme-shop.git", pinned: true },
+    // `?mockCloudLaneMachine=1`: this preview's own project has an origin, so other machines' copies of it are listed.
+    ...(browserMockFlag("mockCloudLaneMachine")
+      ? [{ rootPath: "/tmp/mock", displayName: "Browser Preview", lastOpenedAt: browserMockAgo(60_000), exists: true, kind: "local", gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN }]
+      : []),
     browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/acme-labs/acme-shop"),
     browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/ada/ADE", 3 * 86_400_000, "https://github.com/acme-labs/acme-shop"),
     { rootPath: "/Users/ada/Projects/storefront", displayName: "storefront", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/storefront.git" },
@@ -6473,7 +6513,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         lastSeenArch: "darwin-arm64",
         runtimeBinaryVersion: "0.0.0-browser",
         lastConnectedAt: Date.now(),
-      }]),
+      }, ...mockCloudLaneTargets()]),
       getConnectionSnapshot: browserMockFlag("mockOneMachine")
         ? resolved({ connections: [], connectedCount: 0, updatedAt: Date.now() })
         : resolved({
@@ -6545,8 +6585,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now() - 3 * 86_400_000,
           connectedAt: null,
-        }],
-        connectedCount: 1,
+        }, ...mockCloudLaneTargets().map((target) => ({
+          target,
+          state: "connected" as const,
+          arch: "linux-x64",
+          version: "0.0.0-browser",
+          route: { kind: "relay" as const, endpoint: "relay.ade-app.dev" },
+          capabilities: { projects: true },
+          projects: [{
+            projectId: "mock-cloud-project",
+            rootPath: "/home/ade/work/browser-preview",
+            displayName: "Browser Preview",
+            addedAt: Date.now(),
+            lastOpenedAt: Date.now(),
+            gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN,
+          }],
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+          connectedAt: Date.now(),
+        }))],
+        connectedCount: 1 + mockCloudLaneTargets().length,
         updatedAt: Date.now(),
       }),
       onConnectionSnapshotChanged: noop,
@@ -6740,6 +6798,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
             statusHints: {},
           };
+        }
+        if (_id === "mock-cloud-lane" && request.domain === "lane" && request.action === "list") {
+          return { domain: request.domain, action: request.action, result: mockCloudLaneRows().lanes, statusHints: {} };
+        }
+        if (_id === "mock-cloud-lane" && request.domain === "session" && request.action === "list") {
+          return { domain: request.domain, action: request.action, result: mockCloudLaneRows().sessions, statusHints: {} };
         }
         return ({
         domain: request.domain,
