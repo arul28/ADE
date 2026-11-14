@@ -313,10 +313,22 @@ function parseTokenPayload(value: unknown, priorRefreshToken: string | null): To
   return accessToken ? { accessToken, refreshToken, expiresInSec } : null;
 }
 
-/** What the screen shows of the account's machines; `lastSeenAt` moves on every read and is left out. */
+/**
+ * What the screen shows of the account's machines, sleep included (an asleep
+ * cloud computer is not connected in the background). `lastSeenAt` moves on
+ * every read and is left out.
+ */
 function machinesSignature(machines: readonly AdeAccountMachine[]): string {
   return machines
-    .map((machine) => [machine.machineKey, machine.deviceId ?? "", machine.online ? 1 : 0, machine.customName ?? "", machine.name ?? ""].join("\u0000"))
+    .map((machine) => [
+      machine.machineKey,
+      machine.deviceId ?? "",
+      machine.online ? 1 : 0,
+      machine.sleepState ?? "",
+      machine.sleepStateAt ?? "",
+      machine.customName ?? "",
+      machine.name ?? "",
+    ].join("\u0000"))
     .join("\u0001");
 }
 

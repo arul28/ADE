@@ -29,6 +29,8 @@ import { sameMachineKey } from "../../shared/machineAddress";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { fetchAccountMachines } from "../lib/account";
 import type { RepositoryCopy } from "../../shared/repositoryTab";
+import type { AdeAccountMachine } from "../../shared/types";
+import { resolveMachinePresence, type MachinePresence } from "../../shared/types/power";
 import { useActiveRepositoryTab } from "./repositoryScope";
 import { useRepositoryCopies } from "./useRepositoryCopies";
 
@@ -40,6 +42,8 @@ const TIMED_RETRIES = 5;
 const attemptedAtByMachineKey = new Map<string, number>();
 /** Failed attempts in a row, for computers the account listed as online. */
 const failuresByMachineKey = new Map<string, number>();
+/** Failed reads of the account's computers in a row; the timer retries them like a computer. */
+let directoryFailures = 0;
 let running: Promise<void> | null = null;
 let queued: readonly string[] | null = null;
 
@@ -49,12 +53,19 @@ async function connectInBackground(machineKeys: readonly string[]): Promise<void
   const now = Date.now();
   const due = machineKeys.filter((key) => now - (attemptedAtByMachineKey.get(key.toLowerCase()) ?? 0) >= RETRY_AFTER_MS);
   if (due.length === 0) return;
-  // Online per the account: a computer that is off or asleep is not dialed.
+  // Awake per the account: a computer that is off is not dialed, and neither
+  // is a cloud computer that went to sleep while its heartbeat still reads
+  // online (the sleep state says so first).
   const machines = await fetchAccountMachines();
-  if (machines.state !== "ok") return;
+  if (machines.state !== "ok") {
+    // Signed out or no account: nothing to retry until that changes.
+    if (machines.state === "unavailable" || machines.state === "cancelled") directoryFailures += 1;
+    return;
+  }
+  directoryFailures = 0;
   for (const key of due) {
     const row = machines.machines.find((machine) => sameMachineKey(machine.machineKey, key));
-    if (!row?.online) continue;
+    if (accountMachinePresence(row) !== "online") continue;
     attemptedAtByMachineKey.set(key.toLowerCase(), Date.now());
     const result = await connect(key, { background: true }).catch((error: unknown) => ({
       ok: false as const,
@@ -72,6 +83,21 @@ async function connectInBackground(machineKeys: readonly string[]): Promise<void
     failuresByMachineKey.set(key.toLowerCase(), (failuresByMachineKey.get(key.toLowerCase()) ?? 0) + 1);
     forwardSignalToSentry("repository.copy_connect_failed", { reason: result.reason }, `copy_connect_failed:${result.reason}`, "info");
   }
+}
+
+/**
+ * Whether the account's row says the computer is awake, asleep or off, with
+ * no connection from here counted (the copies in question have none).
+ */
+export function accountMachinePresence(machine: AdeAccountMachine | undefined): MachinePresence | null {
+  if (!machine) return null;
+  return resolveMachinePresence({
+    connected: false,
+    online: machine.online,
+    sleepState: machine.sleepState,
+    sleepStateAt: machine.sleepStateAt,
+    lastSeenAt: machine.lastSeenAt,
+  });
 }
 
 /**
@@ -116,10 +142,9 @@ export function useConnectRepositoryCopies(): void {
     pass();
     window.addEventListener("focus", pass);
     const retry = window.setInterval(() => {
-      const due = machineKeys.some((key) => {
-        const failures = failuresByMachineKey.get(key.toLowerCase()) ?? 0;
-        return failures > 0 && failures <= TIMED_RETRIES;
-      });
+      const retryable = (failures: number) => failures > 0 && failures <= TIMED_RETRIES;
+      const due = retryable(directoryFailures)
+        || machineKeys.some((key) => retryable(failuresByMachineKey.get(key.toLowerCase()) ?? 0));
       if (due) pass();
       // A second past the retry gap, so a tick never lands just short of it.
     }, RETRY_AFTER_MS + 1_000);

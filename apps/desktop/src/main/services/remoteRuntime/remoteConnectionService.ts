@@ -210,6 +210,12 @@ type RemoteConnectionDisconnectOptions = {
 
 type RemoteConnectionConnectOptions = {
   explicit?: boolean;
+  /**
+   * With `explicit`: a window asked for the machine, but no person did (a
+   * project tab joining every computer with a copy). It neither wakes a
+   * sleeping cloud computer nor starts the machine's brain.
+   */
+  background?: boolean;
 };
 
 // A machine that restarts for an update is back in one to two minutes; a
@@ -1055,7 +1061,11 @@ export class RemoteConnectionService {
     }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
-    if (explicit) {
+    const unattended = explicit && options.background === true;
+    if (unattended) {
+      // Nobody asked: the person's Disconnect stands.
+      if (this.isManuallyDisconnected(target)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
+    } else if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
       this.clearAutomaticReconnectState(target.id);
     } else {
@@ -1069,7 +1079,7 @@ export class RemoteConnectionService {
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
-      const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
+      const woke = explicit && !unattended && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
       // An explicit connect counts as the person asking for this machine
       // (Connect, Test, Try again, and opening or switching to one of its
       // projects), so it may start the machine's brain. Unattended
@@ -1077,7 +1087,7 @@ export class RemoteConnectionService {
       const result = woke
         ? await this.connectWokenMachine(target)
         : explicit
-          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" })
+          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: unattended ? "background" : "user" })
           : await this.pool.connect(target, { initiatedBy: "background" });
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         if (this.manuallyDisconnectedTargetIds.has(target.id)) {

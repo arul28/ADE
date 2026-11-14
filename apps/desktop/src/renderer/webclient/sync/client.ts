@@ -298,6 +298,8 @@ export class AdeSyncClient {
   private activeProjectId: string | null = null;
   /** When this client last asked the brain to host its own project again (`ensureHostOnOwnProject`). */
   private ownProjectReassertedAtMs = 0;
+  /** A request that came inside the 15 s gap, run when the gap ends with the catalog of that time. */
+  private ownProjectReassertTimer: ReturnType<typeof setTimeout> | null = null;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
   private readiness: AdeSyncClientStatus["readiness"] = "disconnected";
@@ -1085,6 +1087,7 @@ export class AdeSyncClient {
     const result = await promise;
     if (result.ok) {
       const envId = this.selectedEnvId;
+      const previousProjectId = this.activeProjectId;
       // The route this connection is on works right now: the re-dial below
       // starts with it instead of walking the direct routes again.
       const liveEndpoint = this.connection.getStatus().endpoint ?? null;
@@ -1096,7 +1099,10 @@ export class AdeSyncClient {
           this.currentCatalog = null;
         }
         this.invalidateGeneration(new AdeSyncError("Project connection changed.", "disconnected"));
-        this.retireActiveProjectStreams();
+        // The project in front did not change (the brain was asked to host
+        // this browser's project again): its chat and terminal streams stay,
+        // and the next hello subscribes them again.
+        if (this.activeProjectId !== previousProjectId) this.retireActiveProjectStreams();
         await this.persistCurrentEnvironment((environment) => ({
           ...environment,
           port: result.connection?.port ?? environment.port,
@@ -1192,6 +1198,8 @@ export class AdeSyncClient {
 
   dispose(): void {
     this.disconnect();
+    if (this.ownProjectReassertTimer != null) clearTimeout(this.ownProjectReassertTimer);
+    this.ownProjectReassertTimer = null;
     this.connection.dispose();
     // A disposed client must not keep answering for the recovery store — but
     // only if it is the one bound. Disposing a background session must leave
@@ -1889,8 +1897,17 @@ export class AdeSyncClient {
     if (open?.id === own) return;
     if (!catalog.projects.some((project) => project.id === own)) return;
     const now = Date.now();
-    if (now - this.ownProjectReassertedAtMs < OWN_PROJECT_REASSERT_MIN_MS) {
+    const waitMs = OWN_PROJECT_REASSERT_MIN_MS - (now - this.ownProjectReassertedAtMs);
+    if (waitMs > 0) {
+      // Not dropped: a quick second restart still needs the request. It runs
+      // once the gap ends, against the latest catalog, and only if still due.
       forwardSignalToSentry("web.sync_own_project_reassert_skipped", {}, "own_project_reassert_skipped", "info");
+      if (this.ownProjectReassertTimer == null) {
+        this.ownProjectReassertTimer = setTimeout(() => {
+          this.ownProjectReassertTimer = null;
+          if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
+        }, waitMs);
+      }
       return;
     }
     this.ownProjectReassertedAtMs = now;

@@ -23,6 +23,12 @@ import type { AdeSyncClient } from "../sync";
 import { WebMachineConnectSkipped, type WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
+import { resolveMachinePresence } from "../../../shared/types/power";
+import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
+
+/** How long a person's connect keeps dialing a cloud computer it just woke. */
+const WOKEN_CONNECT_WAIT_MS = 120_000;
+const WOKEN_CONNECT_RETRY_MS = 5_000;
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -774,11 +780,32 @@ export function createFederatedWebAdapter({
           ? { ok: true, address: { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) } }
           : { ok: false, reason: "unreachable", machineKey: key, message: `${machineDisplayName(machine)} is not connected to this browser yet.` };
       }
+      const background = options?.background === true;
+      // A person's connect to a resting ADE Cloud computer wakes it first,
+      // through a connected computer (this browser has no cloud credential),
+      // then dials until it answers. A background connect never wakes one.
+      const asleep = !background && resolveMachinePresence({
+        connected: false,
+        online: machine.online,
+        sleepState: machine.sleepState,
+        sleepStateAt: machine.sleepStateAt,
+        lastSeenAt: machine.lastSeenAt,
+      }) === "asleep";
+      if (asleep) {
+        try {
+          await wakeWebCloudMachine({
+            snapshot: manager.getSnapshot(),
+            getClient: (targetId) => manager.getClient(targetId),
+            machineKey: key,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${message}` };
+        }
+      }
+      const connectOnce = () => manager.connectAccountMachine(machine, { activate: false, background });
       try {
-        const session = await manager.connectAccountMachine(machine, {
-          activate: false,
-          background: options?.background === true,
-        });
+        const session = asleep ? await retryWhileWaking(connectOnce) : await connectOnce();
         return {
           ok: true,
           address: {
@@ -804,6 +831,19 @@ export function createFederatedWebAdapter({
         ? { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) }
         : null;
     },
+  };
+
+  /** A woken cloud computer answers within a minute or two: dial again until then. */
+  const retryWhileWaking = async <T,>(attempt: () => Promise<T>): Promise<T> => {
+    const deadline = Date.now() + WOKEN_CONNECT_WAIT_MS;
+    for (;;) {
+      try {
+        return await attempt();
+      } catch (error) {
+        if (error instanceof WebMachineConnectSkipped || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, WOKEN_CONNECT_RETRY_MS));
+      }
+    }
   };
 
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {

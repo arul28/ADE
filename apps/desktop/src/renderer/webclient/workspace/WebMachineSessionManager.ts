@@ -115,6 +115,9 @@ function writeUserDisconnected(ids: ReadonlySet<string>): void {
  */
 export type WebMachineConnectOptions = { activate?: boolean; background?: boolean };
 
+/** A connect in flight, and whether nobody asked for it (it may be skipped). */
+type ConnectFlight = { promise: Promise<WebMachineSessionSnapshot>; background: boolean };
+
 /** A background connect that did not run, and why. Not a failure of the machine. */
 export class WebMachineConnectSkipped extends Error {
   constructor(readonly reason: "user_disconnected" | "no_room") {
@@ -205,8 +208,8 @@ export class WebMachineSessionManager {
   private readonly allClients = new Set<AdeSyncClient>();
   private readonly availableClients: AdeSyncClient[] = [];
   private readonly authCleanupInFlight = new Set<string>();
-  private readonly environmentConnects = new Map<string, Promise<WebMachineSessionSnapshot>>();
-  private readonly accountMachineConnects = new Map<string, Promise<WebMachineSessionSnapshot>>();
+  private readonly environmentConnects = new Map<string, ConnectFlight>();
+  private readonly accountMachineConnects = new Map<string, ConnectFlight>();
   private admissionTail: Promise<void> = Promise.resolve();
   private readonly catalogs = new Map<string, WebClientMachineCatalogRecord>();
   private catalogStore: WebMachineCatalogStore | null = null;
@@ -422,18 +425,21 @@ export class WebMachineSessionManager {
     // A connect someone asked for clears their earlier Disconnect.
     if (!background) this.setUserDisconnected(targetId, false);
     const inFlight = this.environmentConnects.get(targetId);
-    if (inFlight) {
-      const snapshot = await inFlight;
+    if (inFlight && !(inFlight.background && !background)) {
+      const snapshot = await inFlight.promise;
       // The connect in flight may be a background one; this caller wants it on screen.
       if (activate) this.activateSession(targetId);
       return snapshot;
     }
+    // A connect someone asked for never takes a background flight's answer
+    // (that one may be skipped for room): it waits for it, then runs its own.
+    if (inFlight) await inFlight.promise.catch(() => undefined);
     const connecting = this.connectEnvironmentInternal(targetId, activate, background);
-    this.environmentConnects.set(targetId, connecting);
+    this.environmentConnects.set(targetId, { promise: connecting, background });
     try {
       return await connecting;
     } finally {
-      if (this.environmentConnects.get(targetId) === connecting) {
+      if (this.environmentConnects.get(targetId)?.promise === connecting) {
         this.environmentConnects.delete(targetId);
       }
     }
@@ -506,19 +512,22 @@ export class WebMachineSessionManager {
     machine: AdeAccountMachine,
     options: WebMachineConnectOptions = {},
   ): Promise<WebMachineSessionSnapshot> {
+    const background = options.background === true;
     const inFlight = this.accountMachineConnects.get(machine.machineKey);
-    if (inFlight) {
-      const snapshot = await inFlight;
+    if (inFlight && !(inFlight.background && !background)) {
+      const snapshot = await inFlight.promise;
       // The connect in flight may be a background one; this caller wants it on screen.
-      if (options.activate !== false && options.background !== true) this.activateSession(snapshot.targetId);
+      if (options.activate !== false && !background) this.activateSession(snapshot.targetId);
       return snapshot;
     }
+    // As in `connectEnvironment`: a person's connect runs its own after a background flight.
+    if (inFlight) await inFlight.promise.catch(() => undefined);
     const connecting = this.connectAccountMachineInternal(machine, options);
-    this.accountMachineConnects.set(machine.machineKey, connecting);
+    this.accountMachineConnects.set(machine.machineKey, { promise: connecting, background });
     try {
       return await connecting;
     } finally {
-      if (this.accountMachineConnects.get(machine.machineKey) === connecting) {
+      if (this.accountMachineConnects.get(machine.machineKey)?.promise === connecting) {
         this.accountMachineConnects.delete(machine.machineKey);
       }
     }

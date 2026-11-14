@@ -55,7 +55,8 @@ export type MachineConnectorDeps = {
   /** Pairs this computer with the machine through the account; saves the connection. */
   pairMachine: (machineKey: string) => Promise<{ targetId: string; name: string }>;
   /** Opens a saved connection; wakes a sleeping cloud computer. Throws on failure. */
-  connect: (targetId: string) => Promise<unknown>;
+  /** `background`: no person asked; never wakes the computer or starts its brain. */
+  connect: (targetId: string, options?: { background?: boolean }) => Promise<unknown>;
   /**
    * Wakes the machine when it is a sleeping cloud computer, before a pairing
    * (a pairing is a live hello with its ADE, which a sleeping computer can't
@@ -191,7 +192,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
     onPaired({ ok: true, address });
     if (!wantConnected || deps.isConnected(address.targetId)) return { ok: true, address };
     try {
-      await deps.connect(address.targetId);
+      await deps.connect(address.targetId, { background });
     } catch (error) {
       deps.logger?.warn?.("machines.connect_failed", { targetId: address.targetId, error: getErrorMessage(error) });
       return failure(key, "unreachable", `ADE couldn't reach ${address.name}: ${reasonText(error)}.`);

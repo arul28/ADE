@@ -13012,7 +13012,7 @@ export function registerIpc({
     },
     listAccountMachines: () => accountBridge.listMachines(),
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
-    connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    connect: (targetId, options) => runtimeBridge.remoteForMain.connect(targetId, options),
     wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
     logger: getMachineMainLogger(),
   });

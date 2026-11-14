@@ -28,7 +28,7 @@ import { sameMachineKey } from "../../../shared/machineAddress";
 import { fetchAccountMachines } from "../../lib/account";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
-import { unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
+import { accountMachinePresence, unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
 import "./ProjectWelcomePage.css";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
@@ -71,17 +71,6 @@ function orderForAutoOpen(copies: readonly RepositoryCopy[], lastCopyKey: string
 
 /** How long an automatic connect that answered waits for its copy to open before the next copy is tried. */
 const AUTO_OPEN_SETTLE_MS = 20_000;
-
-function accountPresence(machine: AdeAccountMachine | undefined): ReturnType<typeof resolveMachinePresence> | null {
-  if (!machine) return null;
-  return resolveMachinePresence({
-    connected: false,
-    online: machine.online,
-    sleepState: machine.sleepState,
-    sleepStateAt: machine.sleepStateAt,
-    lastSeenAt: machine.lastSeenAt,
-  });
-}
 
 function openCopy(copy: RepositoryCopy): Promise<unknown> {
   const address = copy.address;
@@ -161,22 +150,39 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // The desktop reads them, and again on focus: a computer started since the
   // page opened is online by then.
   const [desktopAccountMachines, setDesktopAccountMachines] = useState<readonly AdeAccountMachine[] | null>(null);
+  // A failed read of the account's computers, with no list from before: the
+  // page cannot tell an awake computer from an off one, so it says that
+  // instead of calling every copy offline. "Try again" reads past the cache.
+  const [desktopDirectoryFailure, setDesktopDirectoryFailure] = useState<string | null>(null);
+  const [directoryRetries, setDirectoryRetries] = useState(0);
   useEffect(() => {
     if (webMode || !unconnectedKeys) return;
     let cancelled = false;
-    const read = () => {
-      void fetchAccountMachines().then((result) => {
-        if (!cancelled && result.state === "ok") setDesktopAccountMachines(result.machines);
+    const read = (force: boolean) => {
+      void fetchAccountMachines({ force }).then((result) => {
+        if (cancelled) return;
+        if (result.state === "ok") {
+          setDesktopAccountMachines(result.machines);
+          setDesktopDirectoryFailure(null);
+        } else if (result.state === "unavailable") {
+          setDesktopDirectoryFailure(result.message ?? "The account directory did not answer.");
+        }
       });
     };
-    read();
-    window.addEventListener("focus", read);
+    const onFocus = () => read(false);
+    read(directoryRetries > 0);
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
-      window.removeEventListener("focus", read);
+      window.removeEventListener("focus", onFocus);
     };
-  }, [unconnectedKeys, webMode]);
+  }, [directoryRetries, unconnectedKeys, webMode]);
   const accountMachines = webMode ? workspace?.account.machines ?? null : desktopAccountMachines;
+  const directoryFailure = webMode
+    ? workspace?.account.state === "directory_unavailable" && (workspace.account.machines.length === 0)
+      ? workspace.account.message ?? "The account directory did not answer."
+      : null
+    : desktopAccountMachines == null ? desktopDirectoryFailure : null;
   const accountMachineOf = useCallback((copy: RepositoryCopy): AdeAccountMachine | undefined => (
     copy.machineKey ? accountMachines?.find((machine) => sameMachineKey(machine.machineKey, copy.machineKey)) : undefined
   ), [accountMachines]);
@@ -197,7 +203,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         && copy.machineKey != null
         && !autoTried.current.has(copy.machineKey.toLowerCase())
         && !(resumeOwned && tab.lastCopyKey?.startsWith(`remote:${copy.machineId}:`))
-        && accountPresence(accountMachineOf(copy)) === "online"
+        && accountMachinePresence(accountMachineOf(copy)) === "online"
       )),
       tab.lastCopyKey ?? null,
     )[0];
@@ -314,7 +320,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   /** "Connect" for a copy on an awake computer with no connection here, "Wake" for a resting ADE Cloud computer. */
   const wakeOrConnectLabel = (copy: RepositoryCopy): "Connect" | "Wake" | null => {
     if (copy.isThisMachine || copy.online || !copy.machineKey) return null;
-    const presence = accountPresence(accountMachineOf(copy));
+    const presence = accountMachinePresence(accountMachineOf(copy));
     if (presence === "online") return "Connect";
     return copy.isAdeCloud && presence === "asleep" ? "Wake" : null;
   };
@@ -355,7 +361,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                   ? `Opening on ${opening}…`
                   : connectable
                     ? "A computer with this project is not connected"
-                    : copies.length > 0 ? "No computer with this project is online" : "No computer has a copy yet"}
+                    : directoryFailure && copies.length > 0
+                      ? "ADE couldn't check which computers are on"
+                      : copies.length > 0 ? "No computer with this project is online" : "No computer has a copy yet"}
               </strong>
               <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>
                 {opening
@@ -426,6 +434,19 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                 title: openError.title,
                 detail: "Try again, or open the project on another computer.",
                 report: { surface: "no_machine_open", technicalDetail: openError.technicalDetail },
+              }}
+            />
+          ) : null}
+          {directoryFailure && !opening && !connectable && copies.length > 0 ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "no-machine-directory",
+                tone: "error",
+                title: "Couldn't read your account's computers",
+                detail: directoryFailure,
+                ...(webMode ? {} : { actions: [{ label: "Try again", onClick: () => setDirectoryRetries((count) => count + 1) }] }),
+                report: { surface: "repository_tab_no_machine", code: "account_machines_unavailable", technicalDetail: directoryFailure },
               }}
             />
           ) : null}
