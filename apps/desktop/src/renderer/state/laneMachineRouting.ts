@@ -91,6 +91,12 @@ export type LaneMachine = {
   hostname: string | null;
   /** ADE runtime version the machine reported. Null for This computer. */
   version: string | null;
+  /**
+   * Whether another machine's brain answers its own settings with no project
+   * (`shared/machineScope.ts`): false for an older brain, unset until its
+   * connection reports capabilities, and for This computer.
+   */
+  machineScope?: boolean;
 };
 
 /** One lane, tagged with the machine that owns it. */
@@ -267,6 +273,12 @@ function connectionDeviceId(connection: RemoteRuntimeConnectionStatus | undefine
   return connection?.target.pairedMachine?.hostIdentity?.trim() || null;
 }
 
+/** `LaneMachine.machineScope` from a connection, once it reported capabilities. */
+function connectionMachineScope(connection: RemoteRuntimeConnectionStatus | undefined): Pick<LaneMachine, "machineScope"> {
+  const capabilities = connection?.capabilities;
+  return capabilities ? { machineScope: capabilities.machineScope === true } : {};
+}
+
 /**
  * Pure derivation of {@link AllMachineLanes}; it performs no I/O. The optional
  * `connections` and `thisMachineDeviceId` enrich the machines with identity and
@@ -368,6 +380,7 @@ export function buildAllMachineLanes(input: {
       deviceId: isThisMachine ? thisDeviceId : connectionDeviceId(connection),
       hostname: connection?.target.hostname ?? (binding?.kind === "remote" ? binding.hostname ?? null : null),
       version: connectionVersionLabel(connection),
+      ...connectionMachineScope(connection),
     };
     machines.push(machine);
     prsByMachineId.set(entry.machineId, entry.prs);
@@ -386,7 +399,7 @@ export function buildAllMachineLanes(input: {
   const machinesWithoutRepo: LaneMachine[] = [];
   if (input.connections || input.thisMachineDeviceId !== undefined) {
     const listed = new Set(machines.map((machine) => machine.machineId));
-    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version">): LaneMachine => ({
+    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version" | "machineScope">): LaneMachine => ({
       ...overrides,
       isActiveBinding: false,
       binding: null,
@@ -419,6 +432,7 @@ export function buildAllMachineLanes(input: {
         deviceId: connectionDeviceId(connection),
         hostname: connection.target.hostname ?? null,
         version: connectionVersionLabel(connection),
+        ...connectionMachineScope(connection),
       }));
     }
   }

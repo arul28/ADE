@@ -97,6 +97,15 @@ export type ProviderFact = {
 export type ProvidersViewContext = {
   status: AiSettingsStatus | null;
   projectConfigSnapshot: ProjectConfigSnapshot | null;
+  /**
+   * False when the page reaches its computer through the machine route (no
+   * copy of this repository there). The settings a project copy saves
+   * (turning a provider off, local model servers, custom providers and slugs,
+   * compaction) are then shown as a note instead of controls.
+   */
+  projectConfigEditable: boolean;
+  /** The page's computer, for that note. */
+  machineName: string;
   loading: boolean;
   statusLoadError: string | null;
   /** True until the first status payload lands — the "Checking…" gate. */

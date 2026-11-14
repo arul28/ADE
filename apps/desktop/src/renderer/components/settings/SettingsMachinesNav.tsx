@@ -1,5 +1,7 @@
 import { useMemo } from "react";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { machineScopePin, machineScopeUpdateMessage } from "../../../shared/machineScope";
+import type { OpenProjectBinding } from "../../../shared/types";
 import type { ProjectMachine } from "../../state/projectMachines";
 import { useStableBinding } from "../../state/laneMachineRouting";
 import { Banner } from "../ui/notice";
@@ -20,11 +22,33 @@ import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTa
  *    so it is only ever about This computer.
  *  - `bound`: unpinned calls that follow the tab's binding, so it is shown for
  *    the machine the project tab is bound to and nowhere else.
+ *  - `machine`: the computer's own settings (Providers, Terminal shell,
+ *    Passwords, the Machines page's Restarts, Update track and Shell rows).
+ *    Reaches the machine through its copy of the repository when there is
+ *    one, else through the machine route (`shared/machineScope.ts`), so every
+ *    online computer and This computer show up whichever project window is
+ *    open. A section of this kind renders under `machineRoutedPage`.
+ *  - `account`: the account's settings as one computer holds them
+ *    (Passwords). This computer always, through its brain with no project;
+ *    another computer through its copy of this repository.
  */
-export type MachineSectionKind = "routed" | "local" | "bound";
+export type MachineSectionKind = "routed" | "local" | "bound" | "machine" | "account";
 
 /** A Machines page's machine: its scope plus what the page header shows. */
 export type SettingsMachinePage = SettingsMachineScope & {
+  /**
+   * The machine's own route, with no project (`shared/machineScope.ts`). Set
+   * for an online machine the repository route (`target`) cannot reach:
+   * This computer from a tab bound elsewhere, or a connected computer
+   * without this repository. Only `machine` sections use it.
+   */
+  machineRoute: OpenProjectBinding | null;
+  /**
+   * The machine route reaches a brain older than it (no `machineScope`
+   * capability): `machine` sections say to update ADE there instead of
+   * calling it.
+   */
+  machineRouteOutdated: boolean;
   hasRepo: boolean;
   /** The ADE version another machine reported; its About card can't be shown here. */
   version: string | null;
@@ -44,20 +68,54 @@ function settingsTargetFor(machine: ProjectMachine): SettingsMachineTarget | nul
   return machine.routable && machine.pin ? { kind: "pinned", binding: machine.pin } : null;
 }
 
+/**
+ * The machine route for a machine no repository route reaches. This computer
+ * always has one; another computer has one while it is online (its id is the
+ * saved connection's id). The pin is cached per machine, so it keeps its
+ * identity across machine-list ticks.
+ */
+function machineRouteFor(machine: ProjectMachine, target: SettingsMachineTarget | null): OpenProjectBinding | null {
+  if (target) return null;
+  if (machine.isThisMachine) return machineScopePin({ kind: "this", name: machine.machineName });
+  if (!machine.online) return null;
+  return machineScopePin({ kind: "remote", targetId: machine.machineId, name: machine.machineName, hostname: machine.hostname });
+}
+
 /** The page scope for a machine in the Machines group. */
 export function settingsMachinePageFor(machine: ProjectMachine): SettingsMachinePage {
+  const target = settingsTargetFor(machine);
   return {
     ...settingsMachineScope({
       machineId: machine.machineId,
       machineName: machine.machineName,
-      target: settingsTargetFor(machine),
+      target,
       isThisMachine: machine.isThisMachine,
       isActiveBinding: machine.isActiveBinding,
       online: machine.online,
     }),
+    machineRoute: machineRouteFor(machine, target),
+    machineRouteOutdated: target == null && !machine.isThisMachine && machine.machineScope === false,
     hasRepo: machine.hasRepo,
     version: machine.version,
   };
+}
+
+/**
+ * The scope a `machine` section runs under: the page as it is when the
+ * repository route reaches the machine, else the page with its machine route
+ * as the pin. Null when neither reaches it, or the route's brain is too old
+ * to answer (`MachineUnavailableNotice` says which).
+ */
+export function machineRoutedPage(page: SettingsMachinePage): SettingsMachinePage | null {
+  if (page.target) return page;
+  if (!page.machineRoute || page.machineRouteOutdated) return null;
+  return { ...page, target: { kind: "pinned", binding: page.machineRoute }, pin: page.machineRoute };
+}
+
+/** `machineRoutedPage` for an `account` section: the machine route only for This computer. */
+export function accountRoutedPage(page: SettingsMachinePage): SettingsMachinePage | null {
+  if (page.target) return page;
+  return page.isThisMachine ? machineRoutedPage(page) : null;
 }
 
 /**
@@ -83,6 +141,8 @@ export function machineSectionAvailable(kind: MachineSectionKind, page: Settings
   if (!page.online) return false;
   if (kind === "local") return page.isThisMachine;
   if (kind === "bound") return page.isActiveBinding;
+  if (kind === "machine") return page.target != null || ("machineRoute" in page && page.machineRoute != null);
+  if (kind === "account") return page.target != null || page.isThisMachine;
   return page.target != null;
 }
 
@@ -105,6 +165,8 @@ export function MachineUnavailableNotice({
   let detail: string | undefined;
   if (!machine.online) {
     message = `${machine.machineName} is offline. Its settings come back when it does.`;
+  } else if (machine.machineRouteOutdated) {
+    message = machineScopeUpdateMessage(machine.machineName);
   } else if (!machine.isThisMachine && !machine.isActiveBinding && !machine.hasRepo) {
     message = `ADE reaches ${machine.machineName}'s settings through its copy of this repository. Open this repository on ${machine.machineName} to manage it from here.`;
   } else if (machine.isThisMachine) {

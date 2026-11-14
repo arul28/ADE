@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   CaretLeft,
@@ -57,6 +57,8 @@ import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
+  accountRoutedPage,
+  machineRoutedPage,
   machineSectionAvailable,
   type MachineSectionKind,
   type SettingsMachinePage,
@@ -64,7 +66,7 @@ import {
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
-import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { SettingsMachineScopeProvider, useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import { NoProjectCopyNotice, ProjectCopyBar, ProjectCopyScopeProvider, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import {
   SETTINGS_ENTRIES,
@@ -491,8 +493,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
-    // carries that machine's pin.
-    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "routed", title: "Terminal shell" },
+    // carries that machine's pin, the machine route when this window's
+    // project has no copy there.
+    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "machine", title: "Terminal shell" },
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
@@ -573,23 +576,29 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // account directory); edits of a share go to the machine that holds it.
   sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  // Passwords is the account's, so it carries no machine kind and shows with
-  // no project open (this computer's brain answers through `passwords.call`).
-  // A machine picked on the page still pins every call to that machine.
-  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn> }],
+  // Passwords is the account's and shows with no project open: This
+  // computer's brain answers through `passwords.call` whichever project
+  // window is open. Another machine picked on the page is read through its
+  // copy of this repository.
+  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "account", title: "Passwords" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 
 /**
- * Providers is routed: every runtime call, the key store, provider accounts,
- * login terminals and auth-status feeds take the machine's pin. What stays on
- * This computer (opening a config file in the OS) is disabled in place.
+ * Providers is about the computer, not the project: every runtime call, the
+ * key store, provider accounts, login terminals and auth-status feeds take the
+ * machine's pin, which is the copy of this repository on it when there is one
+ * and the machine route otherwise (`machineRoutedPage`). What stays on This
+ * computer (opening a config file in the OS) is disabled in place.
  */
-const AGENTS_TAB_KIND: MachineSectionKind = "routed";
+const AGENTS_TAB_KIND: MachineSectionKind = "machine";
 
-/** A section that loads with no project: this desktop's own, or the account's. */
+/**
+ * A section that loads with no project: this desktop's own, the account's, or
+ * a computer's own settings (the machine route needs no project).
+ */
 function standaloneSection(section: TabSection): boolean {
-  return section.machine === undefined || section.machine === "local";
+  return section.machine === undefined || section.machine === "local" || section.machine === "machine" || section.machine === "account";
 }
 
 /**
@@ -660,6 +669,35 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
   );
 }
 
+/**
+ * A `machine` section: rendered under the machine's routed scope
+ * (`machineRoutedPage`), so its pin is the copy of this repository there or
+ * else the machine's own route. Keyed on that route: a machine that gains or
+ * loses its copy remounts the section on the new route instead of keeping
+ * closures and feeds bound to the old one. A machine whose brain is too old
+ * for the machine route gets the sentence that says to update it.
+ */
+function MachineRouted({
+  page,
+  titles,
+  account = false,
+  children,
+}: {
+  page: SettingsMachinePage;
+  titles: string[];
+  /** An `account` section: the machine route only for This computer. */
+  account?: boolean;
+  children: React.ReactNode;
+}) {
+  const routed = useMemo(() => (account ? accountRoutedPage(page) : machineRoutedPage(page)), [account, page]);
+  if (!routed) return <MachineUnavailableNotice machine={page} unavailableTitles={titles} />;
+  return (
+    <SettingsMachineScopeProvider key={routed.pin?.key ?? routed.machineId} scope={routed}>
+      {children}
+    </SettingsMachineScopeProvider>
+  );
+}
+
 function MachineTabContent({
   tab,
   machine,
@@ -683,14 +721,16 @@ function MachineTabContent({
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {
-    if (machine && !machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
-      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
-    }
-    return (
+    const content = (
       <SettingsColumn wide>
         <AgentsTabContent />
       </SettingsColumn>
     );
+    if (!machine) return content;
+    if (!machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
+      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
+    }
+    return <MachineRouted page={machine} titles={["Providers"]}>{content}</MachineRouted>;
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;
@@ -712,7 +752,11 @@ function MachineTabContent({
       entryIds,
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-          {section.render()}
+          {(section.machine === "machine" || section.machine === "account") && machine ? (
+            <MachineRouted page={machine} titles={[section.title ?? "These settings"]} account={section.machine === "account"}>
+              {section.render()}
+            </MachineRouted>
+          ) : section.render()}
         </WebSettingsSection>
       ),
     };

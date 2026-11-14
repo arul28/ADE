@@ -118,6 +118,7 @@ import {
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { findMachineProject } from "../../../shared/projectIdentity";
+import { isMachineScopeUnknownProjectError, MACHINE_SCOPE_PROJECT_ID, machineScopeUpdateMessage } from "../../../shared/machineScope";
 // How long a woken machine gets to come back online before the call fails as usual.
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
@@ -1666,6 +1667,22 @@ export class RemoteConnectionService {
     return result.projects;
   }
 
+  /**
+   * A machine-scope call (a computer's own settings, `shared/machineScope.ts`)
+   * to a brain that predates the route: it would answer "unknown project", so
+   * it gets the sentence that says what to do instead. Null for any other
+   * call. Before the machine's capabilities are known, only its answer
+   * (`error`, "unknown project") tells.
+   */
+  private machineScopeRefusal(targetId: string, projectId: string, error?: unknown): Error | null {
+    if (projectId !== MACHINE_SCOPE_PROJECT_ID) return null;
+    const capabilities = this.statusById.get(targetId)?.capabilities;
+    const older = capabilities ? capabilities.machineScope !== true : isMachineScopeUnknownProjectError(error);
+    if (!older) return null;
+    const known = this.registry.get(targetId);
+    return new Error(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"));
+  }
+
   async callAction(
     targetId: string,
     projectId: string,
@@ -1701,6 +1718,8 @@ export class RemoteConnectionService {
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
+    const refusedBefore = this.machineScopeRefusal(targetId, projectId);
+    if (refusedBefore) throw refusedBefore;
     try {
       let result: RemoteRuntimeActionResult;
       try {
@@ -1725,6 +1744,9 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectState(targetId);
       return result;
     } catch (error) {
+      // The machine answered (it just lacks the route): not a failed connection.
+      const refused = this.machineScopeRefusal(targetId, projectId, error);
+      if (refused) throw refused;
       this.markCallFailure(targetId, error);
       throw error;
     }
@@ -1768,6 +1790,8 @@ export class RemoteConnectionService {
     // poll owns the machine's status by then.
     return await this.withEventSetupDeadline(targetId, "read", async (notePhase, gaveUp) => {
       const target = await this.requireTargetForImplicitUse(targetId);
+      const refusedBefore = this.machineScopeRefusal(targetId, projectId);
+      if (refusedBefore) throw refusedBefore;
       try {
         const result = await this.pool.streamEventsForTarget(
           target,
@@ -1784,6 +1808,8 @@ export class RemoteConnectionService {
         this.clearAutomaticReconnectState(targetId);
         return result;
       } catch (error) {
+        const refused = this.machineScopeRefusal(targetId, projectId, error);
+        if (refused) throw refused;
         if (!gaveUp()) this.markCallFailure(targetId, error);
         throw error;
       }
@@ -1846,6 +1872,8 @@ export class RemoteConnectionService {
       "subscribe",
       async (notePhase, gaveUp) => {
         const target = await this.requireTargetForImplicitUse(targetId);
+        const refusedBefore = this.machineScopeRefusal(targetId, projectId);
+        if (refusedBefore) throw refusedBefore;
         try {
           const cleanup = await this.pool.subscribeEventsForTarget(
             target,
@@ -1871,6 +1899,8 @@ export class RemoteConnectionService {
           this.clearAutomaticReconnectState(targetId);
           return cleanup;
         } catch (error) {
+          const refused = this.machineScopeRefusal(targetId, projectId, error);
+          if (refused) throw refused;
           if (!gaveUp()) this.markCallFailure(targetId, error);
           throw error;
         }
