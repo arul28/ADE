@@ -300,7 +300,7 @@ struct SettingsConnectionHeader: View {
   }
 
   /// Without a card of its own: the caller frames it, alone or inside
-  /// General's "Primary machine".
+  /// General's "Machines".
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(alignment: .center, spacing: 12) {

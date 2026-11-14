@@ -400,9 +400,6 @@ struct WorkSidebarSectionHeader: View {
                   .truncationMode(.middle)
               }
             }
-            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
-              WorkRemoteLaneGlyph()
-            }
           }
 
           // Beside the name, not in the trailing cluster: there it sat next to
@@ -744,8 +741,6 @@ struct WorkSessionListRow: View {
   var boardCard = false
   /// A row in the Duo's sessions column (see `WorkSessionRow.duoRow`).
   var duoRow = false
-  /// The machine a row from another machine lives on, for the Duo's meta line.
-  var machineName: String? = nil
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -976,8 +971,7 @@ struct WorkSessionListRow: View {
           showsLaneIdentity: showsLaneIdentity,
           waitingOnSubagent: waitingOnSubagent,
           boardCard: boardCard,
-          duoRow: duoRow,
-          machineName: machineName
+          duoRow: duoRow
         )
         .equatable()
       }
@@ -1312,7 +1306,7 @@ struct WorkSessionListRow: View {
           Button {
             onDemoteToPeer(session)
           } label: {
-            Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+            Label("Stop reporting back", systemImage: "arrow.down.forward.and.arrow.up.backward")
           }
         }
       }
@@ -2331,17 +2325,6 @@ struct WorkFilterMenu: View {
   private func laneMenuTitle(_ lane: LaneSummary) -> String {
     guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
     return "\(lane.name) — \(machine)"
-  }
-}
-
-/// Marks a lane that lives on another machine, after its name: two machines'
-/// lanes can share a name, and the machine never goes in the title.
-struct WorkRemoteLaneGlyph: View {
-  var body: some View {
-    Image(systemName: "desktopcomputer")
-      .font(.system(size: 9, weight: .medium))
-      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
-      .accessibilityLabel("On another machine")
   }
 }
 

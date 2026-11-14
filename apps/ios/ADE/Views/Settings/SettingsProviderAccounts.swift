@@ -74,7 +74,6 @@ struct ProviderAccountBadges: View {
 struct ProviderAccountsMachineOption: Identifiable, Equatable {
   let id: String
   let name: String
-  let isPrimary: Bool
 }
 
 /// Settings → AI accounts: the Claude and Codex logins of each connected
@@ -103,12 +102,12 @@ struct SettingsProviderAccountsPage: View {
   /// can manage its accounts from here.
   private var choices: [(option: ProviderAccountsMachineOption, host: ProviderAccountsHost)] {
     var result: [(ProviderAccountsMachineOption, ProviderAccountsHost)] = [(
-      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "Primary machine", isPrimary: true),
+      ProviderAccountsMachineOption(id: primaryId, name: syncService.hostName ?? "Connected computer"),
       syncService
     )]
     for machine in fleet.machines where machine.state == .live && machine.machineKey != primaryId {
       guard let connection = fleet.connection(for: machine.machineKey), connection.supportsProviderAccounts else { continue }
-      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name, isPrimary: false), connection))
+      result.append((ProviderAccountsMachineOption(id: machine.machineKey, name: machine.name), connection))
     }
     return result
   }
@@ -164,7 +163,7 @@ struct ProviderAccountsMachinePicker: View {
           } label: {
             // Two texts make an iOS menu row a title and a subtitle.
             Text(machine.name)
-            Text(machine.isPrimary ? "Primary connection" : "Connected")
+            Text("Connected")
             Image(systemName: machine.id == selectedId ? "checkmark" : "desktopcomputer")
           }
         }
@@ -179,11 +178,11 @@ struct ProviderAccountsMachinePicker: View {
     HStack(spacing: 12) {
       ADESettingsIconTile(symbol: "desktopcomputer", tint: .accent, size: 32)
       VStack(alignment: .leading, spacing: 1) {
-        Text(selected?.name ?? "Primary machine")
+        Text(selected?.name ?? "Connected computer")
           .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-        Text(showsChevron ? "\(machines.count) machines" : "Primary machine")
+        Text(showsChevron ? "\(machines.count) machines" : "Connected")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
       }

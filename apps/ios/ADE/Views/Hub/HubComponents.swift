@@ -1512,9 +1512,6 @@ struct HubLaneSection: View, Equatable {
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(laneTint)
             .lineLimit(1)
-          if isWorkRemoteLaneId(lane.id) {
-            WorkRemoteLaneGlyph()
-          }
           Spacer(minLength: 6)
           // The whole trailing edge, in the same glyph+count language as the
           // project header above it. It replaced a live summary followed by a

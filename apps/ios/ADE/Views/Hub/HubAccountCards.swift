@@ -75,7 +75,7 @@ func hubAccountStatusInputs(
       },
     focusedLastSeen: hubAccountRelativeTime(epochMs: account.machine(forFleetKey: sync.focusedMachineKey)?.lastSeenAt),
     anyFleetMachineLive: fleetMachines.contains { $0.state == .live },
-    anyFleetMachineConnecting: fleetMachines.contains { $0.isPinned && $0.state == .connecting },
+    anyFleetMachineConnecting: fleetMachines.contains { $0.isWanted && $0.state == .connecting },
     hasPairedComputer: sync.canReconnectToSavedHost || !fleetMachines.isEmpty,
     accountHasComputers: !account.machines.isEmpty,
     hasCards: hasCards,

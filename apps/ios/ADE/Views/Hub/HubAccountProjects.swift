@@ -685,140 +685,25 @@ func hubCopyReach(_ machine: AccountMachine?, isLive: Bool, isConnecting: Bool =
   return .offline(lastSeen: hubAccountRelativeTime(epochMs: machine.lastSeenAt))
 }
 
-// MARK: - Copy chip
-
-/// Under a project's Lanes title: the computer the open copy is on, how many
-/// other copies exist, and a quiet "+1" when a connected computer has none.
-/// A tap opens the copies menu: switch to another copy, put a copy on a
-/// computer, or go to Location.
-struct HubCopyChip: View {
-  /// The computer of the open copy.
-  let focusedName: String
-  let focusedSymbol: String
-  /// Start-on order; the open copy's computer included.
-  let candidates: [StartOnCandidate]
-  let focusedAccountKey: String?
-  /// A connected computer holds no copy and the hint was not hidden.
-  let showsSpareHint: Bool
-  let onOpenCopy: (StartOnCandidate) -> Void
-  let onPutCopy: (StartOnCandidate) -> Void
-  let onHideSpareHint: () -> Void
-  var onLocation: (() -> Void)? = nil
-
-  private var copies: [StartOnCandidate] { candidates.filter { $0.kind != .cloneFirst } }
-  private var others: Int { copies.filter { $0.accountMachineKey != focusedAccountKey }.count }
-  private var spare: [StartOnCandidate] { candidates.filter { $0.kind == .cloneFirst } }
-
-  var body: some View {
-    Menu {
-      Section("Copies") {
-        ForEach(copies) { copy in
-          let isOpen = copy.accountMachineKey == focusedAccountKey
-          Button {
-            onOpenCopy(copy)
-          } label: {
-            Label {
-              Text(copy.name)
-              Text(isOpen ? "Open now" : status(copy))
-            } icon: {
-              Image(systemName: isOpen ? "checkmark" : copy.symbol)
-            }
-          }
-          .disabled(isOpen || copy.kind == .offline)
-        }
-      }
-      if !spare.isEmpty {
-        Section {
-          ForEach(spare) { computer in
-            Button {
-              onPutCopy(computer)
-            } label: {
-              Label("Put a copy on \(computer.name)", systemImage: "square.and.arrow.down.on.square")
-            }
-          }
-        }
-      }
-      if let onLocation {
-        Button(action: onLocation) {
-          Label("Location", systemImage: "folder")
-        }
-      }
-      if showsSpareHint {
-        Button(action: onHideSpareHint) {
-          Label("Hide the +1 hint", systemImage: "eye.slash")
-        }
-      }
-    } label: {
-      HStack(spacing: 6) {
-        Image(systemName: focusedSymbol)
-          .font(.system(size: 11.5))
-          .foregroundStyle(ADEColor.textSecondary)
-        Text(focusedName)
-          .font(.system(size: 13, weight: .medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if others > 0 {
-          Text(others == 1 ? "and 1 more" : "and \(others) more")
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-        if showsSpareHint {
-          Text("+1")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(ADEColor.accent.opacity(0.12), in: Capsule())
-        }
-        Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 6)
-      .background(ADEKit.pressed, in: Capsule())
-      .contentShape(Capsule())
-    }
-    .accessibilityLabel(accessibilityText)
-  }
-
-  private func status(_ copy: StartOnCandidate) -> String {
-    switch copy.kind {
-    case .offline: return copy.lastSeen.map { "Offline, last seen \($0)" } ?? "Offline"
-    case .copy, .cloneFirst: return copy.isLive ? "Connected" : "Online"
-    }
-  }
-
-  private var accessibilityText: String {
-    var text = "On \(focusedName)"
-    if others > 0 { text += ", \(others) other \(others == 1 ? "copy" : "copies")" }
-    if showsSpareHint { text += ", a connected computer has no copy" }
-    return text
-  }
-}
-
-/// The projects whose "+1" hint the user hid (`ade.copiesChip.dismissed.v1`).
-enum HubCopyChipHints {
-  static let defaultsKey = "ade.copiesChip.dismissed.v1" // gitleaks:allow (a UserDefaults key, not a secret)
-
-  static func isHidden(_ accountProjectId: String, defaults: UserDefaults = .standard) -> Bool {
-    (defaults.dictionary(forKey: defaultsKey) as? [String: Bool])?[accountProjectId] == true
-  }
-
-  static func hide(_ accountProjectId: String, defaults: UserDefaults = .standard) {
-    var map = (defaults.dictionary(forKey: defaultsKey) as? [String: Bool]) ?? [:]
-    map[accountProjectId] = true
-    defaults.set(map, forKey: defaultsKey)
-  }
-}
-
 // MARK: - Project home
 
+/// The copy the project opens on, with no pick: the main copy when its
+/// computer is online, else the first online copy (`held` is main first).
+/// Nil while no computer with a copy is online.
+@MainActor
+func accountProjectOpenCopy(_ held: [(copy: AccountProjectCopy, machine: AccountMachine?)]) -> AccountProjectCopy? {
+  held.first { entry in
+    if case .online = hubCopyReach(entry.machine, isLive: false) { return true }
+    return false
+  }?.copy
+}
+
 /// The page of a project that no reachable machine shows: the computers
-/// that hold a folder of it, and Open on the ones that are online. Open goes
-/// through the owned-link route, which connects that computer, waits for its
-/// catalog and opens the folder there.
+/// that hold a folder of it, and one Open for the project. Open picks the
+/// computer itself (`accountProjectOpenCopy`) and goes through the owned-link
+/// route, which connects that computer, waits for its catalog and opens the
+/// folder there. The project then connects every other online copy with no
+/// pick; the rows here are information, never a choice of copy.
 struct AccountProjectHomeScreen: View {
   let projectId: String
   var onConnectComputer: () -> Void = {}
@@ -891,6 +776,20 @@ struct AccountProjectHomeScreen: View {
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
         }
+      }
+
+      if let open = accountProjectOpenCopy(held) {
+        Button {
+          dismiss()
+          DeepLinkRouter.shared.openAccountProjectCopy(
+            accountMachineKey: open.machineKey,
+            checkoutId: open.checkoutId
+          )
+        } label: {
+          Text("Open project")
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(ADEKitButtonStyle(prominent: true))
       }
 
       VStack(alignment: .leading, spacing: 8) {
@@ -970,26 +869,12 @@ struct AccountProjectHomeScreen: View {
   }
 
   private func copyRow(_ copy: AccountProjectCopy, machine: AccountMachine?) -> some View {
-    let reach = hubCopyReach(machine, isLive: false)
-    let name = machine?.displayName ?? "A computer that left your account"
-    return HubCopyRow(
-      name: name,
-      reach: reach,
+    HubCopyRow(
+      name: machine?.displayName ?? "A computer that left your account",
+      reach: hubCopyReach(machine, isLive: false),
       detail: copy.rootPath,
       detailIsPath: true,
       symbol: machineDeviceSymbol(deviceType: machine?.deviceType, platform: machine?.platform)
-    ) {
-      if case .online = reach {
-        Button("Open") {
-          dismiss()
-          DeepLinkRouter.shared.openAccountProjectCopy(
-            accountMachineKey: copy.machineKey,
-            checkoutId: copy.checkoutId
-          )
-        }
-        .buttonStyle(ADEKitButtonStyle(prominent: true))
-        .accessibilityLabel("Open on \(name)")
-      }
-    }
+    )
   }
 }

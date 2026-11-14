@@ -174,6 +174,9 @@ struct WorkRootSyncInputs: Equatable {
   // Always tracked.
   var listVisible = false
   var isLive = false
+  /// The paired machines with a live link. An open chat on another machine
+  /// gates its composer on its own machine, also while the list is hidden.
+  var liveMachineKeys: Set<String> = []
   var isAttached = false
   var hostUnreachable = false
   var activeProjectId: String?
@@ -219,6 +222,11 @@ struct WorkRootSyncInputs: Equatable {
   /// The Machine filter's choices: the focused machine, then the machines in
   /// `remoteMachineRepos`. Tracked only while the list is visible.
   var machineFilterOptions: [WorkMachineFilterOption] = []
+  /// False while the focused machine is off past its reconnect window: its
+  /// rows are not listed (`SyncService.focusedMachineListsWork`).
+  var primaryListsWork = true
+  /// An ADE Cloud computer an open from this list waits on while it wakes.
+  var wakingCloudMachineName: String?
 
   init() {}
 
@@ -231,6 +239,7 @@ struct WorkRootSyncInputs: Equatable {
     if WorkRootPreviewFixture.active?.forcesLive == true { isLive = true }
     #endif
     hostUnreachable = sync.connectionState.isHostUnreachable
+    liveMachineKeys = Set(fleet?.liveMachineKeys ?? [])
     activeProjectId = sync.activeProjectId
     activeProjectRootPath = sync.activeProjectRootPath
     activeProjectHostIdentity = sync.activeProjectHostIdentity
@@ -267,12 +276,16 @@ struct WorkRootSyncInputs: Equatable {
     crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
       && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
     autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
-    // Only machines the user keeps connected; a disconnected one stays off.
-    if let fleet, case let connected = fleet.machines.filter(\.isPinned), !connected.isEmpty, let activeProject {
+    primaryListsWork = sync.focusedMachineListsWork
+    wakingCloudMachineName = sync.anyWakingCloudMachineName
+    // Every paired machine with a copy whose work lists: live, reconnecting,
+    // or an ADE Cloud computer. An offline, parked or disconnected computer's
+    // rows are not listed.
+    if let fleet, !fleet.listedMachines.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: connected,
+        machines: fleet.listedMachines,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
         account: sync.accountCopiesOfActiveProject()
@@ -317,6 +330,7 @@ struct WorkRootSyncInputs: Equatable {
 struct WorkRootScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
+
   @EnvironmentObject private var machineFleet: MachineFleet
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
@@ -356,6 +370,16 @@ struct WorkRootListScreen: View, Equatable {
   let isTabActive: Bool
   let inputs: WorkRootSyncInputs
   @Binding var path: NavigationPath
+
+  /// Whether a chat destination's own computer is live. A chat on another
+  /// computer follows that computer's link; the focused computer's chats keep
+  /// the focused gate (connected and its project host ready).
+  func workDestinationIsLive(sessionId: String, remoteChat: WorkChatCrossProjectContext?) -> Bool {
+    guard let key = remoteChat?.machineKey ?? syncService.remoteChatMachineKey(sessionId: sessionId),
+          key != syncService.focusedMachineKey
+    else { return inputs.isLive }
+    return inputs.liveMachineKeys.contains(key)
+  }
 
   init(
     syncService: SyncService,
@@ -1637,7 +1661,7 @@ struct WorkRootListScreen: View, Equatable {
         initialChatSummary: chatSummaries[route.sessionId]
           ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
         transitionNamespace: routeTransitionNamespace,
-        isLive: inputs.isLive,
+        isLive: workDestinationIsLive(sessionId: route.sessionId, remoteChat: route.remoteChat),
         navigationChrome: inColumn ? .column : .pushedDetail,
         // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
         // root, so `workOrderedLanes` stops refreshing there — fall back to the
@@ -1889,6 +1913,11 @@ struct WorkRootListScreen: View, Equatable {
     // The filter panel drops from under the header (search and its filter
     // chip), not over it: on the rows, whose safe area the header insets.
     let rowsWithFilters = rows
+      // A CLI row on an ADE Cloud computer that is asleep opens once the
+      // computer is awake; the list says so meanwhile.
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if let name = inputs.wakingCloudMachineName { CloudComputerWakeBanner(machineName: name) }
+      }
       .overlay(alignment: .top) {
         if filterPanelOpen {
           ZStack(alignment: .top) {
@@ -2506,7 +2535,7 @@ struct WorkRootListScreen: View, Equatable {
     transitionNamespace: Namespace.ID?,
     boardCard: Bool = false
   ) -> WorkSessionListRow {
-    WorkSessionListRow(
+    return WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
       // Fall back to the resolved lane (name/branch match) so legacy sessions
@@ -2524,7 +2553,6 @@ struct WorkRootListScreen: View, Equatable {
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
       // keeps its own full-width row, and drawer shells their compact form.
       duoRow: duoLayout.isWide && !boardCard && !compact,
-      machineName: workRemoteLaneMachineName(session.laneId, options: inputs.machineFilterOptions),
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

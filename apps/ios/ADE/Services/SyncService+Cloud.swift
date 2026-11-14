@@ -519,21 +519,62 @@ extension SyncService {
       return
     }
     let host = activeHostProfile?.hostIdentity
-    let enabled = (try? await cloudRead("access", as: CloudPhoneAccess.self))?.enabled ?? false
+    let access = try? await cloudRead("access", as: CloudPhoneAccess.self)
+    let enabled = access?.enabled ?? false
     guard isAttached, activeHostProfile?.hostIdentity == host else { return }
     cloudAvailable = enabled
+    // Which computers are ADE Cloud ones: their work always lists. A clear
+    // "no access" empties the list; no answer keeps the saved one.
+    if enabled {
+      if let list = try? await cloudRead("list", as: CloudPhoneList.self),
+         isAttached, activeHostProfile?.hostIdentity == host {
+        setCloudMachines(list.machines)
+      }
+    } else if access != nil {
+      setCloudMachines([])
+    }
   }
 
   /// Wakes the cloud box behind an account machine before the phone dials
-  /// it, through the machine the phone is on now. False when it isn't an
+  /// it, through the machine the phone is on now, else through another
+  /// connected machine that can send cloud commands. False when it isn't a
   /// cloud box, nothing here can ask, or the wake was refused.
   func wakeCloudMachineIfNeeded(machineKey: String?) async -> Bool {
-    guard let machineKey = syncNonEmpty(machineKey), cloudSupported, connectionState == .connected else { return false }
+    guard let machineKey = syncNonEmpty(machineKey) else { return false }
+    if cloudSupported, connectionState == .connected {
+      do {
+        let list = try await cloudRead("list", as: CloudPhoneList.self)
+        guard let box = list.machines.first(where: { $0.machineKey == machineKey }) else { return false }
+        if box.isAwake { return true }
+        _ = try await cloudWrite("wake", args: ["machine": box.instanceId], as: CloudPhoneAck.self)
+        return true
+      } catch {
+        return false
+      }
+    }
+    guard let fleet = machineFleet,
+          let connection = fleet.liveMachineKeys.lazy
+            .compactMap({ fleet.connection(for: $0) })
+            .first(where: { $0.supportsAction("cloud.read") && $0.supportsAction("cloud.write") })
+    else { return false }
     do {
-      let list = try await cloudRead("list", as: CloudPhoneList.self)
-      guard let box = list.machines.first(where: { $0.machineKey == machineKey }) else { return false }
+      let raw = try await connection.sendCommand(
+        action: "cloud.read",
+        args: ["action": "list", "args": [String: Any]()],
+        projectId: nil,
+        projectRootPath: nil
+      )
+      guard let list = machineConnectionDecode(raw, as: CloudPhoneList.self),
+            let box = list.machines.first(where: { $0.machineKey == machineKey })
+      else { return false }
       if box.isAwake { return true }
-      _ = try await cloudWrite("wake", args: ["machine": box.instanceId], as: CloudPhoneAck.self)
+      _ = try await connection.sendCommand(
+        action: "cloud.write",
+        args: ["action": "wake", "args": ["machine": box.instanceId]],
+        projectId: nil,
+        projectRootPath: nil,
+        timeoutNanoseconds: 120 * 1_000_000_000
+      )
       return true
     } catch {
       return false

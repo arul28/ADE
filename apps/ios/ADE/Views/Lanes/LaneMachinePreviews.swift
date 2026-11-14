@@ -68,16 +68,6 @@ struct LanesAcrossMachinesPreviewHost: View {
     [Self.snapshot(Self.lane(workRemoteLaneId(machineKey: "pc", laneId: "w-drain"), "windows drain", branch: "ade/windows-drain", color: "#EF4444"))]
   }
 
-  private var chips: LaneMachineChips {
-    LaneMachineChips(
-      focused: LaneMachineChip(name: "Arul’s Mac Studio", isLive: true),
-      byMachineKey: [
-        "mbp": LaneMachineChip(name: "MacBook Pro (97)", isLive: true, symbol: "laptopcomputer"),
-        "pc": LaneMachineChip(name: "arul", isLive: false),
-      ]
-    )
-  }
-
   var body: some View {
     NavigationStack {
       ScrollView {
@@ -113,9 +103,7 @@ struct LanesAcrossMachinesPreviewHost: View {
                     isSelectedTransitionSource: false,
                     onContextMenu: { _ in AnyView(EmptyView()) },
                     onSelectLane: { _ in },
-                    onOpen: {},
-                    machine: chips.chip(forLaneId: snapshot.lane.id),
-                    showsMachineChip: snapshot.id == group.first?.id
+                    onOpen: {}
                   )
                 }
               }

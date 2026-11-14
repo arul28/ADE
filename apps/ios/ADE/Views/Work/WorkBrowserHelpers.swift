@@ -432,7 +432,7 @@ func workSessionEmptyStateMessage(status: WorkSessionStatusFilter, searchText: S
   default:
     return isLive
       ? "Start a new chat, then filter by lane or status as activity comes in."
-      : "Cached sessions stay visible here. Reconnect to create chats or refresh live agent work."
+      : "A computer's chats show here while it is online. Reconnect to see them and start new ones."
   }
 }
 

@@ -23,13 +23,15 @@ struct PersonalChatsScreen: View {
   @State private var failedMachineNames: [String: String] = [:]
 
   private var primaryMachineKey: String { syncService.focusedMachineKey ?? "primary" }
+  /// Chats of the machines whose work lists (`fleetMachineListsWork`): an
+  /// offline, parked or disconnected computer's chats are not listed.
   private var rows: [PersonalChatRowEntry] {
-    var result = (sessionsByMachine[primaryMachineKey] ?? syncService.personalChatSessions).map {
-      PersonalChatRowEntry(summary: $0, machineKey: syncService.focusedMachineKey, machineName: syncService.focusedMachineDisplayName)
+    var result = !syncService.focusedMachineListsWork ? [] : (sessionsByMachine[primaryMachineKey] ?? syncService.personalChatSessions).map {
+      PersonalChatRowEntry(summary: $0, machineKey: syncService.focusedMachineKey)
     }
-    for machine in machineFleet.machines {
+    for machine in machineFleet.listedMachines {
       result += (sessionsByMachine[machine.machineKey] ?? []).map {
-        PersonalChatRowEntry(summary: $0, machineKey: machine.machineKey, machineName: machine.name)
+        PersonalChatRowEntry(summary: $0, machineKey: machine.machineKey)
       }
     }
     return result.sorted { lhs, rhs in
@@ -45,7 +47,6 @@ struct PersonalChatsScreen: View {
       return lhs.id < rhs.id
     }
   }
-  private var showsMachineBadges: Bool { Set(visibleSessions.map { $0.machineKey ?? primaryMachineKey }).count > 1 }
 
   private var canCreateChat: Bool {
     syncService.canInvokeRemoteAction("personalChats.create")
@@ -206,7 +207,7 @@ struct PersonalChatsScreen: View {
               Button {
                 onSelect(summary, entry.machineKey)
               } label: {
-                PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+                PersonalChatRow(summary: summary)
               }
               // The selected row, as Work and Lanes mark theirs.
               .background {
@@ -221,7 +222,7 @@ struct PersonalChatsScreen: View {
               NavigationLink {
                 PersonalChatDestination(summary: summary, machineKey: entry.machineKey)
               } label: {
-                PersonalChatRow(summary: summary, machineName: entry.machineName, showsMachine: showsMachineBadges)
+                PersonalChatRow(summary: summary)
               }
             }
           }
@@ -406,14 +407,11 @@ struct PersonalChatsScreen: View {
 private struct PersonalChatRowEntry: Identifiable {
   let summary: AgentChatSessionSummary
   let machineKey: String?
-  let machineName: String
   var id: String { machineKey.map { "machine:\($0)|\(summary.sessionId)" } ?? "focused|\(summary.sessionId)" }
 }
 
 private struct PersonalChatRow: View {
   let summary: AgentChatSessionSummary
-  let machineName: String
-  let showsMachine: Bool
 
   private var status: String {
     normalizedWorkChatSessionStatus(session: nil, summary: summary)
@@ -445,10 +443,10 @@ private struct PersonalChatRow: View {
     return "\(providerLabel(summary.provider)) · \(modelLabel)"
   }
 
-  /// Model, then the machine when the list spans several.
+  /// The model, when the preview line does not already say it. A row never
+  /// names its machine.
   private var metaLine: String? {
-    let parts = [subtitle == modelContext ? nil : modelContext, showsMachine ? machineName : nil].compactMap { $0 }
-    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    subtitle == modelContext ? nil : modelContext
   }
 
   private var accessibilityStatus: String {
@@ -468,7 +466,6 @@ private struct PersonalChatRow: View {
   private var accessibilityLabel: String {
     [
       title,
-      showsMachine ? machineName : nil,
       accessibilityStatus,
       summary.archivedAt == nil ? nil : "Archived",
       subtitle,

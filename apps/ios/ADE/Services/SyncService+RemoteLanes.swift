@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 // Lanes of the focused repository on the other paired machines, the way the
 // desktop shows every machine in every tab (`laneMachineRouting.ts`).
@@ -97,17 +98,35 @@ let syncRemoteLaneEmptyRuntime = LaneRuntimeSummary(
   bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0
 )
 
+/// Account computers the open project already tried to pair this app run.
+@MainActor private var syncAutoPairedAccountMachines = Set<String>()
+@MainActor private var syncAutoPairRunning = false
+private let syncFleetAutoPairLog = Logger(subsystem: "com.ade.ios", category: "fleet")
+
 // MARK: - Lanes of other machines (see SyncService+RemoteLanes.swift)
 
 extension SyncService {
   /// Every other paired machine's checkout of the focused repository, as the
   /// fleet's rosters report it. The same rule the Work tab and the Hub use.
+  /// It also picks the machines the open project keeps live, so it covers
+  /// machines that are offline now.
   func remoteReposForActiveProject() -> [WorkRemoteMachineRepo] {
-    guard let fleet = machineFleet, !fleet.machines.isEmpty, let activeProject else { return [] }
+    remoteReposForActiveProject(machines: machineFleet?.machines ?? [])
+  }
+
+  /// The checkouts whose lanes and chats the lists show: only machines whose
+  /// work lists (`fleetMachineListsWork`). An offline, parked or disconnected
+  /// computer's lanes are not listed.
+  func listedRemoteReposForActiveProject() -> [WorkRemoteMachineRepo] {
+    remoteReposForActiveProject(machines: machineFleet?.listedMachines ?? [])
+  }
+
+  private func remoteReposForActiveProject(machines: [MachineFleet.Machine]) -> [WorkRemoteMachineRepo] {
+    guard !machines.isEmpty, let activeProject else { return [] }
     let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
       ?? workRepoIdentity(originUrl: rosterProject(for: activeProject)?.repoOriginUrl)
     return workRemoteMachineRepos(
-      machines: fleet.machines,
+      machines: machines,
       identity: identity,
       folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
       account: accountCopiesOfActiveProject()
@@ -145,6 +164,84 @@ extension SyncService {
       fallback: nonEmptyTrimmed(hostName) ?? activeHostProfile?.hostName,
       machines: AccountService.shared.machines
     )
+  }
+
+  /// The paired machines (fleet keys) with a copy of the open project: the
+  /// account's copies first (the main copy first), then every machine whose
+  /// roster lists the repository. The focused machine is left out; it has its
+  /// own connection. Empty while no project is open. The fleet keeps these
+  /// live, so opening a project shows every machine's lanes and chats with no
+  /// pick.
+  func activeProjectCopyMachineKeys() -> [String] {
+    guard activeProjectId != nil, machineFleet != nil else { return [] }
+    let focused = focusedMachineKey
+    var keys: [String] = []
+    if let project = accountProjectForActiveProject() {
+      let machines = AccountService.shared.machines
+      let copies = project.copies.filter(\.isMain) + project.copies.filter { !$0.isMain }
+      for copy in copies {
+        guard let machine = machines.first(where: { $0.machineKey == copy.machineKey }),
+              let key = startOnPhoneKey(for: machine), key != focused else { continue }
+        keys.append(key)
+      }
+    }
+    keys += remoteReposForActiveProject().map(\.machineKey).filter { $0 != focused }
+    var seen = Set<String>()
+    return keys.filter { seen.insert($0).inserted }
+  }
+
+  /// Pairs, next to the primary, each online account computer that holds a
+  /// copy of the open project and that this phone never paired: the same
+  /// silent account pairing Start on uses. Once per computer per app run,
+  /// one at a time, and only while the live limit has room. The fleet then
+  /// keeps it live with the other copies while the project is open; it does
+  /// not join the user's connected set. A failure stays quiet: the
+  /// computer is listed in Settings with its state.
+  func connectActiveProjectAccountCopies() {
+    guard !syncAutoPairRunning,
+          let project = accountProjectForActiveProject(),
+          let fleet = machineFleet,
+          let authorization = AccountService.shared.currentPairingAuthorization
+    else { return }
+    let machines = AccountService.shared.machines
+    var seen = Set<String>()
+    let candidates = project.copies.compactMap { copy -> AccountMachine? in
+      guard let machine = machines.first(where: { $0.machineKey == copy.machineKey }),
+            machine.online,
+            syncNonEmpty(machine.deviceId) != nil,
+            startOnPhoneKey(for: machine) == nil,
+            !syncAutoPairedAccountMachines.contains(machine.machineKey),
+            seen.insert(machine.machineKey).inserted
+      else { return nil }
+      return machine
+    }
+    guard !candidates.isEmpty else { return }
+    // Counted down here: a pairing joins the project's machines only at the
+    // fleet's next update, so re-reading the room would pair past the limit.
+    let initialRoom = fleet.projectMachineRoom
+    guard initialRoom > 0 else { return }
+    syncAutoPairRunning = true
+    Task { @MainActor in
+      defer { syncAutoPairRunning = false }
+      var room = initialRoom
+      for machine in candidates {
+        guard room > 0 else { break }
+        syncAutoPairedAccountMachines.insert(machine.machineKey)
+        switch await pairAccountMachineAlongsidePrimary(machine, authorization: authorization, keepConnected: false) {
+        case .success:
+          // Only a pairing that worked takes a slot; a failed one leaves it.
+          room -= 1
+          // The new pairing is a copy's machine now: the project keeps it live.
+          fleet.scheduleProjectMachinesUpdate()
+        case .failure(let failure):
+          syncFleetAutoPairLog.notice("auto pair of a project copy's computer failed: \(failure.message, privacy: .public)")
+        }
+      }
+      // A project change during this batch found it running and did nothing.
+      // This update runs after the flag clears and pairs that project's
+      // copies; each computer above is already marked as tried.
+      fleet.scheduleProjectMachinesUpdate()
+    }
   }
 
   /// `machineKey`'s checkout of the focused repository, if it has one.

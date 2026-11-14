@@ -15,7 +15,11 @@ private let machineFleetLog = Logger(subsystem: "com.ade.ios", category: "fleet"
 /// Policy (the desktop machine model):
 /// - The user chooses which machines are connected (Settings > Machines). Only
 ///   those get a roster connection; the rest stay listed as available.
+/// - The open project connects every paired machine with a copy of it, with
+///   no pick (`setProjectMachines`). Those come first; a machine the user
+///   disconnected in Settings stays off.
 /// - At most 8 machines live at once, the focused ("primary") one included.
+///   A wanted machine past the limit is parked: its rows show, dimmed.
 /// - All roster connections close when the app goes to the background, and
 ///   open again on foreground.
 /// - A roster connection never runs to the focused machine (the host keeps one
@@ -24,6 +28,9 @@ private let machineFleetLog = Logger(subsystem: "com.ade.ios", category: "fleet"
 final class MachineFleet: ObservableObject {
   nonisolated static let liveMachineLimit = 8
   private static let pinnedKeysDefaultsKey = "ade.fleet.pinnedMachineKeys.v1"
+  /// Machines the user disconnected in Settings: the open project does not
+  /// connect them again until the user connects them.
+  private static let userDisconnectedKeysDefaultsKey = "ade.fleet.userDisconnectedMachineKeys.v1"
   /// Set once the pins became the user's connected set. Before, every paired
   /// machine was live up to the limit; the first reconcile after the change
   /// pins those machines so nothing the user had drops.
@@ -63,13 +70,44 @@ final class MachineFleet: ObservableObject {
     var rosterRevision: Int
     var lastUpdateAt: Date?
     var isPinned: Bool
+    /// In the connected set or the open project's machines: wanted live.
+    /// Settings lists it as connected, with Disconnect.
+    var isWanted: Bool = false
+    /// Wanted live (connected set or the open project's copy) but past the
+    /// live limit: shown as parked.
+    var isParked: Bool = false
+    /// The user disconnected it in Settings.
+    var isDisconnectedByUser: Bool = false
     /// Ran out of retries: "Offline · Tap to retry" until a retry trigger.
     var gaveUp: Bool = false
     /// The route its live link actually took.
     var routeKind: SyncConnectionRouteKind? = nil
     /// The machine's ADE version from its last hello, nil for an older host.
     var appVersion: String? = nil
+    /// An ADE Cloud computer of the account.
+    var isCloud: Bool = false
+    /// Its chats, sessions and lanes show in the project's lists
+    /// (`fleetMachineListsWork`).
+    var listsWork: Bool = false
     var id: String { machineKey }
+  }
+
+  /// How long a machine that lost its link keeps its rows listed, so a short
+  /// reconnect does not make the lists flicker.
+  static let workListReconnectWindow: TimeInterval = 20
+
+  /// The machines whose work the project's lists show: live ones, ones inside
+  /// the reconnect window, and ADE Cloud computers.
+  var listedMachines: [Machine] { machines.filter(\.listsWork) }
+
+  /// ADE Cloud computers (fleet keys). Their work always lists, also while
+  /// they sleep.
+  private(set) var cloudMachineKeys: Set<String> = []
+
+  func setCloudMachineKeys(_ keys: Set<String>) {
+    guard keys != cloudMachineKeys else { return }
+    cloudMachineKeys = keys
+    publish()
   }
 
   /// Every paired machine except the focused one, in display order.
@@ -92,8 +130,25 @@ final class MachineFleet: ObservableObject {
   private var needsUpdateRetryTask: Task<Void, Never>?
   private var needsUpdateRetryDue: Date?
   private var pinnedKeys: [String]
+  private var userDisconnectedKeys: Set<String>
+  /// The paired machines with a copy of the open project, best first. Live
+  /// before the rest of the connected set. Not saved: it follows the project.
+  private var projectMachineKeys: [String] = []
+  /// The machine the user asked for last (Connect, open its chat): live
+  /// before the project's machines, so it never waits parked. Not saved.
+  private var requestedKey: String?
+  /// Counts the user's Connect and Disconnect choices. A failed connect
+  /// undoes its swap only while no newer choice came after it.
+  private var keepLiveChoices = 0
+  private var projectMachinesScheduled = false
+  private var projectCancellables: Set<AnyCancellable> = []
   private var lastOrder: [String] = []
   private var lastPublishedPhase: [String: MachineConnection.Phase] = [:]
+  /// When each machine stopped being live (or the app came back to the
+  /// front): the start of its reconnect window.
+  private var notLiveSince: [String: Date] = [:]
+  private var reconnectWindowTask: Task<Void, Never>?
+  private var reconnectWindowEnd: Date?
   private var lastLiveKeys: Set<String> = []
   private let hiddenMachines: HiddenMachineStore
   private var hiddenCancellables: Set<AnyCancellable> = []
@@ -102,6 +157,7 @@ final class MachineFleet: ObservableObject {
 
   init() {
     pinnedKeys = UserDefaults.standard.stringArray(forKey: Self.pinnedKeysDefaultsKey) ?? []
+    userDisconnectedKeys = Set(UserDefaults.standard.stringArray(forKey: Self.userDisconnectedKeysDefaultsKey) ?? [])
     hiddenMachines = HiddenMachineStore.shared
   }
 
@@ -110,6 +166,60 @@ final class MachineFleet: ObservableObject {
     self.syncService = syncService
     syncService.machineFleet = self
     observeHiddenMachines()
+    observeOpenProject(syncService)
+    scheduleReconcile()
+  }
+
+  /// The open project, the account's copies, the account's computers and
+  /// the rosters decide which machines the project needs live.
+  private func observeOpenProject(_ syncService: SyncService) {
+    projectCancellables.removeAll()
+    syncService.$activeProjectId
+      .removeDuplicates()
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] _ in
+        MainActor.assumeIsolated { self?.scheduleProjectMachinesUpdate() }
+      }
+      .store(in: &projectCancellables)
+    AccountProjectStore.shared.objectWillChange
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] _ in
+        MainActor.assumeIsolated { self?.scheduleProjectMachinesUpdate() }
+      }
+      .store(in: &projectCancellables)
+    // A copy's computer maps to a paired machine, and comes online, through
+    // the account's machine list, which can load after the project opens.
+    AccountService.shared.$machines
+      .receive(on: DispatchQueue.main)
+      .sink { [weak self] _ in
+        MainActor.assumeIsolated { self?.scheduleProjectMachinesUpdate() }
+      }
+      .store(in: &projectCancellables)
+  }
+
+  /// Recomputes the open project's machines once per run-loop turn.
+  func scheduleProjectMachinesUpdate() {
+    guard !projectMachinesScheduled else { return }
+    projectMachinesScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.projectMachinesScheduled = false
+        guard let syncService = self.syncService else { return }
+        self.setProjectMachines(syncService.activeProjectCopyMachineKeys())
+        if self.appActive { syncService.connectActiveProjectAccountCopies() }
+      }
+    }
+  }
+
+  /// The machines with a copy of the open project: kept live before the rest
+  /// of the connected set, within the limit, with no pick and no toast. A
+  /// machine the user disconnected in Settings is left out.
+  func setProjectMachines(_ keys: [String]) {
+    var seen = Set<String>()
+    let next = keys.filter { !userDisconnectedKeys.contains($0) && seen.insert($0).inserted }
+    guard next != projectMachineKeys else { return }
+    projectMachineKeys = next
     scheduleReconcile()
   }
 
@@ -144,6 +254,8 @@ final class MachineFleet: ObservableObject {
           })
           let cameOnline = online.subtracting(self.accountOnlineKeys)
           self.accountOnlineKeys = online
+          // The ADE Cloud computers resolve to fleet keys through this list.
+          self.syncService?.resolveCloudMachineKeys()
           // Machine names come from the directory: a rename shows at once.
           self.schedulePublish()
           self.machinesCameOnline(machineKeys: cameOnline)
@@ -183,8 +295,14 @@ final class MachineFleet: ObservableObject {
       }
       publish()
     } else {
+      // Back in front: every machine reconnects, and its rows stay listed
+      // while it does.
+      let now = Date()
+      for key in notLiveSince.keys { notLiveSince[key] = now }
+      syncService?.restartFocusedReconnectWindow()
       resumeGivenUpConnections()
       reconcile()
+      scheduleProjectMachinesUpdate()
     }
   }
 
@@ -242,6 +360,8 @@ final class MachineFleet: ObservableObject {
     needsUpdateRetryDue = nil
     machines = []
     pairedMachineCount = 0
+    projectMachineKeys = []
+    requestedKey = nil
   }
 
   // MARK: - Queries
@@ -261,20 +381,72 @@ final class MachineFleet: ObservableObject {
 
   /// Connects `machineKey` (adds it to the connected set and dials it) and
   /// waits up to `timeout` for a live link. False when it needs the user,
-  /// runs out of retries, or is not live in time.
+  /// runs out of retries, or is not live in time. A machine that this call
+  /// pushed out of a full connected set comes back when the link fails.
   func connect(machineKey: String, timeout: Duration = .seconds(10)) async -> Bool {
     if isLive(machineKey) { return true }
+    // An asleep ADE Cloud computer is woken first and given the time it
+    // needs to start. A Connect or Disconnect the user chose meanwhile wins:
+    // this older request then changes nothing.
+    let choiceBeforeWake = keepLiveChoices
+    let waking = await syncService?.beginCloudWakeIfAsleep(fleetKey: machineKey) ?? false
+    defer { if waking { syncService?.endCloudWake(fleetKey: machineKey) } }
+    if isLive(machineKey) { return true }
+    guard choiceBeforeWake == keepLiveChoices else { return false }
+    let pinsBefore = pinnedKeys
+    let requestedBefore = requestedKey
     keepLive(machineKey: machineKey)
+    let choice = keepLiveChoices
+    let dropped = pinsBefore.filter { !pinnedKeys.contains($0) }
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
+    let deadline = clock.now.advanced(by: waking ? max(timeout, SyncService.cloudWakeConnectTimeout) : timeout)
     while clock.now < deadline, !Task.isCancelled {
-      guard let machine = machine(for: machineKey) else { return false }
+      guard let machine = machine(for: machineKey) else { break }
       if machine.state == .live { return true }
-      if machine.gaveUp { return false }
-      if case .needsAttention = machine.state { return false }
+      if machine.gaveUp { break }
+      if case .needsAttention = machine.state { break }
       try? await Task.sleep(for: .milliseconds(250))
     }
-    return isLive(machineKey)
+    if isLive(machineKey) { return true }
+    // A newer choice (this machine again, or another one) is what the user
+    // wants now: this older attempt leaves the set as that choice made it.
+    if choice == keepLiveChoices {
+      givePlaceBack(
+        afterFailedConnectOf: machineKey,
+        dropped: dropped,
+        wasPinned: pinsBefore.contains(machineKey),
+        requestedBefore: requestedBefore
+      )
+    }
+    return false
+  }
+
+  /// Undoes what `keepLive` did for a connect that never went live. The
+  /// request gives its first place back to the machine asked for before it,
+  /// so a project machine it pushed out of a live slot comes back. When the
+  /// set was full, the pins it dropped return (as the oldest) and the failed
+  /// machine leaves the set; with room, it stays in the set and retries. A
+  /// machine the user disconnected meanwhile stays off.
+  private func givePlaceBack(
+    afterFailedConnectOf machineKey: String,
+    dropped: [String],
+    wasPinned: Bool,
+    requestedBefore: String?
+  ) {
+    let returning = dropped.filter { !pinnedKeys.contains($0) && !userDisconnectedKeys.contains($0) }
+    let focused = syncService?.focusedMachineKey
+    let overLimit = wantedKeys.filter { $0 != focused }.count > liveOtherMachineLimit
+    let wasRequested = requestedKey == machineKey
+    guard wasRequested || !returning.isEmpty || overLimit else { return }
+    if !wasPinned, !returning.isEmpty || overLimit { pinnedKeys.removeAll { $0 == machineKey } }
+    pinnedKeys.append(contentsOf: returning)
+    if wasRequested {
+      requestedKey = requestedBefore.flatMap { key in
+        key != machineKey && !userDisconnectedKeys.contains(key) ? key : nil
+      }
+    }
+    persistPins()
+    reconcile()
   }
 
   // MARK: - User choices
@@ -284,6 +456,9 @@ final class MachineFleet: ObservableObject {
   /// the set under the limit (Settings asks which machine to disconnect);
   /// past it, the oldest choice other than the primary machine falls off.
   func keepLive(machineKey: String) {
+    keepLiveChoices += 1
+    if userDisconnectedKeys.remove(machineKey) != nil { persistUserDisconnected() }
+    requestedKey = machineKey
     pinnedKeys.removeAll { $0 == machineKey }
     pinnedKeys.insert(machineKey, at: 0)
     // The primary machine may sit in the set (it stays connected when another
@@ -316,8 +491,14 @@ final class MachineFleet: ObservableObject {
   }
 
   func stopKeepingLive(machineKey: String) {
+    // A user choice: an older connect still waiting must not undo it.
+    keepLiveChoices += 1
     pinnedKeys.removeAll { $0 == machineKey }
+    if requestedKey == machineKey { requestedKey = nil }
     persistPins()
+    // The open project does not connect it again behind the user's back.
+    if userDisconnectedKeys.insert(machineKey).inserted { persistUserDisconnected() }
+    projectMachineKeys.removeAll { $0 == machineKey }
     reconcile()
   }
 
@@ -342,6 +523,7 @@ final class MachineFleet: ObservableObject {
   /// Adds `machineKey` to the connected set without dialing it, e.g. the
   /// machine that stops being primary stays connected.
   func markConnected(machineKey: String) {
+    if userDisconnectedKeys.remove(machineKey) != nil { persistUserDisconnected() }
     guard !pinnedKeys.contains(machineKey) else { return }
     pinnedKeys.insert(machineKey, at: 0)
     persistPins()
@@ -439,15 +621,21 @@ final class MachineFleet: ObservableObject {
       focused.stop(reason: "Machine focused.")
     }
 
-    let order = liveOrder(candidates: others.map(\.machineKey), pinnedFirst: pinnedKeys)
+    // The machine the user just asked for, then the open project's machines,
+    // then the rest of the user's connected set. A project machine past the
+    // limit parks; the one the user asked for never does.
+    let order = liveOrder(
+      candidates: others.map(\.machineKey),
+      pinnedFirst: (requestedKey.map { [$0] } ?? []) + projectMachineKeys + pinnedKeys
+    )
     if !UserDefaults.standard.bool(forKey: Self.connectedSetMigratedKey), !others.isEmpty {
       pinnedKeys = Array(order.prefix(liveOtherMachineLimit))
       persistPins()
       UserDefaults.standard.set(true, forKey: Self.connectedSetMigratedKey)
     }
-    // Only the machines the user connected are live.
-    let pinnedSet = Set(pinnedKeys)
-    let liveKeys = Set(order.filter { pinnedSet.contains($0) }.prefix(liveOtherMachineLimit))
+    // Only the machines the user connected, and the open project's, are live.
+    let wanted = wantedKeys
+    let liveKeys = Set(order.filter { wanted.contains($0) }.prefix(liveOtherMachineLimit))
     let now = Date()
     for key in order {
       guard let connection = connections[key] else { continue }
@@ -519,6 +707,8 @@ final class MachineFleet: ObservableObject {
     lastOrder = order
     lastLiveKeys = liveKeys
     let pinned = Set(pinnedKeys)
+    let wanted = wantedKeys
+    let now = Date()
     let next: [Machine] = order.compactMap { key -> Machine? in
       guard let connection = connections[key] else { return nil }
       let state: MachineState
@@ -535,6 +725,13 @@ final class MachineFleet: ObservableObject {
         case .needsAttention(let message): state = .needsAttention(message: message)
         }
       }
+      if state == .live {
+        notLiveSince.removeValue(forKey: key)
+      } else if notLiveSince[key] == nil {
+        notLiveSince[key] = now
+      }
+      let isParked = !liveKeys.contains(key) && wanted.contains(key)
+      let isCloud = cloudMachineKeys.contains(key)
       return Machine(
         machineKey: key,
         // The account's name for the machine, as Settings lists it.
@@ -548,18 +745,80 @@ final class MachineFleet: ObservableObject {
         rosterRevision: connection.rosterRevision,
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
+        isWanted: wanted.contains(key),
+        isParked: isParked,
+        isDisconnectedByUser: userDisconnectedKeys.contains(key),
         gaveUp: connection.gaveUp,
         routeKind: state == .live ? connection.liveRouteKind : nil,
-        appVersion: connection.hostAppVersion
+        appVersion: connection.hostAppVersion,
+        isCloud: isCloud,
+        listsWork: fleetMachineListsWork(
+          isLive: state == .live,
+          isCloud: isCloud,
+          isWanted: wanted.contains(key),
+          isParked: isParked,
+          isDisconnectedByUser: userDisconnectedKeys.contains(key),
+          notLiveSince: notLiveSince[key],
+          now: now,
+          window: Self.workListReconnectWindow
+        )
       )
     }
+    scheduleReconnectWindowEnd(machines: next, now: now)
     if next != machines {
+      // A roster can add or drop a copy of the open project.
+      let rostersChanged = !next.elementsEqual(machines) {
+        $0.machineKey == $1.machineKey && $0.rosterRevision == $1.rosterRevision
+      }
       machines = next
+      if rostersChanged { scheduleProjectMachinesUpdate() }
     }
+  }
+
+  /// Republishes when the first reconnect window among the listed machines
+  /// ends, so their rows leave the lists then.
+  private func scheduleReconnectWindowEnd(machines next: [Machine], now: Date) {
+    let end = next.compactMap { machine -> Date? in
+      guard machine.listsWork, machine.state != .live, !machine.isCloud,
+            let since = notLiveSince[machine.machineKey] else { return nil }
+      return since.addingTimeInterval(Self.workListReconnectWindow)
+    }.min()
+    // Roster deltas publish often; the timer stays while its end stays.
+    if end == reconnectWindowEnd, reconnectWindowTask != nil || end == nil { return }
+    reconnectWindowTask?.cancel()
+    reconnectWindowTask = nil
+    reconnectWindowEnd = end
+    guard let end else { return }
+    let delay = max(0.1, end.timeIntervalSince(now) + 0.1)
+    reconnectWindowTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled, let self else { return }
+      self.reconnectWindowTask = nil
+      self.reconnectWindowEnd = nil
+      self.publish()
+    }
+  }
+
+  /// How many more of the open project's machines could go live. The rest
+  /// of the connected set does not count: project machines go live before
+  /// it, and it parks instead.
+  var projectMachineRoom: Int {
+    let focused = syncService?.focusedMachineKey
+    return max(0, liveOtherMachineLimit - projectMachineKeys.filter { $0 != focused }.count)
+  }
+
+  /// The machines that should be live: the user's connected set and the open
+  /// project's machines.
+  private var wantedKeys: Set<String> {
+    Set(pinnedKeys).union(projectMachineKeys)
   }
 
   private func persistPins() {
     UserDefaults.standard.set(pinnedKeys, forKey: Self.pinnedKeysDefaultsKey)
+  }
+
+  private func persistUserDisconnected() {
+    UserDefaults.standard.set(userDisconnectedKeys.sorted(), forKey: Self.userDisconnectedKeysDefaultsKey)
   }
 }
 
@@ -678,4 +937,24 @@ final class HiddenMachineStore: ObservableObject {
       defaults.set(data, forKey: defaultsKey)
     }
   }
+}
+
+/// Whether a machine's chats, sessions and lanes show in a project's lists.
+/// Live machines and ADE Cloud computers (also asleep) list. A computer the
+/// user disconnected, one parked past the live limit, or one not wanted live
+/// does not. One that lost its link lists only inside the reconnect window.
+func fleetMachineListsWork(
+  isLive: Bool,
+  isCloud: Bool,
+  isWanted: Bool,
+  isParked: Bool,
+  isDisconnectedByUser: Bool,
+  notLiveSince: Date?,
+  now: Date,
+  window: TimeInterval
+) -> Bool {
+  if isCloud || isLive { return true }
+  if isDisconnectedByUser || isParked || !isWanted { return false }
+  guard let notLiveSince else { return true }
+  return now.timeIntervalSince(notLiveSince) < window
 }

@@ -63,9 +63,7 @@ private struct DuoLanesFixtureScreen: View {
                 isSelectedTransitionSource: selection == snapshot.lane.id,
                 onContextMenu: { _ in AnyView(EmptyView()) },
                 onSelectLane: { _ in },
-                onOpen: { selection = snapshot.lane.id },
-                machine: nil,
-                showsMachineChip: snapshot.lane.laneType == "primary"
+                onOpen: { selection = snapshot.lane.id }
               )
               .background {
                 if selection == snapshot.lane.id {

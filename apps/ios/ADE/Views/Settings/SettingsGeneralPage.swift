@@ -5,7 +5,7 @@ private let settingsGeneralLog = Logger(subsystem: "com.ade.ios", category: "Set
 
 // Settings › General, where Settings opens. The desktop's General page
 // (`GeneralPage.tsx`) on the phone, in the same order: what needs attention,
-// then "You" and "Primary machine" (the desktop's "This machine": on the
+// then "You" and "Machines" (the desktop's "This machine": on the
 // phone that name reads as the phone; side by side where the window is wide
 // enough), then ADE itself with every machine's version. Each block is one
 // panel of rows, as on every other Settings page: a lead row that says who or
@@ -147,15 +147,24 @@ struct SettingsGeneralPage: View {
     .accessibilityLabel(weekTotals.map { "\(adeUsageCompact($0.reduce(0, +))) tokens" } ?? "No usage yet")
   }
 
-  // MARK: Primary machine
+  // MARK: Machines
+
+  /// The machines the phone works on. Two or more read as one set: the
+  /// section names them all and Machines owns each one's actions, so the
+  /// machine the phone happens to be focused on is never singled out.
+  private var connectedMachines: [SettingsMachine] { machines.filter(\.isConnectedSet) }
 
   private var machineSection: some View {
-    ADESettingsSection("Primary machine") {
+    let several = connectedMachines.count > 1
+    return ADESettingsSection("Machines") {
       ADESettingsRows {
         ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
-          SettingsGeneralLeadRow(title: primary?.name ?? "No machine yet", subtitle: machineSubtitle) {
+          SettingsGeneralLeadRow(
+            title: several ? "\(connectedMachines.count) machines" : (primary?.name ?? "No machine yet"),
+            subtitle: several ? connectedMachines.map(\.title).joined(separator: ", ") : machineSubtitle
+          ) {
             ADESettingsIconTile(
-              symbol: primary?.symbol ?? "desktopcomputer",
+              symbol: several ? "desktopcomputer" : (primary?.symbol ?? "desktopcomputer"),
               tint: primary == nil ? .slate : .accent,
               size: 44
             )
@@ -163,9 +172,11 @@ struct SettingsGeneralPage: View {
             if pushes { ADESettingsChevron() }
           }
         }
-        connection(primary != nil)
-          .padding(.horizontal, ADEKit.inset)
-          .padding(.vertical, 12)
+        if !several {
+          connection(primary != nil)
+            .padding(.horizontal, ADEKit.inset)
+            .padding(.vertical, 12)
+        }
       }
     }
   }
