@@ -97,12 +97,25 @@ private let syncFleetAutoPairLog = Logger(subsystem: "com.ade.ios", category: "f
 extension SyncService {
   /// Every other paired machine's checkout of the focused repository, as the
   /// fleet's rosters report it. The same rule the Work tab and the Hub use.
+  /// It also picks the machines the open project keeps live, so it covers
+  /// machines that are offline now.
   func remoteReposForActiveProject() -> [WorkRemoteMachineRepo] {
-    guard let fleet = machineFleet, !fleet.machines.isEmpty, let activeProject else { return [] }
+    remoteReposForActiveProject(machines: machineFleet?.machines ?? [])
+  }
+
+  /// The checkouts whose lanes and chats the lists show: only machines whose
+  /// work lists (`fleetMachineListsWork`). An offline, parked or disconnected
+  /// computer's lanes are not listed.
+  func listedRemoteReposForActiveProject() -> [WorkRemoteMachineRepo] {
+    remoteReposForActiveProject(machines: machineFleet?.listedMachines ?? [])
+  }
+
+  private func remoteReposForActiveProject(machines: [MachineFleet.Machine]) -> [WorkRemoteMachineRepo] {
+    guard !machines.isEmpty, let activeProject else { return [] }
     let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
       ?? workRepoIdentity(originUrl: rosterProject(for: activeProject)?.repoOriginUrl)
     return workRemoteMachineRepos(
-      machines: fleet.machines,
+      machines: machines,
       identity: identity,
       folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
       account: accountCopiesOfActiveProject()
@@ -130,16 +143,6 @@ extension SyncService {
   /// else the computer's own host name.
   var focusedMachineDisplayName: String {
     focusedMachineAccountName ?? "This machine"
-  }
-
-  /// The word after the focused machine's name on its rows in a project's
-  /// lists, nil while live (`MachineFleet.Machine.rowStateWord`).
-  var focusedMachineRowStateWord: String? {
-    switch connectionState {
-    case .connected: return nil
-    case .connecting: return "connecting"
-    case .disconnected, .error: return "offline"
-    }
   }
 
   /// `focusedMachineDisplayName` without the placeholder: nil when the phone

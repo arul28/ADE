@@ -392,10 +392,8 @@ struct WorkSessionRow: View, Equatable {
   var boardCard: Bool = false
   /// A row in the Duo's sessions column: the provider mark leading, the title
   /// on up to two lines, the latest word on one, then one meta line (lane,
-  /// machine, PR, status and time). The column is wide enough to say all of it.
+  /// PR, status and time). The column is wide enough to say all of it.
   var duoRow: Bool = false
-  /// The machine a row from another machine lives on (Duo meta line only).
-  var machineName: String?
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -413,12 +411,10 @@ struct WorkSessionRow: View, Equatable {
     showsLaneIdentity: Bool = true,
     waitingOnSubagent: Bool = false,
     boardCard: Bool = false,
-    duoRow: Bool = false,
-    machineName: String? = nil
+    duoRow: Bool = false
   ) {
     self.boardCard = boardCard
     self.duoRow = duoRow
-    self.machineName = machineName
     self.session = session
     self.lane = lane
     self.pullRequest = pullRequest
@@ -452,7 +448,6 @@ struct WorkSessionRow: View, Equatable {
     lhs.renderSignature == rhs.renderSignature
       && lhs.boardCard == rhs.boardCard
       && lhs.duoRow == rhs.duoRow
-      && lhs.machineName == rhs.machineName
   }
 
   var body: some View {
@@ -601,21 +596,19 @@ struct WorkSessionRow: View, Equatable {
     }
   }
 
-  /// Lane, machine, PR, then status and time hard against the trailing edge.
-  /// The lane and PR only where no lane header above already says them.
+  /// Lane, PR, then status and time hard against the trailing edge. The lane
+  /// and PR only where no lane header above already says them. A row never
+  /// names its machine: an open chat does.
   ///
   /// Nothing on this line may draw over anything else: when it does not fit,
-  /// the PR tag goes first, then the lane's git state, then the machine's
-  /// glyph. The machine's name always stays (a list spans machines); the lane
-  /// and machine names truncate last, the machine's in the middle, where two
-  /// computers of one owner share the least.
+  /// the PR tag goes first, then the lane's git state; the lane name
+  /// truncates last.
   private var duoMetaLine: some View {
     HStack(spacing: 6) {
       ViewThatFits(in: .horizontal) {
-        duoMetaItems(pr: true, git: true, machineGlyph: true)
-        duoMetaItems(pr: false, git: true, machineGlyph: true)
-        duoMetaItems(pr: false, git: false, machineGlyph: true)
-        duoMetaItems(pr: false, git: false, machineGlyph: false)
+        duoMetaItems(pr: true, git: true)
+        duoMetaItems(pr: false, git: true)
+        duoMetaItems(pr: false, git: false)
       }
       .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
       .clipped()
@@ -624,7 +617,7 @@ struct WorkSessionRow: View, Equatable {
     }
   }
 
-  private func duoMetaItems(pr: Bool, git: Bool, machineGlyph: Bool) -> some View {
+  private func duoMetaItems(pr: Bool, git: Bool) -> some View {
     HStack(spacing: 6) {
       if session.pinned {
         Image(systemName: "pin.fill")
@@ -659,10 +652,6 @@ struct WorkSessionRow: View, Equatable {
           laneGitState
         }
       }
-      if let machineName, !machineName.isEmpty {
-        machineLabel(machineName, font: .caption, glyphSize: machineGlyph ? 10 : nil)
-          .layoutPriority(-1)
-      }
       if pr, showsLaneIdentity, let pullRequest {
         WorkLanePrIndicator(tag: pullRequest)
           .fixedSize()
@@ -680,7 +669,7 @@ struct WorkSessionRow: View, Equatable {
   private var duoMetaHasLeading: Bool {
     session.pinned || isMuted || renderSignature.activeGoal != nil
       || subagentMark != nil || showsSubagentIdentity || showsCtoLineage
-      || showsLaneIdentity || !(machineName ?? "").isEmpty || failedExitCode != nil
+      || showsLaneIdentity || failedExitCode != nil
   }
 
   /// The status (or, on a board card, the time) hard against the trailing edge.
@@ -748,14 +737,6 @@ struct WorkSessionRow: View, Equatable {
         if showsLaneIdentity {
           laneChip
           laneGitState
-        }
-        // No lane header names the machine here: the row does, while the list
-        // spans machines.
-        if showsLaneIdentity, let machineName, !machineName.isEmpty {
-          // Above the lane chip: the chip fills the rest of the line, so a
-          // lower priority left the badge only its glyph.
-          machineLabel(machineName, font: .caption2, glyphSize: 9)
-            .layoutPriority(1)
         }
         lineageMark(font: .caption2)
         subagentMarkView
@@ -913,31 +894,12 @@ struct WorkSessionRow: View, Equatable {
         if showsLaneIdentity {
           laneChip
           laneGitState
-          if let machineName, !machineName.isEmpty {
-            machineLabel(machineName, font: .caption, glyphSize: 12)
-          }
           if let pullRequest {
             WorkLanePrIndicator(tag: pullRequest)
           }
         }
       }
     }
-  }
-
-  /// The row's machine, muted: a computer glyph (unless `glyphSize` is nil)
-  /// and the name, cut in the middle when the line is short.
-  private func machineLabel(_ name: String, font: Font, glyphSize: CGFloat?) -> some View {
-    HStack(spacing: 3) {
-      if let glyphSize {
-        Image(systemName: "desktopcomputer")
-          .font(.system(size: glyphSize, weight: .medium))
-      }
-      Text(name)
-        .lineLimit(1)
-        .truncationMode(.middle)
-    }
-    .font(font)
-    .foregroundStyle(ADEColor.textMuted)
   }
 
   /// Interaction owns the surface. Background, border and shadow are reserved
@@ -1219,17 +1181,14 @@ struct WorkSessionRow: View, Equatable {
   var accessibilityLabel: String {
     let effectiveStatus = renderSignature.statusLabel ?? sessionStatusLabel(for: status)
     var parts = [chatSummary?.title ?? session.title, session.laneName, effectiveStatus]
-    if let machineName, !machineName.isEmpty {
-      parts.append("on \(machineName)")
-    }
     if renderSignature.steeringInput && renderSignature.statusGlyph == .working {
       parts.append("has a question")
     }
     // The glyphs are `accessibilityHidden`, so the lineage has to be stated
-    // here or it is colour-and-shape-only meaning. "Spawned by the CTO" is the
+    // here or it is colour-and-shape-only meaning. "Started by the CTO" is the
     // more specific answer and stands in for "subagent".
     if renderSignature.isCtoChild {
-      parts.append("spawned by the CTO")
+      parts.append("started by the CTO")
     } else if renderSignature.isSubagent {
       parts.append("subagent")
     }

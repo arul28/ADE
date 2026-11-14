@@ -6,8 +6,8 @@ import Foundation
 ///
 /// A live machine answers `lanes.refreshSnapshots` over its roster link (the
 /// same rows the focused machine's list shows, with namespaced lane ids). A
-/// machine with no live link shows the lanes its last roster named, dimmed and
-/// with no actions. Reads run only while the tab is visible, at most one per
+/// machine with no live link (reconnecting, or an ADE Cloud computer that is
+/// asleep) shows the lanes its last roster named, with no actions. Reads run only while the tab is visible, at most one per
 /// machine at a time, each bounded, and never hold up the focused list.
 @MainActor
 final class LaneRemoteMachinesModel: ObservableObject {
@@ -18,9 +18,6 @@ final class LaneRemoteMachinesModel: ObservableObject {
     let projectId: String
     let rootPath: String?
     let isLive: Bool
-    /// The word after the machine's name on its rows ("parked", "offline"),
-    /// nil while live.
-    var stateWord: String? = nil
     let snapshots: [LaneListSnapshot]
     /// Why the last read failed, when the rows are older than the last attempt.
     let error: String?
@@ -48,7 +45,7 @@ final class LaneRemoteMachinesModel: ObservableObject {
     guard inFlightGeneration != runGeneration else { return }
     inFlightGeneration = runGeneration
     defer { if inFlightGeneration == runGeneration { inFlightGeneration = nil } }
-    let repos = sync.remoteReposForActiveProject()
+    let repos = sync.listedRemoteReposForActiveProject()
     var results: [String: Result<[LaneListSnapshot], Error>] = [:]
     await withTaskGroup(of: (String, Result<[LaneListSnapshot], Error>).self) { group in
       for repo in repos where fleet.isLive(repo.machineKey) {
@@ -72,7 +69,7 @@ final class LaneRemoteMachinesModel: ObservableObject {
     // The project or the fleet may have changed while the reads ran; build
     // from the repos as they are now. A read of another checkout (the project
     // switched) matches no current key and is dropped.
-    let current = sync.remoteReposForActiveProject()
+    let current = sync.listedRemoteReposForActiveProject()
     let currentKeys = Set(current.map(laneRemoteReadKey))
     lastRead = lastRead.filter { currentKeys.contains($0.key) }
     var next: [MachineLanes] = []
@@ -97,7 +94,6 @@ final class LaneRemoteMachinesModel: ObservableObject {
         projectId: repo.projectId,
         rootPath: repo.rootPath,
         isLive: isLive,
-        stateWord: fleet.machine(for: repo.machineKey)?.rowStateWord,
         snapshots: snapshots,
         error: error
       ))

@@ -24,6 +24,8 @@ struct LanesRootInputs: Equatable {
   /// Each machine's row state ("parked", "offline"; "live" while live): a
   /// change redraws the other machines' rows at once.
   var machineStateKeys: [String] = []
+  /// False while the focused machine is off past its reconnect window.
+  var focusedListsWork = true
 
   @MainActor
   init(_ sync: SyncService, fleet: MachineFleet, isActive: Bool) {
@@ -42,7 +44,10 @@ struct LanesRootInputs: Equatable {
     focusedMachineKey = sync.focusedMachineKey
     focusedMachineName = sync.focusedMachineDisplayName
     hasHostProfile = sync.activeHostProfile != nil
-    machineStateKeys = fleet.machines.map { "\($0.machineKey)=\($0.rowStateWord ?? "live")" }
+    // Which machines list their lanes, and which have a live link to read
+    // them through.
+    machineStateKeys = fleet.listedMachines.map { "\($0.machineKey)=\($0.state == .live ? "live" : "listed")" }
+    focusedListsWork = sync.focusedMachineListsWork
   }
 }
 

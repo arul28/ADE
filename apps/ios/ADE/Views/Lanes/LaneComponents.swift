@@ -210,26 +210,16 @@ struct LanePrTagChip: View {
 
 // MARK: - Stack card
 
-/// The machine a lane lives on, shown on its row when the list spans more
-/// than one machine (the desktop's rule: chips only with two or more).
+/// The machine a lane lives on, while the list spans more than one machine.
+/// A row never shows it; the lane's long-press menu offers "Show only" it,
+/// and a lane on a machine with no live link has no swipe actions.
 struct LaneMachineChip: Equatable {
   let name: String
-  /// False for a machine the phone has no live link to: its rows are the last
-  /// roster it sent, dimmed, with no actions.
+  /// False for a machine the phone has no live link to right now.
   let isLive: Bool
-  /// SF Symbol from `machineSymbol(machineKey:name:)`.
-  var symbol: String = "desktopcomputer"
-  /// "parked", "offline", "connecting"; nil while live.
-  var stateWord: String? = nil
-
-  /// The badge text: the name, then the state when it is not live.
-  var label: String {
-    guard let stateWord else { return name }
-    return "\(name), \(stateWord)"
-  }
 }
 
-/// The chip of every lane in a list that spans machines, by lane id.
+/// The machine of every lane in a list that spans machines, by lane id.
 struct LaneMachineChips: Equatable {
   var focused: LaneMachineChip?
   var byMachineKey: [String: LaneMachineChip] = [:]
@@ -251,10 +241,6 @@ struct LaneStackCard: View, Equatable {
   var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
-  var machine: LaneMachineChip? = nil
-  /// The machine chip in the detail line. The machine still dims a row that
-  /// is not live when the chip is hidden.
-  var showsMachineChip = true
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
     lhs.renderSignature == rhs.renderSignature
@@ -271,8 +257,7 @@ struct LaneStackCard: View, Equatable {
       isPinned: isPinned,
       isOpen: isOpen,
       pullRequest: pullRequest,
-      isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: showsMachineChip ? machine : machine.map { LaneMachineChip(name: "", isLive: $0.isLive, symbol: $0.symbol) }
+      isSelectedTransitionSource: isSelectedTransitionSource
     )
   }
 
@@ -292,7 +277,7 @@ struct LaneStackCard: View, Equatable {
             .font(.system(size: 16, weight: .semibold))
             // The glyph carries the lane colour; the name stays readable (a
             // yellow or pale name on the light page failed contrast).
-            .foregroundStyle(machine?.isLive == false ? ADEColor.textSecondary : ADEColor.textPrimary)
+            .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
             .fixedSize(horizontal: false, vertical: true)
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
@@ -324,7 +309,6 @@ struct LaneStackCard: View, Equatable {
     }
     .contentShape(Rectangle())
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-    .opacity(machine?.isLive == false ? 0.5 : 1)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(stackCardAccessibilityLabel)
   }
@@ -356,17 +340,13 @@ struct LaneStackCard: View, Equatable {
     }
   }
 
-  /// One line of muted facts, joined with dots: the machine (only where the
-  /// list mixes machines and no section header names it), Archived/Primary,
+  /// One line of muted facts, joined with dots: Archived/Primary,
   /// the PR ("Merged #1601", in its state's colour), ahead/behind, "edited"
   /// for uncommitted changes, and the branch when there is no PR. Truncates as
   /// one line, at the branch.
   private var metaLine: some View {
     let status = snapshot.lane.status
     var parts: [Text] = []
-    if let machine, showsMachineChip {
-      parts.append(Text("\(Image(systemName: machine.symbol)) \(machine.label)"))
-    }
     if snapshot.lane.archivedAt != nil {
       parts.append(Text("Archived"))
     } else if snapshot.lane.laneType == "primary",
@@ -414,14 +394,12 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var stackCardAccessibilityLabel: String {
-    let label = laneStackCardAccessibilityLabel(
+    laneStackCardAccessibilityLabel(
       snapshot: snapshot,
       isPinned: isPinned,
       isOpen: isOpen,
       pullRequest: pullRequest
     )
-    guard let machine else { return label }
-    return "\(label), on \(machine.label)"
   }
 }
 
@@ -433,14 +411,9 @@ func laneStackCardRenderSignature(
   isPinned: Bool,
   isOpen: Bool,
   pullRequest: LanePrTag?,
-  isSelectedTransitionSource: Bool,
-  machine: LaneMachineChip? = nil
+  isSelectedTransitionSource: Bool
 ) -> Int {
   var hasher = Hasher()
-  hasher.combine(machine?.name)
-  hasher.combine(machine?.isLive)
-  hasher.combine(machine?.stateWord)
-  hasher.combine(machine?.symbol)
   let lane = snapshot.lane
   hasher.combine(lane.id)
   hasher.combine(lane.name)

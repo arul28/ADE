@@ -84,7 +84,30 @@ final class MachineFleet: ObservableObject {
     var routeKind: SyncConnectionRouteKind? = nil
     /// The machine's ADE version from its last hello, nil for an older host.
     var appVersion: String? = nil
+    /// An ADE Cloud computer of the account.
+    var isCloud: Bool = false
+    /// Its chats, sessions and lanes show in the project's lists
+    /// (`fleetMachineListsWork`).
+    var listsWork: Bool = false
     var id: String { machineKey }
+  }
+
+  /// How long a machine that lost its link keeps its rows listed, so a short
+  /// reconnect does not make the lists flicker.
+  static let workListReconnectWindow: TimeInterval = 20
+
+  /// The machines whose work the project's lists show: live ones, ones inside
+  /// the reconnect window, and ADE Cloud computers.
+  var listedMachines: [Machine] { machines.filter(\.listsWork) }
+
+  /// ADE Cloud computers (fleet keys). Their work always lists, also while
+  /// they sleep.
+  private(set) var cloudMachineKeys: Set<String> = []
+
+  func setCloudMachineKeys(_ keys: Set<String>) {
+    guard keys != cloudMachineKeys else { return }
+    cloudMachineKeys = keys
+    publish()
   }
 
   /// Every paired machine except the focused one, in display order.
@@ -121,6 +144,11 @@ final class MachineFleet: ObservableObject {
   private var projectCancellables: Set<AnyCancellable> = []
   private var lastOrder: [String] = []
   private var lastPublishedPhase: [String: MachineConnection.Phase] = [:]
+  /// When each machine stopped being live (or the app came back to the
+  /// front): the start of its reconnect window.
+  private var notLiveSince: [String: Date] = [:]
+  private var reconnectWindowTask: Task<Void, Never>?
+  private var reconnectWindowEnd: Date?
   private var lastLiveKeys: Set<String> = []
   private let hiddenMachines: HiddenMachineStore
   private var hiddenCancellables: Set<AnyCancellable> = []
@@ -265,6 +293,11 @@ final class MachineFleet: ObservableObject {
       }
       publish()
     } else {
+      // Back in front: every machine reconnects, and its rows stay listed
+      // while it does.
+      let now = Date()
+      for key in notLiveSince.keys { notLiveSince[key] = now }
+      syncService?.restartFocusedReconnectWindow()
       resumeGivenUpConnections()
       reconcile()
       scheduleProjectMachinesUpdate()
@@ -350,12 +383,17 @@ final class MachineFleet: ObservableObject {
   /// pushed out of a full connected set comes back when the link fails.
   func connect(machineKey: String, timeout: Duration = .seconds(10)) async -> Bool {
     if isLive(machineKey) { return true }
+    // An asleep ADE Cloud computer is woken first and given the time it
+    // needs to start.
+    let waking = await syncService?.beginCloudWakeIfAsleep(fleetKey: machineKey) ?? false
+    defer { if waking { syncService?.endCloudWake(fleetKey: machineKey) } }
+    if isLive(machineKey) { return true }
     let pinsBefore = pinnedKeys
     keepLive(machineKey: machineKey)
     let choice = keepLiveChoices
     let dropped = pinsBefore.filter { !pinnedKeys.contains($0) }
     let clock = ContinuousClock()
-    let deadline = clock.now.advanced(by: timeout)
+    let deadline = clock.now.advanced(by: waking ? max(timeout, SyncService.cloudWakeConnectTimeout) : timeout)
     while clock.now < deadline, !Task.isCancelled {
       guard let machine = machine(for: machineKey) else { break }
       if machine.state == .live { return true }
@@ -643,6 +681,7 @@ final class MachineFleet: ObservableObject {
     lastLiveKeys = liveKeys
     let pinned = Set(pinnedKeys)
     let wanted = wantedKeys
+    let now = Date()
     let next: [Machine] = order.compactMap { key -> Machine? in
       guard let connection = connections[key] else { return nil }
       let state: MachineState
@@ -659,6 +698,13 @@ final class MachineFleet: ObservableObject {
         case .needsAttention(let message): state = .needsAttention(message: message)
         }
       }
+      if state == .live {
+        notLiveSince.removeValue(forKey: key)
+      } else if notLiveSince[key] == nil {
+        notLiveSince[key] = now
+      }
+      let isParked = !liveKeys.contains(key) && wanted.contains(key)
+      let isCloud = cloudMachineKeys.contains(key)
       return Machine(
         machineKey: key,
         // The account's name for the machine, as Settings lists it.
@@ -673,13 +719,25 @@ final class MachineFleet: ObservableObject {
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
         isWanted: wanted.contains(key),
-        isParked: !liveKeys.contains(key) && wanted.contains(key),
+        isParked: isParked,
         isDisconnectedByUser: userDisconnectedKeys.contains(key),
         gaveUp: connection.gaveUp,
         routeKind: state == .live ? connection.liveRouteKind : nil,
-        appVersion: connection.hostAppVersion
+        appVersion: connection.hostAppVersion,
+        isCloud: isCloud,
+        listsWork: fleetMachineListsWork(
+          isLive: state == .live,
+          isCloud: isCloud,
+          isWanted: wanted.contains(key),
+          isParked: isParked,
+          isDisconnectedByUser: userDisconnectedKeys.contains(key),
+          notLiveSince: notLiveSince[key],
+          now: now,
+          window: Self.workListReconnectWindow
+        )
       )
     }
+    scheduleReconnectWindowEnd(machines: next, now: now)
     if next != machines {
       // A roster can add or drop a copy of the open project.
       let rostersChanged = !next.elementsEqual(machines) {
@@ -687,6 +745,30 @@ final class MachineFleet: ObservableObject {
       }
       machines = next
       if rostersChanged { scheduleProjectMachinesUpdate() }
+    }
+  }
+
+  /// Republishes when the first reconnect window among the listed machines
+  /// ends, so their rows leave the lists then.
+  private func scheduleReconnectWindowEnd(machines next: [Machine], now: Date) {
+    let end = next.compactMap { machine -> Date? in
+      guard machine.listsWork, machine.state != .live, !machine.isCloud,
+            let since = notLiveSince[machine.machineKey] else { return nil }
+      return since.addingTimeInterval(Self.workListReconnectWindow)
+    }.min()
+    // Roster deltas publish often; the timer stays while its end stays.
+    if end == reconnectWindowEnd, reconnectWindowTask != nil || end == nil { return }
+    reconnectWindowTask?.cancel()
+    reconnectWindowTask = nil
+    reconnectWindowEnd = end
+    guard let end else { return }
+    let delay = max(0.1, end.timeIntervalSince(now) + 0.1)
+    reconnectWindowTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled, let self else { return }
+      self.reconnectWindowTask = nil
+      self.reconnectWindowEnd = nil
+      self.publish()
     }
   }
 
@@ -828,4 +910,24 @@ final class HiddenMachineStore: ObservableObject {
       defaults.set(data, forKey: defaultsKey)
     }
   }
+}
+
+/// Whether a machine's chats, sessions and lanes show in a project's lists.
+/// Live machines and ADE Cloud computers (also asleep) list. A computer the
+/// user disconnected, one parked past the live limit, or one not wanted live
+/// does not. One that lost its link lists only inside the reconnect window.
+func fleetMachineListsWork(
+  isLive: Bool,
+  isCloud: Bool,
+  isWanted: Bool,
+  isParked: Bool,
+  isDisconnectedByUser: Bool,
+  notLiveSince: Date?,
+  now: Date,
+  window: TimeInterval
+) -> Bool {
+  if isCloud || isLive { return true }
+  if isDisconnectedByUser || isParked || !isWanted { return false }
+  guard let notLiveSince else { return true }
+  return now.timeIntervalSince(notLiveSince) < window
 }

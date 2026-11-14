@@ -515,9 +515,20 @@ extension SyncService {
       return
     }
     let host = activeHostProfile?.hostIdentity
-    let enabled = (try? await cloudRead("access", as: CloudPhoneAccess.self))?.enabled ?? false
+    let access = try? await cloudRead("access", as: CloudPhoneAccess.self)
+    let enabled = access?.enabled ?? false
     guard isAttached, activeHostProfile?.hostIdentity == host else { return }
     cloudAvailable = enabled
+    // Which computers are ADE Cloud ones: their work always lists. A clear
+    // "no access" empties the list; no answer keeps the saved one.
+    if enabled {
+      if let list = try? await cloudRead("list", as: CloudPhoneList.self),
+         isAttached, activeHostProfile?.hostIdentity == host {
+        setCloudMachines(list.machines)
+      }
+    } else if access != nil {
+      setCloudMachines([])
+    }
   }
 
   /// Wakes the cloud box behind an account machine before the phone dials

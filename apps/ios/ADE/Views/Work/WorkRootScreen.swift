@@ -219,6 +219,11 @@ struct WorkRootSyncInputs: Equatable {
   /// The Machine filter's choices: the focused machine, then the machines in
   /// `remoteMachineRepos`. Tracked only while the list is visible.
   var machineFilterOptions: [WorkMachineFilterOption] = []
+  /// False while the focused machine is off past its reconnect window: its
+  /// rows are not listed (`SyncService.focusedMachineListsWork`).
+  var primaryListsWork = true
+  /// An ADE Cloud computer an open from this list waits on while it wakes.
+  var wakingCloudMachineName: String?
 
   init() {}
 
@@ -267,13 +272,16 @@ struct WorkRootSyncInputs: Equatable {
     crossMachineHandoffAvailable = sync.canInvokeRemoteAction("chat.getCrossMachineHandoffOptions")
       && sync.canInvokeRemoteAction("chat.startCrossMachineHandoff")
     autoHandoffAvailable = sync.autoHandoffRulesAvailable && sync.canInvokeRemoteAction("automations.saveDraft")
-    // Every paired machine with a copy: the open project keeps them live, and
-    // a machine that is not live keeps its last rows, dimmed.
-    if let fleet, !fleet.machines.isEmpty, let activeProject {
+    primaryListsWork = sync.focusedMachineListsWork
+    wakingCloudMachineName = sync.anyWakingCloudMachineName
+    // Every paired machine with a copy whose work lists: live, reconnecting,
+    // or an ADE Cloud computer. An offline, parked or disconnected computer's
+    // rows are not listed.
+    if let fleet, !fleet.listedMachines.isEmpty, let activeProject {
       let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
         ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
       remoteMachineRepos = workRemoteMachineRepos(
-        machines: fleet.machines,
+        machines: fleet.listedMachines,
         identity: identity,
         folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName),
         account: sync.accountCopiesOfActiveProject()
@@ -292,10 +300,8 @@ struct WorkRootSyncInputs: Equatable {
     machineFilterOptions = workMachineFilterOptions(
       primaryName: sync.focusedMachineDisplayName,
       primaryIsLive: isLive,
-      primaryStateWord: sync.focusedMachineRowStateWord,
       remote: remoteMachineRepos,
-      isLive: { fleet?.isLive($0) ?? false },
-      stateWord: { fleet?.machine(for: $0)?.rowStateWord }
+      isLive: { fleet?.isLive($0) ?? false }
     )
     #if DEBUG
     // The fixture has no machine to probe Cursor credentials on; show the entry
@@ -1892,6 +1898,11 @@ struct WorkRootListScreen: View, Equatable {
     // The filter panel drops from under the header (search and its filter
     // chip), not over it: on the rows, whose safe area the header insets.
     let rowsWithFilters = rows
+      // A CLI row on an ADE Cloud computer that is asleep opens once the
+      // computer is awake; the list says so meanwhile.
+      .safeAreaInset(edge: .top, spacing: 0) {
+        if let name = inputs.wakingCloudMachineName { CloudComputerWakeBanner(machineName: name) }
+      }
       .overlay(alignment: .top) {
         if filterPanelOpen {
           ZStack(alignment: .top) {
@@ -2379,10 +2390,7 @@ struct WorkRootListScreen: View, Equatable {
         laneMenu: workLaneMenuActions,
         startsQuietZone: group.id == quietZoneStartGroupId,
         branch: duoLayout.isWide ? group.laneId.flatMap { laneById[$0]?.branchRef } : nil,
-        minimal: duoLayout.isWide,
-        machine: group.isOrphaned ? nil : group.laneId.flatMap {
-          workMachineBadge(laneId: $0, options: inputs.machineFilterOptions)
-        }
+        minimal: duoLayout.isWide
       )
       .disabled(isLaneDeleting)
       .redacted(reason: isLaneDeleting ? .placeholder : [])
@@ -2512,7 +2520,6 @@ struct WorkRootListScreen: View, Equatable {
     transitionNamespace: Namespace.ID?,
     boardCard: Bool = false
   ) -> WorkSessionListRow {
-    let machineBadge = workMachineBadge(laneId: session.laneId, options: inputs.machineFilterOptions)
     return WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
@@ -2531,9 +2538,6 @@ struct WorkRootListScreen: View, Equatable {
       // The Duo's sessions column (and an iPad's) draws the wide row; a phone
       // keeps its own full-width row, and drawer shells their compact form.
       duoRow: duoLayout.isWide && !boardCard && !compact,
-      machineName: machineBadge?.label,
-      // Another machine with no live link: its last rows, dimmed.
-      machineIsLive: machineBadge?.isLive ?? true,
       isLaneDeleting: inputs.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

@@ -215,6 +215,67 @@ struct WorkChatConnectingFrame: View {
   }
 }
 
+/// The line at the top of a screen while the ADE Cloud computer its work
+/// lives on wakes: the computer starts, and its chats and lanes answer once
+/// it is up.
+struct CloudComputerWakeBanner: View {
+  let machineName: String
+
+  var body: some View {
+    HStack(spacing: 10) {
+      ProgressView()
+        .controlSize(.small)
+      VStack(alignment: .leading, spacing: 1) {
+        Text("Waking \(machineName)…")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        Text("A cloud computer can take a minute to start.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .padding(.horizontal, 12)
+    .padding(.top, 6)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.updatesFrequently)
+    .adeInspectable("CloudComputer.Waking")
+  }
+}
+
+extension View {
+  /// Opens work that lives on an ADE Cloud computer: when that computer is
+  /// asleep, the phone wakes it and connects to it next to the others, and
+  /// the screen shows the wake until the computer answers. `onAwake` runs
+  /// once it does. Any other machine, or the focused one, changes nothing.
+  func wakesCloudComputer(
+    machineKey: String?,
+    wakingName: String?,
+    onAwake: (() async -> Void)? = nil
+  ) -> some View {
+    safeAreaInset(edge: .top, spacing: 0) {
+      if let wakingName { CloudComputerWakeBanner(machineName: wakingName) }
+    }
+    .task(id: machineKey) {
+      guard let machineKey, let sync = SyncService.shared,
+            sync.cloudMachineFleetKeys.contains(machineKey),
+            machineKey != sync.focusedMachineKey,
+            let fleet = sync.machineFleet,
+            !fleet.isLive(machineKey)
+      else { return }
+      if await fleet.connect(machineKey: machineKey), !Task.isCancelled {
+        await onAwake?()
+      }
+    }
+  }
+}
+
+
 /// `distanceFromTop` is how far the reader has scrolled from the first row, so
 /// it grows downward — the inverse of the geometry-probe `topY` this used to
 /// take, which was published from a per-frame `GeometryReader` riding the
@@ -4179,7 +4240,7 @@ private struct WorkSubagentLineageBreadcrumb: View {
 
   private var sourceLabel: String {
     let trimmed = parentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? "parent chat" : trimmed
+    return trimmed.isEmpty ? "another chat" : trimmed
   }
 
   var body: some View {
@@ -4190,10 +4251,10 @@ private struct WorkSubagentLineageBreadcrumb: View {
           .foregroundStyle(ADEColor.accent)
 
         VStack(alignment: .leading, spacing: 1) {
-          Text("Subagent chat")
+          Text("Started by")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
-          Text("from \(sourceLabel)")
+          Text(sourceLabel)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
@@ -4217,8 +4278,8 @@ private struct WorkSubagentLineageBreadcrumb: View {
       .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("Open parent chat, \(sourceLabel)")
-    .accessibilityHint("Returns to the chat that spawned this subagent.")
+    .accessibilityLabel("Started by \(sourceLabel)")
+    .accessibilityHint("Opens the chat that started this one.")
   }
 }
 

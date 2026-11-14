@@ -4226,6 +4226,7 @@ final class SyncService: ObservableObject {
         // it is unknown, and unknown is hidden until the next read answers.
         if cloudAvailable { cloudAvailable = false }
       }
+      updateFocusedMachineListing()
     }
   }
   @Published private(set) var hostName: String?
@@ -4752,7 +4753,35 @@ final class SyncService: ObservableObject {
   /// tap that hung.
   @Published var projectOpenFailure: SyncProjectOpenFailure?
   /// The roster connections to every other live machine. Not owned here.
-  weak var machineFleet: MachineFleet?
+  weak var machineFleet: MachineFleet? {
+    didSet { machineFleet?.setCloudMachineKeys(cloudMachineFleetKeys) }
+  }
+  /// When the focused machine's link dropped (or the app came back to the
+  /// front): the start of its reconnect window. Nil while connected.
+  private var focusedNotLiveSince: Date? = Date()
+  private var focusedListWindowTask: Task<Void, Never>?
+  /// False once the focused machine has been off past the reconnect window,
+  /// or the user disconnected it: its chats, sessions and lanes leave the
+  /// project's lists until it is back (`fleetMachineListsWork`).
+  @Published private(set) var focusedMachineListsWork = true
+  /// The account's ADE Cloud computers, as fleet keys. Saved, so a cold start
+  /// lists their work before the cloud list answers.
+  @Published private(set) var cloudMachineFleetKeys: Set<String> =
+    Set(UserDefaults.standard.stringArray(forKey: SyncService.cloudMachineFleetKeysDefaultsKey) ?? []) {
+    didSet {
+      guard cloudMachineFleetKeys != oldValue else { return }
+      UserDefaults.standard.set(cloudMachineFleetKeys.sorted(), forKey: Self.cloudMachineFleetKeysDefaultsKey)
+      machineFleet?.setCloudMachineKeys(cloudMachineFleetKeys)
+      updateFocusedMachineListing()
+    }
+  }
+  static let cloudMachineFleetKeysDefaultsKey = "ade.sync.cloudMachineFleetKeys"
+  /// ADE Cloud computers the phone asked to wake for an open that still
+  /// waits for them. The opened chat says "Waking <name>…" meanwhile.
+  @Published private(set) var wakingCloudMachineKeys: Set<String> = []
+  /// Opens waiting on each waking computer: the mark stays until the last
+  /// one is done.
+  private var cloudWakeWaiters: [String: Int] = [:]
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
@@ -19067,6 +19096,7 @@ final class SyncService: ObservableObject {
   private func setAutoReconnectPausedByUser(_ paused: Bool) {
     autoReconnectPausedByUser = paused
     UserDefaults.standard.set(paused, forKey: autoReconnectPausedKey)
+    updateFocusedMachineListing()
     if paused {
       UserDefaults.standard.set(
         autoReconnectPauseSourceUser,
@@ -28430,6 +28460,11 @@ extension SyncService {
   /// fleet machine when it was live. One that was not live stays off.
   @discardableResult
   func switchFocusKeepingPrevious(toMachineKey machineKey: String) async -> Bool {
+    // An ADE Cloud computer that is asleep: wake it and wait until it answers
+    // next to the others, so the focus switch dials an awake computer.
+    if cloudMachineFleetKeys.contains(machineKey), !isFocusedAndLive(machineKey), let machineFleet {
+      _ = await machineFleet.connect(machineKey: machineKey)
+    }
     if let previous = focusedMachineKey, previous != machineKey, connectionState == .connected {
       machineFleet?.markConnected(machineKey: previous)
     }
@@ -28925,5 +28960,115 @@ extension SyncService {
     if let scope = chatCommandScopeBySession[mainId] {
       chatCommandScopeBySession[sideId] = scope
     }
+  }
+}
+
+// MARK: - Which machines' work the lists show
+
+extension SyncService {
+  /// Applies `fleetMachineListsWork` to the focused machine: listed while
+  /// connected, inside the reconnect window after its link drops, or always
+  /// for an ADE Cloud computer; not after the user disconnected it.
+  func updateFocusedMachineListing(now: Date = Date()) {
+    let isLive = connectionState == .connected
+    if isLive {
+      focusedNotLiveSince = nil
+    } else if focusedNotLiveSince == nil {
+      focusedNotLiveSince = now
+    }
+    let isCloud = focusedMachineKey.map { cloudMachineFleetKeys.contains($0) } ?? false
+    let lists = fleetMachineListsWork(
+      isLive: isLive,
+      isCloud: isCloud,
+      isWanted: !autoReconnectPausedByUser,
+      isParked: false,
+      isDisconnectedByUser: autoReconnectPausedByUser,
+      notLiveSince: focusedNotLiveSince,
+      now: now,
+      window: MachineFleet.workListReconnectWindow
+    )
+    if lists != focusedMachineListsWork { focusedMachineListsWork = lists }
+    focusedListWindowTask?.cancel()
+    focusedListWindowTask = nil
+    guard lists, !isLive, !isCloud, let since = focusedNotLiveSince else { return }
+    let delay = max(0.1, since.addingTimeInterval(MachineFleet.workListReconnectWindow).timeIntervalSince(now) + 0.1)
+    focusedListWindowTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .seconds(delay))
+      guard !Task.isCancelled else { return }
+      self?.updateFocusedMachineListing()
+    }
+  }
+
+  /// Back in front: the focused machine reconnects, and its rows stay listed
+  /// while it does.
+  func restartFocusedReconnectWindow() {
+    if focusedNotLiveSince != nil { focusedNotLiveSince = Date() }
+    updateFocusedMachineListing()
+  }
+
+  /// How long an open waits for an ADE Cloud computer it woke: the wake
+  /// starts the computer, and its ADE answers once the computer is up.
+  static let cloudWakeConnectTimeout: Duration = .seconds(120)
+
+  /// An ADE Cloud computer that is not connected: the phone asks it to wake
+  /// before it dials, through a machine it is connected to, and marks it
+  /// waking until `endCloudWake`. False for any other machine, or when no
+  /// connected machine can send the wake; the caller then dials as usual.
+  func beginCloudWakeIfAsleep(fleetKey: String) async -> Bool {
+    guard cloudMachineFleetKeys.contains(fleetKey),
+          machineFleet?.isLive(fleetKey) != true,
+          !isFocusedAndLive(fleetKey),
+          let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey
+    else { return false }
+    cloudWakeWaiters[fleetKey, default: 0] += 1
+    wakingCloudMachineKeys.insert(fleetKey)
+    guard await wakeCloudMachineIfNeeded(machineKey: accountKey) else {
+      endCloudWake(fleetKey: fleetKey)
+      return false
+    }
+    return true
+  }
+
+  /// The name of the ADE Cloud computer `fleetKey` while an open waits for it
+  /// to wake. Nil for any other machine, or once it answered.
+  func wakingCloudMachineName(fleetKey: String?) -> String? {
+    guard let fleetKey, wakingCloudMachineKeys.contains(fleetKey) else { return nil }
+    return machineFleet?.machine(for: fleetKey)?.name ?? "the cloud computer"
+  }
+
+  /// A waking ADE Cloud computer, for a screen that belongs to no single
+  /// machine (the Work list while one of its CLI rows opens).
+  var anyWakingCloudMachineName: String? {
+    wakingCloudMachineKeys.sorted().first.flatMap { wakingCloudMachineName(fleetKey: $0) }
+  }
+
+  /// The machine a chat on another machine lives on. Nil for the focused
+  /// machine's chats.
+  func remoteChatMachineKey(sessionId: String) -> String? {
+    routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines))?.machineKey
+  }
+
+  /// One open that waited on a waking ADE Cloud computer is done.
+  func endCloudWake(fleetKey: String) {
+    let left = (cloudWakeWaiters[fleetKey] ?? 1) - 1
+    if left > 0 {
+      cloudWakeWaiters[fleetKey] = left
+    } else {
+      cloudWakeWaiters[fleetKey] = nil
+      wakingCloudMachineKeys.remove(fleetKey)
+    }
+  }
+
+  /// Saves the account's ADE Cloud computers as fleet keys. The cloud list
+  /// names account machines; the fleet names a machine by its device id.
+  func setCloudMachines(_ machines: [CloudPhoneMachine]) {
+    let accountMachines = AccountService.shared.machines
+    let keys = machines.compactMap { box -> String? in
+      guard let key = box.machineKey,
+            let deviceId = accountMachines.first(where: { $0.machineKey == key })?.deviceId,
+            !deviceId.isEmpty else { return nil }
+      return HiddenMachineStore.fleetKey(deviceId: deviceId)
+    }
+    cloudMachineFleetKeys = Set(keys)
   }
 }

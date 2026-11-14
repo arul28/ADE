@@ -634,6 +634,12 @@ struct WorkSessionDestinationView: View {
       ?? "Session"
   }
 
+  /// The other machine this chat lives on, for the ADE Cloud wake. Nil for
+  /// the focused machine's chats.
+  var sessionCloudMachineKey: String? {
+    crossProjectContext?.machineKey ?? syncService.remoteChatMachineKey(sessionId: sessionId)
+  }
+
   /// The machine name under the header title: the host this phone is
   /// connected to. The project is deliberately not repeated here.
   var sessionDestinationNavigationSubtitle: String? {
@@ -1670,6 +1676,12 @@ struct WorkSessionDestinationView: View {
   /// sits, never what it is.
   private var chatColumnPresentations: some View {
     AnyView(sessionDestinationRoot)
+      // A chat on an ADE Cloud computer that is asleep: opening it wakes the
+      // computer, and the chat says so until the computer answers.
+      .wakesCloudComputer(
+        machineKey: sessionCloudMachineKey,
+        wakingName: syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey)
+      )
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).
         mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
@@ -2145,6 +2157,11 @@ struct WorkSessionDestinationView: View {
       let ownerKey = syncService.navigationMachineKey(rawMachineKey: nil, sessionId: sessionId)
       if syncService.connectionState == .connected,
          ownerKey == nil || syncService.accountMachineIsFocused(ownerKey) {
+        deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
+      }
+      // An ADE Cloud computer that is waking is progress too: it gets a
+      // fresh window once it answers.
+      if syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey) != nil {
         deadline = Date().addingTimeInterval(SyncService.workSessionNavigationTimeout)
       }
       // Never time out under the Wake & open prompt; give the open a fresh

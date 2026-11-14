@@ -4120,11 +4120,6 @@ private struct WorkChatInfoSubagentRow: View {
                   .background(ADEColor.seriesTokenCache.opacity(0.12), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
                   .accessibilityLabel("background")
               }
-              if snapshot.spawnKind == .peer {
-                Text("peer")
-                  .font(.caption2.weight(.medium))
-                  .foregroundStyle(ADEColor.textMuted)
-              }
               WorkChatInfoStatusMark(status: snapshot.status, needsInput: snapshot.needsInput)
             }
             .fixedSize()
@@ -4668,7 +4663,8 @@ private struct WorkSubagentTimelineGridTile: View {
   private var snapshot: WorkSubagentSnapshot { row.snapshot }
 
   private var metadata: String {
-    let relationship = snapshot.spawnKind == .peer ? "Peer" : "Subagent"
+    // A chat this one started that does not report back is not a subagent.
+    let relationship = snapshot.spawnKind == .peer ? "Started by this chat" : "Subagent"
     let provider = workTrimmedSubagentProvider(snapshot.provider).map(workChatSurfaceProviderName)
     let type = workHumanizedAgentType(snapshot.agentType)
     let background = snapshot.background ? "Background" : nil

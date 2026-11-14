@@ -66,9 +66,12 @@ extension WorkRootListScreen {
     )
     // The same repository's chats on the other paired machines (the desktop
     // Work board's union). Their row actions route to their own machine.
+    // The focused machine off past its reconnect window (or disconnected):
+    // its chats, sessions and lanes are not listed until it is back.
+    let focusedListed = inputs.primaryListsWork
     let remoteMerge = workMergeRemoteMachineRows(
-      sessions: activeRosterProjection.sessions,
-      lanes: activeRosterProjection.lanes,
+      sessions: focusedListed ? activeRosterProjection.sessions : [],
+      lanes: focusedListed ? activeRosterProjection.lanes : [],
       remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : []
     )
     syncService.setWorkListRemoteChats(remoteMerge.remoteChats)
@@ -78,7 +81,7 @@ extension WorkRootListScreen {
     let launchProjection = workOverlayChatLaunches(
       sessions: rosterProjection.sessions,
       lanes: rosterProjection.lanes,
-      launches: localProjectionIsCurrent ? syncService.activeProjectChatLaunches() : []
+      launches: localProjectionIsCurrent && focusedListed ? syncService.activeProjectChatLaunches() : []
     )
     // Side chats live inside their main chat: never a row, and the main
     // chat's row wears the side-chat mark while it has one.
@@ -95,7 +98,7 @@ extension WorkRootListScreen {
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
     // they render through the same machinery; committed rows win on id collision.
-    let optimisticSessionsSnapshot = localProjectionIsCurrent
+    let optimisticSessionsSnapshot = localProjectionIsCurrent && focusedListed
       ? optimisticSessions.merging(pendingChatCreationOptimisticSessions) { current, _ in current }
       : [:]
     let archivedSessionIdsSnapshot = resolvedWorkArchivedSessionIds(

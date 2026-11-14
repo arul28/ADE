@@ -66,20 +66,6 @@ func fleetProjectsMatch(
   return lhsFolder == rhsFolder
 }
 
-extension MachineFleet.Machine {
-  /// The word after the machine's name on its rows in a project's lists, nil
-  /// while live. Rows of a machine that is not live stay listed, dimmed.
-  var rowStateWord: String? {
-    switch state {
-    case .live: return nil
-    case .connecting, .inactive: return "connecting"
-    case .paused: return isParked ? "parked" : "not connected"
-    case .needsUpdate: return "needs update"
-    case .offline, .needsAttention: return "offline"
-    }
-  }
-}
-
 /// Lane ids of another machine live in the list under a namespaced id, so a
 /// lane never merges with a focused-machine lane (or another machine's).
 func workRemoteLaneId(machineKey: String, laneId: String) -> String {
@@ -260,23 +246,6 @@ struct WorkMachineFilterOption: Identifiable, Equatable {
   let id: String
   let name: String
   let isLive: Bool
-  /// "parked", "offline", "connecting"; nil while live.
-  var stateWord: String? = nil
-
-  /// The badge text: the name, then the state when it is not live.
-  var label: String {
-    guard let stateWord else { return name }
-    return "\(name), \(stateWord)"
-  }
-}
-
-/// The machine badge of a row or lane in a list that spans machines: the
-/// focused machine's for its own lanes, another machine's for its namespaced
-/// lanes. Nil while the list shows one machine.
-func workMachineBadge(laneId: String, options: [WorkMachineFilterOption]) -> WorkMachineFilterOption? {
-  guard options.count > 1 else { return nil }
-  let id = workMachineFilterId(laneId: laneId)
-  return options.first { $0.id == id }
 }
 
 /// The focused machine first, then every other machine with a checkout of the
@@ -284,33 +253,19 @@ func workMachineBadge(laneId: String, options: [WorkMachineFilterOption]) -> Wor
 func workMachineFilterOptions(
   primaryName: String,
   primaryIsLive: Bool,
-  primaryStateWord: String? = nil,
   remote: [WorkRemoteMachineRepo],
-  isLive: (String) -> Bool,
-  stateWord: (String) -> String? = { _ in nil }
+  isLive: (String) -> Bool
 ) -> [WorkMachineFilterOption] {
   var seen: Set<String> = [workPrimaryMachineFilterId]
   var others: [WorkMachineFilterOption] = []
   for repo in remote where seen.insert(repo.machineKey).inserted {
-    let live = isLive(repo.machineKey)
-    others.append(WorkMachineFilterOption(
-      id: repo.machineKey,
-      name: repo.machineName,
-      isLive: live,
-      stateWord: live ? nil : (stateWord(repo.machineKey) ?? "offline")
-    ))
+    others.append(WorkMachineFilterOption(id: repo.machineKey, name: repo.machineName, isLive: isLive(repo.machineKey)))
   }
   others.sort { lhs, rhs in
     if lhs.isLive != rhs.isLive { return lhs.isLive }
     return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
   }
-  let primary = WorkMachineFilterOption(
-    id: workPrimaryMachineFilterId,
-    name: primaryName,
-    isLive: primaryIsLive,
-    stateWord: primaryStateWord
-  )
-  return [primary] + others
+  return [WorkMachineFilterOption(id: workPrimaryMachineFilterId, name: primaryName, isLive: primaryIsLive)] + others
 }
 
 /// The Machine filter id of the machine that owns a row in the merged list.

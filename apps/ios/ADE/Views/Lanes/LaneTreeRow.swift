@@ -13,30 +13,20 @@ struct LaneTreeRow: View {
   let onSelectLane: (String) -> Void
   /// Pushes the lane's detail through the list's navigation path.
   let onOpen: () -> Void
-  var machine: LaneMachineChip? = nil
-  /// Off where a section header already names the machine; repeating it
-  /// squeezed the branch name.
-  var showsMachineChip = true
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
-      if machine?.isLive == false {
-        // The last roster of a machine the phone has no live link to: shown,
-        // dimmed, no actions (the desktop's offline rule).
+      Button {
+        onSelectLane(snapshot.lane.id)
+        onOpen()
+      } label: {
         card
-      } else {
-        Button {
-          onSelectLane(snapshot.lane.id)
-          onOpen()
-        } label: {
-          card
-        }
-        .buttonStyle(ADEKitRowButtonStyle())
-        .contextMenu {
-          onContextMenu(snapshot)
-        } preview: {
-          LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
-        }
+      }
+      .buttonStyle(ADEKitRowButtonStyle())
+      .contextMenu {
+        onContextMenu(snapshot)
+      } preview: {
+        LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -49,9 +39,7 @@ struct LaneTreeRow: View {
       isOpen: isOpen,
       pullRequest: pullRequest,
       transitionNamespace: transitionNamespace,
-      isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: machine,
-      showsMachineChip: showsMachineChip
+      isSelectedTransitionSource: isSelectedTransitionSource
     )
     .equatable()
   }

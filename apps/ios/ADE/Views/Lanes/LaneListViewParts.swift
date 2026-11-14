@@ -151,28 +151,18 @@ extension LanesTabView {
     guard !remoteLanes.machines.isEmpty else { return .none }
     return LaneMachineChips(
       // The focused machine's rows keep their saved data and stay open while
-      // its link is down; the badge says so.
-      focused: LaneMachineChip(
-        name: focusedMachineName,
-        isLive: true,
-        symbol: machineSymbol(machineKey: syncService.focusedMachineKey, name: focusedMachineName),
-        stateWord: syncService.focusedMachineRowStateWord
-      ),
+      // its link reconnects.
+      focused: LaneMachineChip(name: focusedMachineName, isLive: true),
       byMachineKey: Dictionary(
-        remoteLanes.machines.map {
-          ($0.machineKey, LaneMachineChip(
-            name: $0.name,
-            isLive: $0.isLive,
-            symbol: machineSymbol(machineKey: $0.machineKey, name: $0.name),
-            stateWord: $0.isLive ? nil : ($0.stateWord ?? "offline")
-          ))
-        },
+        remoteLanes.machines.map { ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive)) },
         uniquingKeysWith: { first, _ in first }
       )
     )
   }
 
   var showsFocusedMachineLanes: Bool {
+    // Off past its reconnect window: its lanes are not listed.
+    guard syncService.focusedMachineListsWork else { return false }
     switch machineFilter {
     case .all, .focused: return true
     case .machine: return false
@@ -287,6 +277,13 @@ extension LanesTabView {
         machineName: machine.name,
         onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
       )
+      // A lane on an ADE Cloud computer that is asleep: opening it wakes the
+      // computer, and the lane reads again once the computer answers.
+      .wakesCloudComputer(
+        machineKey: machine.machineKey,
+        wakingName: syncService.wakingCloudMachineName(fleetKey: machine.machineKey),
+        onAwake: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) }
+      )
     } else {
       ADEEmptyStateView(
         symbol: "square.stack.3d.up.slash",
@@ -306,14 +303,13 @@ extension LanesTabView {
   func laneListRow(
     _ snapshot: LaneListSnapshot,
     pullRequest: LanePrTag?,
-    showsMachineChip: Bool,
     chips: LaneMachineChips
   ) -> some View {
     let laneId = snapshot.lane.id
     let pinned = pinnedLaneIds.contains(laneId)
     let machine = chips.chip(forLaneId: laneId)
-    // A machine with no live link shows its last roster dimmed and inert, so
-    // its rows carry no swipe actions either.
+    // Pin and archive need a live link: a lane of a machine that is waking or
+    // reconnecting has no swipe actions until it is back.
     let actionable = machine?.isLive != false
     let isDuoSelected = duoLayout.isWide && duoSelectedLaneId == laneId
     LaneTreeRow(
@@ -325,9 +321,7 @@ extension LanesTabView {
       isSelectedTransitionSource: isDuoSelected || selectedLaneTransitionId == laneId,
       onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
       onSelectLane: { selectedLaneTransitionId = $0 },
-      onOpen: { openLane(laneId) },
-      machine: machine,
-      showsMachineChip: showsMachineChip
+      onOpen: { openLane(laneId) }
     )
     // The Duo's list column marks its selected row the way a desktop sidebar
     // does (a tinted rounded rectangle inset from the column's edges); the
@@ -391,17 +385,26 @@ extension LanesTabView {
     }
   }
 
-  /// The lane rows of every machine with a copy, in one list: the focused
-  /// machine's lanes (primary first, then the rest oldest first), then each
-  /// other machine's lanes, live machines first. Each row carries its
-  /// machine's badge and state while the list spans machines; a machine that
-  /// is not live keeps its rows, dimmed.
+  /// The lane rows of every listed machine with a copy, in one list: the
+  /// focused machine's lanes (primary first, then the rest oldest first),
+  /// then each other machine's lanes, live machines first. A row never names
+  /// its machine; an offline, parked or disconnected computer's lanes are not
+  /// listed (`fleetMachineListsWork`).
   @ViewBuilder
   var laneListSections: some View {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if showsFocusedMachineLanes, laneSnapshots.isEmpty, remoteLanes.machines.isEmpty {
+    if !syncService.focusedMachineListsWork, remoteSections.isEmpty, machineFilter == .all {
+      // Nothing to list until a computer is back: say so, not "No lanes".
+      ADEEmptyStateView(
+        symbol: "wifi.slash",
+        title: "\(focusedMachineName) is offline",
+        message: "Its lanes show here again when it is back online."
+      )
+      .padding(.top, 32)
+      .adeFlatRow(separator: .hidden)
+    } else if showsFocusedMachineLanes, laneSnapshots.isEmpty, remoteLanes.machines.isEmpty {
       if let emptyStatePresentation {
         emptyStateCard(emptyStatePresentation)
           .padding(.top, 16)
@@ -424,13 +427,11 @@ extension LanesTabView {
       .padding(.top, 32)
       .adeFlatRow(separator: .hidden)
     } else {
-      let spansMachines = !remoteLanes.machines.isEmpty
       if showsFocusedMachineLanes, !orderedSnapshots.isEmpty {
         ForEach(orderedSnapshots) { snapshot in
           laneListRow(
             snapshot,
             pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
-            showsMachineChip: spansMachines,
             chips: chips
           )
         }
@@ -440,7 +441,6 @@ extension LanesTabView {
           laneListRow(
             snapshot,
             pullRequest: nil,
-            showsMachineChip: true,
             chips: chips
           )
         }

@@ -2863,11 +2863,20 @@ parks instead. A machine the user disconnected in
 Settings stays off for the project too
 (`ade.fleet.userDisconnectedMachineKeys.v1`), until the user connects it. The
 Lanes list and the Work list show the lanes and sessions of every machine with
-a copy in one list. While the list spans machines, every lane row, Work lane
-header and Work row without a lane header carries a small machine badge with
-the machine's state when it is not live ("parked", "offline", "not
-connected", "connecting"). The rows of a machine that is not live stay listed,
-dimmed, from its last roster. There is no control in a project that switches
+a copy in one list. Rows show no machine: the machine shows only inside an
+open chat (its header), in the lane detail, in a lane row's menu ("Show only"), and in the
+machine menu where new work starts. The rows of a machine that drops stay
+listed for a 20-second reconnect window (`fleetMachineListsWork`,
+`MachineFleet.workListReconnectWindow`), then leave the list until it is back;
+the window restarts when the app comes back to the front. A machine that is
+parked, not connected or disconnected by the user lists no rows, and the Hub
+and filter counts follow what is listed. An ADE Cloud computer's rows always
+list, from its last roster, also while it sleeps. Opening one of its chats or
+lanes wakes it through a connected machine (`beginCloudWakeIfAsleep`) and
+shows "Waking <computer>…" in the opened screen until it answers. The phone
+knows an asleep cloud computer's work only from that computer's cached roster,
+so a cloud computer this phone never paired shows no rows, and a wake needs
+another connected machine to send it. There is no control in a project that switches
 the machine to see work: the Lanes and Work machine filters only narrow the
 list, and a machine is picked only where new work starts (Start on). The
 focused machine stays the phone's internal home for calls that name no lane
