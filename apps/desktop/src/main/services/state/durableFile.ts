@@ -554,11 +554,8 @@ export function createFileVersionTracker(filePath: string) {
     return stat ? fileStampOf(stat) : null;
   };
   const lookOrNull = (): FileStamp | null => {
-    try {
-      return look();
-    } catch {
-      return null;
-    }
+    const stat = bigIntStatOrNull(filePath);
+    return stat ? fileStampOf(stat) : null;
   };
   const digestOf = (text: string): string => createHash("sha1").update(text).digest("base64");
   const settledAt = (current: FileStamp | null, wallNow: number): boolean =>

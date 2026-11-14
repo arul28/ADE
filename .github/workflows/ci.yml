@@ -39,7 +39,7 @@ jobs:
       # that group instead of a fresh copy of everything. desktop and ade-cli
       # import each other's source, so they share one group. lookup-only
       # checks for the entry without downloading it; a miss installs below
-      # and the post step saves the new entry.
+      # and the post steps save the other groups' entries.
       # The core group's key and paths live in one composite action, which
       # every job that restores the group uses too. It only looks the entry
       # up; the step after the install saves it.
@@ -736,18 +736,8 @@ jobs:
     steps:
       # Each test step below runs for one group only, so a group that no step
       # names would pass green with no tests. scripts/validate-platform-gates.mjs
-      # checks that every step condition names a listed group and that every
-      # listed group has a step; this step stops a group added to the matrix
-      # list alone.
-      - name: Check the matrix group
-        shell: bash
-        env:
-          GROUP: ${{ matrix.group }}
-        run: |
-          case "$GROUP" in
-            ade-cli | desktop-sync | desktop-platform) echo "Group: $GROUP" ;;
-            *) echo "::error::windows-foundation has no steps for group '$GROUP'."; exit 1 ;;
-          esac
+      # (the docs job) fails when a step condition names an unlisted group or
+      # a listed group has no step.
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

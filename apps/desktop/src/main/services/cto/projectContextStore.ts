@@ -548,7 +548,7 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       } catch (renameError) {
         // The file can vanish between read and rename. Another process can
         // also hold it (EPERM on Windows); then keep no cache, so the next
-        // read tries the quarantine again before a write replaces the file.
+        // read tries the quarantine again.
         if ((renameError as NodeJS.ErrnoException)?.code !== "ENOENT") {
           warn("cto_context.store_quarantine_failed", renameError);
         }
