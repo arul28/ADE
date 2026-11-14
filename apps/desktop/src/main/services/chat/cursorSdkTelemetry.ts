@@ -7,13 +7,13 @@ import {
 import { asRecord, finiteNumberOrNull, isEnvFlagOff, toOptionalString } from "../shared/utils";
 
 /** Cursor's hook step name for the compaction hook (`hooks.json` key and `hook_event_name`). */
-export const CURSOR_PRECOMPACT_HOOK_STEP = "preCompact";
+const CURSOR_PRECOMPACT_HOOK_STEP = "preCompact";
 
 /**
  * Every field ADE reads off the `preCompact` hook payload. None is documented:
  * the SDK copies them from agent-core's `agent.v1.PreCompactRequestQuery` into
- * the hook's stdin JSON. `cursorSdkPreCompactContract.test.ts` reads the
- * installed SDK and fails when a bump drops one.
+ * the hook's stdin JSON. No check reads the installed SDK, so an SDK bump that
+ * drops one is not caught; compaction then falls back to the status-text match.
  */
 export const CURSOR_PRECOMPACT_HOOK_FIELDS = [
   "trigger",

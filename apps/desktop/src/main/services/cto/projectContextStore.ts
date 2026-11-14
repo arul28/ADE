@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
 import { nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import { readGitOriginUrl } from "../projects/recentProjectSummary";
+import { createFileVersionTracker } from "../state/durableFile";
 
 /**
  * Durable project context for the one CTO.
@@ -518,52 +519,53 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
   const logger = args.logger ?? null;
   const now = args.now ?? nowIso;
   let cache: StoreFile | null = null;
-  let loadedMtime = -1;
+  // Another store (the desktop panel, the brain) writes the same file, at times
+  // in the same timestamp tick as this one's last read.
+  const fileVersion = createFileVersionTracker(filePath);
 
   const warn = (message: string, error: unknown): void => {
     logger?.warn(message, { error: error instanceof Error ? error.message : String(error) });
   };
 
   const readFromDisk = (): StoreFile => {
-    let stat: fs.Stats;
+    if (cache && !fileVersion.changed()) return cache;
     try {
-      stat = fs.statSync(filePath);
-    } catch {
-      loadedMtime = -1;
-      return emptyStore();
-    }
-    if (cache && stat.mtimeMs === loadedMtime) return cache;
-    try {
-      const parsed = decodeStore(JSON.parse(fs.readFileSync(filePath, "utf8")));
+      const parsed = decodeStore(JSON.parse(fileVersion.read()));
       if (!parsed) throw new Error("undecodable context store");
       cache = parsed;
-      loadedMtime = stat.mtimeMs;
       return cache;
     } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        cache = null;
+        return emptyStore();
+      }
       // A torn write must not wipe the previous good file, and a corrupt one
       // must not crash the CTO. Quarantine it and start clean; the account
       // mirror can fill the gap on the next reconcile.
       warn("cto_context.store_unreadable", error);
       try {
         fs.renameSync(filePath, `${filePath}.corrupt-${Date.now()}`);
-      } catch {
-        // The rename can fail if the file vanished between read and rename.
+      } catch (renameError) {
+        // The file can vanish between read and rename. Another process can
+        // also hold it (EPERM on Windows); then keep no cache, so the next
+        // read tries the quarantine again.
+        if ((renameError as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          warn("cto_context.store_quarantine_failed", renameError);
+        }
+        cache = null;
+        return emptyStore();
       }
       cache = emptyStore();
-      loadedMtime = -1;
       return cache;
     }
   };
 
   const write = (next: StoreFile): void => {
     const compacted = compact(next);
-    writeTextAtomic(filePath, `${JSON.stringify(compacted)}\n`, { mode: 0o600 });
+    const text = `${JSON.stringify(compacted)}\n`;
+    writeTextAtomic(filePath, text, { mode: 0o600 });
     cache = compacted;
-    try {
-      loadedMtime = fs.statSync(filePath).mtimeMs;
-    } catch {
-      loadedMtime = -1;
-    }
+    fileVersion.wrote(text);
   };
 
   const compact = (store: StoreFile): StoreFile => {

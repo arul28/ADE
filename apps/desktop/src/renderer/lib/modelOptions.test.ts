@@ -37,65 +37,20 @@ function makeStatus(overrides: Partial<AiSettingsStatus> & Record<string, unknow
 // ---------------------------------------------------------------------------
 
 describe("describeModelSource", () => {
-  it("returns 'local' for local-auth models", () => {
-    const descriptor = getModelById("ollama/qwen2.5-coder:32b");
-    expect(descriptor).toBeTruthy();
-    expect(describeModelSource(descriptor!)).toBe("local");
+  it.each([
+    ["api-key only", ["api-key"], false, "API only"],
+    ["openrouter", ["openrouter"], false, "OpenRouter"],
+    ["oauth only", ["oauth"], false, "OAuth"],
+    ["no auth types", [], false, "model source"],
+    ["local beats CLI subscription", ["local", "cli-subscription"], true, "local"],
+    ["CLI subscription beats API only", ["api-key"], true, "CLI subscription"],
+  ])("labels %s", (_name, authTypes, isCliWrapped, label) => {
+    expect(describeModelSource({ authTypes, isCliWrapped } as any)).toBe(label);
   });
 
-  it("returns 'CLI subscription' for CLI-wrapped models", () => {
-    const descriptor = getModelById("anthropic/claude-sonnet-5");
-    expect(descriptor).toBeTruthy();
-    expect(descriptor!.isCliWrapped).toBe(true);
-    expect(describeModelSource(descriptor!)).toBe("CLI subscription");
-  });
-
-  it("returns 'API only' for api-key models", () => {
-    const synthetic = {
-      authTypes: ["api-key"] as string[],
-      isCliWrapped: false,
-    } as any;
-    expect(describeModelSource(synthetic)).toBe("API only");
-  });
-
-  it("returns 'OpenRouter' for openrouter models", () => {
-    const synthetic = {
-      authTypes: ["openrouter"] as string[],
-      isCliWrapped: false,
-    } as any;
-    expect(describeModelSource(synthetic)).toBe("OpenRouter");
-  });
-
-  it("returns 'OAuth' for oauth-only models", () => {
-    const synthetic = {
-      authTypes: ["oauth"] as string[],
-      isCliWrapped: false,
-    } as any;
-    expect(describeModelSource(synthetic)).toBe("OAuth");
-  });
-
-  it("falls back to 'model source' for an unknown auth combo", () => {
-    const synthetic = {
-      authTypes: [] as string[],
-      isCliWrapped: false,
-    } as any;
-    expect(describeModelSource(synthetic)).toBe("model source");
-  });
-
-  it("prioritizes local over CLI subscription", () => {
-    const synthetic = {
-      authTypes: ["local", "cli-subscription"] as string[],
-      isCliWrapped: true,
-    } as any;
-    expect(describeModelSource(synthetic)).toBe("local");
-  });
-
-  it("prioritizes CLI subscription over API only", () => {
-    const synthetic = {
-      authTypes: ["api-key"] as string[],
-      isCliWrapped: true,
-    } as any;
-    expect(describeModelSource(synthetic)).toBe("CLI subscription");
+  it("labels registry local and CLI-wrapped models", () => {
+    expect(describeModelSource(getModelById("ollama/qwen2.5-coder:32b")!)).toBe("local");
+    expect(describeModelSource(getModelById("anthropic/claude-sonnet-5")!)).toBe("CLI subscription");
   });
 });
 
@@ -104,22 +59,12 @@ describe("describeModelSource", () => {
 // ---------------------------------------------------------------------------
 
 describe("deriveConfiguredModelIds", () => {
-  it("returns empty array for null status", () => {
-    expect(deriveConfiguredModelIds(null)).toEqual([]);
-  });
-
-  it("returns empty array for undefined status", () => {
-    expect(deriveConfiguredModelIds(undefined)).toEqual([]);
-  });
-
-  it("returns empty array when detectedAuth is empty", () => {
-    const status = makeStatus({ detectedAuth: [] });
-    expect(deriveConfiguredModelIds(status)).toEqual([]);
-  });
-
-  it("returns empty array when detectedAuth is undefined", () => {
-    const status = makeStatus();
-    delete status.detectedAuth;
+  it.each([
+    ["null status", null],
+    ["undefined status", undefined],
+    ["empty detectedAuth", makeStatus({ detectedAuth: [] })],
+    ["missing detectedAuth", (() => { const s = makeStatus(); delete s.detectedAuth; return s; })()],
+  ])("returns an empty list for %s", (_name, status) => {
     expect(deriveConfiguredModelIds(status)).toEqual([]);
   });
 
@@ -367,12 +312,8 @@ describe("deriveConfiguredModelIds", () => {
 // ---------------------------------------------------------------------------
 
 describe("deriveConfiguredModelOptions", () => {
-  it("returns empty array for null status", () => {
-    expect(deriveConfiguredModelOptions(null)).toEqual([]);
-  });
-
-  it("returns empty array for undefined status", () => {
-    expect(deriveConfiguredModelOptions(undefined)).toEqual([]);
+  it.each([[null], [undefined]])("returns an empty list for %s status", (status) => {
+    expect(deriveConfiguredModelOptions(status)).toEqual([]);
   });
 
   it("returns AiModelDescriptor objects with id, label, and description", () => {
@@ -398,16 +339,6 @@ describe("deriveConfiguredModelOptions", () => {
     expect(sonnet!.description).toBe("anthropic (CLI subscription)");
   });
 
-  it("uses displayName as label", () => {
-    const status = makeStatus({
-      detectedAuth: [{ type: "cli-subscription", cli: "claude", authenticated: true }],
-    });
-    const options = deriveConfiguredModelOptions(status);
-    const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-5");
-    expect(sonnet).toBeTruthy();
-    expect(sonnet!.label).toBe("Claude Sonnet 5");
-  });
-
   it("preserves dynamic local model ids as options", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "local", provider: "lmstudio" }],
@@ -430,29 +361,14 @@ describe("includeSelectedModelOption", () => {
     { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", description: "anthropic (CLI subscription)" },
   ];
 
-  it("returns options unchanged when selectedModelId is null", () => {
-    const result = includeSelectedModelOption(baseOptions, null);
-    expect(result).toBe(baseOptions);
-  });
-
-  it("returns options unchanged when selectedModelId is undefined", () => {
-    const result = includeSelectedModelOption(baseOptions, undefined);
-    expect(result).toBe(baseOptions);
-  });
-
-  it("returns options unchanged when selectedModelId is empty string", () => {
-    const result = includeSelectedModelOption(baseOptions, "");
-    expect(result).toBe(baseOptions);
-  });
-
-  it("returns options unchanged when selectedModelId is whitespace", () => {
-    const result = includeSelectedModelOption(baseOptions, "   ");
-    expect(result).toBe(baseOptions);
-  });
-
-  it("returns options unchanged when selectedModelId already exists", () => {
-    const result = includeSelectedModelOption(baseOptions, "anthropic/claude-sonnet-5");
-    expect(result).toBe(baseOptions);
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+    ["empty", ""],
+    ["whitespace", "   "],
+    ["already present", "anthropic/claude-sonnet-5"],
+  ])("returns the same options when the selected id is %s", (_name, selected) => {
+    expect(includeSelectedModelOption(baseOptions, selected)).toBe(baseOptions);
   });
 
   it("prepends the selected model when it is missing from options but exists in registry", () => {

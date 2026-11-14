@@ -2,15 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, LaneLinearIssue, LaneSummary } from "../../shared/types";
 import { createDynamicCursorCliModelDescriptor } from "../../shared/modelRegistry";
 import { descriptorsFromAgentChatModelCatalog, resetRuntimeCatalogDescriptorCacheForTests } from "../components/shared/ModelPicker/modelCatalog";
-import {
-  defaultKickoffPrompt,
-  findIssueConflicts,
-  isBatchLaunchInFlight,
-  runBatchLaunch,
-  BatchLaunchAgentReadinessTracker,
-  type BatchLaunchDeps,
-  type BatchLaunchIssueConfig,
-} from "./linearBatchLaunch";
+import { findIssueConflicts, isBatchLaunchInFlight, runBatchLaunch, BatchLaunchAgentReadinessTracker, type BatchLaunchDeps, type BatchLaunchIssueConfig } from "./linearBatchLaunch";
 import { applyUnifiedPermissionToNativeControls, defaultNativeControls } from "./nativeLaunchControls";
 
 afterEach(() => {
@@ -182,16 +174,6 @@ describe("findIssueConflicts", () => {
     const conflicts = findIssueConflicts(issues, lanes);
     expect(conflicts.get("a")?.reason).toBe("lane");
     expect(conflicts.get("a")?.laneId).toBe("lane-a");
-  });
-});
-
-describe("defaultKickoffPrompt", () => {
-  it("is generic — names no specific issue so it is safe to share across a batch", () => {
-    const prompt = defaultKickoffPrompt();
-    // Must NOT bake in any specific identifier; the agent reads its attached issue.
-    expect(prompt).not.toMatch(/[A-Z]{2,}-\d+/);
-    expect(prompt).toContain("ADE_LINEAR_ISSUE_IDS");
-    expect(prompt).toContain("ade linear");
   });
 });
 

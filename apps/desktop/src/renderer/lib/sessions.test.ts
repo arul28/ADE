@@ -65,36 +65,14 @@ describe("isChatToolType", () => {
 });
 
 describe("shortToolTypeLabel", () => {
-  it('returns "Shell" for null, undefined, or "shell"', () => {
-    expect(shortToolTypeLabel(null)).toBe("Shell");
-    expect(shortToolTypeLabel(undefined)).toBe("Shell");
-    expect(shortToolTypeLabel("shell")).toBe("Shell");
-  });
-
-  it('returns "Claude" for any claude-prefixed tool type', () => {
-    expect(shortToolTypeLabel("claude")).toBe("Claude");
-    expect(shortToolTypeLabel("claude-chat")).toBe("Claude");
-    expect(shortToolTypeLabel("claude-orchestrated")).toBe("Claude");
-  });
-
-  it('returns "Codex" for any codex-prefixed tool type', () => {
-    expect(shortToolTypeLabel("codex")).toBe("Codex");
-    expect(shortToolTypeLabel("codex-chat")).toBe("Codex");
-    expect(shortToolTypeLabel("codex-orchestrated")).toBe("Codex");
-  });
-
-  it('returns "OpenCode" for any opencode-prefixed tool type', () => {
-    expect(shortToolTypeLabel("opencode")).toBe("OpenCode");
-    expect(shortToolTypeLabel("opencode-chat")).toBe("OpenCode");
-    expect(shortToolTypeLabel("opencode-orchestrated")).toBe("OpenCode");
-  });
-
-  it("returns exact labels for known single-name tools", () => {
-    expect(shortToolTypeLabel("cursor")).toBe("Cursor");
-    expect(shortToolTypeLabel("cursor-cli")).toBe("Cursor");
-    expect(shortToolTypeLabel("droid")).toBe("Droid");
-    expect(shortToolTypeLabel("aider")).toBe("Aider");
-    expect(shortToolTypeLabel("continue")).toBe("Continue");
+  it.each([
+    [null, "Shell"], [undefined, "Shell"], ["shell", "Shell"],
+    ["claude", "Claude"], ["claude-chat", "Claude"], ["claude-orchestrated", "Claude"],
+    ["codex-chat", "Codex"], ["codex-orchestrated", "Codex"],
+    ["opencode-chat", "OpenCode"], ["opencode-orchestrated", "OpenCode"],
+    ["cursor-cli", "Cursor"], ["droid", "Droid"], ["aider", "Aider"], ["continue", "Continue"],
+  ])("labels tool type %s as %s", (toolType, label) => {
+    expect(shortToolTypeLabel(toolType as string | null | undefined)).toBe(label);
   });
 
   it("replaces hyphens with spaces for unknown tool types", () => {

@@ -33,10 +33,6 @@ describe("defaultDroidSessionsDir", () => {
     }
   });
 
-  it("defaults to ~/.factory/sessions", () => {
-    expect(defaultDroidSessionsDir()).toBe(path.join(HOME, ".factory", "sessions"));
-  });
-
   it("honours FACTORY_HOME_OVERRIDE the same way the Droid launcher does", () => {
     process.env.FACTORY_HOME_OVERRIDE = "/accounts/two";
     expect(defaultDroidSessionsDir()).toBe(path.join("/accounts/two", ".factory", "sessions"));

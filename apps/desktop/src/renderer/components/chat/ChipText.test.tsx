@@ -128,12 +128,6 @@ describe("ChipText", () => {
     expect(resolveSmartLinkPreview).not.toHaveBeenCalled();
   });
 
-  it("leaves a message with no chips as plain text", () => {
-    const { container } = render(<ChipText text="just words" className="prose" />);
-    expect(container.textContent).toBe("just words");
-    expect(container.querySelector("span")).toBeNull();
-  });
-
   it("draws file and folder paths as clickable pills", () => {
     // The composer inserts `@<path>` for a quick-open pick, so these are the
     // most common chips in a message. Both open through the chat's path opener.

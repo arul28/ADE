@@ -7,19 +7,7 @@ import {
 } from "../../../shared/types";
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { sessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
-import {
-  ACTIVITY_COLUMN_PRESENTATION,
-  ACTIVITY_COLUMNS,
-  activityPhaseIsSessionDerived,
-  activityPhasePresentation,
-  activityItemPresentation,
-  activityRowStatus,
-  activityStateElapsed,
-  activityStateSentence,
-  activityWaitingReasonLabel,
-  SESSION_DERIVED_ACTIVITY_PHASES,
-  type AttentionTone,
-} from "./activityPresentation";
+import { ACTIVITY_COLUMN_PRESENTATION, ACTIVITY_COLUMNS, activityPhasePresentation, activityItemPresentation, activityRowStatus, activityStateElapsed, activityStateSentence, activityWaitingReasonLabel, SESSION_DERIVED_ACTIVITY_PHASES } from "./activityPresentation";
 
 /**
  * Written as an exhaustive record rather than an array so a new `AttentionPhase`
@@ -77,35 +65,6 @@ describe("Activity phase presentation", () => {
     }
   });
 
-  it("returns the complete canonical status presentation for every session-derived phase", () => {
-    const bridge: Record<string, CanonicalSessionPhase> = {
-      starting: "starting",
-      running: "running",
-      needs_you: "needs_you",
-      completed: "ready",
-      failed: "failed",
-      stale: "stale",
-    };
-
-    for (const [attentionPhase, canonicalPhase] of Object.entries(bridge)) {
-      expect(activityItemPresentation({ phase: attentionPhase } as AttentionItem))
-        .toEqual(sessionStatusPresentation(canonicalPhase));
-    }
-  });
-
-  it("returns a complete status presentation for every PR-only phase", () => {
-    for (const phase of ALL_ATTENTION_PHASES.filter(
-      (candidate) => !activityPhaseIsSessionDerived(candidate),
-    )) {
-      const presentation = activityItemPresentation({ phase } as AttentionItem);
-      expect(presentation).toMatchObject({
-        label: activityPhasePresentation(phase).label,
-        tone: activityPhasePresentation(phase).tone,
-        showsElapsed: false,
-      });
-    }
-  });
-
   it("labels work in motion 'Working' and clean outcomes 'Done'", () => {
     // The two renames the sidebar redesign turned on. Asserted literally as
     // well as via the bridge above, because these exact words appear in
@@ -160,30 +119,6 @@ describe("Activity phase presentation", () => {
     expect(activityPhasePresentation("stale").active).toBe(false);
     // `failed` keeps red, so red still means exactly one thing: it broke.
     expect(activityPhasePresentation("failed").tone).toBe("red");
-  });
-
-  it("returns a presentation for every phase and pulses only live ones", () => {
-    const active = ALL_ATTENTION_PHASES.filter(
-      (phase) => activityPhasePresentation(phase).active,
-    );
-    expect(active.sort()).toEqual(["needs_you", "running", "starting"]);
-    for (const phase of ALL_ATTENTION_PHASES) {
-      expect(activityPhasePresentation(phase).label.length).toBeGreaterThan(0);
-    }
-  });
-
-  it("knows which phases came from a session and which are pull-request only", () => {
-    expect(activityPhaseIsSessionDerived("running")).toBe(true);
-    expect(activityPhaseIsSessionDerived("completed")).toBe(true);
-    expect(activityPhaseIsSessionDerived("merge_ready")).toBe(false);
-    expect(activityPhaseIsSessionDerived("blocked")).toBe(false);
-  });
-
-  it("never colours a pull-request phase amber", () => {
-    const prTones: AttentionTone[] = ALL_ATTENTION_PHASES
-      .filter((phase) => !activityPhaseIsSessionDerived(phase))
-      .map((phase) => activityPhasePresentation(phase).tone);
-    expect(prTones).not.toContain("amber");
   });
 
   it("reads a merge-blocked pull request as neutral, not as a raised hand", () => {

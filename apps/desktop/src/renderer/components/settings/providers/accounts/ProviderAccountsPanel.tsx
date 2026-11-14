@@ -32,6 +32,7 @@ import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMoti
 import {
   countProviderLogins,
   isBaseProviderInstance,
+  providerAccountName,
   type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../../../shared/types/providerInstances";
@@ -338,13 +339,38 @@ export function ProviderAccountsPanel({
     [instances, openSheet],
   );
 
+  /**
+   * One notice for each lost login. A login copied into several accounts, then
+   * replaced in each, would otherwise warn on every card. The notice goes on
+   * the card that lost it last.
+   */
+  const replacedNoticeIds = useMemo(() => {
+    const latest = new Map<string, ProviderInstance>();
+    for (const instance of instances) {
+      const email = instance.replacedAccount?.email.trim().toLowerCase();
+      if (!email) continue;
+      const held = latest.get(email);
+      if (!held || (held.replacedAccount?.replacedAt ?? "") < (instance.replacedAccount?.replacedAt ?? "")) {
+        latest.set(email, instance);
+      }
+    }
+    return new Set([...latest.values()].map((instance) => instance.id));
+  }, [instances]);
+
+  /** Dismissing the notice forgets the lost login on every card that held it. */
   const dismissReplaced = useCallback(
-    (instance: ProviderInstance) => {
+    (email: string) => {
       const api = pinnedProviderInstances(pin);
       if (!api?.dismissReplaced) return;
-      void run(() => api.dismissReplaced({ id: instance.id }));
+      const key = email.trim().toLowerCase();
+      const ids = instances
+        .filter((instance) => instance.replacedAccount?.email.trim().toLowerCase() === key)
+        .map((instance) => instance.id);
+      void run(async () => {
+        for (const id of ids) await api.dismissReplaced({ id });
+      });
     },
-    [pin, run],
+    [instances, pin, run],
   );
 
   // A refusal is filed at the top of the panel, which on a machine with ten
@@ -457,17 +483,17 @@ export function ProviderAccountsPanel({
               : settings.smartBalance && showSmartBalance
                 ? (nextPickId === instance.id ? "Next chat" : null)
                 : instance.isDefault ? "New chats" : null;
-            const replaced = instance.replacedAccount;
+            const replaced = replacedNoticeIds.has(instance.id) ? instance.replacedAccount : undefined;
             const replacedNote = replaced ? (
               <Banner
                 layout="inline"
                 model={{
                   id: `replaced-${instance.id}`,
                   tone: "warning",
-                  title: `${replaced.email} was replaced`,
-                  detail: "A sign-in outside ADE put another login in this account.",
+                  title: `${replaced.email} is signed out on this computer`,
+                  detail: `A sign-in to ${providerAccountName(instance)} took its place, for example /login in a terminal. To change the account of a running CLI, use its actions pane.`,
                   actions: [{ label: "Sign it back in", onClick: () => restoreReplaced(instance, replaced.email) }],
-                  dismiss: { onDismiss: () => dismissReplaced(instance), label: `Dismiss: ${replaced.email} was replaced` },
+                  dismiss: { onDismiss: () => dismissReplaced(replaced.email), label: `Dismiss: ${replaced.email} is signed out` },
                 }}
               />
             ) : null;

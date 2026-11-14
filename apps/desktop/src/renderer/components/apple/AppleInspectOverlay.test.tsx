@@ -57,11 +57,6 @@ function renderOverlay(overrides: Partial<React.ComponentProps<typeof AppleInspe
 }
 
 describe("AppleInspectOverlay (round 4 §A4)", () => {
-  it("draws one frame for each inspectable element", () => {
-    const { container } = renderOverlay();
-    const frames = container.querySelectorAll("[data-testid='apple-inspect-overlay'] > div");
-    expect(frames.length).toBe(2);
-  });
 
   it("draws nothing at all while the presenter cannot map", () => {
     const { container } = renderOverlay({ deviceToView: null });

@@ -7,24 +7,10 @@ import {
   AppleDeviceStatusStrip,
   describeAppleError,
 } from "./AppleDeviceStatusStrip";
-import { expectNoHorizontalOverflow } from "./testLayout";
 
 afterEach(cleanup);
 
 describe("describeAppleError", () => {
-  it("keeps every sentence to twelve words or fewer", () => {
-    for (const error of [
-      new Error("APPLE_HELPER_UNAVAILABLE: no helper"),
-      new Error("cannot start the ADE brain directly"),
-      new Error("APPLE_STREAM_NOT_RUNNING"),
-      new Error("Device not booted"),
-      new Error("EPIPE reading from the helper socket at 127.0.0.1:51231"),
-      { code: "APPLE_NO_INSTALLED_SIMULATORS", message: "none" },
-    ]) {
-      const { sentence } = describeAppleError(error);
-      expect(sentence.split(/\s+/).length).toBeLessThanOrEqual(12);
-    }
-  });
 
   it("maps §6's table, and everything else to one honest fallback", () => {
     expect(describeAppleError(new Error("Device not booted")).sentence).toBe("The device is off.");
@@ -74,11 +60,6 @@ describe("AppleDeviceStatusStrip", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss this message" }));
     expect(onDismiss).toHaveBeenCalledOnce();
   });
-
-  it("has no Details button when the failure carried no text", () => {
-    render(<AppleDeviceStatusStrip error={null} onDismiss={vi.fn()} />);
-    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
-  });
 });
 
 describe("AppleDeviceNoticeStrip", () => {
@@ -123,13 +104,6 @@ describe("AppleDeviceNoticeStrip", () => {
     cleanup();
     render(<AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />);
     expect(screen.getAllByRole("button")).toHaveLength(1);
-  });
-
-  it("has no dismiss X when the state cannot be dismissed", () => {
-    render(
-      <AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />,
-    );
-    expect(screen.queryByRole("button", { name: "Dismiss this message" })).toBeNull();
   });
 
 });

@@ -14,7 +14,7 @@ import { grokDialect } from "./grok";
 import { kimiDialect } from "./kimi";
 import { qwenDialect } from "./qwen";
 
-export const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
+const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
   qwen: qwenDialect,
   kimi: kimiDialect,
   grok: grokDialect,

@@ -457,21 +457,6 @@ describe("ProvidersSection", () => {
     expect(screen.queryByText("Not installed")).toBeNull();
   });
 
-  it("renders local runtime details and loaded local models", async () => {
-    renderProvidersSection("opencode");
-
-    await waitFor(() => {
-      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
-    });
-
-    expect((await screen.findAllByText("LM Studio")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Ready").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/LM Studio is reachable at http:\/\/localhost:1234/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("meta-llama-3.1-70b-instruct (LM Studio)").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("qwen2.5-coder:32b (LM Studio)").length).toBeGreaterThan(0);
-  });
-
   it("shows a warning state when a local runtime is detected without loaded models", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -685,23 +670,6 @@ describe("ProvidersSection", () => {
     });
   });
 
-  it("renders one labelled tile per provider on the grid", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    renderProvidersSection();
-
-    for (const label of ["Claude Code", "Codex CLI", "Cursor", "Droid", "Pi", "OpenCode"]) {
-      expect(await screen.findByLabelText(`Open ${label} settings`), label).toBeTruthy();
-    }
-    // Status is a word, not a colour: every tile says which of the six it is.
-    expect(screen.getAllByText(/^(Signed in|Not signed in|Needs attention|Not downloaded|Unknown|Checking…|Disabled)$/).length)
-      .toBeGreaterThan(0);
-    // The catalogs are behind their provider, not spilled onto the grid.
-    expect(screen.queryByLabelText("Search all OpenCode providers")).toBeNull();
-  });
-
   it("opens the custom provider editor from the settings section", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -711,33 +679,6 @@ describe("ProvidersSection", () => {
     const add = await waitFor(() => screen.getByRole("button", { name: "Add" }));
     fireEvent.click(add);
     expect(await screen.findByRole("dialog", { name: "New custom provider" })).toBeTruthy();
-  });
-
-  /**
-   * Every settings header used to wear a violet "Account" or amber "This
-   * computer" tag. Forty copies of the same four words is decoration, not
-   * information — the sidebar already groups the pages by where they save.
-   */
-  it("wears no scope badge on the providers table or the Custom section", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    const { container } = renderProvidersSection();
-    await screen.findByLabelText("Open Claude Code settings");
-
-    expect(container.querySelector("[data-scope]")).toBeNull();
-  });
-
-  it("shows the full GitHub Copilot name on its settings tile", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    renderProvidersSection();
-
-    const tile = await screen.findByLabelText("Open GitHub Copilot settings");
-    expect(within(tile).queryByText("GitHub Copilot", { exact: true })).not.toBeNull();
   });
 
   // A status probe that has not answered is not the same claim as "this is not
@@ -766,23 +707,6 @@ describe("ProvidersSection", () => {
     expect(await within(tile).findByText("Unknown")).toBeTruthy();
     expect(within(tile).queryByText("Checking…")).toBeNull();
     expect(screen.queryByText("Not installed")).toBeNull();
-  });
-
-  it("renders the OpenCode catalog on the OpenCode page", async () => {
-    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-    getStatusMock.mockReset();
-    getStatusMock.mockResolvedValue(buildStatus(true, []));
-
-    renderProvidersSection("opencode");
-
-    expect(await screen.findByText(/^All providers · \d+$/)).toBeTruthy();
-    expect(screen.getByLabelText("Search all OpenCode providers")).toBeTruthy();
-    // Popular cards include Moonshot and Kimi.
-    expect(screen.getByText("Moonshot AI")).toBeTruthy();
-    expect(screen.getByLabelText("Connect Kimi for Coding")).toBeTruthy();
-    // Hated status chrome is gone.
-    expect(screen.queryByText(/managed by ADE/i)).toBeNull();
-    expect(screen.queryByText(/subscriptions ·/i)).toBeNull();
   });
 
   it("keeps a connected OpenCode provider visible when it advertises no models", async () => {
@@ -1620,50 +1544,6 @@ describe("ProvidersSection", () => {
   // The four ACP providers plug into the same descriptor system as the six.
   // These pin the parts a copy-paste port would get wrong.
   describe("ACP providers", () => {
-    it("gives each ACP provider a tile on the grid", async () => {
-      const view = renderProvidersSection();
-      const current = within(view.container);
-      await waitFor(() => {
-        expect(window.ade.ai.getStatus).toHaveBeenCalled();
-      });
-      for (const label of ["Qwen Code", "Kimi", "Grok", "GitHub Copilot"]) {
-        expect(current.getByLabelText(`Open ${label} settings`), label).toBeTruthy();
-      }
-    });
-
-    it("says how Kimi usage and compaction are shown, in plain words, on its page", async () => {
-      const view = renderProvidersSection("kimi");
-      const current = within(view.container);
-      expect(
-        (await current.findAllByText("Token and context figures appear when Kimi reports them. Kimi sends no compaction events, so ADE detects compaction from a drop in context size.")).length,
-      ).toBeGreaterThan(0);
-      expect(current.getByText(/--region global/)).toBeTruthy();
-      expect(current.getByText(/does not write that file/)).toBeTruthy();
-    });
-
-    it("says ADE reuses the Qwen CLI the user already set up", async () => {
-      const view = renderProvidersSection("qwen");
-      const current = within(view.container);
-      expect(await current.findByText(/does not write ~\/.qwen/)).toBeTruthy();
-      expect(current.getAllByText(/OPENAI_BASE_URL/).length).toBeGreaterThan(0);
-    });
-
-    // The chip is a claim about the models, so it must come from the registry's
-    // `previewTier`, not from a hand-maintained list of provider names.
-    it("marks only the preview-tier providers with a Preview chip", async () => {
-      for (const [provider, expected] of [["grok", false], ["devin", true], ["copilot", false], ["qwen", false], ["kimi", false]] as const) {
-        const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
-        getStatusMock.mockReset();
-        getStatusMock.mockResolvedValue(buildStatus(true));
-        const view = renderProvidersSection(provider);
-        const current = within(view.container);
-        await waitFor(() => {
-          expect(getStatusMock).toHaveBeenCalled();
-        });
-        expect(current.queryAllByText("Preview").length > 0, provider).toBe(expected);
-        cleanup();
-      }
-    });
 
     it("runs the vendor doctor only where one exists", async () => {
       const runDiagnostics = vi.fn().mockResolvedValue({

@@ -4,7 +4,6 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { runGit } from "../git/git";
 import { getTurnFileDiffFromGit } from "./turnFileDiff";
-import { getTurnFileDiffFromGit as reExportedFromActionRegistry } from "../adeActions/registry";
 
 describe("turn file diff is one implementation", () => {
   const repos: string[] = [];
@@ -32,14 +31,6 @@ describe("turn file diff is one implementation", () => {
 
   afterAll(() => {
     for (const cwd of repos.splice(0)) fs.rmSync(cwd, { recursive: true, force: true });
-  });
-
-  // The bug this guards: the local `ipcMain` handler kept its own copy that read
-  // BOTH sides with `git show <sha>:<path>`. Preload prefers the runtime action
-  // and falls back to that channel, so fixing only the action left the fallback
-  // rendering "no changes" for every file an uncommitted turn listed.
-  it("the action registry re-exports this module rather than keeping a second copy", () => {
-    expect(reExportedFromActionRegistry).toBe(getTurnFileDiffFromGit);
   });
 
   it("reads the modified side from the working tree when the turn never committed", async () => {

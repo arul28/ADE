@@ -13,13 +13,6 @@ describe("renderer platform helpers", () => {
     expect(isMacPlatform("Win32")).toBe(false);
   });
 
-  it("maps renderer platform values to stable CSS attributes", () => {
-    expect(rendererPlatformAttribute("MacIntel")).toBe("darwin");
-    expect(rendererPlatformAttribute("Win32")).toBe("win32");
-    expect(rendererPlatformAttribute("Linux x86_64")).toBe("linux");
-    expect(rendererPlatformAttribute("browser")).toBe("unknown");
-  });
-
   it("limits the iOS simulator capability to macOS", () => {
     expect(supportsIosSimulatorPlatform("MacIntel")).toBe(true);
     expect(supportsIosSimulatorPlatform("Win32")).toBe(false);

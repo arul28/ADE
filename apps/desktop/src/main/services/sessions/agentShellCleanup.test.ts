@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 import { writeCarriesTypedInput } from "./agentShellCleanup";
 
@@ -32,7 +33,7 @@ afterEach(async () => {
   }
 });
 
-type Db = Awaited<ReturnType<typeof openKvDb>>;
+type Db = AdeDb;
 
 function insertProjectGraph(db: Db): void {
   db.run(
@@ -83,7 +84,7 @@ function insertSession(db: Db, overrides: Partial<{
 
 async function createHarness(): Promise<{ db: Db; agentShells: ReturnType<typeof createSessionService>["agentShells"] }> {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-agent-shell-cleanup-"));
-  const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
+  const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as never);
   activeDisposers.push(async () => db.close());
   insertProjectGraph(db);
   const service = createSessionService({ db });

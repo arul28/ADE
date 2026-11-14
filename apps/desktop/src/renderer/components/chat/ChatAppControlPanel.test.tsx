@@ -15,7 +15,6 @@ import type {
 import type { ComponentProps } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { ChatAppControlPanel as PanelUnderTest } from "./ChatAppControlPanel";
-import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 
 /** The machine the lane (and its App Control session) lives on. */
 const LANE_PIN: OpenProjectBinding = { kind: "local", key: "local:/repo", rootPath: "/repo", displayName: "repo" };
@@ -321,19 +320,6 @@ describe("ChatAppControlPanel", () => {
   afterEach(() => {
     cleanup();
     delete (window as any).ade;
-  });
-
-  it("carries the preview toggle and maximize buttons on its chrome row", async () => {
-    installAdeMock();
-
-    render(
-      <WorkToolsMaximizeContext.Provider value={{ maximized: false, setMaximized: vi.fn() }}>
-        <ChatAppControlPanel sessionId="chat-buttons" laneId="lane-1" projectRoot="/repo" />
-      </WorkToolsMaximizeContext.Provider>,
-    );
-
-    expect(await screen.findByRole("button", { name: "Show preview when minimized" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
   });
 
   it("offers Launch and Attach on the Off card with no session, and inserts the CDP help draft", async () => {

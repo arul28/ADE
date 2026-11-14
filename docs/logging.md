@@ -131,7 +131,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 
 **Alerts and monitors (Sentry account, not code).** Every project keeps Sentry's default "high priority issue" email. On top of it, three org alerts email the owner: `ADE · Regressions in production (all projects)` (a resolved issue comes back), `ADE · Issue hitting 5+ users in an hour (production)`, and `ADE · Uptime: account directory down`. The plan's one uptime monitor checks `GET /health` on `ade-account-directory-production` every five minutes (`ade-workers`, three failures open an issue), and its one cron monitor is `account-directory-cleanup`, the Worker's scheduled sweep. The sweep sends one closing check-in with `Sentry.captureCheckIn` from the handler's own scope (a tick that hangs shows as missed); never wrap it in `Sentry.withMonitor`, whose isolation-scope fork loses the invocation's `waitUntil`, so Cloudflare cancels the closing check-in and every tick reads as a timeout that reopens the issue. Spike protection is on for every project. Nothing paid is enabled: pay-as-you-go stays at $0, so data over a quota is dropped, never billed, and Seer, profiling and extra monitors stay off. Check the settings with `GET /api/0/organizations/ade-app/workflows/`, `/detectors/` and `GET /api/0/customers/ade-app/` (plan, trial end, on-demand budget).
 
-**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs to Sentry and to PostHog (run by `ios-testflight.sh` and the TestFlight workflows). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs to Sentry and to PostHog (run by `ios-testflight.sh` and the TestFlight workflows). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`, in `release-publish.yml`'s `sentry-commits` job, beside the publish job so it never delays a release going public), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
 
 **Tags on every event.** Each client sets the same scope tags (`sentryCommonTags` in `shared/sentry/config.ts`; Swift in `CrashReporting.start`): `surface` (`desktop`, `brain`, `web`, `ios`), `client` (`desktop`, `runtime` for the brain, `web`, `ios`), `release_channel` (`stable`, `beta`, `alpha`, `development`; on iOS the ADE Beta app (`com.ade.ios.beta`) is `beta` and the normal app is `stable` on TestFlight and the App Store alike; iOS's Sentry environment follows it, `production` for `stable`, `beta` for the ADE Beta app and `development` for a debug or simulator run, so a beta's errors never read as the store app's, `CrashReporting.sentryEnvironment`), `is_internal` (`true`/`false`, desktop and brain only, from the same marker PostHog reads; a browser and a phone cannot know), `arch` (desktop and brain) and `machine_id`. `machine_id` is which install on which computer sent the event, the same 16-hex value PostHog events and diagnostic reports carry (`main/services/analytics/machineTelemetryId.ts`): `sha256("ade-telemetry-machine-v1:" + the OS machine identifier + ":" + the ADE home)`, cut to 16 characters. The identifier is the one the account directory's anchor reads (`hardwareAnchor.ts`: `IOPlatformUUID`, `MachineGuid`, `/etc/machine-id`) and never leaves the process; the telemetry domain keeps the hash unrelated to the anchor's. Two ADE homes on one computer (`~/.ade`, Alpha's `~/.ade-alpha`) are two installs; a reinstall into the same home is the same one. It is read once per process off the main thread (one `ioreg` or `reg`, ~13 ms, only where something reports) and set on every event and Sentry Log by `beforeSend`/`beforeSendLog` (`setSentryMachineIdResolver`, `shared/sentry/capture.ts`); events before the read answers, and a VM with no identifier, carry none. The user is the person and spans every machine they own; `machine_id` tells those machines apart. On iOS it is `sha256("ade-telemetry-machine-v1:" + identifierForVendor)`, cut the same way (`DirectPostHogProductAnalyticsSink.machineID`). The OS is Sentry's own `os` tag from each event's OS context. Renderer events carry main's tags, because they travel through main's client. Desktop and brain keep `process`, `os.release` and `package.channel`; the web client keeps `process: web-client` (its `surface` tag was `web-client` before 2026-10-30). The web client's user is the same account hash, computed in the browser from the signed-in account; signed out it has none.
 
@@ -582,7 +582,7 @@ Attached clients and native surfaces:
 Build and operations:
 
 - `apps/desktop/tsup.config.ts` and `apps/ade-cli/tsup.config.ts` validate and compile only the public capture configuration into release artifacts.
-- `apps/ios/Scripts/validate-posthog-project-token.sh`, `.github/workflows/release-core.yml`, and `.github/scripts/ios-testflight-internal-build-bump-asc.sh` validate iOS configuration and pass it through a temporary mode-0600 xcconfig that is deleted after the archive command.
+- `apps/ios/Scripts/validate-posthog-project-token.sh`, `.github/workflows/release-core.yml`, and `scripts/release-tools/ios-testflight-ci.sh` validate iOS configuration and pass it through a temporary mode-0600 xcconfig that is deleted after the archive command.
 - `apps/web/vite.config.ts` rejects non-`phc_` tokens before a public-site build. Vercel Production supplies the two `VITE_` variables; Preview and Development intentionally do not.
 - `scripts/posthog/dashboard-spec.mjs` and `provision.mjs` are the declarative dashboard/insight control plane. They accept the personal management key only in the provisioner process.
 
@@ -1343,7 +1343,7 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
 
-When a user moves a chat to another Claude or Codex account
+When a user moves a chat or a CLI session to another Claude or Codex account
 (`chat.switchAccount`), the chat service emits `chat/account_switched` with
 `outcome: "completed"` after the thread copy and the account change succeed,
 through its `onAccountSwitched` hook. It carries only the Claude/Codex family:
@@ -2101,6 +2101,47 @@ measured on an M4 Max: 2.4 ms of brain CPU and one 1.2 ms `sysctl` every five
 minutes on macOS (none on Linux; none on Windows unless memory is short);
 an episode adds about three spawns and 1.3 s of wall time off the loop.
 
+On macOS the same samples drive the iOS simulators' low-memory pass
+(`ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts`, rules in
+`ios/simulatorMemoryReclaim.ts`). It acts only while an episode is open,
+the current sample breaches memory or swap, and the simulators hold
+at least 3 GB and 10% of RAM. The first step warns each lane with a booted
+simulator and logs `ios_simulator.memory_warning_sent` (info: device, terminal
+and chat counts). Ten minutes later, or on a later critical sample, it shuts
+down the simulators that nothing uses (`simctl shutdown`; never erase, delete
+or kill) and logs `ios_simulator.reclaimed_for_memory` (info: counts per
+in-use reason, swap and simulator MB); a failed shutdown logs
+`ios_simulator.reclaim_for_memory_failed` (warn) and does not count. A step
+whose `simctl list` fails logs `ios_simulator.memory_reclaim_failed` (warn,
+with `step`) and is tried again on the next sample. After a
+pass that shut a device down, the next pass waits an hour; a pass that shut
+nothing down tries again on the next sample. While Simulator.app runs, the
+device it last showed (its `CurrentDeviceUDID` setting, one `defaults read`)
+stays on, and any other device must have gone two hours without ADE use, an
+install change or a boot. A device whose boot time cannot be read stays on.
+Any process outside the simulator whose command line names a device keeps
+that device on; a `simctl` command for `booted` keeps every device on.
+`ADE_APPLE_MEMORY_POWER_OFF=0` keeps the warnings and stops the shutdowns.
+The episode in `runtime/resource-pressure.json` keeps the pass's counts as
+`simulatorReclaim`. It sends no analytics event: no closed taxonomy fits it,
+and the episode's own event already counts memory episodes. A sample that
+could take a step costs one process listing; while the simulators hold less
+than the mark, that listing runs at most every 30 minutes. A step costs one
+`simctl list` and, for a shutdown pass, one `ps`, read again before each
+shutdown after the first.
+
+At each start the brain logs `brain.restart_cause` (info) once: why the
+brain before it on the endpoint ended (`update`, `computer_restarted`,
+`service_restarted_by_watchdog`, `service_restarted` or `unknown`), with the
+time, the version, who asked for an update (`requestedByKind`,
+`requestedByName`), the watchdog's freeze cause, and whether memory was low.
+The asker's name comes from the paired device record of its connection
+(the client's own claim only when there is none), and is kept in
+`runtime/update-request.json` only when the update was accepted. A request
+more than 30 minutes before the brain stopped names nobody.
+`brain.remote_update_route` and `autoUpdate.remote_install_requested` carry
+the same `requestedByKind` and `requestedByName` of a remote update.
+
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
@@ -2435,7 +2476,7 @@ Release workflows use a second personal key of their own, limited to the ADE pro
 
 - **Release annotations** (`scripts/posthog/annotate-release.mjs`): `Desktop 1.2.130-beta.3 · beta` when the beta feed serves a beta (`beta.yml`), `Desktop 1.2.130 · stable` when `/release` publishes a stable (`release-annotation.yml`), `iOS Beta 1.4 (212) · TestFlight` after an ADE Beta upload (`ios-testflight.yml`), and `Web deploy abc1234 (webclient, push-relay)` after a web or Worker deploy (`deploy-web.yml`). Previews are not marked. A re-run finds the identical annotation and adds none.
 - **Source maps** (`scripts/posthog/upload-sourcemaps.mjs`), described under [PostHog error tracking](#posthog-error-tracking).
-- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and `ios-testflight-internal-build-bump-self-hosted.yml`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
+- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and the local `scripts/release-tools/ios-testflight.sh`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
 
 ## PostHog dashboards
 

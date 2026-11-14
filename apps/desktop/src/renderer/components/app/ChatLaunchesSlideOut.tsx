@@ -88,7 +88,7 @@ export function cliFetchDismissCancels(launch: ChatLaunchSnapshot): boolean {
   return !active || active.id === "fetch";
 }
 
-export function slideOutHeadline(launches: ChatLaunchSnapshot[]): string {
+function slideOutHeadline(launches: ChatLaunchSnapshot[]): string {
   const running = launches.filter((launch) => !isChatLaunchSucceeded(launch) && launch.phase !== "failed").length;
   if (running > 0) return `Setting up ${running} lane${running === 1 ? "" : "s"}…`;
   const ready = launches.filter(isChatLaunchSucceeded).length;

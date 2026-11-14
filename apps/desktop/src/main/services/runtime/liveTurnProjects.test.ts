@@ -127,7 +127,10 @@ describe("a brain stop someone asked for", () => {
       projects: 0,
       opens: false,
       acceptedUpdate: undefined,
-      clis: [{ sessionId: "cli-at-work", midTurn: false }, { sessionId: "cli-idle", midTurn: false }],
+      clis: [
+        { sessionId: "cli-at-work", midTurn: false, stoppedForGood: true },
+        { sessionId: "cli-idle", midTurn: false, stoppedForGood: true },
+      ],
     }],
     ["an accepted update keeps the work and restarts the cap", "accepted_update" as const, {
       projects: 2,
@@ -169,8 +172,8 @@ describe("a brain stop someone asked for", () => {
       { sessionId: "chat-of-other-brain", midTurn: true, kind: "chat" },
     ]);
     expect(takeCliSessionsToReopen(cliProject, SIX_HOURS_MS)).toEqual([
-      { sessionId: "cli-at-work", midTurn: false },
-      { sessionId: "cli-idle", midTurn: false },
+      { sessionId: "cli-at-work", midTurn: false, stoppedForGood: true },
+      { sessionId: "cli-idle", midTurn: false, stoppedForGood: true },
     ]);
   });
 
@@ -181,6 +184,11 @@ describe("a brain stop someone asked for", () => {
     // The list cannot be claimed (a folder holds the claim's name), as in a
     // read-only or locked cache.
     const listPath = path.join(resolveAdeLayout(cliProject).cacheDir, `reopen-cli-after-restart.${process.pid}.json`);
+    // A CLI of the earlier stop that this stop no longer names: its continue
+    // is only in the list, so the list itself must be rewritten.
+    const earlier = JSON.parse(fs.readFileSync(listPath, "utf8"));
+    earlier.sessions.push({ sessionId: "cli-ended-since", midTurn: true });
+    fs.writeFileSync(listPath, JSON.stringify(earlier));
     const blockedClaim = `${listPath}.claimed-${process.pid}`;
     fs.mkdirSync(path.join(blockedClaim, "held"), { recursive: true });
     noteBrainStopIntent("stop_for_good", { runtimeDir, socketPath });
@@ -194,8 +202,9 @@ describe("a brain stop someone asked for", () => {
     fs.rmSync(blockedClaim, { recursive: true, force: true });
     expect(takeCliSessionsToReopen(cliProject, SIX_HOURS_MS, undefined, undefined, undefined, stoppedForGoodListWriters(cliProject)))
       .toEqual([
-        { sessionId: "cli-at-work", midTurn: false },
-        { sessionId: "cli-idle", midTurn: false },
+        { sessionId: "cli-at-work", midTurn: false, stoppedForGood: true },
+        { sessionId: "cli-idle", midTurn: false, stoppedForGood: true },
+        { sessionId: "cli-ended-since", midTurn: false, stoppedForGood: true },
       ]);
   });
 

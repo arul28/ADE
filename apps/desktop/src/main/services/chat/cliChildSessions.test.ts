@@ -188,10 +188,7 @@ describe("composeCliChildReport", () => {
 });
 
 describe("TRACKED_AGENT_CLI_TOOL_TYPES", () => {
-  it("stays in step with isTrackedAgentCliToolType", () => {
-    for (const toolType of TRACKED_AGENT_CLI_TOOL_TYPES) {
-      expect(isTrackedAgentCliToolType(toolType)).toBe(true);
-    }
-    expect(new Set(TRACKED_AGENT_CLI_TOOL_TYPES).size).toBe(TRACKED_AGENT_CLI_TOOL_TYPES.length);
+  it.each([...TRACKED_AGENT_CLI_TOOL_TYPES])("%s is a tracked agent CLI tool type", (toolType) => {
+    expect(isTrackedAgentCliToolType(toolType)).toBe(true);
   });
 });

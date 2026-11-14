@@ -14,6 +14,7 @@ import {
   isGithubServiceUnavailable,
   type GitHubServiceHealth,
 } from "../../shared/githubServiceHealth";
+import { stripElectronErrorWrapper } from "../../shared/codedError";
 
 export type GithubCredentialPresentation = {
   tokenTypeLabel: string;
@@ -575,7 +576,10 @@ export function deviceAuthMessageCopy(message: string | null): string | null {
 }
 
 export function deviceAuthErrorCopy(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  // A thrown sign-in error crosses IPC wrapped in "Error invoking remote method
+  // '…': Error: …". The person reads the sentence the brain wrote, not that.
+  const raw = error instanceof Error ? error.message : String(error);
+  const message = stripElectronErrorWrapper(raw) || raw;
   return deviceAuthMessageCopy(message) ?? message;
 }
 

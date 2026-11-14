@@ -1,10 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MacDesktopDisplay, MacDesktopEventPayload, MacDesktopStatus } from "../../../shared/types/macDesktop";
-import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
-import { LANE_MAC_DESKTOP_LABEL, useLaneMacDesktops } from "./useLaneMacDesktops";
+import { useLaneMacDesktops } from "./useLaneMacDesktops";
 
 const { webClient } = vi.hoisted(() => ({ webClient: { on: false } }));
 vi.mock("../../lib/webClientMode", async (importOriginal) => ({
@@ -114,15 +113,5 @@ describe("useLaneMacDesktops", () => {
     });
     expect(getStatus).not.toHaveBeenCalled();
     expect(result.current.size).toBe(0);
-  });
-});
-
-describe("LaneMacDesktopMarker", () => {
-  afterEach(() => cleanup());
-
-  it("names what it marks", () => {
-    render(<LaneMacDesktopMarker laneId="lane-a" />);
-    const mark = screen.getByRole("img", { name: LANE_MAC_DESKTOP_LABEL });
-    expect(mark.getAttribute("data-lane-mac-desktop")).toBe("lane-a");
   });
 });

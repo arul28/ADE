@@ -1134,8 +1134,16 @@ an SDK):
   `npm install --package-lock-only`, then `tools:manifest`, or `tools:muse-pin`
   for Muse), force-pushes `pins/<item>`, opens or updates that item's one PR
   (label `dependencies`), and starts `ci.yml` on the branch with
-  `workflow_dispatch` (pushes made with `GITHUB_TOKEN` do not start CI). A
-  newer release updates the same PR.
+  `workflow_dispatch` (pushes made with `GITHUB_TOKEN` do not start CI), at
+  most two such runs at a time. `ci.yml` gates a dispatch on a `pins/*` branch
+  like a pull request: the runtime targets, the Linux desktop driver and the
+  iOS suite follow its diff from main, so a tool bump builds only linux-x64 and
+  skips iOS. A bump of an SDK the CLI also depends on changes
+  `apps/ade-cli/package.json`, so it still builds all five. The Copilot SDK is
+  a desktop dependency only: the runtime build installs only `apps/ade-cli`, so
+  the binary does not contain it, and its bump builds linux-x64 only. The run
+  ends in the `ci-pass` check the PR needs to merge. A newer release updates
+  the same PR.
 - **Main has the newest:** it closes the item's open PR and deletes
   `pins/<item>`, or deletes a leftover branch with no PR.
 

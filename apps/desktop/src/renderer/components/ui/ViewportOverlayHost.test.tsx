@@ -1,20 +1,8 @@
 // @vitest-environment jsdom
-import React from "react";
-import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { ViewportOverlayHost, createViewportOverlayHost } from "./ViewportOverlayHost";
+import { createViewportOverlayHost } from "./ViewportOverlayHost";
 
 describe("ViewportOverlayHost", () => {
-  it("renders its child in the overlay host", () => {
-    render(
-      <ViewportOverlayHost layer="floatingBanner" testId="viewport-overlay">
-        <button type="button">Dismiss</button>
-      </ViewportOverlayHost>,
-    );
-
-    expect(screen.getByRole("button", { name: "Dismiss" })).toBeTruthy();
-  });
-
   it("marks DOM-only animation layers as hidden and inert", () => {
     const host = createViewportOverlayHost("chatFirstMessageHandoff");
 

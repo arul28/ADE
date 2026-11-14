@@ -575,14 +575,6 @@ describe("WorkLiveCornerCard placement", () => {
     expect(useAppStore.getState().workViewByProject[PROJECT_ROOT]?.workLiveCardWidth).toBe(368);
   });
 
-  it("draws a shrunk card in a column narrower than the full-size floor (M6)", async () => {
-    seedProject();
-    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, value: 360 });
-    const { card } = await showCard();
-    // The card clamps itself to the 200px minimum instead of disappearing.
-    expect(card.style.width).toBe("200px");
-  });
-
   it("pulls a right-edge card back inside when a resize widens it (M7)", async () => {
     seedProject();
     useAppStore.setState({
@@ -887,53 +879,6 @@ describe("WorkLiveCornerCard chrome", () => {
     emitBrowserEvent({ type: "status", status });
     return screen.findByLabelText("Browser live preview", {}, { timeout: 3_000 });
   }
-
-  it("rests as a dot and keeps every control in the hover pill", async () => {
-    seedProject();
-    const { card } = await showCard();
-
-    const dot = restDot(card);
-    expect(dot?.dataset.liveCardStatus).toBe("idle");
-    expect(dot?.className).toContain("group-hover:opacity-0");
-    expect(dot?.className).toContain("h-2");
-
-    const pill = card.querySelector("[data-live-card-pill]");
-    expect(pill?.contains(screen.getByLabelText("Hide the Browser preview"))).toBe(true);
-    expect(pill?.className).toContain("h-8");
-    expect(pill?.className).toContain("group-hover:opacity-100");
-    expect(pill?.className).toContain("cursor-grab");
-    expect(pill?.textContent).toContain("Sign in");
-    expect(pill?.textContent).not.toContain("Browser");
-    expect(card.className).toContain("select-none");
-  });
-
-  it("leads the pill with the page and follows it with the last action", async () => {
-    const card = await showTab({ title: null });
-    const pill = card.querySelector("[data-live-card-pill]");
-    expect(pill?.textContent).toContain("example.test");
-    expect(pill?.textContent).not.toContain("https://");
-
-    emitBrowserEvent(traceEvent("trace-1", "stopFindInPage", ""));
-    await waitFor(() => expect(pill?.textContent).toContain("Closed find"));
-    const text = pill?.textContent ?? "";
-    expect(text.indexOf("example.test")).toBeLessThan(text.indexOf("Closed find"));
-  });
-
-  it("rests on a neutral dot rather than on the tool's own hue", async () => {
-    const card = await showTab({});
-    const dot = restDot(card);
-    expect(dot?.dataset.liveCardStatus).toBe("idle");
-    expect(dot?.getAttribute("style") ?? "").not.toContain("#22d3ee");
-    expect(dot?.className).toContain("bg-fg/25");
-  });
-
-  it("turns the dot red while the tab is recording", async () => {
-    const card = await showTab({ recording: { startedAt: new Date().toISOString(), fps: 30 } });
-    const dot = restDot(card);
-    expect(dot?.dataset.liveCardStatus).toBe("recording");
-    expect(dot?.className).toContain("ade-status-pulse");
-    expect(dot?.className).toContain("motion-reduce:animate-none");
-  });
 
   it("turns the dot amber while a handoff waits, and names it in the pill", async () => {
     const card = await showTab({

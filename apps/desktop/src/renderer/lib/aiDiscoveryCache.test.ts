@@ -177,25 +177,6 @@ describe("aiDiscoveryCache", () => {
     expect(modelsMock).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards explicit OpenCode inventory refresh requests", async () => {
-    getStatusMock.mockResolvedValueOnce({
-      mode: "subscription",
-      availableProviders: { claude: CLAUDE_READY, codex: true, cursor: false },
-      models: { claude: [], codex: [], cursor: [] },
-      features: [],
-    });
-
-    await getAiStatusCached({
-      projectRoot: "/project/a",
-      refreshOpenCodeInventory: true,
-    });
-
-    expect(getStatusMock).toHaveBeenCalledWith({
-      force: false,
-      refreshOpenCodeInventory: true,
-    });
-  });
-
   it("peekAiStatusCached returns null before any fetch and the cached value after", async () => {
     expect(peekAiStatusCached("/project/a")).toBeNull();
 

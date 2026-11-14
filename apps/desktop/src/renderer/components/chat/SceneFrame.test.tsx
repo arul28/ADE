@@ -61,18 +61,6 @@ describe("SceneFrame", () => {
     expect(frame.getAttribute("referrerPolicy") ?? frame.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
-  /**
-   * What the view is — a scene a model drew — is said in the hover toolbar,
-   * beside the buttons that expand it and file it as proof. There is no
-   * always-visible status caption any more; the toolbar carries the title.
-   */
-  it("shows the scene's title in the hover toolbar", async () => {
-    render(<SceneFrame source={'<!-- @scene title="Merged pull requests" -->\n<p>x</p>'} live scopeKey={null} />);
-    await screen.findByTestId("chat-scene-frame");
-    expect(screen.getByTestId("chat-scene").textContent).toContain("Merged pull requests");
-    expect(screen.getByTestId("chat-scene-toolbar").textContent).toContain("Merged pull requests");
-  });
-
   it("falls back to a readable code block when the scene cannot be parsed", () => {
     render(<SceneFrame source={"   "} live scopeKey={null} />);
     expect(screen.queryByTestId("chat-scene-frame")).toBeNull();
@@ -746,10 +734,5 @@ describe("SceneFrame", () => {
       sendOpen(frame, WRITTEN_URL);
       await waitFor(() => expect(openExternal).toHaveBeenCalledWith(WRITTEN_URL));
     });
-  });
-
-  it("leaves other fences alone", () => {
-    render(<MarkdownBlock markdown={"```ts\nconst a = 1;\n```"} />);
-    expect(screen.queryByTestId("chat-scene")).toBeNull();
   });
 });

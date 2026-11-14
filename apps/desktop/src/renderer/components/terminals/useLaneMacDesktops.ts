@@ -32,7 +32,7 @@ export type LaneMacDesktops = ReadonlySet<string>;
 const EMPTY: LaneMacDesktops = new Set();
 
 /** The tooltip and accessible name for a lane's desktop mark. */
-export const LANE_MAC_DESKTOP_LABEL = "Mac Desktop running on this lane";
+const LANE_MAC_DESKTOP_LABEL = "Mac Desktop running on this lane";
 
 /** The mark's tooltip and accessible name for each kind of lane screen. */
 export const LANE_DESKTOP_LABELS: Record<DesktopSeatKind, string> = {

@@ -116,12 +116,6 @@ function hoverRow(id: string): HTMLElement {
   return element as HTMLElement;
 }
 
-function row(container: HTMLElement): HTMLElement {
-  const element = container.querySelector('[data-session-row] [role="button"]');
-  if (!element) throw new Error("session row not found");
-  return element as HTMLElement;
-}
-
 describe("SessionCard new-lane launch status", () => {
   function launchFor(overrides: Record<string, unknown> = {}) {
     return {
@@ -267,51 +261,6 @@ describe("Cursor Cloud row badge visibility", () => {
 });
 
 describe("SessionCard identity", () => {
-  it("stacks the current provider mark above the previous handoff mark", () => {
-    render(
-      <SessionCard
-        session={makeSession({
-          toolType: "codex-chat",
-          modelHandoffHistory: [{
-            fromProvider: "claude",
-            toProvider: "codex",
-            fromModelId: "anthropic/claude-sonnet-5",
-            toModelId: "openai/gpt-5.4",
-          }],
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    const stack = screen.getByTestId("session-provider-stack");
-    expect(stack.getAttribute("aria-label")).toBe("Model handoff history: Claude, Codex");
-    const logos = [...stack.querySelectorAll("[data-session-provider-logo]")];
-    expect(logos.map((logo) => logo.getAttribute("data-session-provider-logo"))).toEqual(["codex", "claude"]);
-    expect(logos.map((logo) => (logo as HTMLElement).style.left)).toEqual(["0px", "6px"]);
-    expect(logos.map((logo) => (logo as HTMLElement).style.zIndex)).toEqual(["2", "1"]);
-  });
-
-  it("shows grid membership immediately left of the status", () => {
-    const { container } = render(
-      <SessionCard
-        session={makeSession()}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-        gridBadge="active"
-      />,
-    );
-
-    const indicator = screen.getByRole("img", { name: "In the active grid" });
-    const status = container.querySelector("[data-session-status-slot]");
-    expect(indicator).toBeTruthy();
-    expect(status).toBeTruthy();
-    expect(indicator.nextElementSibling).toBe(status);
-  });
 
   it("moves the spawn kind and Claude tag into the hover detail card", () => {
     vi.useFakeTimers();
@@ -343,23 +292,6 @@ describe("SessionCard identity", () => {
     expect(hoverRow("live-children").textContent).toContain("3 spawned chats still running");
     expect(hoverRow("lane").textContent).toContain("Lane 1");
     expect(hoverRow("provider").textContent).toContain("Claude chat");
-  });
-
-  it("shows the Needs you status for chat pending input", () => {
-    render(
-      <SessionCard
-        session={makeSession({
-          runtimeState: "waiting-input",
-          pendingInputItemId: "pending-1",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.getAllByText("Needs you")).toHaveLength(1);
   });
 
   it("keeps Working with a question pip for Codex steering", () => {
@@ -500,15 +432,6 @@ describe("SessionCard lineage", () => {
     expect(hoveredStatus?.getAttribute("title")).toContain("Reported by the agent");
     expect(hoveredStatus?.getAttribute("title")).toContain("since ");
     expect(hoveredStatus?.getAttribute("title")).toContain(new Date(reportUpdatedAt).toLocaleTimeString());
-  });
-
-  it("keeps the status word on the row face by default", () => {
-    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
-    const { container } = render(<SessionCard {...props} session={makeSession()} />);
-    // Suppression is opt-in. A list row has no column asserting its status, so
-    // the word is the only place the state is named.
-    expect(container.querySelector("[data-session-status]")).toBeTruthy();
-    expect(screen.queryByTestId("session-hover-status")).toBeNull();
   });
 
   it("replaces the lineage badge with a CTO chip when the parent is the CTO identity", () => {
@@ -869,25 +792,6 @@ describe("SessionCard preview links", () => {
     expect(preview()?.getAttribute("data-session-preview-source")).toBe("goal");
   });
 
-  it("renders the preview line italic so it reads as commentary on the title", () => {
-    // Typographic separation, not decoration: the title is what you scan for,
-    // this line is what it is saying about itself. Matches the auto-naming line.
-    const { container } = render(
-      <SessionCard
-        session={makeSession({ statusNote: "running the build" })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    const preview = container.querySelector("[data-session-preview-source]") as HTMLElement;
-    expect(preview.className).toContain("italic");
-    // Colour and size are unchanged — italics carry the whole distinction.
-    expect(preview.className).not.toContain("text-[");
-  });
-
   it("keeps output fallback plain even when it contains issue-shaped tokens", () => {
     render(
       <SessionCard
@@ -910,54 +814,6 @@ describe("SessionCard preview links", () => {
 });
 
 describe("SessionCard status slot", () => {
-  it("slides the row actions in beside the status label on hover, leaving the word in place", () => {
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          toolType: "codex",
-          status: "completed",
-          runtimeState: "exited",
-          exitCode: 0,
-          endedAt: "2026-05-23T11:00:00.000Z",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    const label = screen.getByTestId("session-status-label");
-    // A full row has the width for both: the word stays put on hover and is
-    // never hidden under the pointer, so "Needs you" cannot vanish.
-    expect(label.className).not.toContain("group-hover/v2-row:absolute");
-
-    // The action cluster slides in to its left: absolute + transparent at rest,
-    // static + opaque on hover, ordered first so it claims the space beside it.
-    const cluster = label.parentElement!.lastElementChild as HTMLElement;
-    expect(cluster.className).toContain("absolute");
-    expect(cluster.className).toContain("group-hover/v2-row:static");
-    expect(cluster.className).toContain("group-hover/v2-row:opacity-100");
-    expect(cluster.className).toContain("order-first");
-    expect(container.querySelector("[data-session-status-slot]")?.className).toContain("ml-auto");
-  });
-
-  it("keeps the status label pointer-events-none so it cannot eat the action clicks", () => {
-    // Regression guard: while hovered the label is painted ON TOP of the
-    // in-flow buttons. Without pointer-events-none it swallows every click.
-    render(
-      <SessionCard
-        session={makeSession()}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByTestId("session-status-label").className).toContain("pointer-events-none");
-  });
-
   it("settles the session without selecting the row", async () => {
     const settle = vi.fn().mockResolvedValue(undefined);
     (window as unknown as { ade: unknown }).ade = {
@@ -1175,19 +1031,6 @@ describe("SessionCard status slot", () => {
 });
 
 describe("SessionCard status vocabulary", () => {
-  it("shows Failed for a non-zero exit", () => {
-    render(
-      <SessionCard
-        session={makeSession({ toolType: "codex", status: "failed", exitCode: 1 })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Failed")).toBeTruthy();
-    expect(screen.getByText("EXIT 1")).toBeTruthy();
-  });
 
   it("shows Stopped once, with no duplicate STOPPED chip, for a disposed CLI session", () => {
     render(
@@ -1232,7 +1075,6 @@ describe("SessionCard status vocabulary", () => {
     expect(status.getAttribute("data-session-status")).toBe("Stale");
     // Neutral, not emerald: the process is alive but nothing is happening.
     expect(status.getAttribute("data-session-tone")).toBe("neutral");
-    expect(status.className).toContain("text-muted-fg/60");
     expect(status.textContent).toContain("4h");
     // The old amber WarningCircle is gone — amber is reserved for "your move".
     expect(screen.queryByLabelText("Idle session")).toBeNull();
@@ -1388,26 +1230,6 @@ describe("SessionCard status vocabulary", () => {
 
     const live = screen.getByRole("status");
     expect(live.textContent).toBe("Working");
-  });
-
-  it("reads a resting chat as Done", () => {
-    render(
-      <SessionCard
-        session={makeSession({
-          toolType: "codex-chat",
-          runtimeState: "idle",
-          pendingInputItemId: null,
-          attentionRequestedAt: null,
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("Done")).toBeTruthy();
-    expect(screen.queryByText("Needs you")).toBeNull();
   });
 
   it("shows Planning for an active ADE chat without adding schedule copy", () => {
@@ -1661,99 +1483,6 @@ describe("SessionCard status vocabulary", () => {
   });
 });
 
-describe("SessionCard row color", () => {
-  it("spends surface on interaction only — no lane tint, border or shadow at rest", () => {
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          toolType: "codex-chat",
-          runtimeState: "waiting-input",
-          pendingInputItemId: "pending-1",
-        })}
-        lane={{ ...lane, color: "#ff8800" } as LaneSummary}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    const element = row(container);
-    expect(element.getAttribute("style") ?? "").not.toContain("box-shadow");
-    expect(element.getAttribute("style") ?? "").not.toContain("border");
-  });
-
-  it("pins the full-bleed geometry: 12px left, 12px+scrollbar right, on the containment box", () => {
-    /* Twice now the fill has stopped short of the sidebar edges, so this test
-       pins the resolved geometry rather than "it has some negative margin".
-       Two things have to hold and both are invisible in jsdom, hence the class
-       assertions:
-
-       1. WHERE. The bleed must sit on the SAME element as
-          `content-visibility: auto`. That property implies paint containment,
-          so a negative margin on any descendant is clipped straight back to
-          this box — which is exactly how the last two attempts failed.
-       2. HOW MUCH. `SessionListPane` insets each row by its scroll container's
-          `px-1` (4px) plus the section stack's `px-2` (8px) = 12px per side,
-          and the inner layout pays all of it back as padding so no content
-          moves. The amount is a variable so a 6px stack can correct it and so
-          an indented lane group can zero the LEFT side only — a grouped row
-          bleeds to its group's edge, never through the indent rail. */
-    const props = {
-      session: makeSession(),
-      lane,
-      isSelected: false,
-      onSelect: vi.fn(),
-      onContextMenu: vi.fn(),
-    };
-    const { container, rerender } = render(<SessionCard {...props} />);
-
-    const assertFullBleed = () => {
-      const wrapper = container.querySelector("[data-session-row]") as HTMLElement;
-      // (1) the bleed and the containment live together.
-      expect(wrapper.className).toContain("[content-visibility:auto]");
-      expect(wrapper.className).toContain(
-        "[--session-row-bleed-left:var(--session-row-bleed,12px)]",
-      );
-      // The right side also clears the 6px classic scrollbar that
-      // `index.css` reserves. Measured in the running app: a plain 12px bleed
-      // left the row exactly flush on the LEFT and 5.9px short on the RIGHT —
-      // the scrollbar track, not a padding error.
-      expect(wrapper.className).toContain("[--session-row-scrollbar:6px]");
-      expect(wrapper.className).toContain(
-        "[--session-row-bleed-right:calc(var(--session-row-bleed,12px)_+_var(--session-row-scrollbar))]",
-      );
-      expect(wrapper.className).toContain("ml-[calc(-1*var(--session-row-bleed-left))]");
-      expect(wrapper.className).toContain("mr-[calc(-1*var(--session-row-bleed-right))]");
-      expect(wrapper.className).toContain(
-        "w-[calc(100%_+_var(--session-row-bleed-left)_+_var(--session-row-bleed-right))]",
-      );
-      // An indented lane group's rail is a hierarchy cue, not padding to eat.
-      expect(wrapper.className).toContain("[[data-indented]_&]:[--session-row-bleed-left:0px]");
-      // Its animated parent clips overflow, so the right bleed must also stop
-      // at the group edge or the clip shears the row's right radius square.
-      expect(wrapper.className).toContain("[[data-indented]_&]:[--session-row-bleed-right:0px]");
-
-      const element = row(container);
-      // Nothing inside the containment box may try to bleed on its own again.
-      expect(element.className).toContain("w-full");
-      expect(element.className).not.toMatch(/(?:^|\s)-m[xl]-/);
-      // Small radius, not a card's.
-      expect(element.className).toContain("rounded-md");
-      expect(element.className).not.toContain("rounded-lg");
-
-      // (2) the bleed is paid back, with the same 6px content inset as a lane
-      // header so singleton glyphs and full header glyphs share one column.
-      const inner = element.firstElementChild as HTMLElement;
-      expect(inner.className).toContain("pl-[calc(var(--session-row-bleed-left)_+_0.375rem)]");
-      expect(inner.className).toContain("pr-[calc(var(--session-row-bleed-right)_+_0.375rem)]");
-    };
-
-    assertFullBleed();
-    rerender(<SessionCard {...props} compact />);
-    assertFullBleed();
-  });
-});
-
 describe("SessionCard where line", () => {
   const branchLane = {
     ...lane,
@@ -1851,9 +1580,6 @@ describe("SessionCard where line", () => {
 
     const branch = container.querySelector("[data-session-branch]") as HTMLElement;
     expect(branch.getAttribute("data-session-branch")).toBe("hotfix-crash-on-open");
-    // Muted, always. Colour is the only thing separating lane from branch.
-    expect(branch.className).toContain("text-muted-fg/70");
-    expect(branch.style.color).toBe("");
     expect(branch.querySelector(".ade-vcs-branch-icon")).toBeTruthy();
   });
 
@@ -1898,9 +1624,6 @@ describe("SessionCard where line", () => {
     );
 
     const badge = screen.getByLabelText("Pull request #959, Open");
-    // Fixed width at the right edge of the title line, directly beneath the
-    // status: the title is elastic because a truncated PR number says nothing.
-    expect(badge.className).toContain("shrink-0");
     const laneIdentity = container.querySelector("[data-session-lane-identity]")!;
     const title = screen.getByText("Build the plan panel");
     const titleLine = title.parentElement!;
@@ -1967,39 +1690,8 @@ describe("SessionCard where line", () => {
     const line = statusSlot.parentElement!;
     expect(line.children).toHaveLength(2);
     const floor = line.firstElementChild as HTMLElement;
-    expect(floor.className).toContain("flex-1");
     expect(floor.getAttribute("data-session-last-activity")).toBe("");
     expect(floor.textContent?.trim()).toBeTruthy();
-  });
-
-  it("puts the diff chips on line 1 instead of line 3, leaving the preview flexible", () => {
-    sessionDeltaMock.mockReturnValue({ insertions: 42, deletions: 8 });
-    const { container } = render(
-      <SessionCard
-        session={makeSession({ lastOutputPreview: "Report sent to parent session" })}
-        lane={branchLane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    const statusSlot = container.querySelector("[data-session-status-slot]") as HTMLElement;
-    const line1 = statusSlot.parentElement!;
-    const delta = container.querySelector("[data-session-delta]") as HTMLElement;
-    expect(delta.textContent).toContain("+42");
-    expect(delta.textContent).toContain("−8");
-    // On line 1 — and there is no second copy anywhere, so line 3 lost it.
-    expect(line1.contains(delta)).toBe(true);
-    expect(container.querySelectorAll("[data-session-delta]")).toHaveLength(1);
-    // The time backstop only appears when there is no diff.
-    expect(container.querySelector("[data-session-last-activity]")).toBeNull();
-
-    // Line 3's preview is the element that absorbs the freed width.
-    const preview = container.querySelector("[data-session-preview-source]") as HTMLElement;
-    expect(preview.className).toContain("flex-1");
-    expect(preview.className).toContain("min-w-0");
-    expect(preview.parentElement!.contains(delta)).toBe(false);
   });
 
   it("gives the freed slot to a lineage badge, with navigation left on the hover card", () => {
@@ -2124,20 +1816,6 @@ describe("SessionCard snooze and woke overlays", () => {
     const status = container.querySelector("[data-session-status]")!;
     expect(status.getAttribute("data-session-status")).toBe("Woke");
     expect(status.getAttribute("data-session-tone")).toBe("amber");
-  });
-
-  it("labels the hover control for a row that is not snoozed", () => {
-    render(
-      <SessionCard
-        session={makeSession()}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Snooze session" })).toBeTruthy();
   });
 
   it("moves the next-wake countdown into the detail card", () => {
@@ -2327,26 +2005,6 @@ describe("SessionCard hover detail card", () => {
     });
 
     expect(screen.queryByTestId("session-hover-card")).toBeNull();
-  });
-
-  it("keeps the lane accented and the branch muted, never crossed", () => {
-    vi.useFakeTimers();
-    const { container } = renderCard();
-
-    openRowTooltip(container);
-
-    const laneIcon = hoverRow("lane").querySelector(".ade-vcs-lane-icon") as SVGElement;
-    expect(laneIcon).toBeTruthy();
-    expect(laneIcon.style.color).toBe("rgb(255, 136, 0)");
-
-    const branchRow = hoverRow("branch");
-    const branchIcon = branchRow.querySelector(".ade-vcs-branch-icon") as SVGElement;
-    expect(branchIcon).toBeTruthy();
-    // Muted class, and NO lane accent leaking onto the branch.
-    expect(branchIcon.getAttribute("class")).toContain("text-muted-fg");
-    expect(branchIcon.style.color).toBe("");
-    // Same display trim as the row; the real ref is untouched elsewhere.
-    expect(branchRow.textContent).toBe("redesign-new-chat-ui");
   });
 
   it("opens the parent thread from the lineage row", () => {

@@ -399,7 +399,10 @@ export function createAgentCliSessionActions(deps: AgentCliSessionActionDeps) {
       return { ok: false, reason: "failed", message: `${providerName(row)} CLI sessions do not run on a provider account ADE can switch.` };
     }
     const launch = row.resumeMetadata?.launch;
-    if (launch?.presetId?.trim() || launch?.credentialId?.trim() || row.resumeMetadata?.presetId?.trim()) {
+    if (
+      launch?.presetId?.trim() || launch?.credentialId?.trim() || launch?.routeHomeId?.trim()
+      || row.resumeMetadata?.presetId?.trim()
+    ) {
       return { ok: false, reason: "failed", message: "This CLI session runs on a saved key or custom provider, not an account." };
     }
     if (isBusy(row)) return { ok: false, reason: "busy", message: "Wait for this turn to finish." };

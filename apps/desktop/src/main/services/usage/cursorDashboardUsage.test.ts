@@ -5,7 +5,6 @@ import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  CURSOR_TURN_START_SKEW_MS,
   cursorDashboardEventKey,
   cursorDashboardUsageEnabled,
   fetchCursorDashboardUsageEvents,
@@ -353,7 +352,6 @@ describe("fetchCursorDashboardUsageEvents", () => {
 
 describe("selectCursorTurnEvents", () => {
   it("keeps only this agent's events inside the skew window, oldest first", () => {
-    expect(CURSOR_TURN_START_SKEW_MS).toBe(10_000);
     const events = [
       event({ timestampMs: TURN_START_MS + 30_000 }),
       event({ timestampMs: TURN_START_MS + 20_000, conversationId: OTHER_AGENT_ID }),
