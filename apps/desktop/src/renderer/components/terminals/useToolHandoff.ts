@@ -5,6 +5,7 @@ import type { DeviceKind } from "../../../shared/types/deviceSources";
 import { cursorSessionRunsInCloud, supportsActiveTurnDispatchMode } from "../../../shared/types/chat";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { providerFromChatToolType } from "../../lib/sessions";
+import { sendWithCloudWakeMark } from "../../state/cloudSavedChatsSync";
 import { showToast } from "../app/toast/toastStore";
 import { withChatPin } from "../chat/chatMachinePin";
 import { deviceSourceErrorText } from "./chatDeviceSources";
@@ -119,6 +120,37 @@ export function useToolHandoff(args: {
     });
   }, [noteToAgent, sessionId]);
 
+  /**
+   * A request from an open tool's start screen ("Boot a simulator"), as the
+   * person's own message: sent as a new turn when the chat is idle, joined to
+   * the running turn where the provider takes that, else queued for its next
+   * turn. Resolves whether the agent got it.
+   */
+  const askAgent = useCallback(async (text: string): Promise<boolean> => {
+    if (!sessionId) return false;
+    const chatPin = pinRef.current;
+    if (turnRunningRef.current) {
+      const result = await noteToAgent(sessionId, chatPin, text, canTellRef.current ? "inline" : undefined);
+      if (!result) return false;
+      showToast({
+        id: "work-tools-agent-note",
+        tone: result.queued ? "info" : "success",
+        title: result.queued ? "Queued for the agent's next turn" : "Sent to the agent",
+        message: text,
+      });
+      return true;
+    }
+    try {
+      await sendWithCloudWakeMark(sessionId, chatPin, () => withChatPin(chatPin, (scopedPin) => (
+        window.ade.agentChat.send({ sessionId, text }, scopedPin)
+      )));
+      return true;
+    } catch (error) {
+      showToast({ tone: "error", title: "Couldn't reach the agent", message: deviceSourceErrorText(error), report: false });
+      return false;
+    }
+  }, [noteToAgent, sessionId]);
+
   const takeOver = useCallback((tile: CatalogCardView) => {
     if (!sessionId) return;
     // One hold at a time: the tool held before is handed back first (with its
@@ -176,6 +208,7 @@ export function useToolHandoff(args: {
     told: heldHere?.told ?? false,
     canTellAgent,
     askMachine,
+    askAgent,
     takeOver,
     handBack,
   };

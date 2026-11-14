@@ -39,10 +39,12 @@ export const WORK_TOOL_CHROME_MOTION = "transition-colors duration-[120ms] ease-
  *
  * An inset accent hairline rather than the app-wide outline halo: these
  * controls sit flush in a 40px row, and an outset ring on a 28px square
- * overlaps its neighbours.
+ * overlaps its neighbours. `outline-none!` because the app-wide ring
+ * (`surfaceKit.css`) is unlayered CSS, which beats any layered utility: without
+ * it a picked chip wore both rings, the outer one clipped by its row.
  */
 export const WORK_TOOL_CHROME_FOCUS =
-  "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
+  "focus-visible:outline-none! focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]";
 
 /**
  * The row itself: 40px, hairline below at 60% of the border token.

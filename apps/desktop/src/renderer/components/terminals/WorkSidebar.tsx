@@ -441,6 +441,7 @@ export function WorkSidebar({
     effectiveTool,
   });
   const heldTool = handoff.heldTool;
+  const { askAgent } = handoff;
   const tiles = useWorkToolCatalog({
     context: toolContext,
     statuses: laneStatuses,
@@ -575,6 +576,9 @@ export function WorkSidebar({
     onAddIosContext: addIosContext,
     onAddContextAttachment: addContextAttachment,
     onInsertDraft: insertDraft,
+    onAskAgent: panelChatSessionId ? askAgent : null,
+    machines: toolMachines.machines,
+    onChooseMachine: catalogState.canChoose ? catalogState.chooseDeviceMachine : null,
     onResumeEndedSession: resumeEndedSession,
     onToolChange,
     onClose,
@@ -605,6 +609,11 @@ export function WorkSidebar({
     selectedCommit,
     selectedMode,
     selectedPath,
+    askAgent,
+    toolMachines.machines,
+    catalogState.canChoose,
+    catalogState.chooseDeviceMachine,
+    panelChatSessionId,
     paneOwnerSessionId,
     shouldPersistPanelAttachment,
     toolContext,
