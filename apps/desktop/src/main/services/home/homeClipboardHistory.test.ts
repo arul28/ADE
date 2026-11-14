@@ -77,7 +77,10 @@ function writeSettings(dir: string, settings: { enabled: boolean; persist: boole
 }
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+  // The poll times each clipboard read with performance.now() and backs off
+  // to the slow interval after a slow read. With the real clock, a stall on a
+  // busy runner moved the poll to 3 s, and a 1 s advance then saw nothing.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
 });
 
 afterEach(() => {
