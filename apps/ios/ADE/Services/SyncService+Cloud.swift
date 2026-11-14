@@ -774,6 +774,16 @@ extension SyncService {
     })
   }
 
+  /// Forgets the last account's ADE Cloud computers and saved chats (an
+  /// account change), so the next account reads its own at once.
+  func clearCloudServerCache() {
+    cloudServerReadTask?.cancel()
+    cloudServerReadTask = nil
+    cloudServerReadAt = nil
+    cloudServerInstances = []
+    cloudSavedChats = []
+  }
+
   /// Reads the account's ADE Cloud computers and their saved chats from the
   /// account server, unless it was read in the last 30 seconds.
   func refreshCloudServerIfStale(force: Bool = false) {
@@ -782,7 +792,8 @@ extension SyncService {
     cloudServerReadAt = Date()
     cloudServerReadTask = Task { @MainActor [weak self] in
       await self?.readCloudServer()
-      self?.cloudServerReadTask = nil
+      // A cancelled read (an account change) leaves a newer read in place.
+      if !Task.isCancelled { self?.cloudServerReadTask = nil }
     }
   }
 
@@ -808,7 +819,7 @@ extension SyncService {
       chats = nil
     }
     // An account switch while it read: the answer is the old account's.
-    guard AccountService.shared.isPairingCommitAuthorized(owner) else { return }
+    guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return }
     if let instances { cloudServerInstances = instances.filter { !$0.isGone } }
     if let chats { cloudSavedChats = chats }
     guard instances != nil || chats != nil else { return }
@@ -956,7 +967,9 @@ extension SyncService {
     }
     guard let machine, machine.online, !Task.isCancelled,
           let authorization = AccountService.shared.currentPairingAuthorization else { return false }
-    if case .success = await pairAccountMachineAlongsidePrimary(machine, authorization: authorization) {
+    // The caller adds it to the connected set, after it checked that no newer
+    // choice was made during the wait.
+    if case .success = await pairAccountMachineAlongsidePrimary(machine, authorization: authorization, keepConnected: false) {
       return true
     }
     return false

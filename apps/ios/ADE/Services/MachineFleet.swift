@@ -374,6 +374,9 @@ final class MachineFleet: ObservableObject {
     pairedMachineCount = 0
     projectMachineKeys = []
     requestedKey = nil
+    // The last account's asleep ADE Cloud rows and the saved chats behind them.
+    syncService?.clearCloudServerCache()
+    restingCloudMachines = []
   }
 
   // MARK: - Queries
@@ -407,10 +410,11 @@ final class MachineFleet: ObservableObject {
     if isLive(machineKey) { return true }
     guard choiceBeforeWake == keepLiveChoices else { return false }
     // A computer this phone never paired: pair it through the account once
-    // it is up. The pairing adds it to the connected set.
+    // it is up. The pairing can wait for minutes, so a Connect or Disconnect
+    // the user chose meanwhile still wins.
     if connections[machineKey] == nil {
       guard await syncService?.pairRestingCloudMachine(fleetKey: machineKey) == true else { return false }
-      if isLive(machineKey) { return true }
+      guard choiceBeforeWake == keepLiveChoices else { return false }
     }
     let pinsBefore = pinnedKeys
     let requestedBefore = requestedKey
