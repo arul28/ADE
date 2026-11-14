@@ -245,6 +245,7 @@ struct LanesTabView: View, Equatable {
     .onChange(of: quickFilter) { _, _ in refreshLaneListPresentation() }
     .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
     .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: syncService.focusedMachineListsWork) { _, _ in refreshLaneListPresentation() }
     .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
       refreshLaneListPresentation()
       let pendingIds = syncService.pendingLaneDeletionIds

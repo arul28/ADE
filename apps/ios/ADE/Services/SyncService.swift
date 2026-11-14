@@ -4776,6 +4776,9 @@ final class SyncService: ObservableObject {
     }
   }
   static let cloudMachineFleetKeysDefaultsKey = "ade.sync.cloudMachineFleetKeys"
+  /// The account machine keys of the last cloud list this run; nil until one
+  /// answered. `resolveCloudMachineKeys` turns them into fleet keys.
+  private var cloudAccountMachineKeys: Set<String>?
   /// ADE Cloud computers the phone asked to wake for an open that still
   /// waits for them. The opened chat says "Waking <name>…" meanwhile.
   @Published private(set) var wakingCloudMachineKeys: Set<String> = []
@@ -29059,14 +29062,27 @@ extension SyncService {
     }
   }
 
-  /// Saves the account's ADE Cloud computers as fleet keys. The cloud list
-  /// names account machines; the fleet names a machine by its device id.
+  /// Takes the account's ADE Cloud computers from the cloud list. The list
+  /// names account machines; the fleet names a machine by its device id, so
+  /// the keys resolve once the account's machine list has loaded.
   func setCloudMachines(_ machines: [CloudPhoneMachine]) {
-    let accountMachines = AccountService.shared.machines
-    let keys = machines.compactMap { box -> String? in
-      guard let key = box.machineKey,
-            let deviceId = accountMachines.first(where: { $0.machineKey == key })?.deviceId,
-            !deviceId.isEmpty else { return nil }
+    cloudAccountMachineKeys = Set(machines.compactMap(\.machineKey))
+    // A clear "no cloud computers" needs no account list to resolve.
+    if machines.isEmpty { cloudMachineFleetKeys = [] }
+    resolveCloudMachineKeys()
+  }
+
+  /// Saves the cloud computers as fleet keys. Before the account's machine
+  /// list has loaded, the saved set stays as it is: an empty list then would
+  /// drop every cloud computer. The fleet calls this again when the account
+  /// list loads.
+  func resolveCloudMachineKeys() {
+    guard let cloudAccountMachineKeys else { return }
+    let account = AccountService.shared
+    guard account.machinesState == .loaded else { return }
+    let keys = account.machines.compactMap { machine -> String? in
+      guard cloudAccountMachineKeys.contains(machine.machineKey),
+            let deviceId = machine.deviceId, !deviceId.isEmpty else { return nil }
       return HiddenMachineStore.fleetKey(deviceId: deviceId)
     }
     cloudMachineFleetKeys = Set(keys)

@@ -38,9 +38,12 @@ extension LanesTabView {
 
   /// A host-side lane delete may take several minutes. Keep its stale local
   /// snapshot out of navigation and list affordances while SyncService owns
-  /// that cleanup request.
+  /// that cleanup request. Past its reconnect window the focused machine's
+  /// lanes are not listed, so the open-lane tray and the filter counts drop
+  /// them too.
   var visibleLaneSnapshots: [LaneListSnapshot] {
-    laneSnapshots.filter { !syncService.isLaneDeletionPending($0.lane.id) }
+    guard syncService.focusedMachineListsWork else { return [] }
+    return laneSnapshots.filter { !syncService.isLaneDeletionPending($0.lane.id) }
   }
 
   var manageableVisibleLaneIds: [String] {

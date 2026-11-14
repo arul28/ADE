@@ -254,6 +254,8 @@ final class MachineFleet: ObservableObject {
           })
           let cameOnline = online.subtracting(self.accountOnlineKeys)
           self.accountOnlineKeys = online
+          // The ADE Cloud computers resolve to fleet keys through this list.
+          self.syncService?.resolveCloudMachineKeys()
           // Machine names come from the directory: a rename shows at once.
           self.schedulePublish()
           self.machinesCameOnline(machineKeys: cameOnline)
