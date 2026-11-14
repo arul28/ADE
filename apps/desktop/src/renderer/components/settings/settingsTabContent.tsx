@@ -47,7 +47,6 @@ import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPane
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
-import { SecretsSection } from "./SecretsSection";
 import { PasswordsSection } from "./passwords/PasswordsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { GeneralPage } from "./general/GeneralPage";
@@ -588,12 +587,10 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // Account-wide lists read through the tab's bound runtime (it asks the
   // account directory); edits of a share go to the machine that holds it.
   sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
-  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
-  // Passwords is the account's and shows with no project open: This
-  // computer's brain answers through `passwords.call` whichever project
-  // window is open. Another machine picked on the page is read through its
-  // machine route (its copy of this repository only for an older ADE).
-  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "account", title: "Passwords" }],
+  // Passwords & Secrets is the account's, read on this computer: its brain
+  // answers through `passwords.call`, with or without a project open, and
+  // whichever machine the project tab is bound to.
+  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "local", title: "Passwords & Secrets" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 

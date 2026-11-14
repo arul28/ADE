@@ -132,7 +132,6 @@ function makeSync(overrides: Partial<SyncConnections> = {}): SyncConnections {
     devices: [],
     loading: false,
     busy: false,
-    notice: null,
     error: null,
     isRemoteBound: false,
     boundMachineName: null,

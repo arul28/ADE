@@ -141,9 +141,10 @@ describe("runAccountMigration", () => {
     const receiptDir = makeReceiptDir();
     const projectRoot = path.join(receiptDir, "project");
     fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    // An SSH-alias origin: the alias rows' copy to the GitHub key is the write.
     fs.writeFileSync(
       path.join(projectRoot, ".git", "config"),
-      `[remote "origin"]\n\turl = https://github.com/acme/old-secrets.git\n`,
+      `[remote "origin"]\n\turl = git@github.com-work:acme/old-secrets.git\n`,
     );
     let userId = "user-a";
     let generation = 0;
@@ -159,8 +160,11 @@ describe("runAccountMigration", () => {
     const vault = {
       list: vi.fn(async (scope?: string | null) => scope === "all"
         ? { ok: false as const, unavailable: true as const, message: "offline" }
-        : { ok: true as const, value: [] }),
-      get: vi.fn(async () => ({ ok: true as const, value: null })),
+        : scope === "repo:github.com-work/acme/old-secrets"
+          ? { ok: true as const, value: [{ scope, kind: "project_secret", key: "OLD", value: null, updatedAt: "1" }] }
+          : { ok: true as const, value: [] }),
+      get: vi.fn(async () => ({ ok: true as const, value: "old-secret" })),
+      sync: vi.fn(async () => ({ ok: true as const, value: "ready" as const })),
       set: vi.fn(async (
         _scope: string,
         _kind: string,
@@ -178,15 +182,7 @@ describe("runAccountMigration", () => {
     const runner = createAccountMigrationRunner({
       accountBridge: { status: () => signedInStatus(userId) },
       accountVaultBridge: vault,
-      getContexts: () => [{
-        project: { rootPath: projectRoot },
-        projectSecretService: {
-          list: () => ({ secrets: [{ name: "old-secret", storage: "account" }] }),
-          getSecretProvenance: () => ({ source: "device" as const, accountUserId: null }),
-          get: () => ({ value: "old-secret" }),
-          hydrateFromVault: vi.fn(async () => {}),
-        },
-      }],
+      getContexts: () => [{ project: { rootPath: projectRoot } }],
       getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
       getReceiptDir: () => receiptDir,
       getAccountMigrationGeneration: () => generation,
@@ -207,29 +203,22 @@ describe("runAccountMigration", () => {
 
   it("start() declines while a previous owner's run is still in flight, so the lifecycle retries", async () => {
     const receiptDir = makeReceiptDir();
-    let releaseVaultWrite: () => void = () => {};
-    const vaultWriteGate = new Promise<void>((resolve) => {
-      releaseVaultWrite = resolve;
+    let releaseMove: () => void = () => {};
+    const moveGate = new Promise<void>((resolve) => {
+      releaseMove = resolve;
     });
     const vault = {
       list: vi.fn(async () => ({ ok: true as const, value: [] })),
       get: vi.fn(async () => ({ ok: true as const, value: null })),
-      set: vi.fn(async () => {
-        await vaultWriteGate;
-        return { ok: true as const, value: null };
-      }),
+      set: vi.fn(async () => ({ ok: true as const, value: null })),
     };
     const runner = createAccountMigrationRunner({
       accountBridge: { status: () => signedInStatus("user-a") },
       accountVaultBridge: vault,
       getContexts: () => [{
         project: { rootPath: makeReceiptDir() },
-        projectSecretService: {
-          list: () => ({ secrets: [{ name: "s", storage: "account" }] }),
-          getSecretProvenance: () => ({ source: "device" as const, accountUserId: null }),
-          get: () => ({ value: "v" }),
-          hydrateFromVault: vi.fn(async () => {}),
-        },
+        // The project's old-secret move is still running.
+        projectSecretService: { migrateLegacy: () => moveGate },
       }],
       getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
       getReceiptDir: () => receiptDir,
@@ -240,7 +229,7 @@ describe("runAccountMigration", () => {
     // A second caller (an account switch, a later ready tick) must be told
     // nothing began, so it can try again once this run winds down.
     expect(runner.start()).toBe(false);
-    releaseVaultWrite();
+    releaseMove();
     await new Promise<void>((resolve) => setImmediate(resolve));
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(runner.start()).toBe(true);
@@ -332,68 +321,40 @@ describe("runAccountMigration", () => {
     });
   });
 
-  it("A3: migrates secrets for a project opened after an earlier project", async () => {
+  it("A3: moves the old secrets of a project opened after an earlier project", async () => {
     const receiptDir = makeReceiptDir();
-    const projectOne = fs.mkdtempSync(path.join(os.tmpdir(), "ade-open-project-one-"));
-    const projectTwo = fs.mkdtempSync(path.join(os.tmpdir(), "ade-open-project-two-"));
-    const roots = [projectOne, projectTwo];
-    for (const [root, repository] of [[projectOne, "one"], [projectTwo, "two"]] as const) {
-      fs.mkdirSync(path.join(root, ".git"));
-      fs.writeFileSync(
-        path.join(root, ".git", "config"),
-        `[remote "origin"]\n\turl = https://github.com/acme/${repository}.git\n`,
-      );
-    }
-    const makeContext = (root: string, name: string, value: string) => ({
-      project: { rootPath: root },
-      projectSecretService: {
-        list: () => ({ secrets: [{ name, storage: "account" }] }),
-        getSecretProvenance: () => ({ source: "device" as const, accountUserId: null }),
-        get: () => ({ value }),
-        hydrateFromVault: vi.fn(async () => {}),
-      },
+    const makeContext = () => ({
+      project: { rootPath: makeReceiptDir() },
+      projectSecretService: { migrateLegacy: vi.fn(async () => {}) },
     });
-    const contextOne = makeContext(projectOne, "first-secret", "first-value");
-    const contextTwo = makeContext(projectTwo, "second-secret", "second-value");
+    const contextOne = makeContext();
+    const contextTwo = makeContext();
     let contexts = [contextOne];
-    const vault = {
-      list: vi.fn(async () => ({ ok: true as const, value: [] })),
-      get: vi.fn(async () => ({ ok: true as const, value: null })),
-      set: vi.fn(async () => ({ ok: true as const, value: null })),
-    };
+    const onMigrationSettled = vi.fn();
     const runner = createAccountMigrationRunner({
       getAccountMigrationGeneration: () => 0,
-      accountBridge: {
-        status: () => signedInStatus("user-1"),
+      accountBridge: { status: () => signedInStatus("user-1") },
+      accountVaultBridge: {
+        list: vi.fn(async () => ({ ok: true as const, value: [] })),
+        get: vi.fn(async () => ({ ok: true as const, value: null })),
+        set: vi.fn(async () => ({ ok: true as const, value: null })),
       },
-      accountVaultBridge: vault,
       getContexts: () => contexts,
       getLogger: () => ({ info: vi.fn(), warn: vi.fn() }),
       getReceiptDir: () => receiptDir,
+      onMigrationSettled,
     });
 
-    try {
-      runner.start();
-      await vi.waitFor(() => expect(vault.set).toHaveBeenCalledWith(
-        "repo:github.com/acme/one",
-        "project_secret",
-        "first-secret",
-        "first-value",
-        { expectedAccountUserId: "user-1" },
-      ));
+    runner.start();
+    await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledTimes(1));
+    expect(contextOne.projectSecretService.migrateLegacy).toHaveBeenCalledOnce();
 
-      contexts = [contextOne, contextTwo];
-      runner.start();
-      await vi.waitFor(() => expect(vault.set).toHaveBeenCalledWith(
-        "repo:github.com/acme/two",
-        "project_secret",
-        "second-secret",
-        "second-value",
-        { expectedAccountUserId: "user-1" },
-      ));
-    } finally {
-      for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
-    }
+    contexts = [contextOne, contextTwo];
+    runner.start();
+    await vi.waitFor(() => expect(onMigrationSettled).toHaveBeenCalledTimes(2));
+    expect(contextTwo.projectSecretService.migrateLegacy).toHaveBeenCalledOnce();
+    // The first project's move is recorded: it does not run again.
+    expect(contextOne.projectSecretService.migrateLegacy).toHaveBeenCalledOnce();
   });
 
   it("reports incomplete when a source stays pending so the lifecycle can retry", async () => {

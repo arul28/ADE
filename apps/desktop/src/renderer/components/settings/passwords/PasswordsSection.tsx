@@ -1,46 +1,52 @@
 /**
- * Settings › Passwords: the person's page for ADE's password manager.
+ * Settings › Passwords & Secrets: the person's page for ADE's vault.
  *
- * The page follows one machine (like Providers and Android devices): the
- * "use on this computer" switch is that computer's, while the vault and the
- * ADE Cloud switch are the account's. Every runtime call carries the page's
- * pin, and effects key on `pin?.key` so a rebuilt pin does not refetch.
+ * The vault is the account's and syncs to every computer the person signs in
+ * to, so the page has no machine picker: it reads this computer's brain, which
+ * also holds the secrets kept on this computer only. Every call goes through
+ * `window.ade.passwords` with no pin (this computer's machine route).
  *
- * Values never reach this file. The list and every save answer with the same
- * summaries an agent may see; there is deliberately no reveal, copy or read
- * of a saved password or secret here.
+ * Values never reach this file except through Reveal / Copy, which main
+ * answers after Touch ID or Windows Hello. Results of an action (a save, an
+ * import, an export) are toasts, so they show wherever the page is scrolled.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import {
-  CheckCircle,
+  Check,
+  ClockCounterClockwise,
+  CloudArrowUp,
+  Desktop,
+  DotsThree,
+  DownloadSimple,
+  FileCsv,
+  FileText,
   Key,
   MagnifyingGlass,
   Password,
+  PencilSimple,
   Plus,
+  ShieldCheck,
   ShieldWarning,
   Trash,
   UploadSimple,
 } from "@phosphor-icons/react";
-import type { PasswordUseRecord, PasswordItemSummary, PasswordsStatus } from "../../../../shared/types/passwords";
-import type { OpenProjectBinding } from "../../../../shared/types";
+import type { PasswordItemSummary, PasswordsProject, PasswordsStatus, PasswordUseRecord } from "../../../../shared/types/passwords";
+import { useAppStore } from "../../../state/appStore";
+import { showToast } from "../../app/toast/toastStore";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { ipcErrorMessage } from "../../../lib/format";
-import {
-  ModernPage,
-  ModernRow,
-  ModernRows,
-  ModernSection,
-  SettingsToggle,
-} from "../primitives";
-import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { ModernPage } from "../primitives";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import {
   ChangeValueDialog,
+  ImportEnvDialog,
   NewLoginDialog,
   NewSecretDialog,
   ResetPasswordsDialog,
+  scopeLabel,
 } from "./PasswordDialogs";
 import "./passwords.css";
 
@@ -55,15 +61,10 @@ const TAB_ANCHORS: Record<string, TabId> = {
   "passwords-activity": "activity",
 };
 
-const TABS: ReadonlyArray<{ id: TabId; label: string }> = [
-  { id: "logins", label: "Logins" },
-  { id: "secrets", label: "Secrets" },
-  { id: "activity", label: "Activity" },
-];
-
 type DialogState =
   | { kind: "new-login" }
   | { kind: "new-secret" }
+  | { kind: "import-env"; file: { fileName: string; entries: Array<{ name: string; value: string }> } }
   | { kind: "change-value"; item: PasswordItemSummary }
   | { kind: "reset" }
   | null;
@@ -76,16 +77,25 @@ function errorText(error: unknown, fallback: string): string {
   return ipcErrorMessage(error) || fallback;
 }
 
-function formatUpdatedAt(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+function cancelled(error: unknown): boolean {
+  return /cancel/i.test(errorText(error, ""));
 }
 
-function statusLine(status: PasswordsStatus): string {
-  if (!status.enabled) return status.machineKind === "cloud" ? "Off for ADE Cloud computers." : "Off on this computer.";
-  if (status.itemCount == null) return "On for this computer.";
-  const count = `${status.itemCount} saved item${status.itemCount === 1 ? "" : "s"}`;
-  return status.machineKind === "cloud" ? `${count} · unlocked for ADE Cloud` : `${count} · encrypted`;
+function relativeTime(value: string): string {
+  const at = new Date(value).getTime();
+  if (Number.isNaN(at)) return value;
+  const minutes = Math.round((Date.now() - at) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(value).toLocaleDateString();
+}
+
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function loginHint(item: PasswordItemSummary): string {
@@ -93,140 +103,185 @@ function loginHint(item: PasswordItemSummary): string {
   return parts.join(" · ") || "No username";
 }
 
-function Fact({ label, children }: { label: string; children: ReactNode }) {
+/** A page-sized "nothing here yet", with what to do about it. */
+function EmptyHero({ icon, title, children, actions }: { icon: ReactNode; title: string; children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="ade-pw-fact">
-      <span className="ade-pw-fact-label">{label}</span>
-      <span className="ade-pw-fact-value">{children}</span>
+    <div className="ade-pw-hero">
+      <span className="ade-pw-hero-icon" aria-hidden>{icon}</span>
+      <h3 className="ade-pw-hero-title">{title}</h3>
+      <p className="ade-pw-hero-text">{children}</p>
+      {actions ? <div className="ade-pw-hero-actions">{actions}</div> : null}
     </div>
   );
 }
 
-function EmptyState({ title, hint, icon }: { title: string; hint: string; icon?: ReactNode }) {
+/** A button that opens a small menu under it. */
+function MenuButton({
+  label,
+  icon,
+  ariaLabel,
+  variant = "plain",
+  children,
+}: {
+  label?: string;
+  icon: ReactNode;
+  ariaLabel: string;
+  variant?: "plain" | "primary" | "icon";
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
   return (
-    <div className="ade-pw-empty">
-      <span className="ade-pw-empty-icon" aria-hidden>{icon ?? <Key size={18} weight="duotone" />}</span>
-      <div className="ade-pw-empty-title">{title}</div>
-      <div className="ade-pw-empty-hint">{hint}</div>
-    </div>
+    <>
+      <button
+        ref={anchorRef}
+        type="button"
+        className={variant === "icon" ? "ade-pw-icon-btn" : "ade-modern-btn"}
+        data-tone={variant === "primary" ? "primary" : undefined}
+        aria-label={ariaLabel}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        {icon}
+        {label}
+      </button>
+      <AnchoredMenu open={open} anchorRef={anchorRef} onClose={close} placement="bottom-end" role="menu" aria-label={ariaLabel} className="ade-pw-menu">
+        {children(close)}
+      </AnchoredMenu>
+    </>
+  );
+}
+
+function MenuItem({ icon, children, onClick, danger, checked, hint }: { icon?: ReactNode; children: ReactNode; onClick: () => void; danger?: boolean; checked?: boolean; hint?: string }) {
+  return (
+    <button
+      type="button"
+      role={checked === undefined ? "menuitem" : "menuitemcheckbox"}
+      aria-checked={checked}
+      className="ade-pw-menu-item"
+      data-danger={danger ? "true" : undefined}
+      onClick={onClick}
+    >
+      <span className="ade-pw-menu-icon" aria-hidden>{checked === undefined ? icon : checked ? <Check size={13} weight="bold" /> : null}</span>
+      <span className="ade-pw-menu-text">
+        {children}
+        {hint ? <small>{hint}</small> : null}
+      </span>
+    </button>
   );
 }
 
 export function PasswordsSection() {
-  const scope = useSettingsMachineScope();
-  const pin = scope.pin;
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const pinKey = pin?.key ?? "this-machine";
-  const machineLabel = scope.isThisMachine ? "this computer" : scope.machineName;
   const location = useLocation();
   const searchAnchors = useSettingsSearchAnchors();
+  const openProjectRoot = useAppStore((state) => state.project?.rootPath ?? null);
 
   const [status, setStatus] = useState<PasswordsStatus | null>(null);
   const [items, setItems] = useState<PasswordItemSummary[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabId>(() => tabFromHash(location.hash) ?? "logins");
-  const [search, setSearch] = useState("");
-  const [selectedLoginId, setSelectedLoginId] = useState<string | null>(null);
-  const [selectedSecretId, setSelectedSecretId] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<DialogState>(null);
-  const [busy, setBusy] = useState<"enabled" | "cloud" | "import" | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
   const [uses, setUses] = useState<PasswordUseRecord[]>([]);
+  const [projects, setProjects] = useState<PasswordsProject[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [tab, setTab] = useState<TabId>(() => tabFromHash(location.hash) ?? "logins");
+  const [dialog, setDialog] = useState<DialogState>(null);
+  const [busy, setBusy] = useState<"switch" | "import" | "export" | null>(null);
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
+
   const loadItems = useCallback(async () => {
-    setItems(await window.ade.passwords.list({}, pinRef.current));
-    // An older brain has no Activity yet; the tab then just stays empty.
-    setUses(await window.ade.passwords.activity?.({}, pinRef.current).catch(() => []) ?? []);
+    setItems(await window.ade.passwords.list({}));
+    setUses(await window.ade.passwords.activity({}).catch(() => []));
   }, []);
 
   const load = useCallback(async () => {
     try {
-      setError(null);
-      const next = await window.ade.passwords.status({}, pinRef.current);
+      setLoadError(null);
+      const next = await window.ade.passwords.status({});
       setStatus(next);
       if (next.signedIn && next.enabled) await loadItems();
       else setItems([]);
     } catch (err) {
-      setError(errorText(err, "ADE couldn't read Passwords on this computer."));
+      setLoadError(errorText(err, "ADE couldn't read Passwords & Secrets on this computer."));
     } finally {
       setLoaded(true);
     }
   }, [loadItems]);
 
-  // Keyed on the pin's key, never the pin object: a rebuilt pin with the same
-  // key must not refetch the page.
   useEffect(() => {
     void load();
-  }, [load, pinKey]);
+    void window.ade.passwords.projects?.().then(setProjects).catch(() => setProjects([]));
+  }, [load]);
 
-  // A deeplink (`#passwords-secrets`) opens the tab it names, and the settings
-  // search opens the tab that holds its match.
+  // A deeplink (`#passwords-secrets`, an old `?tab=secrets`) opens the view it
+  // names; the settings search opens the view that holds its match.
   useEffect(() => {
     const fromHash = tabFromHash(location.hash);
     if (fromHash) setTab(fromHash);
   }, [location.hash]);
-
   useEffect(() => {
-    if (!searchAnchors) return;
-    const match = searchAnchors.find((anchor) => TAB_ANCHORS[anchor] != null);
+    const match = searchAnchors?.find((anchor) => TAB_ANCHORS[anchor] != null);
     if (match) setTab(TAB_ANCHORS[match]!);
   }, [searchAnchors]);
 
   const refreshStatus = useCallback(() => {
-    void window.ade.passwords.status({}, pinRef.current).then(setStatus).catch(() => undefined);
+    void window.ade.passwords.status({}).then(setStatus).catch(() => undefined);
   }, []);
 
   const signedIn = status?.signedIn === true;
   const enabled = status?.enabled === true;
+  const isCloud = status?.machineKind === "cloud";
 
   const logins = useMemo(
     // Passkeys sit with the logins: both are how you sign in to a site.
-    () => items.filter((item) => item.kind === "login" || item.kind === "passkey").sort((left, right) => left.title.localeCompare(right.title)),
+    () => items.filter((item) => item.kind === "login" || item.kind === "passkey").sort((a, b) => a.title.localeCompare(b.title)),
     [items],
   );
   const secrets = useMemo(
-    () => items.filter((item) => item.kind === "secret").sort((left, right) => left.title.localeCompare(right.title)),
+    () => items.filter((item) => item.kind === "secret").sort((a, b) => a.title.localeCompare(b.title)),
     [items],
   );
-  const query = search.trim().toLowerCase();
-  const shownLogins = useMemo(
-    () => (query
-      ? logins.filter((item) => `${item.title} ${item.username ?? ""} ${item.sites.join(" ")}`.toLowerCase().includes(query))
-      : logins),
-    [logins, query],
-  );
-  const shownSecrets = useMemo(
-    () => (query
-      ? secrets.filter((item) => `${item.title} ${item.projectScope ?? ""}`.toLowerCase().includes(query))
-      : secrets),
-    [secrets, query],
-  );
-  const selectedLogin = shownLogins.find((item) => item.id === selectedLoginId) ?? shownLogins[0] ?? null;
-  const selectedSecret = shownSecrets.find((item) => item.id === selectedSecretId) ?? shownSecrets[0] ?? null;
+  const openProjectScope = projects.find((project) => project.rootPath === openProjectRoot)?.scope ?? null;
+  // Projects to offer: this computer's, then any a saved secret is for.
+  const knownProjects = useMemo(() => {
+    const out = [...projects];
+    for (const secret of secrets) {
+      if (secret.projectScope && !out.some((project) => project.scope === secret.projectScope)) {
+        out.push({ scope: secret.projectScope, name: scopeLabel(secret.projectScope, []), rootPath: "" });
+      }
+    }
+    return out;
+  }, [projects, secrets]);
 
-  const chooseTab = (next: TabId) => {
-    setTab(next);
-    setSearch("");
-    setError(null);
-  };
-
-  const setSwitch = async (which: "enabled" | "cloud", next: boolean) => {
-    if (!status) return;
-    setBusy(which);
-    setError(null);
-    setNotice(null);
+  const setEnabledHere = async (next: boolean) => {
+    if (!next) {
+      const confirmed = await confirmDialog({
+        title: "Turn off on this computer?",
+        message: "This computer forgets its copy of your vault, and agents here stop signing in and using secrets. Everything stays in your account and on your other computers.",
+        confirmLabel: "Turn off",
+        destructive: true,
+      });
+      if (!confirmed) return;
+    }
+    setBusy("switch");
     try {
-      const updated = which === "enabled"
-        ? await window.ade.passwords.setEnabled({ enabled: next }, pinRef.current)
-        : await window.ade.passwords.setCloudEnabled({ enabled: next }, pinRef.current);
+      const updated = await window.ade.passwords.setEnabled({ enabled: next });
       setStatus(updated);
       if (updated.signedIn && updated.enabled) await loadItems();
       else setItems([]);
     } catch (err) {
-      setError(errorText(err, "ADE couldn't change that switch."));
+      showToast({ tone: "error", title: "Couldn't change that", message: errorText(err, "Try again in a moment.") });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setCloud = async (next: boolean) => {
+    setBusy("switch");
+    try {
+      setStatus(await window.ade.passwords.setCloudEnabled({ enabled: next }));
+    } catch (err) {
+      showToast({ tone: "error", title: "Couldn't change that", message: errorText(err, "Try again in a moment.") });
     } finally {
       setBusy(null);
     }
@@ -234,413 +289,245 @@ export function PasswordsSection() {
 
   const handleSaved = useCallback(async (saved: PasswordItemSummary) => {
     setDialog(null);
-    setNotice(null);
-    setError(null);
-    setSearch("");
     setTab(saved.kind === "secret" ? "secrets" : "logins");
-    if (saved.kind !== "secret") setSelectedLoginId(saved.id);
-    else setSelectedSecretId(saved.id);
-    try {
-      await loadItems();
-    } catch (err) {
-      setError(errorText(err, "Saved, but ADE couldn't read the list again."));
-    }
+    showToast({ tone: "success", title: `Saved ${saved.title}` });
+    await loadItems().catch(() => undefined);
     refreshStatus();
   }, [loadItems, refreshStatus]);
 
   const removeItem = async (item: PasswordItemSummary) => {
     const noun = item.kind === "secret" ? "secret" : item.kind === "passkey" ? "passkey" : "login";
+    const where = item.deviceOnly ? "from this computer" : "on every computer";
     const confirmed = await confirmDialog({
-      title: `Delete this ${noun}?`,
-      message: item.kind !== "secret"
-        ? `“${item.title}” is removed from Passwords on every computer. This can't be undone.`
-        : `“${item.title}” is removed from Passwords on every computer, and commands that use it stop getting a value. This can't be undone.`,
+      title: `Delete ${item.title}?`,
+      message: item.kind === "secret"
+        ? `This ${noun} is deleted ${where}, and commands that use it stop getting a value. This can't be undone.`
+        : `This ${noun} is deleted ${where}. This can't be undone.`,
       confirmLabel: "Delete",
       destructive: true,
     });
     if (!confirmed) return;
-    setError(null);
-    setNotice(null);
     try {
-      await window.ade.passwords.remove({ id: item.id }, pinRef.current);
-      if (item.kind !== "secret") setSelectedLoginId(null);
-      else setSelectedSecretId(null);
+      await window.ade.passwords.remove({ id: item.id });
+      showToast({ tone: "success", title: `Deleted ${item.title}` });
       await loadItems();
       refreshStatus();
     } catch (err) {
-      setError(errorText(err, "ADE couldn't delete that item."));
+      showToast({ tone: "error", title: `Couldn't delete ${item.title}`, message: errorText(err, "Try again in a moment.") });
     }
   };
 
   const importCsv = async (file: File) => {
-    setError(null);
-    setNotice(null);
     if (file.size > MAX_IMPORT_BYTES) {
-      setError("That file is larger than 5 MB. Export a smaller CSV and try again.");
+      showToast({ tone: "error", title: "That file is too big", message: "Export a CSV under 5 MB and try again.", report: false });
       return;
     }
     setBusy("import");
     try {
-      const text = await file.text();
-      const result = await window.ade.passwords.importCsv({ text }, pinRef.current);
-      setNotice(
-        `Imported ${result.imported}, skipped ${result.skippedDuplicate} duplicates, ${result.skippedInvalid} rows without an https site or password. Delete the exported file now: it has your passwords in plain text.`,
-      );
+      const result = await window.ade.passwords.importCsv({ text: await file.text() });
+      setTab("logins");
+      showToast({
+        tone: "success",
+        title: `Imported ${plural(result.imported, "login")}`,
+        message: `Skipped ${result.skippedDuplicate} already saved and ${result.skippedInvalid} without an https site or password. Delete the CSV now: it has your passwords in plain text.`,
+        durationMs: 18_000,
+      });
       await loadItems();
       refreshStatus();
     } catch (err) {
-      setError(errorText(err, "ADE couldn't import that file."));
+      showToast({ tone: "error", title: "Couldn't import that file", message: errorText(err, "Try again in a moment.") });
     } finally {
       setBusy(null);
     }
   };
 
-  const headerActions = signedIn && enabled ? (
-    <>
-      <button
-        type="button"
-        className="ade-modern-btn"
-        onClick={() => fileInputRef.current?.click()}
-        disabled={busy === "import"}
-      >
-        <UploadSimple size={13} />
-        {busy === "import" ? "Importing…" : "Import…"}
-      </button>
-      <button type="button" className="ade-modern-btn" onClick={() => setDialog({ kind: "new-login" })}>
-        <Plus size={12} weight="bold" /> New login
-      </button>
-      <button type="button" className="ade-modern-btn" onClick={() => setDialog({ kind: "new-secret" })}>
-        <Plus size={12} weight="bold" /> New secret
-      </button>
-    </>
-  ) : null;
+  const chooseEnvFile = async () => {
+    try {
+      const file = await window.ade.passwords.chooseEnvFile();
+      if (!file) return;
+      if (file.entries.length === 0) {
+        showToast({ tone: "warning", title: `No secrets in ${file.fileName}`, message: "It has no NAME=value lines ADE can read.", report: false });
+        return;
+      }
+      setDialog({ kind: "import-env", file });
+    } catch (err) {
+      showToast({ tone: "error", title: "Couldn't read that file", message: errorText(err, "Try another .env file.") });
+    }
+  };
 
-  const itemHint = tab === "logins"
-    ? `${logins.length} saved · ${logins.filter((item) => item.hasTotp).length} with codes`
-    : `${secrets.length} saved · encrypted`;
+  const exportSecrets = async (scope: string | null) => {
+    setBusy("export");
+    try {
+      const result = await window.ade.passwords.exportSecrets({ projectScope: scope });
+      showToast({
+        tone: "success",
+        title: `Exported ${plural(result.secretCount, "secret")}`,
+        message: `Saved to ${result.filePath} on this computer. It holds the values in plain text: delete it when you're done.`,
+        durationMs: 18_000,
+      });
+    } catch (err) {
+      if (!cancelled(err)) showToast({ tone: "error", title: "Couldn't export", message: errorText(err, "Try again in a moment.") });
+    } finally {
+      setBusy(null);
+    }
+  };
 
-  const activeAnchor = tab === "logins" ? "passwords-logins" : tab === "secrets" ? "passwords-secrets" : "passwords-activity";
+  const existingByScope = useMemo(() => {
+    const out = new Map<string | null, Set<string>>();
+    for (const secret of secrets) {
+      if (secret.deviceOnly) continue;
+      const names = out.get(secret.projectScope) ?? new Set<string>();
+      names.add(secret.title);
+      out.set(secret.projectScope, names);
+    }
+    return out;
+  }, [secrets]);
+
+  const statusText = !status
+    ? (loaded ? "Couldn't read this computer's vault" : "Opening…")
+    : !signedIn
+      ? "Sign in to ADE to use it"
+      : !enabled
+        ? (isCloud ? "Off for ADE Cloud computers" : "Off on this computer")
+        : `${plural(logins.length, "login")} · ${plural(secrets.length, "secret")}`;
 
   return (
     <div className="ade-pw-page">
       <ModernPage>
-        {error ? (
+        {loadError ? (
           <Banner
             layout="inline"
             model={{
               id: "passwords-error",
               tone: "error",
-              title: error,
+              title: loadError,
               report: false,
               actions: [{ label: "Retry", onClick: () => void load() }],
             }}
           />
         ) : null}
-        {notice ? (
-          <Banner
-            layout="inline"
-            model={{
-              id: "passwords-notice",
-              tone: "info",
-              title: notice,
-              report: false,
-              dismiss: { onDismiss: () => setNotice(null) },
-            }}
-          />
-        ) : null}
 
-        <ModernSection
-          group="Passwords"
-          anchor="passwords-settings"
-          title="Passwords"
-          hint={!status
-            ? loaded
-              ? `Passwords on ${machineLabel} couldn't be read.`
-              : `Reading Passwords on ${machineLabel}…`
-            : status.signedIn
-              ? statusLine(status)
-              : undefined}
-          icon={<Password size={16} weight="duotone" />}
-          actions={headerActions}
-        >
-          {!status ? (
-            loaded ? null : <p className="ade-pw-loading">Reading Passwords on {machineLabel}…</p>
-          ) : !status.signedIn ? (
-            <p className="ade-pw-signed-out">Sign in to ADE to use Passwords.</p>
-          ) : (
-            <>
-              <ModernRows>
-                <ModernRow
-                  title="Use Passwords on this computer"
-                  hint={status.machineKind === "cloud"
-                    ? undefined
-                    : "Off forgets this computer's copy of the key and its saved items. The account's vault stays."}
-                  control={status.machineKind === "cloud" ? (
-                    <span className="ade-pw-follows">ADE Cloud computers follow the switch below.</span>
-                  ) : (
-                    <SettingsToggle
-                      checked={status.enabled}
-                      onChange={(next) => void setSwitch("enabled", next)}
-                      disabled={busy !== null}
-                      label="Use Passwords on this computer"
-                    />
-                  )}
-                />
-                <ModernRow
-                  title="ADE Cloud computers can use Passwords"
-                  hint="Lets an ADE Cloud computer unlock the vault while it runs your work."
-                  control={(
-                    <SettingsToggle
-                      checked={status.cloudEnabled ?? true}
-                      onChange={(next) => void setSwitch("cloud", next)}
-                      disabled={busy !== null}
-                      label="ADE Cloud computers can use Passwords"
-                    />
-                  )}
-                />
-              </ModernRows>
-              {!status.enabled ? (
-                <p className="ade-pw-off">
-                  Passwords is off on {machineLabel}. Turn it on to save logins and secrets, and to let agents use them.
-                </p>
+        <div className="ade-pw-stack">
+        <section className="ade-pw-bar" id="passwords-settings" data-settings-anchor="passwords-settings" data-settings-group="Passwords & Secrets">
+          <div className="ade-pw-bar-status">
+            <span className="ade-pw-bar-icon" data-on={enabled ? "true" : undefined} aria-hidden>
+              {enabled ? <ShieldCheck size={16} weight="fill" /> : <ShieldWarning size={16} weight="fill" />}
+            </span>
+            <div className="ade-pw-bar-text">
+              <span className="ade-pw-bar-title">{statusText}</span>
+              <span className="ade-pw-bar-sub">
+                {signedIn && enabled
+                  ? "Encrypted, and synced to every computer you sign in to."
+                  : signedIn && !enabled && !isCloud
+                    ? "Turn it on to save logins and secrets here, and let agents here use them."
+                    : "Agents use what's saved here, but never see it."}
+              </span>
+            </div>
+          </div>
+          {signedIn ? (
+            <div className="ade-pw-bar-actions">
+              {enabled ? (
+                <>
+                  <MenuButton label={busy === "import" ? "Importing…" : "Import"} icon={<UploadSimple size={13} />} ariaLabel="Import">
+                    {(close) => (
+                      <>
+                        <MenuItem icon={<FileCsv size={14} />} hint="Chrome, Safari, 1Password, Bitwarden…" onClick={() => { close(); csvInputRef.current?.click(); }}>
+                          Logins from a CSV…
+                        </MenuItem>
+                        <MenuItem icon={<FileText size={14} />} hint="NAME=value lines" onClick={() => { close(); void chooseEnvFile(); }}>
+                          Secrets from a .env…
+                        </MenuItem>
+                      </>
+                    )}
+                  </MenuButton>
+                  <MenuButton label="New" icon={<Plus size={12} weight="bold" />} ariaLabel="New" variant="primary">
+                    {(close) => (
+                      <>
+                        <MenuItem icon={<Password size={14} />} onClick={() => { close(); setDialog({ kind: "new-login" }); }}>Login</MenuItem>
+                        <MenuItem icon={<Key size={14} />} onClick={() => { close(); setDialog({ kind: "new-secret" }); }}>Secret</MenuItem>
+                      </>
+                    )}
+                  </MenuButton>
+                </>
+              ) : !isCloud ? (
+                <button type="button" className="ade-modern-btn" data-tone="primary" disabled={busy === "switch"} onClick={() => void setEnabledHere(true)}>
+                  Turn on
+                </button>
               ) : null}
-            </>
-          )}
-        </ModernSection>
+              <MenuButton icon={<DotsThree size={16} weight="bold" />} ariaLabel="More options" variant="icon">
+                {(close) => (
+                  <>
+                    <MenuItem
+                      checked={status?.cloudEnabled !== false}
+                      hint="Lets your cloud lanes unlock the vault while they work."
+                      onClick={() => { close(); void setCloud(status?.cloudEnabled === false); }}
+                    >
+                      ADE Cloud computers can use it
+                    </MenuItem>
+                    {!isCloud && enabled ? (
+                      <MenuItem icon={<Desktop size={14} />} onClick={() => { close(); void setEnabledHere(false); }}>
+                        Turn off on this computer…
+                      </MenuItem>
+                    ) : null}
+                    {enabled ? (
+                      <>
+                        <div className="ade-pw-menu-rule" role="separator" />
+                        <MenuItem icon={<Trash size={14} />} danger onClick={() => { close(); setDialog({ kind: "reset" }); }}>
+                          Reset Passwords &amp; Secrets…
+                        </MenuItem>
+                      </>
+                    ) : null}
+                  </>
+                )}
+              </MenuButton>
+            </div>
+          ) : null}
+        </section>
 
         {signedIn && enabled ? (
-          <>
-            <ModernSection
-              group="Passwords"
-              anchor={activeAnchor}
-              title={tab === "logins" ? "Saved logins" : tab === "secrets" ? "Saved secrets" : "Activity"}
-              hint={tab === "activity" ? "What agents and you used, and on which computer." : itemHint}
-              icon={tab === "secrets" ? <Key size={16} weight="duotone" /> : undefined}
-            >
-              <div className="kit-seg ade-pw-tabs" role="tablist" aria-label="Passwords">
-                {TABS.map((entry) => (
-                  <button
-                    key={entry.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={tab === entry.id}
-                    onClick={() => chooseTab(entry.id)}
-                  >
-                    {entry.label}
-                    {entry.id === "logins" && logins.length > 0 ? <span className="ade-pw-tab-count">{logins.length}</span> : null}
-                    {entry.id === "secrets" && secrets.length > 0 ? <span className="ade-pw-tab-count">{secrets.length}</span> : null}
-                  </button>
-                ))}
-              </div>
+          <section className="ade-pw-body" id={`passwords-${tab}`} data-settings-anchor={`passwords-${tab}`} data-settings-group="Passwords & Secrets">
+            <div className="kit-seg ade-pw-tabs" role="tablist" aria-label="Passwords & Secrets">
+              {([
+                ["logins", "Logins", logins.length],
+                ["secrets", "Secrets", secrets.length],
+                ["activity", "Activity", null],
+              ] as const).map(([id, label, count]) => (
+                <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}>
+                  {label}
+                  {count ? <span className="ade-pw-tab-count">{count}</span> : null}
+                </button>
+              ))}
+            </div>
 
-              {tab === "activity" ? (
-                <div role="tabpanel" aria-label="Activity">
-                  {uses.length === 0 ? (
-                    <EmptyState
-                      title="No activity yet"
-                      hint="When an agent signs in or uses a secret, it shows here."
-                      icon={<ShieldWarning size={18} weight="duotone" />}
-                    />
-                  ) : (
-                    <ul className="ade-pw-activity" data-testid="passwords-activity-list">
-                      {uses.slice(0, 200).map((use, index) => {
-                        const item = items.find((candidate) => candidate.id === use.itemId);
-                        // A secret row's id is the names given to the command.
-                        const what = use.kind === "secret" ? `Gave ${use.itemId} to \`${use.target}\`` : `Signed in to ${use.target}`;
-                        return (
-                          <li key={`${use.at}-${index}`} className="ade-pw-activity-row">
-                            <span className="ade-pw-activity-what">
-                              {what}
-                              {item?.username ? <span className="ade-pw-activity-sub"> as {item.username}</span> : null}
-                            </span>
-                            <span className="ade-pw-activity-who">{use.by === "agent" ? "Agent" : "You"}{use.machineName ? ` · ${use.machineName}` : ""}</span>
-                            <time className="ade-pw-activity-when" dateTime={use.at}>{new Date(use.at).toLocaleString()}</time>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-              ) : (
-                <div className="ade-pw-split" role="tabpanel" aria-label={tab === "logins" ? "Saved logins" : "Saved secrets"}>
-                  <div className="ade-pw-list">
-                    <label className="ade-pw-search">
-                      <MagnifyingGlass size={13} aria-hidden />
-                      <input
-                        type="search"
-                        className="kit-input"
-                        value={search}
-                        onChange={(event) => setSearch(event.target.value)}
-                        placeholder={tab === "logins" ? "Search logins" : "Search secrets"}
-                        aria-label={tab === "logins" ? "Search logins" : "Search secrets"}
-                        spellCheck={false}
-                      />
-                    </label>
-                    {tab === "logins" ? (
-                      shownLogins.length === 0 ? (
-                        <EmptyState
-                          title={logins.length === 0 ? "No saved logins yet" : "No login matches that"}
-                          hint={logins.length === 0 ? "Add one with New login, or import a CSV." : "Try a site, title or username."}
-                        />
-                      ) : (
-                        <div className="ade-pw-items">
-                          {shownLogins.map((item) => (
-                            <button
-                              key={item.id}
-                              type="button"
-                              className="ade-pw-item"
-                              data-active={selectedLogin?.id === item.id ? "true" : undefined}
-                              onClick={() => setSelectedLoginId(item.id)}
-                            >
-                              <span className="ade-pw-item-title">{item.title}</span>
-                              <span className="ade-pw-item-hint">{loginHint(item)}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )
-                    ) : shownSecrets.length === 0 ? (
-                      <EmptyState
-                        title={secrets.length === 0 ? "No saved secrets yet" : "No secret matches that"}
-                        hint={secrets.length === 0 ? "Add one with New secret." : "Try a name or project."}
-                        icon={<Key size={18} weight="duotone" />}
-                      />
-                    ) : (
-                      <div className="ade-pw-items">
-                        {shownSecrets.map((item) => (
-                          <button
-                            key={item.id}
-                            type="button"
-                            className="ade-pw-item"
-                            data-active={selectedSecret?.id === item.id ? "true" : undefined}
-                            onClick={() => setSelectedSecretId(item.id)}
-                          >
-                            <span className="ade-pw-item-title">{item.title}</span>
-                            <span className="ade-pw-item-hint">{item.projectScope ?? "All projects"}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="ade-pw-detail-wrap">
-                    {tab === "logins" ? (
-                      selectedLogin ? (
-                        <div className="ade-pw-detail">
-                          <header className="ade-pw-detail-head">
-                            <div>
-                              <h3>{selectedLogin.title}</h3>
-                              <p>{selectedLogin.sites.join(" · ") || "No site"}</p>
-                            </div>
-                            <span className="kit-tag" data-tone="ok">
-                              <CheckCircle size={11} weight="bold" /> Saved
-                            </span>
-                          </header>
-                          <div className="ade-pw-facts">
-                            <Fact label="Sites:">{selectedLogin.sites.join(", ") || "None"}</Fact>
-                            <Fact label="Username:">{selectedLogin.username || "No username"}</Fact>
-                            {selectedLogin.kind === "passkey" ? (
-                              <Fact label="Passkey:">saved in ADE · used by ADE's browser after Touch ID</Fact>
-                            ) : (
-                              <Fact label="Password:"><RevealValue key={selectedLogin.id} itemId={selectedLogin.id} field="password" label={selectedLogin.title} /></Fact>
-                            )}
-                            {selectedLogin.hasTotp ? <Fact label="Authenticator code:"><LiveCode itemId={selectedLogin.id} pin={pin} /></Fact> : null}
-                            <Fact label="Updated:">{formatUpdatedAt(selectedLogin.updatedAt)}</Fact>
-                          </div>
-                          <div className="ade-pw-detail-actions">
-                            {selectedLogin.kind === "passkey" ? null : (
-                              <button
-                                type="button"
-                                className="ade-modern-btn"
-                                onClick={() => setDialog({ kind: "change-value", item: selectedLogin })}
-                              >
-                                <Password size={13} /> Change password…
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              className="ade-modern-btn"
-                              data-tone="danger"
-                              onClick={() => void removeItem(selectedLogin)}
-                            >
-                              <Trash size={13} /> Delete
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <EmptyState title="Nothing selected" hint="Pick a login on the left to see its details." />
-                      )
-                    ) : selectedSecret ? (
-                      <div className="ade-pw-detail">
-                        <header className="ade-pw-detail-head">
-                          <div>
-                            <h3>{selectedSecret.title}</h3>
-                            <p>{selectedSecret.projectScope ?? "All projects"}</p>
-                          </div>
-                          <span className="kit-tag" data-tone="ok">
-                            <CheckCircle size={11} weight="bold" /> Saved
-                          </span>
-                        </header>
-                        <div className="ade-pw-facts">
-                          <Fact label="Name:">{selectedSecret.title}</Fact>
-                          <Fact label="Project:">{selectedSecret.projectScope ?? "All projects"}</Fact>
-                          <Fact label="Value:"><RevealValue key={selectedSecret.id} itemId={selectedSecret.id} field="value" label={selectedSecret.title} /></Fact>
-                          <Fact label="Updated:">{formatUpdatedAt(selectedSecret.updatedAt)}</Fact>
-                        </div>
-                        <div className="ade-pw-detail-actions">
-                          <button
-                            type="button"
-                            className="ade-modern-btn"
-                            onClick={() => setDialog({ kind: "change-value", item: selectedSecret })}
-                          >
-                            <Key size={13} /> Change value…
-                          </button>
-                          <button
-                            type="button"
-                            className="ade-modern-btn"
-                            data-tone="danger"
-                            onClick={() => void removeItem(selectedSecret)}
-                          >
-                            <Trash size={13} /> Delete
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <EmptyState title="Nothing selected" hint="Pick a secret on the left to see its details." />
-                    )}
-                  </div>
-                </div>
-              )}
-            </ModernSection>
-
-            <ModernSection
-              group="Passwords"
-              anchor="passwords-reset"
-              title="Danger zone"
-              hint="Starting over deletes the vault itself, not just this computer's copy."
-            >
-              <ModernRows>
-                <ModernRow
-                  title="Reset Passwords"
-                  hint="Deletes every saved login and secret on every computer, and starts an empty vault."
-                  control={(
-                    <button
-                      type="button"
-                      className="ade-modern-btn"
-                      data-tone="danger"
-                      onClick={() => setDialog({ kind: "reset" })}
-                    >
-                      <ShieldWarning size={13} /> Reset Passwords…
-                    </button>
-                  )}
-                />
-              </ModernRows>
-            </ModernSection>
-          </>
+            {tab === "logins" ? (
+              <LoginsView
+                logins={logins}
+                onNew={() => setDialog({ kind: "new-login" })}
+                onImport={() => csvInputRef.current?.click()}
+                onChange={(item) => setDialog({ kind: "change-value", item })}
+                onDelete={(item) => void removeItem(item)}
+              />
+            ) : tab === "secrets" ? (
+              <SecretsView
+                secrets={secrets}
+                projects={knownProjects}
+                exporting={busy === "export"}
+                onNew={() => setDialog({ kind: "new-secret" })}
+                onImport={() => void chooseEnvFile()}
+                onExport={(scope) => void exportSecrets(scope)}
+                onChange={(item) => setDialog({ kind: "change-value", item })}
+                onDelete={(item) => void removeItem(item)}
+              />
+            ) : (
+              <ActivityView uses={uses} items={items} />
+            )}
+          </section>
         ) : null}
+        </div>
       </ModernPage>
 
       <input
-        ref={fileInputRef}
+        ref={csvInputRef}
         type="file"
         accept=".csv,text/csv,text/plain"
         className="ade-pw-file"
@@ -654,38 +541,48 @@ export function PasswordsSection() {
       />
 
       {dialog?.kind === "new-login" ? (
-        <NewLoginDialog
-          pin={pin}
-          onClose={() => setDialog(null)}
-          onSaved={(saved) => void handleSaved(saved)}
-        />
+        <NewLoginDialog onClose={() => setDialog(null)} onSaved={(saved) => void handleSaved(saved)} />
       ) : null}
       {dialog?.kind === "new-secret" ? (
         <NewSecretDialog
-          pin={pin}
+          projects={knownProjects}
+          defaultScope={openProjectScope}
           onClose={() => setDialog(null)}
           onSaved={(saved) => void handleSaved(saved)}
+        />
+      ) : null}
+      {dialog?.kind === "import-env" ? (
+        <ImportEnvDialog
+          file={dialog.file}
+          projects={knownProjects}
+          defaultScope={openProjectScope}
+          existing={existingByScope}
+          onClose={() => setDialog(null)}
+          onImported={(result, scope) => {
+            setDialog(null);
+            setTab("secrets");
+            const count = result.imported.length + result.replaced.length;
+            showToast({
+              tone: "success",
+              title: `Imported ${plural(count, "secret")}`,
+              message: `For ${scopeLabel(scope, knownProjects)}${result.replaced.length ? `; ${result.replaced.length} replaced an existing value` : ""}.`,
+            });
+            void loadItems();
+            refreshStatus();
+          }}
         />
       ) : null}
       {dialog?.kind === "change-value" ? (
-        <ChangeValueDialog
-          item={dialog.item}
-          pin={pin}
-          onClose={() => setDialog(null)}
-          onSaved={(saved) => void handleSaved(saved)}
-        />
+        <ChangeValueDialog item={dialog.item} onClose={() => setDialog(null)} onSaved={(saved) => void handleSaved(saved)} />
       ) : null}
       {dialog?.kind === "reset" ? (
         <ResetPasswordsDialog
-          pin={pin}
           onClose={() => setDialog(null)}
           onReset={(next) => {
             setDialog(null);
             setStatus(next);
-            setItems([]);
-            setSelectedLoginId(null);
-            setSelectedSecretId(null);
-            setNotice("Passwords was reset. Every saved login and secret is gone.");
+            void loadItems();
+            showToast({ tone: "success", title: "Passwords & Secrets reset", message: "Every saved login and secret in your account is gone. Secrets kept on this computer only are still here." });
           }}
         />
       ) : null}
@@ -693,33 +590,291 @@ export function PasswordsSection() {
   );
 }
 
+function LoginsView({
+  logins,
+  onNew,
+  onImport,
+  onChange,
+  onDelete,
+}: {
+  logins: PasswordItemSummary[];
+  onNew: () => void;
+  onImport: () => void;
+  onChange: (item: PasswordItemSummary) => void;
+  onDelete: (item: PasswordItemSummary) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const query = search.trim().toLowerCase();
+  const shown = useMemo(
+    () => (query ? logins.filter((item) => `${item.title} ${item.username ?? ""} ${item.sites.join(" ")}`.toLowerCase().includes(query)) : logins),
+    [logins, query],
+  );
+  const selected = shown.find((item) => item.id === selectedId) ?? shown[0] ?? null;
+
+  if (logins.length === 0) {
+    return (
+      <EmptyHero
+        icon={<Password size={22} weight="duotone" />}
+        title="Save your first login"
+        actions={(
+          <>
+            <button type="button" className="ade-modern-btn" data-tone="primary" onClick={onNew}><Plus size={12} weight="bold" /> New login</button>
+            <button type="button" className="ade-modern-btn" onClick={onImport}><FileCsv size={13} /> Import a CSV</button>
+          </>
+        )}
+      >
+        Agents sign in with your saved logins and fill your 2FA codes, but never see a password. Import the CSV that Chrome,
+        Safari, 1Password or Bitwarden exports to bring everything over at once.
+      </EmptyHero>
+    );
+  }
+
+  return (
+    <div className="ade-pw-split" role="tabpanel" aria-label="Logins">
+      <div className="ade-pw-list">
+        <label className="ade-pw-search">
+          <MagnifyingGlass size={13} aria-hidden />
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search logins"
+            aria-label="Search logins"
+            spellCheck={false}
+          />
+        </label>
+        <div className="ade-pw-items">
+          {shown.length === 0 ? (
+            <p className="ade-pw-nomatch">No login matches that.</p>
+          ) : shown.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="ade-pw-item"
+              data-active={selected?.id === item.id ? "true" : undefined}
+              onClick={() => setSelectedId(item.id)}
+            >
+              <span className="ade-pw-favicon" aria-hidden>{item.title.slice(0, 1).toUpperCase()}</span>
+              <span className="ade-pw-item-body">
+                <span className="ade-pw-item-title">{item.title}</span>
+                <span className="ade-pw-item-hint">{loginHint(item)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+      {selected ? (
+        <div className="ade-pw-detail">
+          <header className="ade-pw-detail-head">
+            <span className="ade-pw-favicon" data-size="lg" aria-hidden>{selected.title.slice(0, 1).toUpperCase()}</span>
+            <div>
+              <h3>{selected.title}</h3>
+              <p>{selected.sites.join(" · ") || "No site"}</p>
+            </div>
+          </header>
+          <dl className="ade-pw-facts">
+            <dt>Username</dt>
+            <dd>{selected.username || "None"}</dd>
+            {selected.kind === "passkey" ? (
+              <>
+                <dt>Passkey</dt>
+                <dd>Used by ADE's browser after Touch ID</dd>
+              </>
+            ) : (
+              <>
+                <dt>Password</dt>
+                <dd><RevealValue key={selected.id} itemId={selected.id} field="password" label={selected.title} /></dd>
+              </>
+            )}
+            {selected.hasTotp ? (
+              <>
+                <dt>2FA code</dt>
+                <dd><LiveCode itemId={selected.id} /></dd>
+              </>
+            ) : null}
+            <dt>Updated</dt>
+            <dd>{relativeTime(selected.updatedAt)}</dd>
+          </dl>
+          <div className="ade-pw-detail-actions">
+            {selected.kind === "passkey" ? null : (
+              <button type="button" className="ade-modern-btn" onClick={() => onChange(selected)}>
+                <PencilSimple size={13} /> Change password
+              </button>
+            )}
+            <button type="button" className="ade-modern-btn" data-tone="danger" onClick={() => onDelete(selected)}>
+              <Trash size={13} /> Delete
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SecretsView({
+  secrets,
+  projects,
+  exporting,
+  onNew,
+  onImport,
+  onExport,
+  onChange,
+  onDelete,
+}: {
+  secrets: PasswordItemSummary[];
+  projects: PasswordsProject[];
+  exporting: boolean;
+  onNew: () => void;
+  onImport: () => void;
+  onExport: (scope: string | null) => void;
+  onChange: (item: PasswordItemSummary) => void;
+  onDelete: (item: PasswordItemSummary) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const query = search.trim().toLowerCase();
+  const groups = useMemo(() => {
+    const byScope = new Map<string | null, PasswordItemSummary[]>();
+    for (const secret of secrets) {
+      if (query && !`${secret.title} ${scopeLabel(secret.projectScope, projects)}`.toLowerCase().includes(query)) continue;
+      const list = byScope.get(secret.projectScope) ?? [];
+      list.push(secret);
+      byScope.set(secret.projectScope, list);
+    }
+    return [...byScope.entries()].sort(([a], [b]) => (a === null ? -1 : b === null ? 1 : scopeLabel(a, projects).localeCompare(scopeLabel(b, projects))));
+  }, [secrets, projects, query]);
+
+  if (secrets.length === 0) {
+    return (
+      <EmptyHero
+        icon={<Key size={22} weight="duotone" />}
+        title="Keep API keys where agents can use them"
+        actions={(
+          <>
+            <button type="button" className="ade-modern-btn" data-tone="primary" onClick={onNew}><Plus size={12} weight="bold" /> New secret</button>
+            <button type="button" className="ade-modern-btn" onClick={onImport}><FileText size={13} /> Import a .env</button>
+          </>
+        )}
+      >
+        Agents run commands with your secrets in the environment (<code>ade secrets exec</code>) and see only masked output.
+        Save a secret for every project, or for one.
+      </EmptyHero>
+    );
+  }
+
+  return (
+    <div className="ade-pw-secrets" role="tabpanel" aria-label="Secrets">
+      <label className="ade-pw-search" data-wide="true">
+        <MagnifyingGlass size={13} aria-hidden />
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search secrets or projects"
+          aria-label="Search secrets"
+          spellCheck={false}
+        />
+      </label>
+      {groups.length === 0 ? <p className="ade-pw-nomatch">No secret matches that.</p> : null}
+      {groups.map(([scope, list]) => (
+        <div key={scope ?? "every"} className="ade-pw-group">
+          <header className="ade-pw-group-head">
+            <span className="ade-pw-group-name">{scopeLabel(scope, projects)}</span>
+            <span className="ade-pw-group-count">{list.length}</span>
+            <button
+              type="button"
+              className="ade-pw-link"
+              disabled={exporting}
+              title="Write these to a .env file in this computer's Downloads (asks for Touch ID)"
+              onClick={() => onExport(scope)}
+            >
+              <DownloadSimple size={12} /> Export .env
+            </button>
+          </header>
+          <div className="ade-pw-rows">
+            {list.map((secret) => (
+              <div key={secret.id} className="ade-pw-row">
+                <span className="ade-pw-row-name">{secret.title}</span>
+                <span className="ade-pw-row-value"><RevealValue key={secret.id} itemId={secret.id} field="value" label={secret.title} /></span>
+                <span className="ade-pw-row-meta">
+                  {secret.deviceOnly ? (
+                    <span className="kit-tag" title="Kept on this computer only, never synced"><Desktop size={10} weight="bold" /> This computer</span>
+                  ) : (
+                    <span className="ade-pw-row-synced" title="Synced to every computer you sign in to"><CloudArrowUp size={12} /></span>
+                  )}
+                  <span className="ade-pw-row-time">{relativeTime(secret.updatedAt)}</span>
+                </span>
+                <span className="ade-pw-row-actions">
+                  <button type="button" className="ade-pw-icon-btn" aria-label={`Change ${secret.title}`} title="Change value" onClick={() => onChange(secret)}>
+                    <PencilSimple size={13} />
+                  </button>
+                  <button type="button" className="ade-pw-icon-btn" data-tone="danger" aria-label={`Delete ${secret.title}`} title="Delete" onClick={() => onDelete(secret)}>
+                    <Trash size={13} />
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ActivityView({ uses, items }: { uses: PasswordUseRecord[]; items: PasswordItemSummary[] }) {
+  if (uses.length === 0) {
+    return (
+      <EmptyHero icon={<ClockCounterClockwise size={22} weight="duotone" />} title="Nothing used yet">
+        Each time an agent or you signs in with a saved login or runs a command with secrets, it shows here, with the computer it happened on.
+      </EmptyHero>
+    );
+  }
+  return (
+    <ul className="ade-pw-activity" data-testid="passwords-activity-list" role="tabpanel" aria-label="Activity">
+      {uses.slice(0, 200).map((use, index) => {
+        const item = items.find((candidate) => candidate.id === use.itemId);
+        // A secret row's id is the names given to the command.
+        const what = use.kind === "secret" ? `Gave ${use.itemId} to \`${use.target}\`` : `Signed in to ${use.target}`;
+        return (
+          <li key={`${use.at}-${index}`} className="ade-pw-activity-row">
+            <span className="ade-pw-activity-who" data-agent={use.by === "agent" ? "true" : undefined}>{use.by === "agent" ? "Agent" : "You"}</span>
+            <span className="ade-pw-activity-what">
+              {what}
+              {item?.username ? <span className="ade-pw-activity-sub"> as {item.username}</span> : null}
+            </span>
+            <span className="ade-pw-activity-where">{use.machineName ?? ""}</span>
+            <time className="ade-pw-activity-when" dateTime={use.at} title={new Date(use.at).toLocaleString()}>{relativeTime(use.at)}</time>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /**
  * The selected login's current authenticator code. Asked again when the code
  * runs out (not every second); the countdown in between is local.
  */
-function LiveCode({ itemId, pin }: { itemId: string; pin: OpenProjectBinding | null }) {
+function LiveCode({ itemId }: { itemId: string }) {
   const [state, setState] = useState<{ code: string; expiresAt: number } | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const pinKey = pin?.key ?? "this-machine";
   useEffect(() => {
-    let cancelled = false;
+    let stopped = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const fetchCode = async () => {
-      const next = await window.ade.passwords.code?.({ itemId }, pinRef.current).catch(() => null) ?? null;
-      if (cancelled) return;
+      const next = await window.ade.passwords.code?.({ itemId }).catch(() => null) ?? null;
+      if (stopped) return;
       setState(next ? { code: next.code, expiresAt: Date.now() + next.secondsLeft * 1000 } : null);
       timer = setTimeout(() => void fetchCode(), Math.max(1_000, (next?.secondsLeft ?? 30) * 1000));
     };
     void fetchCode();
     const tick = setInterval(() => setNow(Date.now()), 1_000);
     return () => {
-      cancelled = true;
+      stopped = true;
       if (timer) clearTimeout(timer);
       clearInterval(tick);
     };
-  }, [itemId, pinKey]);
+  }, [itemId]);
   if (!state) return <span>saved</span>;
   const left = Math.max(0, Math.ceil((state.expiresAt - now) / 1000));
   return (
@@ -731,18 +886,13 @@ function LiveCode({ itemId, pin }: { itemId: string; pin: OpenProjectBinding | n
 }
 
 /**
- * A saved value, hidden until the person asks: Show (for 30 s) or Copy, each
- * after Touch ID / Windows Hello in desktop main. A copy never passes through
- * this page; the clipboard is cleared after 90 s.
- */
-/**
- * Show / Copy one saved value after the person check. Keyed by item where it
- * is used, so an answer that arrives after the selection moved on lands in the
- * old (unmounted) row, never under another item.
+ * Show / Copy one saved value after the person check (Touch ID / Windows
+ * Hello in main). Keyed by item where it is used, so an answer that arrives
+ * after the selection moved on lands in the old (unmounted) row. A copy never
+ * passes through this page; the clipboard is cleared after 90 s.
  */
 function RevealValue({ itemId, field, label }: { itemId: string; field: "password" | "value"; label: string }) {
   const [shown, setShown] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (shown === null) return;
@@ -754,14 +904,12 @@ function RevealValue({ itemId, field, label }: { itemId: string; field: "passwor
   const run = async (copy: boolean) => {
     if (busy) return;
     setBusy(true);
-    setNote(null);
     try {
       const result = await reveal({ itemId, field, copy, label });
-      if (copy) setNote("Copied. The clipboard clears in 90 s.");
+      if (copy) showToast({ tone: "success", title: `Copied ${label}`, message: "The clipboard clears in 90 seconds." });
       else setShown(result.value ?? null);
     } catch (err) {
-      const message = errorText(err, "");
-      setNote(/cancel/i.test(message) ? null : message || "ADE couldn't read this value.");
+      if (!cancelled(err)) showToast({ tone: "error", title: `Couldn't read ${label}`, message: errorText(err, "Try again in a moment.") });
     } finally {
       setBusy(false);
     }
@@ -775,7 +923,6 @@ function RevealValue({ itemId, field, label }: { itemId: string; field: "passwor
         <button type="button" className="ade-pw-shown-btn" onClick={() => setShown(null)}>Hide</button>
       )}
       <button type="button" className="ade-pw-shown-btn" disabled={busy} onClick={() => void run(true)}>Copy</button>
-      {note ? <span className="ade-pw-shown-note" role="status">{note}</span> : null}
     </span>
   );
 }

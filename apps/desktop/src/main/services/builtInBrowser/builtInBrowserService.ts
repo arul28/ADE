@@ -7103,7 +7103,7 @@ function createBuiltInBrowserWindowService(args: {
   async function signin(input: BuiltInBrowserSigninArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open the site's sign-in page first.");
     const passwords = args.passwords;
-    if (!passwords) throw new AdeExpectedError("Passwords isn't available on this computer.", "user");
+    if (!passwords) throw new AdeExpectedError("Passwords & Secrets isn't available on this computer.", "user");
     return runTracedAgentAction(tab, "signin", input, async () => {
       const pageUrl = tab.webContents.getURL();
       const target = passwordFillTarget(pageUrl);
@@ -7201,10 +7201,10 @@ function createBuiltInBrowserWindowService(args: {
   async function signup(input: BuiltInBrowserSigninArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open the site's sign-up page first.");
     const passwords = args.passwords;
-    if (!passwords) throw new AdeExpectedError("Passwords isn't available on this computer.", "user");
+    if (!passwords) throw new AdeExpectedError("Passwords & Secrets isn't available on this computer.", "user");
     return runTracedAgentAction(tab, "signup", input, async () => {
       if (!(await passwords.enabled())) {
-        throw new AdeExpectedError("Passwords is off on this computer. The person can turn it on in Settings › Passwords.", "user");
+        throw new AdeExpectedError("Passwords & Secrets is off on this computer. The person can turn it on in Settings › Passwords & Secrets.", "user");
       }
       const pageUrl = tab.webContents.getURL();
       const target = passwordFillTarget(pageUrl);
@@ -7223,7 +7223,7 @@ function createBuiltInBrowserWindowService(args: {
       }
       const username = stringOrNull(input.username) ?? fields.username;
       if (username && (await passwords.loginsForPage(pageUrl, { exactOrigin: true })).some((login) => login.username === username)) {
-        throw new AdeExpectedError(`Passwords already has a login for ${username} on ${site}. Sign in with \`ade browser signin\`; the person can change it in Settings › Passwords.`, "user");
+        throw new AdeExpectedError(`Passwords already has a login for ${username} on ${site}. Sign in with \`ade browser signin\`; the person can change it in Settings › Passwords & Secrets.`, "user");
       }
       const password = generateSitePassword(fields.maxLength >= 12 ? Math.min(20, fields.maxLength) : 20);
       const fieldSelector = (index: number) => `[data-ade-fill-target="new-password-${index}"]`;

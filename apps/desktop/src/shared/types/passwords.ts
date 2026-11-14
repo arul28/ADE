@@ -72,10 +72,15 @@ export type PasswordItemSummary = {
   hasTotp: boolean;
   /** Secrets only. */
   projectScope: string | null;
+  /**
+   * Secrets only: kept on this computer and never synced. It shows only on the
+   * computer that holds it.
+   */
+  deviceOnly: boolean;
   updatedAt: string;
 };
 
-/** One use of a saved item, for Settings › Passwords › Activity. */
+/** One use of a saved item, for Settings › Passwords & Secrets › Activity. */
 export type PasswordUseRecord = {
   itemId: string;
   kind: PasswordItemKind;
@@ -93,7 +98,7 @@ export type PasswordImportResult = {
   skippedInvalid: number;
 };
 
-/** What Settings › Passwords sends to save (or change) a login. */
+/** What Settings › Passwords & Secrets sends to save (or change) a login. */
 export type PasswordLoginSaveInput = {
   id?: string;
   title?: string;
@@ -105,15 +110,25 @@ export type PasswordLoginSaveInput = {
   totpUri?: string | null;
 };
 
-/** What Settings › Passwords sends to save (or change) a secret. */
+/** What Settings › Passwords & Secrets sends to save (or change) a secret. */
 export type PasswordSecretSaveInput = {
   id?: string;
   name: string;
   value: string;
   projectScope: string | null;
   notes?: string;
+  /** Keep it on this computer only, never synced. Fixed when the secret is made. */
+  deviceOnly?: boolean;
 };
 
+/** A project on this computer a secret can be for, by the key its secrets are saved under. */
+export type PasswordsProject = { scope: string; name: string; rootPath: string };
+
+/** Secrets from a `.env` file, for one project (or every project when null). */
+export type PasswordSecretsImportInput = {
+  projectScope: string | null;
+  entries: Array<{ name: string; value: string }>;
+};
 
 /** Whether Passwords is on for one computer, for Settings and `ade passwords status`. */
 export type PasswordsStatus = {

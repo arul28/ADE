@@ -231,7 +231,7 @@ export function ThisMacCard({
 }) {
   const hideDirectorySummary = statusSlot != null;
   const accountSignedIn = sessionState === "active";
-  const { status, projectStatus, busy, error, notice, isRemoteBound } = sync;
+  const { status, projectStatus, busy, error, isRemoteBound } = sync;
   const appInfo = useAppInfoLine();
   // The version the brain runs (what actually answers other machines), else
   // the app package's; both when they differ ("1.2.123 · brain 1.2.125").
@@ -658,12 +658,6 @@ export function ThisMacCard({
         </PairingDisclosure>
       ) : null}
 
-      {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
-      {error && status ? (
-        <div style={{ ...helperTextStyle, color: COLORS.danger }}>
-          That did not work. Check that ADE is running, then try again.
-        </div>
-      ) : null}
     </div>
   );
 }

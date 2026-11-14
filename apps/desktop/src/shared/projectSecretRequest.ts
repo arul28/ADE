@@ -50,7 +50,7 @@ export const PROJECT_SECRET_REASON_MAX_CHARS = 500;
 
 /** The one line of copy every surface uses to say where the value goes. */
 export const PROJECT_SECRET_WHERE_IT_GOES =
-  "Saved encrypted to this project's secrets. The agent only sees the name.";
+  "Saved to Passwords & Secrets for this project. The agent only sees the name.";
 
 /**
  * The same line for a temporary file. Honest about the trade: the value stays
@@ -64,7 +64,7 @@ export const PROJECT_SECRET_DELIVERY_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  { value: "secrets", label: "Save to ADE secrets", description: PROJECT_SECRET_WHERE_IT_GOES },
+  { value: "secrets", label: "Save to Passwords & Secrets", description: PROJECT_SECRET_WHERE_IT_GOES },
   { value: "file", label: "Temporary private file", description: PROJECT_SECRET_FILE_WHERE_IT_GOES },
 ];
 

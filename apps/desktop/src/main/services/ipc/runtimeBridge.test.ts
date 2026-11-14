@@ -3362,7 +3362,7 @@ describe("registerIpc sync bridge", () => {
     });
 
     await expect(
-      ipcHandlers.get(IPC.projectSecretsChooseEnvFile)?.(eventForSender()),
+      ipcHandlers.get(IPC.passwordsChooseEnvFile)?.(eventForSender()),
     ).resolves.toBeNull();
 
     expect(showOpenDialogMock).toHaveBeenCalledWith(

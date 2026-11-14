@@ -85,6 +85,13 @@ function clearInheritedAdeEnv(): void {
 
 clearInheritedAdeEnv();
 installTrackedTempCleanup();
+
+// Tests run on people's real computers. Code that defaults to this machine's
+// ADE home (the account stores, Passwords & Secrets) must never reach the
+// real ~/.ade from a test: a test that wants a home sets ADE_HOME itself.
+if (!process.env.ADE_HOME?.trim()) {
+  process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-test-home-"));
+}
 afterAll(() => {
   cleanupTrackedTempDirs();
 });

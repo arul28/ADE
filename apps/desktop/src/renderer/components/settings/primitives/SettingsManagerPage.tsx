@@ -84,8 +84,7 @@ export function SettingsManagerPage({
  * The table shell: a header strip plus whatever rows the caller renders.
  *
  * The column template is published as a CSS variable rather than cloned into
- * every row, because the two copies in `SecretsSection` were a literal
- * copy-paste of the same four-track string — the failure mode is a header that
+ * every row: two hand-kept copies of the same track string is how a header
  * silently stops lining up with its rows.
  */
 export function SettingsManagerTable({

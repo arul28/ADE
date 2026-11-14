@@ -91,11 +91,7 @@ function makeContext(overrides: Partial<AccountMigrationContext> = {}): AccountM
       purgeAccountCredentials: vi.fn(),
     },
     projectSecretService: {
-      list: () => ({ secrets: [] }),
-      getSecretProvenance: () => null,
-      get: () => ({ value: "" }),
-      hydrateFromVault: vi.fn(async () => {}),
-      purgeAccountCredentials: vi.fn(),
+      migrateLegacy: vi.fn(async () => {}),
     },
     ...overrides,
   };
@@ -264,7 +260,6 @@ describe("account runtime lifecycle", () => {
       expect(setup.args.purgeAccountApiKeys).toHaveBeenCalledOnce();
       expect(accountKeys.get("account-origin")).toBeUndefined();
       expect(accountKeys.get("device-only")).toBe("device-value");
-      expect(setup.context.projectSecretService?.purgeAccountCredentials).toHaveBeenCalledOnce();
       expect(setup.context.linearCredentialService?.purgeAccountCredentials).toHaveBeenCalledOnce();
     } finally {
       setup.cleanup();

@@ -64,7 +64,7 @@ export async function signInWithPasswords(
   const site = first.signin.site;
   const pageUrl = first.signin.pageUrl ?? "";
   if (!deps.requestLogin || typeof chatSessionId !== "string" || !chatSessionId) {
-    throw new Error(`No saved login for ${site}. Ask the person to add one in Settings › Passwords, or hand the page to them with \`ade browser handoff\`.`);
+    throw new Error(`No saved login for ${site}. Ask the person to add one in Settings › Passwords & Secrets, or hand the page to them with \`ade browser handoff\`.`);
   }
   const answer = await deps.requestLogin({ chatSessionId, pageUrl, reason, timeoutMs });
   if (answer.saved) {

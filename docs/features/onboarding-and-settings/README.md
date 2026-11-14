@@ -173,8 +173,9 @@ Main process:
   accepts it.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
-  receipt-backed sign-in migration and hydration for provider API keys, Linear
-  OAuth refresh credentials, and repository-scoped project secrets. A source is
+  receipt-backed sign-in migration and hydration for provider API keys and
+  Linear OAuth refresh credentials; its `project_secrets` source moves a
+  project's old secrets into Passwords & Secrets. A source is
   marked complete only after the account confirms the write; crashes and
   unavailable contexts leave it pending, and a later vault-ready tick retries
   those pending sources.
@@ -454,18 +455,19 @@ Main process:
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
   matches lanes against `LaneOverlayPolicy[]` to produce the effective
   overlay.
-- `apps/desktop/src/main/services/secrets/projectSecretService.ts` and
-  `projectSecretEnv.ts` — encrypted project-secret CRUD plus bounded dotenv
-  parsing, selected batch import, and mode-`0600` export to the runtime
-  machine's Downloads folder.
+- `apps/desktop/src/main/services/secrets/projectSecretService.ts` — one
+  project's view of Passwords & Secrets (`ade secrets`, process env, webhook
+  checks) and the one-time move of the old per-project store;
+  `projectSecretEnv.ts` — bounded dotenv parsing and the mode-`0600` export
+  file.
 
 Shared types and IPC:
 
 - `apps/desktop/src/shared/types/config.ts` — central type module for
   the configuration schema (tests, overlays, automations, lane
   templates, port allocation, proxy, OAuth, integrations, AI).
-- `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
-  value, dotenv preview/import, and export request/result contracts.
+- `apps/desktop/src/shared/types/projectSecrets.ts` — the project view's
+  list, value, set and delete contracts.
 - `apps/desktop/src/shared/types/core.ts` — `AutoUpdatePreferences` and
   `DEFAULT_AUTO_UPDATE_PREFERENCES` (`automaticInstall: false`,
   `onlyWhenIdle: true`) plus the renderer-visible update snapshot contract.
@@ -491,8 +493,7 @@ Shared types and IPC:
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck, inspectRemoval,
     removeCopy)
-  - `ade.projectSecrets.*` (list, get, set, delete, chooseEnvFile,
-    previewEnvImport, importEnv, exportEnv)
+  - `ade.passwords.*` (call, reveal, chooseEnvFile, projects)
   - `ade.ai.*` and settings-specific channels per integration
   - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
     the global pause is written through `ade.ai.updateConfig`
@@ -505,7 +506,9 @@ Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.onboarding`,
   `window.ade.projectConfig`, `window.ade.project`,
-  `window.ade.projectSecrets`, `window.ade.updateGetPreferences`,
+  `window.ade.passwords`, `window.ade.projectSecrets` (a project's list and
+  set on the pinned machine, for chat and webhook cards),
+  `window.ade.updateGetPreferences`,
   `window.ade.updateSetPreferences`, plus the integration-specific surfaces
   (`window.ade.github`, etc.).
 
@@ -1455,42 +1458,30 @@ Renderer — settings:
   `OpenCodeProviderDetailModal.tsx` latches the open row and snapshots the
   sign-in target when the dialog opens, so a catalog refresh can neither
   unmount the dialog nor retarget a running flow.
-- `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
-  — Settings > Secrets. Lists project-scoped ADE secrets without values,
-  adds/replaces secrets, reveals values on demand, copies them to the
-  clipboard, and deletes with inline confirmation. The section can also open a
-  local Finder picker for a bounded dotenv file, show the extracted names and
-  values in a select-all/individual-selection review modal, atomically import
-  the selected rows, and export all secrets as a mode-`0600`
-  `ade-secrets.env` file in Downloads. Values are backed by
-  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. New
-  secrets default to the account and can be saved to the current repository's
-  account scope or this device only; an account choice falls back to this
-  device when the repository has no Git remote, when nobody is signed in, or
-  when no account vault is wired, and the save message says which of those
-  happened. A "Pull from account" control in the section header asks the
-  account and takes every account secret the repository has in the vault onto
-  this machine without touching a device-only row. Opening the list and
-  revealing a value also check the account first (bounded to a few seconds), so
-  a secret added on another machine shows up without a manual pull. The list
-  shows the effective destination for every secret; an account secret this
-  machine has not finished uploading shows "Uploading" until it lands. When the active project is remote, only the
-  Finder read happens on the controller Mac:
-  the bounded file content is parsed/imported by the active runtime and export
-  writes to Downloads on the remote project host.
+- `apps/desktop/src/renderer/components/settings/passwords/PasswordsSection.tsx`
+  — Settings › Passwords & Secrets (it replaced Settings › Secrets; old
+  `?tab=secrets` links open its Secrets view). One account vault, read on this
+  computer, so the page has no machine picker: a slim status bar (counts, Import,
+  New, and a ⋯ menu holding the ADE Cloud switch, "Turn off on this computer"
+  and Reset), then Logins · Secrets · Activity, each with a page-sized empty
+  state. Secrets are grouped by project (for every project first), each group
+  with **Export .env**; a secret kept on this computer only wears a "This
+  computer" tag. Action results are toasts. See
+  [Passwords & Secrets](../passwords/README.md).
 - Chats can also add project secrets without the value entering the
   transcript: an agent's `ade secrets request NAME --reason "…"` raises the
   private secret card, and the composer's "Add secret…" item opens the same
-  form. Both save through `projectSecretService`; see
+  form. Both save to Passwords & Secrets through `projectSecretService`; see
   [Private secret card](../chat/composer-and-ui.md#private-secret-card).
 - Chats can connect GitHub, Linear and Jira the same way: an agent's
   `ade integrations connect <provider> --reason "…"` raises the connect card,
   which saves through each integration's own service on the chat's machine;
   see [Connect card](../chat/composer-and-ui.md#connect-card).
-- `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
-  — dotenv import review dialog. Displays extracted names and plaintext values,
-  marks replacements, supports select all or individual selection, and saves
-  only the selected secrets.
+- `apps/desktop/src/renderer/components/settings/passwords/PasswordDialogs.tsx`
+  — its dialogs: new login, new secret (project picker, and under "More
+  options" the rarely wanted "Keep on this computer only"), the `.env` import
+  (pick names and a project; values shown only as lengths), change value, and
+  Reset.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies. The template editor is written for someone who has
@@ -2428,7 +2419,7 @@ first read.
 | --- | --- | --- |
 | Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's usage snapshot); once per provider per reset window | Settings › AI accounts |
 | `@` sends work to another machine | Another machine of the project is online, and no sent message has ever had an `@machine` mention | A new chat in the primary lane |
-| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Secrets |
+| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Passwords & Secrets |
 | Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Integrations › that tracker |
 | The Work grid | Activity shows three or more chats working and the grid is off | Turns on Focus with the grid in the open project, opens Work |
 | Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
@@ -2866,7 +2857,7 @@ proxy fabricates callable namespaces for missing properties, so
 | Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
 | AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
 | Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
-| Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
+| Secrets | Passwords & Secrets (sealed items on the relay, a machine-key-encrypted cache per computer) | A secret is for every project or for one repository (keyed by normalized Git origin, or the folder with no remote) and follows the account; a "this computer only" secret never leaves the computer |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
 ## AI mode and provider behavior

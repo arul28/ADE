@@ -253,8 +253,8 @@ describe("createAgentChatService", () => {
       const stored = new Map<string, string>();
       let failNextSave = true;
       const projectSecrets = {
-        list: () => ({ secrets: [...stored.keys()].map((name) => ({ name })) }) as never,
-        set: ({ name, value }: { name: string; value: string }) => {
+        listFresh: async () => ({ secrets: [...stored.keys()].map((name) => ({ name })) }) as never,
+        set: async ({ name, value }: { name: string; value: string }) => {
           if (failNextSave) {
             failNextSave = false;
             throw new Error("the secrets store is locked");
@@ -303,8 +303,8 @@ describe("createAgentChatService", () => {
       if (kind === "terminal CLI") sessionService.create({ sessionId, laneId: "lane-1", ptyId: "pty-cli", toolType: "claude" });
       const saved: string[] = [];
       const projectSecrets = {
-        list: () => ({ secrets: [] }) as never,
-        set: ({ name }: { name: string }) => {
+        listFresh: async () => ({ secrets: [] }) as never,
+        set: async ({ name }: { name: string }) => {
           saved.push(name);
           return { name } as never;
         },
@@ -326,7 +326,7 @@ describe("createAgentChatService", () => {
       const { service, sessionService } = createService();
       // A Claude Code CLI running in a terminal asks for a secret from its shell.
       sessionService.create({ sessionId: "cli-asking", laneId: "lane-1", ptyId: "pty-cli", toolType: "claude" });
-      const projectSecrets = { list: () => ({ secrets: [] }) as never, set: () => ({ name: "STRIPE_KEY" }) as never };
+      const projectSecrets = { listFresh: async () => ({ secrets: [] }) as never, set: async () => ({ name: "STRIPE_KEY" }) as never };
       void requestProjectSecretFromUser(
         { requestChatInput: service.requestChatInput, projectSecrets },
         { chatSessionId: "cli-asking", name: "STRIPE_KEY", reason: "Verifies Stripe deliveries" },

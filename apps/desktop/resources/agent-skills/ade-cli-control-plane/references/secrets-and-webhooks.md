@@ -1,26 +1,28 @@
-# Project secrets and webhooks
+# Secrets and webhooks
 
 ## Project secrets
 
-ADE project secrets are encrypted, project-scoped, and shared by ADE Desktop,
-the CLI, runtime-backed actions, lanes, and agents on the same machine. They live
-under the active project root, not inside an individual lane worktree.
+A project's secrets live in Passwords & Secrets: the person's vault, encrypted
+on their account and synced to every computer they sign in to. A secret is
+for every project or for one repository; a project sees those for every
+project, then its own over them. A secret saved with `--storage device` stays
+on this computer only. The person manages them in Settings › Passwords &
+Secrets.
 
 Use them only when the user names a secret or clearly asks you to use a stored
 credential. You use a secret, you never read it: `ade secrets exec` runs a
-command on this computer with the project's secrets in its environment (plus
-any Passwords secrets for this project) and prints its output with every
-value masked. `ade secrets get` is the person's, in the ADE desktop app.
+command on this computer with the project's secrets in its environment and
+prints its output with every value masked. `ade secrets get` is the person's,
+in the ADE desktop app.
 
 ```
-ade secrets list --text
-ade secrets pull --text                 # take this repository's account secrets out of the vault
+ade secrets list --text                 # names, where each lives, never a value
 ade secrets exec -- npm run deploy      # every secret in the environment
 ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe customers list --api-key "$STRIPE_API_KEY"'
-ade secrets set STRIPE_API_KEY --value sk_...
+ade secrets set STRIPE_API_KEY --value sk_...      # this project, every computer
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
-ade secrets delete STRIPE_API_KEY
+ade secrets delete STRIPE_API_KEY       # this project's own secret only
 ade actions list --domain project_secret --text
 ```
 

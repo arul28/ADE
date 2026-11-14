@@ -470,7 +470,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // default the renderer reported a failure while the dialog was still up.
     case IPC.projectChooseDirectory:
     case IPC.projectChooseIcon:
-    case IPC.projectSecretsChooseEnvFile:
+    case IPC.passwordsChooseEnvFile:
+    // Reset and .env export wait on Touch ID / Windows Hello first.
+    case IPC.passwordsCall:
     case IPC.machineResetChooseRescueDir:
     case IPC.historyExportOperations:
       return 10 * 60_000;

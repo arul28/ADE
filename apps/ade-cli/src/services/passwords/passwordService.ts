@@ -67,11 +67,30 @@ export type PasswordsLogger = {
 type StoredItem = { id: string; revision: string | null; deleted: boolean; envelope: string | null };
 type PendingWrite = { id: string; envelope: string | null; deleted: boolean; ifRevision: string | null };
 type CacheShape = { v: 1; accountId: string; cursor: string | null; items: StoredItem[]; pending: PendingWrite[] };
+type DeviceSecret = PasswordSecretSecret & { id: string };
+
+/** A secret a project's processes get, from the account vault or this computer's own store. */
+export type ProjectSecretEntry = {
+  id: string;
+  name: string;
+  value: string;
+  projectScope: string | null;
+  deviceOnly: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** A secret's name: what a process sees as its variable. Old project secrets also allowed `.` and `-`. */
+export const SECRET_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]{0,127}$/;
 
 const CACHE_KEY = "passwords.items.v1";
 const KEY_CACHE_KEY = "passwords.key.v1";
 const ACTIVITY_KEY = "passwords.activity.v1";
-/** Newest uses kept on this computer, for Settings › Passwords › Activity. */
+/** Secrets kept on this computer only. Machine-sealed like the cache, never sent anywhere. */
+const DEVICE_SECRETS_KEY = "passwords.device-secrets.v1";
+/** Ids of this-computer-only secrets, so a call by id knows which store holds it. */
+const DEVICE_ID_PREFIX = "dev_";
+/** Newest uses kept on this computer, for Settings › Passwords & Secrets › Activity. */
 const ACTIVITY_LIMIT = 500;
 const ITEM_ID_BYTES = 12;
 const SYNC_INTERVAL_MS = 60_000;
@@ -98,11 +117,30 @@ function savedForExactOrigin(secret: PasswordLoginSecret, pageUrl: string): bool
   return Boolean(page) && secret.origins.includes(page!);
 }
 
-function newItemId(): string {
-  return `pw_${crypto.randomBytes(ITEM_ID_BYTES).toString("base64url")}`;
+function newItemId(prefix = "pw_"): string {
+  return `${prefix}${crypto.randomBytes(ITEM_ID_BYTES).toString("base64url")}`;
 }
 
-function summarize(id: string, secret: PasswordItemSecret): PasswordItemSummary {
+function isDeviceId(id: string): boolean {
+  return id.startsWith(DEVICE_ID_PREFIX);
+}
+
+/**
+ * The secrets one project's processes get, by name: those for every project,
+ * then the project's own over them; within each, this computer's own over the
+ * account's (a this-computer-only value is the deliberate one here).
+ */
+function secretsForScope(entries: readonly ProjectSecretEntry[], projectScope: string | null): Map<string, ProjectSecretEntry> {
+  const rank = (entry: ProjectSecretEntry) => (entry.projectScope === null ? 0 : 2) + (entry.deviceOnly ? 1 : 0);
+  const out = new Map<string, ProjectSecretEntry>();
+  for (const entry of [...entries].sort((a, b) => rank(a) - rank(b))) {
+    if (entry.projectScope !== null && entry.projectScope !== projectScope) continue;
+    out.set(entry.name, entry);
+  }
+  return out;
+}
+
+function summarize(id: string, secret: PasswordItemSecret, deviceOnly = false): PasswordItemSummary {
   if (secret.kind === "login") {
     const sites = [...new Set(secret.origins.map((origin) => normalizeLoginOrigin(origin)?.site).filter((site): site is string => Boolean(site)))];
     return {
@@ -114,6 +152,7 @@ function summarize(id: string, secret: PasswordItemSecret): PasswordItemSummary 
       hasPassword: Boolean(secret.password),
       hasTotp: Boolean(secret.totpUri),
       projectScope: null,
+      deviceOnly: false,
       updatedAt: secret.updatedAt,
     };
   }
@@ -128,6 +167,7 @@ function summarize(id: string, secret: PasswordItemSecret): PasswordItemSummary 
       hasPassword: false,
       hasTotp: false,
       projectScope: null,
+      deviceOnly: false,
       updatedAt: secret.updatedAt,
     };
   }
@@ -140,6 +180,7 @@ function summarize(id: string, secret: PasswordItemSecret): PasswordItemSummary 
     hasPassword: Boolean(secret.value),
     hasTotp: false,
     projectScope: secret.projectScope,
+    deviceOnly,
     updatedAt: secret.updatedAt,
   };
 }
@@ -178,14 +219,15 @@ export function createPasswordService(args: {
   const readEnabledHere = (): boolean => {
     if (enabledHere !== null) return enabledHere;
     try {
-      enabledHere = (JSON.parse(fs.readFileSync(statePath, "utf8")) as { enabled?: unknown }).enabled === true;
+      // On unless the person turned it off on this computer.
+      enabledHere = (JSON.parse(fs.readFileSync(statePath, "utf8")) as { enabled?: unknown }).enabled !== false;
     } catch {
-      enabledHere = false;
+      enabledHere = true;
     }
     return enabledHere;
   };
-  const cloudEnabled = (): boolean => args.getCloudEnabled?.() === true;
-  /** Passwords is off until the person turns it on: per computer, or by the one ADE Cloud switch. */
+  const cloudEnabled = (): boolean => args.getCloudEnabled?.() !== false;
+  /** Passwords is on unless turned off: per computer, or by the one ADE Cloud switch. */
   const isEnabled = (): boolean => (isCloud ? cloudEnabled() : readEnabledHere());
 
   let memoryKey: { accountId: string; key: Buffer; epoch: number } | null = null;
@@ -197,11 +239,11 @@ export function createPasswordService(args: {
 
   const accountOrThrow = (): string => {
     const accountId = args.getAccountUserId();
-    if (!accountId) throw new PasswordsUnavailableError("Sign in to ADE to use Passwords.");
+    if (!accountId) throw new PasswordsUnavailableError("Sign in to ADE to use Passwords & Secrets.");
     if (!isEnabled()) {
       throw new PasswordsUnavailableError(isCloud
-        ? "Passwords is off for ADE Cloud computers. The person can turn it on in Settings › Passwords."
-        : "Passwords is off on this computer. The person can turn it on in Settings › Passwords.");
+        ? "Passwords & Secrets is off for ADE Cloud computers. The person can turn it on in Settings › Passwords & Secrets."
+        : "Passwords & Secrets is off on this computer. The person can turn it on in Settings › Passwords & Secrets.");
     }
     return accountId;
   };
@@ -243,7 +285,7 @@ export function createPasswordService(args: {
     const deviceId = args.getDeviceId();
     if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
     const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind });
-    if (!released) throw new PasswordsUnavailableError("Passwords is unavailable right now; try again shortly.");
+    if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
     memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
     if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
     logger.info("passwords.key_ready", { epoch: released.epoch, source: "relay" });
@@ -378,8 +420,21 @@ export function createPasswordService(args: {
   }
 
   /** Pull new revisions, push pending writes, and reopen. Safe to call often; one at a time. */
+  /** One more sync, asked for while a sync was running; shared by every caller that asked. */
+  let followUp: Promise<void> | null = null;
+  /**
+   * Pull, then push this computer's unsent writes. A call while a sync is
+   * running gets one more sync after it, so a save made mid-sync is sent now,
+   * not at the next minute's tick (and a caller awaiting it sees it sent).
+   */
   async function sync(): Promise<void> {
-    if (syncing) return syncing;
+    if (syncing) {
+      followUp ??= syncing.catch(() => undefined).then(() => {
+        followUp = null;
+        return sync();
+      });
+      return followUp;
+    }
     syncing = (async () => {
       const accountId = args.getAccountUserId();
       const relay = args.relay;
@@ -480,6 +535,13 @@ export function createPasswordService(args: {
         }
       }
       openedFor = null;
+      // Open what the sync brought in now, so a caller that cannot wait (a
+      // webhook check) reads today's secrets, not the last open's.
+      try {
+        await openAll(accountId, await withCache(() => readCache(accountId)));
+      } catch (error) {
+        logger.warn("passwords.reopen_failed", { error: error instanceof Error ? error.name : "unknown" });
+      }
     })().finally(() => {
       syncing = null;
     });
@@ -513,6 +575,122 @@ export function createPasswordService(args: {
       await store.delete(ACTIVITY_KEY);
     });
     logger.info("passwords.purged", {});
+  }
+
+  /**
+   * This computer's own secrets: saved here, never synced, and kept whatever
+   * the account does (a sign-out, a reset, Passwords off). They are the
+   * person's deliberate "this computer only", so nothing here deletes them;
+   * while Passwords & Secrets is off here, nothing uses them either.
+   */
+  let deviceSecrets: DeviceSecret[] | null = null;
+  function parseDeviceSecrets(raw: string | null): DeviceSecret[] {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(raw ?? "null");
+    } catch {
+      logger.warn("passwords.device_secrets_unreadable", {});
+    }
+    const items = parsed && typeof parsed === "object" && Array.isArray((parsed as { items?: unknown }).items)
+      ? (parsed as { items: unknown[] }).items
+      : [];
+    return items.filter((item): item is DeviceSecret => {
+      const candidate = item as Partial<DeviceSecret> | null;
+      return Boolean(candidate && typeof candidate.id === "string" && isDeviceId(candidate.id)
+        && typeof candidate.name === "string" && typeof candidate.value === "string");
+    }).map((item) => ({
+      ...item,
+      kind: "secret",
+      projectScope: typeof item.projectScope === "string" ? item.projectScope : null,
+      notes: typeof item.notes === "string" ? item.notes : "",
+    }));
+  }
+  async function readDevice(): Promise<DeviceSecret[]> {
+    deviceSecrets ??= parseDeviceSecrets(await store.get(DEVICE_SECRETS_KEY));
+    return deviceSecrets;
+  }
+  async function writeDevice(next: DeviceSecret[]): Promise<void> {
+    await store.set(DEVICE_SECRETS_KEY, JSON.stringify({ v: 1, items: next }));
+    deviceSecrets = next;
+  }
+
+  /** Is the account vault usable here right now (signed in, on)? Opens it when so. */
+  async function accountVaultOpen(): Promise<boolean> {
+    if (!args.getAccountUserId() || !isEnabled()) return false;
+    await ensureOpened();
+    return true;
+  }
+
+  /**
+   * Open this computer's copy without waiting, for a process that has not
+   * opened it yet (a CLI command, a fresh project runtime) and a caller that
+   * cannot wait. Only with a key already cached on disk; it never asks the
+   * relay, and skips anything sealed under a newer key (the next sync's job).
+   */
+  function openFromDiskSync(accountId: string): void {
+    const syncStore = store as CredentialStore & { getSync?: (key: string) => string | null };
+    if (!keepKeyOnDisk || typeof syncStore.getSync !== "function") return;
+    try {
+      const keyRaw = JSON.parse(syncStore.getSync(KEY_CACHE_KEY) ?? "null") as { accountId?: string; dek?: string; epoch?: number } | null;
+      if (keyRaw?.accountId !== accountId || typeof keyRaw.dek !== "string" || typeof keyRaw.epoch !== "number") return;
+      const cache = JSON.parse(syncStore.getSync(CACHE_KEY) ?? "null") as CacheShape | null;
+      if (cache?.v !== 1 || cache.accountId !== accountId || !Array.isArray(cache.items)) return;
+      const key = Buffer.from(keyRaw.dek, "base64");
+      const epoch = keyRaw.epoch;
+      const live = new Map<string, string | null>();
+      for (const item of cache.items) live.set(item.id, item.deleted ? null : item.envelope);
+      for (const write of cache.pending ?? []) live.set(write.id, write.deleted ? null : write.envelope);
+      const next = new Map<string, PasswordItemSecret>();
+      for (const [id, raw] of live) {
+        const envelope = raw ? parsePasswordEnvelope(raw) : null;
+        if (!envelope || envelope.epoch !== epoch) continue;
+        try {
+          next.set(id, openPasswordItem<PasswordItemSecret>(key, { accountId, itemId: id, epoch }, envelope));
+        } catch {
+          // Unopenable here; the async open logs it.
+        }
+      }
+      memoryKey ??= { accountId, key, epoch };
+      opened = next;
+      openedFor = accountId;
+    } catch (error) {
+      logger.warn("passwords.open_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  function readDeviceSync(): void {
+    const syncStore = store as CredentialStore & { getSync?: (key: string) => string | null };
+    if (deviceSecrets || typeof syncStore.getSync !== "function") return;
+    try {
+      deviceSecrets = parseDeviceSecrets(syncStore.getSync(DEVICE_SECRETS_KEY));
+    } catch (error) {
+      logger.warn("passwords.device_secrets_unreadable", { error: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+
+  function accountSecretEntries(): ProjectSecretEntry[] {
+    const accountId = args.getAccountUserId();
+    if (!accountId || !isEnabled()) return [];
+    if (openedFor !== accountId) openFromDiskSync(accountId);
+    if (openedFor !== accountId) return [];
+    const out: ProjectSecretEntry[] = [];
+    for (const [id, secret] of opened) {
+      if (secret.kind !== "secret") continue;
+      out.push({ id, name: secret.name, value: secret.value, projectScope: secret.projectScope, deviceOnly: false, createdAt: secret.createdAt, updatedAt: secret.updatedAt });
+    }
+    return out;
+  }
+  /** This computer's own secrets, while Passwords & Secrets is on here (off means off). */
+  function deviceSecretEntries(): ProjectSecretEntry[] {
+    if (!isEnabled()) return [];
+    return (deviceSecrets ?? []).map((secret) => ({
+      id: secret.id,
+      name: secret.name,
+      value: secret.value,
+      projectScope: secret.projectScope,
+      deviceOnly: true,
+      createdAt: secret.createdAt,
+      updatedAt: secret.updatedAt,
+    }));
   }
 
   return {
@@ -589,13 +767,15 @@ export function createPasswordService(args: {
      * turns it on, the ADE Cloud switch starts on.
      */
     async setEnabled(enabled: boolean): Promise<PasswordsStatus> {
-      if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords.");
+      if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords & Secrets.");
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
       fs.writeFileSync(statePath, JSON.stringify({ enabled }), { mode: 0o600 });
       enabledHere = enabled;
       if (enabled) {
         if (args.getCloudEnabled?.() === null) args.setCloudEnabled?.(true);
-        void sync().catch((error: unknown) => {
+        // Bring the account's items back before answering, so the page that
+        // turned it on lists them.
+        await sync().catch((error: unknown) => {
           logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
         });
       } else {
@@ -624,7 +804,7 @@ export function createPasswordService(args: {
       const deviceId = args.getDeviceId();
       if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
       const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind, reset: true });
-      if (!released) throw new PasswordsUnavailableError("Passwords is unavailable right now; try again shortly.");
+      if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
       await purgeLocal();
       memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
       if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
@@ -635,10 +815,9 @@ export function createPasswordService(args: {
 
     /** Everything an agent or a list may see. Never a value. */
     async listSummaries(): Promise<PasswordItemSummary[]> {
-      await ensureOpened();
-      return [...opened.entries()]
-        .map(([id, secret]) => summarize(id, secret))
-        .sort((a, b) => a.title.localeCompare(b.title));
+      const device = isEnabled() ? (await readDevice()).map((secret) => summarize(secret.id, secret, true)) : [];
+      const account = (await accountVaultOpen()) ? [...opened.entries()].map(([id, secret]) => summarize(id, secret)) : [];
+      return [...account, ...device].sort((a, b) => a.title.localeCompare(b.title));
     },
 
     /** The site and exact origin Passwords would fill a page on, or null (not https, not a site). */
@@ -711,14 +890,45 @@ export function createPasswordService(args: {
      * then the project's own over them. Empty when Passwords is off or locked.
      */
     async secretValuesForProject(projectScope: string | null): Promise<Record<string, string>> {
-      if (!args.getAccountUserId() || !isEnabled()) return {};
-      await ensureOpened();
-      const out: Record<string, string> = {};
-      for (const secret of opened.values()) if (secret.kind === "secret" && secret.projectScope === null) out[secret.name] = secret.value;
-      if (projectScope) {
-        for (const secret of opened.values()) if (secret.kind === "secret" && secret.projectScope === projectScope) out[secret.name] = secret.value;
-      }
-      return out;
+      return Object.fromEntries([...(await this.secretsForProject(projectScope)).values()].map((entry) => [entry.name, entry.value]));
+    },
+
+    /**
+     * The secrets one project sees, by name (see `secretsForScope` for which
+     * wins). Opens the account vault when it is usable; this computer's own
+     * secrets come either way.
+     */
+    async secretsForProject(projectScope: string | null): Promise<Map<string, ProjectSecretEntry>> {
+      await readDevice();
+      await accountVaultOpen();
+      return secretsForScope([...accountSecretEntries(), ...deviceSecretEntries()], projectScope);
+    },
+
+    /** Every secret this computer can use, unmerged: the account's and its own. */
+    async allSecretEntries(): Promise<ProjectSecretEntry[]> {
+      await readDevice();
+      await accountVaultOpen();
+      return [...accountSecretEntries(), ...deviceSecretEntries()];
+    },
+
+    /**
+     * The same, from what this computer already holds in memory: for a caller
+     * that cannot wait (a webhook signature check). The periodic sync keeps it
+     * current; before the first open it holds only this computer's secrets.
+     */
+    /**
+     * Only this computer's own secrets, without waiting and without asking
+     * who is signed in: for what is read before anyone is (sign-in's account
+     * server, see `SIGN_IN_CONFIG_SECRET_NAMES`).
+     */
+    deviceSecretsSnapshot(projectScope: string | null): Map<string, ProjectSecretEntry> {
+      readDeviceSync();
+      return secretsForScope(deviceSecretEntries(), projectScope);
+    },
+
+    secretsSnapshot(projectScope: string | null): Map<string, ProjectSecretEntry> {
+      readDeviceSync();
+      return secretsForScope([...accountSecretEntries(), ...deviceSecretEntries()], projectScope);
     },
 
     /**
@@ -727,6 +937,11 @@ export function createPasswordService(args: {
      * action layer. Null when the item or field is not there.
      */
     async revealValue(input: { itemId: string; field: "password" | "username" | "value" | "notes" }): Promise<string | null> {
+      if (isDeviceId(input.itemId)) {
+        const secret = (await readDevice()).find((item) => item.id === input.itemId);
+        if (!secret) return null;
+        return input.field === "value" ? secret.value : input.field === "notes" ? secret.notes : null;
+      }
       await ensureOpened();
       const secret = opened.get(input.itemId);
       if (!secret) return null;
@@ -780,14 +995,7 @@ export function createPasswordService(args: {
 
     /** A secret's value by name, for injecting into a process ADE starts. Never returned to an agent. */
     async resolveSecretValue(input: { name: string; projectScope: string | null }): Promise<string | null> {
-      await ensureOpened();
-      let fallback: string | null = null;
-      for (const secret of opened.values()) {
-        if (secret.kind !== "secret" || secret.name !== input.name) continue;
-        if (secret.projectScope === input.projectScope) return secret.value;
-        if (secret.projectScope === null) fallback = secret.value;
-      }
-      return fallback;
+      return (await this.secretsForProject(input.projectScope)).get(input.name)?.value ?? null;
     },
 
     /**
@@ -823,14 +1031,49 @@ export function createPasswordService(args: {
       return summarize(id, secret);
     },
 
-    async saveSecret(input: { id?: string; name: string; value: string; projectScope: string | null; notes?: string }): Promise<PasswordItemSummary> {
-      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(input.name)) throw new Error("A secret's name must look like an environment variable.");
-      const id = input.id ?? newItemId();
-      const existing = input.id ? opened.get(input.id) : undefined;
-      const stamp = now().toISOString();
+    /**
+     * Save a secret. Without an id, a secret with the same name for the same
+     * project (in the same place: the account, or this computer) is updated
+     * rather than doubled. `deviceOnly` keeps it on this computer, never synced.
+     */
+    async saveSecret(input: { id?: string; name: string; value: string; projectScope: string | null; notes?: string; deviceOnly?: boolean; updatedAt?: string }): Promise<PasswordItemSummary> {
+      const name = input.name.trim();
+      if (!SECRET_NAME_PATTERN.test(name)) throw new Error("A secret's name is letters, digits, _, . or -, starting with a letter or _ (like STRIPE_API_KEY).");
+      if (!input.value) throw new Error(`${name} needs a value.`);
+      const stamp = input.updatedAt ?? now().toISOString();
+      const deviceOnly = input.id ? isDeviceId(input.id) : input.deviceOnly === true;
+      if (deviceOnly) {
+        return await withCache(async () => {
+          const items = await readDevice();
+          const existing = input.id
+            ? items.find((item) => item.id === input.id)
+            : items.find((item) => item.name === name && item.projectScope === input.projectScope);
+          if (input.id && !existing) throw new Error("That secret no longer exists.");
+          const secret: DeviceSecret = {
+            id: existing?.id ?? newItemId(DEVICE_ID_PREFIX),
+            kind: "secret",
+            name,
+            value: input.value,
+            projectScope: input.projectScope,
+            notes: input.notes ?? existing?.notes ?? "",
+            createdAt: existing?.createdAt ?? stamp,
+            updatedAt: stamp,
+          };
+          await writeDevice([...items.filter((item) => item.id !== secret.id), secret]);
+          logger.info("passwords.item_saved", { itemId: secret.id, kind: "secret", deviceOnly: true });
+          return summarize(secret.id, secret, true);
+        });
+      }
+      await ensureOpened();
+      const existingEntry = input.id
+        ? [input.id, opened.get(input.id)] as const
+        : [...opened.entries()].find(([, item]) => item.kind === "secret" && item.name === name && item.projectScope === input.projectScope);
+      const existing = existingEntry?.[1];
+      if (input.id && existing?.kind !== "secret") throw new Error("That secret no longer exists.");
+      const id = existingEntry?.[0] ?? newItemId();
       const secret: PasswordSecretSecret = {
         kind: "secret",
-        name: input.name,
+        name,
         value: input.value,
         projectScope: input.projectScope,
         notes: input.notes ?? (existing?.kind === "secret" ? existing.notes : ""),
@@ -843,6 +1086,15 @@ export function createPasswordService(args: {
     },
 
     async remove(id: string): Promise<boolean> {
+      if (isDeviceId(id)) {
+        return await withCache(async () => {
+          const items = await readDevice();
+          if (!items.some((item) => item.id === id)) return false;
+          await writeDevice(items.filter((item) => item.id !== id));
+          logger.info("passwords.item_removed", { itemId: id, deviceOnly: true });
+          return true;
+        });
+      }
       await ensureOpened();
       if (!opened.has(id)) return false;
       await writeItem(id, null);
@@ -877,6 +1129,10 @@ export function createPasswordService(args: {
     /** Keep this computer's copy in step with the account, once per service (unref'd). */
     startPeriodicSync(): void {
       if (periodicSync) return;
+      void readDevice();
+      void sync().catch((error: unknown) => {
+        logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+      });
       periodicSync = setInterval(() => {
         void sync().catch((error: unknown) => {
           logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });

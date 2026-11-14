@@ -4619,7 +4619,7 @@ export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime)
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
-    // Settings › Passwords and the browser's fill with no project open.
+    // Settings › Passwords & Secrets and the browser's fill with no project open.
     passwords: buildPasswordsDomainService(runtime),
   };
 }

@@ -342,8 +342,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "list", "get",
     ],
     write: [
-      "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount",
-      "request", "exec",
+      "set", "delete", "request", "exec",
     ],
   },
   // Passwords: agents read summaries (sites, usernames, never a value). The
@@ -353,7 +352,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     // Sign-in needs the running brain's browser bridge and chats.
     live: ["signin", "signup", "requestLogin"],
     read: ["status", "activity", "code", "list", "loginsForPage"],
-    write: ["saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+    write: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   },
   // Messages on the Mac the person sits at: reading follows its Read Texts
   // switch; each text an agent sends is approved on a card first.
@@ -809,6 +808,7 @@ export const ADE_ACTION_THIS_DESKTOP_ONLY: Readonly<Record<string, Readonly<Reco
     revealValue: "A saved value is shown only in ADE on the computer you are using, after Touch ID or Windows Hello.",
     passkeysForRp: "Passkeys are used by ADE's browser on the computer you are using.",
     savePasskey: "Passkeys are saved by ADE's browser on the computer you are using.",
+    exportSecrets: "A .env export is written on the computer you are using, after Touch ID or Windows Hello.",
   },
   provider_logins: {
     allowKeychain: "Run this on that computer. ADE reads a computer's OS keyring only on the computer you are using.",

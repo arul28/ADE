@@ -6443,23 +6443,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     // Sample project secrets so the Secrets page renders its list in the preview.
     projectSecrets: {
-      list: resolved({
-        secrets: [
-          { name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account" },
-          { name: "OPENAI_API_KEY", createdAt: now, updatedAt: now, valueLength: 51, storage: "account" },
-          { name: "DATABASE_URL", createdAt: now, updatedAt: now, valueLength: 64, storage: "device" },
-        ],
-        storage: { path: `${MOCK_PROJECT.rootPath}/.ade/secrets`, encrypted: true, scope: "project" },
-      }),
-      get: resolvedArg({ name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account", value: "sk_test_preview" }),
-      set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" }),
-      delete: resolvedArg({ deleted: true, name: "" }),
-      pullFromAccount: resolved({ state: "pulled" as const, added: 0, updated: 0 }),
-      chooseEnvFile: resolved(null),
-      importEnv: resolvedArg({ imported: [], replaced: [] }),
-      exportEnv: resolved({ filePath: "", secretCount: 0 }),
+      list: resolved({ secrets: [], storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" as const } }),
+      set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" as const }),
     },
-    // Sample Passwords items so Settings › Passwords renders its lists in the
+    // Sample Passwords items so Settings › Passwords & Secrets renders its lists in the
     // preview. Fake data only, and no field here holds a value: the real
     // summaries never carry one either.
     passwords: (() => {
@@ -6473,6 +6460,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           hasPassword: true,
           hasTotp: true,
           projectScope: null,
+          deviceOnly: false,
           updatedAt: now,
         },
         {
@@ -6484,6 +6472,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           hasPassword: true,
           hasTotp: false,
           projectScope: null,
+          deviceOnly: false,
           updatedAt: new Date(Date.parse(now) - 3 * 86_400_000).toISOString(),
         },
         {
@@ -6495,6 +6484,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           hasPassword: true,
           hasTotp: false,
           projectScope: null,
+          deviceOnly: false,
           updatedAt: now,
         },
         {
@@ -6505,7 +6495,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           username: null,
           hasPassword: true,
           hasTotp: false,
-          projectScope: "github.com/ade/preview",
+          projectScope: "repo:github.com/ade/preview",
+          deviceOnly: false,
           updatedAt: new Date(Date.parse(now) - 9 * 86_400_000).toISOString(),
         },
       ];
@@ -6549,6 +6540,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             hasPassword: true,
             hasTotp: false,
             projectScope: null,
+            deviceOnly: false,
             updatedAt: new Date().toISOString(),
           };
           const index = items.findIndex((item) => item.id === saved.id);
@@ -6556,7 +6548,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           else items.push(saved);
           return saved;
         },
-        saveSecret: async (args: { id?: string; name: string; projectScope: string | null }) => {
+        saveSecret: async (args: { id?: string; name: string; projectScope: string | null; deviceOnly?: boolean }) => {
           const saved: PasswordItemSummary = {
             id: args.id ?? `pw-secret-${items.length + 1}`,
             kind: "secret",
@@ -6566,6 +6558,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             hasPassword: true,
             hasTotp: false,
             projectScope: args.projectScope,
+            deviceOnly: args.deviceOnly === true,
             updatedAt: new Date().toISOString(),
           };
           const index = items.findIndex((item) => item.id === saved.id);
@@ -6580,6 +6573,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           return true;
         },
         importCsv: async () => ({ imported: 0, skippedDuplicate: 0, skippedInvalid: 0 }),
+        importSecrets: async (args: { entries: Array<{ name: string }> }) => ({ imported: args.entries.map((entry) => entry.name), replaced: [] }),
+        exportSecrets: async () => ({ filePath: "~/Downloads/ade-secrets.env", secretCount: items.filter((item) => item.kind === "secret").length }),
+        chooseEnvFile: async () => null,
+        projects: async () => [{ scope: "repo:github.com/ade/preview", name: "preview", rootPath: "/preview" }],
         sync: async () => undefined,
       };
     })(),

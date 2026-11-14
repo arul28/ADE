@@ -2,6 +2,7 @@ import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { capturePasswordsAnalytics } from "../analytics/featureProductAnalytics";
 import { createDomainArgReaders } from "../adeActions/domainArgs";
+import { PROJECT_SECRET_ENV_MAX_ENTRIES, writeSecretsEnvFile } from "../secrets/projectSecretEnv";
 import { requestPasswordLoginFromUser } from "./passwordLoginRequest";
 import { signInWithPasswords, signUpWithPasswords, type PasswordAgentUse } from "./passwordSignin";
 
@@ -119,7 +120,38 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
         value: text(input.value),
         projectScope: typeof input.projectScope === "string" ? input.projectScope : null,
         ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
+        deviceOnly: input.deviceOnly === true,
       });
+    },
+    // A `.env` file's entries, read on this computer: each saved as a secret
+    // for one project (or every project), updating a name already there.
+    importSecrets: async (args?: unknown) => {
+      const input = objectArg(args);
+      const projectScope = typeof input.projectScope === "string" ? input.projectScope : null;
+      const entries = (Array.isArray(input.entries) ? input.entries : [])
+        .filter((entry): entry is { name: string; value: string } => Boolean(entry) && typeof (entry as { name?: unknown }).name === "string" && typeof (entry as { value?: unknown }).value === "string");
+      if (entries.length === 0) throw new AdeExpectedError("Pick at least one secret to import.", "user");
+      if (entries.length > PROJECT_SECRET_ENV_MAX_ENTRIES) throw new AdeExpectedError(`Pick no more than ${PROJECT_SECRET_ENV_MAX_ENTRIES} secrets.`, "user");
+      const before = new Set((await passwords.allSecretEntries()).filter((entry) => !entry.deviceOnly && entry.projectScope === projectScope).map((entry) => entry.name));
+      const imported: string[] = [];
+      const replaced: string[] = [];
+      for (const entry of entries) {
+        await passwords.saveSecret({ name: entry.name.trim(), value: entry.value, projectScope });
+        (before.has(entry.name.trim()) ? replaced : imported).push(entry.name.trim());
+      }
+      return { imported, replaced };
+    },
+    // The secrets one project's commands get (or those for every project),
+    // written to a new `.env` in this computer's Downloads. The person asked,
+    // here: user-only and this-desktop-only in the policy tables.
+    exportSecrets: async (args?: unknown) => {
+      const input = objectArg(args);
+      const projectScope = typeof input.projectScope === "string" ? input.projectScope : null;
+      const entries = projectScope
+        ? [...(await passwords.secretsForProject(projectScope)).values()]
+        : (await passwords.allSecretEntries()).filter((entry) => entry.projectScope === null);
+      if (entries.length === 0) throw new AdeExpectedError("There are no secrets to export there.", "user");
+      return writeSecretsEnvFile(entries.map((entry) => ({ name: entry.name, value: entry.value })));
     },
     remove: (args?: unknown) => passwords.remove(text(objectArg(args).id)),
     importCsv: (args?: unknown) => counted("logins_imported", () => passwords.importCsv(text(objectArg(args).text))),

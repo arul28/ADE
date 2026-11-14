@@ -1,5 +1,5 @@
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
-import { readGitConfigOriginUrl, readGitOriginUrl } from "../projects/recentProjectSummary";
+import { readGitConfigOriginUrl } from "../projects/recentProjectSummary";
 import { resolveCanonicalGitOrigin } from "../github/githubSshAlias";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AccountVaultBridge } from "./accountVaultBridge";
@@ -33,12 +33,9 @@ export type AccountMigrationContext = {
     hydratePatFromVault?(): Promise<void>;
     purgeAccountPat?(): void;
   } | null;
+  /** Moves the old per-project secrets into Passwords & Secrets. */
   projectSecretService?: {
-    list(): { secrets: Array<{ name: string; storage: string }> };
-    getSecretProvenance(name: string): CredentialProvenance | null | undefined;
-    get(args: { name: string }): { value: string };
-    hydrateFromVault(): Promise<void>;
-    purgeAccountCredentials?(): void;
+    migrateLegacy(): Promise<void>;
   } | null;
 };
 
@@ -231,48 +228,16 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     return hasService ? { moved: 0, skipped: 0 } : { moved: 0, skipped: 0, complete: false };
   };
 
-  const migrateProjectSecrets = async (
-    context: AccountMigrationContext,
-    isCurrent: () => boolean,
-    expectedAccountUserId: string,
-  ): Promise<AccountMigrationSourceResult> => {
+  /**
+   * Secrets this project saved in the old per-project store, moved into
+   * Passwords & Secrets (`projectSecretService.migrateLegacy`). Safe to run
+   * again; it is a no-op once nothing old is left.
+   */
+  const migrateProjectSecrets = async (context: AccountMigrationContext): Promise<AccountMigrationSourceResult> => {
     const service = context.projectSecretService;
-    const root = context.project?.rootPath;
-    if (!root || !service) return { moved: 0, skipped: 0, complete: false };
-    const scope = accountRepoScopeKey(readGitOriginUrl(root));
-    if (!scope) return { moved: 0, skipped: 0, complete: false };
-    let moved = 0;
-    let skipped = 0;
-    const listed = await listVaultItems(scope);
-    if (!listed) return { moved, skipped, complete: false };
-    if (!isCurrent()) return { moved, skipped, complete: false };
-    const present = new Set(
-      listed
-        .filter((item) => item.scope === scope && item.kind === "project_secret")
-        .map((item) => item.key),
-    );
-    for (const secret of service.list().secrets) {
-      if (secret.storage !== "account") continue;
-      if (service.getSecretProvenance(secret.name)?.source !== "device") continue;
-      const local = service.get({ name: secret.name });
-      const existing = await options.accountVaultBridge.get(scope, "project_secret", secret.name);
-      if (!existing.ok) return { moved, skipped, complete: false };
-      if (existing.value !== null || present.has(secret.name)) {
-        skipped += 1;
-        continue;
-      }
-      const saved = await setVaultItem(
-        isCurrent,
-        expectedAccountUserId,
-        scope,
-        "project_secret",
-        secret.name,
-        local.value,
-      );
-      if (!saved?.ok) return { moved, skipped, complete: false };
-      moved += 1;
-    }
-    return { moved, skipped };
+    if (!service) return { moved: 0, skipped: 0, complete: false };
+    await service.migrateLegacy();
+    return { moved: 0, skipped: 0 };
   };
 
   /**
@@ -417,7 +382,6 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
             await context.linearCredentialService?.hydrateFromVault();
             await context.jiraCredentialService?.hydrateFromVault();
             await context.githubService?.hydratePatFromVault?.();
-            await context.projectSecretService?.hydrateFromVault();
           } catch (error) {
             complete = false;
             options.getLogger().warn?.("account.vault_hydrate_failed", {
@@ -474,7 +438,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
             ...migrationOptions(),
             projectRoot,
             sources: {
-              project_secrets: () => migrateProjectSecrets(context, isCurrent, ownerToken.userId),
+              project_secrets: () => migrateProjectSecrets(context),
               repo_scope_alias: () => migrateRepoScopeAlias(context, isCurrent, ownerToken.userId, storesSynced),
             },
           });

@@ -205,6 +205,51 @@ describe("password service", () => {
     await laptop.sync();
     expect((await laptop.listSummaries()).length).toBe(205);
   });
+
+  it("is on with no switch set, on this computer and for ADE Cloud, and off only once turned off", async () => {
+    const { relay } = fakeRelay();
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-"));
+    const open = () => createPasswordService({
+      adeDir,
+      relay,
+      getAccountUserId: () => "user_a",
+      getDeviceId: () => "mac",
+      machineKind: "desktop",
+      getCloudEnabled: () => null,
+      store: memoryStore(),
+    });
+    expect(await open().status()).toMatchObject({ enabled: true });
+    await open().setEnabled(false);
+    // A restart reads the switch the person left.
+    expect(await open().status()).toMatchObject({ enabled: false });
+
+    const cloud = createPasswordService({ adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")), relay, getAccountUserId: () => "user_a", getDeviceId: () => "cloud", machineKind: "cloud", getCloudEnabled: () => null, store: memoryStore() });
+    expect(await cloud.status()).toMatchObject({ enabled: true });
+  });
+
+  it("keeps a this-computer-only secret off the relay and other computers, through a reset, and out of use while off", async () => {
+    const { relay, rows } = fakeRelay();
+    const mac = await machine(relay, "mac");
+    await mac.saveSecret({ name: "DEPLOY_TOKEN", value: "account-value-123", projectScope: "repo:acme/app" });
+    await mac.saveSecret({ name: "DEPLOY_TOKEN", value: "local-value-456", projectScope: "repo:acme/app", deviceOnly: true });
+    await mac.sync();
+    expect(JSON.stringify([...rows.values()])).not.toContain("local-value");
+    // The deliberate this-computer value wins here.
+    expect(await mac.resolveSecretValue({ name: "DEPLOY_TOKEN", projectScope: "repo:acme/app" })).toBe("local-value-456");
+
+    const laptop = await machine(relay, "laptop");
+    await laptop.sync();
+    expect((await laptop.listSummaries()).map((s) => [s.title, s.deviceOnly])).toEqual([["DEPLOY_TOKEN", false]]);
+    expect(await laptop.resolveSecretValue({ name: "DEPLOY_TOKEN", projectScope: "repo:acme/app" })).toBe("account-value-123");
+
+    await mac.reset();
+    expect((await mac.listSummaries()).map((s) => [s.title, s.deviceOnly])).toEqual([["DEPLOY_TOKEN", true]]);
+
+    await mac.setEnabled(false);
+    expect(await mac.secretValuesForProject("repo:acme/app")).toEqual({});
+    await mac.setEnabled(true);
+    expect(await mac.resolveSecretValue({ name: "DEPLOY_TOKEN", projectScope: "repo:acme/app" })).toBe("local-value-456");
+  });
 });
 
 const binding = { accountId: "user_123", itemId: "item_abc", epoch: 1 };

@@ -36,6 +36,8 @@ import type {
   PasswordItemSummary,
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
+  PasswordSecretsImportInput,
+  PasswordsProject,
   PasswordsStatus,
 } from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
@@ -206,18 +208,9 @@ import type {
   ProjectDetail,
   ProjectPathInspection,
   ProjectIcon,
-  ProjectSecretDeleteArgs,
-  ProjectSecretEnvFile,
-  ProjectSecretGetArgs,
-  ProjectSecretPullResult,
-  ProjectSecretsExportResult,
-  ProjectSecretsImportArgs,
-  ProjectSecretsImportPreview,
-  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
-  ProjectSecretValueResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -1781,15 +1774,10 @@ declare global {
         get: (pin?: OpenProjectBinding | null) => Promise<KeybindingsSnapshot>;
         set: (overrides: KeybindingOverride[], pin?: OpenProjectBinding | null) => Promise<KeybindingsSnapshot>;
       };
+      /** One project's secrets on the pinned machine (names and metadata; `set` saves a value). */
       projectSecrets: {
         list: (pin: OpenProjectBinding) => Promise<ProjectSecretsListResult>;
-        get: (args: ProjectSecretGetArgs, pin: OpenProjectBinding) => Promise<ProjectSecretValueResult>;
         set: (args: ProjectSecretSetArgs, pin: OpenProjectBinding) => Promise<ProjectSecretSummary>;
-        delete: (args: ProjectSecretDeleteArgs, pin: OpenProjectBinding) => Promise<{ deleted: boolean; name: string }>;
-        pullFromAccount: (pin: OpenProjectBinding) => Promise<ProjectSecretPullResult>;
-        chooseEnvFile: (pin: OpenProjectBinding) => Promise<ProjectSecretsImportPreview | null>;
-        importEnv: (args: ProjectSecretsImportArgs, pin: OpenProjectBinding) => Promise<ProjectSecretsImportResult>;
-        exportEnv: (pin: OpenProjectBinding) => Promise<ProjectSecretsExportResult>;
       };
       ai: {
         /**
@@ -4382,7 +4370,7 @@ declare global {
         onChanged: (cb: () => void, pin?: OpenProjectBinding | null) => () => void;
       };
       /**
-       * Settings › Passwords: the account's saved logins and secrets.
+       * Settings › Passwords & Secrets: the account's saved logins and secrets.
        *
        * Every method takes the machine's pin from
        * `useSettingsMachineScope().pin`; with none it reaches the tab's bound
@@ -4391,20 +4379,24 @@ declare global {
        * `resolveForFill` is not exposed to a renderer.
        */
       passwords: {
-        status: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
-        setEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
-        setCloudEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
+        status: (args?: Record<string, never>) => Promise<PasswordsStatus>;
+        setEnabled: (args: { enabled: boolean }) => Promise<PasswordsStatus>;
+        setCloudEnabled: (args: { enabled: boolean }) => Promise<PasswordsStatus>;
         /** Wipes every saved item on every computer. The person types `reset` first. */
-        reset: (args: { confirm: "reset" }, pin?: OpenProjectBinding | null) => Promise<PasswordsStatus>;
-        list: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary[]>;
-        activity: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
-        code?: (args: { itemId: string }, pin?: OpenProjectBinding | null) => Promise<{ code: string; secondsLeft: number } | null>;
+        reset: (args: { confirm: "reset" }) => Promise<PasswordsStatus>;
+        list: (args?: Record<string, never>) => Promise<PasswordItemSummary[]>;
+        activity: (args?: Record<string, never>) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
+        code?: (args: { itemId: string }) => Promise<{ code: string; secondsLeft: number } | null>;
         reveal?: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }) => Promise<{ value?: string; copied?: true }>;
-        saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
-        saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null) => Promise<PasswordItemSummary>;
-        remove: (args: { id: string }, pin?: OpenProjectBinding | null) => Promise<boolean>;
-        importCsv: (args: { text: string }, pin?: OpenProjectBinding | null) => Promise<PasswordImportResult>;
-        sync: (args?: Record<string, never>, pin?: OpenProjectBinding | null) => Promise<void>;
+        saveLogin: (args: PasswordLoginSaveInput) => Promise<PasswordItemSummary>;
+        saveSecret: (args: PasswordSecretSaveInput) => Promise<PasswordItemSummary>;
+        remove: (args: { id: string }) => Promise<boolean>;
+        importCsv: (args: { text: string }) => Promise<PasswordImportResult>;
+        sync: (args?: Record<string, never>) => Promise<void>;
+        importSecrets: (args: PasswordSecretsImportInput) => Promise<{ imported: string[]; replaced: string[] }>;
+        exportSecrets: (args: { projectScope: string | null }) => Promise<{ filePath: string; secretCount: number }>;
+        chooseEnvFile: () => Promise<{ fileName: string; entries: Array<{ name: string; value: string }> } | null>;
+        projects: () => Promise<PasswordsProject[]>;
       };
       providerInstances: {
         list: (
