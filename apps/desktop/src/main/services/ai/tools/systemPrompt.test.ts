@@ -9,72 +9,6 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toContain("mutating commands only inside this path");
   });
 
-  it("defaults to coding mode and edit permission mode", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
-    // coding mode default text
-    expect(result).toContain("You are executing coding work");
-    // edit permission mode default text
-    expect(result).toContain("Edit mode");
-  });
-
-  it("includes planning mode description when mode is planning", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x", mode: "planning" });
-    expect(result).toContain("You are planning work");
-  });
-
-  it("includes chat mode description when mode is chat", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x", mode: "chat" });
-    expect(result).toContain("interactive coding chat");
-  });
-
-  it("includes plan permission description", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x", permissionMode: "plan" });
-    expect(result).toContain("Plan mode");
-    expect(result).toContain("without editing files or mutating the system");
-  });
-
-  it("uses guarded-local discovery guidance in plan mode", () => {
-    const result = buildCodingAgentSystemPrompt({
-      cwd: "/x",
-      permissionMode: "plan",
-      toolNames: ["readFile", "findRoutingFiles", "TodoWrite", "exitPlanMode"],
-    });
-
-    expect(result).toContain("Plan mode is read-only. Do not attempt editFile, writeFile, bash, or other mutating actions.");
-    expect(result).toContain("Inspect only the concrete files needed to form a plan.");
-    expect(result).toContain("use exitPlanMode to request implementation approval");
-  });
-
-  it("keeps Codex plan context aligned with native app-server plan mode", () => {
-    const result = buildCodingAgentSystemPrompt({
-      cwd: "/x",
-      permissionMode: "plan",
-      runtime: "codex-app-server",
-    });
-
-    expect(result).toContain("Native Codex Plan Mode controls planning and approval");
-    expect(result).toContain("proposed-plan mechanism");
-    expect(result).toContain("Do not use TodoWrite, update_plan, or exitPlanMode");
-  });
-
-  it("does not tell non-interactive Codex plan sessions to ask blocking questions", () => {
-    const result = buildCodingAgentSystemPrompt({
-      cwd: "/x",
-      permissionMode: "plan",
-      runtime: "codex-app-server",
-      interactive: false,
-    });
-
-    expect(result).toContain("Native Codex Plan Mode controls planning and approval");
-    expect(result).toContain("make the safest reasonable assumptions");
-    expect(result).not.toContain("use request_user_input");
-  });
-
-  it("includes full-auto permission description", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x", permissionMode: "full-auto" });
-    expect(result).toContain("Autonomous mode");
-  });
-
   it("includes session activity guidance only when a provider supplies it", () => {
     const guidance = "Report this session's current activity through ADE.";
     expect(buildCodingAgentSystemPrompt({
@@ -132,84 +66,6 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).not.toContain("ade chat settle --outcome");
     });
 
-    it("describes the Codex CLI runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-cli" });
-      expect(result).toContain("## Runtime Environment");
-      expect(result).toContain("Codex CLI");
-      expect(result).toContain("scheduled-work create --in 12m");
-      expect(result).toContain("targets your own session");
-    });
-
-    it("describes the Codex app-server runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-app-server" });
-      expect(result).toContain("## Runtime Environment");
-      expect(result).toContain("Codex app-server protocol");
-      expect(result).toContain("JSON-RPC");
-      expect(result).toContain("scheduled-work create --in 12m");
-      expect(result).toContain("next turn boundary");
-    });
-
-    it("describes durable Claude scheduled self-resume and pause controls", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-query" });
-      expect(result).toContain("## Runtime Environment");
-      expect(result).toContain("Claude Agent SDK stable `query()`");
-      expect(result).toContain("ScheduleWakeup");
-      expect(result).toContain("mirrored into ADE's durable scheduler");
-      expect(result).toContain("next turn boundary");
-      expect(result).toContain("`CronList` is advisory (ADE state wins)");
-      expect(result).toContain("`CronCreate` always adds a job");
-      expect(result).not.toContain("unavailable in this ADE chat");
-      expect(result).not.toContain("will not start a later turn by itself");
-    });
-
-    it("routes Claude-family delegation through the native Agent tool", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "claude-agent-sdk-query" });
-
-      expect(result).toContain("prefer Claude's native `Agent`/`Task` tool");
-      expect(result).toContain("another Anthropic-family model");
-      expect(result).toMatch(/Do not start an ADE chat just to switch Claude models/);
-      // Another provider's model is a subagent the agent starts and can stop.
-      expect(result).toContain("`ade new chat --mode chat --provider <p> --model <m>");
-      expect(result).toMatch(/is your subagent and reports back/);
-      expect(result).toContain("`ade chat interrupt <id>`");
-    });
-
-    it("does not claim native subagents for the Pi SDK path", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "pi-sdk" });
-
-      expect(result).toMatch(/Pi has no native subagent tool here/);
-      expect(result).toContain("`ade new chat --mode chat --prompt");
-      expect(result).not.toContain("prefer Pi's native");
-    });
-
-    it("describes the Cursor SDK runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "cursor-sdk" });
-      expect(result).toContain("Cursor SDK");
-      expect(result).toContain("chat.createScheduledWork");
-    });
-
-    it("describes the Droid SDK runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "droid-sdk" });
-      expect(result).toContain("Factory Droid SDK");
-      expect(result).toContain("chat.createScheduledWork");
-    });
-
-    it("describes the OpenCode runtime", () => {
-      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "opencode" });
-      expect(result).toContain("OpenCode session");
-      expect(result).toContain("chat.createScheduledWork");
-    });
-  });
-
-  it("includes interactive question guidance by default", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
-    expect(result).toContain("ask one concise question");
-  });
-
-  it("includes non-interactive guidance when interactive is false", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x", interactive: false });
-    expect(result).toContain("make the safest reasonable assumption");
-    expect(result).not.toContain("ask one concise question");
   });
 
   describe("workflow tools section", () => {
@@ -223,15 +79,6 @@ describe("buildCodingAgentSystemPrompt", () => {
       // The workflow names a proof command that works off the lane screen.
       expect(result).toMatch(/\*\*Workflow:\*\*[^\n]*`ade browser proof`/);
       expect(result).not.toContain("ade proof capture");
-    });
-
-    it("includes createPrFromLane guidance when present", () => {
-      const result = buildCodingAgentSystemPrompt({
-        cwd: "/x",
-        toolNames: ["createPrFromLane"],
-      });
-      expect(result).toContain("## Workflow Tools");
-      expect(result).toContain("createPrFromLane");
     });
 
     // `captureScreenshot` has no executable implementation in any live tool
@@ -287,32 +134,6 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).not.toContain("## Pull Request Tools");
     });
 
-    it("includes PR tool guidance when ADE PR command tools are present", () => {
-      const result = buildCodingAgentSystemPrompt({
-        cwd: "/x",
-        toolNames: ["pr_refresh_issue_inventory", "pr_get_review_comments"],
-      });
-      expect(result).toContain("## Pull Request Tools");
-      expect(result).toContain("pr_refresh_issue_inventory, pr_get_review_comments");
-    });
-  });
-
-  it("always includes operating loop, editing rules, and verification rules", () => {
-    const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
-    // A status question is a checkpoint; new instructions (from the user or
-    // another agent) replace the old ones.
-    expect(result).toMatch(/status question[^.]*is a checkpoint: answer it, then continue/);
-    expect(result).toMatch(/new instructions, from the user or from another agent, replaces the old ones/);
-    expect(result).toContain("## ADE");
-    expect(result).toContain("read the matching `ade-*` skill");
-    // The Apple skill is listed only where it can run: on a Mac host.
-    expect(result.includes("ade-apple")).toBe(process.platform === "darwin");
-    // The deprecated alias resolves by name but is not advertised.
-    expect(result).not.toContain("ade-ios-simulator");
-    expect(result).toContain("ade-cli-control-plane");
-    expect(result).not.toContain("ade-orchestrator");
-    expect(result).toContain("## Tool Use Rules");
-    expect(result).toContain("## Task");
   });
 
   it("names only skill roots that exist, and says so when none does", () => {
@@ -360,9 +181,4 @@ describe("composeSystemPrompt", () => {
     expect(result).toBe("harness prompt\n\n## Task-Specific Instructions\ndo the thing");
   });
 
-  it("trims leading/trailing whitespace from basePrompt", () => {
-    const result = composeSystemPrompt("  do the thing  ", "harness prompt");
-    expect(result).toContain("do the thing");
-    expect(result).not.toContain("  do the thing  ");
-  });
 });

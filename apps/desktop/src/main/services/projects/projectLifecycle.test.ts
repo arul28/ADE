@@ -10,7 +10,8 @@ import { browseProjectDirectories } from "./projectBrowserService";
 import { __internal, getProjectDetail, parseDirtyStatus } from "./projectDetailService";
 import { writeGlobalState } from "../state/globalState";
 import { inspectRecentProject, toRecentProjectSummary, toShallowRecentProjectSummary } from "./recentProjectSummary";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createProjectConfigService } from "../config/projectConfigService";
 import { expectedErrorKind } from "../../../shared/expectedError";
 
@@ -67,7 +68,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 function insertProject(
-  db: Awaited<ReturnType<typeof openKvDb>>,
+  db: AdeDb,
   projectId: string,
   projectRoot: string,
   now: string,
@@ -79,7 +80,7 @@ function insertProject(
 }
 
 function insertLane(
-  db: Awaited<ReturnType<typeof openKvDb>>,
+  db: AdeDb,
   args: {
     laneId: string;
     projectId: string;
@@ -343,7 +344,7 @@ describe("createAdeProjectService.clearLocalData", () => {
   it("preserves attachment-backed proof rows when clearing artifact packs", async () => {
     const root = makeTempDir("ade-project-clear-artifact-rows-");
     const layout = resolveAdeLayout(root);
-    const db = await openKvDb(path.join(layout.adeDir, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(layout.adeDir, "ade.db"), createLogger());
     const now = "2026-07-29T00:00:00.000Z";
     insertProject(db, "project-1", root, now);
     const service = createAdeProjectService({
@@ -569,7 +570,7 @@ describe("toRecentProjectSummary", () => {
     tempDirs.push(attachedLanePath);
     fs.mkdirSync(managedLanePath, { recursive: true });
 
-    const db = await openKvDb(layout.dbPath, createLogger());
+    const db = await openFreshKvDb(layout.dbPath, createLogger());
     const now = "2026-04-02T12:00:00.000Z";
     insertProject(db, "proj-recent", projectRoot, now);
     insertLane(db, {
@@ -646,7 +647,7 @@ describe("toRecentProjectSummary", () => {
     fs.mkdirSync(path.join(projectRoot, ".git", "worktrees", "lane-a"), { recursive: true });
 
     const layout = resolveAdeLayout(projectRoot);
-    const db = await openKvDb(layout.dbPath, createLogger());
+    const db = await openFreshKvDb(layout.dbPath, createLogger());
     const now = "2026-04-02T12:00:00.000Z";
     insertProject(db, "proj-recent-archived", projectRoot, now);
     insertLane(db, {

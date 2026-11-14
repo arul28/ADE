@@ -3,6 +3,7 @@ import path from "node:path";
 import YAML from "yaml";
 import type { Logger } from "../logging/logger";
 import { isRecord, nowIso } from "../shared/utils";
+import { createFileVersionTracker } from "../state/durableFile";
 
 type AutomationSecretServiceArgs = {
   adeDir: string;
@@ -46,31 +47,29 @@ export function createAutomationSecretService(args: AutomationSecretServiceArgs)
   let cachedDoc: unknown = null;
   let loadedAt: string | null = null;
   let lastError: string | null = null;
-  let lastMtimeMs = -1;
+  // An editor can save twice in one timestamp tick with the same size.
+  const fileVersion = createFileVersionTracker(secretPath);
 
   const ensureLoaded = (): void => {
+    // A file that failed to load is read again on every call.
+    if (cachedDoc !== null && lastError === null && !fileVersion.changed()) return;
     try {
-      const stat = fs.statSync(secretPath);
-      if (stat.mtimeMs === lastMtimeMs && cachedDoc !== null) return;
-      const raw = fs.readFileSync(secretPath, "utf8");
+      const raw = fileVersion.read();
       cachedDoc = YAML.parse(raw) ?? {};
       loadedAt = nowIso();
       lastError = null;
-      lastMtimeMs = stat.mtimeMs;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
         cachedDoc = {};
         loadedAt = null;
         lastError = null;
-        lastMtimeMs = -1;
         return;
       }
       args.logger?.warn("automations.secret_load_failed", { error: message, path: secretPath });
       cachedDoc = {};
       loadedAt = null;
       lastError = message;
-      lastMtimeMs = -1;
     }
   };
 
@@ -98,7 +97,6 @@ export function createAutomationSecretService(args: AutomationSecretServiceArgs)
 
     reload(): SecretSnapshot {
       cachedDoc = null;
-      lastMtimeMs = -1;
       ensureLoaded();
       return this.getSnapshot();
     },

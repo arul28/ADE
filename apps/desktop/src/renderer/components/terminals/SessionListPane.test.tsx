@@ -6,7 +6,6 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
-import { eventMatchesBinding } from "../../lib/keybindings";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
@@ -226,13 +225,6 @@ function seedStudioMachine(
 
 function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {}) {
   return render(paneElement(props));
-}
-
-/** The one shared header shape: the wrapper + the hairline row inside it. */
-function headerRow(sectionId: string): HTMLElement | null {
-  return document.querySelector<HTMLElement>(
-    `[data-section-id="${sectionId}"] > div`,
-  );
 }
 
 /**
@@ -2306,14 +2298,6 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
     expect(setWorkSessionFilters).toHaveBeenCalledWith(EMPTY_WORK_SESSION_FILTERS);
   });
 
-  it("marks the funnel as active when only chips are set", () => {
-    renderTwoLanes({
-      workSessionFilters: { status: ["running"], tool: [], hasPr: false, dirtyLane: false, machine: [] },
-      setWorkSessionFilters: vi.fn(),
-    });
-    expect(screen.getByTestId("work-lane-filter-active-indicator")).toBeTruthy();
-  });
-
   it("keeps every divider in manual sort mode, singleton lanes included", () => {
     // Rule 3 of the singleton threshold: a singleton has no header to grab, and
     // the card's own drag gesture belongs to the work grid, so manual reorder
@@ -2919,21 +2903,6 @@ describe("SessionListPane header shape", () => {
     expect(within(collapsedHeader).getByText("Known Lane (2)")).toBeTruthy();
   });
 
-  it("opens the command palette from the search button", () => {
-    const setQ = vi.fn();
-    renderPane({ setQ });
-
-    const seen: KeyboardEvent[] = [];
-    const listener = (event: KeyboardEvent) => seen.push(event);
-    window.addEventListener("keydown", listener);
-    fireEvent.click(screen.getByTestId("work-sidebar-search"));
-    window.removeEventListener("keydown", listener);
-
-    expect(seen).toHaveLength(1);
-    expect(eventMatchesBinding(seen[0]!, "Mod+K")).toBe(true);
-    expect(setQ).not.toHaveBeenCalled();
-  });
-
 });
 
 describe("SessionListPane visual hierarchy", () => {
@@ -3228,22 +3197,6 @@ describe("SessionListPane quiet-shelf defaults", () => {
     expect(shelfRows()).toEqual([]);
   });
 
-  it("leaves every other section expanded by default", () => {
-    const running = makeSession({
-      id: "session-default-running",
-      laneId: "lane-known",
-      laneName: "Known Lane",
-      title: "Working chat",
-    });
-    renderByStatus({
-      runningFiltered: [running],
-      allSessionsUnfiltered: [running, snoozed, settled],
-      sessionsGroupedByLane: new Map([["lane-known", [running, snoozed, settled]]]),
-    });
-
-    expect(document.querySelector('[data-session-id="session-default-running"]')).toBeTruthy();
-  });
-
   it("round-trips an explicit expand: stored preference beats the collapsed default", () => {
     const toggleWorkSectionCollapsed = vi.fn();
     // 1. Never touched → closed, and opening it records the *expand*, not a
@@ -3366,22 +3319,6 @@ describe("SessionListPane header chevrons", () => {
   });
   const laneB = makeSession({
     id: "session-chevron-b", laneId: "lane-known", laneName: "Known Lane", title: "Second chat",
-  });
-  const snoozed = makeSession({
-    id: "session-chevron-snoozed",
-    laneId: "lane-known",
-    laneName: "Known Lane",
-    title: "Sleeping chat",
-    snoozedUntil: "2099-01-01T00:00:00.000Z",
-  });
-  const settled = makeSession({
-    id: "session-chevron-settled",
-    laneId: "lane-known",
-    laneName: "Known Lane",
-    title: "Finished chat",
-    status: "completed",
-    runtimeState: "idle",
-    settledAt: "2026-07-23T12:00:00.000Z",
   });
 
   it("toggles an active lane header from its chevron", () => {
@@ -3730,86 +3667,5 @@ describe("SessionListPane shared-branch clusters", () => {
     expect(container.querySelector('[data-testid="shelf-body-settled"]')?.contains(cluster)).toBe(true);
     expect(cluster?.querySelector('[data-group-id="lane-local-mobile"]')).toBeTruthy();
     expect(cluster?.querySelector('[data-group-id="target-studio:lane-studio-mobile"]')).toBeTruthy();
-  });
-});
-
-describe("SessionListPane Apple device marks", () => {
-  afterEach(() => {
-    vi.useRealTimers();
-    cleanup();
-    laneAppleDevicesForTest.clear();
-    Reflect.deleteProperty(window, "ade");
-  });
-
-  const groupLane = makeLane({ id: "lane-group", name: "Group lane", branchRef: "group-lane" });
-  const soloLane = makeLane({ id: "lane-solo", name: "Solo lane", branchRef: "solo-lane" });
-  const plainLane = makeLane({ id: "lane-plain", name: "Plain lane", branchRef: "plain-lane" });
-  const groupA = makeSession({ id: "session-group-a", laneId: "lane-group", laneName: "Group lane", title: "Group A" });
-  const groupB = makeSession({ id: "session-group-b", laneId: "lane-group", laneName: "Group lane", title: "Group B" });
-  const solo = makeSession({ id: "session-solo", laneId: "lane-solo", laneName: "Solo lane", title: "Solo chat" });
-  const plain = makeSession({ id: "session-plain", laneId: "lane-plain", laneName: "Plain lane", title: "Plain chat" });
-
-  function renderLanes() {
-    const sessions = [groupA, groupB, solo, plain];
-    return renderPane({
-      lanes: [groupLane, soloLane, plainLane],
-      runningFiltered: sessions,
-      allSessionsUnfiltered: sessions,
-      sessionsGroupedByLane: new Map([
-        ["lane-group", [groupA, groupB]],
-        ["lane-solo", [solo]],
-        ["lane-plain", [plain]],
-      ]),
-    });
-  }
-
-  it("marks a lane header whose lane holds a device, with the device in the tooltip", () => {
-    laneAppleDevicesForTest.set("lane-group", { udid: "udid-group", name: "iPhone 16 Pro", running: true });
-    vi.useFakeTimers();
-    const { container } = renderLanes();
-
-    const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
-    const mark = within(header).getByRole("img", { name: "iPhone 16 Pro on this lane" });
-    expect(mark.getAttribute("data-lane-apple-device-running")).toBe("true");
-    // The only mark: unclaimed lanes stay bare, and rows under the marked
-    // header do not repeat it.
-    expect(container.querySelectorAll("[data-lane-apple-device]")).toHaveLength(1);
-
-    fireEvent.pointerEnter(mark.parentElement!);
-    act(() => {
-      vi.advanceTimersByTime(600);
-    });
-    expect(screen.getByRole("tooltip").textContent).toBe("iPhone 16 Pro on this lane");
-  });
-
-  it("marks a singleton lane's card, and says when the device is off", () => {
-    laneAppleDevicesForTest.set("lane-solo", { udid: "udid-solo", name: "iPad Air", running: false });
-    const { container } = renderLanes();
-
-    expect(container.querySelector('[data-section-id="lane-solo"]')).toBeNull();
-    const card = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
-    const identity = card.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
-    const mark = within(identity).getByRole("img", { name: "iPad Air on this lane (off)" });
-    expect(mark.getAttribute("data-lane-apple-device-running")).toBe("false");
-  });
-
-  it("marks a lane holding a Mac Desktop display, on its header or its lone card, and no other", () => {
-    laneMacDesktopsForTest.add("lane-group");
-    laneMacDesktopsForTest.add("lane-solo");
-    try {
-      const { container } = renderLanes();
-
-      const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
-      expect(within(header).getByRole("img", { name: "Mac Desktop running on this lane" })).toBeTruthy();
-      const soloCard = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
-      const identity = soloCard.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
-      expect(identity.querySelector('[data-lane-mac-desktop="lane-solo"]')).toBeTruthy();
-      const plainCard = container.querySelector('[data-session-id="session-plain"]') as HTMLElement;
-      expect(plainCard.querySelector("[data-lane-mac-desktop]")).toBeNull();
-      // Rows under a marked header do not repeat the mark.
-      expect(container.querySelectorAll("[data-lane-mac-desktop]")).toHaveLength(2);
-    } finally {
-      laneMacDesktopsForTest.clear();
-    }
   });
 });

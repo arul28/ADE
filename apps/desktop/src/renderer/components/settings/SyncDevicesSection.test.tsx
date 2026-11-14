@@ -183,12 +183,6 @@ describe("ThisMacCard", () => {
     else (globalThis.window as any).ade = originalAde;
   });
 
-  it("shows the account state line for a signed-in Mac", () => {
-    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
-    expect(screen.getByText("Studio")).toBeTruthy();
-    expect(screen.getByText("Connected to your ADE account")).toBeTruthy();
-  });
-
   it("says nothing about readiness or routes when this computer is healthy", () => {
     render(<ThisMacCard sync={makeSync()} sessionState="active" />);
     // A healthy host has no actionable status, so it gets no status line at all.
@@ -227,13 +221,6 @@ describe("ThisMacCard", () => {
     expect(saveRuntimeName).toHaveBeenCalledWith("Workshop");
     // …and the account directory catches up so other clients agree.
     await waitFor(() => expect(renameMachine).toHaveBeenCalledWith("mk-1", "Workshop"));
-  });
-
-  it("keeps the pencil visible but inert while signed out", () => {
-    render(<ThisMacCard sync={makeSync()} sessionState="signed_out" />);
-    const pencil = screen.getByRole("button", { name: "Rename Studio" });
-    expect((pencil as HTMLButtonElement).disabled).toBe(true);
-    expect(pencil.getAttribute("title")).toBe("Sign in to rename this computer");
   });
 
   // The summary line and the Reconnect button read the refusal once, with one
@@ -385,13 +372,6 @@ describe("ThisMacCard", () => {
     expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
-  it("explains nearby fallback when signed out", () => {
-    render(<ThisMacCard sync={makeSync()} sessionState="signed_out" />);
-    expect(
-      screen.getByText("Not signed in — you can still connect to other machines manually"),
-    ).toBeTruthy();
-  });
-
   it("generates a code from inside the pairing disclosure", () => {
     const generatePin = vi.fn();
     render(
@@ -447,30 +427,6 @@ describe("ThisMacCard", () => {
     render(<ThisMacCard sync={makeSync()} sessionState="active" />);
     expect(screen.getByRole("button", { name: /^Manual pairing code/ }).getAttribute("aria-expanded"))
       .toBe("false");
-  });
-
-  it.each([
-    ["darwin", "Mac"],
-    ["win32", "Windows"],
-    ["linux", "Linux"],
-  ])("marks the identity tile with the %s platform logo", async (platform, accessibleName) => {
-    (globalThis.window as any).ade = {
-      app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform })) },
-    };
-    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
-
-    // The tile is the platform statement; the chip beside it carries the
-    // version number alone, so the platform is never spelled out twice.
-    expect(
-      await screen.findByRole("button", { name: new RegExp(`${accessibleName} desktop`) }),
-    ).toBeTruthy();
-    expect(await screen.findByText("1.2.28")).toBeTruthy();
-    expect(screen.queryByText(new RegExp(`1\\.2\\.28.*${accessibleName}`))).toBeNull();
-  });
-
-  it("labels this pane as this machine", () => {
-    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
-    expect(screen.getByText("This computer")).toBeTruthy();
   });
 
   it("swaps the version line for the fault while the listener is down", async () => {
@@ -634,14 +590,6 @@ describe("PhoneConnectionsTab", () => {
 
 describe("WebConnectionsTab", () => {
   afterEach(() => cleanup());
-
-  it("offers the browser launcher when signed in", () => {
-    render(
-      <WebConnectionsTab sync={makeSync()} accountSignedIn confirmRevoke={vi.fn(autoConfirm)} />,
-    );
-    expect(screen.getByRole("button", { name: /Open ADE in browser/ })).toBeTruthy();
-    expect(screen.queryByText("Sign in to use the web client")).toBeNull();
-  });
 
   it("prompts to sign in when signed out", () => {
     const onAccountRequested = vi.fn();

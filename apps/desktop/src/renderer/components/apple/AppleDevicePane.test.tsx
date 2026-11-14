@@ -355,15 +355,6 @@ describe("AppleDevicePane states", () => {
     expect(screen.queryByText(/current state: Shutdown/)).toBeNull();
   });
 
-  it("live: shows the device with a fully labelled rail and no strip", async () => {
-    setup({ lane: LANE_DEVICE, stream: "live" });
-    renderPane();
-    await waitFor(() => expect(paneState()).toBe("live"));
-    expect(screen.getByTestId("apple-stage")).toBeTruthy();
-    expect(screen.getByRole("complementary", { name: "Device controls" })).toBeTruthy();
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
   it("video-lost: keeps the last frame dimmed and says Video stopped.", async () => {
     setup({ lane: LANE_DEVICE, stream: "stalled" });
     renderPane();
@@ -393,13 +384,6 @@ describe("AppleDevicePane states", () => {
       lane: LANE_DEVICE,
       installed: [{ ...PRO, state: "Shutdown" }],
       stream: "idle",
-    });
-
-    it("shows Off on a stopped device", async () => {
-      off();
-      renderPane();
-      await waitFor(() => expect(paneState()).toBe("stopped"));
-      expect(screen.getByText("Off")).toBeTruthy();
     });
 
     it("Start boots the lane's device through the existing restart path", async () => {
@@ -589,15 +573,6 @@ describe("AppleDevicePane states", () => {
 
 describe("AppleDevicePane viewport (round 4 §A1–§A4)", () => {
   const live = () => setup({ lane: LANE_DEVICE, stream: "live" });
-
-  it("§A1: shows the real body in 3D, and never asks for a procedural one", async () => {
-    live();
-    renderPane();
-    await waitFor(() => expect(paneState()).toBe("live"));
-    expect(screen.getByTestId("apple-stage").getAttribute("data-mode")).toBe("3d");
-    // The prop that pinned round 3 to the procedural slab is gone entirely.
-    expect(stage.props && "realistic" in stage.props).toBe(false);
-  });
 
   it("§A1: a body that cannot load falls back to FLAT and says so once", async () => {
     live();

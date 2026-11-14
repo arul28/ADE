@@ -190,98 +190,23 @@ describe("terminalAttention", () => {
   });
 
   describe("sessionStatusDot", () => {
-    it("returns a solid sky dot for a running active session", () => {
-      const dot = sessionStatusDot({
-        status: "running",
-        lastOutputPreview: "building project...",
-      });
+    // Neutral, NOT red, for a stopped session: exit 130/143 is the user pressing
+    // stop, and the alarm hue is kept for outcomes the user did not choose.
+    it.each([
+      ["a running active session", { status: "running", lastOutputPreview: "building project..." }, "sky", "Working"],
+      ["a prompt-looking running session", { status: "running", lastOutputPreview: "Confirm continue? (y/n)" }, "sky", "Working"],
+      ["an idle chat", { status: "running", lastOutputPreview: "Completed response", runtimeState: "idle", toolType: "claude-chat" }, "emerald", "Done"],
+      ["an idle AI CLI", { status: "running", lastOutputPreview: "Analyzed project state", runtimeState: "idle", toolType: "claude" }, "emerald", "Done"],
+      ["an ended CLI", { status: "completed", lastOutputPreview: "Process exited with code 0", toolType: "claude" }, "white", "Ended"],
+      ["a detached session", { status: "detached", lastOutputPreview: "Last preserved output", runtimeState: "exited", toolType: "codex" }, "white", "Ended"],
+      ["a disposed session", { status: "disposed", lastOutputPreview: "Stopped by user", runtimeState: "killed", toolType: "codex" }, "white", "Stopped"],
+      ["an explicit failed status", { status: "failed", lastOutputPreview: "Launch failed", runtimeState: "exited", toolType: "codex" }, "red", "Failed"],
+      ["a non-running agent chat", { status: "completed", lastOutputPreview: "Last response preview", toolType: "claude-chat" }, "emerald", "Done"],
+    ] as const)("draws %s as a solid %s dot labelled %s", (_name, session, color, label) => {
+      const dot = sessionStatusDot({ ...session } as Parameters<typeof sessionStatusDot>[0]);
       expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("sky");
-      expect(dot.label).toBe("Working");
-    });
-
-    it("keeps a prompt-looking running session non-interrupting", () => {
-      const dot = sessionStatusDot({
-        status: "running",
-        lastOutputPreview: "Confirm continue? (y/n)",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("sky");
-      expect(dot.label).toBe("Working");
-    });
-
-    it("returns a solid emerald dot for an idle chat session", () => {
-      const dot = sessionStatusDot({
-        status: "running",
-        lastOutputPreview: "Completed response",
-        runtimeState: "idle",
-        toolType: "claude-chat",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("emerald");
-      expect(dot.label).toBe("Done");
-    });
-
-    it("returns a solid emerald Done dot for idle AI CLI sessions", () => {
-      const dot = sessionStatusDot({
-        status: "running",
-        lastOutputPreview: "Analyzed project state",
-        runtimeState: "idle",
-        toolType: "claude",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("emerald");
-      expect(dot.label).toBe("Done");
-    });
-
-    it("returns a neutral dot for an ended CLI session", () => {
-      const dot = sessionStatusDot({
-        status: "completed",
-        lastOutputPreview: "Process exited with code 0",
-        toolType: "claude",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("white");
-      expect(dot.label).toBe("Ended");
-    });
-
-    it("returns a neutral ended dot for a detached session", () => {
-      const dot = sessionStatusDot({
-        status: "detached",
-        lastOutputPreview: "Last preserved output",
-        runtimeState: "exited",
-        toolType: "codex",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("white");
-      expect(dot.label).toBe("Ended");
-    });
-
-    it("returns a neutral stopped dot for a disposed session", () => {
-      const dot = sessionStatusDot({
-        status: "disposed",
-        lastOutputPreview: "Stopped by user",
-        runtimeState: "killed",
-        toolType: "codex",
-      });
-      expect(dot.spinning).toBe(false);
-      // Neutral, NOT red: exit 130/143 is the user pressing stop. Spending the
-      // alarm hue on an outcome the user chose is what trains people to ignore
-      // red — see sessionStatusPresentation's header.
-      expect(dot.cls).toContain("white");
-      expect(dot.label).toBe("Stopped");
-    });
-
-    it("returns a failed red dot for an explicit failed status", () => {
-      const dot = sessionStatusDot({
-        status: "failed",
-        lastOutputPreview: "Launch failed",
-        runtimeState: "exited",
-        toolType: "codex",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("red");
-      expect(dot.label).toBe("Failed");
+      expect(dot.cls).toContain(color);
+      expect(dot.label).toBe(label);
     });
 
     it("resolves the usage-limit dot against the session's own clock", () => {
@@ -309,17 +234,6 @@ describe("terminalAttention", () => {
       };
       expect(sessionStatusDot(session).label).toBe("Resuming");
       expect(sessionStatusDisplay(session)?.label).toBe("Resuming");
-    });
-
-    it("returns an emerald Done dot for a non-running agent chat session", () => {
-      const dot = sessionStatusDot({
-        status: "completed",
-        lastOutputPreview: "Last response preview",
-        toolType: "claude-chat",
-      });
-      expect(dot.spinning).toBe(false);
-      expect(dot.cls).toContain("emerald");
-      expect(dot.label).toBe("Done");
     });
   });
 

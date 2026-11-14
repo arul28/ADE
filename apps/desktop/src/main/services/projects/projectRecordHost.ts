@@ -10,6 +10,7 @@ import {
 } from "../../../shared/projectRecord";
 import type { ProjectIcon } from "../../../shared/types";
 import { createFileNewLaneAccountStore, type NewLaneAccountStore } from "../lanes/newLaneSettingsStore";
+import { createFileVersionTracker } from "../state/durableFile";
 import { rasterizeProjectIconPngWithSips } from "./projectIconThumbnail";
 
 /**
@@ -22,42 +23,46 @@ import { rasterizeProjectIconPngWithSips } from "./projectIconThumbnail";
 export type ProjectRecordStore = NewLaneAccountStore;
 
 const STAND_IN_CACHE_MAX = 256;
-const standInCache = new Map<string, { mtimeMs: number; size: number; rows: Record<string, unknown> | null }>();
+type StandInEntry = {
+  version: ReturnType<typeof createFileVersionTracker>;
+  /** Undefined until the first read; null for a missing, unreadable or invalid file. */
+  rows: Record<string, unknown> | null | undefined;
+};
+const standInCache = new Map<string, StandInEntry>();
 
 /**
  * The record on a host with no account store (a `--no-sync` brain, a desktop
  * whose brain is not answering): the same rows in `.ade/project-record.json`,
- * on this computer only. Reads are kept in memory while the file's time and
- * size hold, so a project list costs a stat, not a read.
+ * on this computer only. Reads are kept in memory until the file changes, so a
+ * project list costs a stat, not a read. The desktop main process and the
+ * brain both write the file, at times in one timestamp tick;
+ * createFileVersionTracker tells such writes apart.
  */
 export function createProjectRecordStandInStore(projectRoot: string): ProjectRecordStore {
   const filePath = path.join(projectRoot, ".ade", "project-record.json");
   const fileStore = createFileNewLaneAccountStore(filePath);
   return {
     get(scope, key) {
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(filePath);
-      } catch {
-        return undefined;
-      }
       let entry = standInCache.get(filePath);
-      if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
+      if (!entry) {
+        if (standInCache.size >= STAND_IN_CACHE_MAX) standInCache.clear();
+        entry = { version: createFileVersionTracker(filePath), rows: undefined };
+        standInCache.set(filePath, entry);
+      }
+      if (entry.rows === undefined || entry.version.changed()) {
         let rows: Record<string, unknown> | null = null;
         try {
-          const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+          const parsed = JSON.parse(entry.version.read()) as unknown;
           rows = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
         } catch {
           rows = null;
         }
-        entry = { mtimeMs: stat.mtimeMs, size: stat.size, rows };
-        if (standInCache.size >= STAND_IN_CACHE_MAX) standInCache.clear();
-        standInCache.set(filePath, entry);
+        entry.rows = rows;
       }
       return entry.rows?.[`${scope}|${key}`];
     },
     set: (scope, key, value) => {
-      // Two writes in the same millisecond can leave the time and size as they were.
+      // The write goes through another store, so the next read starts fresh.
       standInCache.delete(filePath);
       return fileStore.set(scope, key, value);
     },

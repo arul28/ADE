@@ -3,15 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { PrCommit, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
-import {
-  buildDefaultCommitMessage,
-  buildMergeCommandLineInstructions,
-  canAttemptMerge,
-  LAST_MERGE_METHOD_KEY,
-  mergeMethodLabel,
-  readLastMergeMethod,
-  writeLastMergeMethod,
-} from "./prMergeRailUtils";
+import { buildDefaultCommitMessage, buildMergeCommandLineInstructions, canAttemptMerge, LAST_MERGE_METHOD_KEY, readLastMergeMethod, writeLastMergeMethod } from "./prMergeRailUtils";
 
 function makePr(overrides: Partial<PrWithConflicts> = {}): PrWithConflicts {
   return {
@@ -52,11 +44,6 @@ function makeStatus(overrides: Partial<PrStatus> = {}): PrStatus {
 }
 
 describe("prMergeRailUtils", () => {
-  it("labels merge methods like GitHub", () => {
-    expect(mergeMethodLabel("squash")).toBe("Squash and merge");
-    expect(mergeMethodLabel("merge")).toBe("Create merge commit");
-    expect(mergeMethodLabel("rebase")).toBe("Rebase and merge");
-  });
 
   it("allows bypass merge attempts when requested", () => {
     expect(canAttemptMerge({

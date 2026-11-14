@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -372,6 +372,40 @@ const STAMP_SETTLE_MS = 2_000;
  */
 const CLOCK_STEP_TOLERANCE_MS = 500;
 
+/** One stat of a file: its stamp, and when it last changed. */
+type FileStamp = { stamp: string; changedAtMs: number };
+
+/**
+ * The stamp of a file is its device, inode, size, mtime and ctime. A replace by
+ * rename gives the file a new inode, and the ctime cannot be set back by a
+ * writer that keeps the mtime. The stat must be a bigint stat: an NTFS file id
+ * does not fit in a double.
+ */
+function fileStampOf(stat: fs.BigIntStats): FileStamp {
+  const changedAtNs = stat.mtimeNs > stat.ctimeNs ? stat.mtimeNs : stat.ctimeNs;
+  return {
+    stamp: `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`,
+    changedAtMs: Number(changedAtNs / 1_000_000n),
+  };
+}
+
+/**
+ * Returns a check that is true when the wall clock stepped back since its last
+ * call. It compares the wall clock's lead over the monotonic clock, not the
+ * wall clock alone: comparing wall readings misses a step whenever more time
+ * than the step has passed between two calls. The lead falls only when the
+ * wall clock is stepped back.
+ */
+function createClockStepDetector(): (wallNow: number) => boolean {
+  let lastClockLead: number | null = null;
+  return (wallNow) => {
+    const clockLead = wallNow - performance.now();
+    const stepped = lastClockLead !== null && clockLead < lastClockLead - CLOCK_STEP_TOLERANCE_MS;
+    lastClockLead = clockLead;
+    return stepped;
+  };
+}
+
 export type StampedJsonCacheLimits = {
   maxEntries: number;
   /** Bytes of JSON on disk, not of the parsed heap. An entry larger than this is never kept. */
@@ -382,12 +416,12 @@ export type StampedJsonCacheLimits = {
  * JSON file text kept while the file's bytes are unchanged.
  *
  * A reader that walks many small files, such as one state file per chat, pays a
- * synchronous open and read for each file on every call. The stat (inode, size,
- * mtime, ctime) says whether the cached text still holds. Every writer here
+ * synchronous open and read for each file on every call. The stamp of one stat
+ * (fileStampOf) says whether the cached text still holds. Every writer here
  * replaces a file by rename, which gives it a new inode, or rewrites it, which
- * gives it a new mtime and ctime. The ctime cannot be set back by a copy that
- * keeps the mtime. Each hit parses the cached text again: that is cheaper than
- * copying a parsed value, and every caller gets an object of its own.
+ * gives it a new mtime and ctime. Each hit parses the cached text again: that
+ * is cheaper than copying a parsed value, and every caller gets an object of
+ * its own.
  *
  * Only a primary-file read is cached, and only when the file had been unchanged
  * for STAMP_SETTLE_MS before the read began. Two writes in one timestamp tick can
@@ -406,9 +440,7 @@ export function createStampedJsonCache<T>(
   type Entry = { stamp: string; bytes: number; text: string };
   const entries = new Map<string, Entry>();
   let totalBytes = 0;
-  // The wall clock's lead over the monotonic clock at the last read. It falls only
-  // when the wall clock is stepped back.
-  let lastClockLead: number | null = null;
+  const clockSteppedBack = createClockStepDetector();
 
   const clear = (): void => {
     entries.clear();
@@ -446,21 +478,18 @@ export function createStampedJsonCache<T>(
   return {
     read(filePath: string): ReadJsonRecoveryResult<T> {
       // A step back of the wall clock can give a later write the stamp an entry
-      // already holds. The check compares the wall clock's lead over the monotonic
-      // clock, not the wall clock alone: comparing wall readings misses a step
-      // whenever more time than the step has passed between two reads.
+      // already holds.
       const wallNow = Date.now();
-      const clockLead = wallNow - performance.now();
-      if (lastClockLead !== null && clockLead < lastClockLead - CLOCK_STEP_TOLERANCE_MS) clear();
-      lastClockLead = clockLead;
+      if (clockSteppedBack(wallNow)) clear();
 
       // Both the clock and the stat come before the read: a write that lands
       // after them leaves the entry under the older stamp, so the next stat misses.
+      // An inode of 0 means the filesystem has none, so such a file is never cached.
       const settledBefore = wallNow - STAMP_SETTLE_MS;
-      const stat = statOrNull(filePath);
-      const stamp = stat && stat.ino ? `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` : null;
+      const stat = bigIntStatOrNull(filePath);
+      const look = stat && stat.ino !== 0n ? fileStampOf(stat) : null;
       const cached = entries.get(filePath);
-      if (stamp !== null && cached?.stamp === stamp) {
+      if (look !== null && cached?.stamp === look.stamp) {
         const value = parseValid(cached.text);
         if (value !== null) {
           // Re-insert to mark it most recently used.
@@ -481,13 +510,13 @@ export function createStampedJsonCache<T>(
       }
       const value = text === null ? null : parseValid(text);
       if (text !== null && value !== null) {
-        if (stat && stamp !== null && Math.max(stat.mtimeMs, stat.ctimeMs) <= settledBefore) {
+        if (look !== null && look.changedAtMs <= settledBefore) {
           // Charged for the text read, not stat.size: a rewrite between the stat and
           // the read makes the two differ. remember() evicts the oldest entries to fit
           // a new one, so an entry over the whole budget is skipped rather than
           // emptying the cache for itself.
           const bytes = Buffer.byteLength(text, "utf8");
-          if (bytes <= limits.maxBytes) remember(filePath, { stamp, bytes, text });
+          if (bytes <= limits.maxBytes) remember(filePath, { stamp: look.stamp, bytes, text });
         }
         return { value, source: "primary" };
       }
@@ -499,9 +528,95 @@ export function createStampedJsonCache<T>(
   };
 }
 
-function statOrNull(filePath: string): fs.Stats | null {
+/**
+ * Tells whether a file still holds what this process last read or wrote, when
+ * other processes also rewrite it: another brain on the project, a sync client,
+ * an editor.
+ *
+ * The mtime alone is not enough. Two writes in one timestamp tick (a few
+ * milliseconds on Linux and Windows, one or two seconds on HFS+ and FAT) get the
+ * same mtime. A check compares the whole stamp (fileStampOf) with one stat.
+ *
+ * A stamp can still match when the writes share a tick and the inode is reused
+ * or meaningless (FAT, some network shares, the in-place copy fallback of
+ * `writeFileAtomic`). So until the file has gone STAMP_SETTLE_MS unchanged, a
+ * check with a matching stamp also compares a digest of the bytes. A settled
+ * file costs one stat per check. The settle check reads the wall clock; when
+ * that clock steps back, the next check compares the bytes again.
+ */
+export function createFileVersionTracker(filePath: string) {
+  type Seen = { stamp: string | null; digest: string | null; settled: boolean };
+  let seen: Seen | null = null;
+  const clockSteppedBack = createClockStepDetector();
+
+  const look = (): FileStamp | null => {
+    const stat = fs.statSync(filePath, { bigint: true, throwIfNoEntry: false });
+    return stat ? fileStampOf(stat) : null;
+  };
+  const lookOrNull = (): FileStamp | null => {
+    const stat = bigIntStatOrNull(filePath);
+    return stat ? fileStampOf(stat) : null;
+  };
+  const digestOf = (text: string): string => createHash("sha1").update(text).digest("base64");
+  const settledAt = (current: FileStamp | null, wallNow: number): boolean =>
+    current !== null && current.changedAtMs <= wallNow - STAMP_SETTLE_MS;
+
+  return {
+    /** True when the file may differ from what was last read or written here. */
+    changed(): boolean {
+      if (!seen) return true;
+      const wallNow = Date.now();
+      const stepped = clockSteppedBack(wallNow);
+      let current: FileStamp | null;
+      try {
+        current = look();
+      } catch {
+        return true;
+      }
+      if ((current?.stamp ?? null) !== seen.stamp) return true;
+      if (current === null || (seen.settled && !stepped)) return false;
+      let text: string;
+      try {
+        text = fs.readFileSync(filePath, "utf8");
+      } catch {
+        return true;
+      }
+      if (digestOf(text) !== seen.digest) return true;
+      seen = { ...seen, settled: settledAt(current, wallNow) };
+      return false;
+    },
+
+    /** Reads the file as `fs.readFileSync` does (and throws as it does), and remembers what it read. */
+    read(): string {
+      // The clock and the stat come before the read: a write that lands after
+      // them leaves an older stamp, so the next check sees a change.
+      const wallNow = Date.now();
+      clockSteppedBack(wallNow);
+      const before = lookOrNull();
+      try {
+        const text = fs.readFileSync(filePath, "utf8");
+        seen = { stamp: before?.stamp ?? null, digest: digestOf(text), settled: settledAt(before, wallNow) };
+        return text;
+      } catch (error) {
+        // A missing or unreadable file reads as unchanged until its stamp changes.
+        seen = { stamp: before?.stamp ?? null, digest: null, settled: before === null || settledAt(before, wallNow) };
+        throw error;
+      }
+    },
+
+    /** Remembers `text`, which this process just wrote to the file. */
+    wrote(text: string): void {
+      const wallNow = Date.now();
+      clockSteppedBack(wallNow);
+      const after = lookOrNull();
+      seen = { stamp: after?.stamp ?? null, digest: digestOf(text), settled: settledAt(after, wallNow) };
+    },
+  };
+}
+
+function bigIntStatOrNull(filePath: string): fs.BigIntStats | null {
   try {
-    return fs.statSync(filePath, { throwIfNoEntry: false }) ?? null;
+    return fs.statSync(filePath, { bigint: true, throwIfNoEntry: false }) ?? null;
   } catch {
     // An unreadable file is read the normal way, which reports it as the read always has.
     return null;

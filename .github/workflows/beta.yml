@@ -220,9 +220,16 @@ jobs:
           node-version: 24
 
       # Only for the pure-JS yaml package, as release-publish.yml's manifest
-      # merge does; --ignore-scripts skips Electron's postinstall.
+      # merge does: that one package at the version and integrity
+      # apps/desktop/package-lock.json pins. If that fails, the full npm ci
+      # (scripts skipped) installs it instead, with the same integrity check,
+      # and the warning shows that the fast path broke.
       - name: Install the yaml parser
-        run: cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund
+        run: |
+          node scripts/release-tools/install-locked-package.mjs apps/desktop/package-lock.json yaml || {
+            echo "::warning::install-locked-package.mjs failed; installing yaml with the full npm ci."
+            (cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund)
+          }
 
       - name: Build the feed from the published beta
         run: |

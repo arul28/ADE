@@ -5,7 +5,7 @@ import {
   type AndroidMachinePreferences,
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
-import { writeFileAtomic } from "../state/durableFile";
+import { createFileVersionTracker, writeFileAtomic } from "../state/durableFile";
 
 /*
  * The machine's Android preferences (recording overlays, auto-record, the
@@ -24,9 +24,9 @@ import { writeFileAtomic } from "../state/durableFile";
 export class AndroidSettingsFileBrokenError extends Error {}
 
 /**
- * The machine's Android settings file, read once per change. The cache key is
- * the file's mtime and size, so two writes in the same mtime tick are still
- * told apart.
+ * The machine's Android settings file, read again only when it changed. The
+ * desktop main process and the brain both write it, at times in one timestamp
+ * tick; createFileVersionTracker tells such writes apart.
  */
 export type AndroidSettingsFile = {
   /** False when there is no file path (a test host): the keys live in memory only. */
@@ -54,10 +54,10 @@ const SETTINGS_PROBLEM_TEXT: Record<NonNullable<SettingsRead["problem"]>, string
   invalid: "is not valid JSON",
 };
 
-function readSettingsBody(file: string): SettingsRead {
+function readSettingsBody(readText: () => string): SettingsRead {
   let text: string;
   try {
-    text = fs.readFileSync(file, "utf8");
+    text = readText();
   } catch (error) {
     // Missing: there is nothing to keep. Any other read error (a permission
     // error, a lock on Windows) is broken, so a write does not replace the file.
@@ -77,35 +77,32 @@ function readSettingsBody(file: string): SettingsRead {
 /** With no file (a test host), the keys live in memory. A broken file is logged once per change. */
 export function createAndroidSettingsFile(file: string | null | undefined, logger?: Logger | null): AndroidSettingsFile {
   let memory: Record<string, unknown> = {};
-  let cache: { mtimeMs: number; size: number; value: Record<string, unknown> } | null = null;
-  let warnedFor: string | null = null;
+  const version = file ? createFileVersionTracker(file) : null;
+  let cache: { value: Record<string, unknown> } | null = null;
+  let lastProblem: SettingsRead["problem"] = null;
   return {
     persistent: Boolean(file),
     read() {
-      if (!file) return memory;
-      try {
-        const stat = fs.statSync(file);
-        if (cache && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) return cache.value;
-        const current = readSettingsBody(file);
-        const seen = `${current.problem}:${stat.mtimeMs}:${stat.size}`;
-        if (current.problem && warnedFor !== seen) {
-          warnedFor = seen;
-          logger?.warn("android.settings_file_broken", { problem: current.problem });
-        }
-        // A file that could not be read is not cached, so the next read tries again.
-        if (current.problem === "unreadable") return current.body;
-        cache = { mtimeMs: stat.mtimeMs, size: stat.size, value: current.body };
-        return current.body;
-      } catch {
-        return {};
+      if (!version) return memory;
+      if (cache && !version.changed()) return cache.value;
+      const current = readSettingsBody(() => version.read());
+      // An invalid file is parsed again only after it changed, so each warning
+      // is for a new version. An unreadable file is read again on every call,
+      // so it warns once until a read succeeds.
+      if (current.problem === "invalid" || (current.problem === "unreadable" && lastProblem !== "unreadable")) {
+        logger?.warn("android.settings_file_broken", { problem: current.problem });
       }
+      lastProblem = current.problem;
+      // A file that could not be read is not cached, so the next read tries again.
+      cache = current.problem === "unreadable" ? null : { value: current.body };
+      return current.body;
     },
     writeKeys(keys) {
       if (!file) {
         memory = { ...memory, ...(typeof keys === "function" ? keys(memory) : keys) };
         return;
       }
-      const current = readSettingsBody(file);
+      const current = readSettingsBody(() => fs.readFileSync(file, "utf8"));
       if (current.problem) {
         throw new AndroidSettingsFileBrokenError(
           `The Android settings file ${file} ${SETTINGS_PROBLEM_TEXT[current.problem]}, so ADE did not change it. Fix the file or delete it, then try again.`,
@@ -113,8 +110,11 @@ export function createAndroidSettingsFile(file: string | null | undefined, logge
       }
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const body = { ...current.body, ...(typeof keys === "function" ? keys(current.body) : keys), updatedAt: new Date().toISOString() };
-      writeFileAtomic(file, `${JSON.stringify(body, null, 2)}\n`);
-      cache = null;
+      const text = `${JSON.stringify(body, null, 2)}\n`;
+      writeFileAtomic(file, text);
+      version?.wrote(text);
+      // What a read of the file gives, so the next read needs no file read.
+      cache = { value: JSON.parse(text) as Record<string, unknown> };
     },
   };
 }

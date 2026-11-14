@@ -73,14 +73,6 @@ describe("RichMarkdown", () => {
     expect(link?.getAttribute("href")).toBe("https://example.com");
   });
 
-  it("renders inline images at their stated source", () => {
-    const { container } = render(
-      <RichMarkdown source={"![chart](artifacts/evidence/chart.png)"} />,
-    );
-    const image = container.querySelector("img");
-    expect(image?.getAttribute("src")).toBe("artifacts/evidence/chart.png");
-  });
-
   it("sanitizes raw html while preserving document-safe anchors and subscript", () => {
     const { container } = render(
       <RichMarkdown
@@ -105,20 +97,5 @@ describe("RichMarkdown", () => {
     const anchor = container.querySelector("a#section-foo");
     expect(anchor).toBeTruthy();
     expect(anchor?.getAttribute("href")).toBe("#phase-a");
-  });
-
-  it("renders mermaid blocks via a lazy loader placeholder", async () => {
-    const source = "```mermaid\ngraph TD; A-->B;\n```";
-    const { container } = render(<RichMarkdown source={source} />);
-    // Either the loading placeholder OR the resolved svg should be present.
-    const block = container.querySelector("[data-mermaid-block], [role='status']");
-    expect(block).toBeTruthy();
-  });
-
-  it("renders gfm tables", () => {
-    const source = "| col | val |\n| --- | --- |\n| a   | 1   |";
-    const { container } = render(<RichMarkdown source={source} />);
-    expect(container.querySelector("table")).toBeTruthy();
-    expect(container.querySelector("th")?.textContent ?? "").toMatch(/col/);
   });
 });

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import YAML from "yaml";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { PROJECT_CONFIG_CHANGED_ON_DISK } from "../../../shared/types/config";
 import { createProjectConfigService, mergeAiConfig } from "./projectConfigService";
 
@@ -967,7 +967,7 @@ describe("projectConfigService - linear sync", () => {
     tempDirs.push(root);
     const adeDir = path.join(root, ".ade");
     fs.mkdirSync(adeDir, { recursive: true });
-    const db = await openKvDb(path.join(adeDir, "ade.db"), quietLogger());
+    const db = await openFreshKvDb(path.join(adeDir, "ade.db"), quietLogger());
     const service = createProjectConfigService({
       projectRoot: root,
       adeDir,

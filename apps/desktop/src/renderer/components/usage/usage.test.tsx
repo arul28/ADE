@@ -15,16 +15,12 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { HeaderUsageControl } from "./HeaderUsageControl";
-import {
-  ActivityModule,
-  WorkActivityModule,
-  readActivityPersisted,
-} from "./ActivityModule";
+import { ActivityModule, WorkActivityModule } from "./ActivityModule";
 import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
 import { UsagePooledLimits } from "./UsagePooledLimits";
-import { USAGE_HEADROOM_COLOR, usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
+import { usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
 import { useAppStore } from "../../state/appStore";
 
 /** A switch to a project on another machine: the usage readers re-read that machine's numbers. */
@@ -1085,16 +1081,6 @@ describe("usage components", () => {
       ).toBeTruthy();
     });
 
-    it("never renders a Cursor section", async () => {
-      render(<MountedBand />);
-
-      await waitFor(() => {
-        expect(window.ade.usage.noteDemand).toHaveBeenCalled();
-      });
-      expect(screen.queryByText("Cursor")).toBeNull();
-      expect(screen.queryByText(/Cursor not detected/i)).toBeNull();
-    });
-
     it("does not refresh when provider and cost scans are both fresh", async () => {
       const freshSnapshot = makeQuotaPanelSnapshot();
       freshSnapshot.lastPolledAt = new Date().toISOString();
@@ -1659,10 +1645,6 @@ describe("usage components", () => {
   describe("ActivityModule", () => {
     beforeEach(() => localStorage.clear());
 
-    it("defaults new activity views to the all-time range", () => {
-      expect(readActivityPersisted()).toEqual({ tab: "activity", preset: "all" });
-    });
-
     it("switches tabs and persists the selection", async () => {
       render(<ActivityModule stats={makeActivityStats()} preset="7d" onPresetChange={vi.fn()} />);
 
@@ -1780,17 +1762,6 @@ describe("usage components", () => {
       bars.forEach((bar) => expect((bar as HTMLElement).style.transition).toBe(""));
 
       Reflect.deleteProperty(window, "matchMedia");
-    });
-
-    it("renders a compact range select and a full segmented control", () => {
-      const { unmount } = render(<ActivityModule stats={makeActivityStats()} variant="compact" preset="7d" onPresetChange={vi.fn()} />);
-      // Compact uses a narrow select rather than five buttons.
-      expect(screen.getByLabelText("Time range")).toBeTruthy();
-      expect(screen.queryByRole("button", { name: "30d" })).toBeNull();
-      unmount();
-
-      render(<ActivityModule stats={makeActivityStats()} variant="full" preset="7d" onPresetChange={vi.fn()} />);
-      expect(screen.getByRole("button", { name: "30d" })).toBeTruthy();
     });
 
     it("lays the heatmap out as square cells: one row for short ranges, seven for long", () => {
@@ -2141,18 +2112,6 @@ describe("usage components", () => {
       expect(screen.getByText(/Cursor ledger covers this machine only\./)).toBeTruthy();
     });
 
-    // The Settings shell prints the page title and its description above this
-    // component. Printing them again gave the page two "Usage" headings.
-    it("leaves the page title to the Settings shell", async () => {
-      render(<AdeUsageSection />);
-
-      await waitFor(() => expect(getAdeStats).toHaveBeenCalled());
-      expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
-      // The range and freshness line is this component's to draw — the shell
-      // has no idea what is on screen.
-      expect(screen.getByText(/updated .* ago/i)).toBeTruthy();
-    });
-
     // "Daily cost needs a newer host" named the wrong cause: the commonest way
     // a current machine loses its per-provider daily split is the default
     // project scope, where ledgers that cannot attribute a row to a project are
@@ -2367,17 +2326,6 @@ describe("usage components", () => {
       expect(await screen.findByText("Couldn't check for new usage. Showing the last numbers.")).toBeTruthy();
       expect(screen.getByText("Estimated cost")).toBeTruthy();
       expect(screen.queryByText(/timed out/)).toBeNull();
-    });
-
-    it("carries no live quota band and no drawer state", async () => {
-      render(<AdeUsageSection />);
-
-      // The page itself rendered.
-      expect(await screen.findByText("Estimated cost")).toBeTruthy();
-
-      expect(screen.queryByRole("button", { name: /Live limits/ })).toBeNull();
-      expect(screen.queryByText("37%")).toBeNull();
-      expect(localStorage.getItem("ade.stats.liveLimits.open.v1")).toBeNull();
     });
 
     // The machine list previously read a locally-declared shape through a

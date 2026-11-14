@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PrSummary } from "../../../shared/types";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createPrChatLinkStore } from "./prChatLinkStore";
 
 function createLogger() {
@@ -15,7 +15,7 @@ const NOW = "2026-10-08T00:00:00Z";
 describe("prChatLinkStore", () => {
   it("marks a linked chat on another lane as cross-lane, against the real tables", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-chat-links-"));
-    const db = await openKvDb(path.join(root, ".ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, ".ade.db"), createLogger());
     try {
       db.run(
         "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
@@ -71,7 +71,7 @@ describe("prChatLinkStore", () => {
   });
   it("claims a persisted origin once, preserves explicit unlinks, and retries failed writes", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-origin-"));
-    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, "ade.db"), createLogger());
     try {
       db.run("insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values ('proj', ?, 'ADE', 'main', ?, ?)", [root, NOW, NOW]);
       for (const lane of ["origin", "other"]) {

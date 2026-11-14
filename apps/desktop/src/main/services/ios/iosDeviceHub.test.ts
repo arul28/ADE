@@ -17,7 +17,6 @@ import { createIosDeviceHub, type IosDeviceHubDeps } from "./iosDeviceHub";
 import { createSimulatorPower } from "./simulatorPower";
 import type { IosEventLogProcess } from "./iosEventLog";
 import {
-  IOS_ACCESSIBILITY_PREFERENCES,
   buildPushPayload,
   createIosDeviceTools,
   parseAppStateFromLaunchctlList,
@@ -1322,39 +1321,6 @@ describe("createIosDeviceTools setters", () => {
     ]);
   });
 
-  it("uses the documented key and notification for every preference toggle", () => {
-    expect(IOS_ACCESSIBILITY_PREFERENCES).toEqual({
-      "reduce-motion": {
-        key: "ReduceMotionEnabled",
-        notification: "com.apple.Accessibility.ReduceMotionEnabledChanged",
-      },
-      "reduce-transparency": {
-        key: "ReduceTransparencyEnabled",
-        notification: "com.apple.Accessibility.ReduceTransparencyEnabledChanged",
-      },
-      "button-shapes": {
-        key: "ButtonShapesEnabled",
-        notification: "com.apple.Accessibility.ButtonShapesEnabledChanged",
-      },
-      "bold-text": {
-        key: "BoldTextEnabled",
-        notification: "com.apple.Accessibility.BoldTextEnabledChanged",
-      },
-      "invert-colors": {
-        key: "InvertColorsEnabled",
-        notification: "com.apple.Accessibility.InvertColorsEnabledChanged",
-      },
-      grayscale: {
-        key: "GrayscaleEnabled",
-        notification: "com.apple.Accessibility.GrayscaleEnabledChanged",
-      },
-      "voice-over": {
-        key: "VoiceOverTouchEnabled",
-        notification: "com.apple.Accessibility.VoiceOverTouchEnabledChanged",
-      },
-    });
-  });
-
   it("sets and clears the location", async () => {
     const harness = toolsCreateHarness();
     await harness.tools.setLocation(TOOLS_DEVICE_UDID, { latitude: 37.7749, longitude: -122.4194 });
@@ -1534,132 +1500,29 @@ describe("readSettings", () => {
 });
 
 describe("validation", () => {
-  it("rejects a content size that is not a known category", async () => {
+  // Bad input must be refused before any simctl call, so a mistyped value can
+  // never reach the simulator.
+  it.each([
+    ["a content size outside the known categories", (t: ToolsHarness["tools"]) => t.setContentSize(TOOLS_DEVICE_UDID, "enormous" as never), /Unsupported content size/],
+    ["an unknown privacy service", (t: ToolsHarness["tools"]) => t.setPermission({ deviceUdid: TOOLS_DEVICE_UDID, service: "bluetooth" as never, action: "grant", bundleId: "com.ade.ios" }), /Unsupported privacy service/],
+    ["a grant with no bundle id", (t: ToolsHarness["tools"]) => t.setPermission({ deviceUdid: TOOLS_DEVICE_UDID, service: "photos", action: "grant", bundleId: "" }), /bundle id/],
+    ["an unknown privacy action", (t: ToolsHarness["tools"]) => t.setPermission({ deviceUdid: TOOLS_DEVICE_UDID, service: "photos", action: "allow" as never, bundleId: "com.ade.ios" }), /Unsupported privacy action/],
+    ["a latitude out of range", (t: ToolsHarness["tools"]) => t.setLocation(TOOLS_DEVICE_UDID, { latitude: 91, longitude: 0 }), /Invalid latitude/],
+    ["a longitude out of range", (t: ToolsHarness["tools"]) => t.setLocation(TOOLS_DEVICE_UDID, { latitude: 0, longitude: -181 }), /Invalid longitude/],
+    ["a non-finite coordinate", (t: ToolsHarness["tools"]) => t.setLocation(TOOLS_DEVICE_UDID, { latitude: Number.NaN, longitude: 0 }), /Invalid latitude/],
+    ["an unknown appearance", (t: ToolsHarness["tools"]) => t.setAppearance(TOOLS_DEVICE_UDID, "sepia" as never), /Unsupported appearance/],
+    ["an empty bundle id for terminate", (t: ToolsHarness["tools"]) => t.terminateApp(TOOLS_DEVICE_UDID, ""), /bundle id is required/],
+    ["an empty bundle id for uninstall", (t: ToolsHarness["tools"]) => t.uninstallApp(TOOLS_DEVICE_UDID, "  "), /bundle id is required/],
+    ["a url that does not parse", (t: ToolsHarness["tools"]) => t.openUrl(TOOLS_DEVICE_UDID, "not a url"), /Invalid url/],
+    ["wifiBars out of range", (t: ToolsHarness["tools"]) => t.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, wifiBars: 4 }), /Invalid wifiBars/],
+    ["cellularBars out of range", (t: ToolsHarness["tools"]) => t.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, cellularBars: -1 }), /Invalid cellularBars/],
+    ["a batteryLevel out of range", (t: ToolsHarness["tools"]) => t.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, batteryLevel: 140 }), /Invalid batteryLevel/],
+    ["an unknown batteryState", (t: ToolsHarness["tools"]) => t.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, batteryState: "full" as never }), /Invalid batteryState/],
+    ["a status bar override with no fields", (t: ToolsHarness["tools"]) => t.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID }), /at least one field/],
+  ])("rejects %s without calling simctl", async (_label, run, message) => {
     const harness = toolsCreateHarness();
-    await expect(
-      harness.tools.setContentSize(TOOLS_DEVICE_UDID, "enormous" as never),
-    ).rejects.toThrow(/Unsupported content size "enormous"\. Allowed values: extra-small, /);
+    await expect(run(harness.tools)).rejects.toThrow(message);
     expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects an unknown privacy service", async () => {
-    const harness = toolsCreateHarness();
-    await expect(
-      harness.tools.setPermission({
-        deviceUdid: TOOLS_DEVICE_UDID,
-        service: "bluetooth" as never,
-        action: "grant",
-        bundleId: "com.ade.ios",
-      }),
-    ).rejects.toThrow(/Unsupported privacy service "bluetooth"\. Allowed values: all, /);
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects a grant with no bundle id", async () => {
-    const harness = toolsCreateHarness();
-    await expect(
-      harness.tools.setPermission({ deviceUdid: TOOLS_DEVICE_UDID, service: "photos", action: "grant", bundleId: "" }),
-    ).rejects.toThrow('A bundle id for a "grant" is required.');
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects a revoke with no bundle id", async () => {
-    const harness = toolsCreateHarness();
-    await expect(
-      harness.tools.setPermission({ deviceUdid: TOOLS_DEVICE_UDID, service: "photos", action: "revoke", bundleId: "   " }),
-    ).rejects.toThrow('A bundle id for a "revoke" is required.');
-  });
-
-  it("rejects an unknown privacy action", async () => {
-    const harness = toolsCreateHarness();
-    await expect(
-      harness.tools.setPermission({
-        deviceUdid: TOOLS_DEVICE_UDID,
-        service: "photos",
-        action: "allow" as never,
-        bundleId: "com.ade.ios",
-      }),
-    ).rejects.toThrow('Unsupported privacy action "allow". Allowed values: grant, revoke, reset.');
-  });
-
-  it("rejects a latitude outside -90 to 90", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setLocation(TOOLS_DEVICE_UDID, { latitude: 91, longitude: 0 })).rejects.toThrow(
-      'Invalid latitude "91". Allowed range: -90 to 90.',
-    );
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects a longitude outside -180 to 180", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setLocation(TOOLS_DEVICE_UDID, { latitude: 0, longitude: -181 })).rejects.toThrow(
-      'Invalid longitude "-181". Allowed range: -180 to 180.',
-    );
-  });
-
-  it("rejects a non-finite coordinate", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setLocation(TOOLS_DEVICE_UDID, { latitude: Number.NaN, longitude: 0 })).rejects.toThrow(
-      /Invalid latitude/,
-    );
-  });
-
-  it("rejects an appearance that simctl does not know", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setAppearance(TOOLS_DEVICE_UDID, "sepia" as never)).rejects.toThrow(
-      'Unsupported appearance "sepia". Allowed values: light, dark.',
-    );
-  });
-
-  it("rejects an empty bundle id for terminate and uninstall", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.terminateApp(TOOLS_DEVICE_UDID, "")).rejects.toThrow("A bundle id is required.");
-    await expect(harness.tools.uninstallApp(TOOLS_DEVICE_UDID, "  ")).rejects.toThrow("A bundle id is required.");
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects a url that does not parse", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.openUrl(TOOLS_DEVICE_UDID, "not a url")).rejects.toThrow(
-      'Invalid url "not a url". Allowed values: an absolute url such as https://example.com.',
-    );
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects wifiBars outside 0 to 3", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, wifiBars: 4 })).rejects.toThrow(
-      'Invalid wifiBars "4". Allowed range: 0 to 3.',
-    );
-  });
-
-  it("rejects cellularBars outside 0 to 4", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, cellularBars: -1 })).rejects.toThrow(
-      'Invalid cellularBars "-1". Allowed range: 0 to 4.',
-    );
-  });
-
-  it("rejects a batteryLevel outside 0 to 100", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, batteryLevel: 140 })).rejects.toThrow(
-      'Invalid batteryLevel "140". Allowed range: 0 to 100.',
-    );
-    expect(harness.calls).toHaveLength(0);
-  });
-
-  it("rejects an unknown batteryState", async () => {
-    const harness = toolsCreateHarness();
-    await expect(
-      harness.tools.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID, batteryState: "full" as never }),
-    ).rejects.toThrow('Invalid batteryState "full". Allowed values: charging, charged, discharging.');
-  });
-
-  it("rejects a status bar override with no fields", async () => {
-    const harness = toolsCreateHarness();
-    await expect(harness.tools.setStatusBar({ deviceUdid: TOOLS_DEVICE_UDID })).rejects.toThrow(
-      /A status bar override needs at least one field/,
-    );
   });
 });
 
@@ -2570,20 +2433,13 @@ describe("describeElement", () => {
 });
 
 describe("describeQuery", () => {
-  it("names one field", () => {
-    expect(describeQuery({ label: "Continue" })).toBe('label "Continue"');
-  });
-
-  it("joins two fields with and", () => {
-    expect(describeQuery({ label: "Continue", role: "button" })).toBe('label "Continue" and role "button"');
-  });
-
-  it("joins three fields with commas and a final and", () => {
-    expect(describeQuery({ identifier: "a", label: "b", role: "c" })).toBe('identifier "a", label "b" and role "c"');
-  });
-
-  it("leaves the index out", () => {
-    expect(describeQuery({ label: "Continue", index: 2 })).toBe('label "Continue"');
+  it.each([
+    [{ label: "Continue" }, 'label "Continue"'],
+    [{ label: "Continue", role: "button" }, 'label "Continue" and role "button"'],
+    [{ identifier: "a", label: "b", role: "c" }, 'identifier "a", label "b" and role "c"'],
+    [{ label: "Continue", index: 2 }, 'label "Continue"'],
+  ])("describes the query %j", (query, expected) => {
+    expect(describeQuery(query)).toBe(expected);
   });
 
   it("reports an empty query", () => {

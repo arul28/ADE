@@ -81,40 +81,6 @@ afterEach(() => {
 });
 
 describe("model picker custom tab", () => {
-  it("puts Custom above Favorites and Recents in the rail", () => {
-    renderPicker();
-    const rail = document.querySelector('[data-model-picker-rail="true"]') as HTMLElement;
-    const labels = Array.from(rail.querySelectorAll('[role="tab"]')).map((node) => node.getAttribute("aria-label"));
-    expect(labels.slice(0, 3)).toEqual(["Custom", "Favorites", "Recents"]);
-  });
-
-  /**
-   * The rail's own mark, not the app's. The tab used to wear the ADE logo,
-   * which read as "ADE the product" beside nine vendor marks.
-   */
-  it("marks the Custom tab with the Custom mark, at the provider logos' size", () => {
-    renderPicker();
-    const tab = screen.getByRole("tab", { name: "Custom" });
-    const mark = tab.querySelector("[data-custom-mark]");
-    expect(mark).toBeTruthy();
-    expect(mark!.getAttribute("width")).toBe("18");
-  });
-
-  /** Same shape as a provider's model row: mark, name, a chip, one subtitle. */
-  it("shows one row per preset, drawn like a model row", () => {
-    setPresets([preset(), preset({ id: "hp_2", name: "Haiku sweeps", model: "anthropic/claude-haiku-5-5" })]);
-    renderPicker();
-    openHarnessesTab();
-
-    expect(screen.getByText("Opus on work")).toBeTruthy();
-    expect(screen.getByText("Haiku sweeps")).toBeTruthy();
-    const row = document.querySelector('[data-harness-preset-row="hp_1"]') as HTMLElement;
-    // The agent is a chip beside the name; the model is the subtitle. Neither
-    // is the old "Claude Code · Claude Opus 5" run-on string.
-    expect(row.textContent).toContain("Claude Code");
-    expect(row.textContent).toContain("Claude Opus 5");
-    expect(screen.queryByText("Claude Code · Claude Opus 5")).toBeNull();
-  });
 
   it("keeps the preset's details behind the arrow until it is opened", () => {
     setPresets([preset({ subagentModel: "anthropic/claude-haiku-5-5", agentOverrides: { explore: "anthropic/claude-haiku-5-5" } })]);

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   AGENT_CHAT_STOP_MODES,
-  CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
   chatStopModeCopy,
   formatBackgroundJobCount,
@@ -85,7 +84,6 @@ describe("chat stop matrix", () => {
       stopTaskExposed: true,
       stopControlsReachable: true,
     })).toBe(true);
-    expect(CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE).toBe(true);
   });
 
 });

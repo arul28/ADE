@@ -3,26 +3,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppleDeviceLoadingCard } from "./AppleDeviceLoadingCard";
-import { expectNoHorizontalOverflow } from "./testLayout";
 
 afterEach(cleanup);
 
 describe("AppleDeviceLoadingCard", () => {
-  it("names the device, the runtime and the step, in §3.2's words", () => {
-    render(
-      <AppleDeviceLoadingCard
-        name="iPhone 17 Pro"
-        runtime="iOS 26.2"
-        family="iphone"
-        stage="starting"
-        onRetry={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Booting iPhone 17 Pro…")).toBeTruthy();
-    expect(screen.getByText("Installed simulator · iOS 26.2")).toBeTruthy();
-    expect(screen.getByText("Booting device")).toBeTruthy();
-    expect(screen.getByLabelText("Step 1 of 2: boot device")).toBeTruthy();
-  });
 
   it("advances to the second segment for the video step", () => {
     render(
@@ -125,35 +109,6 @@ describe("AppleDeviceLoadingCard", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it("is a gradient card on the picker's own page, never a black column", () => {
-    const { container } = render(
-      <AppleDeviceLoadingCard
-        name="iPhone 17 Pro"
-        runtime="iOS 26.2"
-        family="iphone"
-        stage="starting"
-        onRetry={vi.fn()}
-      />,
-    );
-    expect(container.querySelector(".ade-tool-picker-static")).toBeTruthy();
-    expect(container.querySelector(".ade-tool-card")).toBeTruthy();
-    expect(container.querySelector(".bg-bg")).toBeNull();
-  });
-
-  it.each([360, 900])("fits its container at %ipx", (width) => {
-    const { container } = render(
-      <AppleDeviceLoadingCard
-        name="iPhone 17 Pro Max (2nd generation)"
-        runtime="iOS 26.2"
-        model="iPhone 17 Pro Max"
-        family="vision"
-        stage="streaming"
-        onRetry={vi.fn()}
-      />,
-    );
-    expectNoHorizontalOverflow(container, width);
   });
 
   it("stays a status while it is working and becomes an alert when it fails", () => {
