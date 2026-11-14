@@ -82,10 +82,11 @@ export function useToolHandoff(args: {
     chatPin: OpenProjectBinding | null,
     text: string,
     dispatchMode: "inline" | undefined,
+    sentByUser = false,
   ): Promise<AgentChatSteerResult | null> => {
     try {
       const result = await withChatPin(chatPin, (scopedPin) => window.ade.agentChat.steer(
-        { sessionId: chatId, text, ...(dispatchMode ? { dispatchMode } : {}) },
+        { sessionId: chatId, text, ...(dispatchMode ? { dispatchMode } : {}), ...(sentByUser ? { sentByUser } : {}) },
         scopedPin,
       ));
       if (result.reason === "queue_full") {
@@ -130,7 +131,7 @@ export function useToolHandoff(args: {
     if (!sessionId) return false;
     const chatPin = pinRef.current;
     if (turnRunningRef.current) {
-      const result = await noteToAgent(sessionId, chatPin, text, canTellRef.current ? "inline" : undefined);
+      const result = await noteToAgent(sessionId, chatPin, text, canTellRef.current ? "inline" : undefined, true);
       if (!result) return false;
       showToast({
         id: "work-tools-agent-note",

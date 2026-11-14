@@ -195,7 +195,7 @@ function MachineRow({
       <span className="mr-1 shrink-0 font-sans text-[12px] text-muted-fg">
         {rowLabel(asking, viewOnly)}
       </span>
-      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {able.map((machine) => {
           const chosen = Boolean(tile.machine && sameMachineKey(tile.machine.key, machine.key));
           const title = machineChipTitle({ noun, machine, chosen, asking, enabled, viewOnly, chooseUnavailableReason });
@@ -210,7 +210,7 @@ function MachineRow({
               title={title}
               className={cn(
                 WORK_TOOL_CHROME_CHIP,
-                "h-6 min-w-[44px] shrink-[0.3] rounded-full px-2.5",
+                "h-6 shrink-0 rounded-full px-2.5",
                 chosen
                   ? "bg-[color-mix(in_srgb,var(--tool-color)_16%,transparent)] text-fg shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--tool-color)_55%,transparent)]"
                   : "text-fg/70",

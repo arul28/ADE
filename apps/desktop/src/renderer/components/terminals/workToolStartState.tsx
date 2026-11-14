@@ -193,10 +193,13 @@ function StartText({ title, line }: { title: string; line: string }) {
 export function WorkToolStartState({
   kind,
   machine,
+  viewOnly,
   onAskAgent,
 }: {
   kind: DeviceKind;
   machine: ToolMachine;
+  /** The chat's machine keeps no device choice: this machine is only what the panel shows. */
+  viewOnly: boolean;
   onAskAgent: ((text: string) => Promise<boolean>) | null;
 }) {
   const [asked, setAsked] = useState<string | null>(null);
@@ -224,7 +227,9 @@ export function WorkToolStartState({
       <StartHero kind={kind} machine={machine} glowing={Boolean(asked)} />
       <StartText
         title={asked ? `Starting the ${noun}…` : `No ${noun} running yet`}
-        line={`This chat's ${noun}s run on ${machine.name}. Tell the agent what to do and watch it here.`}
+        line={viewOnly
+          ? `Showing ${machine.name}. Ask the agent to start one there and watch it here.`
+          : `This chat's ${noun}s run on ${machine.name}. Tell the agent what to do and watch it here.`}
       />
       {onAskAgent ? (
         <div className="flex w-full max-w-[320px] flex-col gap-2">
@@ -255,25 +260,29 @@ export function WorkToolStartState({
 export function WorkToolPickMachineState({
   kind,
   machines,
+  read,
+  viewOnly,
   onChoose,
 }: {
   kind: DeviceKind;
-  /** The machines that can run it. */
+  /** The machines that can run it, offline ones too. */
   machines: readonly ToolMachine[];
+  /** Whether the account's machine list was read: an unread list is not an empty one. */
+  read: "pending" | "ok" | "failed";
+  /** The chat's machine keeps no device choice: a pick only changes what this panel shows. */
+  viewOnly: boolean;
   onChoose: ((machine: ToolMachine) => void) | null;
 }) {
   const noun = DEVICE_KINDS[kind].noun;
   const title = kind === "ios" ? "Apple simulators run on a Mac" : `This machine can't run the ${noun}`;
+  const somewhere = kind === "ios" ? "a Mac" : "a machine that can run it";
   let line: string;
-  if (!machines.length) {
-    line = kind === "ios"
-      ? "Sign in to ADE on a Mac and it shows up here."
-      : "Sign in to ADE on a machine that can run it and it shows up here.";
-  } else if (!onChoose) {
-    line = `Open a chat on this lane to pick where its ${noun}s run.`;
-  } else {
-    line = `Pick where this chat's ${noun}s run. Then ask the agent to start one.`;
-  }
+  if (!machines.length && read === "pending") line = "Looking for your machines…";
+  else if (!machines.length && read === "failed") line = "Couldn't read your account's machines. Check that ADE is signed in, then open this again.";
+  else if (!machines.length) line = `Sign in to ADE on ${somewhere} and it shows up here.`;
+  else if (!onChoose) line = `Open a chat on this lane to pick where its ${noun}s run.`;
+  else if (viewOnly) line = `Pick ${somewhere} to show its ${noun} here, then ask the agent to start one.`;
+  else line = `Pick where this chat's ${noun}s run. Then ask the agent to start one.`;
   return (
     <div data-testid="work-tool-pick-machine" style={startStyle(kind)} className={START_ROOT}>
       <StartHero kind={kind} machine={null} glowing={false} />

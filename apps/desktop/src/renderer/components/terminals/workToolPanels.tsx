@@ -52,9 +52,9 @@ import {
 } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolPickMachineState, WorkToolStartState } from "./workToolStartState";
-import type { DeviceKind } from "../../../shared/types/deviceSources";
+import { deviceKindRunsOnPlatform, type DeviceKind } from "../../../shared/types/deviceSources";
 import type { RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
-import { machinesForKind, workCopyUseOn } from "./workToolCatalog";
+import { workCopyUseOn } from "./workToolCatalog";
 import type { ToolMachine } from "./useToolMachines";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
@@ -117,10 +117,16 @@ export type WorkToolPanelProps = {
   onInsertDraft: ((text: string) => void) | undefined;
   /** Sends the chat's agent a request as the person's message; null with no chat to ask. */
   onAskAgent: ((text: string) => Promise<boolean>) | null;
-  /** Every machine on the account, for a tool's machine choices. */
-  machines: readonly ToolMachine[];
-  /** Sets the chat's device choice (`ade devices use`); null when this view can't keep one. */
-  onChooseMachine: ((kind: DeviceKind, machine: ToolMachine) => void) | null;
+  /** The machines a device can be picked on, and the pick itself. */
+  deviceChoice: {
+    machines: readonly ToolMachine[];
+    /** Whether the account's machine list was read (`useToolMachines`). */
+    read: "pending" | "ok" | "failed";
+    /** The chat's machine keeps no choice: a pick only changes what this panel shows. */
+    viewOnly: boolean;
+    /** The chat's device choice (`ade devices use`); null with no chat to keep one. */
+    choose: ((kind: DeviceKind, machine: ToolMachine) => void) | null;
+  };
   onResumeEndedSession: () => void;
   onToolChange: (tool: WorkSidebarTab | null) => void;
   onClose: () => void;
@@ -196,14 +202,33 @@ function chosenRemoteTarget(
   return { machine, use: workCopyUseOn(props.activeSession?.remoteWork, machine.key) };
 }
 
-/** The machines other than the chat's that can run `kind`, one press each. */
-function PickMachine({ kind, machines, onChooseMachine }: WorkToolPanelProps & { kind: DeviceKind }) {
-  const able = machinesForKind(kind, machines, null).filter((machine) => !machine.isChat);
+/** The machines other than the chat's that can run `kind`, offline ones too, one press each. */
+function PickMachine({ kind, deviceChoice }: WorkToolPanelProps & { kind: DeviceKind }) {
+  const { choose } = deviceChoice;
+  const able = deviceChoice.machines.filter((machine) => !machine.isChat && deviceKindRunsOnPlatform(kind, machine.platform));
   return (
     <WorkToolPickMachineState
       kind={kind}
       machines={able}
-      onChoose={onChooseMachine ? (machine) => onChooseMachine(kind, machine) : null}
+      read={deviceChoice.read}
+      viewOnly={deviceChoice.viewOnly}
+      onChoose={choose ? (machine) => choose(kind, machine) : null}
+    />
+  );
+}
+
+/**
+ * The start screen for a chosen machine with no device of `kind` yet. Keyed by
+ * the chat and machine, so "Asked the agent" never follows a pick elsewhere.
+ */
+function StartOn({ kind, machine, ...props }: WorkToolPanelProps & { kind: DeviceKind; machine: ToolMachine }) {
+  return (
+    <WorkToolStartState
+      key={`${props.panelSessionId ?? "none"}:${machine.key}`}
+      kind={kind}
+      machine={machine}
+      viewOnly={props.deviceChoice.viewOnly}
+      onAskAgent={props.onAskAgent}
     />
   );
 }
@@ -406,7 +431,7 @@ function WorkIosTool(props: WorkToolPanelProps) {
   const { toolContext } = props;
   const driverChat = useDriverChat(props);
   const target = chosenRemoteTarget(props, "ios");
-  if (target && !target.use) return <WorkToolStartState kind="ios" machine={target.machine} onAskAgent={props.onAskAgent} />;
+  if (target && !target.use) return <StartOn {...props} kind="ios" machine={target.machine} />;
   if (!target && !toolContext.supportsIosSimulator) {
     return <PickMachine kind="ios" {...props} />;
   }
@@ -420,6 +445,7 @@ function WorkIosTool(props: WorkToolPanelProps) {
           key={`${remotePin.key}:${use.workCopyLaneId}`}
           use={use}
           remotePin={remotePin}
+          renderNone={target ? () => <StartOn {...props} kind="ios" machine={target.machine} /> : undefined}
           renderDevice={() => (
             <WorkIosDevice
               {...props}
@@ -611,7 +637,7 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
   // `ade android show` for this chat finds the tool on screen.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("android", mountScope, laneId) : null);
   const target = chosenRemoteTarget(props, "android");
-  if (target && !target.use) return <WorkToolStartState kind="android" machine={target.machine} onAskAgent={props.onAskAgent} />;
+  if (target && !target.use) return <StartOn {...props} kind="android" machine={target.machine} />;
   if (!target && toolContext.supportsAndroidEmulator === false) {
     return <PickMachine kind="android" {...props} />;
   }
@@ -629,6 +655,7 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
             key={`${remotePin.key}:${use.workCopyLaneId}`}
             use={use}
             remotePin={remotePin}
+            renderNone={target ? () => <StartOn {...props} kind="android" machine={target.machine} /> : undefined}
             renderDevice={() => (
               <WorkAndroidDevice
                 {...props}
@@ -753,7 +780,7 @@ function WorkAppControlTool(props: WorkToolPanelProps) {
     if (!laneId) return <NoLaneEmptyLine />;
     return panel(`work-appcontrol:${mountScope}:${laneId}`, { laneId, pin: runtimePin, projectRoot: laneRoot });
   };
-  if (target && !target.use) return <WorkToolStartState kind="app" machine={target.machine} onAskAgent={props.onAskAgent} />;
+  if (target && !target.use) return <StartOn {...props} kind="app" machine={target.machine} />;
   return (
     <RemoteOrLaneTool
       use={target?.use ?? null}
@@ -839,7 +866,7 @@ function WorkDesktopTool({ tool, ...props }: WorkToolPanelProps & { tool: Deskto
       </NativePanelFrame>
     );
   };
-  if (target && !target.use) return <WorkToolStartState kind="screen" machine={target.machine} onAskAgent={props.onAskAgent} />;
+  if (target && !target.use) return <StartOn {...props} kind="screen" machine={target.machine} />;
   return (
     <RemoteOrLaneTool
       use={target?.use ?? null}
