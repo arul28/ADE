@@ -919,23 +919,29 @@ describe("cloud disk grow for a lane setup", () => {
   const disk = (free: number, total: number) => ({ bsize: 4096, blocks: (total * GB) / 4096, bavail: (free * GB) / 4096 }) as fs.StatsFs;
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  // Each run: the free space it started with, then what the disk read when setup said ENOSPC.
+  // Each run: the free space it started with, the lowest it read while it ran, what the disk read when setup said ENOSPC, and the disk's size.
   it.each([
-    ["a disk with room left (a tool's own limit, not the disk)", [[3.5, 3, 8]], [false]],
-    ["a disk that really ran short", [[3.5, 0.2, 8]], [true]],
-    ["a second fill that used no more than the first (the grow didn't help)", [[3.5, 0.2, 8], [4, 0.8, 12]], [true, false]],
-    ["a second fill that used more than the first", [[3.5, 0.2, 8], [7, 0.3, 12]], [true, true]],
+    ["a disk with room left (a tool's own limit, not the disk)", [[3.5, 3, 3, 8]], [false]],
+    ["a disk that really ran short", [[3.5, 0.2, 0.2, 8]], [true]],
+    ["a disk that ran short, then read roomy again once the failed install cleaned up", [[3.5, 0.1, 3.4, 8]], [true]],
+    ["a second fill that used no more than the first (the grow didn't help)", [[3.5, 0.2, 0.2, 8], [4, 0.8, 3.9, 12]], [true, false]],
+    ["a second fill that used more than the first", [[3.5, 0.2, 0.2, 8], [7, 0.3, 6.5, 12]], [true, true]],
   ])("%s", (_label, runs, grows) => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-grow-"));
     try {
+      vi.useFakeTimers();
       const statfs = vi.spyOn(fs, "statfsSync");
       const setup = createCloudDiskGrower({ instanceId: "i-1", client: async () => null, path: home, adeHome: home }).setupDisk(() => true);
-      const answers = runs.map(([startFree, fullFree, total]) => {
+      const answers = runs.map(([startFree, lowFree, fullFree, total]) => {
         statfs.mockReturnValue(disk(startFree!, total!));
         setup.setupStarting({ launchId: "launch-1" });
+        // The install runs: the disk reads its low point, then whatever it reads when setup says ENOSPC.
+        statfs.mockReturnValue(disk(lowFree!, total!));
+        vi.advanceTimersByTime(5_000);
         statfs.mockReturnValue(disk(fullFree!, total!));
         const answer = setup.diskFull({ launchId: "launch-1", error: ENOSPC });
         setup.setupEnded({ launchId: "launch-1" });

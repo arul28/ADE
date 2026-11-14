@@ -1345,9 +1345,12 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   (`laneSetupDiskFullError`). A file-watcher limit (`ENOSPC: System limit for
   number of file watchers`) is not a full disk and shows as itself. On a cloud
   computer (`cloudDiskGrower.setupDisk`) each setup run keeps a 32 MB reserve
-  on the disk; an `ENOSPC` grows only when the disk really ran short (under
-  1 GB or 10% free, or past the guard's warning), and a launch grows again only
-  when its run used more than the run before (four grows at most). The reserve
+  on the disk and reads its free space every 2 seconds while it runs (a local
+  statfs); an `ENOSPC` grows only when the run's lowest reading was really short
+  (under 1 GB or 10% free, or past the guard's warning), since a failed install
+  that deletes what it wrote reads roomy again right after. A launch grows
+  again only when its run used more than the run before, measured to that low
+  point (four grows at most). The reserve
   is freed, the launch record is marked `awaitingRoom` (no grow when that write
   fails: "free some space or Clear caches, then retry"), and the grower asks
   for one step (the same server rules, only while no other work and at most

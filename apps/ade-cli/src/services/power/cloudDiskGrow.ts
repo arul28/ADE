@@ -81,6 +81,12 @@ const SETUP_SHORT_FREE_BYTES = 1024 * 1024 * 1024;
 const SETUP_SHORT_FREE_FRACTION = 0.1;
 /** Kept on the disk while a setup runs and freed just before the launch writes its grow mark, so a full disk can still take it. */
 const SETUP_RESERVE_BYTES = 32 * 1024 * 1024;
+/**
+ * How often a running setup's free space is read (a local statfs). A failed
+ * install often deletes what it wrote, so the disk reads roomy again right
+ * after ENOSPC: the run's lowest reading says how short it really ran.
+ */
+const SETUP_SAMPLE_MS = 2_000;
 /** One launch's setup grows at most this often, however much more each run used. */
 const SETUP_MAX_GROWS = 4;
 /** A launch's grow history goes after this long (no launch's setup waits a day). */
@@ -232,8 +238,20 @@ export function createCloudDiskGrower(deps: {
     }
   };
 
-  /** The free space each running setup started with, by launch (this boot only: a resumed run starts again). */
-  const setupRuns = new Map<string, number | null>();
+  /**
+   * Each running setup, by launch (this boot only: a resumed run starts
+   * again): the free space it started with, the lowest it read while it ran,
+   * and the sampler reading it (stopped once the run says ENOSPC or ends).
+   */
+  type SetupRun = { startFree: number | null; lowFree: number | null; sampler: ReturnType<typeof setInterval> | null };
+  const setupRuns = new Map<string, SetupRun>();
+  const noteLow = (run: SetupRun, freeBytes: number | null | undefined): void => {
+    if (freeBytes != null && (run.lowFree == null || freeBytes < run.lowFree)) run.lowFree = freeBytes;
+  };
+  const stopSampling = (run: SetupRun | undefined): void => {
+    if (run?.sampler) clearInterval(run.sampler);
+    if (run) run.sampler = null;
+  };
   const reservePath = (launchId: string): string => path.join(reserveDir, `${launchId.replace(/[^A-Za-z0-9_-]/g, "_")}.bin`);
   const freeReserve = (launchId: string): void => {
     try { fs.rmSync(reservePath(launchId), { force: true }); } catch { /* nothing to free */ }
@@ -479,29 +497,40 @@ export function createCloudDiskGrower(deps: {
     setupDisk(stillIdle: () => boolean | Promise<boolean>): ChatLaunchEnvironmentDisk {
       return {
         setupStarting({ launchId }) {
-          setupRuns.set(launchId, readDiskSpace(deps.path)?.freeBytes ?? null);
+          stopSampling(setupRuns.get(launchId));
+          const startFree = readDiskSpace(deps.path)?.freeBytes ?? null;
+          const run: SetupRun = { startFree, lowFree: startFree, sampler: null };
+          run.sampler = setInterval(() => noteLow(run, readDiskSpace(deps.path)?.freeBytes), SETUP_SAMPLE_MS);
+          run.sampler.unref?.();
+          setupRuns.set(launchId, run);
           keepReserve(launchId);
         },
         setupEnded({ launchId }) {
+          stopSampling(setupRuns.get(launchId));
           setupRuns.delete(launchId);
           freeReserve(launchId);
         },
         diskFull({ launchId, error }) {
           const space = readDiskSpace(deps.path);
-          const startFree = setupRuns.get(launchId) ?? null;
+          const run = setupRuns.get(launchId);
+          stopSampling(run);
+          const startFree = run?.startFree ?? null;
           const line = safeExcerpt(diskFullLine(error));
           if (!space) return { grow: false, error };
-          const pressure = pressureOf(space);
-          const short = space.freeBytes < SETUP_SHORT_FREE_BYTES
-            || space.freeBytes / space.totalBytes < SETUP_SHORT_FREE_FRACTION
+          // The lowest the disk read during the run: a failed install that cleaned up after itself reads roomy now.
+          if (run) noteLow(run, space.freeBytes);
+          const lowFree = Math.min(run?.lowFree ?? space.freeBytes, space.freeBytes);
+          const pressure = pressureOf({ freeBytes: lowFree, totalBytes: space.totalBytes });
+          const short = lowFree < SETUP_SHORT_FREE_BYTES
+            || lowFree / space.totalBytes < SETUP_SHORT_FREE_FRACTION
             || pressure !== "normal";
-          const usedBytes = startFree == null ? null : Math.max(0, startFree - space.freeBytes);
+          const usedBytes = startFree == null ? null : Math.max(0, startFree - lowFree);
           const history = readHistory();
           const before = history[launchId];
-          const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), grows: before?.grows ?? 0, line };
+          const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), lowMb: Math.round(lowFree / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), grows: before?.grows ?? 0, line };
           if (!short) {
             deps.logger?.info("cloud.setup_disk_full_not_short", log);
-            return { grow: false, error: `Setup said there's no space left on the device, but this computer's disk has ${gb(space.freeBytes)} free, so ADE didn't grow it (a tool's own limit or a full inode table says the same).${line ? ` Last error: ${line}` : ""} Fix that, then retry.` };
+            return { grow: false, error: `Setup said there's no space left on the device, but this computer's disk kept at least ${gb(lowFree)} free during setup, so ADE didn't grow it (a tool's own limit or a full inode table says the same).${line ? ` Last error: ${line}` : ""} Fix that, then retry.` };
           }
           if (before && (before.grows >= SETUP_MAX_GROWS || usedBytes == null || usedBytes <= before.usedBytes)) {
             deps.logger?.info("cloud.setup_disk_full_no_regrow", log);
