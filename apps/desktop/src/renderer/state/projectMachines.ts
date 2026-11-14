@@ -20,6 +20,7 @@ import type { LaneSummary, OpenProjectBinding, RemoteRuntimeConnectionSnapshot }
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
 import { useAppStore, useRootAppStore } from "./appStore";
+import { useAdeCloudLaneComputers } from "./adeCloudLaneIndex";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
 import { buildAllMachineLanes, connectionOnline, type LaneMachine } from "./laneMachineRouting";
 
@@ -200,6 +201,7 @@ export function useProjectMachines(active = true): ProjectMachinesState {
   const unionMachines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const { snapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(active);
   const local = useThisMachineIdentity(active);
+  const { computers: laneComputers } = useAdeCloudLaneComputers();
 
   const machines = useMemo<ProjectMachine[]>(() => {
     const all = buildAllMachineLanes({
@@ -221,7 +223,9 @@ export function useProjectMachines(active = true): ProjectMachinesState {
       ...withRepo,
       ...withoutRepo.filter((machine) => !machine.isThisMachine),
     ];
-  }, [local.deviceId, projectBinding, snapshot, unionMachines]);
+    // `laneComputers`: a cloud lane's computer reads "Cloud · <lane>".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneComputers, local.deviceId, projectBinding, snapshot, unionMachines]);
 
   const connectedRemoteCount = useMemo(
     () => (snapshot?.connections ?? []).filter(connectionOnline).length,

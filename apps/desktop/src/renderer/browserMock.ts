@@ -3024,19 +3024,24 @@ function mockCloudLaneRows(): { lanes: any[]; sessions: any[] } {
 
 function mockCloudLaneTargets(): any[] {
   if (!browserMockFlag("mockCloudLaneMachine")) return [];
-  return [{
-    id: "mock-cloud-lane",
-    name: "ade-cloud-k3j9x0a1",
-    hostname: "k3j9x0a1",
+  const target = (id: string, name: string, hostname: string) => ({
+    id,
+    name,
+    hostname,
     transport: "paired",
-    pairedMachine: { hostIdentity: "mock-cloud-k3j9x0a1", machineKey: "mock-k3j9x0a1" },
+    pairedMachine: { hostIdentity: `mock-cloud-${hostname}`, machineKey: `mock-${hostname}` },
     sshUser: null,
     port: null,
     sshKeyPath: null,
     lastSeenArch: "linux-x64",
     runtimeBinaryVersion: "0.0.0-browser",
     lastConnectedAt: Date.now(),
-  }];
+  });
+  // One computer under an instance-derived name, one under a prompt-derived name (the lanes' computers of `?mockCloud=plus`).
+  return [
+    target("mock-cloud-lane", "ade-cloud-0t1p52vfqe", "k3j9x0a1"),
+    target("mock-cloud-lane-2", "Live Test ADE Cloud Keep", "m2q8w1b2"),
+  ];
 }
 
 /** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */

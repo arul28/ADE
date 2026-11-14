@@ -39,7 +39,7 @@ import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
-import { adeCloudLaneComputerForMachine, machineLabelForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 import {
   useAppStore,
   useRootAppStore,
@@ -292,12 +292,14 @@ export function buildAllMachineLanes(input: {
   };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
-  // What a person sees: a cloud lane computer reads "Cloud · <lane>" (only when
-  // the lane computers are passed); every other machine keeps its own name.
+  // What a person sees: a cloud lane computer reads "Cloud · <lane>" (from the
+  // lane computers passed, else the ones last read); every other machine keeps
+  // its own name. Callers re-run this when the lane computers change.
+  const laneComputers = input.adeCloud?.computers ?? adeCloudLaneComputersNow();
+  const labelFor = (hostname: string | null, machineId: string, name: string): string =>
+    machineLabelForMachine({ hostname, machineKey: machineId, name }, laneComputers);
   const shownName = (binding: OpenProjectBinding | null, machineId: string, name: string): string =>
-    input.adeCloud
-      ? machineLabelForMachine({ hostname: binding?.kind === "remote" ? binding.hostname ?? null : null, machineKey: machineId, name }, input.adeCloud.computers)
-      : name;
+    labelFor(binding?.kind === "remote" ? binding.hostname ?? null : null, machineId, name);
   const active = activeMachineFor(activeBinding);
   const activeSlice = input.machines[active.machineId];
   const connectionById = new Map((input.connections ?? []).map((connection) => [connection.target.id, connection]));
@@ -411,7 +413,7 @@ export function buildAllMachineLanes(input: {
     for (const connection of rest) {
       machinesWithoutRepo.push(noRepo({
         machineId: connection.target.id,
-        machineName: connection.target.name?.trim() || connection.target.hostname || connection.target.id,
+        machineName: labelFor(connection.target.hostname ?? null, connection.target.id, connection.target.name?.trim() || connection.target.hostname || connection.target.id),
         online: connectionOnline(connection),
         isThisMachine: false,
         deviceId: connectionDeviceId(connection),
@@ -470,9 +472,12 @@ export function useAllMachineLanes(active = true): AllMachineLanes {
   const activeBinding = useAppStore((state) => state.projectBinding);
   const activeLanes = useAppStore((state) => state.lanes);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const { computers } = useAdeCloudLaneComputers();
   return useMemo(
     () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {} }),
-    [activeBinding, activeLanes, machines],
+    // `computers`: the machine names read the lane computers as last read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeBinding, activeLanes, machines, computers],
   );
 }
 
