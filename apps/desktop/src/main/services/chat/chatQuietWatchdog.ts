@@ -12,9 +12,9 @@ import { CODEX_COMPACTION_STALL_MS } from "./codexAppServerFeatures";
  *
  * Fed by the chat's own event stream (`observe` from `emitChatEvent`), so a
  * provider gets it by emitting the events every provider already emits:
- * `status: started` arms it, any agent output counts as activity (not ADE's
- * own `activity` placeholder or notices), `done` or a terminal `status` ends
- * it. A provider with a better signal than its emitted
+ * `status: started` arms it, agent output counts as activity (`AGENT_ACTIVITY`;
+ * not ADE's own `activity` placeholder, notices or diagnostics), `done` or a
+ * terminal `status` ends it. A provider with a better signal than its emitted
  * events (Codex's raw app-server notifications) can also call `activity`.
  *
  * A compaction counts as activity: while one is open the turn is waiting on
@@ -87,23 +87,42 @@ export type QuietInfo = Readonly<Omit<QuietWatch, "openCompactions">> & {
 export type QuietObservedEvent = { type: string; [key: string]: unknown };
 
 /**
- * Events that are not the agent working: what the user or ADE wrote, ADE's
- * own notices and cards, and turn boundaries (handled separately).
+ * Events that are the agent working: its output, its tools and subagents, a
+ * provider retry, and the user answering it (the turn is the agent's again).
+ * An allowlist, because ADE emits plenty of its own events mid-turn (turn
+ * diagnostics, session metadata, notices, usage readings) and none of those
+ * may hold the watchdog off. Turn boundaries and compactions are handled
+ * separately.
  */
-const NOT_AGENT_ACTIVITY: ReadonlySet<string> = new Set([
-  "user_message",
-  "user_message_resolution",
-  "system_notice",
-  "turn_health",
-  "turn_recovery",
-  "codex_turn_stalled",
-  "codex_turn_recovery",
-  "status",
-  "done",
-  "error",
-  "notice",
-  "mcp_startup_status",
-  "provider_health",
+const AGENT_ACTIVITY: ReadonlySet<string> = new Set([
+  "text",
+  "reasoning",
+  "tool_call",
+  "tool_result",
+  "tool_use_summary",
+  "file_change",
+  "command",
+  "command_lifecycle",
+  "plan",
+  "todo_update",
+  "approval_request",
+  "structured_question",
+  "pending_input_resolved",
+  "subagent_started",
+  "subagent_progress",
+  "subagent_result",
+  "subagent.started",
+  "subagent.progress",
+  "subagent.completed",
+  "step_boundary",
+  "web_search",
+  "sources",
+  "completion_report",
+  "codex_image_generation",
+  "codex_image_view",
+  "cloud_status",
+  "cloud_artifact",
+  "api_retry",
 ]);
 
 const COMPACTION_EVENTS: ReadonlySet<string> = new Set(["context_compact", "codex_context_compaction"]);
@@ -249,11 +268,11 @@ export function createChatQuietWatchdog(options: {
       else activity(sessionId, turnId);
       return;
     }
-    if (NOT_AGENT_ACTIVITY.has(event.type)) return;
     // ADE posts `activity: thinking/working` itself the moment a turn starts,
     // so it is not the agent answering. A provider retry or reconnect is.
-    if (event.type === "activity" && event.providerRetry !== true) return;
-    activity(sessionId, turnId);
+    const agentWorking = AGENT_ACTIVITY.has(event.type)
+      || (event.type === "activity" && event.providerRetry === true);
+    if (agentWorking) activity(sessionId, turnId);
   };
 
   return {
