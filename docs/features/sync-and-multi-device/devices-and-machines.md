@@ -90,14 +90,17 @@ A device on another machine runs your code from a copy ADE keeps there.
 `ade shell clean --machine <name>` deletes your code there and everything it
 held: its simulator session, emulator, screen and app. A machine can hold
 two checkouts of one repository; the calls of a chat keep landing in the one
-that holds its copy (asked of that machine once, then kept), and `clean`
+that holds its copy (asked of that machine once, then kept; a lookup that
+got no answer is asked again on the next call), and `clean`
 deletes the chat's copy in every checkout there, naming each folder. It says
 "Deleted" only when it deleted something. The chat's record of that machine
 (its work copy lane, its shells) is cleared with it. The tools pane's
 **Clean up** deletes the same copies for a person, each through its own
 project there, but keeps a copy holding work nobody pushed and names it
 (Settings › Machines deletes it on purpose, after asking). Archiving or
-deleting the chat removes its copies the same way, unpushed work kept.
+deleting the chat removes its copies the same way, unpushed work kept: its
+shells there stop first, in whichever checkout they run, and a copy still
+busy is left for that machine's hourly sweep.
 
 The old flags keep working as aliases and are no longer shown in help.
 
