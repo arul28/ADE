@@ -271,6 +271,9 @@ export function MenuSubmenu({
           onPointerEnter={clearTimers}
           onPointerLeave={scheduleClose}
           onKeyDown={(event) => {
+            // A nested submenu's panel sits inside this one and handles its
+            // own keys; they bubble here but are not ours.
+            if (event.target instanceof Element && event.target.closest("[role='menu']") !== panelRef.current) return;
             if (event.key === "Escape" || event.key === "ArrowLeft") {
               event.preventDefault();
               event.stopPropagation();
@@ -298,9 +301,11 @@ export function MenuSubmenu({
   );
 }
 
+/** The panel's own enabled rows; a nested submenu's rows are its own. */
 function focusableItems(panel: HTMLElement | null): HTMLElement[] {
   if (!panel) return [];
-  return Array.from(panel.querySelectorAll<HTMLElement>("button:not([disabled])"));
+  return Array.from(panel.querySelectorAll<HTMLElement>("button:not([disabled])"))
+    .filter((item) => item.closest("[role='menu']") === panel);
 }
 
 function focusFirstItem(panel: HTMLElement | null): void {
