@@ -151,6 +151,24 @@ jobs:
           [ -n "$PREVIEW_REF" ] && args+=(--preview-ref "$PREVIEW_REF")
           node scripts/beta/resolve.mjs "${args[@]}"
 
+      # A person who dispatched a beta must never read a green run as a beta
+      # that shipped: a skip says so in a warning and at the top of the summary.
+      # Not a failure: that would open the "Beta build failed" issue for a beta
+      # that was never due.
+      - name: Say loudly that nothing was built
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.resolve.outputs.skip == 'true' }}
+        env:
+          REASON: ${{ steps.resolve.outputs.reason }}
+        run: |
+          echo "::warning title=No beta was built::$REASON"
+          {
+            echo "## No beta was built by this run"
+            echo
+            echo "> $REASON"
+            echo
+            echo "Nothing was published and no machine is offered an update."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     needs: resolve
     if: ${{ needs.resolve.outputs.skip == 'false' }}

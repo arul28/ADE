@@ -979,10 +979,16 @@ export async function cloudDomainEnabled(
   }
 }
 
-/** "412" or "49.5" hours from thousandths. */
+/**
+ * "1,600", "299.8" or "49.5" hours from thousandths: whole hours plainly, any
+ * other value to the tenth, rounded down at every size. So 299.8 left of 300
+ * reads "299.8", never "299" (an hour used that wasn't) or "300" (none used).
+ * Integer tenths, so 0.3 h never prints as 0.2 through float error. The CLI
+ * (`cloudHoursText`) and the phone (`cloudHours`) write it the same way.
+ */
 export function formatCloudHours(milli: number): string {
-  const hours = Math.max(0, milli) / 1000;
-  return hours >= 100 ? Math.floor(hours).toLocaleString("en-US") : String(Math.floor(hours * 10) / 10);
+  const tenths = Math.floor(Math.max(0, Number.isFinite(milli) ? milli : 0) / 100);
+  return (tenths / 10).toLocaleString("en-US", { maximumFractionDigits: 1 });
 }
 
 /** The banner for an account, or null when there is nothing to warn about. */

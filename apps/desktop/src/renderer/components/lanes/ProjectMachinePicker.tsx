@@ -8,7 +8,7 @@ import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
 import type { CloudTierId } from "../../../shared/cloudTiers";
 import { CloudSizeButton } from "../chat/AdeCloudComposerParts";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudLaneTarget } from "./useAdeCloudLaneTarget";
-import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 
 /** ADE Cloud was picked: the lane gets a new computer of this size. */
 export type AdeCloudPick = { kind: "ade-cloud"; sizeId: CloudTierId };
@@ -138,8 +138,8 @@ function ProjectMachinePickerDialog({
   const adeCloud = useAdeCloudLaneTarget(offerCloud, request.adeCloudOriginUrl ?? null);
   const cloudPicked = offerCloud && selectedMachineId === ADE_CLOUD_MACHINE_ID;
   const cloudProblem = cloudPicked ? cloudLaneStartBlock(adeCloud.account, { newLane: true })?.message ?? null : null;
-  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>".
-  const labelOf = useAdeCloudMachineLabel();
+  // An ADE Cloud lane's computer reads "Cloud · <lane>".
+  const labelOf = useMachineLabelForMachine();
   const options = useMemo(
     () => request.machines.map((machine) => ({
       ...optionFor(machine, request.laneCountByMachineId.get(machine.machineId) ?? null),

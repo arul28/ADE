@@ -14,7 +14,7 @@ import {
 } from "../../state/laneMachineRouting";
 import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
@@ -252,8 +252,8 @@ export function useLanesPageMachines({
 
   // The machine of each row, for its hover card. Rows show no machine; the
   // hover card names it while the project has lanes on more than one machine.
-  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>".
-  const cloudMachineLabel = useAdeCloudMachineLabel();
+  // An ADE Cloud lane's computer reads "Cloud · <lane>".
+  const cloudMachineLabel = useMachineLabelForMachine();
   const machineByLaneId = useMemo(() => {
     if (!multiMachine) return undefined;
     const byMachineId = new Map<string, MachineChipModel>();

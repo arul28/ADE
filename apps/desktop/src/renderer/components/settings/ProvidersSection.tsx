@@ -54,6 +54,7 @@ import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSh
 import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import { useSettingsReadPin } from "./ProjectCopyScope";
+import { PROJECT_AI_CONFIG_ACTION, isMachineScopePin, machineScopeActionAllowed } from "../../../shared/machineScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
 import { acpLoginCommand } from "./providers/acpProviders";
 import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
@@ -368,6 +369,11 @@ function MachineProvidersSection({
   // The project settings read names this page's machine, This computer included.
   const readPin = useSettingsReadPin();
   const readPinKey = readPin?.key ?? null;
+  // Reached through the machine route: no copy of this repository there, so
+  // nothing a project copy saves can be read or written from this page (the
+  // machine scope never answers `PROJECT_AI_CONFIG_ACTION`).
+  const projectConfigEditable = !isMachineScopePin(pin)
+    || machineScopeActionAllowed(PROJECT_AI_CONFIG_ACTION.domain, PROJECT_AI_CONFIG_ACTION.action);
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -467,7 +473,9 @@ function MachineProvidersSection({
     ).finally(() => {
       if (!options?.silent) setLoading(false);
     });
-    const configRead = Promise.resolve().then(() => window.ade.projectConfig.get(requirePin(readPin))).then(
+    const configRead = Promise.resolve().then(() => (
+      projectConfigEditable ? window.ade.projectConfig.get(requirePin(readPin)) : null
+    )).then(
       (next) => {
         setProjectConfigSnapshot(next);
         return next;
@@ -497,7 +505,7 @@ function MachineProvidersSection({
       setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
     return nextStatus;
-  }, [editingLocalProvider, pin, readPin, savingLocalProvider]);
+  }, [editingLocalProvider, pin, projectConfigEditable, readPin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
@@ -1141,6 +1149,8 @@ function MachineProvidersSection({
   const ctx = useMemo((): ProvidersViewContext => ({
     status,
     projectConfigSnapshot,
+    projectConfigEditable,
+    machineName,
     loading,
     statusLoadError,
     isInitialCheckInFlight,
@@ -1200,6 +1210,7 @@ function MachineProvidersSection({
       verifySignIn,
     },
   }), [
+    projectConfigEditable, machineName,
     apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
     cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
     cursorLoginUrl, customModelSlugs, deleteApiKey,

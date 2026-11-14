@@ -12,7 +12,7 @@ import { selectChatPrs } from "../lanes/lanePageModel";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { invalidatePrListCache, listPrsCached } from "../../lib/prReadCache";
 import { browserHostLabel } from "../../lib/browserUrl";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { useLaneDevServers } from "../../lib/laneDevServers";
 import { relativeWhen } from "../../lib/format";
 import {
@@ -775,8 +775,9 @@ export function useWorkToolStatuses(args: {
 
   // Keyed on the name, not the pin object: a pin can be rebuilt with the same key.
   // The tab's own copy is not a "remote chat", even when the tab is bound to a remote machine.
+  const runtimeMachineLabel = useMachineLabelForBinding(runtimePin);
   const remoteChatMachineName = runtimePin?.kind === "remote" && runtimePinKey !== tabBindingKey
-    ? machineNameForBinding(runtimePin)
+    ? runtimeMachineLabel
     : null;
   const statuses = useMemo<WorkToolStatusMap>(() => {
     const browserLine = offline

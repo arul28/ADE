@@ -14,6 +14,12 @@
  *  - `idle`: Free plan, one lane unused 2 days (deleted in 1 day, ignored files listed) and one whose computer the idle cleanup removed.
  *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
  *  - `idleheld`: Free plan, one lane ADE didn't delete because its push was refused.
+ *  - `pastdue`: Plus with its last payment failed (free plan rules until it's paid).
+ *  - `extradisk`: Plus with extra disk on, past the plan's 30 GB.
+ *  - `upgraded`: Plus a moment after checkout, with this computer last seeing Free
+ *    (79.1 free hours left): the "You're on Plus" confirmation shows once.
+ *  - `emptyplus`: Plus with nothing made yet and no use this period.
+ * On `free`, Get Plus lands the plan a moment later, as a checkout coming back does.
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
@@ -32,9 +38,10 @@ import {
   type CloudPlanCleanup,
 } from "../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "extradisk" | "upgraded" | "emptyplus";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "extradisk", "upgraded", "emptyplus"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -142,6 +149,12 @@ type Fixture = {
   downgrade?: boolean;
   /** The plan in force is over its limits: new computers refused until the person picks. */
   over?: boolean;
+  /** The last payment failed: the plan stays, its rules are the free plan's until paid. */
+  pastDue?: boolean;
+  /** Extra disk on, with a $10 monthly limit and some of it used. */
+  extraDiskOn?: boolean;
+  /** The period started an hour ago (a plan just bought). */
+  freshPeriod?: boolean;
 };
 
 function fixture(scenario: Scenario): Fixture {
@@ -184,6 +197,18 @@ function fixture(scenario: Scenario): Fixture {
       };
     case "downgrade":
       return { ...fixture("pro"), downgrade: true };
+    case "pastdue":
+      return { ...fixture("plus"), pastDue: true, extraHours: false };
+    case "extradisk":
+      return {
+        ...fixture("plus"),
+        extraDiskOn: true,
+        lanes: [...fixture("plus").lanes, { id: "x4d5i6s7", lane: "video-pipeline", tier: "large", diskGb: 6, state: "asleep", lastActiveAgoMs: 3 * HOUR, createdAgoMs: 2 * DAY }],
+      };
+    case "upgraded":
+      return { planId: "plus", usedMilli: 200, freshPeriod: true, lanes: fixture("free").lanes.slice(0, 2), without: [] };
+    case "emptyplus":
+      return { planId: "plus", usedMilli: 0, freshPeriod: true, recentUsedMilli: 4_000, lanes: [], without: [] };
     case "over":
       return { ...fixture("plus"), planId: "free", usedMilli: 9_000, extraHours: false, earnedMilli: undefined, over: true };
     case "full":
@@ -270,7 +295,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   const used = Math.min(fix.usedMilli, includedMilli);
   const left = Math.max(0, includedMilli - used);
   const percent = includedMilli > 0 ? Math.round((used / includedMilli) * 100) : 100;
-  const period = periodBounds(now);
+  const period = fix.freshPeriod ? { start: now - HOUR, end: now - HOUR + 30 * DAY } : periodBounds(now);
   const diskUsed = machines.reduce((total, box) => total + (box.resources?.diskGb ?? 0), 0);
   const extra: Record<string, unknown> = {};
   if (fix.earnedMilli != null) extra.earnedHours = { leftMilli: fix.earnedMilli, usedThisPeriodMilli: 0, grantedMilli: fix.earnedMilli };
@@ -295,7 +320,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   };
   return {
     plan: fix.planId === "free" ? "free" : "paid",
-    rules: fix.planId === "free" ? "free" : "paid",
+    rules: fix.planId === "free" || fix.pastDue ? "free" : "paid",
     planId: fix.planId,
     hours: {
       includedMilli,
@@ -305,7 +330,9 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: left <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    extraDisk: fix.planId === "free" ? undefined : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
+    extraDisk: fix.planId === "free" ? undefined : fix.extraDiskOn
+      ? { available: true, state: "on", monthlyLimitCents: 1000, usedCents: 140 }
+      : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
     disk: { usedGb: fix.planId === "free" && fix.lanes.length === 2 && fix.usedMilli === 100_000 ? 11 : diskUsed, limitGb: plan.diskGb },
     computers: {
       total: machines.length,
@@ -331,10 +358,10 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
     billing: {
       periodStart: period.start,
       periodEnd: period.end,
-      stripeStatus: fix.planId === "free" ? null : "active",
+      stripeStatus: fix.planId === "free" ? null : fix.pastDue ? "past_due" : "active",
       cancelAtPeriodEnd: false,
       nextPlanId: fix.downgrade ? "plus" : null,
-      notice: null,
+      notice: fix.pastDue ? "past_due" : null,
     },
     ...(fix.downgrade ? { planCleanup: mockCleanup(machines, "plus", period.end) } : {}),
     ...(fix.over ? { planCleanup: mockCleanup(machines, "free", null) } : {}),
@@ -384,7 +411,21 @@ export function applyBrowserMockCloud(ade: any): void {
   const now = Date.now();
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
-  const state = account(fix, machines, now);
+  let state = account(fix, machines, now);
+  // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
+  // (once per tab, as a real checkout coming back is seen once).
+  if (scenario === "upgraded") {
+    try {
+      if (window.sessionStorage.getItem("ade.browserMock.planSeenSeed") !== "1") {
+        window.sessionStorage.setItem("ade.browserMock.planSeenSeed", "1");
+        window.localStorage.setItem(CLOUD_PLAN_SEEN_STORAGE_KEY, JSON.stringify({
+          [state.referral?.code ?? "account"]: { planId: "free", periodStart: state.billing.periodStart - 30 * DAY, leftMilli: 79_100 },
+        }));
+      }
+    } catch {
+      // Storage off: the preview shows Plus without the confirmation.
+    }
+  }
   const without: CloudLaneWithoutComputer[] = fix.without.map((lane, index) => ({
     laneId: `lane-without-${index}`,
     laneName: lane.name,
@@ -426,7 +467,19 @@ export function applyBrowserMockCloud(ade: any): void {
     openCheckout: async (plan?: string, cleanup?: { push: boolean; instanceIds: string[] }) => {
       console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`, cleanup ?? "");
       // A paid account changes plan without a checkout page, as the server does: Pro to Plus waits for the period's end.
-      if (fix.planId === "free" || !plan) return { opened: true };
+      if (fix.planId === "free") {
+        // The checkout page "comes back" a moment later: the plan lands with a fresh period.
+        const landed = (plan ?? "plus") as Fixture["planId"];
+        window.setTimeout(() => {
+          fix.planId = landed;
+          fix.freshPeriod = true;
+          fix.usedMilli = 0;
+          state = account(fix, machines, Date.now());
+          for (const listener of statusListeners) listener();
+        }, 1_500);
+        return { opened: true };
+      }
+      if (!plan) return { opened: true };
       const downgrade = plan === "plus" && fix.planId === "pro";
       if (downgrade && cleanup) {
         state.billing = { ...state.billing, nextPlanId: "plus" };

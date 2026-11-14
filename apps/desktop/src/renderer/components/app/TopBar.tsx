@@ -148,6 +148,7 @@ import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
 import { AdeWordmark } from "../ui/AdeWordmark";
+import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
 
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
@@ -842,19 +843,14 @@ export function TopBar({
       );
       // A machine that froze says so when it is reached again; once per freeze.
       for (const connection of snapshot.connections) {
+        if (!connection.hostStorageWait && !connection.hostStall) continue;
+        const machineName = machineLabelForMachine({ hostname: connection.target.hostname, name: connection.target.name?.trim() || connection.target.hostname });
         if (connection.hostStorageWait) {
-          announceHostStorageWait({
-            wait: connection.hostStorageWait,
-            machineKey: connection.target.id,
-            machineName: connection.target.name?.trim() || connection.target.hostname,
-          });
+          announceHostStorageWait({ wait: connection.hostStorageWait, machineKey: connection.target.id, machineName });
         }
-        if (!connection.hostStall) continue;
-        announceHostStall({
-          stall: connection.hostStall,
-          machineKey: connection.target.id,
-          machineName: connection.target.name?.trim() || connection.target.hostname,
-        });
+        if (connection.hostStall) {
+          announceHostStall({ stall: connection.hostStall, machineKey: connection.target.id, machineName });
+        }
       }
     },
     [],

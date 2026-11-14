@@ -1263,15 +1263,20 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     // A cancel can land during that transcript read (re-read: the await widens what TS narrowed).
     if ((record.snapshot.phase as ChatLaunchSnapshot["phase"]) === "cancelled") throw new Error("This launch was cancelled.");
     const delivering = record.snapshot.agentStarted && Boolean(record.snapshot.sessionId);
+    // A retried hand-off of a message this launch already holds: queued once.
+    if (args.clientSendId && record.snapshot.queuedMessages.some((message) => message.id === args.clientSendId)) {
+      return cloneSnapshot(record.snapshot);
+    }
+    const messageId = args.clientSendId ?? randomUUID();
     if (delivering && record.snapshot.queuedMessages.length === 0) {
       // Too late to queue here and nothing waits ahead of it: a normal send.
-      await sendChatMessage(record.snapshot.sessionId!, { ...args, text });
+      await sendChatMessage(record.snapshot.sessionId!, { ...args, text, clientSendId: messageId });
       return cloneSnapshot(record.snapshot);
     }
     if (record.snapshot.queuedMessages.length >= MAX_QUEUED_MESSAGES) {
       throw new Error(`At most ${MAX_QUEUED_MESSAGES} messages can wait for the lane.`);
     }
-    record.snapshot.queuedMessages.push(toQueuedMessage({ ...args, text }, { id: randomUUID(), createdAt: nowIso() }));
+    record.snapshot.queuedMessages.push(toQueuedMessage({ ...args, text }, { id: messageId, createdAt: nowIso() }));
     publish(record);
     if (delivering) {
       // Earlier messages failed to deliver: this one waits behind them, and

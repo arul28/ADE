@@ -3,6 +3,7 @@ import {
   CLOUD_PLAN_LABELS,
   cloudCatalogOf,
   cloudHoursLeftMilli,
+  cloudPlanIdOf,
   formatCloudDate,
   formatCloudHoursRate,
   type CloudAccountState,
@@ -161,6 +162,8 @@ export function planName(account: CloudAccountState): string {
 export function hoursForecast(account: CloudAccountState, now: number): string | null {
   const recent = account.recentUse;
   if (!recent || recent.days <= 0 || recent.usedMilli <= 0) return null;
+  // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
+  if (account.hours.usedMilli <= 0) return null;
   const perDay = recent.usedMilli / recent.days;
   const left = cloudHoursLeftMilli(account);
   if (left <= 0) return null;
@@ -212,4 +215,18 @@ export function cleanupOrder(lanes: readonly DashLane[]): DashLane[] {
 export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined") return true;
   return document.documentElement.dataset.motion === "reduced" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/**
+ * The hero's period chip: when the plan ends, fails to pay, changes, renews
+ * or resets, in that order. `tone` colours the chip; null is the plain one.
+ */
+export function heroPeriodChip(account: CloudAccountState): { text: string; tone: "warn" | "crit" | null } {
+  const { billing } = account;
+  const end = formatCloudDate(billing.periodEnd);
+  if (billing.cancelAtPeriodEnd) return { text: `Ends ${end}`, tone: "warn" };
+  if (billing.notice === "past_due") return { text: "Payment failed", tone: "crit" };
+  const nextPlanId = billing.nextPlanId ?? null;
+  if (nextPlanId && nextPlanId !== cloudPlanIdOf(account)) return { text: `${CLOUD_PLAN_LABELS[nextPlanId]} from ${end}`, tone: null };
+  return { text: `${account.plan === "paid" ? "Renews" : "Resets"} ${end}`, tone: null };
 }

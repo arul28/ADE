@@ -1,5 +1,6 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
+import { MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
@@ -386,7 +387,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall" | "runtimeForDelivery">>;
   /** Profile of the outer runtime, used to trust the sole embedded host. */
   runtimeProfile?: "full" | "chat" | "embedded";
   /**
@@ -427,6 +428,13 @@ export type MultiProjectRpcHandlerOptions = {
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
+  /**
+   * The account settings store the machine scope writes through, so a
+   * provider's account-saved entries (OpenCode's cloud logins) reach the
+   * account the same way a project copy's do. Null on a brain with sync off,
+   * whose project runtimes have no account store either.
+   */
+  machineScopeAccountSettings?: (() => NonNullable<AdeRuntime["accountSettingsStore"]>) | null;
   /**
    * The shared project record (a repository's name and icon on every machine
    * of the account). Without it, names and icons come from this machine only.
@@ -903,6 +911,36 @@ function machineAccountAppGithubOptions(accountUserId: () => string | null) {
     getAccountUserId: accountUserId,
     getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl() || null,
   };
+}
+
+/** One overlay per machine-owned runtime, so every connection shares it. */
+const lentAccountSettingsRuntimes = new WeakMap<AdeRuntime, AdeRuntime>();
+
+/**
+ * The machine-owned runtime (sync off, no account store of its own) with this
+ * brain's account settings store lent to it, for the machine route only. A
+ * prototype overlay keeps the runtime's getters and methods live. It is made
+ * once per runtime: what the action registry hangs on a runtime (the sign-in
+ * status bridges) is then added once, and disposing the runtime runs the
+ * overlay's teardown first, then the runtime's own.
+ */
+function withLentAccountSettings(
+  runtime: AdeRuntime,
+  settings: NonNullable<AdeRuntime["accountSettingsStore"]>,
+): AdeRuntime {
+  const cached = lentAccountSettingsRuntimes.get(runtime);
+  if (cached) return cached;
+  const scoped = Object.create(runtime) as AdeRuntime;
+  Object.defineProperty(scoped, "accountSettingsStore", { value: settings, enumerable: true });
+  // The overlay's own `dispose` starts as the runtime's; whatever wraps it
+  // (`ensureAuthStatusRelayBridges`) ends in the runtime's own teardown.
+  Object.defineProperty(scoped, "dispose", { value: runtime.dispose, writable: true, enumerable: true });
+  runtime.dispose = (reason) => {
+    lentAccountSettingsRuntimes.delete(runtime);
+    return scoped.dispose(reason);
+  };
+  lentAccountSettingsRuntimes.set(runtime, scoped);
+  return scoped;
 }
 
 async function createMachineProjectScaffoldService() {
@@ -1957,6 +1995,41 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
+  /**
+   * This computer's own settings with no project (`MACHINE_SCOPE_PROJECT_ID`):
+   * the machine-owned runtime personal chats run in.
+   */
+  const machineScopeRuntime = async (): Promise<AdeRuntime> => {
+    if (typeof personalChatScope.runtimeForDelivery !== "function") {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime has no machine scope.");
+    }
+    const runtime = await personalChatScope.runtimeForDelivery();
+    const settings = options.machineScopeAccountSettings?.();
+    return settings ? withLentAccountSettings(runtime, settings) : runtime;
+  };
+
+  /**
+   * The runtime a project id names, and its App Control (whose frames a
+   * connection asks for): a project's scope, or for `MACHINE_SCOPE_PROJECT_ID`
+   * this computer's own settings, which show no App Control frames. The one
+   * place the machine scope is told apart from a project.
+   */
+  const scopeFor = async (
+    projectId: ProjectId,
+    requestedBy?: string,
+  ): Promise<{ runtime: AdeRuntime; appControl: NonNullable<AdeRuntime["appControlService"]> | null; machineScope: boolean }> => {
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) {
+      return { runtime: await machineScopeRuntime(), appControl: null, machineScope: true };
+    }
+    const scope = await scopeRegistry.get(projectId, { requestedBy });
+    return { runtime: scope.runtime, appControl: scope.runtime.appControlService ?? null, machineScope: false };
+  };
+
+  /**
+   * The request handler for a project id (`scopeFor`), built and initialized
+   * the same way for a project and for the machine scope, so their role
+   * checks are the same. One cache and one dispose path for both.
+   */
   const getProjectHandler = async (
     projectId: ProjectId,
     requestedBy?: string,
@@ -1965,7 +2038,7 @@ export function createMultiProjectRpcRequestHandler(
     if (cached) return await cached;
 
     const pending = (async () => {
-      const scope = await scopeRegistry.get(projectId, { requestedBy });
+      const scope = await scopeFor(projectId, requestedBy);
       const handler = createAdeRpcRequestHandler({
         runtime: scope.runtime,
         serverVersion: options.serverVersion,
@@ -1973,7 +2046,7 @@ export function createMultiProjectRpcRequestHandler(
       if (initializedParams) {
         await handler({
           jsonrpc: "2.0",
-          id: "initialize-project-scope",
+          id: scope.machineScope ? "initialize-machine-scope" : "initialize-project-scope",
           method: "ade/initialize",
           params: initializedParams,
         });
@@ -1985,7 +2058,7 @@ export function createMultiProjectRpcRequestHandler(
     try {
       return await pending;
     } catch (error) {
-      handlers.delete(projectId);
+      if (handlers.get(projectId) === pending) handlers.delete(projectId);
       throw error;
     }
   };
@@ -2368,7 +2441,9 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
-    const scope = await scopeRegistry.get(projectId);
+    // The machine scope (a computer's own settings) streams its runtime's
+    // events the same way (`scopeFor`); it has no App Control frames.
+    const scope = await scopeFor(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
@@ -2394,7 +2469,7 @@ export function createMultiProjectRpcRequestHandler(
         "The connection closed before the runtime event subscription was ready.",
       );
     }
-    const frameService = scope.runtime.appControlService ?? null;
+    const frameService = scope.appControl;
     // A scope that restarted under this connection has a fresh service with no
     // demand; this puts back what the connection last declared for it.
     frameDemand.apply(projectId, frameService);
@@ -2515,13 +2590,15 @@ export function createMultiProjectRpcRequestHandler(
       );
     }
     // Recorded before the scope lookup, so a slower lookup for an older call
-    // applies this newer demand rather than its own.
+    // applies this newer demand rather than its own. A computer's own
+    // settings show no App Control frames (`scopeFor`): nothing to record,
+    // and nothing to look up.
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return { applied: false };
     frameDemand.declare(projectId, readAppControlFrameDemand(params));
-    const scope = await scopeRegistry.get(projectId);
-    if (disposed) return { applied: false };
-    const service = scope.runtime.appControlService ?? null;
-    frameDemand.apply(projectId, service);
-    return { applied: service != null };
+    const scope = await scopeFor(projectId);
+    if (disposed || !scope.appControl) return { applied: false };
+    frameDemand.apply(projectId, scope.appControl);
+    return { applied: true };
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
@@ -2856,6 +2933,40 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
+  /**
+   * A call for `MACHINE_SCOPE_PROJECT_ID`: a computer's own settings, never a
+   * project. Only the actions `machineScopeActionAllowed` lists (and
+   * `stream_events`) answer here.
+   */
+  const routeMachineScopeCall = async (request: JsonRpcRequest, params: Record<string, unknown>): Promise<unknown> => {
+    const method = typeof request.method === "string" ? request.method : "";
+    // Another machine's agents act through a project they were given, not
+    // this computer's settings.
+    if (isAgentRemoteClientName(callerClientName())) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This computer's settings are not open to another machine's agents.");
+    }
+    if (method !== "ade/actions/call" || (params.name !== "run_ade_action" && params.name !== "stream_events")) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `${method} needs a project; this computer's settings do not answer it.`);
+    }
+    const envelope = params.name === "run_ade_action" ? safeParams(params.arguments) : null;
+    if (envelope) {
+      const domain = typeof envelope.domain === "string" ? envelope.domain : "";
+      const action = typeof envelope.action === "string" ? envelope.action : "";
+      if (!machineScopeActionAllowed(domain, action)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.methodNotFound,
+          `${domain}.${action} needs a project; this computer's settings do not answer it.`,
+        );
+      }
+    }
+    const entry = await getProjectHandler(MACHINE_SCOPE_PROJECT_ID);
+    const result = await entry.handler({ ...request, params: omitProjectId(omitRemoteCaller(params)) });
+    if (envelope && params[CONDITIONAL_ACTION_PARAM] === true) {
+      return conditionalActionResult(result, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM]);
+    }
+    return result;
+  };
+
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
     const method = typeof request.method === "string" ? request.method : "";
     const params = safeParams(request.params);
@@ -2917,6 +3028,10 @@ export function createMultiProjectRpcRequestHandler(
           },
           ...sdkCapabilities(),
           account: true,
+          // `MACHINE_SCOPE_PROJECT_ID` names this computer's own settings
+          // (Providers) with no project: `ade/actions/call` for the actions
+          // `machineScopeActionAllowed` lists, and `runtimeEvents.subscribe`.
+          machineScope: true,
         },
       };
     }
@@ -4655,6 +4770,7 @@ export function createMultiProjectRpcRequestHandler(
         `Method ${method} requires params.projectId.`,
       );
     }
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return await routeMachineScopeCall(request, params);
     const foreignCaller = resolveForeignCaller(params);
     const handlerFor = (target: ProjectId): Promise<HandlerEntry> => (
       foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target, method)

@@ -1,0 +1,53 @@
+---
+title: "ADE Cloud"
+description: "Run a lane on its own cloud computer: start one, see what it uses, and manage your plan."
+icon: "cloud"
+---
+
+ADE Cloud gives a lane a computer of its own. The lane, its chats and its terminals run there, so your laptop can sleep while agents keep working, and you can follow along from the desktop app, the web app or your phone.
+
+Every computer belongs to your ADE account. It joins your account when it is made, sleeps when nothing runs on it, and wakes when you or an agent send it work.
+
+## Start a lane on ADE Cloud
+
+<Steps>
+  <Step title="Open a new chat">
+    In the ADE app, start a new chat as you would for any lane.
+  </Step>
+  <Step title="Pick ADE Cloud under Run on">
+    Choose a size. Small is enough for most work; Large and X-Large are full computers for heavier work, such as an Android emulator.
+  </Step>
+  <Step title="Send the first message">
+    ADE makes the computer, gets the repository from GitHub, sets the lane up and starts the agent there. The lane starts from the pushed copy of its branch, so push what the agent needs first.
+  </Step>
+</Steps>
+
+From a terminal, or from an agent in an ADE chat:
+
+```bash
+ade chat create --machine cloud --prompt "Fix the flaky login test"
+```
+
+Add `--size small|medium|large|xlarge` to pick a size; without it ADE uses the size you saved for new lanes. An agent asks you in its chat before it starts a cloud lane, unless you let agents do it alone in **Settings › ADE Cloud › What agents may do**.
+
+<Tip>
+`ade cloud status` shows your plan, the hours left, the disk in use, every cloud lane, and whether a new lane can start right now.
+</Tip>
+
+## Hours and disk
+
+- **Hours.** Each plan has hours for the month. A Small computer uses one hour per hour awake; bigger sizes use more. A computer that sleeps uses none.
+- **Disk.** Your plan's disk is shared by all your computers at one time. It is not a monthly amount.
+- **Extra hours and extra disk.** On a paid plan you can turn them on in **Settings › ADE Cloud**, with a monthly limit for extra disk. You pay for them only while they are on.
+- **Unused computers** are cleaned up after a while. ADE warns you first and saves the lane's work to its branch; the lane stays, and its next message makes a new computer.
+
+See [the plans and what each includes](https://ade-app.dev/pricing).
+
+## Manage your plan and billing
+
+Open **Settings › ADE Cloud** in the ADE app:
+
+- **The plan cards** move you between plans. A bigger plan applies at once; a smaller one waits for the end of the period.
+- **Manage billing** opens Stripe's billing page, where you change your card, see invoices and cancel. A cancelled plan stays until the end of the period you paid for.
+
+After you buy a plan, the page Stripe returns you to has an **Open ADE** button that takes you straight to **Settings › ADE Cloud**, where the new plan shows within a moment.

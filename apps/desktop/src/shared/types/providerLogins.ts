@@ -358,6 +358,21 @@ export type ProviderLoginStatus = {
 } & ProviderLoginStatusParts;
 
 /**
+ * What of the account's sign-ins a cloud computer applies: each sign-in and
+ * pass by key with its switches and dates, and the account setting. A change
+ * here is worth asking the cloud computer to pull; a fresh read with the same
+ * sign-ins is not.
+ */
+export function providerLoginAccountSignInsPrint(status: ProviderLoginStatus): string {
+  return JSON.stringify([
+    status.cloud.enabled,
+    Object.entries(status.cloud.inUse).sort(([a], [b]) => a.localeCompare(b)),
+    status.signIns.map((signIn) => [signIn.key, signIn.onForCloud, signIn.inUseOnCloud, signIn.capturedAt, signIn.renewedAt]),
+    (status.claudePasses ?? []).map((pass) => (pass.unreadable ? [pass.key] : [pass.key, pass.on, pass.newChats, pass.upload, pass.state, pass.renewedAt])),
+  ]);
+}
+
+/**
  * Fields another package adds to the status (`registerProviderLoginStatusPart`).
  * P6 fills `claudePasses` (claudePassSync.ts).
  */

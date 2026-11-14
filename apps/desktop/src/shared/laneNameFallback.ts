@@ -4,6 +4,7 @@ export const AUTO_LANE_TEMP_BRANCH_RE = /^ade\/[0-9a-f]{8}$/u;
 
 export const LANE_FALLBACK_STOPWORDS = new Set([
   "a",
+  "also",
   "an",
   "and",
   "are",
@@ -26,7 +27,10 @@ export const LANE_FALLBACK_STOPWORDS = new Set([
   "had",
   "has",
   "have",
+  "hello",
   "help",
+  "hey",
+  "hi",
   "how",
   "i",
   "if",
@@ -45,7 +49,9 @@ export const LANE_FALLBACK_STOPWORDS = new Set([
   "please",
   "pls",
   "prompt",
+  "so",
   "the",
+  "then",
   "this",
   "though",
   "thought",
@@ -123,6 +129,28 @@ export function genericLaneFallbackName(genericSuffix?: string | null): string {
   return suffix ? `${GENERIC_LANE_FALLBACK_NAME}-${suffix}` : GENERIC_LANE_FALLBACK_NAME;
 }
 
+const NAME_WORD_LIMIT = 5;
+const isMeaningfulNameWord = (token: string): boolean => token.length > 1 && !LANE_FALLBACK_STOPWORDS.has(token);
+
+/**
+ * Up to five meaningful words, taken whole clause by whole clause: once the
+ * name has two words, a clause that would not fit is left out rather than cut,
+ * so "Live test of ADE Cloud, keep it short" names "live-test-ade-cloud", not
+ * "…-cloud-keep". A first clause longer than the limit is still cut.
+ */
+function meaningfulNameWords(collapsed: string): string[] {
+  const clauses = collapsed.toLowerCase().split(/[,;:!?()]+|\.(?=\s|$)|\s[-\u2013\u2014]+\s/u);
+  const words: string[] = [];
+  for (const clause of clauses) {
+    const clauseWords = (clause.match(/[a-z0-9]+/g) ?? []).filter(isMeaningfulNameWord);
+    if (!clauseWords.length) continue;
+    if (words.length >= 2 && words.length + clauseWords.length > NAME_WORD_LIMIT) break;
+    words.push(...clauseWords.slice(0, NAME_WORD_LIMIT - words.length));
+    if (words.length >= NAME_WORD_LIMIT) break;
+  }
+  return words;
+}
+
 export function deriveDeterministicLaneNameFromPrompt(
   prompt: string,
   options: { genericSuffix?: string | null } = {},
@@ -130,9 +158,7 @@ export function deriveDeterministicLaneNameFromPrompt(
   const collapsed = cleanPromptForNaming(prompt);
   if (!collapsed.length) return genericLaneFallbackName(options.genericSuffix);
   const tokens = collapsed.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  const meaningfulWords = tokens
-    .filter((token) => token.length > 1 && !LANE_FALLBACK_STOPWORDS.has(token))
-    .slice(0, 5);
+  const meaningfulWords = meaningfulNameWords(collapsed);
   const fallbackWords = tokens
     .filter((token) => token.length > 1)
     .slice(0, 4);

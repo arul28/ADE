@@ -103,6 +103,7 @@ import {
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
   isUnsupportedAgentChatRecoveryActionError,
+  TURN_RECOVERY_ACTION_BY_CODEX_ACTION,
   providerForkReplaysTranscript,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -16299,15 +16300,9 @@ export function AgentChatPane({
     },
     [handleApproval],
   );
-  const handleListCodexRecovery = useCallback(
+  const handleQuietTurnRecovery = useCallback(
     async (args: AgentChatRecoverCodexTurnArgs) => {
-      const action = args.action === "steer"
-        ? "nudge"
-        : args.action === "interrupt_retry_same_thread"
-          ? "retry_same_runtime"
-          : args.action === "restart_resume_thread"
-            ? "restart_resume"
-            : "wait";
+      const action = TURN_RECOVERY_ACTION_BY_CODEX_ACTION[args.action];
       try {
         const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.recoverTurn({
           sessionId: args.sessionId,
@@ -20718,7 +20713,7 @@ export function AgentChatPane({
                         onCancelQueuedMessage={!subagentView && selectedSessionId ? listCancelQueuedMessage : undefined}
                         onRestoreCancelledQueue={!subagentView && selectedSessionId ? listRestoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
-                        onCodexRecovery={chatScope ? undefined : handleListCodexRecovery}
+                        onQuietTurnRecovery={chatScope ? undefined : handleQuietTurnRecovery}
                         onRecoverContinuity={chatScope ? undefined : recoverContinuity}
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
                         onEditUnprocessedMessage={listEditUnprocessedMessage}

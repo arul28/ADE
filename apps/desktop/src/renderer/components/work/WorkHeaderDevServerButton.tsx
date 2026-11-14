@@ -1,6 +1,6 @@
 import { Globe } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { useAppStore } from "../../state/appStore";
 import { useLaneDevServers } from "../../lib/laneDevServers";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
@@ -39,7 +39,7 @@ export function WorkHeaderDevServerButton({
   const windowBinding = useAppStore((state) => state.projectBinding);
   if (servers.length === 0) return null;
   const primary = servers[0]!;
-  const machine = machineNameForBinding(runtimePin ?? windowBinding);
+  const machine = machineLabelForBinding(runtimePin ?? windowBinding);
   const label = portLabel(primary.url, primary.port);
   const others = servers.slice(1).map((server) => portLabel(server.url, server.port));
   const title = [

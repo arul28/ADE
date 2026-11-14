@@ -1896,6 +1896,7 @@ function browserMockFirstRun(): boolean {
  *   cooldown, so only the named ones can show. Name two to see the cooldown
  *   hold the second back. Reloads keep the state (the seed is per tab).
  * - `?mockOneMachine`: no other machine is connected (the phone suggestion).
+ * - `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane computer is paired under its generated name.
  * - `?mockRunningChats`: Activity reports three running chats (the grid).
  * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
  * - `?mockGithubOff` / `?mockJiraOff`: GitHub or Jira is not connected
@@ -3089,7 +3090,82 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
   const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
-  return [...base, ...browserMockQuestionEvents(sessionId), ...(browserMockSentEvents.get(sessionId) ?? [])];
+  return [
+    ...base,
+    ...browserMockQuestionEvents(sessionId),
+    ...browserMockCodexStallEvents(sessionId),
+    ...(browserMockSentEvents.get(sessionId) ?? []),
+  ];
+}
+
+/**
+ * `?mockCodexStall=1` (or `=claude`, `=cursor`, …): the question chat (or `mockStallSession`) ends on a turn that has not
+ * answered, so the preview shows the restart card and the ADE rows (a message
+ * ADE wrote, never the user's bubble) without a slow Codex.
+ */
+function browserMockCodexStallEvents(sessionId: string): any[] {
+  const href = typeof window === "undefined" ? "" : window.location.href;
+  const match = /[?&]mockCodexStall=([a-z]+|1)\b/.exec(href);
+  if (!match) return [];
+  // `&mockStallSession=<id>` puts it on that chat instead (a snapshot without the question chat).
+  const target = /[?&]mockStallSession=([A-Za-z0-9-]+)/.exec(href)?.[1] ?? BROWSER_MOCK_QUESTION_SESSION_ID;
+  if (sessionId !== target) return [];
+  // `=1` is Codex; `=claude`, `=cursor`, … shows the same card for that provider.
+  const provider = match[1] === "1" ? "codex" : match[1]!;
+  const name = provider.charAt(0).toUpperCase() + provider.slice(1);
+  const startedAt = Date.now() - 3 * 60_000;
+  const at = (offsetMs: number) => new Date(startedAt + offsetMs).toISOString();
+  const turnId = "mock-stall-turn";
+  return [
+    {
+      sessionId,
+      timestamp: at(0),
+      sequence: 991_000,
+      event: { type: "user_message", text: "Add a settings page with a dark mode toggle.", turnId },
+    },
+    {
+      sessionId,
+      timestamp: at(500),
+      sequence: 991_001,
+      event: {
+        type: "user_message",
+        text: "Status check: briefly report your current progress or what is blocking this turn, then continue the task.",
+        turnId,
+        metadata: { hostContinuation: { reason: "stall_nudge" } },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at(1_000),
+      sequence: 991_002,
+      event: {
+        type: "user_message",
+        text: "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress.",
+        turnId,
+        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at(120_000),
+      sequence: 991_003,
+      event: {
+        type: "turn_health",
+        provider,
+        turnId,
+        state: "stalled",
+        reason: "no_output",
+        message: `${name} hasn't answered in 2 minutes. Restart ${name}, or keep waiting.`,
+        turnStartedAt: at(0),
+        lastProgressAt: at(0),
+        detectedAt: at(120_000),
+        recoveryCount: 0,
+        supportedActions: ["wait", "restart_resume"],
+        automaticRecoveryAttempted: false,
+        sourceSessionId: sessionId,
+      },
+    },
+  ];
 }
 
 // Live chat events in the preview: messages sent here and thread-comment
@@ -3161,6 +3237,46 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
     notifyBrowserMockSessionsChanged(row.id);
   }, 3_000);
 })();
+
+/**
+ * `?mockCloudLaneMachine=1` (with `?mockCloud=plus`): an ADE Cloud lane
+ * computer paired like any machine, under its generated internal name, so the
+ * surfaces that list machines can show "Cloud · <lane>" instead.
+ */
+const MOCK_CLOUD_LANE_ORIGIN = "git@github.com:acme-labs/browser-preview.git";
+
+/** The lane and chat the cloud computer of `?mockCloudLaneMachine=1` reports. */
+function mockCloudLaneRows(): { lanes: any[]; sessions: any[] } {
+  const base = MOCK_LANES.find((lane) => lane.laneType === "primary") ?? MOCK_LANES[0];
+  const lane = { ...base, id: "cloud-lane-checkout", name: "checkout-redesign", branchRef: "checkout-redesign", laneType: "worktree", parentLaneId: base?.id ?? null, worktreePath: "/home/ade/work/browser-preview/.ade/worktrees/checkout-redesign" };
+  const template = MOCK_SESSIONS.find((row) => row.id === "mock-session-codex-1");
+  const session = template
+    ? { ...template, id: "cloud-chat-1", chatSessionId: "cloud-chat-1", laneId: lane.id, laneName: lane.name, title: "Checkout redesign", status: "running", runtimeState: "idle", endedAt: null, currentTurnStartedAt: null }
+    : null;
+  return { lanes: [lane], sessions: session ? [session] : [] };
+}
+
+function mockCloudLaneTargets(): any[] {
+  if (!browserMockFlag("mockCloudLaneMachine")) return [];
+  const target = (id: string, name: string, hostname: string) => ({
+    id,
+    name,
+    hostname,
+    transport: "paired",
+    pairedMachine: { hostIdentity: `mock-cloud-${hostname}`, machineKey: `mock-${hostname}` },
+    sshUser: null,
+    port: null,
+    sshKeyPath: null,
+    lastSeenArch: "linux-x64",
+    runtimeBinaryVersion: "0.0.0-browser",
+    lastConnectedAt: Date.now(),
+  });
+  // One computer under an instance-derived name, one under a prompt-derived name (the lanes' computers of `?mockCloud=plus`).
+  return [
+    target("mock-cloud-lane", "ade-cloud-0t1p52vfqe", "k3j9x0a1"),
+    target("mock-cloud-lane-2", "Live Test ADE Cloud Keep", "m2q8w1b2"),
+  ];
+}
 
 /** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */
 function createBrowserMockDemoChat(args: any): any {
@@ -5105,6 +5221,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   });
   const BROWSER_MOCK_RECENT_PROJECTS: any[] = [
     { rootPath: "/Users/ada/ADE", displayName: "ADE", lastOpenedAt: browserMockAgo(4 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/acme-shop.git", pinned: true },
+    // `?mockCloudLaneMachine=1`: this preview's own project has an origin, so other machines' copies of it are listed.
+    ...(browserMockFlag("mockCloudLaneMachine")
+      ? [{ rootPath: "/tmp/mock", displayName: "Browser Preview", lastOpenedAt: browserMockAgo(60_000), exists: true, kind: "local", gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN }]
+      : []),
     browserMockRemoteRecent("mock-remote", "Studio Mac", "studio.local", "ade", "ADE", "/Users/admin/ADE", 2 * 3_600_000, "https://github.com/acme-labs/acme-shop"),
     browserMockRemoteRecent("mock-windows", "windows", "win-box.local", "ade", "ADE", "C:/Users/ada/ADE", 3 * 86_400_000, "https://github.com/acme-labs/acme-shop"),
     { rootPath: "/Users/ada/Projects/storefront", displayName: "storefront", lastOpenedAt: browserMockAgo(55 * 60_000), exists: true, kind: "local", gitOriginUrl: "git@github.com:acme-labs/storefront.git" },
@@ -6200,7 +6320,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         if (BROWSER_MOCK_DEMO) return { ...state, completedAt: state.completedAt ?? new Date().toISOString() };
         // `?mockFirstRun` previews first-run setup on top of the gate.
         if (browserMockFirstRun()) return { ...state, completedAt: null, dismissedAt: null };
-        return browserMockGateState() && !state.completedAt && !state.dismissedAt
+        // The gate's previews and the ADE Cloud dashboard preview (`?mockCloud=`) skip the welcome.
+        return (browserMockGateState() || browserMockFlag("mockCloud")) && !state.completedAt && !state.dismissedAt
           ? { ...state, dismissedAt: new Date().toISOString() }
           : state;
       },
@@ -6635,7 +6756,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         lastSeenArch: "darwin-arm64",
         runtimeBinaryVersion: "0.0.0-browser",
         lastConnectedAt: Date.now(),
-      }]),
+      }, ...mockCloudLaneTargets()]),
       getConnectionSnapshot: browserMockFlag("mockOneMachine")
         ? resolved({ connections: [], connectedCount: 0, updatedAt: Date.now() })
         : resolved({
@@ -6707,8 +6828,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now() - 3 * 86_400_000,
           connectedAt: null,
-        }, ...browserMockHeldElsewhereConnection()],
-        connectedCount: 1,
+        }, ...browserMockHeldElsewhereConnection(), ...mockCloudLaneTargets().map((target) => ({
+          target,
+          state: "connected" as const,
+          arch: "linux-x64",
+          version: "0.0.0-browser",
+          route: { kind: "relay" as const, endpoint: "relay.ade-app.dev" },
+          capabilities: { projects: true },
+          projects: [{
+            projectId: "mock-cloud-project",
+            rootPath: "/home/ade/work/browser-preview",
+            displayName: "Browser Preview",
+            addedAt: Date.now(),
+            lastOpenedAt: Date.now(),
+            gitOriginUrl: MOCK_CLOUD_LANE_ORIGIN,
+          }],
+          lastError: null,
+          lastAttemptedAt: Date.now(),
+          connectedAt: Date.now(),
+        }))],
+        connectedCount: 1 + mockCloudLaneTargets().length,
         updatedAt: Date.now(),
       }),
       onConnectionSnapshotChanged: noop,
@@ -6902,6 +7041,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             },
             statusHints: {},
           };
+        }
+        if (_id === "mock-cloud-lane" && request.domain === "lane" && request.action === "list") {
+          return { domain: request.domain, action: request.action, result: mockCloudLaneRows().lanes, statusHints: {} };
+        }
+        if (_id === "mock-cloud-lane" && request.domain === "session" && request.action === "list") {
+          return { domain: request.domain, action: request.action, result: mockCloudLaneRows().sessions, statusHints: {} };
         }
         return ({
         domain: request.domain,

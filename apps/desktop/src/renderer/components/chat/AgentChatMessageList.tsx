@@ -214,8 +214,8 @@ import { workflowRunShape } from "./SubagentWorkflowRunView";
 import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
-import { CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
-import { CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
+import { CloudJoinApprovalCard, CloudTierRequestCard } from "../cloudLane/CloudLaneChatCards";
+import { CLOUD_JOIN_APPROVAL_CARD_VARIANT, CLOUD_TIER_REQUEST_CARD_VARIANT } from "../../../shared/cloudLaneLife";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
@@ -514,7 +514,7 @@ function SubagentAnswerUnsentNoticeRow({
   );
 }
 
-function CodexTurnRecoveryCard({
+function QuietTurnCard({
   event,
   sessionId,
   onRecover,
@@ -528,18 +528,20 @@ function CodexTurnRecoveryCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
+  // One card for every provider (`turn_health`); a legacy Codex event names none.
+  const name = providerDisplayLabel(event.provider ?? "codex", "The agent");
   const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
     wait: "Keep waiting",
     steer: "Send nudge",
     interrupt_retry_same_thread: "Retry same server",
-    restart_resume_thread: "Restart & resume",
+    restart_resume_thread: `Restart ${name}`,
   };
-  const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
-    waiting: "Waiting for Codex output…",
+  const resultLabels = useMemo<Record<AgentChatRecoverCodexTurnResult["status"], string>>(() => ({
+    waiting: `Waiting for ${name}…`,
     nudged: "Status nudge sent.",
     retrying: "Retry started in this thread.",
-    resumed: "Codex app-server restarted and the thread resumed.",
-  };
+    resumed: `${name} restarted and picked up your last request.`,
+  }), [name]);
   const recoveryOptions = event.recoveryOptions ?? [
     "restart_resume_thread",
     "wait",
@@ -551,12 +553,12 @@ function CodexTurnRecoveryCard({
   const secondaryOptions = (["steer", "interrupt_retry_same_thread"] as const)
     .filter((option) => recoveryOptions.includes(option));
   const title = event.reason === "waiting_on_approval"
-    ? "Codex is waiting for approval"
+    ? `${name} is waiting for approval`
     : event.reason === "waiting_on_input"
-      ? "Codex is waiting for your input"
+      ? `${name} is waiting for your input`
       : event.reason === "no_progress"
-        ? "Codex stopped making progress"
-        : "Codex did not start responding";
+        ? `${name} has gone quiet`
+        : `${name} is slow to answer`;
   const timing = (() => {
     const detectedAt = event.detectedAt ? Date.parse(event.detectedAt) : Number.NaN;
     const turnStartedAt = event.turnStartedAt ? Date.parse(event.turnStartedAt) : Number.NaN;
@@ -597,6 +599,7 @@ function CodexTurnRecoveryCard({
         {event.message}
       </div>
       {event.automaticRecoveryAttempted ? (
+        // Only on cards from older brains, which restarted Codex once on their own.
         <div className="mt-1 text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48">
           ADE already tried one automatic restart. It will not restart again without you.
         </div>
@@ -1669,12 +1672,14 @@ const FOLDED_MESSAGE_ICON: Record<FoldedMessageSource, typeof Robot> = {
   agent: Robot,
   automation: Lightning,
   schedule: Clock,
+  ade: Info,
 };
 
 const FOLDED_MESSAGE_KIND_LABEL: Record<FoldedMessageSource, string> = {
   agent: "Message from another agent",
   automation: "Automation prompt",
   schedule: "Scheduled prompt",
+  ade: "Message ADE sent",
 };
 
 /**
@@ -2931,7 +2936,7 @@ function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     /** Re-runs compaction through the pane's guarded compact action. */
@@ -3757,10 +3762,10 @@ function renderEvent(
 
   if (event.type === "codex_turn_stalled") {
     return (
-      <CodexTurnRecoveryCard
+      <QuietTurnCard
         event={event}
         sessionId={options?.sessionId}
-        onRecover={options?.onCodexRecovery}
+        onRecover={options?.onQuietTurnRecovery}
       />
     );
   }
@@ -4666,6 +4671,10 @@ function renderEvent(
     if (event.variant === CLOUD_TIER_REQUEST_CARD_VARIANT) {
       return <CloudTierRequestCard card={event} sessionId={options?.sessionId ?? null} />;
     }
+    // A lane launch's new computer waits for the person to approve it joining the account.
+    if (event.variant === CLOUD_JOIN_APPROVAL_CARD_VARIANT) {
+      return <CloudJoinApprovalCard card={event} />;
+    }
     // An MCP App: the page a server ships with a tool, run in the scene
     // sandbox. Where this build cannot host one (the web client) the card
     // falls through to its fallback text, which says where apps do run.
@@ -5396,7 +5405,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   turnEndDurationMs?: number | null;
   turnToolEntries?: ChatWorkLogEntry[];
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -5484,7 +5493,7 @@ const EventRow = React.memo(function EventRow({
   turnEndDurationMs,
   turnToolEntries = [],
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -5615,7 +5624,7 @@ const EventRow = React.memo(function EventRow({
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
-            onCodexRecovery,
+            onQuietTurnRecovery,
             onRecoverContinuity,
             onRetryProviderFailure,
             onRetryCompaction,
@@ -6199,7 +6208,7 @@ function AgentChatMessageListMain({
   transcriptPending = false,
     className,
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -6280,7 +6289,7 @@ function AgentChatMessageListMain({
   transcriptPending?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -9096,7 +9105,7 @@ function AgentChatMessageListMain({
           inlineProof={inlineProof}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
-          onCodexRecovery={onCodexRecovery}
+          onQuietTurnRecovery={onQuietTurnRecovery}
           onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
           onRetryCompaction={onRetryCompaction}
@@ -9174,7 +9183,7 @@ function AgentChatMessageListMain({
         inlineProof={inlineProof}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
-        onCodexRecovery={onCodexRecovery}
+        onQuietTurnRecovery={onQuietTurnRecovery}
         onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
         onRetryCompaction={onRetryCompaction}
@@ -9230,7 +9239,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

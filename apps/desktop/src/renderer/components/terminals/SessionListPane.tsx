@@ -21,7 +21,8 @@ import {
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
-import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
 import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
@@ -136,7 +137,7 @@ import {
 import { QUIET_LABEL_CLASS } from "./sessionListStyles";
 import { usePendingChatLaunchLaneIds } from "../../state/chatLaunchStore";
 import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
-import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 import { withChatPin } from "../chat/chatMachinePin";
 import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
@@ -1407,8 +1408,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   // reports this repo contributes union rows. Those are the machine choices.
   const activeMachineId = machineIdForBinding(projectBinding);
   const crossMachineEntries = useRootAppStore((state) => state.crossMachineLanesByMachineId);
-  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>" in the machine filter.
-  const machineLabelOf = useAdeCloudMachineLabel();
+  // An ADE Cloud lane's computer reads "Cloud · <lane>" in the machine filter.
+  const machineLabelOf = useMachineLabelForMachine();
+  const activeMachineLabel = useMachineLabelForBinding(projectBinding);
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
     const others = Object.values(crossMachineEntries)
       // A deleted cloud computer is no machine to filter by: its lanes have their own place.
@@ -1419,12 +1421,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     return [
       {
         id: activeMachineId,
-        name: machineNameForBinding(projectBinding),
+        name: activeMachineLabel,
         online: crossMachineEntries[activeMachineId]?.online ?? true,
       },
       ...others,
     ];
-  }, [activeMachineId, crossMachineEntries, machineLabelOf, projectBinding]);
+  }, [activeMachineId, activeMachineLabel, crossMachineEntries, machineLabelOf]);
   // A machine that answers the connection but refuses the chat read would
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are

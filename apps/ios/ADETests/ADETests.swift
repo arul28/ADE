@@ -19428,10 +19428,10 @@ final class ADETests: XCTestCase {
       ["steer", "interrupt_retry_same_thread"]
     )
     XCTAssertEqual(
-      workCodexRecoveryActionLabel(for: "restart_resume_thread"),
-      "Restart & resume"
+      workQuietTurnActionLabel(for: "restart_resume_thread"),
+      "Restart Codex"
     )
-    XCTAssertEqual(workCodexRecoveryActionLabel(for: "wait"), "Keep waiting")
+    XCTAssertEqual(workQuietTurnActionLabel(for: "wait"), "Keep waiting")
 
     let raw = #"{"sessionId":"chat-parent","timestamp":"2026-07-09T00:00:01.000Z","sequence":1,"event":{"type":"codex_turn_stalled","turnId":"turn-child","threadId":"thread-child","reason":"no_output","message":"Codex accepted the turn but has not streamed output yet.","recoveryOptions":["wait","steer","interrupt_retry_same_thread","restart_resume_thread"],"sourceSessionId":"chat-child","automaticRecoveryAttempted":true}}"#
     guard case .codexTurnStalled(_, let parsedOptions, let parsedTurnId, let parsedSourceSessionId, let parsedContext) = parseWorkChatTranscript(raw).first?.event else {
