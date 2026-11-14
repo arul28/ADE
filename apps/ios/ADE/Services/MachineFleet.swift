@@ -114,6 +114,9 @@ final class MachineFleet: ObservableObject {
   /// The machine the user asked for last (Connect, open its chat): live
   /// before the project's machines, so it never waits parked. Not saved.
   private var requestedKey: String?
+  /// Counts the user's connect choices. A failed connect undoes its swap
+  /// only while no newer choice came after it.
+  private var keepLiveChoices = 0
   private var projectMachinesScheduled = false
   private var projectCancellables: Set<AnyCancellable> = []
   private var lastOrder: [String] = []
@@ -349,6 +352,7 @@ final class MachineFleet: ObservableObject {
     if isLive(machineKey) { return true }
     let pinsBefore = pinnedKeys
     keepLive(machineKey: machineKey)
+    let choice = keepLiveChoices
     let dropped = pinsBefore.filter { !pinnedKeys.contains($0) }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
@@ -360,7 +364,11 @@ final class MachineFleet: ObservableObject {
       try? await Task.sleep(for: .milliseconds(250))
     }
     if isLive(machineKey) { return true }
-    givePlaceBack(afterFailedConnectOf: machineKey, dropped: dropped, wasPinned: pinsBefore.contains(machineKey))
+    // A newer choice (this machine again, or another one) is what the user
+    // wants now: this older attempt leaves the set as that choice made it.
+    if choice == keepLiveChoices {
+      givePlaceBack(afterFailedConnectOf: machineKey, dropped: dropped, wasPinned: pinsBefore.contains(machineKey))
+    }
     return false
   }
 
@@ -385,6 +393,7 @@ final class MachineFleet: ObservableObject {
   /// the set under the limit (Settings asks which machine to disconnect);
   /// past it, the oldest choice other than the primary machine falls off.
   func keepLive(machineKey: String) {
+    keepLiveChoices += 1
     if userDisconnectedKeys.remove(machineKey) != nil { persistUserDisconnected() }
     requestedKey = machineKey
     pinnedKeys.removeAll { $0 == machineKey }
