@@ -308,6 +308,8 @@ export class AdeSyncClient {
    * connection first and clears this).
    */
   private ownProjectHeldAfterReassert = false;
+  /** The reassert in flight, if any: a person's switch waits for it (`switchProject`). */
+  private ownProjectReassert: Promise<void> | null = null;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
   private readiness: AdeSyncClientStatus["readiness"] = "disconnected";
@@ -1092,6 +1094,17 @@ export class AdeSyncClient {
    * project uuid, which the host's registry cannot match by id alone.
    */
   async switchProject(
+    projectId: string,
+    rootPath: string | null = null,
+  ): Promise<SyncProjectSwitchResultPayload> {
+    // A reassert in flight ends with a re-dial that rejects every pending
+    // request, this one too. The person's choice waits for it, then wins.
+    const reassert = this.ownProjectReassert;
+    if (reassert) await reassert;
+    return await this.sendProjectSwitch(projectId, rootPath);
+  }
+
+  private async sendProjectSwitch(
     projectId: string,
     rootPath: string | null = null,
   ): Promise<SyncProjectSwitchResultPayload> {
@@ -1958,12 +1971,15 @@ export class AdeSyncClient {
       return;
     }
     this.ownProjectReassertedAtMs = now;
-    void this.switchProject(own).then(
+    const reassert: Promise<void> = this.sendProjectSwitch(own).then(
       (result) => {
         if (!result.ok) forwardSignalToSentry("web.sync_own_project_reassert_failed", { reason: "refused" }, "own_project_reassert_failed:refused", "warn");
       },
       () => forwardSignalToSentry("web.sync_own_project_reassert_failed", { reason: "error" }, "own_project_reassert_failed:error", "warn"),
-    );
+    ).finally(() => {
+      if (this.ownProjectReassert === reassert) this.ownProjectReassert = null;
+    });
+    this.ownProjectReassert = reassert;
   }
 
   private publishActiveProjectBoundary(

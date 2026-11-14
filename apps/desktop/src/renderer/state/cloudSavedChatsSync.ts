@@ -52,6 +52,8 @@ export type SavedChatsContext = {
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastReadAtMs = 0;
 let inFlight = false;
+/** A forced read is waiting in the debounce. */
+let forcePending = false;
 /** A read asked for while one was running (a project switch); it runs next. */
 let queuedContext: SavedChatsContext | null = null;
 
@@ -59,9 +61,12 @@ let queuedContext: SavedChatsContext | null = null;
 export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext, options?: { force?: boolean }): void {
   if (!window.ade?.cloud?.savedChats) return;
   if (timer) clearTimeout(timer);
-  const force = options?.force === true;
+  // A plain request that replaces a forced one inside the debounce keeps it forced.
+  forcePending ||= options?.force === true;
   timer = setTimeout(() => {
     timer = null;
+    const force = forcePending;
+    forcePending = false;
     // Inside the debounce, so a window just opened has its access answer by now.
     if (!adeCloudEnabled()) return;
     if (!force && Date.now() - lastReadAtMs < MIN_REFRESH_INTERVAL_MS) return;

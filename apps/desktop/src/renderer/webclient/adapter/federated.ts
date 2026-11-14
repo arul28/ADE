@@ -682,7 +682,7 @@ export function createFederatedWebAdapter({
       return () => connectionListeners.delete(listener);
     },
     async connect(targetId: string) {
-      const session = await manager.connectEnvironment(targetId);
+      await manager.connectEnvironment(targetId);
       const connection = getConnectionSnapshot().connections.find((entry) => entry.target.id === targetId);
       if (!connection) throw new Error("The machine connection disappeared.");
       return {
@@ -784,13 +784,19 @@ export function createFederatedWebAdapter({
       // A person's connect to a resting ADE Cloud computer wakes it first,
       // through a connected computer (this browser has no cloud credential),
       // then dials until it answers. A background connect never wakes one.
-      const asleep = !background && resolveMachinePresence({
+      const presence = resolveMachinePresence({
         connected: false,
         online: machine.online,
         sleepState: machine.sleepState,
         sleepStateAt: machine.sleepStateAt,
         lastSeenAt: machine.lastSeenAt,
-      }) === "asleep";
+      });
+      // A sleep announcement older than the window reads "offline", but an
+      // ADE Cloud computer can sleep for days with no heartbeat: its last word
+      // was that it went to sleep, so a person's connect still wakes it.
+      const asleep = !background && (
+        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep")
+      );
       // "Asleep" is also how an ordinary computer with a recent heartbeat
       // reads, and this browser cannot tell the two apart here: a wake that
       // fails still tries the saved connection once, and says why only when

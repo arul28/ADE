@@ -484,7 +484,8 @@ export class WebMachineSessionManager {
       // mark now is a newer Disconnect, and it wins over that connect too.
       if (this.userDisconnected.has(targetId)) throw new WebMachineConnectSkipped("user_disconnected");
       if (background && !existing?.client && !this.hasRoom()) throw new WebMachineConnectSkipped("no_room");
-      await this.makeRoom(targetId);
+      // A session that still holds its client needs no room.
+      if (!existing?.client) await this.makeRoom(targetId);
       const admitted = existing ?? this.createSession(environment);
       if (!admitted.client) this.attachClient(admitted, this.takeClient());
       admitted.parked = false;
