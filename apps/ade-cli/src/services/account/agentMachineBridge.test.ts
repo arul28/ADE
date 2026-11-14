@@ -10,6 +10,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 const target = vi.hoisted(() => ({
   received: [] as Array<{ method: string; params: Record<string, unknown> }>,
   externalWakeNotices: false,
+  /** "Studio" (two checkouts of the repository): which hold the asking chat's work copy, or "refuse" (an older ADE). */
+  copyRoots: {} as Record<string, string[] | "refuse">,
 }));
 
 vi.mock("./sharedAccountAuthService", async (importActual) => ({
@@ -57,6 +59,14 @@ vi.mock("./accountMachineDirectoryService", async (importActual) => ({
             platform: "darwin",
             lastSeenAt: Date.now(),
           },
+          {
+            machineKey: "machine-studio",
+            deviceId: "device-studio",
+            name: "Studio",
+            online: true,
+            platform: "darwin",
+            lastSeenAt: Date.now(),
+          },
         ],
       };
     }
@@ -67,9 +77,13 @@ vi.mock("./accountMachineDirectoryService", async (importActual) => ({
 vi.mock("./pairedRemoteConnector", async () => {
   const { startJsonRpcServer } = await import("../../jsonrpc");
   return {
-    openPairedCandidate: async (args: { acceptTransport: (transport: unknown) => Promise<unknown> }) => {
+    openPairedCandidate: async (args: {
+      target: { pairedMachine?: { machineKey?: string } | null };
+      acceptTransport: (transport: unknown) => Promise<unknown>;
+    }) => {
       const toServer = new PassThrough();
       const toClient = new PassThrough();
+      const studio = args.target.pairedMachine?.machineKey === "machine-studio";
       startJsonRpcServer(async (request) => {
         const method = String(request.method ?? "");
         const params = (request.params ?? {}) as Record<string, unknown>;
@@ -87,7 +101,19 @@ vi.mock("./pairedRemoteConnector", async () => {
         target.received.push({ method, params });
         if (method === "machines.deliverWake") return "delivered";
         if (method === "projects.list") {
+          if (studio) {
+            return [
+              { projectId: "project-main", rootPath: "/srv/repo", displayName: "repo", gitOriginUrl: "https://github.com/example/repo.git", lastOpenedAt: 2 },
+              { projectId: "project-sandbox", rootPath: "/srv/sandbox/repo", displayName: "repo", gitOriginUrl: "https://github.com/example/repo.git", lastOpenedAt: 1 },
+            ];
+          }
           return [{ projectId: "project-b", rootPath: "/srv/repo", displayName: "repo", gitOriginUrl: "https://github.com/example/repo.git" }];
+        }
+        if (method === "ade/actions/call" && params.name === "find_remote_work_copy") {
+          const chat = (params.remoteCaller as { chatSessionId?: string } | undefined)?.chatSessionId ?? "";
+          const roots = target.copyRoots[chat] ?? [];
+          if (roots === "refuse") throw new Error("Unknown ADE action: find_remote_work_copy");
+          return { projectRoots: roots };
         }
         return { domain: "chat", action: "createSession", result: { id: "child-1" } };
       }, {
@@ -179,5 +205,41 @@ describe("agent machine bridge", () => {
     target.externalWakeNotices = false;
     expect(await bridge.deliverWake("machine-old", notice)).toBe("delivered");
     expect(delivered()).toHaveLength(1);
+  });
+
+  // A machine with two checkouts of the repository (`~/ADE` and a sandbox
+  // clone): a chat's calls land in the one holding its work copy there, and
+  // stay there, so the pick never moves with "last opened" and splits the
+  // chat's work into a second copy.
+  it("lands a chat's calls in the checkout holding its work copy, and keeps that pick", async () => {
+    const { createAgentMachineBridge } = await import("./agentMachineBridge");
+    const bridge = createAgentMachineBridge({ appVersion: "test", projectRoots: () => [] });
+    const callFrom = async (chatSessionId: string) => {
+      target.received.length = 0;
+      await bridge.call({
+        machine: "Studio",
+        scope: { kind: "repo", originUrl: "git@github.com:example/repo.git" },
+        method: "ade/actions/call",
+        params: { name: "run_ade_action", arguments: { domain: "lane", action: "list", args: {} } },
+        caller: { chatSessionId },
+      });
+      const calls = target.received.filter((entry) => entry.method === "ade/actions/call");
+      return {
+        landedIn: calls.find((entry) => entry.params.name === "run_ade_action")?.params.projectId,
+        asked: calls.filter((entry) => entry.params.name === "find_remote_work_copy").length,
+      };
+    };
+
+    // Its copy is in the sandbox, not the checkout opened last.
+    target.copyRoots["chat-copy"] = ["/srv/sandbox/repo"];
+    expect(await callFrom("chat-copy")).toEqual({ landedIn: "project-sandbox", asked: 1 });
+    // Kept: not asked again, even once the other checkout holds a copy too.
+    target.copyRoots["chat-copy"] = ["/srv/repo", "/srv/sandbox/repo"];
+    expect(await callFrom("chat-copy")).toEqual({ landedIn: "project-sandbox", asked: 0 });
+
+    // An older ADE there has no such lookup: the usual pick, kept from then on.
+    target.copyRoots["chat-old"] = "refuse";
+    expect(await callFrom("chat-old")).toEqual({ landedIn: "project-main", asked: 1 });
+    expect(await callFrom("chat-old")).toEqual({ landedIn: "project-main", asked: 0 });
   });
 });

@@ -4,7 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createRemoteWorkCopyService } from "./remoteWorkCopyService";
+import {
+  createRemoteWorkCopyService,
+  registerRemoteWorkShellCheck,
+  releaseChatRemoteWork,
+  remoteWorkCopiesInRepo,
+} from "./remoteWorkCopyService";
 import { createRemoteWorkFiles } from "./remoteWorkFiles";
 
 const GIT_ENV = {
@@ -84,6 +89,114 @@ describe("remote work copy", () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * A chat on another machine deleting its own copies here: `ade shell clean
+ * --machine` (only in checkouts of the repository the call landed in), or its
+ * brain saying the chat was archived or deleted (`ended`: every copy it has
+ * here). Never another chat's copy, never work nobody pushed when asked to
+ * keep it, and a busy copy is kept without failing the rest.
+ */
+describe("a chat on another machine releasing its copies here", () => {
+  const owner = "remote:machine-a:chat-1";
+  const otherOwner = "remote:machine-a:chat-2";
+  let root = "";
+  let adeHome = "";
+  const offShellChecks: Array<() => void> = [];
+
+  /** A bare origin and `checkouts` clones of it, each pushed to once. */
+  const makeRepo = (name: string, checkouts: string[]) => {
+    const origin = path.join(root, `${name}.git`);
+    git(root, "init", "--bare", "-b", "main", origin);
+    const roots = checkouts.map((checkout) => {
+      const projectRoot = path.join(root, checkout);
+      git(root, "clone", "-q", origin, projectRoot);
+      return projectRoot;
+    });
+    fs.writeFileSync(path.join(roots[0]!, "app.txt"), "v1\n");
+    git(roots[0]!, "add", "-A");
+    git(roots[0]!, "commit", "-m", "first");
+    git(roots[0]!, "push", "-q", "origin", "HEAD:main");
+    for (const other of roots.slice(1)) git(other, "pull", "-q", "origin", "main");
+    return { roots, head: git(roots[0]!, "rev-parse", "HEAD") };
+  };
+  const serviceFor = (projectRoot: string) => createRemoteWorkCopyService({ projectRoot, adeHome, freeBytes: () => null });
+  const makeCopy = async (projectRoot: string, copyOwner: string, head: string): Promise<string> => {
+    const prepared = await serviceFor(projectRoot).prepare(copyOwner, { head, fetchRef: "main", branch: "main" });
+    prepared.done();
+    return prepared.path;
+  };
+  const roots = (copies: ReadonlyArray<{ projectRoot: string }>) => copies.map((copy) => copy.projectRoot).sort();
+
+  beforeEach(() => {
+    root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-work-release-")));
+    adeHome = path.join(root, "ade-home");
+  });
+  afterEach(() => {
+    for (const off of offShellChecks.splice(0)) off();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("`ade shell clean` removes the chat's copies in every checkout of the repository, and nothing else", async () => {
+    const repo = makeRepo("repo", ["main-checkout", "sandbox-checkout"]);
+    const [here, sandbox] = repo.roots as [string, string];
+    const other = makeRepo("other", ["other-checkout"]);
+    const [elsewhere] = other.roots as [string];
+    const mineHere = await makeCopy(here, owner, repo.head);
+    const mineInSandbox = await makeCopy(sandbox, owner, repo.head);
+    const mineInOtherRepo = await makeCopy(elsewhere, owner, other.head);
+    const theirsInSandbox = await makeCopy(sandbox, otherOwner, repo.head);
+
+    // What `find_remote_work_copy` answers: this repository's checkouts holding this chat's copy, this one first.
+    expect(remoteWorkCopiesInRepo(here, owner, adeHome).map((copy) => copy.projectRoot)).toEqual([here, sandbox]);
+
+    const { removed, kept } = await releaseChatRemoteWork({ projectRoot: here, owner, ended: false, keepUnsynced: false, adeHome });
+
+    expect(roots(removed)).toEqual([here, sandbox].sort());
+    expect(kept).toEqual([]);
+    expect(fs.existsSync(mineHere)).toBe(false);
+    expect(fs.existsSync(mineInSandbox)).toBe(false);
+    // Another repository's copy, and another chat's, are not this call's to delete.
+    expect(fs.existsSync(mineInOtherRepo)).toBe(true);
+    expect(serviceFor(elsewhere).get(owner)).not.toBeNull();
+    expect(fs.existsSync(theirsInSandbox)).toBe(true);
+    expect(serviceFor(sandbox).get(otherOwner)).not.toBeNull();
+  });
+
+  it("an ended chat's copies go from every project, its shells there stopped, keeping unpushed work and a copy still busy", async () => {
+    const repo = makeRepo("repo", ["main-checkout", "sandbox-checkout", "busy-checkout"]);
+    const [here, sandbox, busy] = repo.roots as [string, string, string];
+    const other = makeRepo("other", ["other-checkout"]);
+    const [elsewhere] = other.roots as [string];
+    const clean = await makeCopy(here, owner, repo.head);
+    const withShell = await makeCopy(sandbox, owner, repo.head);
+    const withUnpushedWork = await makeCopy(elsewhere, owner, other.head);
+    const stillBusy = await makeCopy(busy, owner, repo.head);
+    const theirs = await makeCopy(here, otherOwner, repo.head);
+    fs.writeFileSync(path.join(withUnpushedWork, "app.txt"), "work\n");
+
+    // The sandbox runtime runs the chat's shell and can stop it; the busy one's shell does not stop.
+    let shellRuns = true;
+    offShellChecks.push(registerRemoteWorkShellCheck(
+      sandbox,
+      (shellOwner) => shellRuns && shellOwner === owner,
+      (shellOwner) => { if (shellOwner === owner) shellRuns = false; },
+    ));
+    offShellChecks.push(registerRemoteWorkShellCheck(busy, (shellOwner) => shellOwner === owner));
+
+    const { removed, kept } = await releaseChatRemoteWork({ projectRoot: here, owner, ended: true, keepUnsynced: true, adeHome });
+
+    expect(roots(removed)).toEqual([here, sandbox].sort());
+    expect(roots(kept)).toEqual([busy, elsewhere].sort());
+    expect(shellRuns).toBe(false);
+    expect(fs.existsSync(clean)).toBe(false);
+    expect(fs.existsSync(withShell)).toBe(false);
+    expect(fs.readFileSync(path.join(withUnpushedWork, "app.txt"), "utf8")).toBe("work\n");
+    expect(fs.existsSync(stillBusy)).toBe(true);
+    expect(fs.existsSync(theirs)).toBe(true);
+    expect(serviceFor(here).get(otherOwner)).not.toBeNull();
   });
 });
 
