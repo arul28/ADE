@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { Archive, ArrowClockwise, CaretDown, CaretRight, CircleDashed, CircleNotch, Desktop, Funnel, Kanban, ListBullets, MagnifyingGlass, Moon, NotePencil, PushPin, Square, Terminal, Trash, UsersThree, WarningCircle, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { parentChatRowId } from "../../../shared/runtimeClientNames";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
@@ -1680,6 +1681,22 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return byMachine;
   }, [foreignRows]);
+  // The parent's name for a child row: from the child's own machine, or, for a
+  // parent on another computer (`remote:<device>:<chat>`), from whichever
+  // machine lists that chat.
+  const parentTitleFor = useCallback((parentId: string | null | undefined, machineId: string | null): string | null => {
+    const id = parentChatRowId(parentId);
+    if (!id) return null;
+    const own = machineId ? foreignSessionTitleByMachine.get(machineId)?.get(id) : sessionTitleById.get(id);
+    if (own || id === parentId?.trim()) return own ?? null;
+    const local = sessionTitleById.get(id);
+    if (local) return local;
+    for (const titles of foreignSessionTitleByMachine.values()) {
+      const title = titles.get(id);
+      if (title) return title;
+    }
+    return null;
+  }, [foreignSessionTitleByMachine, sessionTitleById]);
   const selectedSettleableSessions = useMemo(() => {
     // Bulk settle stays scoped to the host roster's rows; each machine's
     // share goes to that machine (see `settleSessions`).
@@ -2742,13 +2759,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         lane={sessionLane}
         liveChildrenCount={foreignRow ? 0 : liveChildrenByParentId.get(session.id) ?? 0}
         subagentBusy={busySubagentParentIds.has(session.id)}
-        parentSessionTitle={
-          !session.orchestrationParentSessionId
-            ? null
-            : foreignRow
-              ? foreignSessionTitleByMachine.get(foreignRow.machineId)?.get(session.orchestrationParentSessionId) ?? null
-              : sessionTitleById.get(session.orchestrationParentSessionId) ?? null
-        }
+        parentSessionTitle={parentTitleFor(session.orchestrationParentSessionId, foreignRow?.machineId ?? null)}
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => {

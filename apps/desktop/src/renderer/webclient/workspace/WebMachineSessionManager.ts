@@ -431,12 +431,24 @@ export class WebMachineSessionManager {
     targetId: string,
     options: WebMachineConnectOptions = {},
   ): Promise<WebMachineSessionSnapshot> {
+    // The person's connect clears their earlier Disconnect at the click.
+    if (options.background !== true) this.acceptUserConnect(targetId);
+    return await this.connectAcceptedEnvironment(targetId, options);
+  }
+
+  /**
+   * `connectEnvironment` after the click's Disconnect was cleared: a mark now is
+   * a newer Disconnect, and it stops this connect too.
+   */
+  private async connectAcceptedEnvironment(
+    targetId: string,
+    options: WebMachineConnectOptions,
+  ): Promise<WebMachineSessionSnapshot> {
     const activate = options.activate !== false && options.background !== true;
     const background = options.background === true;
     if (background && this.userDisconnected.has(targetId)) {
       throw new WebMachineConnectSkipped("user_disconnected");
     }
-    if (!background) this.acceptUserConnect(targetId);
     const inFlight = this.environmentConnects.get(targetId);
     if (inFlight && !(inFlight.background && !background)) {
       const snapshot = await inFlight.promise;
@@ -532,6 +544,10 @@ export class WebMachineSessionManager {
     options: WebMachineConnectOptions = {},
   ): Promise<WebMachineSessionSnapshot> {
     const background = options.background === true;
+    // At the click, as in `connectEnvironment`: a Disconnect pressed while this
+    // waits behind a background connect is newer, and it wins.
+    const savedEnvironment = background ? null : this.findAccountMachineEnvironment(machine);
+    if (savedEnvironment) this.acceptUserConnect(savedEnvironment.envId);
     const inFlight = this.accountMachineConnects.get(machine.machineKey);
     if (inFlight && !(inFlight.background && !background)) {
       const snapshot = await inFlight.promise;
@@ -559,7 +575,7 @@ export class WebMachineSessionManager {
     const background = options.background === true;
     const activate = options.activate !== false && !background;
     const existingEnvironment = this.findAccountMachineEnvironment(machine);
-    if (existingEnvironment) return await this.connectEnvironment(existingEnvironment.envId, options);
+    if (existingEnvironment) return await this.connectAcceptedEnvironment(existingEnvironment.envId, options);
 
     const client = await this.withAdmission(async () => {
       if (background && !this.hasRoom()) throw new WebMachineConnectSkipped("no_room");

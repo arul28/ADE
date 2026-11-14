@@ -207,10 +207,15 @@ export function useChatChildRoster(
   return { snapshots: withFiled, childById: roster.byId, childStatuses };
 }
 
+/**
+ * The child chat's own kind decides: "Report back" and "Stop reports" change
+ * it after the row was written. The row's kind counts only for a child this
+ * machine does not list.
+ */
 function childDoesNotReport(row: ChatSubagentSnapshot, childById: ReadonlyMap<string, ChildChat>): boolean {
-  if (row.spawnKind === "peer") return true;
   const id = paneRowChildSessionId(row);
-  return id != null && childById.get(id)?.session.spawnKind === "peer";
+  const current = id != null ? childById.get(id)?.session.spawnKind : undefined;
+  return (current ?? row.spawnKind) === "peer";
 }
 
 /**

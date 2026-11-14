@@ -163,6 +163,18 @@ export function parseForeignCallerSessionId(
 }
 
 /**
+ * The id of a child chat's parent as the parent's own Work row has it. A child
+ * started from another computer stores `remote:<device id>:<chat id>`; its
+ * parent's row is `<chat id>` on that computer. Null for a terminal caller.
+ */
+export function parentChatRowId(parentId: string | null | undefined): string | null {
+  const raw = parentId?.trim() || null;
+  if (!raw) return null;
+  const foreign = parseForeignCallerSessionId(raw);
+  return foreign ? foreign.chatSessionId : raw;
+}
+
+/**
  * How a person is told that an agent on another machine holds something here
  * (a simulator, a screen): "an agent on Mac mini". One wording for the desktop
  * pane, the phone's owner ribbon, and anything after them.

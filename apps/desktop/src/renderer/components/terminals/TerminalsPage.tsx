@@ -63,6 +63,7 @@ import type {
   TerminalSessionSummary,
   WorkBoardWaitingReason,
 } from "../../../shared/types";
+import { parentChatRowId } from "../../../shared/runtimeClientNames";
 import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
@@ -652,9 +653,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
          */
         binding?: OpenProjectBinding | null;
       }>).detail;
-      const sessionId = detail?.sessionId;
+      const requestedId = detail?.sessionId?.trim() || null;
+      // A child started from another computer names its parent by that
+      // computer's address: open the parent's own row, on the parent's machine,
+      // not on the machine of the child that asked.
+      const sessionId = parentChatRowId(requestedId);
       if (!sessionId) return;
-      const binding = detail.binding ?? null;
+      const binding = sessionId !== requestedId
+        ? resolveSessionRuntimePin({ id: sessionId, sessionId, laneId: null })
+        : detail.binding ?? null;
       // Session focus never rebinds the tab — same rule as a sidebar click.
       // The binding (command palette, foreign thread) is a pin for Work tools,
       // not a request to drag Lanes/PRs/Files onto that machine.
@@ -685,7 +692,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [applySessionFocus, machineRouter, refreshLanes, work]);
+  }, [applySessionFocus, machineRouter, refreshLanes, resolveSessionRuntimePin, work]);
 
   // A pane that cannot mount the menu itself (the chat actions pane's shell
   // rows) asks for it here, so there is still exactly one menu host.
@@ -1594,7 +1601,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
   // The chat that started the menu's chat, named by its report items.
-  const contextMenuParentId = contextMenu?.session.orchestrationParentSessionId ?? null;
+  const contextMenuParentId = parentChatRowId(contextMenu?.session.orchestrationParentSessionId);
   const contextMenuParent = contextMenuParentId ? work.sessionsById.get(contextMenuParentId) ?? null : null;
   const contextMenuParentTitle = contextMenuParent ? primarySessionLabel(contextMenuParent) : null;
   const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
