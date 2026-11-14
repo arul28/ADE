@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
-import type { CloudApprovalMode, CloudApprovalWindowResult } from "./cloudMachineCreator";
+import { requestCloudApprovalTicket, type CloudApprovalMode, type CloudApprovalWindowResult } from "./cloudMachineCreator";
+import type { CloudApprovalWindowAnswer } from "./cloudDesktopActions";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 
 type Logger = {
@@ -151,4 +152,34 @@ export function openCloudApprovalWindow(
       armShow();
     }
   });
+}
+
+/**
+ * A lane launch an agent or the CLI started in a brain: its new computer signs
+ * in through this app's window, as the app's own do. This app's own account
+ * service mints the ticket, so the window opens only what it gave. Where no
+ * ticket can be minted, the approval page always needs the person, who may
+ * not be at this screen: the brain sends the link (`needs_person`, the code
+ * still pending).
+ */
+export async function approveBrainWindow(
+  args: {
+    userCode: string;
+    title: string;
+    signal: AbortSignal;
+    directoryBaseUrl: () => string | null;
+    getAccountToken: () => Promise<string | null>;
+  },
+  logger: Logger,
+): Promise<CloudApprovalWindowAnswer> {
+  const directory = args.directoryBaseUrl();
+  const token = await args.getAccountToken();
+  if (!directory || !token) throw new Error("Sign in to ADE in this app first. The machine joins your account.");
+  const ticket = await requestCloudApprovalTicket({ directory, token, userCode: args.userCode, signal: args.signal });
+  if (ticket.mode === "browser") return { result: "needs_person", codeStillPending: true };
+  const result = await openCloudApprovalWindow(
+    { url: ticket.url, mode: "ticket", title: args.title, signal: args.signal, onNeedsPerson: () => undefined, endWhenPersonNeeded: true },
+    logger,
+  );
+  return { result, codeStillPending: false };
 }

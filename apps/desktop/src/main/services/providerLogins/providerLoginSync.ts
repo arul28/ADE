@@ -30,6 +30,7 @@
 
 import type { ProviderLoginProvider, ProviderLoginStatus } from "../../../shared/types/providerLogins";
 import { onProviderLoginChanged } from "../ai/providerLoginChanged";
+import { withTimeout } from "../shared/withTimeout";
 import { createAccess } from "./providerLoginAccess";
 import { createAllow } from "./providerLoginAllow";
 import { createApplyPass } from "./providerLoginApplyPass";
@@ -90,24 +91,13 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
 
   /** Pull the vault and the settings once, waiting at most PULL_NOW_LIMIT_MS; never throws. */
   async function pullAccountNow(): Promise<void> {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const limit = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(() => resolve("timeout"), PULL_NOW_LIMIT_MS);
-      timer.unref?.();
-    });
-    const pulls = Promise.all([
-      deps.vault()?.sync?.()?.catch((error: unknown) => {
-        deps.logger.warn("provider_login.pull_now_failed", { store: "vault", name: error instanceof Error ? error.name : "unknown" });
-      }),
-      deps.settings()?.sync?.()?.catch((error: unknown) => {
-        deps.logger.warn("provider_login.pull_now_failed", { store: "settings", name: error instanceof Error ? error.name : "unknown" });
-      }),
-    ]);
-    try {
-      // A slow account service: the pass goes ahead on what is here.
-      if ((await Promise.race([pulls, limit])) === "timeout") deps.logger.warn("provider_login.pull_now_slow", { limitMs: PULL_NOW_LIMIT_MS });
-    } finally {
-      if (timer) clearTimeout(timer);
+    const pulls = Promise.all((["vault", "settings"] as const).map((store) =>
+      deps[store]()?.sync?.()?.catch((error: unknown) => {
+        deps.logger.warn("provider_login.pull_now_failed", { store, name: error instanceof Error ? error.name : "unknown" });
+      })));
+    // A slow account service: the pass goes ahead on what is here.
+    if ((await withTimeout(pulls.then(() => true), PULL_NOW_LIMIT_MS)) === null) {
+      deps.logger.warn("provider_login.pull_now_slow", { limitMs: PULL_NOW_LIMIT_MS });
     }
   }
 

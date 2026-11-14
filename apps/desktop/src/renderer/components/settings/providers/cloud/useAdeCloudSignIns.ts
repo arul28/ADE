@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CloudSignInStatus } from "../../../../../shared/cloudSignIns";
 import type { AiSettingsStatus, OpenProjectBinding } from "../../../../../shared/types";
-import type { ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
+import { providerLoginAccountSignInsPrint, type ProviderLoginStatus } from "../../../../../shared/types/providerLogins";
 import { withMachineTimeout, type ProjectMachine } from "../../../../state/projectMachines";
 import { cloudBoxForMachine } from "../../../remoteTargets/cloudMachineModel";
 import { useCloudMachines } from "../../../remoteTargets/useCloudMachines";
@@ -54,21 +54,6 @@ export type AdeCloudSignInsState = {
   /** Read the reporting computer's AI status again (after a sign-in there). */
   refreshCloudAi: () => void;
 };
-
-/**
- * What of the account's sign-ins a cloud computer applies: each sign-in and
- * pass by key with its switches and dates, and the account setting. A change
- * here is worth asking the cloud computer to pull; a fresh read with the same
- * sign-ins is not.
- */
-function accountSignInsPrint(status: ProviderLoginStatus): string {
-  return JSON.stringify([
-    status.cloud.enabled,
-    Object.entries(status.cloud.inUse).sort(([a], [b]) => a.localeCompare(b)),
-    status.signIns.map((signIn) => [signIn.key, signIn.onForCloud, signIn.inUseOnCloud, signIn.capturedAt, signIn.renewedAt]),
-    (status.claudePasses ?? []).map((pass) => (pass.unreadable ? [pass.key] : [pass.key, pass.on, pass.newChats, pass.upload, pass.state, pass.renewedAt])),
-  ]);
-}
 
 /** The connection target id behind a remote machine, for its account machine key. */
 function targetIdOf(machine: ProjectMachine): string | null {
@@ -218,7 +203,7 @@ export function useAdeCloudSignIns(): AdeCloudSignInsState {
   // a switch): read the saved keys and passes again, and ask the reporting
   // cloud computer to pull the account and apply it now rather than on its
   // next heartbeat (up to a minute). One call per change, no timer.
-  const accountPrint = accountRead.status ? accountSignInsPrint(accountRead.status) : null;
+  const accountPrint = accountRead.status ? providerLoginAccountSignInsPrint(accountRead.status) : null;
   const lastAccountPrintRef = useRef<{ key: string | null; print: string } | null>(null);
   useEffect(() => {
     if (accountPrint == null) return undefined;

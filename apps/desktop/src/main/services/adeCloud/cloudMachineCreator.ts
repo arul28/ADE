@@ -224,7 +224,6 @@ export async function waitForCloudBoxAuth(
   return auth;
 }
 
-/** `/device/approve`'s refusals, in words. */
 /**
  * Asks the account service to approve `userCode` with this machine's ADE
  * sign-in (`POST /device/approve`): a one-time sign-in ticket to open in a
@@ -281,6 +280,7 @@ export async function requestCloudApprovalTicket(args: {
   throw new Error(approvalErrorMessage(response.status, refusal));
 }
 
+/** `/device/approve`'s refusals, in words. */
 function approvalErrorMessage(status: number, code: string | null): string {
   if (status === 401) return "Your ADE sign-in on this computer has expired. Sign in again, then make the machine.";
   if (code === "expired") return "The new machine's sign-in code expired before ADE could approve it. Try again.";

@@ -47,8 +47,8 @@ import {
   type CloudAccessDeps,
 } from "./cloudAccess";
 import { cloudGitPreflight } from "./cloudGitCredential";
-import { createCloudMachine, requestCloudApprovalTicket, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
-import { openCloudApprovalWindow } from "./cloudApprovalWindow";
+import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
+import { approveBrainWindow, openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
@@ -639,18 +639,13 @@ export function registerCloudIpc(args: {
       const controller = new AbortController();
       approvalWindows.set(id, controller);
       try {
-        const directory = machineCreatorDeps.directoryBaseUrl();
-        const token = await machineCreatorDeps.getAccountToken();
-        if (!directory || !token) throw new Error("Sign in to ADE in this app first. The machine joins your account.");
-        // This app's own account service mints the ticket, so the window opens only what it gave.
-        const ticket = await requestCloudApprovalTicket({ directory, token, userCode, signal: controller.signal });
-        // The approval page always needs the person, who may not be at this screen: the brain sends the link.
-        if (ticket.mode === "browser") return { result: "needs_person" as const, codeStillPending: true };
-        const result = await openCloudApprovalWindow(
-          { url: ticket.url, mode: "ticket", title, signal: controller.signal, onNeedsPerson: () => undefined, endWhenPersonNeeded: true },
-          logger,
-        );
-        return { result, codeStillPending: false };
+        return await approveBrainWindow({
+          userCode,
+          title,
+          signal: controller.signal,
+          directoryBaseUrl: machineCreatorDeps.directoryBaseUrl,
+          getAccountToken: machineCreatorDeps.getAccountToken,
+        }, logger);
       } finally {
         if (approvalWindows.get(id) === controller) approvalWindows.delete(id);
       }
