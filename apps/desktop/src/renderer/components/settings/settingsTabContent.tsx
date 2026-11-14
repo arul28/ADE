@@ -57,6 +57,7 @@ import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
+  machineRoutedPage,
   machineSectionAvailable,
   type MachineSectionKind,
   type SettingsMachinePage,
@@ -64,7 +65,7 @@ import {
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
-import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { SettingsMachineScopeProvider, useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import { NoProjectCopyNotice, ProjectCopyBar, ProjectCopyScopeProvider, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import {
   SETTINGS_ENTRIES,
@@ -581,11 +582,13 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
 };
 
 /**
- * Providers is routed: every runtime call, the key store, provider accounts,
- * login terminals and auth-status feeds take the machine's pin. What stays on
- * This computer (opening a config file in the OS) is disabled in place.
+ * Providers is about the computer, not the project: every runtime call, the
+ * key store, provider accounts, login terminals and auth-status feeds take the
+ * machine's pin, which is the copy of this repository on it when there is one
+ * and the machine route otherwise (`machineRoutedPage`). What stays on This
+ * computer (opening a config file in the OS) is disabled in place.
  */
-const AGENTS_TAB_KIND: MachineSectionKind = "routed";
+const AGENTS_TAB_KIND: MachineSectionKind = "machine";
 
 /** A section that loads with no project: this desktop's own, or the account's. */
 function standaloneSection(section: TabSection): boolean {
@@ -683,14 +686,23 @@ function MachineTabContent({
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {
-    if (machine && !machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
+    const routed = machine ? machineRoutedPage(machine) : null;
+    if (machine && (!routed || !machineSectionAvailable(AGENTS_TAB_KIND, machine))) {
       return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
     }
-    return (
+    const content = (
       <SettingsColumn wide>
         <AgentsTabContent />
       </SettingsColumn>
     );
+    // Keyed on the route: a machine that gains or loses its copy of this
+    // repository remounts the page on the new route instead of carrying
+    // closures and feeds bound to the old one.
+    return routed ? (
+      <SettingsMachineScopeProvider key={routed.pin?.key ?? routed.machineId} scope={routed}>
+        {content}
+      </SettingsMachineScopeProvider>
+    ) : content;
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;

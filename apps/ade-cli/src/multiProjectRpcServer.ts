@@ -1,5 +1,6 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
+import { MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
@@ -368,7 +369,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall" | "runtimeForDelivery">>;
   /** Profile of the outer runtime, used to trust the sole embedded host. */
   runtimeProfile?: "full" | "chat" | "embedded";
   /**
@@ -1965,6 +1966,44 @@ export function createMultiProjectRpcRequestHandler(
   };
 
   /**
+   * This computer's own settings with no project (`MACHINE_SCOPE_PROJECT_ID`):
+   * the machine-owned runtime personal chats run in, behind a handler built
+   * and initialized the way a project's is, so its role checks are the same.
+   */
+  let machineScopeHandler: Promise<HandlerEntry> | null = null;
+  const machineScopeRuntime = async (): Promise<AdeRuntime> => {
+    if (typeof personalChatScope.runtimeForDelivery !== "function") {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime has no machine scope.");
+    }
+    return await personalChatScope.runtimeForDelivery();
+  };
+  const getMachineScopeHandler = async (): Promise<HandlerEntry> => {
+    if (machineScopeHandler) return await machineScopeHandler;
+    const pending = (async () => {
+      const handler = createAdeRpcRequestHandler({
+        runtime: await machineScopeRuntime(),
+        serverVersion: options.serverVersion,
+      });
+      if (initializedParams) {
+        await handler({
+          jsonrpc: "2.0",
+          id: "initialize-machine-scope",
+          method: "ade/initialize",
+          params: initializedParams,
+        });
+      }
+      return { handler };
+    })();
+    machineScopeHandler = pending;
+    try {
+      return await pending;
+    } catch (error) {
+      if (machineScopeHandler === pending) machineScopeHandler = null;
+      throw error;
+    }
+  };
+
+  /**
    * The foreign session id for this request, when it comes from another
    * machine's agent bridge. Null for every other caller: a local process may
    * name itself `AGENT_REMOTE_CLIENT_NAME`, but without a paired peer there is
@@ -2340,7 +2379,11 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
-    const scope = await scopeRegistry.get(projectId);
+    // The machine scope (a computer's own settings) streams its runtime's
+    // events the same way; it has no App Control frames.
+    const scope = projectId === MACHINE_SCOPE_PROJECT_ID
+      ? { runtime: await machineScopeRuntime() }
+      : await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
@@ -2488,6 +2531,8 @@ export function createMultiProjectRpcRequestHandler(
     }
     // Recorded before the scope lookup, so a slower lookup for an older call
     // applies this newer demand rather than its own.
+    // A computer's own settings show no App Control frames.
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return { applied: false };
     frameDemand.declare(projectId, readAppControlFrameDemand(params));
     const scope = await scopeRegistry.get(projectId);
     if (disposed) return { applied: false };
@@ -2812,6 +2857,10 @@ export function createMultiProjectRpcRequestHandler(
           },
           ...sdkCapabilities(),
           account: true,
+          // `MACHINE_SCOPE_PROJECT_ID` names this computer's own settings
+          // (Providers) with no project: `ade/actions/call` for the actions
+          // `machineScopeActionAllowed` lists, and `runtimeEvents.subscribe`.
+          machineScope: true,
         },
       };
     }
@@ -4501,6 +4550,33 @@ export function createMultiProjectRpcRequestHandler(
         `Method ${method} requires params.projectId.`,
       );
     }
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) {
+      // A computer's own settings, never a project. Another machine's agents
+      // act through a project they were given, not this computer's settings.
+      if (isAgentRemoteClientName(callerClientName())) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This computer's settings are not open to another machine's agents.");
+      }
+      if (method !== "ade/actions/call" || (params.name !== "run_ade_action" && params.name !== "stream_events")) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `${method} needs a project; this computer's settings do not answer it.`);
+      }
+      const envelope = params.name === "run_ade_action" ? safeParams(params.arguments) : null;
+      if (envelope) {
+        const domain = typeof envelope.domain === "string" ? envelope.domain : "";
+        const action = typeof envelope.action === "string" ? envelope.action : "";
+        if (!machineScopeActionAllowed(domain, action)) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.methodNotFound,
+            `${domain}.${action} needs a project; this computer's settings do not answer it.`,
+          );
+        }
+      }
+      const entry = await getMachineScopeHandler();
+      const result = await entry.handler({ ...request, params: omitProjectId(omitRemoteCaller(params)) });
+      if (envelope && params[CONDITIONAL_ACTION_PARAM] === true) {
+        return conditionalActionResult(result, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM]);
+      }
+      return result;
+    }
     const foreignCaller = resolveForeignCaller(params);
     const handlerFor = (target: ProjectId): Promise<HandlerEntry> => (
       foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target)
@@ -4610,6 +4686,8 @@ export function createMultiProjectRpcRequestHandler(
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }
     handlers.clear();
+    void machineScopeHandler?.then((entry) => entry.handler.dispose?.()).catch(() => {});
+    machineScopeHandler = null;
     for (const cached of foreignHandlers.values()) {
       void cached.then((entry) => entry.handler.dispose?.()).catch(() => {});
     }

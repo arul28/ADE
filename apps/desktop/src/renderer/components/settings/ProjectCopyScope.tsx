@@ -78,6 +78,8 @@ function copyPageFor(
       // page then says so instead of calling it.
       online: base?.online ?? true,
     }),
+    // A project page reads the copy, never the machine route.
+    machineRoute: null,
     hasRepo: true,
     version: base?.version ?? null,
   };
