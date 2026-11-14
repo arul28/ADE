@@ -17,7 +17,7 @@ import { AppleMark, ElectronMark, GithubMark, LinearMark, WindowsMark } from "./
  * `crop` frames the part of the screenshot that shows the tool at work, as
  * fractions of the full picture: its left and top edge, and its width.
  */
-type Tool = { icons: ReactNode[]; title: string; body: string; src: string; alt: string; glow: string; crop: [number, number, number] };
+type Tool = { icons: ReactNode[]; title: string; body: string; src: string; alt: string; glow: string; crop: [number, number, number]; bright?: number };
 
 const TOOLS: Tool[] = [
   {
@@ -45,6 +45,7 @@ const TOOLS: Tool[] = [
     glow: "rgba(34,211,238,0.2)",
     src: "/images/home/tools/slide-browser.webp",
     crop: [0.46, 0.34, 0.4],
+    bright: 1.6,
     alt: "An agent's steps in ADE beside ADE's browser, showing the download dialog it opened on ade-app.dev",
   },
   {
@@ -62,7 +63,7 @@ const TOOLS: Tool[] = [
     body: "Drive and record your app.",
     glow: "rgba(159,234,249,0.16)",
     src: "/images/home/tools/slide-appc.webp",
-    crop: [0.47, 0.18, 0.36],
+    crop: [0.46, 0.02, 0.52],
     alt: "ADE's App Control pane driving a small Electron app that shows ADE's v1.2.112 release notes",
   },
 ];
@@ -122,8 +123,8 @@ function ToolTile({ tool, wide }: { tool: Tool; wide: boolean }) {
           height={1447}
           loading="lazy"
           decoding="async"
-          className="absolute left-0 top-0 h-auto max-w-none brightness-[1.15] contrast-[1.05]"
-          style={{ width: `${100 / tool.crop[2]}%`, transform: `translate(-${tool.crop[0] * 100}%, -${tool.crop[1] * 100}%)` }}
+          className="absolute left-0 top-0 h-auto max-w-none"
+          style={{ width: `${100 / tool.crop[2]}%`, transform: `translate(-${tool.crop[0] * 100}%, -${tool.crop[1] * 100}%)`, filter: `brightness(${tool.bright ?? 1.15}) contrast(1.05)` }}
         />
       </div>
     </figure>

@@ -75,7 +75,7 @@ function BarRow({ bar, max, big }: { bar: Bar; max: number; big?: boolean }) {
   return (
     <div className="grid grid-cols-[26px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2">
       <Mark src={bar.logo} name={bar.name} />
-      <p className="min-w-0 truncate text-[14px] leading-tight">
+      <p className="min-w-0 text-[14px] leading-tight">
         {bar.source ? (
           <a href={bar.source} target="_blank" rel="noreferrer" className={cn(link, "text-white/90")}>
             {bar.name}
@@ -83,7 +83,7 @@ function BarRow({ bar, max, big }: { bar: Bar; max: number; big?: boolean }) {
         ) : (
           <span className="font-semibold text-white">{bar.name}</span>
         )}
-        <span className="ml-2 text-white/45">{bar.sub}</span>
+        {bar.sub ? <span className="mt-0.5 block text-[12.5px] text-white/45">{bar.sub}</span> : null}
       </p>
       <span className={cn("text-right font-mono tabular-nums", big ? "text-[15px]" : "text-[14px]", bar.ade ? "text-[#ffc861]" : "text-white/85")}>{bar.label}</span>
       <div className={cn("col-span-3 overflow-hidden rounded-full bg-white/[0.06]", big ? "h-[8px]" : "h-[6px]")}>
@@ -129,9 +129,6 @@ function BillChart({ className }: { className?: string }) {
     }),
   ].sort((a, b) => (a.ade ? -1 : b.ade ? 1 : (a.value ?? Infinity) - (b.value ?? Infinity)));
   const max = Math.max(...bars.map((bar) => bar.value ?? 0), 1);
-  const priced = bars.filter((bar) => !bar.ade && bar.value != null);
-  const nextBest = priced.reduce<Bar | null>((best, bar) => (!best || (bar.value as number) < (best.value as number) ? bar : best), null);
-  const nextBestRival = RIVALS.find((rival) => rival.id === nextBest?.id);
 
   return (
     <Chart
@@ -161,8 +158,7 @@ function BillChart({ className }: { className?: string }) {
       <p className="font-display text-[clamp(30px,3vw,44px)] leading-none text-white">
         {money(adeBill)}
         <span className="ml-3 font-sans text-[15px] font-normal tracking-normal text-white/55">
-          on ADE.{" "}
-        {nextBest ? `The next lowest is ${nextBest.label} on ${nextBest.name}${nextBestRival?.estimate ? ", our estimate" : ""}.` : ""}
+          on ADE for the whole month, plan included.
         </span>
       </p>
       {bars.map((bar) => (

@@ -53,6 +53,8 @@ export const RIVALS: Rival[] = [
     monthlyUsd: (hours) => Math.max(20, hours * 0.2),
     perHourCents: 20,
     freeHours: 0,
+    // Credits past the plan's $20 are assumed to cost the same $0.20 an hour; the page does not print a top-up rate.
+    estimate: true,
     note: "On a $20 plan; credits also pay for model tokens",
     source: "https://capy.ai/pricing",
   },
@@ -90,7 +92,7 @@ export const RIVALS: Rival[] = [
     name: "GitHub Copilot",
     logo: "/images/competitors/logo-copilot.svg",
     machine: "4 GiB, CPUs not published",
-    plan: "Any Copilot plan, compute metered",
+    plan: "compute only, before any included time and the Copilot plan",
     rateKind: "usage rate",
     // $0.000024 per compute second plus $0.000003 per GiB-second, at 4 GiB; a Copilot plan comes on top.
     monthlyUsd: (hours) => hours * 0.1296,
