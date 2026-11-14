@@ -36,7 +36,7 @@ import type {
   TerminalSessionSummary,
 } from "../../shared/types";
 import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
-import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
+import { distinctMachineNames, THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
 import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
@@ -448,6 +448,27 @@ export function buildAllMachineLanes(input: {
         ...connectionMachineScope(connection),
       }));
     }
+  }
+
+  // Two computers that share a name ("Arul's Mac Studio" twice) are told
+  // apart here, once, for every list and picker built from this.
+  const shown = distinctMachineNames([...machines, ...machinesWithoutRepo].map((machine) => ({
+    id: machine.machineId,
+    name: machine.machineName,
+    isThisMachine: machine.isThisMachine,
+    hostname: machine.hostname,
+    deviceId: machine.deviceId,
+  })));
+  const renamed = (machine: LaneMachine) => {
+    const name = shown.get(machine.machineId);
+    return name != null && name !== machine.machineName;
+  };
+  const relabel = <T extends LaneMachine>(machine: T): T =>
+    renamed(machine) ? { ...machine, machineName: shown.get(machine.machineId)! } : machine;
+  if (machines.some(renamed) || machinesWithoutRepo.some(renamed)) {
+    machines.splice(0, machines.length, ...machines.map(relabel));
+    machinesWithoutRepo.splice(0, machinesWithoutRepo.length, ...machinesWithoutRepo.map(relabel));
+    lanes.splice(0, lanes.length, ...lanes.map(relabel));
   }
 
   return {

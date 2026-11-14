@@ -74,6 +74,16 @@ afterAll(() => {
   cleanupTrackedTempDirs();
 });
 
+// Run as CI does, with no ADE environment of the shell that started the run.
+// An ADE agent's shell carries its identity (`ADE_CHAT_SESSION_ID`,
+// `ADE_ACTIVITY_SESSION_ID`, the brain's socket, …), and code under test reads
+// it: a brain a test spawns from that shell took the agent role, so the pool
+// refused it as incompatible and every such test failed inside an agent. A
+// test that needs one of these sets it itself; the ones this file sets follow.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("ADE_")) delete process.env[key];
+}
+
 const claudeConfigDir = path.join(os.tmpdir(), "ade-vitest-claude-config");
 
 fs.mkdirSync(path.join(claudeConfigDir, "debug"), { recursive: true });

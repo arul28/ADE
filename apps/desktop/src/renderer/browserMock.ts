@@ -4987,7 +4987,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   const BROWSER_MOCK_LOCAL_DEVICE: any = {
     deviceId: "browser-mock-device",
     siteId: "browser-mock-site",
-    name: "Browser preview",
+    // `?mockSameNameMachines`: this computer and two paired ones all named "Studio Mac".
+    name: browserMockFlag("mockSameNameMachines") ? "Studio Mac" : "Browser preview",
     platform: "macOS",
     deviceType: "desktop",
     createdAt: now,
@@ -6809,7 +6810,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         }, {
           target: {
             id: "mock-windows",
-            name: "windows",
+            name: browserMockFlag("mockSameNameMachines") ? "Studio Mac" : "windows",
             hostname: "win-box.local",
             transport: "paired",
             pairedMachine: { hostIdentity: "mock-windows" },

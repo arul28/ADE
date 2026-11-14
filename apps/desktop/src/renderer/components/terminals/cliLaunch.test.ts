@@ -28,7 +28,8 @@ import {
   withClaudeSessionIdInCommandLine,
   withCodexNoAltScreen,
 } from "./cliLaunch";
-import { ADE_CLI_AGENT_GUIDANCE } from "../../../shared/adeCliGuidance";
+// Built inside each test: the file runs as Linux, and the guidance lists only the skills the host can run.
+import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { PI_THINKING_LEVELS } from "../../../shared/cliLaunch";
 import { PI_THINKING_LEVELS as PI_SDK_THINKING_LEVELS } from "../../../main/services/chat/piSdkProtocol";
 import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
@@ -905,7 +906,7 @@ describe("buildTrackedCliStartupCommand", () => {
         "--session-id",
         "00000000-0000-0000-0000-000000000001",
         "--append-system-prompt",
-        expect.stringContaining(ADE_CLI_AGENT_GUIDANCE),
+        expect.stringContaining(buildAdeCliAgentGuidance()),
         "--permission-mode",
         "default",
       ]));
@@ -913,7 +914,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toContain("--append-system-prompt");
       const promptIndex = launch.args.indexOf("--append-system-prompt");
       const prompt = launch.args[promptIndex + 1] ?? "";
-      expect(prompt).toContain(ADE_CLI_AGENT_GUIDANCE);
+      expect(prompt).toContain(buildAdeCliAgentGuidance());
       expect(prompt).not.toContain('"$ADE_CLI_PATH" chat activity testing');
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
@@ -1418,7 +1419,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.args).toEqual(expect.arrayContaining([
         "--model", "openai/gpt-5.4", "--thinking", "high", "--append-system-prompt",
       ]));
-      expect(launch.args.join("\n")).toContain(ADE_CLI_AGENT_GUIDANCE);
+      expect(launch.args.join("\n")).toContain(buildAdeCliAgentGuidance());
       expect(launch.startupCommand).toBe("pi --model \"openai/gpt-5.4\" --thinking high --tools read,bash,edit,write,grep,find,ls --tui-mode regular");
       expect(launch.initialInput).toBe("Run the Pi path.");
       expect(launch.args.join("\n")).toContain("ADE permission policy for this Pi session: full-auto");

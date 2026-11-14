@@ -5,6 +5,7 @@ import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MachineAvatar, machineFormFactor } from "../remoteTargets/MachineIdentity";
 import { machineSectionAvailable, settingsMachinePageFor, type PickableSectionKind } from "./SettingsMachinesNav";
 import { useMachineFacts, type MachineFacts } from "./machines/machineFacts";
+import { settingsMachineNames } from "./machines/settingsMachinesContext";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import "./machines/machinesPage.css";
@@ -52,6 +53,7 @@ export function MachinePicker({
   kind?: PickableSectionKind;
 }) {
   const reachable = useMemo(() => reachableMachines(machines, kind), [kind, machines]);
+  const names = useMemo(() => settingsMachineNames(machines, thisMachineName), [machines, thisMachineName]);
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(reachable, update.currentVersion || null);
   const [open, setOpen] = useState(false);
@@ -61,7 +63,7 @@ export function MachinePicker({
   // page then says why it can't show it). Naming another one here would put
   // one computer in the title and act on a different one.
   const selected = machines.find((machine) => machine.machineId === selectedId) ?? reachable[0]!;
-  const nameOf = (machine: ProjectMachine) => (machine.isThisMachine ? (thisMachineName ?? machine.machineName) : machine.machineName);
+  const nameOf = (machine: ProjectMachine) => names.get(machine.machineId) ?? machine.machineName;
   const cloudSelected = adeCloud?.selected === true;
   const triggerName = cloudSelected ? ADE_CLOUD_NAME : nameOf(selected);
 
