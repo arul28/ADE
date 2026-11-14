@@ -80,7 +80,7 @@ const GREW_MARGIN_BYTES = 512 * 1024 * 1024;
 const SETUP_SHORT_FREE_BYTES = 1024 * 1024 * 1024;
 const SETUP_SHORT_FREE_FRACTION = 0.1;
 /** Kept on the disk while a setup runs and freed just before the launch writes its grow mark, so a full disk can still take it. */
-const SETUP_RESERVE_BYTES = 32 * 1024 * 1024;
+const SETUP_RESERVE_BYTES = 4 * 1024 * 1024;
 /**
  * How often a running setup's free space is read (a local statfs). A failed
  * install often deletes what it wrote, so the disk reads roomy again right
@@ -94,8 +94,14 @@ const SETUP_HISTORY_TTL_MS = 24 * 60 * 60_000;
 
 type DiskSpace = { freeBytes: number; totalBytes: number };
 
-/** One launch's setup grows so far, and how much its last grown run used (bytes it took from the free space). */
-type SetupGrowHistory = Record<string, { grows: number; usedBytes: number; at: number }>;
+/**
+ * One launch's setup grows so far, and its last grown run's peak use (the
+ * disk's size less the lowest free space that run read). Peak, not what the
+ * run itself added: an installer that leaves its files behind on failure
+ * frees them in the next run, which then adds about as much as the last one
+ * did while it fills a bigger disk.
+ */
+type SetupGrowHistory = Record<string, { grows: number; peakBytes: number; at: number }>;
 
 /** A short line of command output for the log: token-like runs and home paths cut. */
 function safeExcerpt(text: string | null): string | null {
@@ -213,10 +219,10 @@ export function createCloudDiskGrower(deps: {
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
       const out: SetupGrowHistory = {};
       for (const [launchId, entry] of Object.entries(parsed as Record<string, unknown>)) {
-        const e = entry as { grows?: unknown; usedBytes?: unknown; at?: unknown };
-        if (typeof e?.grows !== "number" || typeof e.usedBytes !== "number" || typeof e.at !== "number") continue;
+        const e = entry as { grows?: unknown; peakBytes?: unknown; at?: unknown };
+        if (typeof e?.grows !== "number" || typeof e.peakBytes !== "number" || typeof e.at !== "number") continue;
         if (now() - e.at > SETUP_HISTORY_TTL_MS) continue;
-        out[launchId] = { grows: e.grows, usedBytes: e.usedBytes, at: e.at };
+        out[launchId] = { grows: e.grows, peakBytes: e.peakBytes, at: e.at };
       }
       return out;
     } catch {
@@ -253,29 +259,35 @@ export function createCloudDiskGrower(deps: {
     if (run) run.sampler = null;
   };
   const reservePath = (launchId: string): string => path.join(reserveDir, `${launchId.replace(/[^A-Za-z0-9_-]/g, "_")}.bin`);
+  /** The launches whose reserve should be on disk; a write that finishes after its launch let go of it is removed. */
+  const reserved = new Set<string>();
+  let reserveZeros: Buffer | null = null;
   const freeReserve = (launchId: string): void => {
+    reserved.delete(launchId);
     try { fs.rmSync(reservePath(launchId), { force: true }); } catch { /* nothing to free */ }
   };
+  /** Written off the event loop (one write on libuv's pool): a setup's start never waits on it. */
   const keepReserve = (launchId: string): void => {
     const target = reservePath(launchId);
     const space = readDiskSpace(deps.path);
     // Too little room to set any aside: the launch's mark may not land, and then it doesn't grow.
     if (!space || space.freeBytes < SETUP_RESERVE_BYTES * 4) return;
-    let fd: number | null = null;
-    try {
-      fs.mkdirSync(reserveDir, { recursive: true });
-      fd = fs.openSync(target, "w", 0o600);
-      // Real blocks: a sparse file holds no room.
-      const chunk = Buffer.alloc(1024 * 1024);
-      for (let written = 0; written < SETUP_RESERVE_BYTES; written += chunk.length) fs.writeSync(fd, chunk);
-    } catch (error) {
-      deps.logger?.warn("cloud.setup_reserve_failed", { error: error instanceof Error ? error.message : String(error) });
-      if (fd != null) { try { fs.closeSync(fd); } catch { /* ignore */ } fd = null; }
-      freeReserve(launchId);
-    } finally {
-      if (fd != null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
-    }
+    reserved.add(launchId);
+    // Real blocks: a sparse file holds no room.
+    reserveZeros ??= Buffer.alloc(SETUP_RESERVE_BYTES);
+    void fs.promises.mkdir(reserveDir, { recursive: true })
+      .then(() => fs.promises.writeFile(target, reserveZeros!, { mode: 0o600 }))
+      .then(() => {
+        if (!reserved.has(launchId)) fs.rmSync(target, { force: true });
+      })
+      .catch((error: unknown) => {
+        deps.logger?.warn("cloud.setup_reserve_failed", { error: error instanceof Error ? error.message : String(error) });
+        try { fs.rmSync(target, { force: true }); } catch { /* nothing to free */ }
+      });
   };
+
+  /** A setup that may grow, once its launch's mark is saved: the history entry `makeRoom` writes first. */
+  const pendingGrows = new Map<string, { grows: number; peakBytes: number }>();
 
   /** The disk as the grow sees it, or null when unreadable. */
   const measure = (): { space: DiskSpace; used: number; pressure: DiskPressureState } | null => {
@@ -320,10 +332,14 @@ export function createCloudDiskGrower(deps: {
         deps.logger?.info("cloud.disk_grow_raced", { toGb });
         return { state: "changed" };
       }
-      // No answer (the network, a timeout, the server failing after the provider): the grow may
+      // No answer (the network, a timeout, a gateway that lost the server's reply): the grow may
       // have happened, and its restart may be coming. Held as started, so nothing asks again
       // for it inside the cooldown; the state stays "growing" with the size it came from.
-      if (!(error instanceof CloudProviderError) || error.status === 0 || error.status >= 500) {
+      // A deliberate no (a 503, `unavailable`: no provider key, can't record) is a refusal below.
+      const lost = !(error instanceof CloudProviderError)
+        || error.status === 0
+        || ((error.status === 502 || error.status === 504) && error.code !== "unavailable");
+      if (lost) {
         grewAt = now();
         deps.logger?.warn("cloud.disk_grow_answer_lost", { toGb, error: error instanceof Error ? error.message : String(error) });
         return { state: "growing", toGb };
@@ -491,8 +507,10 @@ export function createCloudDiskGrower(deps: {
      * (`ChatLaunchEnvironmentDisk`). Each run keeps a small reserve on the
      * disk, freed just before the launch writes its grow mark, so the mark
      * lands even on a full disk. An ENOSPC grows only when this disk really
-     * ran short, and a launch grows again only when its run used more than
-     * the run before it (a grow that didn't help won't help twice).
+     * ran short (by the lowest free space the run read), and a launch grows
+     * again only when its run's peak use passed the last grown run's (a grow
+     * that didn't help won't help twice), four times at most. A grow counts
+     * toward that only once the launch's mark is saved (`makeRoom`).
      */
     setupDisk(stillIdle: () => boolean | Promise<boolean>): ChatLaunchEnvironmentDisk {
       return {
@@ -506,6 +524,7 @@ export function createCloudDiskGrower(deps: {
           keepReserve(launchId);
         },
         setupEnded({ launchId }) {
+          pendingGrows.delete(launchId);
           stopSampling(setupRuns.get(launchId));
           setupRuns.delete(launchId);
           freeReserve(launchId);
@@ -525,27 +544,33 @@ export function createCloudDiskGrower(deps: {
             || lowFree / space.totalBytes < SETUP_SHORT_FREE_FRACTION
             || pressure !== "normal";
           const usedBytes = startFree == null ? null : Math.max(0, startFree - lowFree);
+          const peakBytes = space.totalBytes - lowFree;
           const history = readHistory();
           const before = history[launchId];
-          const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), lowMb: Math.round(lowFree / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), grows: before?.grows ?? 0, line };
+          const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), lowMb: Math.round(lowFree / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), peakMb: Math.round(peakBytes / 2 ** 20), grows: before?.grows ?? 0, line };
           if (!short) {
             deps.logger?.info("cloud.setup_disk_full_not_short", log);
             return { grow: false, error: `Setup said there's no space left on the device, but this computer's disk kept at least ${gb(lowFree)} free during setup, so ADE didn't grow it (a tool's own limit or a full inode table says the same).${line ? ` Last error: ${line}` : ""} Fix that, then retry.` };
           }
-          if (before && (before.grows >= SETUP_MAX_GROWS || usedBytes == null || usedBytes <= before.usedBytes)) {
+          if (before && (before.grows >= SETUP_MAX_GROWS || peakBytes <= before.peakBytes)) {
             deps.logger?.info("cloud.setup_disk_full_no_regrow", log);
             return { grow: false, error: `Setup filled this computer's disk again after it grew to ${gb(space.totalBytes)}, and another step wouldn't help. Free some space (or use Clear caches in Settings > ADE Cloud), or make the setup lighter, then retry.` };
           }
-          // The reserve goes now, so the launch's mark (and the grow's own note) have room on a full disk.
+          // The reserve goes now, so the launch's mark (and the grow's own notes) have room on a full disk.
           freeReserve(launchId);
-          if (!writeHistory({ ...history, [launchId]: { grows: (before?.grows ?? 0) + 1, usedBytes: usedBytes ?? 0, at: now() } })) {
-            return { grow: false, error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
-          }
+          pendingGrows.set(launchId, { grows: (before?.grows ?? 0) + 1, peakBytes });
           deps.logger?.info("cloud.setup_disk_full_grow", log);
           return { grow: true };
         },
-        makeRoom({ signal }) {
-          return grower.makeRoomForSetup({ stillIdle, signal });
+        async makeRoom({ launchId, signal }) {
+          // The launch's mark is saved: only now does this grow count toward the next one's rule.
+          const pending = pendingGrows.get(launchId);
+          pendingGrows.delete(launchId);
+          if (!pending) return null;
+          if (!writeHistory({ ...readHistory(), [launchId]: { ...pending, at: now() } })) {
+            return { state: "refused", error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
+          }
+          return await grower.makeRoomForSetup({ stillIdle, signal });
         },
       };
     },

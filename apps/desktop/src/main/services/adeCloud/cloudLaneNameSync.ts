@@ -13,7 +13,9 @@
  * so it holds whoever started the launch: a desktop, the phone, the web or
  * nobody watching. Renames apply in order; a burst writes only the last
  * name. A write that failed is tried again a few times with a doubling wait,
- * never for a computer that is gone.
+ * never for a computer that is gone, and never once a newer rename came. The
+ * machine's key lands on the computer up to a minute after it joins: a
+ * rename before then retries the machine's part the same way.
  */
 
 import { CLOUD_LANE_ID_METADATA, CLOUD_LANE_NAME_METADATA } from "../../../shared/cloudLaneLaunch";
@@ -41,6 +43,8 @@ export function createCloudLaneNameSync(deps: {
 }) {
   const setTimer = deps.setTimer ?? ((run: () => void, ms: number) => { setTimeout(run, ms).unref?.(); });
   let wanted: { laneId: string; name: string; attempt: number } | null = null;
+  /** Bumped on every rename: a retry runs only while no newer rename came after the write it retries. */
+  let generation = 0;
   let chain: Promise<void> = Promise.resolve();
   /** What landed last, so a repeat of it writes nothing: set only once a write succeeded. */
   const named = { computer: null as string | null, machine: null as string | null };
@@ -63,11 +67,12 @@ export function createCloudLaneNameSync(deps: {
       await client.setInstanceName(deps.instanceId, computerName);
     }
     named.computer = computerName;
+    if (!deps.renameMachine || named.machine === computerName) return;
     const machineKey = metadata[CLOUD_MACHINE_KEY_METADATA]?.trim();
-    if (machineKey && deps.renameMachine && named.machine !== computerName) {
-      await deps.renameMachine(machineKey, computerName);
-      named.machine = computerName;
-    }
+    // Not recorded yet (the first minute after the join): the retry names the machine.
+    if (!machineKey) throw new Error("This computer's machine key isn't recorded yet.");
+    await deps.renameMachine(machineKey, computerName);
+    named.machine = computerName;
   };
 
   const run = (): void => {
@@ -75,16 +80,18 @@ export function createCloudLaneNameSync(deps: {
       const next = wanted;
       wanted = null;
       if (!next) return;
+      const startedIn = generation;
       try {
         await write(next);
       } catch (error) {
         const gone = error instanceof CloudProviderError && error.status === 404;
         deps.logger.warn("cloud.lane_name_sync_failed", { laneId: next.laneId, attempt: next.attempt, gone, error: getErrorMessage(error) });
         // A newer rename replaces this one; a gone computer has nothing to name.
-        if (gone || next.attempt >= WRITE_ATTEMPTS || wanted) return;
+        if (gone || next.attempt >= WRITE_ATTEMPTS || generation !== startedIn) return;
         const retry = { ...next, attempt: next.attempt + 1 };
         setTimer(() => {
-          if (wanted) return;
+          // A newer rename came meanwhile (written, or failed and retrying on its own): this one is stale.
+          if (generation !== startedIn) return;
           wanted = retry;
           run();
         }, RETRY_FIRST_MS * 2 ** (next.attempt - 1));
@@ -96,6 +103,7 @@ export function createCloudLaneNameSync(deps: {
     noteRenamed(laneId: string, name: string): void {
       const trimmed = name.trim();
       if (!deps.instanceId || !laneId || !trimmed) return;
+      generation += 1;
       wanted = { laneId, name: trimmed, attempt: 1 };
       run();
     },

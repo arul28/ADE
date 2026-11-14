@@ -884,11 +884,10 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         host?.setupEnded({ launchId });
       }
       if (record.snapshot.phase === "cancelled") return "failed";
-      if (room === true) {
-        // Start now pressed while the disk grew: it holds from here.
-        if (record.startNowRequested) runtimeFor(launchId).startNow?.();
-        continue;
-      }
+      // Start now pressed while the disk grew: held through the grow, it goes now
+      // (setup runs again, or the grow was refused and the stage fails as a warning).
+      if (record.startNowRequested) runtimeFor(launchId).startNow?.();
+      if (room === true) continue;
       setStage(record, "environment", environmentFailureStatus(record), {
         steps: full.diskFull,
         error: room,

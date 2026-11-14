@@ -178,9 +178,10 @@ describe("machine directory", () => {
   });
 
   it.each([
-    ["spaces around it", "  Studio Mac  "],
-    ["control and bidi characters in it", "Studio\u202e\u0007\n Mac"],
-  ])("renames an owned machine with customName (%s cleaned) and prefers it over the reported hostname", async (_label, customName) => {
+    ["spaces around it", "  Studio Mac  ", "Studio Mac"],
+    ["control and bidi characters in it", "Studio\u202e\u0007\n Mac", "Studio Mac"],
+    ["an emoji joined with a zero-width joiner (kept)", "Studio Mac \u{1F469}\u200D\u{1F4BB}", "Studio Mac \u{1F469}\u200D\u{1F4BB}"],
+  ])("renames an owned machine with customName (%s cleaned) and prefers it over the reported hostname", async (_label, customName, expected) => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
     await register(env, token, "machine-a");
@@ -196,7 +197,7 @@ describe("machine directory", () => {
     expect(await renamed.json()).toEqual(expect.objectContaining({
       machineKey: "machine-a",
       name: "Machine machine-a",
-      customName: "Studio Mac",
+      customName: expected,
       online: true,
     }));
 
@@ -206,7 +207,7 @@ describe("machine directory", () => {
         expect.objectContaining({
           machineKey: "machine-a",
           name: "Machine machine-a",
-          customName: "Studio Mac",
+          customName: expected,
         }),
       ],
     });
