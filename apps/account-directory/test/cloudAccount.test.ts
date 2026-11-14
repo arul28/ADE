@@ -729,15 +729,21 @@ describe("ADE Cloud account", () => {
     });
   }
 
-  it.each<[string, Row, number | null]>([
+  it.each<[string, Row, number | null, boolean?]>([
     ["a paid plan with extra disk on pays the GB past the plan", { extra_disk_state: "on", extra_disk_limit_cents: 1000 }, 10],
     ["extra disk turned down pays nothing", { extra_disk_state: "asked", extra_disk_limit_cents: 1000 }, null],
     ["the free plan pays nothing", { plan: "free", stripe_status: null, extra_disk_state: "on", extra_disk_limit_cents: 1000 }, null],
     ["a failed payment pays nothing", { stripe_status: "past_due", extra_disk_state: "on", extra_disk_limit_cents: 1000 }, null],
-  ])("extra disk: a finished day is billed once, from that day's row: %s", async (_label, overrides, billedGb) => {
+    // Its item starts then, after the midday the day's event is stamped at: Stripe would drop it unbilled.
+    ["the day extra disk goes on pays nothing, before any row that day", { extra_disk_state: "asked" }, null, true],
+  ])("extra disk: a finished day is billed once, from that day's row: %s", async (_label, overrides, billedGb, turnedOnToday) => {
     Object.assign(harness.env, MONEY_ENV);
     seedAccount(harness, OWNER, { ...plusAccount, ...overrides });
     seedStopped([24, 16]);
+    if (turnedOnToday) {
+      harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: "price_plan" } }] } });
+      expect((await harness.send(OWNER, "POST", "/cloud/billing/extra-disk", { enabled: true, monthlyLimitUsd: 10 })).status).toBe(200);
+    }
     // Day one writes its row; the next day's owner check bills it; a later check finds nothing left.
     await harness.tick();
     clock += DAY;
@@ -2069,6 +2075,69 @@ describe("ADE Cloud server launcher", () => {
     expect((await join({ nonce: joinCode(), needsApproval: true })).status).toBe(200);
     const record = await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json();
     expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: "GHJK-6789" }) }));
+  });
+
+  it("a Retry holds the failed launch while it deletes its computer: that computer's reports and a second start change nothing, the launch starts again with a new deadline", async () => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", LAUNCH);
+    clock = NOW + 2 * HOUR;
+    // A report the failed computer sent before the Retry: read against the old row, its body still arriving.
+    let bodyRead!: () => void;
+    const reading = new Promise<void>((resolve) => { bodyRead = resolve; });
+    let sendBody!: () => void;
+    const body = new ReadableStream<Uint8Array>({
+      pull: (controller) => new Promise<void>((resolve) => {
+        bodyRead();
+        sendBody = () => {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ state: "running" })));
+          controller.close();
+          resolve();
+        };
+      }),
+    });
+    const earlyReport = handleCloudRequest(new Request(`https://directory.test/cloud/launches/${LAUNCH}/stages`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit), harness.env);
+    await reading;
+    // While the delete is in flight, where a real one lands: a late report, the early one's body, and a second start.
+    const during: number[] = [];
+    harness.net.after.push({ match: /DELETE .*\/instances\/madenew12345$/, run: async () => {
+      during.push((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "joined" })).status);
+      sendBody();
+      during.push((await earlyReport).status);
+      during.push((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status);
+      during.push(madeCalls().length);
+    } });
+
+    const retried = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true });
+
+    expect(retried.status).toBe(201);
+    // Both reports refused, the second start answered with no computer made.
+    expect(during).toEqual([409, 409, 200, 1]);
+    expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
+    expect(madeCalls()).toHaveLength(2);
+    expect(harness.row("select state, expires_at from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "joining", expires_at: clock + 7 * DAY });
+  });
+
+  it("a Retry whose delete the provider refuses keeps the launch failed with its computer, so the next Retry deletes it", async () => {
+    await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
+    harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", LAUNCH);
+    harness.net.once.push({ match: /DELETE .*\/instances\/madenew12345$/, reply: harness.net.reply({ error: { code: "upstream" } }, 500) });
+
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(503);
+    expect(harness.row("select state, instance_id from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "failed", instance_id: "madenew12345" });
+    expect(madeCalls()).toHaveLength(1);
+    // A later Retry whose Worker stopped mid-delete leaves its hold: after 5 minutes a read says failed, so the client retries.
+    harness.exec("update cloud_launches set state = 'retrying', updated_at = ? where launch_id = ?", clock, LAUNCH);
+    clock += 6 * 60_000;
+    expect(await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()).toEqual(expect.objectContaining({ state: "failed", instanceId: null }));
+
+    expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(201);
+    expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(2);
+    expect(madeCalls()).toHaveLength(2);
   });
 
   it.each<[string, Record<string, string>, number, string | null]>([

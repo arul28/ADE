@@ -4,8 +4,9 @@
  * brain of choice. Everything runs here except the one step only the person
  * can do, approving the new machine joining their account. That goes out as a
  * sign-in link (the phone opens it natively, any signed-in browser works): to
- * the agent's chat as a notice, and to `status` for a caller (the phone) that
- * started the job in the background and shows the link itself.
+ * the agent's chat as a notice, to `status` for a caller (the phone) that
+ * started the job in the background and shows the link itself, and as a push
+ * to the person's phones, which open their own approval sheet.
  */
 
 import { randomUUID } from "node:crypto";
@@ -107,6 +108,46 @@ export function createCloudSelfApproval(deps: {
   };
 }
 
+/**
+ * A push to this brain's phones (`ade serve` sets it): the person is needed
+ * to approve a machine joining. The push rules apply (notifications off,
+ * quiet hours, the chat's mute when `chatSessionId` names one).
+ */
+export type CloudJoinApprovalPush = (input: { dedupeKey: string; title: string; body: string; deepLink: string; chatSessionId: string | null }) => void;
+
+let joinApprovalPush: CloudJoinApprovalPush | null = null;
+
+export function setCloudJoinApprovalPush(next: CloudJoinApprovalPush | null): void {
+  joinApprovalPush = next;
+}
+
+/** The phone's own approval sheet for this code (`ade://device?user_code=…`), whatever host the account service answers from. */
+export function phoneApprovalLink(url: string): string | null {
+  try {
+    const code = new URL(url).searchParams.get("user_code")?.trim();
+    return code ? `ade://device?user_code=${encodeURIComponent(code)}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One push per sign-in code: a fresh code (a sign-in started again) is news again. */
+function pushJoinApproval(input: { requestId: string; url: string; name: string; chatSessionId: string | null }, logger?: BrainLogger): void {
+  const deepLink = phoneApprovalLink(input.url);
+  if (!joinApprovalPush || !deepLink) return;
+  try {
+    joinApprovalPush({
+      dedupeKey: `cloud-join-approval:${input.requestId}:${deepLink}`,
+      title: `Approve ${input.name} joining your ADE account`,
+      body: "A new ADE Cloud computer waits for you. Tap to approve it.",
+      deepLink,
+      chatSessionId: input.chatSessionId,
+    });
+  } catch (error) {
+    logger?.warn?.("cloud.join_approval_push_failed", { requestId: input.requestId, error: getErrorMessage(error) });
+  }
+}
+
 /** The creator's deps a brain fills in with no window: the approval is handed off. */
 export type CloudBrainMakerBase = Omit<CloudCopyDeps, "approveInWindow" | "handOffApproval" | "selfApproval"> & {
   /** Plan and hours, for a sign-in the brain approves itself. */
@@ -155,7 +196,10 @@ export function createCloudBrainMaker(deps: {
     const startedAt = Date.now();
     const creatorDeps: CloudCopyDeps = {
       ...deps.base,
-      handOffApproval: ({ url, name }) => onApproval?.(url, name),
+      handOffApproval: ({ url, name }) => {
+        pushJoinApproval({ requestId, url, name, chatSessionId: input.madeByChat ?? null }, deps.logger);
+        onApproval?.(url, name);
+      },
       selfApproval: (args) => allowSelfApproval(args, { selfApprove: input.selfApprove === true, startedAt }),
     };
     const madeBy = cloudMadeByMetadata(input);

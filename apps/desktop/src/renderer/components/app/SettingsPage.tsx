@@ -33,7 +33,7 @@ import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { ADE_CLOUD_PLACE_ID, ProvidersPlaceProvider, SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
 import { useSettingsMachinePage } from "../settings/SettingsMachinesNav";
-import { SettingsMachinesContext, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
+import { SettingsMachinesContext, settingsMachineNames, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
 import { MachinePicker, reachableMachines } from "../settings/ProvidersMachinePicker";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
@@ -682,6 +682,7 @@ export function SettingsPage({
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
     machines,
     thisMachineName: thisMachineDeviceName,
+    machineNames: settingsMachineNames(machines, thisMachineDeviceName),
     openMachine: (machineId, tab = "machines") => navigateToTab(tab, undefined, machineId),
     openTab: (tab, anchor) => {
       const resolved = resolveSettingsTab(tab);

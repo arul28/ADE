@@ -478,7 +478,7 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
     });
 
-    it("recovers a Cursor stale access token on the same agent thread, invisibly, before any output", async () => {
+    it("recovers a Cursor stale access token before any output on a fresh agent, invisibly, so the prompt is never in one thread twice", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       // The SDK exchanges the API key for a short-lived access token once per
       // worker and never refreshes it, so ~60 min in every send dies instantly
@@ -523,21 +523,15 @@ describe("createAgentChatService", () => {
       // Exactly one recycle and one re-send...
       expect(mockState.cursorSdkSendCalls).toHaveLength(2);
       expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
-      // ...onto the SAME agent id, so the whole conversation survives. This is
-      // what separates it from the transport recycle, which rotates to a new
-      // agent and re-seeds it with a continuity summary.
+      // ...onto a NEW agent. The first run may already have recorded the
+      // prompt in the old thread, and expiring that run does not take it back
+      // out: re-sending it there would leave it in Cursor's thread twice.
       expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
-      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBe("cursor-sdk-agent-1");
-      expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBe(true);
-      // Nothing had streamed yet, so the original prompt is re-sent verbatim —
-      // byte-identical to attempt 1, not a "continue" instruction. Accepted
-      // trade-off: `forceExpireActiveRun` expires the wedged run but does not
-      // unregister the message it already recorded, so the resumed thread can
-      // hold this prompt twice. A silent, correct answer beats a deduped no-op.
+      expect(mockState.cursorSdkAcquireCalls[0]?.agentId ?? null).not.toBe("cursor-sdk-agent-1");
+      expect(mockState.cursorSdkAcquireCalls[1]?.agentId).toBeNull();
+      // Nothing had streamed yet, so the request itself is what goes again.
       expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? ""))
         .toContain("Send whose token just expired.");
-      expect(mockState.cursorSdkSendCalls[1]?.promptText)
-        .toBe(mockState.cursorSdkSendCalls[0]?.promptText);
       // And the user sees none of it: no error card, no notice.
       expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);
       expect(events.filter((event) => event.event.type === "system_notice")).toHaveLength(0);
@@ -660,7 +654,7 @@ describe("createAgentChatService", () => {
       expect(mockState.cursorSdkSendCalls).toHaveLength(2);
       const retryPrompt = String(mockState.cursorSdkSendCalls[1]?.promptText ?? "");
       expect(retryPrompt).not.toContain("Continue where you left off");
-      expect(retryPrompt).toBe(String(mockState.cursorSdkSendCalls[0]?.promptText ?? ""));
+      expect(retryPrompt).toContain("Refactor the composer.");
       // Nothing visible happened on this turn, so the recovery stays silent.
       expect(events.filter((event) => event.event.type === "system_notice")).toHaveLength(0);
       expect(events.filter((event) => event.event.type === "error")).toHaveLength(0);

@@ -50,19 +50,9 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * `cancelled`: ADE closed the window itself because the box signed in another
- * way. `needs_person`: a window a brain borrowed (`endWhenPersonNeeded`)
- * reached a step only a person can take, so it ended at once rather than wait
- * on a screen nobody may be at. Otherwise the same values as a brain's
- * headless approval.
+ * way. Otherwise the same values as a brain's headless approval.
  */
-export type CloudApprovalWindowResult = HeadlessApprovalResult | "needs_person";
-
-/** A borrowed window ended at a step only a person can take; `codeStillPending`: the code was never claimed (the approval page, not a ticket). */
-class ApprovalNeedsPerson extends Error {
-  constructor(readonly codeStillPending: boolean) {
-    super("The sign-in needs the person.");
-  }
-}
+export type CloudApprovalWindowResult = HeadlessApprovalResult;
 
 /**
  * `ticket`: a one-time sign-in link from `/device/approve`; nothing to type,
@@ -97,15 +87,6 @@ export type CloudMachineCreatorDeps = {
    * natively, any browser works). Used only when `approveInWindow` is unset.
    */
   handOffApproval?: (args: { url: string; userCode: string; name: string }) => void;
-  /**
-   * A brain with a desktop app attached (its lane launch): the desktop asks
-   * its own account service for the one-time ticket and opens it in its
-   * window, ending at once with `needs_person` at a step only a person can
-   * take. `codeStillPending`: the desktop never claimed the code (no ticket
-   * could be minted). Used only with `handOffApproval`, which takes over
-   * whenever the desktop can't finish.
-   */
-  approveOnDesktop?: (args: { userCode: string; title: string; signal: AbortSignal }) => Promise<{ result: CloudApprovalWindowResult; codeStillPending: boolean }>;
   /**
    * A brain with no window: the one-time link opened in a headless Chromium
    * on this machine (ade-cli services/account/cloudHeadlessApproval.ts). Used only when the sign-in
@@ -443,7 +424,7 @@ export async function createCloudMachine(
  * machine may be signed in whatever this function answers.
  */
 export async function approveCloudMachineSignIn(
-  deps: Pick<CloudMachineCreatorDeps, "approveInWindow" | "handOffApproval" | "approveOnDesktop" | "approveHeadless" | "selfApproval" | "getAccountToken" | "fetch" | "logger" | "sleep">,
+  deps: Pick<CloudMachineCreatorDeps, "approveInWindow" | "handOffApproval" | "approveHeadless" | "selfApproval" | "getAccountToken" | "fetch" | "logger" | "sleep">,
   args: {
     userCode: string;
     name: string;
@@ -483,32 +464,6 @@ export async function approveCloudMachineSignIn(
       await sleep(POLL_MS);
     }
   };
-  if (deps.approveOnDesktop && deps.handOffApproval && args.restartSignIn) {
-    // A brain with a desktop attached (its lane launch): the desktop approves
-    // in its window when nothing needs a person. Otherwise, or when it can't
-    // finish (it left, its window closed, it is too old), the person gets the link.
-    const onDesktop = deps.approveOnDesktop;
-    let codeStillPending = false;
-    try {
-      args.onApprovalSent();
-      await watchWindow(async (windowSignal) => {
-        const answer = await onDesktop({ userCode, title: `Sign in ${name}`, signal: windowSignal });
-        codeStillPending = answer.codeStillPending;
-        return answer.result;
-      }, () => codeStillPending);
-      return;
-    } catch (error) {
-      checkCancelled();
-      if (error instanceof ApprovalNeedsPerson) {
-        logger.info?.("cloud.approval_window_needs_person", { instanceId, requestId: args.requestId, codeStillPending: error.codeStillPending });
-        // Nothing was approved: an unclaimed code goes in the link as it is;
-        // a ticket claimed it, so the link takes a fresh one, with no grace.
-        return error.codeStillPending ? await handOff(userCode) : await handOffWithFreshCode(error, { grace: false });
-      }
-      logger.warn?.("cloud.approval_window_failed", { instanceId, requestId: args.requestId, error: errorText(error) });
-      return await handOffWithFreshCode(error);
-    }
-  }
   if (!deps.approveInWindow) {
     const headless = deps.approveHeadless;
     const selfApproved = Boolean(headless && args.requestId && deps.selfApproval)
@@ -540,8 +495,8 @@ export async function approveCloudMachineSignIn(
    * needs (unless none can have landed), then sends the person a link with a
    * fresh code (`/device/approve` claimed the first one).
    */
-  async function handOffWithFreshCode(cause: unknown, options: { grace?: boolean } = {}): Promise<void> {
-    const graceDeadline = Date.now() + (options.grace === false ? 0 : SIGN_IN_FINISH_TIMEOUT_MS);
+  async function handOffWithFreshCode(cause: unknown): Promise<void> {
+    const graceDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
     for (;;) {
       checkCancelled();
       if (await readSignedIn()) return;
@@ -567,19 +522,15 @@ export async function approveCloudMachineSignIn(
       title: `Sign in ${name}`,
       signal: windowSignal,
       onNeedsPerson: () => progress("confirm_in_window", `Confirm in the window that opened to let ${name} use your account.`, instanceId),
-    }), () => window.mode === "browser");
+    }));
   }
 
   /**
    * Runs an approval window against the box's own word: an approval from
    * anywhere (this window, a phone, another browser) ends the wait and
-   * closes the window. `codeStillPending` is read when the window ends at a
-   * step only a person can take (`needs_person`).
+   * closes the window.
    */
-  async function watchWindow(
-    open: (windowSignal: AbortSignal) => Promise<CloudApprovalWindowResult>,
-    codeStillPending: () => boolean,
-  ): Promise<void> {
+  async function watchWindow(open: (windowSignal: AbortSignal) => Promise<CloudApprovalWindowResult>): Promise<void> {
     const stopWatching = new AbortController();
     // Cancelling the create closes the window too, including a cancel that
     // came before this point.
@@ -602,9 +553,7 @@ export async function approveCloudMachineSignIn(
       stopWatching.abort();
       checkCancelled();
 
-      if (first.kind === "window" && first.outcome === "needs_person") {
-        if (!(await readSignedIn())) throw new ApprovalNeedsPerson(codeStillPending());
-      } else if (first.kind === "window" && first.outcome !== "cancelled") {
+      if (first.kind === "window" && first.outcome !== "cancelled") {
         if (first.outcome === "signed_in") {
           // The approval landed; give the box a moment to collect its session.
           const finishDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
