@@ -12,6 +12,8 @@ import {
   startGitHubAppDeviceFlow,
 } from "./githubAppUserAuth";
 import { describeGitHubAppUserAuthFailure } from "./githubAppUserAuthFailure";
+import { markExpected } from "../../../shared/expectedError";
+import { describeFetchTransportFailure, isFetchTransportFailure } from "../../../shared/fetchTransportFailure";
 
 /**
  * The GitHub device flow: how a person first authorizes ADE.
@@ -33,6 +35,16 @@ const MAX_PENDING_DEVICE_AUTH_SESSIONS = 5;
  */
 export const GITHUB_SIGN_IN_RATE_LIMITED_COPY =
   "GitHub is rate-limiting ADE's sign-in requests right now. Try again in a few minutes.";
+
+/**
+ * What a person is told when the sign-in request never reached GitHub (no
+ * network, a connect timeout, a TLS handshake cut off). The reason stays in
+ * the brackets for the log and a support report.
+ */
+function githubSignInUnreachableCopy(error: unknown): string {
+  const reason = describeFetchTransportFailure(error);
+  return `ADE couldn't reach GitHub${reason ? ` (${reason})` : ""}. Check your connection, then try again.`;
+}
 
 type GitHubAppDeviceAuthSession = GitHubAppDeviceCode & {
   sessionId: string;
@@ -102,6 +114,10 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
         oauthError: described.oauthError,
       });
       if (described.status === 429) throw new Error(GITHUB_SIGN_IN_RATE_LIMITED_COPY);
+      // The user's network, not ADE: say so, and keep it out of crash reports.
+      if (isFetchTransportFailure(error)) {
+        throw markExpected(new Error(githubSignInUnreachableCopy(error), { cause: error }), "network");
+      }
       throw error;
     }
     const sessionId = randomUUID();
@@ -155,7 +171,9 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
       const described = describeGitHubAppUserAuthFailure(error);
       const message = described.status === 429
         ? GITHUB_SIGN_IN_RATE_LIMITED_COPY
-        : described.message;
+        : isFetchTransportFailure(error)
+          ? githubSignInUnreachableCopy(error)
+          : described.message;
       deps.logger.warn("github.app_user_device_poll_failed", {
         error: described.message,
         status: described.status,

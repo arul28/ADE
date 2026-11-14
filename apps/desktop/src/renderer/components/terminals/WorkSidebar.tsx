@@ -1,4 +1,4 @@
-import { activeRemoteWorkOnRow, remoteAndroidEmulatorUses, remoteSimulatorUses } from "../../../shared/chatRemoteWork";
+import { activeRemoteWorkOnRow } from "../../../shared/chatRemoteWork";
 import {
   useCallback,
   useEffect,
@@ -33,7 +33,7 @@ import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
 import { WorkToolsMaximizeContext } from "./workToolsMaximize";
 import { cn } from "../ui/cn";
 import { WorkToolPicker } from "./WorkToolPicker";
-import { useWorkToolStatuses } from "./useWorkToolStatuses";
+import { useWorkToolStatuses, withRemoteWorkToolLines } from "./useWorkToolStatuses";
 import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
 import { AndroidToolCardMenu } from "../android/AndroidToolCardMenu";
@@ -44,6 +44,9 @@ import {
   isAvailableWorkSidebarTab,
   isDesktopWorkTool,
   isHostMismatchWorkTool,
+  laneScreenPlatform,
+  remoteDesktopToolContext,
+  remoteWorkUsesForTool,
   workToolContextLabel,
   workToolLabel,
   type WorkToolContext,
@@ -208,17 +211,35 @@ export function WorkSidebar({
     activeSession && activeSession.id === panelChatSessionId ? activeSession.sideChatSessionId ?? null : null,
   );
   const hasSideChat = sideChat.kind !== "none";
-  const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
-  const hasRemoteAndroidEmulator = remoteAndroidEmulatorUses(activeSession).length > 0;
-  const toolContext = useMemo(
+  const hasRemoteSimulator = remoteWorkUsesForTool(activeSession, "ios").length > 0;
+  const hasRemoteAndroidEmulator = remoteWorkUsesForTool(activeSession, "android").length > 0;
+  // The other machines' screens this chat drives, by the tool that shows each.
+  const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext([
+    ...remoteWorkUsesForTool(activeSession, "mac-desktop"),
+    ...remoteWorkUsesForTool(activeSession, "windows-desktop"),
+  ]);
+  const hasRemoteAppControl = remoteWorkUsesForTool(activeSession, "app-control").length > 0;
+  const toolContext = useMemo<WorkToolContext>(
     () => ({
       ...feedsToolContext,
       ...(laneCloud ? { cloudLane: laneCloud } : {}),
       hasSideChat,
       ...(hasRemoteSimulator ? { hasRemoteSimulator } : {}),
       ...(hasRemoteAndroidEmulator ? { hasRemoteAndroidEmulator } : {}),
+      ...(remoteMacDesktopPlatform ? { remoteMacDesktopPlatform } : {}),
+      ...(hasRemoteWindowsDesktop ? { hasRemoteWindowsDesktop } : {}),
+      ...(hasRemoteAppControl ? { hasRemoteAppControl } : {}),
     }),
-    [feedsToolContext, hasSideChat, hasRemoteAndroidEmulator, hasRemoteSimulator, laneCloud],
+    [
+      feedsToolContext,
+      hasSideChat,
+      hasRemoteAndroidEmulator,
+      hasRemoteAppControl,
+      hasRemoteSimulator,
+      hasRemoteWindowsDesktop,
+      laneCloud,
+      remoteMacDesktopPlatform,
+    ],
   );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a
@@ -321,7 +342,7 @@ export function WorkSidebar({
   // The same for the Android card menu's start, stop, release and delete.
   const [androidDeviceRefreshKey, setAndroidDeviceRefreshKey] = useState(0);
   const {
-    statuses,
+    statuses: laneStatuses,
     loading: statusesLoading,
     appleDevice,
     androidDevice,
@@ -337,6 +358,10 @@ export function WorkSidebar({
     androidDeviceRefreshKey,
     remoteShellCount: activeRemoteWorkOnRow(activeSession).reduce((total, use) => total + use.terminalIds.length, 0),
   });
+  // A card whose device the chat drives on another machine names that machine
+  // instead of this lane's "No device" (from the chat summary; no reads).
+  const remoteWork = activeSession?.remoteWork;
+  const statuses = useMemo(() => withRemoteWorkToolLines(laneStatuses, remoteWork), [laneStatuses, remoteWork]);
 
   // No lane warning: every tool here is this lane's own. Another lane's App
   // Control session is never shown, so there is nothing to warn about.
@@ -822,7 +847,7 @@ export function WorkSidebar({
               key={effectiveTool}
               role="tabpanel"
               id={workToolPanelId(effectiveTool)}
-              aria-label={workToolLabel(effectiveTool, toolContext.hostPlatform ?? null)}
+              aria-label={workToolLabel(effectiveTool, laneScreenPlatform(toolContext))}
               className="absolute inset-0 z-[1] min-h-0"
               initial={{ opacity: 0, y: tabSwitch ? 0 : 4 }}
               animate={{ opacity: 1, y: 0 }}

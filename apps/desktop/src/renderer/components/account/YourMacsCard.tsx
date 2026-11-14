@@ -163,9 +163,9 @@ const MACHINES_REFRESH_MS = 30_000;
 const YOUR_COMPUTERS_SETTINGS_ANCHOR = "account-computers";
 /**
  * The ADE iPhone app holds live connections to at most this many computers at
- * once (the one in focus plus three). Keep in step with the iOS fleet limit.
+ * once. Keep in step with the iOS fleet limit (`MachineFleet.liveMachineLimit`).
  */
-const MOBILE_LIVE_MACHINE_LIMIT = 4;
+const MOBILE_LIVE_MACHINE_LIMIT = 8;
 const ACCOUNT_MENU_WIDTH = 200;
 
 type AccountBridge = {

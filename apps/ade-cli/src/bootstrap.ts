@@ -10,6 +10,7 @@ import {
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import type { RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
@@ -1077,6 +1078,8 @@ export async function createAdeRuntime(args: {
   syncRuntime?: AdeRuntimeSyncOptions;
   /** The brain's way to another machine, for moving a chat there. */
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /** The brain's way to let go of what a chat holds on other machines when its turn ends. */
+  releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /**
@@ -2050,8 +2053,9 @@ export async function createAdeRuntime(args: {
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
     // A row still marked running after its PTY ended does not count: only a live PTY does.
-    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
-      ptyService.list({ chatSessionId: owner, status: "running", limit: null }).some((row) => ptyService.hasLivePty(row.id))));
+    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner, ignoring) =>
+      ptyService.list({ chatSessionId: owner, status: "running", limit: null })
+        .some((row) => !ignoring.has(row.id) && ptyService.hasLivePty(row.id))));
     ptyServiceForSessionChanges = ptyService;
     // The runtime is stopping (an update, a reboot, the brain quitting): its
     // open agent CLIs reopen when the project's next runtime starts.
@@ -2447,6 +2451,9 @@ export async function createAdeRuntime(args: {
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
+        // Linux: a launch with no display here runs on the lane's own screen.
+        laneScreenLaunchEnv: async (request) => await macDesktopService?.laneScreenLaunchEnv(request) ?? null,
+        noteLaneScreenUse: (laneId: string) => macDesktopService?.noteLaneScreenUse?.(laneId),
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
@@ -2458,6 +2465,9 @@ export async function createAdeRuntime(args: {
           const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
           return lane?.worktreePath ?? null;
         },
+        // A chat on another machine runs its app in this lane's terminal, in its work copy.
+        resolvePrimaryLaneId: () => laneService.getPrimaryLane()?.laneId ?? null,
+        archiveTerminal: (sessionId: string) => { sessionService.archiveSession(sessionId); },
         // No fallback lane: a session whose lane cannot be resolved is refused.
         resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
           laneId,
@@ -3316,6 +3326,9 @@ export async function createAdeRuntime(args: {
         }),
         // This brain forwards the chat's calls to the other machine, so it
         // records that the chat used one.
+        ...(typeof args !== "string" && args.releaseRemoteWorkDevices
+          ? { onRemoteWorkTurnSettled: args.releaseRemoteWorkDevices }
+          : {}),
         onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3380,6 +3393,7 @@ export async function createAdeRuntime(args: {
         agentChatService,
         jevService,
         isEnabled: () => jevEnabled(projectConfigService.get().effective.ai?.chat, "settle_nudge"),
+        logger,
       });
       settleNudgeSweep.start();
       teardown.push(() => settleNudgeSweep.dispose());

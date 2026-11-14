@@ -109,6 +109,14 @@ export function formatAppleWindow(value: unknown): string {
   return lines.join("\n");
 }
 
+/** "Made the Xcode project from apps/Demo/project.yml with XcodeGen." for a build that ran XcodeGen first; null otherwise. */
+export function xcodeGenNote(value: unknown): string | null {
+  const folders = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  if (!folders.length) return null;
+  const specs = folders.map((folder) => (folder === "." ? "project.yml" : `${folder.replace(/\\/g, "/")}/project.yml`));
+  return `Made the Xcode project from ${specs.join(", ")} with XcodeGen.`;
+}
+
 /** `apple install`: which device has the app now, and whether it was built, installed and started. */
 export function formatAppleInstall(value: unknown): string {
   const result = isRecord(value) ? value : {};
@@ -132,6 +140,8 @@ export function formatAppleInstall(value: unknown): string {
       ["app", result.appBundlePath],
     ]),
   ];
+  const generated = xcodeGenNote(result.generatedXcodeProjects);
+  if (generated) lines.unshift(generated);
   return lines.join("\n");
 }
 
@@ -266,7 +276,9 @@ export function formatAppleTests(value: unknown): string {
     : `${count(result.testsExecuted)} run, ${count(result.testsFailed)} failed, ${count(result.testsSkipped ?? 0)} skipped`
       + (typeof result.durationMs === "number" ? ` in ${Math.round(result.durationMs / 1000)} s` : "")
       + ".";
+  const generated = xcodeGenNote(result.generatedXcodeProjects);
   const lines: string[] = [
+    ...(generated ? [generated] : []),
     `${head} ${counts}`,
     `${asString(result.scheme) ?? "?"} on ${asString(result.deviceName) ?? "the lane's device"} (${asString(result.deviceUdid) ?? "?"}).`,
   ];

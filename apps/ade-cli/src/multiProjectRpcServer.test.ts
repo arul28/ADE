@@ -268,15 +268,16 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("keeps healthy sync status on the active-host resolver", async () => {
+  it("answers sync status from the ready active host without activating a host", async () => {
     const { registry, projectRoot } = createRegistry();
     const record = registry.add(projectRoot);
     const runtime = makeRuntime("healthy-active");
+    const readyScope = { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
     const scopeRegistry = {
-      getActiveSyncHostProjectId: vi.fn(() => null),
+      getActiveSyncHostProjectId: vi.fn(() => record.projectId),
       getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
-      getIfReady: vi.fn(() => null),
-      resolveActiveSyncHost: vi.fn(async () => ({ registryProjectId: record.projectId, record, runtime, dispose: vi.fn() })),
+      getIfReady: vi.fn((id: string) => id === record.projectId ? readyScope : null),
+      resolveActiveSyncHost: vi.fn(async () => readyScope),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -284,7 +285,7 @@ describe("multi-project RPC server", () => {
     await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
     await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.getStatus", params: {} }))
       .resolves.toEqual({ role: "brain", label: "healthy-active" });
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledOnce();
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     handler.dispose();
   });
 
@@ -2534,7 +2535,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: added.projectId },
     }) as { actions: Array<{ name: string }> };
     expect(actions.actions.length).toBeGreaterThan(0);
-    expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId);
+    expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId, expect.anything());
 
     handler.dispose();
   });
@@ -2792,7 +2793,7 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("exposes runtime sync PIN methods through the active sync host scope", async () => {
+  it("serves sync PIN, device and lane presence calls from the active sync host", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
     const syncService = {
@@ -2807,16 +2808,14 @@ describe("multi-project RPC server", () => {
       forgetDevice: vi.fn(async (deviceId: string) => ({ role: "brain", forgotten: deviceId })),
       setActiveLanePresence: vi.fn(async (_laneIds: string[]) => {}),
     };
+    const hostScope = { registryProjectId: added.projectId, record: added, runtime: { syncService }, dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(),
       ensureSyncHost: vi.fn(),
       switchSyncHost: vi.fn(),
-      resolveActiveSyncHost: vi.fn(async () => ({
-        registryProjectId: added.projectId,
-        record: added,
-        runtime: { syncService },
-        dispose: vi.fn(),
-      })),
+      getActiveSyncHostProjectId: vi.fn(() => added.projectId),
+      getIfReady: vi.fn((id: string) => id === added.projectId ? hostScope : null),
+      resolveActiveSyncHost: vi.fn(async () => hostScope),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -2957,9 +2956,15 @@ describe("multi-project RPC server", () => {
     const activeRuntime = makeRuntime("active");
     const requestedRuntime = makeRuntime("requested-project");
     const requestedScope = { registryProjectId: other.projectId, record: other, runtime: requestedRuntime, dispose: vi.fn() };
+    const activeScope = { registryProjectId: active.projectId, record: active, runtime: activeRuntime, dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(),
-      getIfReady: vi.fn((id: string) => id === other.projectId ? requestedScope : null),
+      getActiveSyncHostProjectId: vi.fn(() => active.projectId),
+      getIfReady: vi.fn((id: string) => {
+        if (id === other.projectId) return requestedScope;
+        if (id === active.projectId) return activeScope;
+        return null;
+      }),
       ensureSyncHost: vi.fn(),
       switchSyncHost: vi.fn(),
       resolveActiveSyncHost: vi.fn(async () => ({
@@ -2998,7 +3003,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: other.projectId },
     })).toEqual([{ deviceId: "active-device" }]);
 
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
 
@@ -3123,7 +3128,7 @@ describe("multi-project RPC server", () => {
       },
     });
     expect(status.localDevice.name).not.toBe("");
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     handler.dispose();
   });
 

@@ -3,6 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
+import { remoteWorkUseKey, remoteWorkUsesDevice, type RemoteWorkTurnRelease } from "../../../shared/chatRemoteWork";
 import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
@@ -17,7 +18,12 @@ import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createCodexAppServerPool, type CodexAppServerClient, type CodexAppServerHost } from "./codexAppServerPool";
+import {
+  createCodexAppServerPool,
+  isCodexAppServerProcessAlive,
+  type CodexAppServerClient,
+  type CodexAppServerHost,
+} from "./codexAppServerPool";
 import { createHash, randomUUID } from "node:crypto";
 import {
   crossMachineDestinationIdempotencyKey,
@@ -453,6 +459,7 @@ import {
   readCliTurnsRunning,
   resetCliCrashReopenCount,
   takeCliSessionsToReopen,
+  type CliReopenEntry,
   type CliSessionOwner,
 } from "../pty/cliReopenAfterRestart";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
@@ -984,6 +991,13 @@ import type {
   DraftEntry,
   DraftStatus,
 } from "../../../shared/types/chat";
+import {
+  isDeviceKind,
+  normalizeChatDeviceSources,
+  type ChatDeviceSources,
+  type ChatDeviceSourcesResult,
+  type ChatSetDeviceSourceArgs,
+} from "../../../shared/types/deviceSources";
 import type { UsageAccount, UsageSnapshot, UsageWindow } from "../../../shared/types/usage";
 import {
   CLAUDE_RESUME_RETURN_OPTIONS,
@@ -1245,6 +1259,8 @@ import {
   buildRestartNote,
   collectRestartCancelledWork,
   RESTART_RESUME_PROMPT,
+  RESTART_RESUME_MAX_AGE_MS,
+  CLI_RESTART_RESUME_PROMPT,
   MAX_CONSECUTIVE_RESTART_RESUMES,
   cliReopenedNotice,
   nextRestartResumeStreak,
@@ -1550,6 +1566,7 @@ import {
 } from "./acpHost/acpModelDiscovery";
 import {
   acquireDroidSdkConnection,
+  isDroidSdkPooledAlive,
   releaseDroidSdkConnection,
   type DroidSdkPooled,
 } from "./droidSdkPool";
@@ -1759,9 +1776,11 @@ import {
   presentChatFailure,
   presentDiskFullRefusal,
   presentExternalProcessStop,
+  presentProviderAccountRefusal,
   sanitizeAgentFailureText,
 } from "../../../shared/chatErrorPresentation";
 import type { ChatErrorPresentation } from "../../../shared/chatErrorPresentation";
+import { classifyProviderAccountRefusal } from "../../../shared/providerAccountRefusal";
 import { resolveCursorCloudCreateCloudExtras } from "./cursorCloudCreateOptions";
 import type {
   DroidSdkAskUserRequest,
@@ -1865,7 +1884,13 @@ import {
   resolvePersonalSystemPrompt,
 } from "./personalSession";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
-import { forgetLiveTurnProject, noteLiveTurn } from "../runtime/liveTurnProjects";
+import {
+  forgetLiveTurnProject,
+  noteLiveTurn,
+  settleStoppedForGood,
+  stoppedForGoodListWriters,
+  takeCarriedCliSessionsToReopen,
+} from "../runtime/liveTurnProjects";
 import { noteRestartContinuation } from "../runtime/brainUnplannedRestart";
 import { providerFromTool } from "../../utils/terminalSessionSignals";
 import { createCliCardInputs } from "./cliCardInputs";
@@ -1891,6 +1916,7 @@ import {
 } from "./cliChildSessions";
 import {
   TRACKED_AGENT_CLI_TOOL_TYPES,
+  trackedCliReopensAfterRestart,
   type AgentChatCliChildSessionSummary,
   type CliSessionFacts,
 } from "../../../shared/cliChildSession";
@@ -2424,6 +2450,11 @@ type PersistedChatState = {
   runtimeTitleAdopted?: boolean;
   /** A lane share move's chat whose first send is still to come (`withLaneShareMoveFirstSend`). */
   laneShareMoveFirstSend?: LaneShareMoveFirstSend;
+  /**
+   * `ade devices use`: the machine each device kind of this chat runs on,
+   * when it is not this one. Persisted so the choice survives a restart.
+   */
+  deviceSources?: ChatDeviceSources;
   /**
    * Which brain instance last held a provider process for this chat. Absent on
    * every record written before this field existed, which is exactly what makes
@@ -5667,6 +5698,8 @@ type ManagedChatSession = {
   runtimeTitleAdopted: boolean;
   /** Set on a lane share move's chat until its first send (`withLaneShareMoveFirstSend`). */
   laneShareMoveFirstSend?: LaneShareMoveFirstSend | null;
+  /** See PersistedChatState.deviceSources. */
+  deviceSources?: ChatDeviceSources | null;
   manuallyNamed: boolean;
   /**
    * Held by `rerunLastTurn` while it rolls the last turn back and sends it
@@ -12359,6 +12392,13 @@ export function createAgentChatService(args: {
    */
   onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
   /**
+   * A chat that drove a device on another machine through its work copy there
+   * (`noteRemoteWork`) finished a turn: the brain asks each such machine to let
+   * go of what the chat holds there (leases, sessions; nothing powered off).
+   * `uses` are the machines and projects whose devices it used.
+   */
+  onRemoteWorkTurnSettled?: (event: RemoteWorkTurnRelease) => void;
+  /**
    * Content-free hook fired after a session-metadata generation: on request,
    * or `automatic` when ADE refreshed the status line after a turn.
    */
@@ -12485,6 +12525,7 @@ export function createAgentChatService(args: {
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
     onRemoteWorkStarted,
+    onRemoteWorkTurnSettled,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
@@ -14165,6 +14206,12 @@ export function createAgentChatService(args: {
 
   /** Other machines each chat ran commands on; live only. See `noteRemoteWork`. */
   const remoteWorkBySession = new Map<string, AgentChatRemoteWorkUse[]>();
+  /**
+   * Every machine and project each chat used a device on, by `machineKey` +
+   * `projectId`. Kept apart from the six-entry list above, which drops old
+   * entries: a turn's end releases them all (see `notifyTurnSettled`).
+   */
+  const remoteDeviceTargetsBySession = new Map<string, Map<string, RemoteWorkTurnRelease["uses"][number]>>();
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -14201,6 +14248,13 @@ export function createAgentChatService(args: {
    * transcript's rows name, and not only to a time. Cleared with the map above.
    */
   const lastTurnIdBySession = new Map<string, string>();
+  /**
+   * Each chat's recent provider turn ids, with the start stamp
+   * (`lastTurnStartedAtBySession`) of the ADE turn their events ran in. A late
+   * `done` for an earlier turn then releases by its own turn's stamp, not the
+   * newer turn's. Cleared with the maps above.
+   */
+  const turnStartStampsBySession = new Map<string, Map<string, string>>();
   /** Chats whose last reply Jev read as waiting on their own work; read by the session summary. */
   const awaitingOwnWork = createAwaitingOwnWorkTracker({
     logger,
@@ -21329,6 +21383,7 @@ export function createAgentChatService(args: {
       ...pickHostSessionConfig(managed.session),
       ...(managed.runtimeTitleAdopted ? { runtimeTitleAdopted: true } : {}),
       ...(managed.laneShareMoveFirstSend ? { laneShareMoveFirstSend: managed.laneShareMoveFirstSend } : {}),
+      ...(managed.deviceSources && Object.keys(managed.deviceSources).length ? { deviceSources: managed.deviceSources } : {}),
       ...(runtimeOwner ? { runtimeOwner } : {}),
       ...(managed.session.permissionMode ? { permissionMode: managed.session.permissionMode } : {}),
       ...(managed.session.identityKey ? { identityKey: managed.session.identityKey } : {}),
@@ -22172,6 +22227,10 @@ export function createAgentChatService(args: {
           const mark = parseLaneShareMoveFirstSend(record.laneShareMoveFirstSend);
           return mark ? { laneShareMoveFirstSend: mark } : {};
         })(),
+        ...((): { deviceSources?: ChatDeviceSources } => {
+          const deviceSources = normalizeChatDeviceSources(record.deviceSources);
+          return deviceSources ? { deviceSources } : {};
+        })(),
         ...((): { runtimeOwner?: ChatRuntimeOwner } => {
           const runtimeOwner = normalizeChatRuntimeOwner(record.runtimeOwner);
           return runtimeOwner ? { runtimeOwner } : {};
@@ -22422,6 +22481,16 @@ export function createAgentChatService(args: {
    * coordinator" chat on that lane's code, and then held it, so the installed
    * brain refused every send. An explicit send from this brain still adopts.
    */
+  /** The planned-stop list's chat is the machine brain's, and this brain is not it. */
+  const chatLeftForMachineBrain = (sessionId: string): boolean => {
+    try {
+      const state = readPersistedState(sessionId);
+      return yieldsToMachineBrain(state, chatRuntimeOwnershipDecision(state?.runtimeOwner ?? null).verdict);
+    } catch {
+      return false;
+    }
+  };
+
   const yieldsToMachineBrain = (
     state: PersistedChatState | null | undefined,
     verdict: ChatRuntimeOwnershipDecision["verdict"],
@@ -23154,14 +23223,13 @@ export function createAgentChatService(args: {
     return projectConfigService.get().effective.ai?.chat?.continueAfterRestart !== false;
   };
   /**
-   * How long after a restart cut a turn short ADE still continues it. A chat
-   * first opened later than this (it crashed long ago, maybe under an older
-   * build) keeps the closed turn instead of resuming stale work. A chat at
-   * rest that waited on background work wakes only if it went idle within
-   * this time.
+   * Cut off within `RESTART_RESUME_MAX_AGE_MS`. A chat first opened later than
+   * that (it crashed long ago, maybe under an older build) keeps the closed
+   * turn instead of resuming stale work. A chat at rest that waited on
+   * background work wakes only if it went idle within this time. No time
+   * reads as now: a row with no end time read "running" until the dead owner
+   * was detected now.
    */
-  const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
-  /** No time reads as now: a row with no end time read "running" until the dead owner was detected now. */
   const withinRestartResumeAge = (iso: string | null | undefined): boolean => {
     const ms = iso ? Date.parse(iso) : Number.NaN;
     return !Number.isFinite(ms) || Date.now() - ms <= RESTART_RESUME_MAX_AGE_MS;
@@ -23699,7 +23767,10 @@ export function createAgentChatService(args: {
     if (isAgentBinaryMissingError(text, provider) || isPinnedToolNotReadyMessage(text)) {
       return { ...base, category: "missing" as const };
     }
-    if (isAcpAuthError(text)) return { ...base, category: "unauthenticated" as const };
+    // A plan refusal says "authentication required" too; it gets the plan card.
+    if (isAcpAuthError(text) && classifyProviderAccountRefusal(text) !== "plan") {
+      return { ...base, category: "unauthenticated" as const };
+    }
     return null;
   };
 
@@ -23709,8 +23780,42 @@ export function createAgentChatService(args: {
   ): Extract<AgentChatEvent, { type: "error" }> => {
     const existingInfo = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
     if (existingInfo?.agentCli) return event;
+    // A runtime that already named the failure a sign-in (Cursor's expired
+    // session after its own reconnect) and built its own card keeps it; the
+    // wider sign-in words below must not replace it with the generic CLI
+    // card. An "auth" error with no card still gets one below.
+    if (existingInfo?.category === "auth" && existingInfo.presentation) return event;
 
     const text = `${event.message}\n${event.detail ?? ""}`;
+    // Signed in, but the plan or the model is the refusal: no button fixes
+    // it, so the card says so in plain words instead of a crash frame. A card
+    // the runtime already built keeps its own words. A usage limit (Codex's
+    // `usageLimitExceeded`, "Upgrade to Pro or try again later") keeps its
+    // own words too: rewriting it would hide the reset and skip auto-resume.
+    const refusal = existingInfo?.presentation || isUsageLimitChatError(event)
+      ? null
+      : classifyProviderAccountRefusal(text);
+    if (refusal === "plan" || refusal === "model") {
+      const providerLabel = existingInfo?.provider
+        ?? providerDisplayLabel(managed.session.provider, String(managed.session.provider));
+      const presentation = presentProviderAccountRefusal({
+        refusal,
+        provider: providerLabel,
+        message: event.message,
+        detail: event.detail ?? null,
+      });
+      return {
+        ...event,
+        message: presentation.body,
+        ...(presentation.technicalDetail ? { detail: presentation.technicalDetail } : {}),
+        errorInfo: {
+          category: existingInfo?.category ?? "unknown",
+          provider: providerLabel,
+          ...(existingInfo?.model ? { model: existingInfo.model } : {}),
+          presentation,
+        },
+      };
+    }
     const match = classifyAgentCliError(text, managed.session.provider)
       // The agent-CLI registry that classifier reads is the TUI's, and it has
       // no entries for the ACP providers. Without this the calm "sign in and
@@ -24990,6 +25095,30 @@ export function createAgentChatService(args: {
       if (serviceDisposed) return;
       crossMachineHandoff?.onTurnSettled(settledSessionId);
     });
+    // Devices this chat drove on other machines are let go of when its turn
+    // ends, as a local chat's are when it ends (those machines never see this
+    // chat end). Shells there keep running: they are background work. Every
+    // machine the chat holds a device on, not only this turn's: a release
+    // that machine skipped as stale (it saw a newer call first) is covered
+    // by this one. A machine with nothing held answers with nothing.
+    const deviceUses = [...(remoteDeviceTargetsBySession.get(settledSessionId)?.values() ?? [])];
+    if (onRemoteWorkTurnSettled && deviceUses.length) {
+      try {
+        // The settled turn's own start: a late `done` for an earlier turn
+        // must not carry the newer turn's stamp, which the other machine
+        // would take as current.
+        const settledTurnStamp = (event.turnId ? turnStartStampsBySession.get(settledSessionId)?.get(event.turnId) : undefined)
+          ?? lastTurnStartedAtBySession.get(settledSessionId)
+          ?? null;
+        onRemoteWorkTurnSettled({
+          sessionId: settledSessionId,
+          turnId: settledTurnStamp,
+          uses: deviceUses,
+        });
+      } catch (error) {
+        logger.warn("agent_chat.remote_work_turn_release_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     try {
       recordTurnUsage(managed, event);
     } catch (error) {
@@ -25848,6 +25977,22 @@ export function createAgentChatService(args: {
     const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
     if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
       lastTurnIdBySession.set(managed.session.id, eventTurnId);
+      // The turn's working events stamp it with the ADE turn they run in (a
+      // provider that keeps one turn id into a new ADE turn moves with it);
+      // its `done` reads the stamp and never moves it. A late event of an
+      // earlier turn, arriving once the new ADE turn has an id of its own,
+      // keeps its old stamp, so its `done` cannot release the new turn's claims.
+      const startStamp = lastTurnStartedAtBySession.get(managed.session.id);
+      const stamps = turnStartStampsBySession.get(managed.session.id) ?? new Map<string, string>();
+      const earlierStamp = stamps.get(eventTurnId);
+      const newTurnHasOwnId = earlierStamp !== undefined && earlierStamp !== startStamp
+        && [...stamps].some(([id, stamp]) => id !== eventTurnId && stamp === startStamp);
+      if (startStamp && normalizedEvent.type !== "done" && !newTurnHasOwnId) {
+        stamps.delete(eventTurnId);
+        stamps.set(eventTurnId, startStamp);
+        while (stamps.size > 8) stamps.delete(stamps.keys().next().value as string);
+        turnStartStampsBySession.set(managed.session.id, stamps);
+      }
     }
 
     if (isBufferablePlanDelta(normalizedEvent)) {
@@ -29697,6 +29842,17 @@ export function createAgentChatService(args: {
        * loss without scheduling a wake that would race that send.
        */
       backgroundLossTurnImminent?: boolean;
+      /**
+       * Codex: the process is already dead, found by a caller before its exit
+       * event. Either way the turn it never finished ends as interrupted once,
+       * without the "stopped while ADE was closing" notice.
+       * - `turn_imminent`: the caller starts a turn next (a send or a steer).
+       *   The chat stays active; an idle mark would land on that new turn.
+       * - `settle`: no turn follows (Stop, resume, a fork, a read). The chat
+       *   goes idle, or it stays active with no turn and scheduled work
+       *   defers forever.
+       */
+      deadCodexRuntime?: "turn_imminent" | "settle";
     },
   ): void => {
     runtimeTeardownEpochs.set(managed, runtimeTeardownEpoch(managed) + 1);
@@ -29773,7 +29929,32 @@ export function createAgentChatService(args: {
       );
       settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
       runtime.codexAgentIndexByTurn.clear();
-      if (shouldMarkInterrupted) {
+      if (shouldMarkInterrupted && options?.deadCodexRuntime) {
+        markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
+        // An older turn the dead process never finished still ends here: its
+        // exit event, if it comes, is suppressed. ADE did not stop it while
+        // closing, so no "closing" notice.
+        if (interruptedTurnId) {
+          emitChatEvent(managed, {
+            type: "status",
+            turnStatus: "interrupted",
+            message: "The Codex process stopped before this turn finished.",
+            turnId: interruptedTurnId,
+          });
+          void emitTurnDiffSummaryIfChanged(managed, interruptedTurnId);
+          emitChatEvent(managed, {
+            type: "done",
+            turnId: interruptedTurnId,
+            status: "interrupted",
+            model: managed.session.model,
+            ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+          });
+        }
+        if (options.deadCodexRuntime === "settle") {
+          markSessionIdleWithFreshCache(managed);
+          persistChatState(managed);
+        }
+      } else if (shouldMarkInterrupted) {
         markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
         emitChatEvent(managed, {
           type: "system_notice",
@@ -30183,6 +30364,7 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(managed.session.id);
     pendingTurnStartMsBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
+    turnStartStampsBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
     releaseChatBrowser(managed.session.id);
   };
@@ -30381,6 +30563,7 @@ export function createAgentChatService(args: {
       sessionMetadataTitleRevision: 0,
       runtimeTitleAdopted: persisted?.runtimeTitleAdopted === true,
       laneShareMoveFirstSend: persisted?.laneShareMoveFirstSend ?? null,
+      deviceSources: persisted?.deviceSources ?? null,
       manuallyNamed: persisted?.manuallyNamed === true || row.manuallyNamed === true,
       summaryInFlight: false,
       continuitySummary: persisted?.continuitySummary ?? null,
@@ -47055,6 +47238,24 @@ export function createAgentChatService(args: {
       settleCodexPendingInputs(managed, runtime, { planApprovals: "preserve-cards" });
     };
 
+    // A quiet exit (a clean stop, a closed chat, a shared process another chat
+    // stopped) reports nothing, but the chat must still forget the dead
+    // process: a kept runtime is handed back by ensureCodexSessionRuntime and
+    // every later request fails with "stdin is not writable". The idle-style
+    // teardown keeps the thread id, so the next send resumes the same thread.
+    const forgetThisRuntimeIfStillCurrent = (reason: "exited" | "process_error"): void => {
+      if (managed.runtime !== runtime) return;
+      logger.info("agent_chat.codex_dead_runtime_dropped", {
+        sessionId: managed.session.id,
+        reason,
+        closed: managed.closed,
+      });
+      teardownRuntime(
+        managed,
+        managed.session.status === "ended" ? "ended_session" : managed.closed ? "handle_close" : "idle_ttl",
+      );
+    };
+
     const onProcessError = (error: Error) => {
       const redactedError = redactCallerMcpText(
         error instanceof Error ? error.message : String(error),
@@ -47073,7 +47274,10 @@ export function createAgentChatService(args: {
       settleThisRuntimesCardsIfStillCurrent();
       runtime.suppressExitError = true;
 
-      if (managed.closed || managed.session.status === "ended") return;
+      if (managed.closed || managed.session.status === "ended") {
+        forgetThisRuntimeIfStillCurrent("process_error");
+        return;
+      }
       keepChatSessionOpen(managed, {
         message,
         turnId: runtime.activeTurnId,
@@ -47085,7 +47289,10 @@ export function createAgentChatService(args: {
       const message = `Codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"}).`;
       codexVoice.onRuntimeExit(managed, runtime);
       const hadPendingRequests = pending.size > 0;
-      const cleanExit = code === 0 && signal == null && !hadPendingRequests;
+      // A turn still running when the process ends is never clean: nothing
+      // else would end it, and the user must see why it stopped.
+      const cleanExit = code === 0 && signal == null && !hadPendingRequests
+        && !runtime.activeTurnId && managed.session.status !== "active";
       if (runtime.killTimer) {
         clearTimeout(runtime.killTimer);
         runtime.killTimer = null;
@@ -47095,9 +47302,10 @@ export function createAgentChatService(args: {
 
       settleThisRuntimesCardsIfStillCurrent();
 
-      if (runtime.suppressExitError) return;
-      if (cleanExit) return;
-      if (managed.closed || managed.session.status === "ended") return;
+      if (runtime.suppressExitError || cleanExit || managed.closed || managed.session.status === "ended") {
+        forgetThisRuntimeIfStillCurrent("exited");
+        return;
+      }
       keepChatSessionOpen(managed, {
         message,
         turnId: runtime.activeTurnId,
@@ -47225,9 +47433,44 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  /** False once the app-server behind this runtime has exited or closed its input. */
+  const isCodexRuntimeProcessAlive = (runtime: CodexRuntime): boolean => {
+    if (codexHostByRuntime.get(runtime)?.host.isGone()) return false;
+    return isCodexAppServerProcessAlive(runtime.process);
+  };
+
   const codexRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CodexRuntime> }>();
-  const ensureCodexSessionRuntime = async (managed: ManagedChatSession): Promise<CodexRuntime> => {
+  /**
+   * Drops the chat's Codex runtime when its app-server is already dead. The
+   * exit handler normally does this first; this covers the gap between stdin
+   * closing and the exit event. True when it dropped one.
+   */
+  const dropDeadCodexRuntime = (
+    managed: ManagedChatSession,
+    mode: "turn_imminent" | "settle",
+  ): boolean => {
+    if (managed.runtime?.kind !== "codex" || isCodexRuntimeProcessAlive(managed.runtime)) return false;
+    logger.info("agent_chat.codex_dead_runtime_dropped", {
+      sessionId: managed.session.id,
+      reason: "not_alive_on_reuse",
+      closed: managed.closed,
+      mode,
+    });
+    teardownRuntime(managed, "idle_ttl", { deadCodexRuntime: mode });
+    return true;
+  };
+
+  /**
+   * `turnImminent`: the caller starts a turn right after (a send or a steer),
+   * so a dead runtime is swapped without settling the chat. Every other
+   * caller settles it.
+   */
+  const ensureCodexSessionRuntime = async (
+    managed: ManagedChatSession,
+    options: { turnImminent?: boolean } = {},
+  ): Promise<CodexRuntime> => {
     refreshRuntimeCompactionSettings(managed);
+    dropDeadCodexRuntime(managed, options.turnImminent ? "turn_imminent" : "settle");
     if (managed.runtime?.kind === "codex") return managed.runtime;
     return joinRuntimeStart(codexRuntimeStarts, managed, () => attachNewCodexRuntime(managed));
   };
@@ -52168,17 +52411,17 @@ export function createAgentChatService(args: {
     const presetSuppliesModel = Boolean(presetSpec?.model);
     const launchingProvider: AgentChatProvider = presetSpec?.harness ?? provider;
     if (launchingProvider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
-      throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
+      throw new AdeExpectedError("OpenCode chat requires a known model ID. Select a model from the registry.", "user");
     }
 
     if (launchingProvider === "cursor" && !resolvedModelId) {
-      throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
+      throw new AdeExpectedError("Cursor chat requires a known model. Pick a Cursor model from the model list.", "user");
     }
     if (launchingProvider === "droid" && !resolvedModelId && !presetSuppliesModel) {
-      throw new Error("Droid chat requires a known model. Pick a Droid model from the model list.");
+      throw new AdeExpectedError("Droid chat requires a known model. Pick a Droid model from the model list.", "user");
     }
     if (launchingProvider === "pi" && !resolvedModelId && !presetSuppliesModel) {
-      throw new Error("Pi chat requires a known model. Refresh the Pi model list and select a model.");
+      throw new AdeExpectedError("Pi chat requires a known model. Refresh the Pi model list and select a model.", "user");
     }
 
     const resolvedDescriptor = requestedModelDescriptor ?? (resolvedModelId ? getModelById(resolvedModelId) : undefined);
@@ -53030,7 +53273,11 @@ export function createAgentChatService(args: {
     droid: { ensureRuntime: (managed) => ensureDroidRuntime(managed) },
     copilot: { ensureRuntime: (managed) => ensureCopilotRuntime(managed) },
     muse: { ensureRuntime: (managed) => ensureMuseRuntime(managed) },
-    pi: { runtimeOf: async (managed) => (managed.runtime?.kind === "pi" ? managed.runtime : await startPiRuntime(managed)) },
+    pi: {
+      runtimeOf: async (managed) => (managed.runtime?.kind === "pi" && isPiSdkPooledAlive(managed.runtime.sdk)
+        ? managed.runtime
+        : await startPiRuntime(managed)),
+    },
     kimi: { ensureRuntime: (managed) => ensureAcpSessionRuntime(managed) },
   });
 
@@ -64259,7 +64506,17 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime?.kind === "droid") {
       const existing = managed.runtime;
-      if (existing.poolKey !== poolKey) {
+      const workerAlive = isDroidSdkPooledAlive(existing.sdk);
+      if (existing.poolKey === poolKey && !workerAlive) {
+        // The worker died between turns. Reusing the runtime would send the
+        // next turn to a dead process; the pool starts a fresh worker.
+        logger.warn("agent_chat.droid_sdk_dead_runtime_reacquire", {
+          sessionId: managed.session.id,
+          exitCode: existing.sdk.process.exitCode,
+          killed: existing.sdk.process.killed,
+        });
+      }
+      if (existing.poolKey !== poolKey || !workerAlive) {
         settleDroidPermissionWaiters(
           managed,
           existing,
@@ -65001,7 +65258,7 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
-      const runtime = await ensureCodexSessionRuntime(managed);
+      const runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
         managed.session.reasoningEffort = applySessionPresetReasoningEffort("codex", reasoningEffort);
       } else if (!managed.session.reasoningEffort) {
@@ -66910,28 +67167,63 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
-      const runtime = await ensureCodexSessionRuntime(managed);
-      await runtime.collaborationModesReady?.catch(() => {});
-      await runtime.acceptedSteersHydrationReady;
+      // A steer on a dead runtime finds no active turn on the new one and
+      // sends as a new turn below.
+      const droppedDeadRuntime = dropDeadCodexRuntime(managed, "turn_imminent");
+      // The dead runtime's turn ended above and left the chat active for the
+      // turn that should follow. When no turn follows (nothing to send, or the
+      // replacement runtime or the new turn fails to start), the chat settles
+      // here, or it stays active with no runtime and no turn.
+      const settleAfterDeadDrop = (): void => {
+        if (!droppedDeadRuntime || managed.session.status !== "active") return;
+        const current = managed.runtime?.kind === "codex" ? managed.runtime : null;
+        if (current && (current.activeTurnId || current.awaitingTurnStart || current.turnStartReserved)) return;
+        markSessionIdleWithFreshCache(managed);
+        persistChatState(managed);
+      };
+      const sendAsNewTurn = async (prepared: PreparedSendMessage): Promise<void> => {
+        try {
+          await executePreparedSendMessage(prepared);
+        } catch (error) {
+          settleAfterDeadDrop();
+          throw error;
+        }
+      };
+      let runtime: CodexRuntime;
+      try {
+        runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
+        await runtime.collaborationModesReady?.catch(() => {});
+        await runtime.acceptedSteersHydrationReady;
+      } catch (error) {
+        settleAfterDeadDrop();
+        throw error;
+      }
 
-      const preparedSteer = prepareSendMessage({
-        sessionId,
-        text: trimmed,
-        displayText: displayText ?? trimmed,
-        attachments,
-        contextAttachments,
-        metadata,
-        allowPendingInput: options?.allowPendingInput,
-      });
+      let preparedSteer: PreparedSendMessage | null;
+      try {
+        preparedSteer = prepareSendMessage({
+          sessionId,
+          text: trimmed,
+          displayText: displayText ?? trimmed,
+          attachments,
+          contextAttachments,
+          metadata,
+          allowPendingInput: options?.allowPendingInput,
+        });
+      } catch (error) {
+        settleAfterDeadDrop();
+        throw error;
+      }
       if (!preparedSteer) {
+        settleAfterDeadDrop();
         return { steerId, queued: false };
       }
       if (isCodexGoalSlashInput(trimmed)) {
-        await executePreparedSendMessage(preparedSteer);
+        await sendAsNewTurn(preparedSteer);
         return { steerId, queued: false };
       }
       if (!managed.session.threadId || !runtime.activeTurnId) {
-        await executePreparedSendMessage(preparedSteer);
+        await sendAsNewTurn(preparedSteer);
         return { steerId, queued: false };
       }
 
@@ -69078,6 +69370,21 @@ export function createAgentChatService(args: {
     }
 
     if (managed.session.provider === "codex") {
+      // A dead app-server has nothing left to stop: settle the chat (its turn
+      // ends as interrupted, the chat goes idle) and do not start a new
+      // process just to find no turn on it.
+      const deadRuntime = managed.runtime?.kind === "codex" && !isCodexRuntimeProcessAlive(managed.runtime)
+        ? managed.runtime
+        : null;
+      if (deadRuntime) {
+        // The teardown keeps an unanswered plan card (a crash must leave it
+        // answerable). A clearing Stop discards it, as on a live runtime
+        // below; `stop_only` leaves it for the user.
+        if (stopModeClearsQueue(mode)) settleCodexPendingInputs(managed, deadRuntime);
+        dropDeadCodexRuntime(managed, "settle");
+        persistChatState(managed);
+        return result;
+      }
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
       // Stop has to settle the user-facing cards even when there is no turn
@@ -71673,6 +71980,30 @@ export function createAgentChatService(args: {
   });
 
   /**
+   * Why a chat row that reads ended was ended on purpose, or null when an
+   * earlier process ended it while its turn ran (reopen it, then arm). A
+   * `disposed` row was closed by the person; a row this brain ended was closed
+   * in this launch (the user closed the chat, its lane went).
+   */
+  const chatRowClosedOnPurpose = (
+    row: { status: TerminalSessionStatus; endedAt?: string | null },
+  ): "disposed" | "no_end_time" | "ended_this_launch" | null => {
+    if (row.status === "disposed") return "disposed";
+    const endedAtMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
+    if (!Number.isFinite(endedAtMs)) return "no_end_time";
+    return endedAtMs >= serviceStartedAtMs ? "ended_this_launch" : null;
+  };
+
+  /** Chats whose update-resume row the scheduler cancelled on arrival, in this brain. */
+  const updateResumeNotArmedIds = new Set<string>();
+  /**
+   * How many times the user drove each chat (`cancelPendingUpdateResume`) in
+   * this brain. An arm compares it across its own awaits: a message that
+   * lands while the row is written means the chat already continued.
+   */
+  const updateResumeUserCancels = new Map<string, number>();
+
+  /**
    * Arms one durable "continue" row per chat.
    *
    * Two shapes. With no argument it arms the chats running right now (the
@@ -71682,16 +72013,29 @@ export function createAgentChatService(args: {
    *
    * Only rows that actually landed `scheduled` are reported back: a chat whose
    * scheduled work is paused, or whose session is no longer active, is not a
-   * resume anyone should be told about.
+   * resume anyone should be told about. Requested chats that will not be armed
+   * for good come back in `settled`; every other one stays owed, and the
+   * desktop asks again. Each chat that is not armed leaves a log line.
    */
   const armUpdateResume = async (
     input?: { sessionIds?: readonly string[] },
   ): Promise<AgentChatArmUpdateResumeResult> => {
+    // Read before any await: a user message from here on wins over this arm.
+    const userCancelsAtStart = new Map(updateResumeUserCancels);
+    const userDroveSinceStart = (sessionId: string): boolean =>
+      (updateResumeUserCancels.get(sessionId) ?? 0) !== (userCancelsAtStart.get(sessionId) ?? 0);
     await scheduledWorkReady;
-    if (!scheduledWorkScheduler) return { chats: [] };
     const requested = Array.isArray(input?.sessionIds)
       ? new Set(input.sessionIds.filter((id): id is string => typeof id === "string" && id.length > 0))
       : null;
+    if (!scheduledWorkScheduler) {
+      // Left owed: the desktop retries what this answer does not arm.
+      logger.warn("agent_chat.update_resume_dropped", {
+        reason: "scheduler_unavailable",
+        chats: requested?.size ?? null,
+      });
+      return { chats: [] };
+    }
     const candidates: AgentChatInterruptedChatRef[] = requested == null
       ? liveTurnChatRefs()
       : Array.from(requested, (sessionId) => {
@@ -71701,15 +72045,27 @@ export function createAgentChatService(args: {
         });
     const createdAt = Date.now();
     const armed: AgentChatInterruptedChatRef[] = [];
+    const settled: NonNullable<AgentChatArmUpdateResumeResult["settled"]> = [];
     for (const chat of candidates) {
       const row = sessionService.get(chat.sessionId);
-      if (!row || !isSchedulableAgentSession(row)) continue;
+      if (!row) {
+        // Normal when the desktop asks every open project: the chat lives in
+        // another one. Info, and left owed for the project that has it.
+        logger.info("agent_chat.update_resume_dropped", { sessionId: chat.sessionId, reason: "session_missing" });
+        continue;
+      }
+      if (!isSchedulableAgentSession(row)) {
+        logger.warn("agent_chat.update_resume_dropped", { sessionId: chat.sessionId, reason: "not_schedulable" });
+        settled.push({ sessionId: chat.sessionId, reason: "not_schedulable" });
+        continue;
+      }
       // The same rule a crash or reboot follows (`continueAfterRestartHold`):
       // the setting is on, the chat is not settled, archived or waiting on the
       // user's answer. The cap starts again: the user accepted this restart.
       const hold = continueAfterRestartHold(chat.sessionId, { acceptedUpdate: true });
       if (hold !== null) {
         logger.info("agent_chat.update_resume_held", { sessionId: chat.sessionId, hold });
+        settled.push({ sessionId: chat.sessionId, reason: "held" });
         continue;
       }
       // No second resume: this brain's own restart recovery may already have
@@ -71720,11 +72076,57 @@ export function createAgentChatService(args: {
         const sinceStart = (scheduledWorkScheduler.list(chat.sessionId) ?? []).find((schedule) =>
           schedule.id === updateResumeScheduleId(chat.sessionId)
           && schedule.createdAt >= serviceStartedAtMs
-          && schedule.status !== "scheduled");
+          && schedule.status !== "scheduled"
+          // A row the scheduler cancelled on arrival never continued
+          // anything: the retry arms it again.
+          && !(updateResumeNotArmedIds.has(chat.sessionId) && schedule.lastFiredAt == null));
         if (sinceStart) {
           logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: sinceStart.status });
+          settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
           continue;
         }
+      }
+      // A chat named for recovery after the restart already ran a turn in
+      // this brain (the user typed into it, or something else drove it)
+      // before this arm, e.g. before a retry of an arm that failed. A
+      // continue now would start work nobody asked for. A call with no list
+      // arms the chats at work now, which have a turn by definition.
+      if (
+        requested != null
+        && (updateResumeUserCancels.has(chat.sessionId) || lastTurnStartedAtBySession.has(chat.sessionId))
+      ) {
+        logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: "driven_since_start" });
+        settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
+        continue;
+      }
+      // The chat had a live turn when the update stopped ADE (the previous
+      // process listed it from its running turns), so a row that reads ended
+      // is wrong: something stamped it while the turn ran (a terminal write
+      // aimed at the chat once launched its marker as a shell command and
+      // marked it `failed`). The scheduler cancels a row for an ended chat on
+      // the spot, so reopen it first, as restart recovery and turn start do.
+      // Only a row an earlier process ended: one this brain ended (the user
+      // closed the chat, its lane went) was ended on purpose, and so was any
+      // `disposed` row. Those are settled, never retried.
+      if (
+        isChatToolType(row.toolType)
+        && !row.archivedAt
+        && row.status !== "running"
+        && row.status !== "detached"
+      ) {
+        const closedReason = chatRowClosedOnPurpose(row);
+        if (closedReason) {
+          logger.warn("agent_chat.update_resume_dropped", {
+            sessionId: chat.sessionId,
+            reason: "not_schedulable",
+            closedReason,
+            status: row.status,
+          });
+          settled.push({ sessionId: chat.sessionId, reason: "not_schedulable" });
+          continue;
+        }
+        logger.warn("agent_chat.update_resume_row_reopened", { sessionId: chat.sessionId, priorStatus: row.status });
+        sessionService.reopen(chat.sessionId);
       }
       try {
         const schedule = await scheduledWorkScheduler.upsert({
@@ -71742,7 +72144,34 @@ export function createAgentChatService(args: {
           // The user accepted this update: a fresh start for the resume cap.
           restartResumeStreak: 0,
         });
-        if (schedule.status === "scheduled" && schedule.pausedFlag !== true) armed.push(chat);
+        if (userDroveSinceStart(chat.sessionId)) {
+          // The user typed into the chat while this arm ran. Their cancel
+          // either already ended the row, or ran before the row existed; end
+          // it here then. Settled for good: a retry reads the cancelled row
+          // as already continued, because it is not in the not-armed set.
+          updateResumeNotArmedIds.delete(chat.sessionId);
+          if (schedule.status === "scheduled" || schedule.status === "paused") {
+            await scheduledWorkScheduler.cancel(schedule.id);
+          }
+          logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: "user_message" });
+          settled.push({ sessionId: chat.sessionId, reason: "already_continued" });
+        } else if (schedule.status === "scheduled" && schedule.pausedFlag !== true) {
+          updateResumeNotArmedIds.delete(chat.sessionId);
+          armed.push(chat);
+        } else if (schedule.status === "paused") {
+          // The row stays and fires when scheduled work is resumed.
+          logger.info("agent_chat.update_resume_dropped", { sessionId: chat.sessionId, reason: "paused" });
+          settled.push({ sessionId: chat.sessionId, reason: "paused" });
+        } else {
+          // Cancelled at once by the scheduler: the session read as ended,
+          // archived or missing when the row landed. Left owed for a retry.
+          updateResumeNotArmedIds.add(chat.sessionId);
+          logger.warn("agent_chat.update_resume_dropped", {
+            sessionId: chat.sessionId,
+            reason: "not_armed",
+            status: schedule.status,
+          });
+        }
       } catch (error) {
         logger.warn("agent_chat.update_resume_arm_failed", {
           sessionId: chat.sessionId,
@@ -71750,7 +72179,7 @@ export function createAgentChatService(args: {
         });
       }
     }
-    return { chats: armed };
+    return { chats: armed, settled };
   };
 
   /**
@@ -71762,6 +72191,11 @@ export function createAgentChatService(args: {
    * never collateral.
    */
   const cancelPendingUpdateResume = async (sessionId: string): Promise<void> => {
+    // The user is driving the chat now: a later retry of an arm the scheduler
+    // refused must read its cancelled row as settled, not arm it again, and an
+    // arm still writing its row must not keep it (`armUpdateResume`).
+    updateResumeNotArmedIds.delete(sessionId);
+    updateResumeUserCancels.set(sessionId, (updateResumeUserCancels.get(sessionId) ?? 0) + 1);
     try {
       await scheduledWorkReady;
       const pending = (scheduledWorkScheduler?.list(sessionId) ?? [])
@@ -71773,6 +72207,146 @@ export function createAgentChatService(args: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  /**
+   * Continues, once, the chats whose turn ran when this project's brain was
+   * stopped on purpose (a service restart, an update, a logout or reboot),
+   * named in the list that stop wrote first (`recordPlannedBrainStop`). By
+   * id, so no sweep bound can miss one. The rules of every restart continue
+   * (`continueAfterRestartHold`): the setting is on, the chat is not archived
+   * or waiting on the user, it stopped in the last 6 h, and it is under the
+   * cap, which starts again after an update the user accepted. Never a chat
+   * the person closed (`disposed`, or ended in this launch), one another
+   * brain owns, or one that already continued or was driven since this brain
+   * started. The row id is the one restart recovery and the update arm use,
+   * so a chat gets one continue whichever path arms it. Each chat that does
+   * not continue logs one line with a closed reason.
+   */
+  const continueChatsAfterPlannedStop = async (entries: readonly CliReopenEntry[]): Promise<void> => {
+    if (entries.length === 0) return;
+    await scheduledWorkReady;
+    const dropped = (sessionId: string, reason: string, extra?: Record<string, unknown>): void => {
+      logger.info("agent_chat.update_resume_dropped", { sessionId, reason, cause: "planned_stop", ...extra });
+    };
+    const armedSinceStart = (sessionId: string) => (scheduledWorkScheduler?.list(sessionId) ?? [])
+      .find((schedule) => schedule.id === updateResumeScheduleId(sessionId) && schedule.createdAt >= serviceStartedAtMs);
+    let armed = 0;
+    for (const entry of entries) {
+      if (serviceDisposed) return;
+      const sessionId = entry.sessionId;
+      const acceptedUpdate = entry.acceptedUpdate === true;
+      try {
+        if (!scheduledWorkScheduler) {
+          dropped(sessionId, "scheduler_unavailable");
+          continue;
+        }
+        const row = sessionService.get(sessionId);
+        if (!row) {
+          dropped(sessionId, "session_missing");
+          continue;
+        }
+        if (!isChatToolType(row.toolType) || !isSchedulableAgentSession(row)) {
+          dropped(sessionId, "not_schedulable");
+          continue;
+        }
+        if (!row.archivedAt && row.status !== "running" && row.status !== "detached") {
+          const closedReason = chatRowClosedOnPurpose(row);
+          if (closedReason) {
+            dropped(sessionId, "not_schedulable", { closedReason, status: row.status });
+            continue;
+          }
+        }
+        // A sibling brain's chat is its own to continue (`chatAutoAdoptable`).
+        if (!chatAutoAdoptable(sessionId, readPersistedState(sessionId), { quiet: true })) {
+          dropped(sessionId, "claimed_elsewhere");
+          continue;
+        }
+        const earlier = armedSinceStart(sessionId);
+        if (earlier && earlier.status !== "scheduled" && earlier.status !== "paused") {
+          dropped(sessionId, "already_continued", { status: earlier.status });
+          continue;
+        }
+        // Read before a reopen clears the row's end time.
+        const recent = withinRestartResumeAge(row.endedAt);
+        if (!row.archivedAt && row.status !== "running" && row.status !== "detached") {
+          logger.warn("agent_chat.update_resume_row_reopened", { sessionId, priorStatus: row.status, cause: "planned_stop" });
+          sessionService.reopen(sessionId);
+        }
+        // Loading a `detached` row runs its restart recovery (closes the cut
+        // turn, says so), which may arm this same row itself; let it finish.
+        const managed = ensureManagedSession(sessionId);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (serviceDisposed) return;
+        if (
+          updateResumeUserCancels.has(sessionId)
+          || lastTurnStartedAtBySession.has(sessionId)
+          || sessionTurnInFlight(managed, activeTurnIdForManaged(managed))
+        ) {
+          dropped(sessionId, "already_continued", { status: "driven" });
+          continue;
+        }
+        const current = armedSinceStart(sessionId);
+        if (current && current.status !== "scheduled" && current.status !== "paused") {
+          dropped(sessionId, "already_continued", { status: current.status });
+          continue;
+        }
+        if (current && !acceptedUpdate) {
+          // Restart recovery armed it just now, by the same rule: that is
+          // this chat's continue. (Read before the hold: the cap counts the
+          // row recovery just wrote.)
+          armed += 1;
+          continue;
+        }
+        const hold = continueAfterRestartHold(sessionId, { acceptedUpdate, managed, recent });
+        if (hold !== null) {
+          logger.info("agent_chat.update_resume_held", { sessionId, hold, cause: "planned_stop" });
+          continue;
+        }
+        const createdAt = Date.now();
+        const arm = (scheduler: ChatScheduledWorkScheduler) => scheduler.upsert({
+          id: updateResumeScheduleId(sessionId),
+          sessionId,
+          kind: "wakeup",
+          prompt: acceptedUpdate ? UPDATE_RESUME_PROMPT : RESTART_RESUME_PROMPT,
+          reason: acceptedUpdate ? UPDATE_RESUME_REASON : RESTART_RESUME_REASON,
+          fireAt: createdAt,
+          createdAt: current?.createdAt ?? createdAt,
+          status: "scheduled",
+          lateFlag: false,
+          durable: true,
+          source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          restartResumeStreak: acceptedUpdate ? 0 : restartResumeStreakFor(managed),
+        });
+        let schedule: Awaited<ReturnType<typeof arm>>;
+        try {
+          schedule = await arm(scheduledWorkScheduler);
+        } catch (error) {
+          // The list is already taken, so this is the chat's only chance: one
+          // more try (a busy store fails for a moment), then `arm_failed`.
+          logger.warn("agent_chat.update_resume_arm_retry", {
+            sessionId,
+            cause: "planned_stop",
+            error: error instanceof Error ? error.message : String(error),
+          });
+          schedule = await arm(scheduledWorkScheduler);
+        }
+        if (updateResumeUserCancels.has(sessionId)) {
+          // The user typed into the chat while this row was written.
+          if (schedule.status === "scheduled" || schedule.status === "paused") await scheduledWorkScheduler.cancel(schedule.id);
+          dropped(sessionId, "already_continued", { status: "user_message" });
+        } else if (schedule.status === "scheduled" && schedule.pausedFlag !== true) {
+          armed += 1;
+        } else if (schedule.status === "paused") {
+          dropped(sessionId, "paused");
+        } else {
+          dropped(sessionId, "not_armed", { status: schedule.status });
+        }
+      } catch (error) {
+        dropped(sessionId, "arm_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    logger.info("agent_chat.planned_stop_chats_continued", { chats: entries.length, armed });
   };
 
   const cliContinueStreakFor = (sessionId: string): number => {
@@ -71810,12 +72384,49 @@ export function createAgentChatService(args: {
       const failed = pruneCliCrashReopenState(projectRoot, { keepMs: 2 * RESTART_RESUME_MAX_AGE_MS });
       if (failed > 0) logger.warn("agent_chat.cli_reopen_prune_failed", { failed });
     };
+    /** A CLI owed a continue that will not get one here: one line per session, never silent. */
+    const noteContinueDropped = (sessionId: string, reason: string): void => {
+      logger.info("agent_chat.cli_continue_dropped", { sessionId, reason });
+    };
+    /** The same for a chat a planned stop named (`continueChatsAfterPlannedStop`). */
+    const noteChatContinueDropped = (sessionId: string, reason: string): void => {
+      logger.info("agent_chat.update_resume_dropped", { sessionId, reason, cause: "planned_stop" });
+    };
     let planned: ReturnType<typeof takeCliSessionsToReopen> = [];
+    // A brain of this endpoint stopped for good and could not rewrite its
+    // lists here: those lists only reopen their CLIs and continue nothing.
+    const forGoodWriters = stoppedForGoodListWriters(projectRoot);
     try {
-      planned = takeCliSessionsToReopen(projectRoot, RESTART_RESUME_MAX_AGE_MS);
+      planned = takeCliSessionsToReopen(projectRoot, RESTART_RESUME_MAX_AGE_MS, undefined, (stale) => {
+        // A list older than 6 h: its work is stale, as for any restart.
+        for (const entry of stale) {
+          if (entry.kind === "chat") noteChatContinueDropped(entry.sessionId, "stale");
+          else if (entry.midTurn) noteContinueDropped(entry.sessionId, "stale");
+        }
+      }, (entry) => {
+        // A chat the installed machine brain ran is its to continue, even while
+        // it is down (`yieldsToMachineBrain`): left in the list for it, with
+        // the list's own time, so a dev or test brain that opens the project
+        // first does not take it.
+        if (entry.kind !== "chat" || !chatLeftForMachineBrain(entry.sessionId)) return false;
+        logger.info("agent_chat.planned_stop_chat_left", { sessionId: entry.sessionId, reason: "machine_brain" });
+        return true;
+      }, forGoodWriters);
+      if (forGoodWriters) settleStoppedForGood(projectRoot);
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_read_failed", { source: "planned", error: errorText(error) });
     }
+    // A list the stopped brain could not save in this project's folder rode
+    // in its record instead (`recordPlannedBrainStop`).
+    const carried = takeCarriedCliSessionsToReopen(projectRoot);
+    if (carried.length > 0) {
+      const listed = new Set(planned.map((entry) => entry.sessionId));
+      planned = [...planned, ...carried.filter((entry) => !listed.has(entry.sessionId))];
+    }
+    // The chats a planned brain stop named ride in the same list; they are
+    // continued by id, never reopened as terminals.
+    const plannedChats = planned.filter((entry) => entry.kind === "chat");
+    planned = planned.filter((entry) => entry.kind !== "chat");
     let crash: ReturnType<typeof findCliSessionsCutOffByCrash> = { cutOff: [], stale: 0 };
     try {
       const toolTypes = [...TRACKED_AGENT_CLI_TOOL_TYPES];
@@ -71833,13 +72444,17 @@ export function createAgentChatService(args: {
     } catch (error) {
       logger.warn("agent_chat.cli_reopen_read_failed", { source: "crash", error: errorText(error) });
     }
+    const hold = !continueAfterRestartEnabled()
+      ? "disabled"
+      : args.isRuntimeInRestartLoop?.() === true ? "restart_loop" : null;
+    if (plannedChats.length > 0) {
+      if (hold) for (const entry of plannedChats) noteChatContinueDropped(entry.sessionId, hold);
+      else await continueChatsAfterPlannedStop(plannedChats);
+    }
     if (planned.length === 0 && crash.cutOff.length === 0) {
       pruneCrashState();
       return;
     }
-    const hold = !continueAfterRestartEnabled()
-      ? "disabled"
-      : args.isRuntimeInRestartLoop?.() === true ? "restart_loop" : null;
     /**
      * The claim for a planned entry: the owner its row names now, so a runtime
      * that derives the same row after a crash claims the same file. A row with
@@ -71861,6 +72476,7 @@ export function createAgentChatService(args: {
       plannedReopened: 0,
     };
     if (hold) {
+      for (const entry of planned) if (entry.midTurn) noteContinueDropped(entry.sessionId, hold);
       // Claimed all the same: a later start must not reopen what this one held back.
       for (const owner of [...planned.map((entry) => plannedClaim(entry.sessionId)), ...crash.cutOff]) {
         if (!owner) continue;
@@ -71904,39 +72520,53 @@ export function createAgentChatService(args: {
       }
       return turns.has(owner.sessionId);
     };
-    const entries: Array<{ owner?: CliSessionOwner & { ownerPid: number }; sessionId: string; midTurn: boolean }> = [
+    const entries: Array<{
+      owner?: CliSessionOwner & { ownerPid: number };
+      sessionId: string;
+      midTurn: boolean;
+      acceptedUpdate?: true;
+    }> = [
       ...planned,
       ...crash.cutOff.map((owner) => ({ owner, sessionId: owner.sessionId, midTurn: false })),
     ];
     // One at a time: each reopen starts a CLI process.
     for (const entry of entries) {
       if (serviceDisposed) break;
+      // Read first, so every drop below logs for exactly the CLIs owed a continue.
+      const midTurn = entry.owner ? crashMidTurn(entry.owner) : entry.midTurn;
       const row = sessionService.get(entry.sessionId);
       if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) {
         tally.notReopenable += 1;
+        if (midTurn) noteContinueDropped(entry.sessionId, "not_reopenable");
+        continue;
+      }
+      if (!trackedCliReopensAfterRestart(row.toolType)) {
+        tally.notReopenable += 1;
+        if (midTurn) noteContinueDropped(entry.sessionId, "not_supported");
         continue;
       }
       if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) {
         tally.alreadyOpen += 1;
+        if (midTurn) noteContinueDropped(row.id, "already_open");
         continue;
       }
       const unexpected = entry.owner != null;
-      let midTurn = entry.midTurn;
       try {
         // Claimed right before its own reopen, so a stop during the reopens
         // leaves the rest to the next start.
         const claim = entry.owner ?? plannedClaim(row.id, row);
         if (claim && !claimCliReopen(projectRoot, claim)) {
           tally.claimedElsewhere += 1;
+          if (midTurn) noteContinueDropped(row.id, "claimed_elsewhere");
           continue;
         }
         if (entry.owner) {
           // Counted before the reopen starts: a reopen that stops this runtime counts too.
           if (countCliCrashReopen(projectRoot, row.id, RESTART_RESUME_MAX_AGE_MS) > MAX_CONSECUTIVE_RESTART_RESUMES) {
             tally.capped += 1;
+            if (midTurn) noteContinueDropped(row.id, "reopen_capped");
             continue;
           }
-          midTurn = crashMidTurn(entry.owner);
         }
       } catch (error) {
         // A claim or count that cannot be written: it does not reopen.
@@ -71947,9 +72577,18 @@ export function createAgentChatService(args: {
       try {
         // A CLI that waits on the user's answer reopens, but is not told to go on.
         const wantsContinue = midTurn && !row.attentionRequestedAt;
-        const streak = wantsContinue && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
+        // An update the user accepted starts the count again, as for a chat
+        // (`armUpdateResume`): it is not one more restart in a loop.
+        const streak = !wantsContinue || !scheduledWorkScheduler
+          ? 0
+          : entry.acceptedUpdate ? 0 : cliContinueStreakFor(row.id);
         const continues = wantsContinue && scheduledWorkScheduler != null && streak <= MAX_CONSECUTIVE_RESTART_RESUMES;
         if (wantsContinue && !continues) tally.continueHeld += 1;
+        if (midTurn && !continues) {
+          noteContinueDropped(row.id, row.attentionRequestedAt
+            ? "awaiting_user"
+            : !scheduledWorkScheduler ? "scheduler_unavailable" : "continue_capped");
+        }
         const reopened = await ptyService.resumeSession({ sessionId: row.id }, { reopenAfterRestart: true });
         // A CLI child's card closed with its process; reopening it reopens the card.
         if (reopened.resumed) notifyParentOfCliChildSpawn(row.id, { resumed: true });
@@ -71961,7 +72600,9 @@ export function createAgentChatService(args: {
             id: updateResumeScheduleId(row.id),
             sessionId: row.id,
             kind: "wakeup",
-            prompt: RESTART_RESUME_PROMPT,
+            // Says that its background agents stopped too: a CLI that was only
+            // waiting on them would otherwise go on waiting.
+            prompt: CLI_RESTART_RESUME_PROMPT,
             reason: RESTART_RESUME_REASON,
             fireAt: createdAt,
             createdAt,
@@ -71989,6 +72630,7 @@ export function createAgentChatService(args: {
     noteRestartContinuation("cli", tally.reopened - tally.plannedReopened);
     logger.info("agent_chat.cli_reopened_after_restart", {
       planned: planned.length,
+      plannedChats: plannedChats.length,
       crash: crash.cutOff.length,
       stale: crash.stale,
       ...tally,
@@ -72603,6 +73245,8 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(sessionId);
     pendingTurnStartMsBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
+    turnStartStampsBySession.delete(sessionId);
+    remoteDeviceTargetsBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -75425,6 +76069,8 @@ export function createAgentChatService(args: {
     lastTurnStartedAtBySession.delete(trimmedSessionId);
     pendingTurnStartMsBySession.delete(trimmedSessionId);
     lastTurnIdBySession.delete(trimmedSessionId);
+    turnStartStampsBySession.delete(trimmedSessionId);
+    remoteDeviceTargetsBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -75761,8 +76407,18 @@ export function createAgentChatService(args: {
       const exemptionStale = claimsWorkload
         && isRuntimeWorkloadExemptionStale(managed.runtime, silentForMs);
       if (claimsWorkload && !exemptionStale) continue;
-      if (exemptionStale) announceExpiredWorkloadExemption(managed, silentForMs);
-      teardownRuntime(managed, "idle_ttl");
+      try {
+        if (exemptionStale) announceExpiredWorkloadExemption(managed, silentForMs);
+        teardownRuntime(managed, "idle_ttl");
+      } catch (error) {
+        // The teardown saves the chat; a project folder that stops answering
+        // throws there. A throw from this timer is uncaught and would skip
+        // every later chat, so log it and let the next tick try again.
+        logger.warn("agent_chat.idle_teardown_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
   }, SESSION_CLEANUP_INTERVAL_MS);
   // Allow the process to exit even if the timer is still scheduled
@@ -75842,17 +76498,39 @@ export function createAgentChatService(args: {
   let restartRecoverySweepTimer: ReturnType<typeof setTimeout> | null = null;
   /** Set by dispose: a sweep in flight stops between rows and never reschedules. */
   let restartRecoverySweepStopped = false;
+  /**
+   * The `detached` chat rows a restart cut off in the last 6 h, the most
+   * recently active first: a chat at work when ADE stopped was streaming then.
+   * Not by creation time: rows nobody opens stay `detached`, so a newest-200
+   * page by `started_at` could leave out an older chat that was at work, and
+   * the 25 kept would favor new idle chats over it. One indexed read of ids,
+   * then each row by id.
+   */
+  const recentDetachedChatRows = (cutoffMs: number) => {
+    const cutoffIso = new Date(cutoffMs).toISOString();
+    const ids = db?.all
+      ? db.all<{ id: string }>(
+          // Chats only: detached shells and CLIs must not fill the 200.
+          `select id from terminal_sessions
+            where status = 'detached' and archived_at is null and ended_at >= ?
+              and tool_type in (${CHAT_SESSION_TOOL_TYPES.map(() => "?").join(", ")})
+            order by coalesce(last_output_at, ended_at) desc, ended_at desc
+            limit 200`,
+          [cutoffIso, ...CHAT_SESSION_TOOL_TYPES],
+        ).map((row) => row.id)
+      : sessionService.list({ status: "detached", limit: 200, toolTypes: CHAT_SESSION_TOOL_TYPES }).map((row) => row.id);
+    return ids
+      .map((id) => sessionService.get(id))
+      .filter((row): row is NonNullable<typeof row> => row != null && isChatToolType(row.toolType) && !row.archivedAt)
+      .filter((row) => {
+        const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
+        return Number.isFinite(endedMs) && endedMs >= cutoffMs;
+      });
+  };
   const runRestartRecoverySweep = async (): Promise<void> => {
     await scheduledWorkReady;
     if (restartRecoverySweepStopped || !continueAfterRestartEnabled()) return;
-    const cutoff = Date.now() - RESTART_RESUME_MAX_AGE_MS;
-    const rows = sessionService
-      .list({ status: "detached", limit: 200, toolTypes: CHAT_SESSION_TOOL_TYPES })
-      .filter((row) => isChatToolType(row.toolType) && !row.archivedAt)
-      .filter((row) => {
-        const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
-        return Number.isFinite(endedMs) && endedMs >= cutoff;
-      })
+    const rows = recentDetachedChatRows(Date.now() - RESTART_RESUME_MAX_AGE_MS)
       .slice(0, RESTART_RECOVERY_SWEEP_LIMIT);
     for (const row of rows) {
       if (restartRecoverySweepStopped) return;
@@ -78991,13 +79669,16 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatCodexPlugin[]> => {
     const sessionId = args.sessionId?.trim() ?? "";
     const laneId = args.laneId?.trim() ?? "";
-    const liveCodex = [...managedSessions.values()].filter((session) => session.runtime?.kind === "codex");
+    // Only a runtime whose app-server still runs can answer; a dead one is
+    // dropped by its exit handler and is never a reason to fail this list.
+    const liveCodex = [...managedSessions.values()].filter((session) =>
+      session.runtime?.kind === "codex" && isCodexRuntimeProcessAlive(session.runtime));
     const managed = sessionId
       ? managedSessions.get(sessionId) ?? null
       : laneId
         ? liveCodex.find((session) => session.session.laneId === laneId) ?? null
         : liveCodex[0] ?? null;
-    const runtime = managed?.runtime?.kind === "codex" ? managed.runtime : null;
+    const runtime = managed?.runtime?.kind === "codex" && isCodexRuntimeProcessAlive(managed.runtime) ? managed.runtime : null;
     if (!runtime) return [];
     try {
       await runtime.request("plugin/reconcile", {});
@@ -79008,6 +79689,8 @@ export function createAgentChatService(args: {
       return parseCodexPluginList(await runtime.request("plugin/list", {}));
     } catch (error) {
       if (isCodexRpcMethodNotFound(error)) return [];
+      // The app-server exited mid-request: no plugins to list from it.
+      if (!isCodexRuntimeProcessAlive(runtime)) return [];
       throw error;
     }
   };
@@ -81282,6 +81965,51 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * `ade devices use|current`: the machine each device kind of a chat runs on.
+   * Kept with the chat (every provider alike: it is keyed on the session) and
+   * persisted with it. A tracked agent CLI in a terminal has no chat record to
+   * keep it in, so it is told to name the machine on each command.
+   */
+  const deviceSourcesSession = (sessionId: unknown): ManagedChatSession => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!id) throw new Error("sessionId is required.");
+    if (agentCliActions.target(id, "keep a device choice for")) {
+      throw new Error(
+        "A device choice is kept for ADE chats; this session is an agent CLI in a terminal. "
+          + "Pass --machine <name> on each device command instead.",
+      );
+    }
+    return ensureManagedSession(id);
+  };
+
+  const getDeviceSources = (args: { sessionId?: string } | null | undefined): ChatDeviceSourcesResult => {
+    const managed = deviceSourcesSession(args?.sessionId);
+    return { sessionId: managed.session.id, sources: { ...(managed.deviceSources ?? {}) } };
+  };
+
+  const setDeviceSource = (args: ChatSetDeviceSourceArgs | null | undefined): ChatDeviceSourcesResult => {
+    const managed = deviceSourcesSession(args?.sessionId);
+    const kind = args?.kind;
+    if (!isDeviceKind(kind)) throw new Error("kind must be ios, android, screen or app.");
+    const source = args?.source;
+    const next: ChatDeviceSources = { ...(managed.deviceSources ?? {}) };
+    // A machine is read the way a stored choice is read back, so the two agree.
+    const chosen = source?.kind === "machine"
+      ? normalizeChatDeviceSources({ [kind]: { ...source, chosenAt: nowIso() } })?.[kind]
+      : undefined;
+    if (source?.kind === "here") {
+      delete next[kind];
+    } else if (chosen) {
+      next[kind] = chosen;
+    } else {
+      throw new Error("source must be { kind: \"here\" } or { kind: \"machine\", machineKey, machineName }.");
+    }
+    managed.deviceSources = Object.keys(next).length ? next : null;
+    persistChatState(managed, { fsync: true });
+    return { sessionId: managed.session.id, sources: { ...next } };
+  };
+
+  /**
    * This chat started a shell on another machine (`ade shell start --machine`),
    * or drove a simulator or Android emulator there through its work copy;
    * recorded by this brain as it forwards the call. Open views get the whole
@@ -81298,6 +82026,8 @@ export function createAgentChatService(args: {
     workCopyLaneId: string | null;
     usesSimulator: boolean;
     usesAndroidEmulator?: boolean;
+    usesDesktop?: boolean;
+    usesAppControl?: boolean;
   }): void => {
     const sessionId = args.sessionId.trim();
     if (!sessionId || !args.machineKey.trim()) return;
@@ -81322,6 +82052,8 @@ export function createAgentChatService(args: {
       workCopyLaneId: args.workCopyLaneId ?? previous?.workCopyLaneId ?? null,
       usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
       ...(args.usesAndroidEmulator === true || previous?.usesAndroidEmulator === true ? { usesAndroidEmulator: true } : {}),
+      ...(args.usesDesktop === true || previous?.usesDesktop === true ? { usesDesktop: true } : {}),
+      ...(args.usesAppControl === true || previous?.usesAppControl === true ? { usesAppControl: true } : {}),
       lastStartedAt: new Date().toISOString(),
     };
     // At most six. The oldest entry without a device goes first, so the iOS
@@ -81329,10 +82061,15 @@ export function createAgentChatService(args: {
     // always stays.
     const list = [...uses.filter((use) => !sameUse(use)), next];
     while (list.length > 6) {
-      const withoutDevice = list.slice(0, -1).findIndex((use) => !use.usesSimulator && !use.usesAndroidEmulator);
+      const withoutDevice = list.slice(0, -1).findIndex((use) => !remoteWorkUsesDevice(use));
       list.splice(withoutDevice >= 0 ? withoutDevice : 0, 1);
     }
     remoteWorkBySession.set(sessionId, list);
+    if (remoteWorkUsesDevice(next)) {
+      const targets = remoteDeviceTargetsBySession.get(sessionId) ?? new Map();
+      targets.set(remoteWorkUseKey(next), { machineKey: next.machineKey, machineName: next.machineName, projectId: next.projectId });
+      remoteDeviceTargetsBySession.set(sessionId, targets);
+    }
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
     onRemoteWorkStarted?.({ sessionId, machineKey: args.machineKey });
   };
@@ -81752,6 +82489,8 @@ export function createAgentChatService(args: {
       return cli ? await agentCliActions.respondToInput(cli, respondArgs) : await respondToInput(respondArgs);
     },
     clearAsk,
+    getDeviceSources,
+    setDeviceSource,
     getMcpApp: mcpApps.get,
     mcpAppRequest: mcpApps.request,
     listMcpAppGrants,
@@ -81854,6 +82593,13 @@ export function createAgentChatService(args: {
         },
       });
     },
+    /**
+     * The id another machine knows this chat's current (or latest) turn by:
+     * when it started. Sent with every call there and with the end-of-turn
+     * release, so a release that lands after the next turn's calls is
+     * skipped there. Null when the chat has not had a turn here.
+     */
+    remoteTurnIdOf: (sessionId: string): string | null => lastTurnStartedAtBySession.get(sessionId) ?? null,
     /**
      * The permission level a chat in this service runs at, or null when it is
      * not one of this service's chats. The brain records it for a child it

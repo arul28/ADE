@@ -1,14 +1,21 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretRight, Check, PaperPlaneTilt } from "@phosphor-icons/react";
 import { forwardSignalToSentry } from "../../../../shared/sentry/logBridge";
-import { reportContentsTitle, ReportIssueResult, useIssueReport, type IssueReportState } from "../../app/ReportIssueButton";
+import { useAppStore } from "../../../state/appStore";
+import {
+  REPORT_ERROR_LABEL,
+  reportControlTitle,
+  ReportIssueResult,
+  useIssueReport,
+  type IssueReportState,
+} from "../../app/ReportIssueButton";
 import type { NoticeAction } from "./NoticeParts";
 
 /**
  * What every error notice carries so a person can hand it to ADE: the raw
- * error on one quiet line that opens to the full text, a "Report" action that
- * sends a redacted diagnostic report, and one Sentry log the first time it is
- * shown.
+ * error on one quiet line that opens to the full text, a "Report…" action that
+ * opens the report dialog (the person reads the redacted report, adds a note
+ * and presses Send), and one Sentry log the first time it is shown.
  *
  * `Banner` and `ToastCard` add it on their own for every `error`-tone notice,
  * from the notice's own words; a warning that is really a failure passes one.
@@ -23,6 +30,8 @@ export type NoticeReport = {
   technicalDetail?: string | null;
   /** Defaults to the notice's title. */
   headline?: string | null;
+  /** The project the failure is in. Defaults to the project open when the notice was first shown. */
+  projectRoot?: string | null;
 };
 
 type ResolvedNoticeReport = NoticeReport & { headline: string };
@@ -84,9 +93,10 @@ function useNoticeSentryLog(report: ResolvedNoticeReport | null): void {
 
 /**
  * Everything a notice needs for the failure behind it, from the notice's own
- * words: `action` is a "Report" pill that goes with the notice's actions, and
- * `body` sits under its text — the raw error as one quiet line that opens to
- * the full text, and after a send, the reference with copy and GitHub links.
+ * words: `action` is a "Report…" pill that goes with the notice's actions and
+ * opens the report dialog, and `body` sits under its text — the raw error as
+ * one quiet line that opens to the full text, and after a send, the reference
+ * with a copy control and the public GitHub issue link.
  * Both are null for a notice with no report (a non-error tone, or `false`).
  * Logs the failure to Sentry once unless `logged` says the owner already did.
  */
@@ -103,33 +113,38 @@ export function useNoticeFailure(notice: {
 }): { report: ResolvedNoticeReport | null; action: NoticeAction | null; body: ReactNode } {
   const report = resolveNoticeReport(notice);
   useNoticeSentryLog(notice.logged ? null : report);
+  // Read once, when the notice is first shown, and kept: the same error in
+  // two projects is two failures (each has its own note and sent state), and
+  // a toast that stays up after a project switch is still about the first.
+  const openProjectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const [shownInProjectRoot] = useState(openProjectRoot);
   const state = useIssueReport({
     surface: report?.surface ?? "notice",
     headline: report?.headline ?? null,
     code: report?.code ?? null,
     technicalDetail: report?.technicalDetail?.trim() || null,
+    projectRoot: report?.projectRoot ?? shownInProjectRoot,
   });
   if (!report) return { report: null, action: null, body: null };
   const detail = report.technicalDetail?.trim() || null;
   // A raw error that repeats what the notice already says is not shown twice.
   const visible = [plainNoticeText(notice.title), plainNoticeText(notice.detail ?? null), notice.error];
   const shownDetail = detail && !visible.some((text) => text?.trim() === detail) ? detail : null;
-  const sentOk = Boolean(state.sent?.ok);
+  const sentOk = Boolean(state.sent);
+  // "Report…", not the full sentence: the pill sits in a row of actions that
+  // must fit a toast. The full sentence is its accessible name and tooltip.
   const action: NoticeAction | null = state.available
     ? {
-        label: state.sending ? "Sending…" : sentOk ? "Sent" : "Report",
+        label: sentOk ? "Sent" : "Report…",
+        ariaLabel: sentOk ? "Sent to ADE" : REPORT_ERROR_LABEL,
         variant: "secondary",
         icon: sentOk ? <Check size={11} weight="bold" /> : <PaperPlaneTilt size={11} />,
-        busy: state.sending || (!state.canSend && state.opening),
-        disabled: sentOk,
-        title: sentOk
-          ? "Sent to ADE"
-          : reportContentsTitle(state.canSend),
-        onClick: () => void state.run(),
+        disabled: sentOk || state.dialogOpen,
+        title: sentOk ? "Sent to ADE" : `${REPORT_ERROR_LABEL} ${reportControlTitle()}`,
+        onClick: state.openDialog,
       }
     : null;
-  const hasResult = Boolean(state.sent || state.issue || state.issueFailed);
-  const body = shownDetail || hasResult ? <NoticeReportBody detail={shownDetail} state={state} /> : null;
+  const body = shownDetail || sentOk ? <NoticeReportBody detail={shownDetail} state={state} /> : null;
   return { report, action, body };
 }
 
@@ -160,7 +175,7 @@ function NoticeReportBody({ detail, state }: { detail: string | null; state: Iss
           {detail}
         </pre>
       ) : null}
-      <ReportIssueResult state={state} className="text-[11px] leading-[1.5] " sentLabel="Reference" />
+      <ReportIssueResult state={state} className="text-[11px] leading-[1.5] " />
     </div>
   );
 }

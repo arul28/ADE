@@ -1625,6 +1625,42 @@ describe("createAgentChatService", () => {
       ]);
     });
 
+    it("settles a steered Codex chat whose dead app-server cannot be replaced", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      try {
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+        });
+        await service.sendMessage({ sessionId: session.id, text: "Start working" }, { awaitDispatch: true });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "status" && event.event.turnStatus === "started" && event.event.turnId === "turn-1",
+        );
+        expect((await service.getSessionSummary(session.id))?.status).toBe("active");
+
+        // The app-server exits mid-turn, and the next one fails to start.
+        const spawnIndexes = codexAppServerSpawnIndexes();
+        const deadProcess = vi.mocked(spawn).mock.results[spawnIndexes[spawnIndexes.length - 1]!]!.value as {
+          stdin: { writable: boolean };
+        };
+        deadProcess.stdin.writable = false;
+        mockState.codexResponseOverrides.set("initialize", { error: { code: -32000, message: "app-server failed to start" } });
+
+        await expect(service.steer({ sessionId: session.id, text: "Keep going." })).rejects.toThrow();
+
+        // No runtime and no turn: the chat is not left active.
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      } finally {
+        service.forceDisposeAll();
+      }
+    });
+
     it("starts a normal Codex turn when steering stale active UI state", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

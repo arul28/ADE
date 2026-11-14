@@ -25,10 +25,12 @@ import {
   LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS } from "../remoteRuntime/remoteEventSetup";
+import { REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS } from "../remoteRuntime/pairedRuntimeRoutes";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
 import { DISK_USAGE_TIMEOUT_MS } from "../../../../../ade-cli/src/services/projects/projectMove/moveCopy";
+import { MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS } from "../diagnostics/autoDiagnosticsService";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -264,9 +266,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeListMyGitHubRepos:
     case IPC.remoteRuntimeOpenProject:
     case IPC.remoteRuntimeListActionRegistry:
-    case IPC.remoteRuntimeCallSync:
     case IPC.remoteRuntimeEnsurePortForward:
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
+    // Short `sync.*` and `modelPicker.*` calls. The call has its own deadline
+    // (REMOTE_RUNTIME_SYNC_DEADLINE_MS) that names the method and the step,
+    // and this sits just above it.
+    case IPC.remoteRuntimeCallSync:
+      return REMOTE_RUNTIME_SYNC_IPC_TIMEOUT_MS;
     // An event poll answers with a batch, or once its subscription is
     // acknowledged; it never stays open for the stream. Its own ceiling
     // (REMOTE_RUNTIME_EVENT_SETUP_TIMEOUT_MS) names the step that hung, and
@@ -378,6 +384,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // merged PR. The 30s default reported a failure while the merge went on.
     case IPC.prsLand:
       return 120_000;
+    // A report dialog's prepare or send waits for a report already running
+    // (an automatic send collects, then uploads for up to 20s) before its own
+    // collection or upload. On the 30s default the dialog showed a raw IPC
+    // timeout while the report went on.
+    case IPC.diagnosticsPrepareReport:
+    case IPC.diagnosticsSendReport:
+      return MANUAL_DIAGNOSTICS_IPC_TIMEOUT_MS;
     // The Usage page's Refresh runs the isolated ledger worker end to end. On
     // the 30s default the renderer rejected with a raw IPC timeout — and blanked
     // the page — while the daemon kept scanning for another nine minutes.

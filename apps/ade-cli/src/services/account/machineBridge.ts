@@ -42,6 +42,10 @@ import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 import { codedError } from "../../../../desktop/src/shared/codedError";
 import { probeRpcLiveness, type RpcLivenessClient } from "../../../../desktop/src/shared/rpcLiveness";
 import { isRuntimeTransportTimeoutError } from "../../../../desktop/src/shared/runtimeErrors";
+import {
+  REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS,
+  remoteMachineLongCallBudgetMs,
+} from "../../../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
 import {
   getSignedInAccountAccessToken,
@@ -55,7 +59,7 @@ import {
 /** Opening a route, including one re-pair. */
 const CONNECT_BUDGET_MS = 25_000;
 export const MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS = 30_000;
-export const MACHINE_BRIDGE_MAX_CALL_TIMEOUT_MS = 180_000;
+export const MACHINE_BRIDGE_MAX_CALL_TIMEOUT_MS = REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS;
 const PROJECTS_LIST_TIMEOUT_MS = 10_000;
 const PROJECTS_CACHE_MS = 60_000;
 /** How long a directory read serves the tools (name resolution, routing). */
@@ -201,7 +205,28 @@ export function resultByteLength(value: unknown): number {
   }
 }
 
-export function clampMachineCallTimeout(value: number | undefined): number {
+/** "45s", "4m", "2h 5m": a wait as a person reads it. */
+function formatMachineWait(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 120) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 120) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * The deadline for one call. A long verb (`remoteMachineLongCallBudgetMs`: an
+ * iOS build, a test run, a Gradle install) gets the budget it has on that
+ * machine itself plus headroom, whatever was asked: the caller's default (ten
+ * minutes) would cut a 20-minute Gradle build short. Anything else is the
+ * request, capped at three minutes. Nothing else changes for a long call: the
+ * pool's heartbeat keeps pinging the connection while it waits, so a quiet
+ * relay is not taken for idle, and a connection that stops answering is
+ * dropped and reported as such. `label` is `domain.action`.
+ */
+export function clampMachineCallTimeout(value: number | undefined, label?: string | null): number {
+  const long = remoteMachineLongCallBudgetMs(label);
+  if (long != null) return long;
   const requested = Number(value ?? MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS);
   if (!Number.isFinite(requested) || requested <= 0) return MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS;
   return Math.min(MACHINE_BRIDGE_MAX_CALL_TIMEOUT_MS, Math.ceil(requested));
@@ -261,7 +286,8 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
 
   /**
    * Restart the idle countdown. A connection with a call in flight never counts
-   * as idle: calls may run up to three minutes, longer than `IDLE_CLOSE_MS`, and
+   * as idle: calls may run three minutes (a long verb such as an iOS build,
+   * far longer; see `clampMachineCallTimeout`), longer than `IDLE_CLOSE_MS`, and
    * closing the socket mid-call would lose a result the host may already have
    * produced.
    */
@@ -592,7 +618,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     // caller always hears "it may still have run there", never a bare refusal.
     const timedOut = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new MachineCallTimeoutError(
-        `${machineName(machine)} did not answer ${label} within ${Math.round(timeoutMs / 1000)}s. It may still have run there.`,
+        `${machineName(machine)} did not answer ${label} within ${formatMachineWait(timeoutMs)}. It may still have run there.`,
       )), timeoutMs);
       timer.unref?.();
     });

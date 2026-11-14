@@ -2,7 +2,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   diagnosticReportFilePath,
   writeDiagnosticReportFile,
@@ -38,11 +37,11 @@ import {
   getSharedAccountAuthService,
   getSharedAccountDirectoryBaseUrl,
 } from "../services/account/sharedAccountAuthService";
-import { copyToClipboard } from "../lib/clipboard";
 import { openExternalUrl } from "../lib/externalLinks";
+import { buildPublicIssueUrl, osFamilyOf } from "../../../desktop/src/shared/publicIssueLink";
 
 /**
- * Headless counterpart to the desktop "Report issue" button. Reads only local
+ * Headless counterpart to the desktop "Report this error to ADE…" dialog. Reads only local
  * files — it never starts or contacts the brain — so it still works on the
  * machine where ADE itself will not come up, and on Windows where there is no
  * desktop error screen to press.
@@ -65,8 +64,9 @@ export type ReportIssueOptions = {
 
 export type ReportIssueResult = {
   report: string;
-  issueUrl: string;
   installId: string;
+  /** As Sentry and PostHog name this build; the public issue link carries it. */
+  releaseChannel: string;
   /** `machine_id`, sent as upload metadata so the stored report names its machine. */
   machineId?: string | null;
   /** CLI version stamped into the report; sent as upload metadata. */
@@ -95,8 +95,8 @@ export type ReportIssueResult = {
  *
  * Null whenever analytics is off — the `.disabled` marker the desktop writes,
  * or `enabled: false` in the state itself. No event carries the id then, so it
- * correlates to nothing, and printing it into a report the user is about to
- * paste into a public issue is the opposite of the choice they made.
+ * correlates to nothing, and printing it into a report the user may send is
+ * the opposite of the choice they made.
  */
 function readInstallId(secretsDir: string): string | null {
   const statePath = path.join(secretsDir, "product-analytics.json");
@@ -165,18 +165,19 @@ function finishCliDiagnosticReport(
   const env = options.env ?? process.env;
   const installId = readInstallId(sources.layout.secretsDir) ?? "unknown";
   const packageChannel = cliPackageChannel(env, sources.layout.adeDir);
+  // As Sentry and PostHog name this build (`sentry/brainBuild.ts`).
+  const releaseChannel = resolveReleaseChannel({
+    env: { ...env, ADE_PACKAGE_CHANNEL: packageChannel },
+    packaged: brainReportsAsRelease(env),
+    version: options.cliVersion ?? null,
+  });
 
   const report = buildDiagnosticReport({
     generatedAt: at.toISOString(),
     app: {
       version: options.cliVersion ?? null,
       packageChannel,
-      // As Sentry and PostHog name this build (`sentry/brainBuild.ts`).
-      releaseChannel: resolveReleaseChannel({
-        env: { ...env, ADE_PACKAGE_CHANNEL: packageChannel },
-        packaged: brainReportsAsRelease(env),
-        version: options.cliVersion ?? null,
-      }),
+      releaseChannel,
       isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath()),
       platform: process.platform,
       arch: process.arch,
@@ -218,16 +219,7 @@ function finishCliDiagnosticReport(
     secretsDir: sources.layout.secretsDir,
     reportsDir: path.join(sources.layout.adeDir, "diagnostic-reports"),
     redaction: sources.redaction,
-    issueUrl: buildDiagnosticIssueUrl({
-      surface,
-      headline: options.headline?.trim().slice(0, 300) || null,
-      code: options.code?.trim().slice(0, 120) || null,
-      appVersion: options.cliVersion ?? null,
-      platform: process.platform,
-      arch: process.arch,
-      installId,
-      redaction: sources.redaction,
-    }),
+    releaseChannel,
   };
 }
 
@@ -278,42 +270,35 @@ export async function buildCliDiagnosticReportAsync(
 }
 
 /**
- * The side effects of `ade report-issue --open`, in the order the desktop
- * "Report issue" button does them: the report goes on the clipboard, *then*
- * the prefilled GitHub issue opens.
- *
- * The order is the whole point. The template the URL carries says "paste the
- * report from your clipboard" — the URL itself only holds a stub, because a
- * full report does not fit in a query string. A flow that opens that form
- * without copying anything sends the user to a page asking for something that
- * is not there (and whatever unrelated text they had copied is what they would
- * paste). Both steps are best effort: a box with no clipboard binary and no
- * browser still gets the whole report on stdout.
+ * The public GitHub issue for a report ADE received: only the reference, the
+ * version and channel, and the OS family (`buildPublicIssueUrl`). Null before a
+ * successful send — the report itself never goes to a public page.
  */
-export async function openDiagnosticIssue(
-  built: Pick<ReportIssueResult, "report" | "issueUrl">,
-  deps: {
-    copy?: (text: string) => boolean;
-    open?: (url: string) => Promise<void>;
-  } = {},
-): Promise<{ copied: boolean; opened: boolean }> {
-  const copy = deps.copy ?? copyToClipboard;
-  const open = deps.open ?? openExternalUrl;
-  let copied = false;
+export function publicIssueUrlForSend(
+  built: Pick<ReportIssueResult, "appVersion" | "releaseChannel">,
+  sent: DiagnosticUploadResult | null,
+): string | null {
+  if (!sent?.ok) return null;
+  return buildPublicIssueUrl({
+    reference: sent.reference,
+    appVersion: built.appVersion,
+    channel: built.releaseChannel,
+    osFamily: osFamilyOf(process.platform),
+  });
+}
+
+/** `ade report-issue --send --open`: opens the public issue after a send. Best effort. */
+export async function openPublicIssue(
+  url: string,
+  deps: { open?: (url: string) => Promise<void> } = {},
+): Promise<boolean> {
   try {
-    copied = copy(built.report);
-  } catch {
-    copied = false;
-  }
-  let opened = false;
-  try {
-    await open(built.issueUrl);
-    opened = true;
+    await (deps.open ?? openExternalUrl)(url);
+    return true;
   } catch {
     // Headless boxes have no browser; the caller still prints the URL.
-    opened = false;
+    return false;
   }
-  return { copied, opened };
 }
 
 /**
@@ -430,37 +415,32 @@ export function describeDiagnosticUpload(
     }
   })();
   return savedPath
-    ? `${reason}\nThe report is saved at ${savedPath} — attach that file to a GitHub issue.`
-    : `${reason} File it on GitHub instead (the full report is above).`;
+    ? `${reason}\nThe report is saved at ${savedPath}. Send it to the ADE team privately; do not post it on a public page.`
+    : `${reason} Send the report above to the ADE team privately; do not post it on a public page.`;
 }
 
 /**
- * The `--json` shape of `ade report-issue`. `copied` is here because `--open`
- * has two side effects, and a script that asked for machine-readable output
- * could not tell whether the second one happened: on a box with no clipboard
- * binary the report is only on stdout, and a caller that assumed otherwise
- * would tell its user to paste something that is not there. Without `--open`
- * nothing is copied, so it is simply false.
+ * The `--json` shape of `ade report-issue`. `issueUrl` is the public GitHub
+ * issue link, present only after a successful `--send` (it holds the
+ * reference, never the report); `opened` says whether `--open` opened it.
  */
 export function buildReportIssuePayload(
-  built: Pick<ReportIssueResult, "report" | "issueUrl" | "installId">,
-  side: { copied: boolean } | null,
+  built: Pick<ReportIssueResult, "report" | "installId">,
   sent?: DiagnosticUploadResult | null,
   savedPath?: string | null,
+  publicIssue?: { url: string; opened: boolean } | null,
 ): {
   ok: true;
   installId: string;
-  issueUrl: string;
-  copied: boolean;
   report: string;
   reportPath?: string;
   sent?: { ok: boolean; reference?: string; reason?: string };
+  issueUrl?: string;
+  opened?: boolean;
 } {
   return {
     ok: true,
     installId: built.installId,
-    issueUrl: built.issueUrl,
-    copied: side?.copied ?? false,
     report: built.report,
     // The same file the text output names, so a script that wraps `--send`
     // can attach it without re-serializing the report itself.
@@ -474,5 +454,6 @@ export function buildReportIssuePayload(
           : { ok: false, reason: sent.reason },
       }
       : {}),
+    ...(publicIssue ? { issueUrl: publicIssue.url, opened: publicIssue.opened } : {}),
   };
 }

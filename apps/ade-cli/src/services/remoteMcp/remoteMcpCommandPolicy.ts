@@ -3,6 +3,7 @@ import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/
 import { ANDROID_SDK_PERSON_ONLY_ACTIONS } from "../../../../desktop/src/shared/types/androidEmulator";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
 import { CLOUD_LANE_MACHINE } from "../../../../desktop/src/shared/cloudLaneLaunch";
+import { devicesSubcommand } from "../../../../desktop/src/shared/types/deviceSources";
 
 /**
  * Which `ade` commands a remote AI app may run, by the scope of its connection.
@@ -29,18 +30,18 @@ const MAX_REMOTE_ARG_CHARS = 8_000;
 
 /** Never runnable remotely, at any scope. */
 const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
-  ["mcp", "ADE MCP is managed on the computer itself, not by a connected app."],
-  ["login", "Signing this computer in or out is done on the computer itself."],
-  ["logout", "Signing this computer in or out is done on the computer itself."],
-  ["connect", "Linking this computer to an account is done on the computer itself."],
-  ["setup", "Setup is interactive and runs on the computer itself."],
-  ["reset", "Resetting ADE is done on the computer itself."],
+  ["mcp", "ADE MCP is managed on the machine itself, not by a connected app."],
+  ["login", "Signing this machine in or out is done on the machine itself."],
+  ["logout", "Signing this machine in or out is done on the machine itself."],
+  ["connect", "Linking this machine to an account is done on the machine itself."],
+  ["setup", "Setup is interactive and runs on the machine itself."],
+  ["reset", "Resetting ADE is done on the machine itself."],
   ["brain", "Starting or stopping ADE's brain would cut this connection."],
   ["serve", "Starting or stopping ADE's brain would cut this connection."],
   ["runtime", "Running another ADE runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
-  ["desktop", "Opening the desktop app is done on the computer itself."],
-  ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
+  ["desktop", "Opening the desktop app is done on the machine itself."],
+  ["account", "Account tokens outlive ADE MCP, so they are created on the machine itself."],
 ]);
 
 /**
@@ -51,7 +52,7 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "action", "actions", "ade-browser", "cloud", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
-  "code", "codes", "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
+  "code", "codes", "device", "devices", "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
   "health", "help", "history", "imessage", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
   "mac-desk", "mac-desktop", "machine", "machines", "messages", "models", "new", "notify", "open", "operation",
   "operations", "password", "passwords", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
@@ -85,6 +86,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Nothing that spends money or deletes is reachable from here.
   ["cloud", new Set(["status", "list", "ls", "machines", "hours", "limits"])],
   ["machines", new Set(["list", "show"])],
+  // The devices on this computer, and a chat's choice (an app has none). `use`
+  // is refused for every scope above.
+  ["devices", true],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
   // `share` lists a lane's shares in its read form only (`isLaneShareListForm`).
@@ -196,26 +200,33 @@ export function checkRemoteAdeCommand(
       reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
     };
   }
-  // Another computer is reached through the tools' own `machine` input, which
-  // goes through that computer's token check and policy, never through the
-  // CLI's agent bridge. The one exception is a new ADE Cloud lane
-  // (`--machine cloud`), which reaches no existing computer.
-  if (args.some((word) => MACHINE_TARGET_FLAG.test(word)) && !isCloudLaneMachineUse(command, args)) {
+  const words = positionalWords(args);
+  // Another machine is reached through the tools' own `machine` input, which
+  // goes through that machine's token check and policy, never through the
+  // CLI's agent bridge: so `--machine`, and `--to` on `chat handoff|move`
+  // (another machine, as the destination), are refused. The one exception is
+  // a new ADE Cloud lane (`--machine cloud`), which reaches no existing machine.
+  const movesChat = (command === "chat" || command === "chats") && (words[0] === "handoff" || words[0] === "move");
+  const namesMachine = args.some((word) => MACHINE_TARGET_FLAG.test(word) || (movesChat && MOVE_DESTINATION_FLAG.test(word)));
+  if (namesMachine && !isCloudLaneMachineUse(command, args)) {
     return {
       ok: false,
-      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
+      reason: movesChat
+        ? "Moving a chat to another machine (`--to`) is not available through ADE MCP. Use the tool's `machine` input to work on another machine."
+        : "Use the tool's `machine` input to run on another machine (machines_list names them), not --machine. Only a new ADE Cloud lane takes it: exactly `--machine cloud` on `chat create`, `lanes create` or `chat launch-status`.",
     };
   }
-  const words = positionalWords(args);
+  const devicesVerdict = checkDevicesCommand(command, args);
+  if (devicesVerdict) return devicesVerdict;
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
-    return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
+    return { ok: false, reason: "The chat tools find a chat's machine by themselves: pass the chat id to chat_status or chat_read." };
   }
   // Git's credential helper prints this computer's GitHub token; it is for
   // git on this computer only, never a connected app.
   if (command === "git" && words[0] === "credential") {
-    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this computer and is not available remotely." };
+    return { ok: false, reason: "`ade git credential` is git's sign-in helper on this machine and is not available remotely." };
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
@@ -223,14 +234,14 @@ export function checkRemoteAdeCommand(
   // Only ADE's server runs these, over exec on a cloud computer: one interrupts
   // all its work, the other commits and pushes every lane.
   if (command === "cloud" && (words[0] === "prepare-stop" || words[0] === "push-work" || words[0] === "work-state")) {
-    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a computer it is about to stop or free-wake.` };
+    return { ok: false, reason: `\`ade cloud ${words[0]}\` is not available remotely. ADE's server runs it on a machine it is about to stop or free-wake.` };
   }
   // Renaming, removing or re-pairing account machines outlives revoking the
   // connection, like account tokens; reading the roster is fine.
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
     return {
       ok: false,
-      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a computer itself.`,
+      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a machine itself.`,
     };
   }
   if (command === "android") {
@@ -262,10 +273,35 @@ export function checkRemoteAdeCommand(
 
 const COMMAND_WORD = /^[a-z][a-z0-9-]*$/;
 /** Spellings the CLI treats as the same command. */
-const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([["action", "actions"], ["machine", "machines"], ["gh", "github"], ["provider", "providers"]]);
+const COMMAND_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["action", "actions"], ["machine", "machines"], ["device", "devices"], ["gh", "github"], ["provider", "providers"],
+]);
 /** `ade machines` subcommands that only read the roster. */
 const MACHINE_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(["list", "ls", "show", "view", "get", "info"]);
 const MACHINE_TARGET_FLAG = /^--(?:machine|all-machines|machine-project)(?:=|$)/;
+/** `chat handoff|move --to <machine>`: the machine a chat moves to. */
+const MOVE_DESTINATION_FLAG = /^--to(?:=|$)/;
+
+/**
+ * `ade devices`: the list (of this computer's devices; the app picks the
+ * computer with the tool's `machine` input) and `current`. `use` keeps a
+ * choice for a chat, and an app has no chat on the computer.
+ */
+function checkDevicesCommand(command: string, args: readonly string[]): RemoteCommandVerdict | null {
+  if (command !== "devices") return null;
+  const { sub, first } = devicesSubcommand(args.slice(1));
+  if (sub === "use") {
+    return {
+      ok: false,
+      reason: "`ade devices use` picks a device for a chat, and an ADE MCP app has no chat there. "
+        + "Pick the machine with the tool's `machine` input, then pass --lane <lane there> to the device commands.",
+    };
+  }
+  if (sub === null) {
+    return { ok: false, reason: `\`ade devices ${first}\` is not a devices command. Use ["devices","--text"] or ["devices","current"].` };
+  }
+  return null;
+}
 /**
  * The reviewed exception to "no --machine": `--machine cloud` (with `--size`)
  * on exactly these subcommands. It asks this computer's own brain to make a
@@ -311,7 +347,7 @@ function isCloudLaneMachineUse(command: string, args: readonly string[]): boolea
   return named;
 }
 const SERVICE_SIGN_IN_REASON =
-  "Signing this computer in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the computer itself.";
+  "Signing this machine in or out of a service (GitHub, Linear, Jira, an AI provider) outlives ADE MCP, so it is done on the machine itself.";
 /** `ade github` groups that manage the machine's GitHub App authorization. */
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
@@ -344,9 +380,9 @@ function jsonNamesRestartAdb(text: string): boolean {
 
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
-  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that computer.";
+  "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that machine.";
 const ANDROID_SDK_REASON =
-  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that computer: "
+  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that machine: "
   + "the setup card in the Android tool, or Settings › Android devices. System images: the device picker's System images.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
@@ -374,7 +410,7 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
  * The whole `account_vault` domain, at every scope: it holds the account's
  * credentials, ADE MCP's own token hashes and its account secret.
  */
-const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the computer itself.";
+const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the machine itself.";
 
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);

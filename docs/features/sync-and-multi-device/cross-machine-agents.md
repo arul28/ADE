@@ -4,7 +4,9 @@ Agents and the `ade` CLI can find, start, message and wait on chats on the
 account's other machines, drive their devices, and hear back when a child they
 started there finishes. The person's surfaces (the cross-machine Work list,
 drafts on another machine, handoff) are described elsewhere; this is the agent
-half.
+half. The words and commands agents see (machine, device, "your code there",
+`ade devices`, `--device`, `--code`, `--to`) are specified in
+[devices and machines](./devices-and-machines.md); this page is how they work.
 
 ## What an agent can do
 
@@ -110,17 +112,30 @@ error only when it is for the same commit.
   project root the environment names, `resolveRoots` in `cli.ts`) and sends the commit, the remote branch that holds it, and the patch as bytes
   (base64, 16 MiB at most), made with fixed diff options so the user's diff
   settings cannot break it. A commit that is not on origin is refused here:
-  "Push it first". `--no-sync` and `--discard` are read only for a shell start
-  or an Apple build with `--machine` and no `--lane`.
+  "Push it first". `--code as-is` and `--code fresh` (old names `--no-sync`
+  and `--discard`, still accepted) are read only for a command that runs your
+  code with `--machine` and no `--lane`: a shell start, an Apple build, an
+  Android install, launch, test or preview, and an App Control launch
+  (`cliMachineTargeting.ts`).
 - **Never lose work there.** Before a sync the copy is compared with what the
   last sync wrote and with its checked-out commit. Unpushed commits, or files
   changed there and not committed, refuse the sync and name the files.
-  `--no-sync` runs in the copy as it is (to commit and push from there);
-  `--discard` resets anyway.
+  `--code as-is` runs in the copy as it is (to commit and push from there);
+  `--code fresh` resets anyway.
+- **Files made there stay.** A file that is untracked, not ignored, and not
+  written by the last sync (a `.xcodeproj` from `xcodegen generate`, a file
+  `ade files push` put there) does not refuse a sync: it is kept in place
+  (`filesMadeHere` in the copy service; left out of `git clean` with an
+  anchored `-e` pattern each, and out of the tree recorded as synced, so the
+  next sync keeps it again). The answer lists them (`workCopy.keptFiles`). A
+  sync whose commit or patch would write a file of the same name (or a folder
+  in its way; case-folded on macOS and Windows) is refused before anything
+  changes. More than 200 such files counts as work made there, as before.
+  The week-unused and low-disk cleanups still count them as unpushed work.
 - **One command at a time.** A copy is busy from its sync until the command
   it was readied for has started (an Apple build: until the call returns), and
   while a shell runs in it. A synced command is refused while it is busy;
-  `--no-sync` runs beside it. Another chat on the machine cannot read, type
+  `--code as-is` runs beside it. Another chat on the machine cannot read, type
   into or stop such a shell, and lane-wide terminal lists leave it out.
 - **Limits.** Submodules are not initialised in a copy. Untracked files that
   are not ignored travel in the patch, so a large one must be committed or
@@ -139,8 +154,9 @@ error only when it is for the same commit.
   ending in a dot or a space, Windows device names, and links that lead out of
   the copy are refused on every OS. Only a caller from another machine
   (`remote:<device>:<chat>`) can use it, and only on its own copy. A pushed
-  file that git does not ignore blocks the next default sync like any change
-  made there.
+  file that git does not track stays through the next sync (see above); one
+  that replaces a file the repository tracks is a change made there and
+  refuses it.
 - **The run.** The command runs once in that machine's shell, started clean
   and not interactive (`remoteRunOnceShellLaunch` in `ptyService.ts`: the
   saved terminal shell or Automatic, `-c` on macOS and Linux; on Windows
@@ -162,6 +178,14 @@ error only when it is for the same commit.
   ADE lane (`envLaneIdForLaneCommand`). A terminal whose terminal host process
   dies prints why, and each stop of such a shell logs
   `pty.remote_work_shell_disposed`.
+- **No repository.** `ade shell start --machine <name> --no-code [--wait] --
+  <cmd>` (old name `--scratch`) runs a command that needs no code
+  (`nvidia-smi`, a disk check) in an empty folder under `<ADE_HOME>/remote-work/scratch/` there: no work copy,
+  no git, no commit to push. It runs in any project open in ADE there (the
+  `anyProject` scope; this repository's checkout when there is one). The
+  folder goes when the shell ends; the hourly sweep removes any older than a
+  week. While it runs it counts as a shell of this chat there, so a synced
+  command waits for it as for any other.
 - **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
   chat deleted or archived on its own machine; a low disk deletes other idle
   copies, oldest first, before a new copy is refused. The brain sweeps every
@@ -239,10 +263,10 @@ approves) starts new work. Running work stays where it is.
 
 ## Moving a chat to another machine
 
-`ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO
-that one: here `--machine` names the destination, and the command runs on this
-machine's brain. The move form is never forwarded, so you cannot move a chat
-that lives on another machine from here; and `--machine` with `--cancel`,
+`ade chat handoff <session> --to <name>` moves a chat FROM this machine TO
+that one: `--to` names the destination (`--machine` is a hidden alias), and the
+command runs on this machine's brain. The move form is never forwarded, so you
+cannot move a chat that lives on another machine from here; and `--to` with `--cancel`,
 `--retry` or `--options` is an error, because those act on this machine's own
 move. It is the same move
 the desktop modal, the session menu and the phone start; see
@@ -250,11 +274,11 @@ the desktop modal, the session menu and the phone start; see
 
 ```bash
 ade chat handoff <session> --options --json        # machines, blockers with fixes, what would travel
-ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 \
+ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 \
   --prompt "run the UI tests next"                 # brief (default); --fork carries full history
-ade chat handoff <session> --machine "Mac mini" --model … --include-changes   # bring uncommitted/unpushed work
-ade chat handoff <session> --machine "Mac mini" --model … --clone             # set the repo up there first
-ade chat handoff <session> --machine "Mac mini" --model … --when-turn-ends    # queue it from inside a turn
+ade chat handoff <session> --to "Mac mini" --model … --include-changes        # bring uncommitted/unpushed work
+ade chat handoff <session> --to "Mac mini" --model … --clone                  # set the repo up there first
+ade chat handoff <session> --to "Mac mini" --model … --when-turn-ends         # queue it from inside a turn
 ade chat handoff <session> --cancel                # keep a queued or awaiting move here, or dismiss an unknown one
 ade chat handoff <session> --retry                 # retry a failed or unknown move with the same choices
 ```
@@ -367,7 +391,42 @@ the trust boundary, as it is for the person's own desktop.
   phone's ownership ribbon names the same "an agent on <machine>".
 - **Clone.** `--clone` asks the target to set the repository up
   (`machines.cloneForAgent`): GitHub only, the default projects folder, the
-  handoff storage preflight, the target's own Git credentials.
+  handoff storage preflight, the target's own Git credentials. It works with
+  `chat`, `shell`, `apple`, `android` and `files` (any call that needs the
+  project there); the commit must still be on origin.
+- **Long calls.** A call waits at most three minutes, except the verbs that
+  run long on their own machine too (`remoteMachineLongCallBudgetMs`: every
+  action in `localRuntimeTimeoutPolicy`'s long-running table, such as an iOS
+  build and launch, a test run, a Gradle install or an emulator boot): those
+  get that verb's own budget there plus a minute, and the CLI waits a minute
+  more and prints `· still running <verb> on <machine>… 2m30s` to stderr every
+  30 s. The pool's heartbeat keeps pinging the connection during the wait; a
+  connection that stops answering is dropped and the call fails as "dropped,
+  may or may not have run there". A timeout still says it may have run there.
+  `shell --wait` was never bound by this: it polls the terminal in short calls.
+- **End of turn.** When a chat's turn ends, its brain sends
+  `release_remote_work_devices` (a hidden tool, only for a `remote:` caller,
+  only its own claims) to each machine and project whose simulator, emulator,
+  screen or App Control session it used this turn (`onRemoteWorkTurnSettled`
+  in the chat service). That machine lets go as for a local chat that ended,
+  without powering anything off: iOS leases, automatic recordings and device
+  session, and its claim on the app session, which keeps running with its
+  live view, unowned, for the next turn or another chat to take
+  (`releaseIfOwnedBy(…, { keepRunning: true })`); Android leases and
+  automatic recordings (one the agent started itself keeps going); the
+  desktop input lease. App Control sessions are left running (a stop would
+  quit the app). The release carries the ended turn's id, and every call
+  carries the caller's current turn (`RemoteCallerClaim.turnId`), so a
+  release that lands after the chat's next turn already called there is
+  skipped. A machine that is offline or asleep is skipped, never woken;
+  device leases there still expire by themselves (10 minutes).
+- **Which callers get it.** The end-of-turn release covers chats: every
+  provider on the chat surface (Claude, Codex, Cursor, Droid, OpenCode, Pi,
+  Muse, Qwen, Kimi, Grok, Copilot, Devin, Antigravity), since the chat
+  service sees their turns end. A provider's CLI in an ADE terminal using
+  `--machine` gets no release: it relies on the device lease timeouts, the
+  20-minute Android idle stop, the screen's idle stop and the work-copy
+  sweep.
 
 ## Limits
 
@@ -386,11 +445,11 @@ the trust boundary, as it is for the person's own desktop.
 
 - Both machines need this ADE version; an older target is reported as
   "update ADE there" (capability `agentRemoteCallers`).
-- Recordings started with `--machine` are filed on that machine; only stills
-  (`proof`) are filed back here.
-- A remote device session is not released automatically when the calling turn
-  ends; the agent stops it, or the person frees the device from that machine's
-  pane.
+- A recording started with `--machine` and stopped with a caption (`record
+  stop`) is read back and filed here, like stills (`proof`). One that stops by
+  itself there (its cap, idle, the app closed) is filed on that machine.
+- An App Control session started from another machine is not stopped when the
+  calling turn ends; the agent stops it, or the work copy's removal does.
 - Builds run where the lane is. To build an iOS app from a Linux box, start a
   subagent on the Mac (`ade chat create --machine …`) and let it build and drive.
 

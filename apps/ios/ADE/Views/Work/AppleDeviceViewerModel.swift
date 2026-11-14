@@ -44,6 +44,11 @@ final class AppleDeviceViewerModel: ObservableObject {
   private weak var syncService: SyncService?
   private var laneId: String = ""
   private var chatSessionId: String?
+  /// The chat id the touches carry: the chat's own, or the id its calls on
+  /// another machine claimed the device under (`appleDeviceInputChatSessionId`).
+  private var inputChatSessionId: String? {
+    appleDeviceInputChatSessionId(status?.owner, viewerChatSessionId: chatSessionId)
+  }
   /// When the person last touched the picture while controlling.
   private var lastControlActivity = Date()
   private lazy var liveTouch = AppleLiveTouchSender { [weak self] phase, point in
@@ -305,7 +310,7 @@ final class AppleDeviceViewerModel: ObservableObject {
     lastControlActivity = Date()
     if next.fold != lastFold {
       do {
-        try await syncService.foldAppleDevice(laneId: laneId, chatSessionId: chatSessionId, pose: next.pose, angle: next.angle)
+        try await syncService.foldAppleDevice(laneId: laneId, chatSessionId: inputChatSessionId, pose: next.pose, angle: next.angle)
         lastFold = next.fold
       } catch {
         appleViewerLog.error("fold mirror failed: \((error as NSError).localizedDescription, privacy: .public)")
@@ -322,7 +327,7 @@ final class AppleDeviceViewerModel: ObservableObject {
       let alreadyThere = posture?.screen == "inner" && posture?.pictureIsWide == next.wantsWidePicture
       if !alreadyThere {
         do {
-          try await syncService.rotateAppleDevice(laneId: laneId, chatSessionId: chatSessionId, orientation: asked)
+          try await syncService.rotateAppleDevice(laneId: laneId, chatSessionId: inputChatSessionId, orientation: asked)
         } catch {
           appleViewerLog.error("fold mirror rotate failed: \((error as NSError).localizedDescription, privacy: .public)")
           inputFailed(error)
@@ -348,7 +353,7 @@ final class AppleDeviceViewerModel: ObservableObject {
     guard let syncService else { return }
     let started = Date()
     do {
-      try await syncService.sendAppleDeviceInput(laneId: laneId, chatSessionId: chatSessionId, input: input)
+      try await syncService.sendAppleDeviceInput(laneId: laneId, chatSessionId: inputChatSessionId, input: input)
       let ms = Int(Date().timeIntervalSince(started) * 1_000)
       appleViewerLog.debug("input acked in \(ms)ms")
     } catch {

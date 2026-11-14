@@ -19,7 +19,7 @@ import {
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import type { Logger } from "../logging/logger";
 import { withDeadline } from "../shared/withTimeout";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 
 type AccountAttentionClient = Pick<
   PushRelayClient,
@@ -107,6 +107,11 @@ export class ActivityAcknowledgmentStaleError extends Error {
   }
 }
 
+/** No brain to ask yet: a state of this computer, not a defect. */
+function accountActivityNotReadyError(): AdeExpectedError {
+  return new AdeExpectedError("Account Activity is unavailable until this computer's ADE brain is ready.", "environment");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -126,6 +131,23 @@ export const ATTENTION_IPC_BUDGET_MS = 25_000;
  * the local fallback, a read from the brain's memory, gets the rest.
  */
 export const ATTENTION_ACCOUNT_SNAPSHOT_BUDGET_MS = 18_000;
+
+/**
+ * How long a window's presence report may hold its IPC call. Presence is a
+ * best-effort heartbeat (the next one carries the latest state), so a relay
+ * or brain that is slow to answer must not keep the handler busy until the
+ * 30s IPC timer fires. The send keeps running past this; only the reply to
+ * the window stops waiting for it.
+ */
+export const ATTENTION_PRESENCE_BUDGET_MS = 8_000;
+
+/**
+ * The longest one away or back change may hold the queue. Each leg of the
+ * send already ends sooner (the relay's foreground deadline, the brain's
+ * {@link ATTENTION_IPC_BUDGET_MS}); this only frees the queue from a send
+ * that never settles.
+ */
+export const ATTENTION_PRESENCE_CHANGE_DEADLINE_MS = ATTENTION_IPC_BUDGET_MS + 5_000;
 
 /** First pause after the relay could not be reached; doubles to the max. */
 const RELAY_BACKOFF_BASE_MS = 5_000;
@@ -204,6 +226,8 @@ export class AttentionAccountCoordinator {
   /** The last presence a window reported, resent on lock, sleep and wake. */
   private lastPresence: Record<string, unknown> | null = null;
   private presenceChanges: Promise<void> = Promise.resolve();
+  /** Set once a presence send passed its budget; cleared by the next one in time. */
+  private presenceSlowLogged = false;
   /**
    * A signed-in account whose presence sends found no usable token (a session
    * that could not refresh): how many in a row, and when to try again.
@@ -477,7 +501,8 @@ export class AttentionAccountCoordinator {
       }
       const pool = this.options.localRuntimeConnectionPool;
       if (!pool) {
-        throw new Error("Machine Activity is unavailable until this computer's ADE brain is ready.");
+        // A state of this computer (no brain to ask yet), not a defect; the same for the throws below.
+        throw new AdeExpectedError("Machine Activity is unavailable until this computer's ADE brain is ready.", "environment");
       }
       // The host caps a batch at the same 64, so chunk here too rather than
       // report success for ids that were never sent. It answers per CHUNK, not
@@ -570,6 +595,26 @@ export class AttentionAccountCoordinator {
    * the relay's presence window).
    */
   async reportPresence(input: unknown): Promise<AttentionPresenceReceipt> {
+    const { presence, userActive } = this.preparePresence(input);
+    // A late send finishes on its own (its relay or brain state is still
+    // recorded); the window gets its receipt now.
+    let timedOut = false;
+    await withDeadline(this.sendPresence(presence), ATTENTION_PRESENCE_BUDGET_MS, () => {
+      timedOut = true;
+      return new Error("presence send passed its budget");
+    }).catch((error: unknown) => {
+      if (!timedOut) throw error;
+    });
+    if (timedOut) this.notePresenceSlow();
+    else this.presenceSlowLogged = false;
+    return { userActive };
+  }
+
+  /**
+   * Check a reported presence, put the OS clock's "in use" on it, and keep it
+   * as the last report (what away and back re-send).
+   */
+  private preparePresence(input: unknown): { presence: Record<string, unknown>; userActive: boolean | null } {
     const reported = isRecord(input) ? input : null;
     if (!reported || typeof reported.deviceId !== "string" || !reported.deviceId.trim()) {
       throw new Error("A valid Activity presence payload is required.");
@@ -584,8 +629,16 @@ export class AttentionAccountCoordinator {
     const { userActive: _callerClaim, ...rest } = reported;
     const presence: Record<string, unknown> = userActive === null ? rest : { ...rest, userActive };
     this.lastPresence = rest;
-    await this.sendPresence(presence);
-    return { userActive };
+    return { presence, userActive };
+  }
+
+  /** One info line per slow stretch; the next send in time re-arms it. */
+  private notePresenceSlow(): void {
+    if (this.presenceSlowLogged) return;
+    this.presenceSlowLogged = true;
+    this.options.getLogger().info("attention.presence_send_slow", {
+      budgetMs: ATTENTION_PRESENCE_BUDGET_MS,
+    });
   }
 
   /**
@@ -611,17 +664,28 @@ export class AttentionAccountCoordinator {
     return this.queuePresenceChange("back", async () => {
       const last = this.lastPresence;
       if (!last) return;
-      await this.reportPresence({ ...last, observedAt: new Date().toISOString() });
+      // The real send, not the window's 8 s receipt: the next change waits
+      // for this one to reach the relay or the brain.
+      const { presence } = this.preparePresence({ ...last, observedAt: new Date().toISOString() });
+      await this.sendPresence(presence);
     });
   }
 
   /**
    * Away and back go out one after the other, in the order they happened: a
    * quick lock and unlock must not let the "away" land last and release the
-   * phone while the person is at the computer.
+   * phone while the person is at the computer. The relay keeps the report
+   * that arrives last, so each change waits for the previous send itself.
+   * Both legs of a send have their own deadline; the queue's own deadline is
+   * a backstop, so a send that never settles cannot hold every later change.
    */
   private queuePresenceChange(change: "away" | "back", send: () => Promise<void>): Promise<void> {
-    const next = this.presenceChanges.then(send).catch((error) => this.warnPresenceFailed(change, error));
+    const bounded = (): Promise<void> => withDeadline(
+      send(),
+      ATTENTION_PRESENCE_CHANGE_DEADLINE_MS,
+      () => new Error(`presence ${change} did not finish in ${ATTENTION_PRESENCE_CHANGE_DEADLINE_MS} ms`),
+    );
+    const next = this.presenceChanges.then(bounded).catch((error) => this.warnPresenceFailed(change, error));
     this.presenceChanges = next;
     return next;
   }
@@ -684,10 +748,16 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (this.options.localRuntimeConnectionPool) {
-      await this.options.localRuntimeConnectionPool.callAttention<void>(
-        "reportPresence",
-        presence as AttentionPresence & Record<string, unknown>,
-        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+      // The connect in front of the call is not covered by the transport
+      // timeout, so the deadline wraps both (as in `getPreferences`).
+      await withDeadline(
+        this.options.localRuntimeConnectionPool.callAttention<void>(
+          "reportPresence",
+          presence as AttentionPresence & Record<string, unknown>,
+          { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+        ),
+        ATTENTION_IPC_BUDGET_MS,
+        () => new Error("This computer's ADE brain did not take the presence report in time."),
       );
     }
   }
@@ -717,10 +787,16 @@ export class AttentionAccountCoordinator {
       }
     }
     if (!this.options.localRuntimeConnectionPool) return DEFAULT_ATTENTION_PREFERENCES;
-    return await this.options.localRuntimeConnectionPool.callAttention<AttentionPreferences>(
-      "getPreferences",
-      { accountOwnerId },
-      { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+    // The connect in front of the call is not covered by the transport
+    // timeout, so the deadline wraps both (as in `getSnapshot`).
+    return await withDeadline(
+      this.options.localRuntimeConnectionPool.callAttention<AttentionPreferences>(
+        "getPreferences",
+        { accountOwnerId },
+        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+      ),
+      ATTENTION_IPC_BUDGET_MS,
+      () => new Error("This computer's ADE brain did not answer in time. Activity will retry."),
     );
   }
 
@@ -738,14 +814,21 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (!this.options.localRuntimeConnectionPool) {
-      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+      throw accountActivityNotReadyError();
     }
-    await this.options.localRuntimeConnectionPool.callAttention<void>(
-      "putPreferences",
-      {
-        accountOwnerId,
-        preferences: request.preferences,
-      },
+    // With no timeout this call inherited the pool's ten-minute budget, past
+    // the renderer's 30s IPC timer.
+    await withDeadline(
+      this.options.localRuntimeConnectionPool.callAttention<void>(
+        "putPreferences",
+        {
+          accountOwnerId,
+          preferences: request.preferences,
+        },
+        { timeoutMs: ATTENTION_IPC_BUDGET_MS },
+      ),
+      ATTENTION_IPC_BUDGET_MS,
+      () => new Error("This computer's ADE brain did not answer in time. Try saving again."),
     );
   }
 
@@ -768,7 +851,7 @@ export class AttentionAccountCoordinator {
       !this.options.accountAttentionClient
       || !this.options.accountAttentionClient.putActivityMachinePreferences
     ) {
-      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+      throw accountActivityNotReadyError();
     }
     await this.options.accountAttentionClient.putActivityMachinePreferences(
       accountOwnerId,
@@ -798,7 +881,7 @@ export class AttentionAccountCoordinator {
       throw new Error("Sign in to mute a chat's notifications.");
     }
     if (!this.options.accountAttentionClient?.setAttentionSessionMuted) {
-      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
+      throw accountActivityNotReadyError();
     }
     await this.options.accountAttentionClient.setAttentionSessionMuted(
       accountOwnerId,

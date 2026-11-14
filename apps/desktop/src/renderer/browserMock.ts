@@ -41,6 +41,7 @@ import {
   applyBrowserMockUpdateAndFallback,
   browserMockBrainDownScenario,
   browserMockRecoveryScenario,
+  browserMockReportScenario,
   createBrowserMockRecoveryBridges,
   showBrowserMockBrainDownPending,
   showBrowserMockRecoveryScreen,
@@ -1456,6 +1457,129 @@ function browserMockFlag(name: string): boolean {
   }
 }
 
+function browserMockParam(name: string): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch {
+    return null;
+  }
+}
+
+/** The machine `?mockRemoteWork` names; this window starts with no connection to it. */
+const BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY = "mk_mbp_97";
+const BROWSER_MOCK_REMOTE_WORK_TARGET_ID = "mock-mbp-97";
+
+/** Mac Desktop in the web preview: this computer cannot host one. */
+const BROWSER_MOCK_LOCAL_MAC_DESKTOP_STATUS = {
+  // `?mockHostPlatform=darwin` shows the host-bound tools (Apple
+  // Development) so a pane can be looked at beside them.
+  platform: (new URLSearchParams(window.location.search).get("mockHostPlatform") ?? "browser") as NodeJS.Platform,
+  supported: false,
+  unsupportedReason: "The hosted web client cannot host a Mac display.",
+  driver: {
+    state: "unsupported" as const,
+    title: "Not available here",
+    message: "Mac Desktop runs on the machine that hosts the lane.",
+    recovery: null,
+    version: null,
+  },
+  permissions: { screenRecording: "unknown" as const, accessibility: "unknown" as const },
+  displayMode: "unavailable" as const,
+  display: null,
+  windows: [],
+  lease: null,
+  stream: null,
+  recording: null,
+  lanes: [],
+  hostIsLocal: false,
+};
+
+/** `?mockRemoteWork`'s machine: a Mac whose screen for the work copy is off. */
+function browserMockRemoteMacDesktopStatus() {
+  return {
+    ...BROWSER_MOCK_LOCAL_MAC_DESKTOP_STATUS,
+    platform: "darwin" as NodeJS.Platform,
+    supported: true,
+    unsupportedReason: null,
+    driver: { state: "running" as const, title: "Running", message: "", recovery: null, version: "mock" },
+    permissions: { screenRecording: "granted" as const, accessibility: "granted" as const },
+    displayMode: "virtual" as const,
+  };
+}
+
+function browserMockRemoteWorkKinds(): string[] {
+  return (browserMockParam("mockRemoteWork") ?? "").split(",").map((kind) => kind.trim()).filter(Boolean);
+}
+
+let browserMockRemoteConnects = 0;
+let browserMockIosStopped = false;
+let browserMockIosStopTimer: number | null = null;
+const browserMockIosListeners = new Set<(event: any) => void>();
+
+/** `?mockRemoteConnect=in-use`'s saved machine: another ADE app on this computer holds the link. */
+function browserMockHeldElsewhereConnection(): any[] {
+  if (browserMockParam("mockRemoteConnect") !== "in-use") return [];
+  return [{
+    target: {
+      id: BROWSER_MOCK_REMOTE_WORK_TARGET_ID,
+      name: "MacBook Pro (97)",
+      hostname: "mbp-97.local",
+      transport: "paired",
+      pairedMachine: { hostIdentity: "mock-mbp-97", machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "0.0.0-browser",
+      lastConnectedAt: Date.now() - 60_000,
+    },
+    state: "error",
+    arch: "darwin-arm64",
+    version: "0.0.0-browser",
+    route: null,
+    capabilities: null,
+    projects: [],
+    lastError: "Another ADE app on this computer (for example ADE Beta or a dev build) is using the link to MacBook Pro (97). Use it here instead?",
+    lastAttemptedAt: Date.now() - 30_000,
+    connectedAt: null,
+    reconnectBlocked: "disconnected",
+    recovery: "held_elsewhere",
+  }];
+}
+
+/** `remoteRuntime.connect` on `?mockRemoteConnect=in-use`'s machine ("Use it here"): it connects after a beat. */
+async function browserMockConnectHeldTarget(): Promise<any> {
+  await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+  const [held] = browserMockHeldElsewhereConnection();
+  return { target: { ...held.target, lastConnectedAt: Date.now() }, arch: "darwin-arm64", version: "0.0.0-browser", projects: [] };
+}
+
+/** `remoteRuntime.connect`, except "Use it here" on `?mockRemoteConnect=in-use`'s machine connects it after a beat. */
+function withHeldElsewhereConnect(connect: (id: string) => Promise<any>): (id: string) => Promise<any> {
+  return (id) => (id === BROWSER_MOCK_REMOTE_WORK_TARGET_ID && browserMockParam("mockRemoteConnect") === "in-use"
+    ? browserMockConnectHeldTarget()
+    : connect(id));
+}
+
+/** `window.ade.machines.connect`: the paired machines connect, after a beat; `?mockRemoteConnect` picks a failure. */
+async function browserMockConnectMachine(machineKey: string): Promise<any> {
+  // This call's own attempt number, taken before the wait.
+  const attempt = ++browserMockRemoteConnects;
+  const mode = browserMockParam("mockRemoteConnect");
+  if (mode === "hang") return new Promise(() => undefined);
+  await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+  if (mode === "fail" || (mode === "fail-once" && attempt === 1)) {
+    return { ok: false, reason: "unreachable", machineKey, message: "MacBook Pro (97) did not answer. It may be asleep or off." };
+  }
+  if (machineKey === BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY) {
+    return { ok: true, address: { kind: "remote", machineKey, targetId: BROWSER_MOCK_REMOTE_WORK_TARGET_ID, name: "MacBook Pro (97)" } };
+  }
+  if (machineKey === "mk_studio_mac") {
+    return { ok: true, address: { kind: "remote", machineKey, targetId: "mock-remote", name: "Studio Mac" } };
+  }
+  return { ok: false, reason: "not_in_account", machineKey, message: "That machine is not on this account." };
+}
+
 /**
  * ADE MCP (Settings → You → ADE MCP). `?mockAdeMcp=` stages the page:
  * - `on` (default): three computers, two answering and one on an older ADE,
@@ -2298,6 +2422,8 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
     },
     // `?mockAndroidRemote`: the chat drove the Studio Mac's Android emulator
     // through its work copy there (`ade android … --machine "Studio Mac"`).
+    // `=two`: it later ran work on "MacBook Pro (97)" too, whose copy there
+    // has no emulator, so the newest use is not the one with a device.
     ...(browserMockFlag("mockAndroidRemote")
       ? {
         remoteWork: [{
@@ -2310,6 +2436,39 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
           workCopyLaneId: "remote-work-0a1b2c3d4e5f",
           usesSimulator: false,
           usesAndroidEmulator: true,
+          lastStartedAt: new Date(Date.now() - 60_000).toISOString(),
+        }, ...(browserMockParam("mockAndroidRemote") === "two" ? [{
+          machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY,
+          machineName: "MacBook Pro (97)",
+          machinePlatform: "darwin",
+          projectId: "mock-project-mbp",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-97aa",
+          usesSimulator: true,
+          usesAndroidEmulator: true,
+          lastStartedAt: new Date().toISOString(),
+        }] : [])],
+      }
+      : {}),
+    // `?mockRemoteWork=ios,desktop,app-control`: the chat drove those on
+    // "MacBook Pro (97)", a machine this window has no connection to; the
+    // tool connects on demand (`?mockRemoteConnect=hang|fail|fail-once`), or
+    // `?mockRemoteConnect=in-use`: another ADE app on this computer holds the
+    // link, and "Use it here" takes it back.
+    ...(browserMockParam("mockRemoteWork") !== null
+      ? {
+        remoteWork: [{
+          machineKey: BROWSER_MOCK_REMOTE_WORK_MACHINE_KEY,
+          machineName: "MacBook Pro (97)",
+          machinePlatform: "darwin",
+          projectId: "mock-project-mbp",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-97aa",
+          usesSimulator: browserMockRemoteWorkKinds().includes("ios"),
+          usesDesktop: browserMockRemoteWorkKinds().includes("desktop"),
+          usesAppControl: browserMockRemoteWorkKinds().includes("app-control"),
           lastStartedAt: new Date().toISOString(),
         }],
       }
@@ -6547,6 +6706,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onMissing: noop,
       onStateEvent: noop,
     },
+    machines: {
+      connect: browserMockConnectMachine,
+      addressFor: async () => null,
+    },
     remoteRuntime: {
       checkReachability: async (_id: string) => {
         await new Promise((resolve) => setTimeout(resolve, 600));
@@ -6665,7 +6828,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           lastError: null,
           lastAttemptedAt: Date.now() - 3 * 86_400_000,
           connectedAt: null,
-        }, ...mockCloudLaneTargets().map((target) => ({
+        }, ...browserMockHeldElsewhereConnection(), ...mockCloudLaneTargets().map((target) => ({
           target,
           state: "connected" as const,
           arch: "linux-x64",
@@ -6713,7 +6876,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         autoConnect: true,
       }),
       removeTarget: resolvedArg({ removed: true }),
-      connect: resolvedArg({
+      connect: withHeldElsewhereConnect(resolvedArg({
         target: {
           id: "mock-remote",
           name: "Mock remote",
@@ -6728,7 +6891,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         arch: "darwin-arm64",
         version: "0.0.0-browser",
         projects: [],
-      }),
+      })),
       listProjects: resolvedArg([{
         projectId: "mock-remote-project",
         rootPath: "/Users/ade/Projects/browser-preview",
@@ -8857,21 +9020,31 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
        * preview (jsdom computes no layout). Five simulators on one runtime, two
        * booted, one held by another lane.
        */
-      getStatus: resolved({
-        platform: "darwin",
-        supported: true,
-        tools: [],
-        activeDevice: null,
-        activeSession: null,
-        deviceSession: null,
-        laneDevice: null,
-        helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
-      }),
+      // A fresh object per read, as over IPC. On `?mockRemoteWork`'s machine
+      // this chat's agent holds the device, from this (another) computer.
+      getStatus: async (pin?: OpenProjectBinding | null) => {
+        const remote = pin?.kind === "remote" && pin.targetId === BROWSER_MOCK_REMOTE_WORK_TARGET_ID;
+        return {
+          platform: "darwin",
+          supported: true,
+          tools: [],
+          activeDevice: null,
+          activeSession: remote && !browserMockIosStopped
+            ? { id: "mock-remote-session", deviceUdid: "pro", laneId: "remote-work-97aa", chatSessionId: "remote:dev_win:mock-session-codex-1" }
+            : null,
+          remoteHolder: remote && !browserMockIosStopped ? { machineName: "windows" } : null,
+          deviceSession: null,
+          laneDevice: null,
+          helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
+        } as any;
+      },
       // `?mockIosLive`: the lane holds the booted iPhone 17 Pro, which streams
       // the Android mock's test picture and records each tap in
       // `window.__adeMockIosTaps`, so iOS taps can be checked by number.
       deviceList: async (args?: { laneId?: string | null }) => ({
-        installed: BROWSER_MOCK_SIMULATORS,
+        installed: browserMockIosStopped
+          ? BROWSER_MOCK_SIMULATORS.map((entry) => (entry.udid === "pro" ? { ...entry, state: "Shutdown" } : entry))
+          : BROWSER_MOCK_SIMULATORS,
         lane: browserMockFlag("mockIosLive") && args?.laneId
           ? { laneId: args.laneId, udid: "pro", name: "iPhone 17 Pro", origin: "attached", family: "iphone", runtime: "iOS 26.3", createdAt: "2026-11-03T09:00:00.000Z" }
           : null,
@@ -8993,14 +9166,27 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       } as any),
       renderPreview: resolvedArg({} as any),
       openPreviewWorkspace: resolved({ ok: true as const, path: "/tmp" }),
+      // `?mockIosStop502`: five seconds in, an agent stops the device. The
+      // stream breaks first and its next read fails, before any "off" news.
       startStream: browserMockFlag("mockIosLive")
-        ? async () => ({
-          deviceUdid: "pro",
-          running: true,
-          streaming: true,
-          streamUrl: MOCK_STREAM_URL,
-          transport: { url: MOCK_STREAM_URL, token: "mock-token", width: 576, height: 1280 },
-        }) as any
+        ? async () => {
+          if (browserMockFlag("mockIosStop502") && !browserMockIosStopTimer) {
+            browserMockIosStopTimer = window.setTimeout(() => {
+              browserMockIosStopped = true;
+              for (const listener of browserMockIosListeners) {
+                listener({ type: "stream-stopped", status: { deviceUdid: "pro", streaming: false, streamUrl: null } });
+              }
+            }, 5_000);
+          }
+          const url = browserMockIosStopped ? "http://127.0.0.1:9/ios-mock-stream-gone" : MOCK_STREAM_URL;
+          return {
+            deviceUdid: "pro",
+            running: true,
+            streaming: true,
+            streamUrl: url,
+            transport: { url, token: "mock-token", width: 576, height: 1280 },
+          } as any;
+        }
         : resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
@@ -9076,7 +9262,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       // The pane's recordings drawer reads these on mount.
       recordList: resolvedArg([]),
       recordingsTotalBytes: resolvedArg(0),
-      onEvent: () => () => {},
+      onEvent: (listener: (event: any) => void) => {
+        browserMockIosListeners.add(listener);
+        return () => { browserMockIosListeners.delete(listener); };
+      },
     },
     // Six AVDs, an SDK and one booted lane device; `?mockAndroid=` picks another state.
     androidEmulator: createMockAndroidEmulator(),
@@ -9088,29 +9277,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
      * would throw there rather than hide a tool.
      */
     macDesktop: {
-      getStatus: resolvedArg({
-        // `?mockHostPlatform=darwin` shows the host-bound tools (Apple
-        // Development) so a pane can be looked at beside them.
-        platform: (new URLSearchParams(window.location.search).get("mockHostPlatform") ?? "browser") as NodeJS.Platform,
-        supported: false,
-        unsupportedReason: "The hosted web client cannot host a Mac display.",
-        driver: {
-          state: "unsupported" as const,
-          title: "Not available here",
-          message: "Mac Desktop runs on the machine that hosts the lane.",
-          recovery: null,
-          version: null,
-        },
-        permissions: { screenRecording: "unknown" as const, accessibility: "unknown" as const },
-        displayMode: "unavailable" as const,
-        display: null,
-        windows: [],
-        lease: null,
-        stream: null,
-        recording: null,
-        lanes: [],
-        hostIsLocal: false,
-      }),
+      getStatus: async (_args?: unknown, pin?: OpenProjectBinding | null) => (pin?.kind === "remote" && pin.targetId === BROWSER_MOCK_REMOTE_WORK_TARGET_ID
+        ? browserMockRemoteMacDesktopStatus()
+        : BROWSER_MOCK_LOCAL_MAC_DESKTOP_STATUS) as any,
       start: resolvedArg(null as never),
       stop: resolvedArg({ stopped: false, releasedWindows: 0 }),
       listWindows: resolvedArg([]),
@@ -10744,6 +10913,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           (error) => useAppStore.setState({ projectTransitionError: error }),
           MOCK_PROJECT.rootPath,
         );
+      });
+    }, 2_500);
+  }
+  if (browserMockReportScenario()) {
+    // `?adeReport=`: an error toast whose "Report…" opens the report dialog.
+    window.setTimeout(() => {
+      void import("./components/app/toast/toastStore").then(({ showToast }) => {
+        showToast({
+          tone: "error",
+          title: "Couldn't push the lane",
+          message: "Check your connection, then try again.",
+          error: "fatal: unable to access 'https://github.com/acme/web.git/': Could not resolve host: github.com",
+          durationMs: 0,
+        });
       });
     }, 2_500);
   }

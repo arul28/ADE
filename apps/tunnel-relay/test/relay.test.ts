@@ -405,7 +405,7 @@ describe("ADE MCP account failover", () => {
   const M1 = "1".repeat(48);
   const M2 = "2".repeat(48);
   const M3 = "3".repeat(48);
-  type MachineAnswer = "ok" | "offline" | "off" | "lost" | "busy";
+  type MachineAnswer = "ok" | "offline" | "off" | "lost" | "lostMarked" | "busy";
 
   function answerFor(kind: MachineAnswer, machineKey: string): Response {
     const cors = { "access-control-allow-origin": "*" };
@@ -419,6 +419,10 @@ describe("ADE MCP account failover", () => {
       case "lost":
         // Sent to the brain, then its socket went: the same 503, no marker.
         return Response.json({ error: "offline" }, { status: 503, headers: cors });
+      case "lostMarked":
+        // The machine object's own answer when the control socket that took
+        // the request closed (`failMcpForControl`).
+        return Response.json({ error: "offline" }, { status: 503, headers: { ...cors, "x-ade-mcp-lost": "1" } });
       case "busy":
         return Response.json({ error: "rate_limited" }, { status: 429, headers: cors });
     }
@@ -502,6 +506,32 @@ describe("ADE MCP account failover", () => {
       { machineKey: M2, mount: `a/${ACCOUNT_KEY}`, body: "{\"jsonrpc\":\"2.0\",\"id\":7}" },
       { machineKey: M1, mount: `a/${ACCOUNT_KEY}`, body: "{\"jsonrpc\":\"2.0\",\"id\":7}" },
     ]);
+  });
+
+  // A request a computer's link took down with it (a laptop that slept) may
+  // have run there: only a message that changes nothing goes to the next one.
+  const rpc = (...methods: string[]) => JSON.stringify(methods.length === 1
+    ? { jsonrpc: "2.0", id: 1, method: methods[0] }
+    : methods.map((method, id) => ({ jsonrpc: "2.0", id, method })));
+  it.each([
+    ["a tool list goes on to the next computer", rpc("tools/list"), [M2, M1], 200, M1, [M1]],
+    ["an initialize batch goes on", rpc("initialize", "notifications/initialized"), [M2, M1], 200, M1, [M1]],
+    ["a tool call is final: it may have run", rpc("tools/call"), [M2], 503, null, []],
+    ["a batch with a tool call is final", rpc("tools/list", "tools/call"), [M2], 503, null, []],
+    ["a body that is not JSON is final", "not json", [M2], 503, null, []],
+  ] as const)("a lost request: %s", async (_label, body, expectedTried, status, answeredBy, expectedFronts) => {
+    const harness = accountHarness({ members: [M1, M2], answers: { [M2]: "lostMarked", [M1]: "ok" } });
+
+    const response = await harness.send({ method: "POST", body });
+    await harness.settle();
+
+    expect(harness.tried.map((entry) => entry.machineKey)).toEqual(expectedTried);
+    expect(response.status).toBe(status);
+    // The marker is the relay's own; a client never sees it.
+    expect(response.headers.get("x-ade-mcp-lost")).toBeNull();
+    if (answeredBy) expect(await response.text()).toBe(`answered by ${answeredBy}`);
+    // A computer that lost a request is not the one to try first next time.
+    expect(harness.fronts).toEqual(expectedFronts);
   });
 
   it("refuses a body over 1 MiB without reaching a computer", async () => {

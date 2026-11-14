@@ -697,7 +697,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const existing = records.get(launchId);
     if (existing) return served(existing);
     const problem = cloudLaneLaunchStartRefusal(input)?.message;
-    if (problem) throw new Error(problem);
+    // The launch the person asked for can't run on ADE Cloud (no GitHub
+    // origin, no size, uncommitted start): the sentence says why.
+    if (problem) throw new AdeExpectedError(problem, "user");
     if (!deps.uploadAttachment && (hasLocalAttachments(args.attachments) || hasLocalAttachments(args.chat?.message?.attachments))) {
       throw new Error(CANT_CARRY_FILES);
     }

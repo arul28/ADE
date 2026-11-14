@@ -5,6 +5,7 @@ import { carryExpected, markExpectedFromWire } from "../../../shared/expectedErr
 import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { readBrainConnectionLossData, type BrainConnectionLossData } from "../../../shared/brainConnectionLoss";
+import { wireBrainFrames, type RuntimeActionReplyError } from "../../../shared/runtimeActionReplyError";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
@@ -377,9 +378,16 @@ export class RuntimeRpcClient {
         return;
       }
       const data = formatRpcErrorData(rpcError.data);
-      pending.reject(markExpectedFromWire(new Error(
+      const rebuilt: RuntimeActionReplyError = new Error(
         `Remote ADE service method ${pending.method} failed${code}: ${message}${data ? ` Details: ${data}` : ""}`,
-      ), rpcError.expected));
+      );
+      // An internal error's own frames (`data.frames`), so the report says
+      // where the brain failed, as it does for a failed action's reply.
+      const brainFrames = wireBrainFrames(
+        rpcError.data && typeof rpcError.data === "object" ? (rpcError.data as { frames?: unknown }).frames : null,
+      );
+      if (brainFrames.length) rebuilt.brainFrames = brainFrames;
+      pending.reject(markExpectedFromWire(rebuilt, rpcError.expected));
       return;
     }
     pending.resolve(response.result);

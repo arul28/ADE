@@ -203,7 +203,7 @@ export function AccountMachineRow({
       style={{ display: "grid", gap: 8 }}
     >
       <div style={{ ...machineRowStyle, opacity: !awake && section === "unavailable" ? 0.62 : 1 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+        <div className="ade-cx-row-grid">
           <MachineAvatar
             colorKey={machine.machineKey}
             name={shownName}
@@ -266,7 +266,7 @@ export function AccountMachineRow({
                 </form>
               ) : (
                 <>
-                  <span className="ade-cx-machine-name" style={nameStyle} title={shownName !== displayName ? displayName : machine.adeHome ?? undefined}>
+                  <span style={nameStyle} title={shownName !== displayName ? displayName : machine.adeHome ?? undefined}>
                     {shownName !== displayName ? shownName : installTag ? accountMachineRowName(machine) ?? displayName : displayName}
                   </span>
                   {/* The install is named only when it is not the regular
@@ -298,7 +298,7 @@ export function AccountMachineRow({
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+          <div className="ade-cx-row-actions" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {connecting ? (
               <button
                 type="button"

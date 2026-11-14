@@ -69,6 +69,12 @@ export const Z_LAYERS = {
   nestedDialog: 210,
   /** Bottom-right toast viewport; above dialogs so a dialog's own result toast shows. */
   toast: 250,
+  /**
+   * A modal dialog that shows its results inside itself and raises no toasts:
+   * the report dialog, opened from an error toast. Above the toast stack, so
+   * that toast (and any toast after it) never covers the dialog's footer.
+   */
+  dialogOverToasts: 260,
   /** Tooltips and hover cards; above dialogs so a dialog's tooltips work. */
   tooltip: 300,
   /** A right-click / row context menu and its click-away layer, above every app surface. */

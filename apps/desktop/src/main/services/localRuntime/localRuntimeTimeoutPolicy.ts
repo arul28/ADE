@@ -495,6 +495,27 @@ export function longRunningLocalRuntimeActionTimeoutMs(
   return LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS.get(actionKey) ?? null;
 }
 
+/** The most an ordinary call to another machine waits (`ade … --machine`, the brain's bridge). */
+export const REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS = 180_000;
+/** On top of a long verb's own budget there: the answer still has to travel back. */
+const REMOTE_MACHINE_LONG_CALL_HEADROOM_MS = 60_000;
+
+/**
+ * How long a call to another machine may take when it is one of the verbs
+ * that run long on their own machine too (the table above: an iOS build and
+ * launch, a test run, a Gradle install, an emulator boot): that verb's local
+ * budget plus headroom, so the caller hears the real answer and not a
+ * timeout while the build goes on there. Null for any other call, which keeps
+ * `REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS`. `actionKey` is `domain.action`.
+ */
+export function remoteMachineLongCallBudgetMs(actionKey: string | null | undefined): number | null {
+  if (!actionKey) return null;
+  const local = longRunningLocalRuntimeActionTimeoutMs(actionKey);
+  if (local == null) return null;
+  const budget = local + REMOTE_MACHINE_LONG_CALL_HEADROOM_MS;
+  return budget > REMOTE_MACHINE_CALL_MAX_TIMEOUT_MS ? budget : null;
+}
+
 export function localRuntimeActionTimeoutMs(
   domain: string,
   action: string,

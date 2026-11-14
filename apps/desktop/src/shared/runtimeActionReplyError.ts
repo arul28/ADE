@@ -39,11 +39,20 @@ export function runtimeActionReplyError(errorRecord: unknown, fallbackMessage: s
   const code = record.code;
   if (typeof code === "string" && code.trim() && !isErrnoLikeCode(code)) error.code = code.trim();
   else if (typeof code === "number" && Number.isInteger(code)) error.rpcCode = code;
-  const frames = Array.isArray(record.frames)
-    ? record.frames.filter((frame): frame is string => typeof frame === "string" && FRAME_VALUE.test(frame)).slice(0, 3)
-    : [];
+  const frames = wireBrainFrames(record.frames);
   if (frames.length) error.brainFrames = frames;
   return markExpectedFromWire(error, record.expected);
+}
+
+/**
+ * The brain frames a peer sent (an action reply's `frames`, or an internal
+ * JSON-RPC error's `data.frames`), each re-checked against the
+ * `function:line` shape; at most three.
+ */
+export function wireBrainFrames(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((frame): frame is string => typeof frame === "string" && FRAME_VALUE.test(frame)).slice(0, 3)
+    : [];
 }
 
 /** `.brainFrames` of an error rebuilt from a brain's reply, or null. */

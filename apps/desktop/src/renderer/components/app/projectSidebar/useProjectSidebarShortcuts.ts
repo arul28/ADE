@@ -2,7 +2,7 @@ import { useEffect, useMemo } from "react";
 import type { KeybindingsSnapshot } from "../../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../../lib/keybindings";
 import { isMacPlatform } from "../../../lib/platform";
-import { toggleProjectSidebarHidden } from "./projectSidebarPrefs";
+import { getProjectSidebarPrefs, toggleProjectSidebarHidden } from "./projectSidebarPrefs";
 import {
   PROJECT_SIDEBAR_TABS,
   PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
@@ -31,8 +31,8 @@ function keystrokeIsClaimed(target: EventTarget | null): boolean {
  * shows or hides it. They follow the command palette's rule and work while a
  * text field has focus, but a handler that already used the chord (bold in the
  * PR markdown editor) wins because it calls `preventDefault` first.
- * `sidebarLocked` is set on Settings, which keeps the sidebar open, so Mod+B
- * is left alone there.
+ * `sidebarLocked` is set on Settings, which keeps the docked sidebar open, so
+ * Mod+B is left alone there; the phone-width drawer still opens and closes.
  */
 export function useProjectSidebarShortcuts(args: {
   enabled: boolean;
@@ -63,7 +63,7 @@ export function useProjectSidebarShortcuts(args: {
       if (event.defaultPrevented || isImeComposing(event)) return;
       if (keystrokeIsClaimed(event.target)) return;
       if (eventMatchesBinding(event, bindings.toggle)) {
-        if (sidebarLocked) return;
+        if (sidebarLocked && !getProjectSidebarPrefs().drawer) return;
         event.preventDefault();
         if (!event.repeat) toggleProjectSidebarHidden();
         return;

@@ -985,6 +985,7 @@ describe("createAutoUpdateService", () => {
         targetVersion: "1.2.3",
         releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
+        handoffStep: "quit_started",
       },
       restoreUpdateWorkspaceOnLaunch: true,
     });
@@ -1498,6 +1499,7 @@ describe("createAutoUpdateService", () => {
         targetVersion: "1.2.4",
         releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.4",
         requestedAt: "2026-04-06T15:21:00.000Z",
+        handoffStep: "quit_started",
       },
       restoreUpdateWorkspaceOnLaunch: true,
     });
@@ -2334,8 +2336,14 @@ describe("createAutoUpdateService", () => {
 
   it("recovers a Squirrel network-lost handoff by re-downloading once and retrying native install", async () => {
     const updaterCacheDir = makeUpdaterCacheDir();
+    const globalStatePath = makeStatePath();
     const rollbackQuitAndInstall = vi.fn(async () => {});
-    const beforeQuitAndInstall = vi.fn(async () => {});
+    const chatAtWork = { sessionId: "chat-at-work", title: "Chat", projectName: "Project", projectRoot: "/p" };
+    // The first prepare stops the brain and lists the chat; by the retry the
+    // brain is gone, so a fresh list is empty and the first one must carry.
+    const beforeQuitAndInstall = vi.fn(async () => {})
+      .mockResolvedValueOnce([chatAtWork] as never)
+      .mockResolvedValue([] as never);
     const updater = Object.assign(new FakeAutoUpdater(), {
       downloadUpdate: vi.fn(async () => {
         fs.writeFileSync(path.join(updaterCacheDir, "update.zip"), "loopback restored", "utf8");
@@ -2348,7 +2356,7 @@ describe("createAutoUpdateService", () => {
     const service = createAutoUpdateService({
       logger: makeLogger(),
       currentVersion: "1.2.2",
-      globalStatePath: makeStatePath(),
+      globalStatePath,
       updaterCacheDir,
       getDiskSpace: plentyOfDisk,
       autoCheckEnabled: false,
@@ -2358,7 +2366,7 @@ describe("createAutoUpdateService", () => {
     });
     updater.emit("update-downloaded", { version: "1.2.3" });
 
-    await expect(service.quitAndInstall()).resolves.toBe(true);
+    await expect(service.quitAndInstall(true, { requestedRemotely: true })).resolves.toBe(true);
     expect(updater.quitAndInstall).toHaveBeenCalledTimes(1);
 
     updater.emit("error", new Error("The network connection was lost."));
@@ -2367,6 +2375,12 @@ describe("createAutoUpdateService", () => {
     await vi.waitFor(() => expect(updater.quitAndInstall).toHaveBeenCalledTimes(2));
     expect(rollbackQuitAndInstall).toHaveBeenCalledWith("handoff_stale_archive");
     expect(beforeQuitAndInstall).toHaveBeenCalledTimes(2);
+    // The retry is the same request: continue the chats, from the same machine.
+    expect(beforeQuitAndInstall).toHaveBeenLastCalledWith(true, { closeAfterInstall: false });
+    expect(readState(globalStatePath).pendingInstallUpdate).toMatchObject({
+      requestedRemotely: true,
+      resumedChats: [chatAtWork],
+    });
     expect(service.getSnapshot()).toMatchObject({
       status: "installing",
       version: "1.2.3",
@@ -2705,6 +2719,7 @@ describe("createAutoUpdateService", () => {
   it("auto-applies a ready update after two continuously idle minutes and the countdown", async () => {
     vi.useFakeTimers();
     const updater = new FakeAutoUpdater();
+    const beforeQuitAndInstall = vi.fn(async () => {});
     const productAnalyticsService = { captureInternal: vi.fn() };
     const service = createAutoUpdateService({
       logger: makeLogger(),
@@ -2722,6 +2737,7 @@ describe("createAutoUpdateService", () => {
       autoApplyCountdownMs: 10_000,
       getRuntimeActivitySummary: vi.fn(async () => ({ idle: true })),
       productAnalyticsService: productAnalyticsService as never,
+      beforeQuitAndInstall,
       updater,
     });
     service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
@@ -2738,6 +2754,8 @@ describe("createAutoUpdateService", () => {
     await vi.advanceTimersByTimeAsync(10_000);
 
     expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    // Idle means nothing ran at the check; anything that started after it is continued.
+    expect(beforeQuitAndInstall).toHaveBeenCalledWith(true, { closeAfterInstall: false });
     expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
       event: "ade_update_auto_applied",
       surface: "desktop",

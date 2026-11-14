@@ -7,6 +7,7 @@ import {
   MCP_MACHINE_OFF_DESCRIPTION,
   MCP_MACHINE_OFFLINE_DESCRIPTION,
   MCP_MAX_REQUEST_BYTES,
+  MCP_LOST_HEADER,
   MCP_UNDELIVERED_HEADER,
   mcpErrorResponse,
   type McpUndeliveredReason,
@@ -211,7 +212,7 @@ function mcpResponseFromBrain(parsed: Record<string, unknown>): Response {
 export function failMcpForControl(fwd: McpForwarding, control: WebSocket): void {
   for (const [rid, pending] of fwd.pending) {
     if (pending.control !== control) continue;
-    settleMcp(fwd, rid, mcpErrorResponse(503, "offline", "That computer went offline before it answered."));
+    settleMcp(fwd, rid, mcpErrorResponse(503, "offline", "That computer went offline before it answered.", { [MCP_LOST_HEADER]: "1" }));
   }
 }
 
