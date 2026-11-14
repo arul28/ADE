@@ -571,6 +571,10 @@ final class DeepLinkRouter {
   /// Once a live catalog has arrived, how long a missing project may take to
   /// show up (catalogs stream in chunks) before the link says it is gone.
   private static let ownedLinkCatalogGrace: TimeInterval = 2
+  /// How long an owned link waits for the phone to reconnect to the owning
+  /// machine after a project switch that the transport cut, before it tries
+  /// the switch once more.
+  private static let ownedLinkSwitchRetryTimeout: TimeInterval = 30
   /// How long an owned link waits for the account: a link that launches the
   /// app arrives while the session restores, and a signed-out person signs in
   /// first. Matches how long the web client keeps a link across sign-in.
@@ -767,8 +771,24 @@ final class DeepLinkRouter {
       return
     }
 
+    let ownerKey = sync.focusedMachineKey
     await sync.openProjectForHubChat(project)
     guard !Task.isCancelled else { return }
+    if !sync.isActiveProject(project), sync.focusedMachineKey == ownerKey {
+      // A switch that the connection cut ("The connection to the machine was
+      // interrupted") leaves the phone reconnecting to the same computer by
+      // itself. Wait for that reconnect and switch once more, rather than
+      // land on the Hub with the computer connected.
+      let retryDeadline = Date().addingTimeInterval(Self.ownedLinkSwitchRetryTimeout)
+      while sync.connectionState != .connected, sync.focusedMachineKey == ownerKey, Date() < retryDeadline {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard !Task.isCancelled else { return }
+      }
+      if sync.connectionState == .connected, sync.focusedMachineKey == ownerKey, !sync.isActiveProject(project) {
+        await sync.openProjectForHubChat(project)
+        guard !Task.isCancelled else { return }
+      }
+    }
     guard sync.isActiveProject(project) else {
       sync.landOnHub(notice: "ADE could not open \(project.displayName) on \(machineName).")
       return

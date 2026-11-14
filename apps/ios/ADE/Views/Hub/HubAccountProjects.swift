@@ -254,22 +254,18 @@ func accountProjectCopyMachines(_ project: AccountProject, machines: [AccountMac
   }
 }
 
-/// The line under an account-only card's name: where it is, or why nothing
-/// shows it.
+/// The line under an account-only card's name: how many computers hold it, or
+/// why nothing shows it. A Hub card never names a machine; the machine shows
+/// once the project is open, and in the menus where new work starts.
 func hubAccountProjectNote(_ project: AccountProject, machines: [AccountMachine]) -> String {
   let held = accountProjectCopyMachines(project, machines: machines)
   guard !held.isEmpty else { return "Not on a computer yet" }
   let online = held.filter { $0.machine?.online == true }
-  if let first = online.first {
-    let name = first.machine?.displayName ?? "a computer"
-    return online.count > 1 ? "On \(name) and \(online.count - 1) more" : "On \(name)"
-  }
   // The computer list did not load (offline): say how many hold a copy, not
   // that none is online.
-  if held.allSatisfy({ $0.machine == nil }) {
-    return held.count == 1 ? "On 1 computer" : "On \(held.count) computers"
-  }
-  return "No computer online"
+  guard !online.isEmpty || held.allSatisfy({ $0.machine == nil }) else { return "No computer online" }
+  let count = online.isEmpty ? held.count : online.count
+  return count == 1 ? "On 1 computer" : "On \(count) computers"
 }
 
 // MARK: - What the Hub says above the projects

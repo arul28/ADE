@@ -4555,8 +4555,10 @@ A subagent that has not yet answered the takeover prompt also shows a
 non-blocking composer banner: **Take over** / **Keep reporting**. Take over
 demotes to peer; dismiss and Keep reporting persist
 `subagentTakeoverPromptShownAt` without changing `spawnKind`. The Work session
-context menu (and the iOS long-press menu) offer **Demote to peer** /
-**Promote to subagent** for the same write. Spawned-chat rows in
+context menu offers **Demote to peer** / **Promote to subagent** for the
+same write. The iOS long-press menu names the parent chat instead:
+**Stop reports to <parent>** / **Report back to <parent>**, with a long
+title cut in the middle and "parent" when the title is unknown. Spawned-chat rows in
 `ChatSubagentsPanel` derive an explicit `childSessionId`
 and navigate to it directly, and they ask for that chat's actions pane in the
 same press so the pane you clicked in stays open where you land. Their labels

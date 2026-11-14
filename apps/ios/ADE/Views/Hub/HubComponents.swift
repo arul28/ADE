@@ -1173,7 +1173,9 @@ struct HubProjectTile: View, Equatable {
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
               .frame(maxWidth: .infinity, alignment: .leading)
-            trailingMark
+            // The computer chip sits on the bottom line here: beside the
+            // name it left a narrow tile (the tent pose) one letter.
+            if let selection { HubSelectionMark(selected: selection) }
           }
           // Under the row, not beside the name: the chip or the selection
           // mark would leave the subtitle a few characters.
@@ -1222,10 +1224,16 @@ struct HubProjectTile: View, Equatable {
               .lineLimit(presentation.metaLineIsNote ? 2 : 1)
               .fixedSize(horizontal: false, vertical: presentation.metaLineIsNote)
           }
+          .layoutPriority(1)
           Spacer(minLength: 4)
+          // A short tile has no room for the chip and the chevron beside the
+          // lane count; the chip takes the chevron's place (the tile itself
+          // is the button).
+          let chipOnBottomLine = isShort && selection == nil && showsMachineChip
+          if chipOnBottomLine { machineChip }
           if presentation.isSwitching {
             ProgressView().controlSize(.small)
-          } else if selection == nil {
+          } else if selection == nil, !chipOnBottomLine {
             ADESettingsChevron()
           }
         }
@@ -1338,7 +1346,16 @@ struct HubProjectTile: View, Equatable {
   private var trailingMark: some View {
     if let selection {
       HubSelectionMark(selected: selection)
-    } else if machineLabel != nil, machineCount > 0 {
+    } else {
+      machineChip
+    }
+  }
+
+  private var showsMachineChip: Bool { machineLabel != nil && machineCount > 0 }
+
+  @ViewBuilder
+  private var machineChip: some View {
+    if showsMachineChip {
       HubProjectMachineChip(count: machineCount, live: machineLive)
     }
   }
@@ -1346,7 +1363,10 @@ struct HubProjectTile: View, Equatable {
   private var tileSpokenLabel: String {
     var parts = [project.displayName]
     if let subtitle { parts.append(subtitle) }
-    if let machineLabel { parts.append("on \(machineLabel)") }
+    // Spoken like the chip: a count, never a machine name.
+    if machineLabel != nil, machineCount > 0, !presentation.metaLineIsNote {
+      parts.append(machineCount == 1 ? "on 1 computer" : "on \(machineCount) computers")
+    }
     if let machineLive, machineCount > 0 { parts.append("\(machineLive) of \(machineCount) online") }
     if !presentation.stateCounts.isEmpty { parts.append(hubStateSummaryLabel(presentation.stateCounts)) }
     parts.append(presentation.metaLine)

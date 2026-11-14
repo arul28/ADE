@@ -2578,6 +2578,9 @@ struct WorkRootListScreen: View, Equatable {
       onWake: wakeSession,
       onDemoteToPeer: demoteSessionToPeer,
       onPromoteToSubagent: promoteSessionToSubagent,
+      parentChatTitle: chatSummaries[session.id]?.orchestrationParentSessionId.flatMap { parentId in
+        chatSummaries[parentId]?.title ?? syncService.chatSummaryCache[parentId]?.title
+      },
       spawnKindUpdateAvailable: inputs.spawnKindUpdateAvailable,
       deleteSessionAvailable: inputs.deleteSessionAvailable,
       onDeleteSession: deleteWorkSession,

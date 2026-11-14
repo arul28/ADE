@@ -777,6 +777,8 @@ struct WorkSessionListRow: View {
   var onDemoteToPeer: (TerminalSessionSummary) -> Void = { _ in }
   /// Promote a peer chat back to a subagent so it reports to its parent again.
   var onPromoteToSubagent: (TerminalSessionSummary) -> Void = { _ in }
+  /// The parent chat's title, for "Stop reports to …" / "Report back to …".
+  var parentChatTitle: String? = nil
   /// The host advertises `chat.setSpawnKind`. Older hosts have
   /// `chat.updateSession` but cannot apply spawn-kind writes.
   var spawnKindUpdateAvailable: Bool = false
@@ -1299,14 +1301,20 @@ struct WorkSessionListRow: View {
           Button {
             onPromoteToSubagent(session)
           } label: {
-            Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+            Label(
+              workReportingMenuLabel(.reportBack, parentTitle: parentChatTitle),
+              systemImage: "arrow.up.backward.and.arrow.down.forward"
+            )
           }
         }
         if canDemoteToPeer {
           Button {
             onDemoteToPeer(session)
           } label: {
-            Label("Stop reporting back", systemImage: "arrow.down.forward.and.arrow.up.backward")
+            Label(
+              workReportingMenuLabel(.stopReports, parentTitle: parentChatTitle),
+              systemImage: "arrow.down.forward.and.arrow.up.backward"
+            )
           }
         }
       }

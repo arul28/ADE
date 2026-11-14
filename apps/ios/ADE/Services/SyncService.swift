@@ -6545,8 +6545,9 @@ final class SyncService: ObservableObject {
       connectionState = .connecting
       setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
       logProjectSwitchPhase("reconnect_started")
+      // Fresh session, with retries if the machine drops in the handoff.
       Task { @MainActor [weak self] in
-        await self?.reconnectIfPossible(userInitiated: true)
+        await self?.reconnectIfPossible(replaceSuspendedSession: true)
       }
       return
     }
@@ -6670,8 +6671,12 @@ final class SyncService: ObservableObject {
       connectionState = .disconnected
       currentAddress = nil
       if previousProfile != nil, previousToken != nil {
+        // A fresh session that keeps retrying: when the machine is briefly
+        // gone (a brain restart in the middle of the switch), a user-initiated
+        // attempt fails once and stops, and the phone stays "unreachable" on
+        // the Hub until someone taps Reconnect.
         Task { @MainActor [weak self] in
-          await self?.reconnectIfPossible(userInitiated: true)
+          await self?.reconnectIfPossible(replaceSuspendedSession: true)
         }
       }
       logProjectSwitchPhase("failed", completed: true)
@@ -9526,7 +9531,7 @@ final class SyncService: ObservableObject {
       sleepState: machine.sleepState,
       sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt)
     ), promptToWake else {
-      return await pairWithAccountMachine(machine, authorization: authorization)
+      return await pairAccountMachineKeepingPrevious(machine, authorization: authorization)
     }
     // Loops so a failed wake retries from the same card. Every pass ends in a
     // definite state: opened, declined, or a named failure holding a retry.
@@ -9541,7 +9546,7 @@ final class SyncService: ObservableObject {
       // a cloud box asleep is woken through the machine the phone is on;
       // its ADE answers a few seconds later, which the pairing waits out.
       _ = await wakeCloudMachineIfNeeded(machineKey: machine.machineKey)
-      if await pairWithAccountMachine(machine, authorization: authorization) {
+      if await pairAccountMachineKeepingPrevious(machine, authorization: authorization) {
         pendingMachineWake = nil
         return true
       }
