@@ -3036,6 +3036,9 @@ first open after a fresh launch includes Vite's compile).
 | `remote-only` → This computer (machine route on this computer) | not reachable, and the page title named the other computer | 53–88 ms | 150 ms |
 | `remote-only` → "dev" (the tab's machine) | 37 ms | 29 ms | 150 ms |
 
+The ceilings (150 ms on This computer, 750 ms on another computer, 1.5 s
+for the first open after a brain start) are approved by owner 2026-11-14.
+
 The minute-long wait in the report was not the page. The installed brain's
 log (`~/.ade/runtime/brain.jsonl`) has `project_root.not_answering` for every
 project on the external `/Volumes/Dev` drive at 20:14–20:17 that day, with
@@ -3061,7 +3064,7 @@ says Checking (CDP, 7 runs after a reload; the first includes Vite's compile).
 
 | Window → computer | Before (main) | After (branch) | Ceiling |
 | --- | --- | --- | --- |
-| ADE → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms |
+| ADE → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms (approved by owner 2026-11-14) |
 
 Main read the status through the bound copy, which a stalled project drive
 holds up. The branch reads it on This computer's machine route (`~/.ade`
