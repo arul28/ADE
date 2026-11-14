@@ -5104,6 +5104,9 @@ final class SyncService: ObservableObject {
   private var workListRemoteChats: [String: SyncRemoteMachineChat] = [:]
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
+  /// Bumps each time a project open starts, so a caller that waits between
+  /// two opens can tell that the person chose another project meanwhile.
+  var currentProjectSelectionGeneration: UInt64 { projectSelectionGeneration }
   private var healthyConnectionSampleCount = 0
   private var poorConnectionSampleCount = 0
   /// Monotonic deadline (seconds since boot, sourced from

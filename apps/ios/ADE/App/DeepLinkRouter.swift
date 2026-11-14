@@ -778,12 +778,15 @@ final class DeepLinkRouter {
       // A switch that the connection cut ("The connection to the machine was
       // interrupted") leaves the phone reconnecting to the same computer by
       // itself. Wait for that reconnect and switch once more, rather than
-      // land on the Hub with the computer connected.
+      // land on the Hub with the computer connected. A project the person
+      // opens meanwhile wins: the retry stops without a notice.
+      let selection = sync.currentProjectSelectionGeneration
       let retryDeadline = Date().addingTimeInterval(Self.ownedLinkSwitchRetryTimeout)
       while sync.connectionState != .connected, sync.focusedMachineKey == ownerKey, Date() < retryDeadline {
         try? await Task.sleep(nanoseconds: 500_000_000)
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, sync.currentProjectSelectionGeneration == selection else { return }
       }
+      guard sync.currentProjectSelectionGeneration == selection else { return }
       if sync.connectionState == .connected, sync.focusedMachineKey == ownerKey, !sync.isActiveProject(project) {
         await sync.openProjectForHubChat(project)
         guard !Task.isCancelled else { return }
