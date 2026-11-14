@@ -90,13 +90,17 @@ function parkCursorSteer(): () => void {
  */
 const failParkedCursorSendOnTheWire = async (next: "run" | "park" | "fail" = "run"): Promise<void> => {
   const release = mockState.cursorSendParks.shift();
+  const thrownBefore = mockState.cursorSendPromptErrorThrows;
   mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
   // `release` clears the shared gate; a re-send that must stall gets its own.
   release?.();
   if (next === "park") parkCursorSend();
-  // The released send reads the error on its next microtask.
-  await Promise.resolve();
-  await Promise.resolve();
+  // Keep the error until the released send has read it, however many turns
+  // that takes: clearing it after a fixed microtask count raced a loaded
+  // runner and let the failure through as a success.
+  for (let turn = 0; turn < 50 && mockState.cursorSendPromptErrorThrows === thrownBefore; turn += 1) {
+    await Promise.resolve();
+  }
   if (next !== "fail") mockState.cursorSendPromptError = null;
   await flushCursorSdkSilenceRecycle();
 };
