@@ -863,14 +863,29 @@ function scopedConfigHome(
  * background poll that refuses the Keychain can never see it. The read is
  * cached per account, so the Keychain is opened once per process, then the
  * cache serves every later poll.
+ *
+ * The cache holds a token for about eight hours. Without another Keychain
+ * read, the default account's background polls then stop, and its meters
+ * freeze until the user refreshes. So once a poll in this process has read
+ * the default login from the Keychain (`defaultKeychainRead`), background
+ * polls may read it again: the user has already allowed that lookup.
  */
 export function claudePollAllowsKeychain(
   reason: UsageProviderPollContext["reason"],
   configHome: string | undefined,
+  defaultKeychainRead = defaultClaudeKeychainRead,
 ): boolean {
   if (configHome?.trim()) return true;
-  return reason === "user";
+  return reason === "user" || defaultKeychainRead;
 }
+
+/**
+ * True after a poll in this process opened the Keychain for the default
+ * Claude account and found its login there. False again after a read that
+ * the Keychain refused. Process-local: a new brain waits for the next user
+ * poll before it reads that Keychain item in the background.
+ */
+let defaultClaudeKeychainRead = false;
 
 /**
  * Per-account rate-limit memory for multi-account providers.
@@ -1297,8 +1312,9 @@ async function pollQuotaInstances(
  *
  * The next background poll reads the refreshed login: a scoped account's own
  * Keychain item, or the credentials file the CLI rewrites off macOS. The base
- * account on macOS is left out: its background poll skips the Keychain, so a
- * refresh there would respawn the CLI on every allowance without being read.
+ * account on macOS is left out until a poll has read its Keychain item: before
+ * that its background poll skips the Keychain, so a refresh there would
+ * respawn the CLI on every allowance without being read.
  */
 async function refreshClaudeLoginInBackground(
   logger: Logger,
@@ -1308,7 +1324,7 @@ async function refreshClaudeLoginInBackground(
   configHome: string | undefined,
 ): Promise<FreshUsageProviderPollResult | null> {
   if (context.reason === "user") return null;
-  if (configHome === undefined && process.platform === "darwin") return null;
+  if (configHome === undefined && process.platform === "darwin" && !defaultClaudeKeychainRead) return null;
   if (!claimClaudeBackgroundRefresh(accountId)) return null;
   const refreshed = await measureUsagePhase(
     logger,
@@ -1391,6 +1407,10 @@ async function pollClaudeInstance(
       ...(configHome ? { configHome } : {}),
     }),
   );
+  if (!configHome && allowKeychain) {
+    if (login.state === "ok" || login.state === "expired") defaultClaudeKeychainRead = true;
+    else if (login.state === "unreadable") defaultClaudeKeychainRead = false;
+  }
   // On macOS the login lives in the Keychain. A read that skipped it saw only
   // the credentials file, so its miss says nothing about the account.
   if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {

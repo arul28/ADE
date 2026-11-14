@@ -241,6 +241,7 @@ export function ChatAccountNote({
   events,
   runtimePin,
   busy = false,
+  subject = "chat",
   onSwitched,
 }: {
   sessionId: string;
@@ -253,6 +254,8 @@ export function ChatAccountNote({
   runtimePin: OpenProjectBinding | null;
   /** A turn is running; switching waits for it to end. */
   busy?: boolean;
+  /** What moves: a chat, or a CLI session (relaunched and resumed there). */
+  subject?: "chat" | "CLI";
   onSwitched?: () => void;
 }) {
   const agentChatApi = useAgentChatApi();
@@ -383,7 +386,7 @@ export function ChatAccountNote({
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content side="top" align="start" sideOffset={4} className={MENU_CONTENT_CLASS}>
-          <div className={MENU_LABEL_CLASS}>Run this chat on</div>
+          <div className={MENU_LABEL_CLASS}>Run this {subject} on</div>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={(event) => event.preventDefault()}>
             {accountRow(current, true)}
           </DropdownMenu.Item>

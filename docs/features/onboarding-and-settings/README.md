@@ -3053,8 +3053,11 @@ under the status chip instead.
   own machine under another machine's accounts.
 - **Replaced login**: when a config home's email changes to another email — a
   `claude /login` in a shell for the default account — the store records the old
-  one as `replacedAccount`. The card says it was replaced outside ADE, with
-  **Sign it back in** (into a `Copy` slot when there is one, so the accounts
+  one as `replacedAccount`. The card says "<old email> is signed out on this
+  computer": a sign-in to the new email took its place, for example `/login` in
+  a terminal, and a running CLI changes account from its actions pane. A login
+  that several cards lost shows one notice, on the card that lost it last, and
+  **Dismiss** forgets it on every card. The notice offers **Sign it back in** (into a `Copy` slot when there is one, so the accounts
   shift instead of doubling; otherwise, or when the only copy is the machine's
   own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own

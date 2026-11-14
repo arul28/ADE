@@ -632,7 +632,11 @@ would clear the login, which is how idle secondary accounts lost their
 sign-in. These rules keep a dead file token from turning into an OAuth storm
 that gets the whole client rate-limited (429) by Anthropic:
 
-- The default account's background polls must not touch the Keychain. A scoped
+- The default account's background polls do not touch the Keychain until a
+  poll in this process has read the default login from it (`ok` or `expired`;
+  an `unreadable` read resets this). After that, background polls may read it
+  again, because the cached token lasts about eight hours and the meters would
+  otherwise freeze until a user refresh. A scoped
   account (`CLAUDE_CONFIG_DIR`) may open that account's namespaced Keychain
   item; the successful read is cached for the process and later polls reuse it.
 - Claude Code namespaces the Keychain item per config directory: the machine's
@@ -651,9 +655,9 @@ that gets the whole client rate-limited (429) by Anthropic:
   (`refreshClaudeLoginInBackground`): smart balance does not send a chat to an
   account it has no reading for, so an idle account's token (about eight
   hours) would otherwise expire and leave the account unread. The base
-  account (no scoped config home) on macOS is left out: its background poll
-  skips the Keychain and could not see the refreshed token, so it keeps
-  waiting for a chat or a user refresh. Off macOS the CLI rewrites the
+  account (no scoped config home) on macOS is left out until a poll has read
+  its Keychain item; before that its background poll skips the Keychain and
+  could not see the refreshed token. Off macOS the CLI rewrites the
   credentials file the next poll reads, so the base account is refreshed too. A token with no refresh token at all is
   `signed_out`, because the CLI cannot renew it either. A failed Keychain read
   is `unreadable`, because a miss after it proves nothing about the login.

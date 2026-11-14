@@ -30,6 +30,7 @@ import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { cn } from "../ui/cn";
 import { NO_CHAT_MACHINE_MESSAGE, requireChatPin } from "../chat/chatMachinePin";
 import { Banner } from "../ui/notice/Banner";
+import { ChatAccountNote } from "../chat/ChatAccountNote";
 
 /**
  * A tracked agent CLI gets a chat's actions pane: the same header button, the
@@ -44,9 +45,25 @@ import { Banner } from "../ui/notice/Banner";
  * Nothing polls.
  */
 
+/**
+ * The login this CLI runs on, for the account row at the bottom of the pane.
+ * Claude and Codex only: the row moves the CLI to another account (stop,
+ * copy the conversation, resume there), so nobody has to run `/login` inside
+ * the CLI, which signs a different login into this account's folder.
+ */
+type CliAccount = {
+  provider: string;
+  instanceId: string | null;
+  credentialId: string | null;
+  /** A turn is running; the switch waits for it. */
+  busy: boolean;
+};
+
 type CliActionsState = {
   sessionId: string;
   provider: string | null;
+  /** Null when the CLI runs on a custom provider (a preset): no account to show. */
+  account: CliAccount | null;
   runtimePin: OpenProjectBinding | null;
   open: boolean;
   setOpen: (open: boolean) => void;
@@ -304,9 +321,23 @@ function CliActionsStateProvider({
     setOpen(true);
   }, [hasContent, sessionId, setOpen]);
 
+  const resume = session.resumeMetadata ?? null;
+  const accountProvider = resume?.provider ?? null;
+  const accountInstanceId = resume?.launch?.instanceId?.trim() || resume?.instanceId?.trim() || null;
+  const accountCredentialId = resume?.launch?.credentialId?.trim() || null;
+  const presetLaunch = Boolean(resume?.launch?.presetId?.trim() || resume?.presetId?.trim());
+  const accountBusy = session.runtimeState === "running";
+  const account = useMemo<CliAccount | null>(
+    () => (accountProvider && !presetLaunch
+      ? { provider: accountProvider, instanceId: accountInstanceId, credentialId: accountCredentialId, busy: accountBusy }
+      : null),
+    [accountBusy, accountCredentialId, accountInstanceId, accountProvider, presetLaunch],
+  );
+
   const value = useMemo<CliActionsState>(() => ({
     sessionId,
     provider: session.resumeMetadata?.provider ?? null,
+    account,
     runtimePin,
     open,
     setOpen,
@@ -322,7 +353,7 @@ function CliActionsStateProvider({
     problem,
     clearProblem,
   }), [
-    answer, cards, childRows, clearProblem, problem, open, proof, proofCount, readProof, respondingIds, runningChildren,
+    account, answer, cards, childRows, clearProblem, problem, open, proof, proofCount, readProof, respondingIds, runningChildren,
     runtimePin, session.resumeMetadata?.provider, sessionId, setOpen, stopChild,
   ]);
   return <CliActionsContext.Provider value={value}>{children}</CliActionsContext.Provider>;
@@ -367,7 +398,7 @@ const EMPTY_EVENTS: never[] = [];
 export function CliActionsSidePane() {
   const state = useContext(CliActionsContext);
   if (!state?.open) return null;
-  const { sessionId, childRows, stopChild, proof, proofCount, readProof, runtimePin } = state;
+  const { sessionId, account, childRows, stopChild, proof, proofCount, readProof, runtimePin } = state;
   return (
     <div
       className="pointer-events-none absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))] flex-col"
@@ -376,6 +407,18 @@ export function CliActionsSidePane() {
       <div className="pointer-events-auto flex max-h-full min-h-0 w-full flex-col overflow-hidden rounded-xl border border-fg/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]">
         <ChatActionsDrawerPanel
           emptyCopy="Nothing here yet. Agents this CLI starts and proof it files show up here."
+          footer={account ? (
+            <ChatAccountNote
+              sessionId={sessionId}
+              provider={account.provider}
+              instanceId={account.instanceId}
+              credentialId={account.credentialId}
+              events={EMPTY_EVENTS}
+              runtimePin={runtimePin}
+              busy={account.busy}
+              subject="CLI"
+            />
+          ) : null}
           sections={[
             childRows.length > 0 && {
               key: "agents",
