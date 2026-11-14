@@ -24,6 +24,7 @@ import type {
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
+  SyncProjectSwitchResultPayload,
   SyncRemoteCommandDescriptor,
   SyncFileRequest,
   SyncRosterProject,
@@ -1732,6 +1733,109 @@ describe("brain project actions fallback handler", () => {
       cleanup();
     }
   });
+
+  it.each([
+    { switchOk: true, handedOverAfterAnswer: false },
+    { switchOk: false, handedOverAfterAnswer: true },
+  ])(
+    "keeps a project socket until its switch is answered when the project host attaches mid-switch (ok=$switchOk)",
+    async ({ switchOk, handedOverAfterAnswer }) => {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const secretsDir = path.join(projectRoot, "secrets");
+      fs.mkdirSync(secretsDir, { recursive: true });
+      const credentialStore = new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterial: { read: () => null },
+      });
+      credentialStore.setSync("test.bootstrap", "bootstrap-token");
+      const project = createDiscoveryProject({ id: "project-1", rootPath: projectRoot, isOpen: true });
+
+      let hostAttached = false;
+      const attachListeners: Array<() => void> = [];
+      let finishPrepare: () => void = () => {};
+      let markPrepareStarted: () => void = () => {};
+      const prepareStarted = new Promise<void>((resolve) => { markPrepareStarted = resolve; });
+      const prepareProjectConnection = vi.fn(() => new Promise<SyncProjectSwitchResultPayload>((resolve) => {
+        finishPrepare = () => resolve(switchOk
+          ? { ok: true, project, connection: null }
+          : { ok: false, project, connection: null, message: "not now" });
+        markPrepareStarted();
+      }));
+
+      const handler = createBrainProjectActionsSyncHandler({
+        logger: createDiscoveryLogger(),
+        projectCatalogProvider: {
+          listProjects: vi.fn(async () => ({ projects: [project] })),
+          prepareProjectConnection,
+        },
+        bootstrapCredentialStore: credentialStore,
+        bootstrapTokenKey: "test.bootstrap",
+        secretsDir,
+        localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+        localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+        projectHostAttached: () => hostAttached,
+        onProjectHostAttached: (listener) => {
+          attachListeners.push(listener);
+          return () => {};
+        },
+        activateProjectHost: async () => {},
+      });
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      server.on("connection", (ws, request) => {
+        handler({
+          ws,
+          remoteAddress: request.socket.remoteAddress ?? null,
+          remotePort: request.socket.remotePort ?? null,
+          transportOrigin: "direct",
+        });
+      });
+
+      let client: WebSocket | null = null;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("listening", () => resolve());
+          server.once("error", reject);
+        });
+        const address = server.address();
+        const port = typeof address === "object" && address ? address.port : 0;
+        client = new WebSocket(`ws://127.0.0.1:${port}`);
+        const { envelopes } = trackClientEnvelopes(client);
+        const closed = new Promise<number>((resolve) => client!.once("close", (code) => resolve(code)));
+        await new Promise<void>((resolve, reject) => {
+          client!.once("open", () => resolve());
+          client!.once("error", reject);
+        });
+        sendHello(client, "bootstrap-token");
+        await waitForValue(() => envelopes.find((envelope) => envelope.type === "hello_ok"), "brain hello_ok");
+
+        client.send(encodeSyncEnvelope({
+          type: "project_switch_request",
+          requestId: "switch-1",
+          payload: { projectId: "project-1" },
+        }));
+        await prepareStarted;
+        // The project host attaches while the switch is still being prepared.
+        hostAttached = true;
+        for (const listener of attachListeners) listener();
+        finishPrepare();
+
+        const result = await waitForEnvelope(envelopes, "project_switch_result", "switch-1");
+        expect(result.payload).toMatchObject({ ok: switchOk });
+        if (handedOverAfterAnswer) {
+          await expect(closed).resolves.toBe(1012);
+        } else {
+          // Still this ingress's socket: a later request is answered on it.
+          client.send(encodeSyncEnvelope({ type: "project_catalog_request", requestId: "catalog-1", payload: {} }));
+          await waitForEnvelope(envelopes, "project_catalog", "catalog-1");
+          expect(client.readyState).toBe(WebSocket.OPEN);
+        }
+      } finally {
+        client?.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        cleanup();
+      }
+    },
+  );
 
   it("refuses rpc/fwd when a PIN-authorized brain pairing request merely claims desktop", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
