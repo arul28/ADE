@@ -2,6 +2,7 @@ import "./lib/packagedRuntimeFlag";
 import type { PasswordService } from "./services/passwords/passwordService";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
+import { onAccountProjectListChanged } from "./services/projects/accountProjectListChanges";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import {
@@ -3404,6 +3405,12 @@ export async function createAdeRuntime(args: {
         // The phone hears it too: an open sign-ins card reads again at once.
         syncService?.notifyProviderLoginsChanged();
       },
+    }));
+    // The account's project list changed on this brain: the desktop and the
+    // sync clients read it again (a new copy joins an open tab).
+    teardown.push(onAccountProjectListChanged(() => {
+      pushEvent("runtime", { type: "account_projects_changed" });
+      syncService?.notifyAccountProjectsChanged();
     }));
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({

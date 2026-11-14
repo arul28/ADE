@@ -9784,6 +9784,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     },
 
+    /** The account's project list changed on this brain: a client reads it again. Older clients ignore the type. */
+    broadcastAccountProjectsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "account_projects_changed", payload, null, { action: "account_projects_changed" });
+      }
+    },
+
     async broadcastProjectCatalog(): Promise<void> {
       const payload = await buildProjectCatalogPayload();
       if (bonjourPort != null) {

@@ -122,6 +122,10 @@ class FakeSyncClient {
     return () => this.catalogListeners.delete(listener);
   }
 
+  onAccountProjectsChanged(_listener: () => void) {
+    return () => undefined;
+  }
+
   emitProjectCatalog(projects: Array<{ id: string; displayName?: string }>) {
     const payload = {
       projects: projects.map(({ id, displayName }) => ({

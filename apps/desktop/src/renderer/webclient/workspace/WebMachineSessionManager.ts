@@ -205,6 +205,7 @@ export class WebMachineSessionManager {
   private pairingClients = 0;
   private readonly environments = new Map<string, WebClientEnvironmentRecord>();
   private readonly listeners = new Set<(snapshot: WebMachineWorkspaceSnapshot) => void>();
+  private readonly accountProjectsListeners = new Set<() => void>();
   private readonly invalidationListeners = new Set<(
     invalidation: WebMachineEnvironmentInvalidation,
   ) => void | Promise<void>>();
@@ -344,6 +345,12 @@ export class WebMachineSessionManager {
     this.listeners.add(listener);
     listener(this.getSnapshot());
     return () => this.listeners.delete(listener);
+  }
+
+  /** Any connected machine read a changed account project list: the account's list is worth a read. */
+  subscribeAccountProjectsChanged(listener: () => void): () => void {
+    this.accountProjectsListeners.add(listener);
+    return () => this.accountProjectsListeners.delete(listener);
   }
 
   subscribeEnvironmentInvalidation(
@@ -738,6 +745,7 @@ export class WebMachineSessionManager {
     this.allClients.clear();
     this.listeners.clear();
     this.invalidationListeners.clear();
+    this.accountProjectsListeners.clear();
   }
 
   private createSession(
@@ -787,6 +795,10 @@ export class WebMachineSessionManager {
         session.projects = payload.projects;
         this.rememberCatalog(session);
         this.emit();
+      }),
+      client.onAccountProjectsChanged(() => {
+        if (session.client !== client) return;
+        for (const listener of [...this.accountProjectsListeners]) listener();
       }),
     );
   }

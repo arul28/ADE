@@ -2460,6 +2460,10 @@ export function createSyncService(args: SyncServiceArgs) {
       hostService?.broadcastProviderLoginsChanged();
     },
 
+    notifyAccountProjectsChanged(): void {
+      hostService?.broadcastAccountProjectsChanged();
+    },
+
     /**
      * Push a fresh status snapshot to subscribers now.
      *

@@ -3314,6 +3314,12 @@ const remoteAccountSettingsChangedFanout = createRemoteRuntimeFanout<Record<stri
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   extract: (payload) => payload.type === "account_settings_changed" ? {} : null,
 });
+const remoteAccountProjectsChangedFanout = createRemoteRuntimeFanout<Record<string, never>>({
+  eventType: "account_projects_changed",
+  label: "account projects",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+  extract: (payload) => payload.type === "account_projects_changed" ? {} : null,
+});
 const remoteProviderLoginsChangedFanout = createRemoteRuntimeFanout<Record<string, never>>({
   eventType: "provider_logins_changed",
   label: "provider sign-ins",
@@ -3556,6 +3562,7 @@ const remoteWorkToolShowRequestFanout = createRemoteRuntimeFanout<WorkToolShowRe
 export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteAgentChatEventFanout,
   remoteAccountSettingsChangedFanout,
+  remoteAccountProjectsChangedFanout,
   remoteProviderLoginsChangedFanout,
   remoteSessionChangedFanout,
   remoteLaneDeleteEventFanout,
@@ -5685,6 +5692,10 @@ const adeBridge = {
     // machine: no server call.
     accountList: async (pin?: OpenProjectBinding | null): Promise<AccountProjectListResult> =>
       ipcRenderer.invoke(IPC.projectAccountList, pin?.kind === "remote" ? { targetId: pin.targetId } : {}),
+    // The brain of the tab read a changed account project list. Machine-wide
+    // news, so it follows the tab's runtime: no pin.
+    onAccountListChanged: (cb: () => void): (() => void) =>
+      remoteAccountProjectsChangedFanout.subscribe(() => cb()),
     accountAdd: async (origin: string): Promise<AccountProjectChangeResult> =>
       ipcRenderer.invoke(IPC.projectAccountAdd, { origin }),
     accountRemove: async (projectId: string): Promise<AccountProjectChangeResult> =>

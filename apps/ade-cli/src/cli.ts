@@ -447,6 +447,7 @@ import {
 import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import { createAccountProjectSync, readAccountProjectState, type AccountProjectSync } from "./services/projects/accountProjectSync";
+import { noteAccountProjectListChanged } from "./services/projects/accountProjectListChanges";
 import { provideAccountProjectMainHandler } from "./services/projects/accountProjectMain";
 import {
   parseAccountProjectSelector,
@@ -32553,6 +32554,7 @@ async function runServe(
         readFolderStates: (records) => readProjectFolderStates(records),
         isDevTestMachine: () => isDevTestMachineProcess() || isDevTestMachineHome(layout.adeDir),
         logger: headlessProjectLogger,
+        onListChanged: () => noteAccountProjectListChanged(),
       });
       return accountProjectSync;
     };

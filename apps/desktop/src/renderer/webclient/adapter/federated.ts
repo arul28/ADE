@@ -607,6 +607,10 @@ export function createFederatedWebAdapter({
     async accountList() {
       return await accountClient.readAccountProjects();
     },
+    // A connected machine read a changed list from the account: read it too.
+    onAccountListChanged(cb: () => void) {
+      return manager.subscribeAccountProjectsChanged(cb);
+    },
     async setRecentPinned() {
       return await listRecent();
     },
@@ -680,6 +684,11 @@ export function createFederatedWebAdapter({
     onConnectionSnapshotChanged(listener: (snapshot: RemoteRuntimeConnectionSnapshot) => void) {
       connectionListeners.add(listener);
       return () => connectionListeners.delete(listener);
+    },
+    // A web tab reaches a machine through the relay, never over SSH, so there
+    // is no host key to confirm before Connect.
+    async getSshHostKeyTrust(_targetId: string) {
+      return { state: "trusted" as const };
     },
     async connect(targetId: string) {
       await manager.connectEnvironment(targetId);
