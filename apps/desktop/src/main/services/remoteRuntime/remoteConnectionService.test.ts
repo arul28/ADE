@@ -1340,6 +1340,12 @@ describe("RemoteConnectionService", () => {
       }),
     ).rejects.toThrow(/manually disconnected/i);
     expect(pool.callActionForTarget).not.toHaveBeenCalled();
+    // A window's connect that no person asked for (a project tab joining every
+    // computer with a copy) leaves the Disconnect standing.
+    await expect(
+      service.connect(previouslyConnected.id, { explicit: true, background: true }),
+    ).rejects.toThrow(/manually disconnected/i);
+    expect(pool.connect).not.toHaveBeenCalled();
 
     await service.connect(previouslyConnected.id, { explicit: true });
     await expect(

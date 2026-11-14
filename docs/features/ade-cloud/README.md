@@ -1186,6 +1186,15 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   this desktop runs forgets its saved connection to the deleted source
   (`forgetMachineConnections` in `cloudMachineCopy.ts`). Another desktop keeps
   that connection; its chats there read as on a deleted computer.
+- ADE Web has no cloud credential of its own, so it reads saved chats through
+  a connected computer: `cloud.read` with `saved_chats_list` or
+  `saved_chats_read` (`savedChatReads` in `adeActions/registry.ts`, allowed for
+  the phone and the web in `syncRemoteCommandService.ts`). These two reads are
+  not in the agents' action list. An older brain answers `cloud has no "…"`, and
+  the web keeps what it shows; any other failure is the Sentry Log
+  `web.cloud_saved_chats_read_failed`. A person's connect to an asleep cloud
+  computer from ADE Web wakes it first (`cloud.write wake` through a connected
+  computer), then retries the connect for up to two minutes.
 - When the remote connection service starts or ends a rest for a computer
   (found asleep, or answering again), main sends `cloudStatusChanged` once per
   change (`onCloudRestChanged` → `cloudRestChanged` in `cloudWakeHook.ts`). The

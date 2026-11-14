@@ -1,4 +1,5 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
+import { captureError } from "../../../shared/sentry/capture";
 // Loaded on the first read, so the signed-out page does not pay for it.
 import type { AccountProjectListResult } from "../../../shared/accountProject";
 import {
@@ -787,8 +788,9 @@ export class BrowserAccountClient {
     for (const listener of [...this.machinesListeners]) {
       try {
         listener();
-      } catch {
+      } catch (error) {
         // A listener's failure is its own; the directory read still succeeded.
+        captureError(error, { fingerprint: ["web", "account_machines_listener"], tags: { area: "account_machines" }, handled: true });
       }
     }
   }

@@ -1476,6 +1476,22 @@ describe("foreign payload decoding", () => {
   });
 });
 
+/** One pinned machine read, as the union issues it: which list, with what arguments. */
+type MachineReadRequest = { domain: "lane" | "session" | "pr"; action: string; args?: unknown };
+
+/**
+ * The pinned list reads (`lanes.list`, `sessions.list`, `prs.listAll`) the
+ * union sends with a machine's binding, all answered by one `read`, so a test
+ * counts and answers every machine read in one place.
+ */
+function pinnedMachineReads(read: (request: MachineReadRequest, binding: unknown) => Promise<unknown>) {
+  return {
+    lanes: { list: vi.fn((args: unknown, binding: unknown) => read({ domain: "lane", action: "list", args }, binding)) },
+    sessions: { list: vi.fn((args: unknown, binding: unknown) => read({ domain: "session", action: "list", args }, binding)) },
+    prs: { listAll: vi.fn((binding: unknown) => read({ domain: "pr", action: "listAll" }, binding)) },
+  };
+}
+
 describe("cross-machine refresh scheduling", () => {
   it("reads This computer explicitly while the active tab is bound remotely", async () => {
     vi.useFakeTimers();
@@ -1593,13 +1609,13 @@ describe("cross-machine refresh scheduling", () => {
 
   it("waits for a slow refresh to settle before scheduling the next poll", async () => {
     vi.useFakeTimers();
-    const pending: Array<(value: { result: unknown }) => void> = [];
-    const callAction = vi.fn(
-      () => new Promise<{ result: unknown }>((resolve) => pending.push(resolve)),
+    const pending: Array<(value: unknown) => void> = [];
+    const machineRead = vi.fn(
+      (_request: MachineReadRequest) => new Promise<unknown>((resolve) => pending.push(resolve)),
     );
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1631,30 +1647,27 @@ describe("cross-machine refresh scheduling", () => {
     // and must be issued in parallel — reading them after the lane read would
     // hold this machine's lanes and chats behind a second 8s timeout and stall
     // every other machine's cadence with it.
-    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(machineRead).toHaveBeenCalledTimes(3);
 
     // The old setInterval path started another generation on its own cadence,
     // invalidating this still-live read. A settled-chain poll must leave it alone
     // for as long as the read's own timeout allows it to run.
     await vi.advanceTimersByTimeAsync(7_500);
-    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(machineRead).toHaveBeenCalledTimes(3);
 
-    pending.splice(0).forEach((resolve, index) => resolve({
-      result: index === 0 ? { lanes: [] } : index === 1 ? { sessions: [] } : { prs: [] },
-    }));
+    pending.splice(0).forEach((resolve) => resolve([]));
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(9_000);
-    expect(callAction).toHaveBeenCalledTimes(3);
+    expect(machineRead).toHaveBeenCalledTimes(3);
     // The next tick reads chats only: the lane list (and with it the PR list)
     // has its own 30s cadence, and no chat referenced a lane this machine has
     // not already reported.
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(callAction).toHaveBeenCalledTimes(4);
-    expect(callAction).toHaveBeenLastCalledWith(
-      "target-studio",
-      "project-a",
+    expect(machineRead).toHaveBeenCalledTimes(4);
+    expect(machineRead).toHaveBeenLastCalledWith(
       expect.objectContaining({ domain: "session", action: "list" }),
+      expect.objectContaining({ kind: "remote", targetId: "target-studio" }),
     );
 
     stop();
@@ -1666,32 +1679,25 @@ describe("cross-machine refresh scheduling", () => {
       session: (() => void) | null;
       lane: (() => void) | null;
     } = { session: null, lane: null };
-    const callAction = vi.fn(async (
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => ({
-      result: request.domain === "lane"
-        ? { lanes: [] }
-        : request.domain === "pr"
-          ? { prs: [] }
-          : { sessions: [] },
-    }));
+    const machineRead = vi.fn(async (_request: MachineReadRequest): Promise<unknown> => []);
+    const reads = pinnedMachineReads(machineRead);
     window.ade = {
+      prs: reads.prs,
       sessions: {
+        ...reads.sessions,
         onChanged: vi.fn((listener: () => void) => {
           emitters.session = listener;
           return () => { emitters.session = null; };
         }),
       },
       lanes: {
+        ...reads.lanes,
         onLifecycleEvent: vi.fn((listener: () => void) => {
           emitters.lane = listener;
           return () => { emitters.lane = null; };
         }),
       },
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1718,17 +1724,17 @@ describe("cross-machine refresh scheduling", () => {
     });
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
-    const initialCallCount = callAction.mock.calls.length;
+    const initialCallCount = machineRead.mock.calls.length;
     expect(initialCallCount).toBe(3);
 
     emitters.session?.();
     emitters.lane?.();
     emitters.session?.();
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(callAction).toHaveBeenCalledTimes(initialCallCount);
+    expect(machineRead).toHaveBeenCalledTimes(initialCallCount);
 
     await vi.advanceTimersByTimeAsync(8_500);
-    expect(callAction.mock.calls.length).toBeGreaterThan(initialCallCount);
+    expect(machineRead.mock.calls.length).toBeGreaterThan(initialCallCount);
 
     stop();
   });
@@ -1737,19 +1743,14 @@ describe("cross-machine refresh scheduling", () => {
     vi.useFakeTimers();
     const requests: Array<{ domain: string; action: string }> = [];
     let sessionLaneId = "lane-known";
-    const callAction = vi.fn(async (
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => {
+    const machineRead = vi.fn(async (request: MachineReadRequest): Promise<unknown> => {
       requests.push({ domain: request.domain, action: request.action });
-      return request.domain === "lane"
-        ? { result: { lanes: [{ id: "lane-known", name: "Known", branchRef: "feature/known" }] } }
-        : { result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } };
+      if (request.domain === "lane") return [{ id: "lane-known", name: "Known", branchRef: "feature/known" }];
+      return request.domain === "pr" ? [] : [{ id: "session-1", laneId: sessionLaneId }];
     });
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1806,33 +1807,29 @@ describe("cross-machine refresh scheduling", () => {
     vi.useFakeTimers();
     const requests: Array<{ domain: string; action: string }> = [];
     let sessionLaneId = "lane-known";
-    const callAction = vi.fn(async (
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => {
+    const machineRead = vi.fn(async (request: MachineReadRequest): Promise<unknown> => {
       requests.push({ domain: request.domain, action: request.action });
       if (request.domain === "lane") {
-        return { result: { lanes: [
+        return [
           { id: "lane-known", name: "Known", branchRef: "feature/known" },
           { id: "lane-brand-new", name: "New", branchRef: "feature/new" },
-        ] } };
+        ];
       }
       if (request.domain === "pr") {
-        return { result: { prs: [{
+        return [{
           id: "pr-foreign",
           laneId: "lane-known",
           headBranch: "feature/known",
           githubPrNumber: 91,
           githubUrl: "https://github.com/acme/repo-a/pull/91",
           state: "open",
-        }] } };
+        }];
       }
-      return { result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } };
+      return [{ id: "session-1", laneId: sessionLaneId }];
     });
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1882,22 +1879,18 @@ describe("cross-machine refresh scheduling", () => {
   it("does not let a late catch-up read suppress a new scope's first lane read", async () => {
     vi.useFakeTimers();
     const requests: Array<{ domain: string; action: string }> = [];
-    const pendingLaneReads: Array<(value: { result: unknown }) => void> = [];
+    const pendingLaneReads: Array<(value: unknown) => void> = [];
     let holdLaneReads = false;
     let sessionLaneId = "lane-one";
-    const callAction = vi.fn((
-      _targetId: string,
-      _projectId: string,
-      request: { domain: string; action: string },
-    ) => {
+    const machineRead = vi.fn((request: MachineReadRequest): Promise<unknown> => {
       requests.push({ domain: request.domain, action: request.action });
       if (request.domain === "lane") {
         if (holdLaneReads) {
-          return new Promise<{ result: unknown }>((resolve) => pendingLaneReads.push(resolve));
+          return new Promise<unknown>((resolve) => pendingLaneReads.push(resolve));
         }
-        return Promise.resolve({ result: { lanes: [] } });
+        return Promise.resolve([]);
       }
-      return Promise.resolve({ result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } });
+      return Promise.resolve(request.domain === "pr" ? [] : [{ id: "session-1", laneId: sessionLaneId }]);
     });
     const connections = [{
       state: "connected",
@@ -1910,8 +1903,8 @@ describe("cross-machine refresh scheduling", () => {
       }],
     }];
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({ connections, connectedCount: 1 })),
         onConnectionSnapshotChanged: vi.fn(() => () => {}),
       },
@@ -1940,7 +1933,7 @@ describe("cross-machine refresh scheduling", () => {
     const second = startCrossMachineLaneSync({ ...scope, scopeKey: "local:/repo-a-copy" });
     first();
     holdLaneReads = false;
-    pendingLaneReads.splice(0).forEach((resolve) => resolve({ result: { lanes: [] } }));
+    pendingLaneReads.splice(0).forEach((resolve) => resolve([]));
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1956,10 +1949,10 @@ describe("cross-machine refresh scheduling", () => {
 
   it("stops polling while the window is hidden and refreshes on the way back", async () => {
     vi.useFakeTimers();
-    const callAction = vi.fn(async () => ({ result: { sessions: [] } }));
+    const machineRead = vi.fn(async (_request: MachineReadRequest): Promise<unknown> => []);
     window.ade = {
+      ...pinnedMachineReads(machineRead),
       remoteRuntime: {
-        callAction,
         getConnectionSnapshot: vi.fn(async () => ({
           connections: [{
             state: "connected",
@@ -1986,16 +1979,16 @@ describe("cross-machine refresh scheduling", () => {
     });
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
-    const whileVisible = callAction.mock.calls.length;
+    const whileVisible = machineRead.mock.calls.length;
     expect(whileVisible).toBeGreaterThan(0);
 
     setDocumentVisibility("hidden");
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(callAction).toHaveBeenCalledTimes(whileVisible);
+    expect(machineRead).toHaveBeenCalledTimes(whileVisible);
 
     setDocumentVisibility("visible");
     await vi.advanceTimersByTimeAsync(400);
-    expect(callAction.mock.calls.length).toBeGreaterThan(whileVisible);
+    expect(machineRead.mock.calls.length).toBeGreaterThan(whileVisible);
 
     stop();
   });
