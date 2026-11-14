@@ -332,13 +332,14 @@ export function createCloudDiskGrower(deps: {
         deps.logger?.info("cloud.disk_grow_raced", { toGb });
         return { state: "changed" };
       }
-      // No answer (the network, a timeout, a gateway that lost the server's reply): the grow may
-      // have happened, and its restart may be coming. Held as started, so nothing asks again
-      // for it inside the cooldown; the state stays "growing" with the size it came from.
-      // A deliberate no (a 503, `unavailable`: no provider key, can't record) is a refusal below.
+      // No answer, or one that came after the provider may have resized (the network, a timeout,
+      // a gateway, the server failing after the provider): the grow may have happened, and its
+      // restart may be coming. Held as started, so nothing asks again for it inside the cooldown;
+      // the state stays "growing" with the size it came from. A deliberate no (a 503,
+      // `unavailable`: no provider key, can't record) is a refusal below.
       const lost = !(error instanceof CloudProviderError)
         || error.status === 0
-        || ((error.status === 502 || error.status === 504) && error.code !== "unavailable");
+        || (error.status >= 500 && error.status !== 503 && error.code !== "unavailable");
       if (lost) {
         grewAt = now();
         deps.logger?.warn("cloud.disk_grow_answer_lost", { toGb, error: error instanceof Error ? error.message : String(error) });

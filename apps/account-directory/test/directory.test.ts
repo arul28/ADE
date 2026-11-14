@@ -181,6 +181,7 @@ describe("machine directory", () => {
     ["spaces around it", "  Studio Mac  ", "Studio Mac"],
     ["control and bidi characters in it", "Studio\u202e\u0007\n Mac", "Studio Mac"],
     ["an emoji joined with a zero-width joiner (kept)", "Studio Mac \u{1F469}\u200D\u{1F4BB}", "Studio Mac \u{1F469}\u200D\u{1F4BB}"],
+    ["nothing but joiners (no name left, so none)", "\u200D \u200C\u200D", null],
   ])("renames an owned machine with customName (%s cleaned) and prefers it over the reported hostname", async (_label, customName, expected) => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });
