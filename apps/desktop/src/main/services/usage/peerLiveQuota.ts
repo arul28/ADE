@@ -83,26 +83,27 @@ export function createPeerLiveQuota({
 
   /**
    * When a spend dropped each `machineKey`/`accountId` count. A reading whose
-   * pull started before then cannot bring the count back; a pull that started
-   * after it can, and clears the entry.
+   * pull started before then cannot bring the count back, even after a newer
+   * pull answered: the rollup and the quota-only pulls run separately, so an
+   * older one can finish last. An entry is kept as long as a reading is.
    */
   const spentAtMs = new Map<string, number>();
   const spentKey = (machineKey: string, accountId: string) => `${machineKey}\u0000${accountId}`;
 
   function withoutSpentCredits(quota: PeerLiveQuota, startedAtMs: number): PeerLiveQuota {
+    const held = byMachine.get(quota.machineKey);
     let stripped = false;
     const accounts = quota.accounts.map((account) => {
       const key = spentKey(quota.machineKey, account.id);
       const spentAt = spentAtMs.get(key);
-      if (spentAt === undefined) return account;
-      if (startedAtMs > spentAt) {
-        spentAtMs.delete(key);
-        return account;
-      }
-      if (!account.resetCredits) return account;
+      if (spentAt === undefined || startedAtMs > spentAt || !account.resetCredits) return account;
       stripped = true;
       const { resetCredits: _spent, ...rest } = account;
-      return rest;
+      // Keep a count that a pull after the spend already brought.
+      const current = held && held.fetchedAtMs > spentAt
+        ? held.accounts.find((entry) => entry.id === account.id)?.resetCredits
+        : undefined;
+      return current ? { ...rest, resetCredits: current } : rest;
     });
     return stripped ? { ...quota, accounts } : quota;
   }
@@ -114,7 +115,9 @@ export function createPeerLiveQuota({
    */
   function forgetResetCredits(machineKey: string, accountId: string): void {
     // A pull already in flight read the count before the spend.
-    spentAtMs.set(spentKey(machineKey, accountId), Date.now());
+    const nowMs = Date.now();
+    for (const [key, atMs] of spentAtMs) if (nowMs - atMs > MAX_AGE_MS) spentAtMs.delete(key);
+    spentAtMs.set(spentKey(machineKey, accountId), nowMs);
     const held = byMachine.get(machineKey);
     if (!held?.accounts.some((account) => account.id === accountId && account.resetCredits)) return;
     byMachine.set(machineKey, {

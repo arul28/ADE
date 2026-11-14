@@ -45,5 +45,9 @@ describe("createPeerLiveQuota", () => {
     vi.advanceTimersByTime(10);
     store.set(studioQuota(1), Date.now());
     expect(credits()).toBe(1);
+
+    // The other feed's older pull can still finish last; the newer count stands.
+    store.set(studioQuota(2), pullStartedAt);
+    expect(credits()).toBe(1);
   });
 });
