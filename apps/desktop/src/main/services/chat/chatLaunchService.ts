@@ -1436,6 +1436,10 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     setTimeout(() => {
       for (const record of resumeAfterRoom) {
         if (disposed || record.snapshot.phase !== "running") continue;
+        // Once: written down before setup runs again, so a restart during this
+        // run reads as interrupted (with Retry) instead of resuming in a loop.
+        record.awaitingRoom = false;
+        store.persist(record);
         logger.info("chat_launch.environment_resumed_after_room", { launchId: record.snapshot.launchId });
         void runPipeline(record);
       }

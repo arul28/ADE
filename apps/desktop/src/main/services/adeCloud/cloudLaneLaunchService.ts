@@ -28,6 +28,7 @@ import type {
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { getErrorMessage } from "../shared/utils";
 import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineCreator";
+import { CloudProviderError } from "./cloudProvider";
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
 import { createCloudLaneLaunchRecordStore, type CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
@@ -96,6 +97,10 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  * connecting repeat. Nothing runs while no cloud launch is live.
  */
 
+/** A computer rename that failed is tried this often at most, with a doubling wait from this first one. */
+const NAME_WRITE_ATTEMPTS = 3;
+const NAME_WRITE_BACKOFF_MS = 30_000;
+
 export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const { logger } = deps;
   const now = () => deps.now?.() ?? new Date();
@@ -131,6 +136,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   };
 
   const disposeRuntime = (launchId: string): void => {
+    nameFailures.delete(launchId);
     const runtime = runtimes.get(launchId);
     if (!runtime) return;
     runtime.unsubscribe?.();
@@ -310,27 +316,42 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
    * One lane, one name: once the brain renames the lane (its AI name), the
    * computer and its account machine take the new name too, as a moved
    * lane's computer does. Same one-at-a-time queue as the branch write, and a
-   * write a newer name replaced is skipped. A failed write is tried again on
-   * the next snapshot.
+   * write a newer name replaced is skipped, as is one for a launch cancelled
+   * meanwhile. The name is the lane's, cleaned and cut to the server's 60
+   * characters (`normalizeCloudMachineName`); the server checks the computer
+   * and the machine are this account's. A failed write is tried again on a
+   * later snapshot after a backoff, three times at most, never for a computer
+   * that is gone.
    */
+  const nameFailures = new Map<string, { name: string; attempts: number; retryAt: number }>();
   const recordName = (record: CloudLaneLaunchRecord): void => {
     const laneName = record.snapshot.laneName?.trim();
     const instanceId = record.snapshot.cloud.instanceId;
     if (!laneName || !instanceId || record.snapshot.phase === "cancelled") return;
     const name = normalizeCloudMachineName(laneName);
     if (name === record.computerName) return;
+    const launchId = record.snapshot.launchId;
+    const failed = nameFailures.get(launchId);
+    if (failed?.name === name && (failed.attempts >= NAME_WRITE_ATTEMPTS || Date.now() < failed.retryAt)) return;
     const previous = record.computerName;
     record.computerName = name;
-    const launchId = record.snapshot.launchId;
     queueComputerWrite(launchId, async () => {
-      if (record.computerName !== name) return;
+      if (record.computerName !== name || record.snapshot.phase === "cancelled") return;
       const client = await providerClient();
       await client.setInstanceName(instanceId, name);
       const machineKey = record.snapshot.cloud.machineKey;
       if (machineKey) await deps.creator.renameMachine(machineKey, name);
+      nameFailures.delete(launchId);
     }, (error: unknown) => {
       if (record.computerName === name) record.computerName = previous;
-      logger.warn("cloud_lane_launch.computer_rename_failed", { launchId, error: getErrorMessage(error) });
+      const attempts = (failed?.name === name ? failed.attempts : 0) + 1;
+      const gone = error instanceof CloudProviderError && error.status === 404;
+      nameFailures.set(launchId, {
+        name,
+        attempts: gone ? NAME_WRITE_ATTEMPTS : attempts,
+        retryAt: Date.now() + NAME_WRITE_BACKOFF_MS * 2 ** (attempts - 1),
+      });
+      logger.warn("cloud_lane_launch.computer_rename_failed", { launchId, attempts, gone, error: getErrorMessage(error) });
     });
   };
 
