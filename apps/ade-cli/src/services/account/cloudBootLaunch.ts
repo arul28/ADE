@@ -655,6 +655,8 @@ export type CloudBootLaunchHost = {
   logger: Logger;
   account: AccountAuthService;
   directoryBaseUrl: () => string | null;
+  /** The Clerk issuer this machine signs in with (`CLERK_ISSUER`); its join link must be on its hosts. */
+  clerkIssuer: () => string;
   projectRegistry: ProjectRegistry;
   /** The launch pipeline of one project's runtime, once its scope is open. */
   chatLaunchService: (projectId: string) => Promise<Pick<ChatLaunchService, "start" | "get" | "subscribe"> | null | undefined>;
@@ -735,7 +737,13 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         startDeviceLogin: () => account.startDeviceLogin({ retryUnreachableForMs: 60_000 }),
         pollDeviceLogin: (sessionId) => account.pollDeviceLogin(sessionId),
       },
-      approveHeadless: (url, signal) => headless.approveSignInLink({ url, signal, binary: chromium, logger }),
+      approveHeadless: (url, signal) => headless.approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        trust: () => ({ clerkIssuer: host.clerkIssuer(), directoryBaseUrl: host.directoryBaseUrl() }),
+        logger,
+      }),
       setUpProject: async (originUrl) => await setUpRepositoryOnThisMachine(host.projectRegistry, originUrl, host.holdCloudWork),
       waitForChatEnd: host.waitForChatEnd,
       launches: async (projectId) => {

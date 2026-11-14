@@ -686,7 +686,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
 import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
@@ -31644,6 +31644,7 @@ async function runServe(
       logger: headlessProjectLogger,
       account: brainAccountAuthService,
       directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
       projectRegistry,
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),

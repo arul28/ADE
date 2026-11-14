@@ -338,7 +338,7 @@ import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
-import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -4497,7 +4497,17 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
     // unattended yes is approved without a browser, a headless Chromium (the
     // template ships one) as the fallback.
     ...(onCloudMachine ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-      approveSignInLink({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
+      approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        // The link must be on this brain's own Clerk hosts and account directory.
+        trust: () => ({
+          clerkIssuer: getSharedAccountAttestationConfig({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }).issuer,
+          directoryBaseUrl: directoryBaseUrl(),
+        }),
+        logger: runtime.logger,
+      }) } : {}),
     logger: runtime.logger,
   };
 }

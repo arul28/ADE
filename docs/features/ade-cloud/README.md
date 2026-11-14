@@ -925,15 +925,22 @@ launch
   step and the account service's `/device/callback`. The computer completes
   it without a browser (`approveSignInLinkDirectly` in
   `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts`): the ticket
-  sign-in through Clerk's Frontend API (the authorize URL's origin), the
-  authorize step with that session, then the callback, in about a second.
+  sign-in through Clerk's Frontend API, the authorize step with that
+  session, then the callback, in about a second. Only a link on the hosts
+  the computer already signs in with: the sign-in page on its Clerk
+  issuer's accounts host (`clerk.<domain>` → `accounts.<domain>`; a
+  development `<slug>.clerk.accounts.dev` → `<slug>.accounts.dev`), the
+  authorize step on the issuer's host, and the callback on the account
+  directory it talks to. Redirects go only to Clerk's host or that
+  callback. Any other link is sent nowhere, not even to the browser, and
+  goes to the person.
   The hosted page sits behind a Cloudflare bot check ("Just a moment…",
   Turnstile) that a headless Chromium on a datacenter address often can't
   pass in 25 s; until 2026-11-14 the computer opened the link there, and
   most joins (3 of 3 probes that day) fell back to a person. Clerk's
   Frontend API isn't behind that check. A headless Chromium is the fallback
-  only while the ticket is still unused (a link of another shape, Clerk
-  unreachable or refusing the ticket). When that stops too, the launch shows
+  only while the ticket is still unused (Clerk unreachable or refusing the
+  ticket). When that stops too, the launch shows
   `needs_approval` with the device page and code, and the caller offers one
   Approve tap in the person's own browser. The computer waits no longer than
   the join window (`joinExpiresAt` in the join's answer), the minute cron's

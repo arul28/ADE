@@ -15,7 +15,9 @@
  * sign-in through Clerk's Frontend API, which answers these computers, then
  * the authorize step with that session, then the account service's
  * `/device/callback`. A headless Chromium is the fallback, only while the
- * ticket is unused.
+ * ticket is unused. Either path only takes a link on the hosts this machine
+ * already signs in with: its Clerk issuer's accounts and Frontend API hosts
+ * and the account directory it talks to.
  *
  * It never types or clicks. A page that stops on something a person has to
  * confirm ends it as `closed`, and the caller falls back to the sign-in link
@@ -264,42 +266,107 @@ const DIRECT_MAX_REDIRECTS = 8;
 
 /**
  * The direct approval's answer. `unused`: it stopped before the ticket was
- * spent (a link it doesn't know, Clerk unreachable or refusing the ticket), so
- * a browser may still open the same link.
+ * spent (a link it doesn't trust, Clerk unreachable or refusing the ticket),
+ * so a browser may still open the same link.
  */
 export type DirectApprovalResult = "signed_in" | "closed" | "cancelled" | "unused";
 
 /**
+ * Where this machine's sign-in links may lead, from the config it already
+ * signs in with: its Clerk issuer (`CLERK_ISSUER`, ADE production by default)
+ * and the account directory it talks to.
+ */
+export type SignInLinkTrust = { clerkIssuer: string; directoryBaseUrl: string | null };
+
+type TrustedSignInLink = {
+  ticket: string;
+  /** The hosted sign-in page's origin, sent as the ticket POST's `origin`. */
+  accountsOrigin: string;
+  authorize: URL;
+  clerkOrigin: string;
+  callback: URL;
+};
+
+/**
+ * Clerk's hosted pages for a Frontend API host: `clerk.<domain>` serves
+ * `accounts.<domain>`, and a development instance's
+ * `<slug>.clerk.accounts.dev` serves `<slug>.accounts.dev`.
+ */
+function accountsHostForClerkHost(host: string): string | null {
+  const devSuffix = ".clerk.accounts.dev";
+  if (host.endsWith(devSuffix) && host.length > devSuffix.length) return `${host.slice(0, -devSuffix.length)}.accounts.dev`;
+  if (host.startsWith("clerk.") && host.length > "clerk.".length) return `accounts.${host.slice("clerk.".length)}`;
+  return null;
+}
+
+/**
+ * The link's parts, or null unless every host in it is one this machine
+ * trusts: the sign-in page on the account's Clerk accounts host, the
+ * authorize step on its Clerk Frontend API host, and the callback on the
+ * account directory this machine talks to. Nothing is sent for a null.
+ */
+function trustedSignInLink(url: string, trust: SignInLinkTrust): TrustedSignInLink | null {
+  try {
+    const clerk = new URL(trust.clerkIssuer);
+    const directory = new URL(trust.directoryBaseUrl ?? "");
+    const accountsHost = accountsHostForClerkHost(clerk.hostname.toLowerCase());
+    if (!accountsHost) return null;
+    const accountsOrigin = `${clerk.protocol}//${accountsHost}${clerk.port ? `:${clerk.port}` : ""}`;
+    const link = new URL(url);
+    const ticket = link.searchParams.get("__clerk_ticket");
+    const authorize = new URL(link.searchParams.get("redirect_url") ?? "");
+    const callback = new URL(authorize.searchParams.get("redirect_uri") ?? "");
+    const trusted = Boolean(ticket)
+      && link.origin === accountsOrigin && link.pathname.replace(/\/$/, "") === "/sign-in"
+      && authorize.origin === clerk.origin && authorize.pathname === "/oauth/authorize"
+      && callback.origin === directory.origin && callback.pathname === "/device/callback";
+    return trusted ? { ticket: ticket!, accountsOrigin, authorize, clerkOrigin: clerk.origin, callback } : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveTrustedSignInLink(url: string, trust: () => SignInLinkTrust, logger: Logger): TrustedSignInLink | null {
+  let resolved: TrustedSignInLink | null = null;
+  try {
+    resolved = trustedSignInLink(url, trust());
+  } catch {
+    resolved = null;
+  }
+  if (!resolved) {
+    let host: string | null = null;
+    try {
+      host = new URL(url).host;
+    } catch {
+      // Not a URL at all.
+    }
+    logger.warn?.("cloud.sign_in_link_untrusted", { host });
+  }
+  return resolved;
+}
+
+/**
  * Completes a sign-in link without a browser: the ticket sign-in through
- * Clerk's Frontend API (the origin of the link's `redirect_url`), the OAuth
- * authorize step with the session it made, and the account service's
- * `/device/callback`, which approves the device sign-in exactly as the page
- * does. Clerk's cookies only ever go back to Clerk's own host. Never the
+ * Clerk's Frontend API, the OAuth authorize step with the session it made,
+ * and the account service's `/device/callback`, which approves the device
+ * sign-in exactly as the page does. Only a link whose hosts are all trusted
+ * (`trustedSignInLink`) is followed, and only through Clerk's own host to
+ * that callback; Clerk's cookies only ever go back to Clerk's host. Never the
  * link, ticket or code in a log.
  */
 export async function approveSignInLinkDirectly(args: {
   url: string;
   signal: AbortSignal;
+  trust: () => SignInLinkTrust;
   logger?: Logger;
 }): Promise<DirectApprovalResult> {
   const logger = args.logger ?? {};
   if (args.signal.aborted) return "cancelled";
-  let link: URL;
-  let authorize: URL;
-  let ticket: string | null;
-  try {
-    link = new URL(args.url);
-    ticket = link.searchParams.get("__clerk_ticket");
-    authorize = new URL(link.searchParams.get("redirect_url") ?? "");
-  } catch {
-    return "unused";
-  }
-  if (!ticket || link.protocol !== "https:" || authorize.protocol !== "https:" || authorize.pathname !== "/oauth/authorize") {
-    logger.info?.("cloud.direct_approval_unknown_link", { host: link.host });
-    return "unused";
-  }
+  const trusted = resolveTrustedSignInLink(args.url, args.trust, logger);
+  if (!trusted) return "unused";
+  const { ticket, authorize, callback } = trusted;
+  const clerk = trusted.clerkOrigin;
   const step = (signal: AbortSignal) => AbortSignal.any([signal, AbortSignal.timeout(DIRECT_STEP_TIMEOUT_MS)]);
-  const clerk = authorize.origin;
   const cookies = new Map<string, string>();
   const keepCookies = (response: Response) => {
     for (const line of response.headers.getSetCookie?.() ?? []) {
@@ -315,7 +382,7 @@ export async function approveSignInLinkDirectly(args: {
   try {
     signIn = await fetch(`${clerk}/v1/client/sign_ins`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json", origin: link.origin },
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json", origin: trusted.accountsOrigin },
       body: new URLSearchParams({ strategy: "ticket", ticket }).toString(),
       redirect: "manual",
       signal: step(args.signal),
@@ -351,7 +418,7 @@ export async function approveSignInLinkDirectly(args: {
       return "closed";
     }
     if (next.origin === clerk) keepCookies(response);
-    if (next.pathname === "/device/callback") {
+    if (next.origin === callback.origin && next.pathname === callback.pathname) {
       const html = await response.text().catch(() => "");
       const title = /<title>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ?? "";
       if (response.status === 200 && /signed in/i.test(title)) return "signed_in";
@@ -369,7 +436,11 @@ export async function approveSignInLinkDirectly(args: {
     } catch {
       return "closed";
     }
-    if (next.protocol !== "https:") return "closed";
+    // Only Clerk's own host, or the trusted callback: never a redirect anywhere else.
+    if (next.origin !== clerk && !(next.origin === callback.origin && next.pathname === callback.pathname)) {
+      logger.warn?.("cloud.direct_approval_untrusted_redirect", { host: next.host });
+      return "closed";
+    }
   }
   logger.warn?.("cloud.direct_approval_too_many_redirects", {});
   return "closed";
@@ -378,15 +449,21 @@ export async function approveSignInLinkDirectly(args: {
 /**
  * The one way a machine with nobody at it approves a sign-in link: without a
  * browser first, then a headless Chromium (`binary`, when this machine has
- * one) while the ticket is still unused.
+ * one) while the ticket is still unused. Only a link whose hosts this machine
+ * trusts (`trustedSignInLink`); any other ends `closed` with nothing sent.
  */
 export async function approveSignInLink(args: {
   url: string;
   signal: AbortSignal;
   binary: string | null;
+  /** A link it doesn't trust goes to neither path, and the person gets it. */
+  trust: () => SignInLinkTrust;
   logger?: Logger;
   platform?: NodeJS.Platform;
 }): Promise<HeadlessApprovalResult> {
+  if (args.signal.aborted) return "cancelled";
+  // An untrusted link is `unused` to the direct path, but the browser mustn't open it either.
+  if (!resolveTrustedSignInLink(args.url, args.trust, args.logger ?? {})) return "closed";
   const direct = await approveSignInLinkDirectly(args);
   args.logger?.info?.("cloud.direct_approval", { result: direct });
   if (direct !== "unused") return direct;
