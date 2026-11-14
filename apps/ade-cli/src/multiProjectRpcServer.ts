@@ -1,6 +1,6 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
-import { MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed } from "../../desktop/src/shared/machineScope";
+import { MACHINE_SCOPE_DOMAINS, MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed, machineScopeRefusalMessage } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
@@ -90,6 +90,8 @@ import {
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
+import type { AndroidEmulatorEvent } from "../../desktop/src/shared/types/androidEmulator";
+import type { AndroidMachineSettingsService } from "../../desktop/src/main/services/android/androidMachineSettingsService";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { readRuntimeBusyFacts, summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
 import type { CloudBusyFacts } from "./services/power/cloudKeepAwake";
@@ -430,12 +432,18 @@ export type MultiProjectRpcHandlerOptions = {
    */
   machineAccountDomains?: MachineAccountDomains;
   /**
-   * The account settings store the machine scope writes through, so a
+   * The account stores the machine scope is lent: the settings store, so a
    * provider's account-saved entries (OpenCode's cloud logins) reach the
-   * account the same way a project copy's do. Null on a brain with sync off,
-   * whose project runtimes have no account store either.
+   * account the same way a project copy's do, and Passwords. Null on a brain
+   * with sync off, whose project runtimes have neither.
    */
-  machineScopeAccountSettings?: (() => NonNullable<AdeRuntime["accountSettingsStore"]>) | null;
+  machineScopeAccountStores?: (() => MachineScopeAccountStores) | null;
+  /**
+   * The machine scope's Android settings (the SDK, its install, the machine
+   * preferences): built once per machine-owned runtime, its events sent to
+   * that runtime's feed. Absent on an embedded runtime.
+   */
+  machineScopeAndroid?: (() => Promise<(onEvent: (event: AndroidEmulatorEvent) => void) => AndroidMachineSettingsService>) | null;
   /**
    * The shared project record (a repository's name and icon on every machine
    * of the account). Without it, names and icons come from this machine only.
@@ -914,33 +922,75 @@ function machineAccountAppGithubOptions(accountUserId: () => string | null) {
   };
 }
 
-/** One overlay per machine-owned runtime, so every connection shares it. */
-const lentAccountSettingsRuntimes = new WeakMap<AdeRuntime, AdeRuntime>();
+/** The account stores a machine scope is lent while sync is on. */
+export type MachineScopeAccountStores = {
+  settings: NonNullable<AdeRuntime["accountSettingsStore"]>;
+  passwords: NonNullable<AdeRuntime["passwordService"]>;
+};
+
+/** What the machine scope is lent beyond the machine-owned runtime's own services. */
+type MachineScopeLent = {
+  account: MachineScopeAccountStores | null;
+  keepAwake: AdeRuntime["keepAwakeService"] | null;
+  android: AndroidMachineSettingsService | null;
+};
 
 /**
- * The machine-owned runtime (sync off, no account store of its own) with this
- * brain's account settings store lent to it, for the machine route only. A
- * prototype overlay keeps the runtime's getters and methods live. It is made
- * once per runtime: what the action registry hangs on a runtime (the sign-in
- * status bridges) is then added once, and disposing the runtime runs the
- * overlay's teardown first, then the runtime's own.
+ * The machine scope's Android service: its settings only. Lanes, devices and
+ * recordings need a project, and `machineScopeActionAllowed` keeps every
+ * other action from reaching here; this says so if one ever does.
  */
-function withLentAccountSettings(
-  runtime: AdeRuntime,
-  settings: NonNullable<AdeRuntime["accountSettingsStore"]>,
-): AdeRuntime {
-  const cached = lentAccountSettingsRuntimes.get(runtime);
+function machineScopeAndroidService(settings: AndroidMachineSettingsService): NonNullable<AdeRuntime["androidEmulatorService"]> {
+  return new Proxy(settings, {
+    get(target, property) {
+      if (Object.hasOwn(target, property)) return target[property as keyof AndroidMachineSettingsService];
+      return () => Promise.reject(new Error("Android devices need a project; this computer's settings have none."));
+    },
+  }) as unknown as NonNullable<AdeRuntime["androidEmulatorService"]>;
+}
+
+/** One overlay per machine-owned runtime, so every connection shares it. */
+const lentMachineScopeRuntimes = new WeakMap<AdeRuntime, AdeRuntime>();
+
+/**
+ * The machine-owned runtime (sync off, chat profile) with what the machine
+ * route needs lent to it: this brain's account stores (only when sync is on),
+ * its keep-awake service, and the machine's Android settings. A prototype
+ * overlay keeps the runtime's getters and methods live. It is made once per
+ * runtime, and `lend` is called once with it: what the action registry hangs
+ * on a runtime (the sign-in status bridges) is then added once, and disposing
+ * the runtime runs the overlay's teardown first (the lent Android settings,
+ * then whatever wraps the overlay), then the runtime's own.
+ */
+function withLentMachineServices(runtime: AdeRuntime, lend: (runtime: AdeRuntime) => MachineScopeLent): AdeRuntime {
+  const cached = lentMachineScopeRuntimes.get(runtime);
   if (cached) return cached;
+  const lent = lend(runtime);
   const scoped = Object.create(runtime) as AdeRuntime;
-  Object.defineProperty(scoped, "accountSettingsStore", { value: settings, enumerable: true });
-  // The overlay's own `dispose` starts as the runtime's; whatever wraps it
-  // (`ensureAuthStatusRelayBridges`) ends in the runtime's own teardown.
-  Object.defineProperty(scoped, "dispose", { value: runtime.dispose, writable: true, enumerable: true });
+  const define = <K extends keyof AdeRuntime>(key: K, value: AdeRuntime[K]) =>
+    Object.defineProperty(scoped, key, { value, enumerable: true });
+  if (lent.account) {
+    define("accountSettingsStore", lent.account.settings);
+    define("passwordService", lent.account.passwords);
+  }
+  if (lent.keepAwake) define("keepAwakeService", lent.keepAwake);
+  if (lent.android) define("androidEmulatorService", machineScopeAndroidService(lent.android));
+  const ownDispose = runtime.dispose;
+  // The overlay's own `dispose` ends in the runtime's; whatever wraps it
+  // (`ensureAuthStatusRelayBridges`) runs first.
+  Object.defineProperty(scoped, "dispose", {
+    value: (reason?: Parameters<AdeRuntime["dispose"]>[0]) => {
+      lent.android?.dispose();
+      return ownDispose(reason);
+    },
+    writable: true,
+    enumerable: true,
+  });
   runtime.dispose = (reason) => {
-    lentAccountSettingsRuntimes.delete(runtime);
+    lentMachineScopeRuntimes.delete(runtime);
     return scoped.dispose(reason);
   };
-  lentAccountSettingsRuntimes.set(runtime, scoped);
+  lentMachineScopeRuntimes.set(runtime, scoped);
   return scoped;
 }
 
@@ -1996,8 +2046,21 @@ export function createMultiProjectRpcRequestHandler(
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime has no machine scope.");
     }
     const runtime = await personalChatScope.runtimeForDelivery();
-    const settings = options.machineScopeAccountSettings?.();
-    return settings ? withLentAccountSettings(runtime, settings) : runtime;
+    const lentAlready = lentMachineScopeRuntimes.get(runtime);
+    if (lentAlready) return lentAlready;
+    const createAndroid = await options.machineScopeAndroid?.();
+    return withLentMachineServices(runtime, (owner) => ({
+      account: options.machineScopeAccountStores?.() ?? null,
+      // The brain's own service, the one `keepAwake.call` answers from.
+      keepAwake: (options.keepAwakeService as AdeRuntime["keepAwakeService"] | null | undefined) ?? null,
+      android: createAndroid?.((event) => {
+        owner.eventBuffer.push({
+          timestamp: new Date().toISOString(),
+          category: "runtime",
+          payload: { type: "android_emulator_event", event },
+        });
+      }) ?? null,
+    }));
   };
 
   /**
@@ -2945,10 +3008,7 @@ export function createMultiProjectRpcRequestHandler(
       const domain = typeof envelope.domain === "string" ? envelope.domain : "";
       const action = typeof envelope.action === "string" ? envelope.action : "";
       if (!machineScopeActionAllowed(domain, action)) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.methodNotFound,
-          `${domain}.${action} needs a project; this computer's settings do not answer it.`,
-        );
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, machineScopeRefusalMessage(domain, action));
       }
     }
     const entry = await getProjectHandler(MACHINE_SCOPE_PROJECT_ID);
@@ -3024,6 +3084,9 @@ export function createMultiProjectRpcRequestHandler(
           // (Providers) with no project: `ade/actions/call` for the actions
           // `machineScopeActionAllowed` lists, and `runtimeEvents.subscribe`.
           machineScope: true,
+          // The domains it answers there: a desktop shows the ones an older
+          // brain lacks (Keep awake, Android, Passwords) as "update ADE".
+          machineScopeDomains: [...MACHINE_SCOPE_DOMAINS],
         },
       };
     }

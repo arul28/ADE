@@ -217,6 +217,9 @@ export function validateRemoteRuntimeInitializeResult(args: {
       machineProjects: normalizedMachineProjects,
       ...(capabilities.clientSendDedupe === true ? { clientSendDedupe: true } : {}),
       ...(capabilities.machineScope === true ? { machineScope: true } : {}),
+      ...(capabilities.machineScope === true && Array.isArray(capabilities.machineScopeDomains)
+        ? { machineScopeDomains: capabilities.machineScopeDomains.filter((domain): domain is string => typeof domain === "string") }
+        : {}),
       ...(chatLaunchKinds.length ? { chatLaunchKinds } : {}),
     },
     compatibilityWarnings,

@@ -2850,24 +2850,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     },
 
     /**
-     * A one-off alert about a chat that is not "needs you": a move to another
-     * machine landed or failed while the person wasn't watching. Plain
+     * A one-off alert that is not a chat's "needs you": a move to another
+     * machine landed or failed while the person wasn't watching, or a new
+     * cloud computer waits for the person to approve it joining. Plain
      * title/body/deep link through the same alert queue; no run state changes.
+     * With no chat (`sessionId` null) the alert needs its own deep link, and
+     * only the device-wide rules apply.
      */
     handleSessionNotice(notice: {
-      sessionId: string;
+      sessionId: string | null;
       dedupeKey: string;
       title: string;
       body: string | null;
       deepLink?: string | null;
     }): void {
-      if (disposed || !notice.sessionId) return;
+      const sessionId = notice.sessionId?.trim() || null;
+      if (disposed || (!sessionId && !notice.deepLink)) return;
       enqueueAlert({
-        sessionId: notice.sessionId,
-        dedupeKey: `alert:${notice.sessionId}:${notice.dedupeKey}`,
+        sessionId,
+        dedupeKey: sessionId ? `alert:${sessionId}:${notice.dedupeKey}` : `alert:machine:${notice.dedupeKey}`,
         render: () => ({ title: notice.title, body: notice.body }),
-        deepLink: notice.deepLink ?? `ade://session/${notice.sessionId}`,
-        threadId: notice.sessionId,
+        deepLink: notice.deepLink ?? `ade://session/${sessionId}`,
+        threadId: sessionId,
         phase: "terminal",
         interruptionLevel: "active",
         standalone: true,

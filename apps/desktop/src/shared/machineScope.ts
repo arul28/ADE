@@ -103,11 +103,48 @@ export const PROJECT_AI_CONFIG_ACTION = { domain: "ai", action: "updateConfig" }
 type MachineScopeRule = { all: true; except: readonly string[] } | { only: readonly string[] };
 
 /**
+ * The `android_emulator` actions of Settings › Android devices that belong to
+ * the machine: the SDK, its install and the machine preferences. Lanes and
+ * devices need a project. The brain answers them with no project
+ * (`androidMachineSettingsService.ts`).
+ */
+export const ANDROID_MACHINE_ACTIONS = [
+  "getStatus",
+  "getSdkSetupPlan",
+  "installSdk",
+  "cancelSdkInstall",
+  "getSdkInstallState",
+  "setSdkPath",
+  "getMachinePreferences",
+  "setMachinePreferences",
+] as const;
+
+/**
+ * The Passwords actions the Passwords page sends to the computer it shows.
+ * Never a value: `resolveForFill`, `revealValue` and `passkeysForRp` stay with
+ * this computer's own desktop (actionPolicy), and neither are the agent verbs.
+ */
+const PASSWORDS_PAGE_ACTIONS = [
+  "status",
+  "setEnabled",
+  "setCloudEnabled",
+  "reset",
+  "list",
+  "activity",
+  "code",
+  "saveLogin",
+  "saveSecret",
+  "remove",
+  "importCsv",
+  "sync",
+] as const;
+
+/**
  * What a machine scope answers: a computer's own settings (Providers, the
- * Machines page's Restarts, Update track, Shell and load, Behaviour's Terminal
- * shell). Passwords is not here: the machine-owned runtime is lent only the
- * account settings store (for account-saved sign-ins), not the vault, and
- * This computer's machine pin reaches its brain's `passwords.call`.
+ * Machines page's Restarts, Update track, Shell, load and Keep awake,
+ * Behaviour's Terminal shell, Android devices, Passwords). The brain lends
+ * the machine-owned runtime what these need (`withLentMachineServices`):
+ * keep-awake, the Android settings and, with sync on, the account stores.
  */
 const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, MachineScopeRule>> = {
   ai: { all: true, except: [PROJECT_AI_CONFIG_ACTION.action] },
@@ -120,7 +157,35 @@ const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, MachineScopeRule>> = {
   usage: { only: ["getAdeUsageStats"] },
   chat: { only: ["listCodexPlugins"] },
   machine_stats: { only: ["get"] },
+  keep_awake: { only: ["getSnapshot", "setLevel", "migrateLegacyPreference", "fixSystemSleep"] },
+  android_emulator: { only: ANDROID_MACHINE_ACTIONS },
+  passwords: { only: PASSWORDS_PAGE_ACTIONS },
 };
+
+/**
+ * The domains of the machine route that came after its first version, by the
+ * name a brain lists them under (`machineScopeDomains` in its capabilities).
+ * A brain that answers the machine route but lists none of them answers only
+ * the first version's: its Keep awake, Android devices and Passwords still
+ * say to update ADE there.
+ */
+export const MACHINE_SCOPE_LATER_DOMAINS = ["keep_awake", "android_emulator", "passwords"] as const;
+export type MachineScopeLaterDomain = (typeof MACHINE_SCOPE_LATER_DOMAINS)[number];
+
+/**
+ * Whether a brain that answers the machine route answers `domain` there.
+ * `domains` is what it listed (`machineScopeDomains`); a brain that listed
+ * nothing is of the first version, which answers every domain but the later
+ * ones. No `domain`: the route itself, which it answers.
+ */
+export function machineScopeDomainAnswered(domains: readonly string[] | null | undefined, domain?: string | null): boolean {
+  if (!domain) return true;
+  if (domains) return domains.includes(domain);
+  return !(MACHINE_SCOPE_LATER_DOMAINS as readonly string[]).includes(domain);
+}
+
+/** Every domain this ADE's machine route answers, for the brain's capabilities. */
+export const MACHINE_SCOPE_DOMAINS: readonly string[] = Object.keys(MACHINE_SCOPE_ACTIONS);
 
 export function machineScopeActionAllowed(domain: string, action: string): boolean {
   const rule = Object.hasOwn(MACHINE_SCOPE_ACTIONS, domain) ? MACHINE_SCOPE_ACTIONS[domain] : undefined;
@@ -144,4 +209,24 @@ export const THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE =
 export function isMachineScopeUnknownProjectError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   return message.includes(`Unknown projectId: ${MACHINE_SCOPE_PROJECT_ID}`);
+}
+
+const MACHINE_SCOPE_REFUSAL_TAIL = "needs a project; this computer's settings do not answer it.";
+
+/** How a brain refuses an action its machine scope does not answer. */
+export function machineScopeRefusalMessage(domain: string, action: string): string {
+  return `${domain}.${action} ${MACHINE_SCOPE_REFUSAL_TAIL}`;
+}
+
+/**
+ * How a brain older than this app answers a machine-scope call: it does not
+ * know the scope at all (`isMachineScopeUnknownProjectError`), or it refuses
+ * an action this app's machine route answers (one added since, such as Keep
+ * awake on a brain of the route's first version).
+ */
+export function isMachineScopeOlderBrainError(error: unknown): boolean {
+  if (isMachineScopeUnknownProjectError(error)) return true;
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const refused = /([a-z_]+)\.([A-Za-z]+) needs a project; this computer's settings do not answer it\./.exec(message);
+  return refused != null && machineScopeActionAllowed(refused[1]!, refused[2]!);
 }

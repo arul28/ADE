@@ -1589,7 +1589,11 @@ describe("ProvidersSection", () => {
       await act(async () => {
         fireEvent.click(disable);
       });
-      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] }, null);
+      // The project's AI config goes to the project's own copy, by its pin.
+      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith(
+        { disabledProviders: ["grok"] },
+        expect.objectContaining({ kind: "local", rootPath: "/repo" }),
+      );
     });
 
     it("shows Disabled on the tile and offers the way back on", async () => {

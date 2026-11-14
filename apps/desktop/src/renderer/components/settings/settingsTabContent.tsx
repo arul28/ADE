@@ -59,12 +59,14 @@ import {
   MachineUnavailableNotice,
   isRoutedSectionKind,
   routedPageFor,
+  machineRouteNeedsUpdate,
   machineSectionAvailable,
   type MachineSectionKind,
   type PickableSectionKind,
   type RoutedSectionKind,
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
+import type { MachineScopeLaterDomain } from "../../../shared/machineScope";
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
@@ -317,6 +319,12 @@ type TabSection = {
   /** For pages under Machines: how the section reaches its machine. */
   machine?: MachineSectionKind;
   /**
+   * A `machine` section's domain on the machine route when it came after the
+   * route's first version: a machine whose ADE predates it is reached through
+   * its copy of this repository, or says to update ADE there.
+   */
+  machineDomain?: MachineScopeLaterDomain;
+  /**
    * A link to this section with no `?machine=` opens the tab's machine rather
    * than This computer: it is about the project tab's own connection (a banner
    * or a PR reporting that machine's GitHub, say). Implied by `bound`.
@@ -522,7 +530,10 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
   apple: [{ entryIds: "tab", render: () => <SettingsColumn wide><AppleDevicesSection /></SettingsColumn> }],
-  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "routed", title: "Android devices" }],
+  // The SDK and the machine preferences are the computer's: the machine
+  // route, so the page shows for every online computer and never waits on a
+  // project's drive.
+  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "machine", machineDomain: "android_emulator", title: "Android devices" }],
   chat: [
     {
       entryIds: "tab",
@@ -581,7 +592,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // Passwords is the account's and shows with no project open: This
   // computer's brain answers through `passwords.call` whichever project
   // window is open. Another machine picked on the page is read through its
-  // copy of this repository.
+  // machine route (its copy of this repository only for an older ADE).
   passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "account", title: "Passwords" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
@@ -692,18 +703,32 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
 function MachineRouted({
   page,
   kind,
+  domain,
   titles,
   children,
 }: {
   page: SettingsMachinePage;
   kind: RoutedSectionKind;
+  domain?: MachineScopeLaterDomain;
   titles: string[];
   children: React.ReactNode;
 }) {
-  const routed = useMemo(() => routedPageFor(kind, page), [kind, page]);
-  if (!routed) return <MachineUnavailableNotice machine={page} unavailableTitles={titles} />;
+  const routed = useMemo(() => routedPageFor(kind, page, domain), [domain, kind, page]);
+  if (!routed) {
+    return (
+      <MachineUnavailableNotice
+        machine={page}
+        unavailableTitles={titles}
+        needsUpdate={machineRouteNeedsUpdate(kind, page, domain)}
+      />
+    );
+  }
+  // Keyed on both routes: a machine that gains or loses its copy of this
+  // repository remounts the section, so nothing stays bound to the old copy.
+  const projectTarget = routed.projectTarget;
+  const projectKey = projectTarget?.kind === "pinned" ? projectTarget.binding.key : projectTarget?.kind ?? "";
   return (
-    <SettingsMachineScopeProvider key={routed.pin?.key ?? routed.machineId} scope={routed}>
+    <SettingsMachineScopeProvider key={`${routed.pin?.key ?? routed.machineId}|${projectKey}`} scope={routed}>
       {children}
     </SettingsMachineScopeProvider>
   );
@@ -764,7 +789,7 @@ function MachineTabContent({
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
           {isRoutedSectionKind(section.machine) && machine ? (
-            <MachineRouted page={machine} kind={section.machine} titles={[section.title ?? "These settings"]}>
+            <MachineRouted page={machine} kind={section.machine} domain={section.machineDomain} titles={[section.title ?? "These settings"]}>
               {section.render()}
             </MachineRouted>
           ) : section.render()}

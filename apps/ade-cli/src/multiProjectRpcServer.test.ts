@@ -49,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (originalAdeHome === undefined) delete process.env.ADE_HOME;
   else process.env.ADE_HOME = originalAdeHome;
   fs.rmSync(isolatedAdeHome, { recursive: true, force: true });
@@ -1735,6 +1736,10 @@ describe("multi-project RPC server", () => {
   });
 
   it("answers a computer's own settings on the machine scope, and nothing a project owns", async () => {
+    // The desktop's brain allows the CTO role, as it does for keep awake on a
+    // project; a run from inside a chat must not clamp it to that chat's.
+    vi.stubEnv("ADE_DEFAULT_ROLE", "cto");
+    vi.stubEnv("ADE_CHAT_SESSION_ID", "");
     const { registry } = createRegistry();
     const machineRuntime = makeRuntime("machine");
     const scopeRegistry = {
@@ -1750,14 +1755,30 @@ describe("multi-project RPC server", () => {
       dispose: vi.fn(async () => undefined),
       runtimeForDelivery: vi.fn(async () => machineRuntime as never),
     };
+    // The brain's own services the machine scope is lent: keep awake, the
+    // account's Passwords, and the computer's Android settings.
+    const keepAwakeService = {
+      getSnapshot: vi.fn(async () => ({ level: "off" })),
+      setLevel: vi.fn(async () => ({ level: "off" })),
+      migrateLegacyPreference: vi.fn(async () => ({ level: "off" })),
+      fixSystemSleep: vi.fn(async () => ({ level: "off" })),
+    };
+    const passwords = { listSummaries: vi.fn(async () => [{ id: "login-1" }]) };
+    const android = {
+      getStatus: vi.fn(async () => ({ platformSupported: true, lane: null })),
+      dispose: vi.fn(),
+    };
     const makeHandler = async (clientName: string) => {
       const handler = createMultiProjectRpcRequestHandler({
         serverVersion: "test",
         projectRegistry: registry,
         scopeRegistry,
         personalChatScope,
+        keepAwakeService: keepAwakeService as never,
+        machineScopeAccountStores: () => ({ settings: {} as never, passwords: passwords as never }),
+        machineScopeAndroid: async () => () => android as never,
       });
-      const init = await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { clientInfo: { name: clientName } } });
+      const init = await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { clientInfo: { name: clientName }, identity: { role: "cto" } } });
       return { handler, init };
     };
     const action = (domain: string, name: string) => ({
@@ -1768,11 +1789,24 @@ describe("multi-project RPC server", () => {
     });
 
     const { handler, init } = await makeHandler("ade-desktop");
+    // An app reads which later domains this brain answers before it calls one.
     expect(init).toMatchObject({ capabilities: { machineScope: true } });
+    expect((init as { capabilities: { machineScopeDomains: string[] } }).capabilities.machineScopeDomains)
+      .toEqual(expect.arrayContaining(["keep_awake", "android_emulator", "passwords"]));
     await expect(handler(action("lane", "list"))).resolves.toMatchObject({ result: [{ id: "machine-lane" }] });
     expect(machineRuntime.laneService.list).toHaveBeenCalledTimes(1);
+    await expect(handler(action("keep_awake", "getSnapshot"))).resolves.toMatchObject({ result: { level: "off" } });
+    await expect(handler(action("passwords", "list"))).resolves.toMatchObject({ result: [{ id: "login-1" }] });
+    await expect(handler(action("android_emulator", "getStatus"))).resolves.toMatchObject({ result: { lane: null } });
+    expect(keepAwakeService.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(passwords.listSummaries).toHaveBeenCalledTimes(1);
+    expect(android.getStatus).toHaveBeenCalledTimes(1);
 
-    for (const [domain, name] of [["lane", "create"], ["ai", "updateConfig"], ["chat", "send"], ["git", "status"]] as const) {
+    // A lane's devices are a project's, and no secret leaves through the settings route.
+    for (const [domain, name] of [
+      ["lane", "create"], ["ai", "updateConfig"], ["chat", "send"], ["git", "status"],
+      ["android_emulator", "listDevices"], ["passwords", "revealValue"], ["passwords", "resolveForFill"],
+    ] as const) {
       await expect(handler(action(domain, name))).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
     }
     await expect(handler({
@@ -1785,9 +1819,13 @@ describe("multi-project RPC server", () => {
     // Another machine's agents act through a project they were given, never
     // through this computer's settings.
     const agent = await makeHandler(AGENT_REMOTE_CLIENT_NAME);
-    await expect(agent.handler(action("lane", "list"))).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidRequest });
+    for (const [domain, name] of [["lane", "list"], ["keep_awake", "setLevel"], ["passwords", "list"], ["android_emulator", "getStatus"]] as const) {
+      await expect(agent.handler(action(domain, name))).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidRequest });
+    }
 
     expect(machineRuntime.laneService.list).toHaveBeenCalledTimes(1);
+    expect(keepAwakeService.setLevel).not.toHaveBeenCalled();
+    expect(passwords.listSummaries).toHaveBeenCalledTimes(1);
     expect(scopeRegistry.get).not.toHaveBeenCalled();
     handler.dispose();
     agent.handler.dispose();
