@@ -4,7 +4,7 @@ import type { DeviceKind } from "../../../shared/types/deviceSources";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { cn } from "../ui/cn";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW } from "./workToolChrome";
-import { DEVICE_KINDS, joinNames, machinesForKind, railMachineName } from "./workToolCatalog";
+import { DEVICE_KINDS, machinesForKind, railMachineName } from "./workToolCatalog";
 import type { CatalogCardView } from "./useWorkToolCatalog";
 import type { ToolMachine } from "./useToolMachines";
 import { MachineOsMark } from "./workToolTileMarks";
@@ -149,7 +149,7 @@ function machineChipTitle(args: {
   if (args.chosen) return args.viewOnly ? `Showing ${machine.name}'s ${noun}` : `This chat's ${noun} runs on ${machine.name}`;
   if (args.asking) return `Ask the agent to switch the ${noun} to ${machine.name}`;
   if (args.enabled && args.viewOnly) return `Show ${machine.name}'s ${noun} here. The agent's commands still pick with --machine.`;
-  if (args.enabled) return `Use ${machine.name} for this chat (same as ade devices use)`;
+  if (args.enabled) return `Use ${machine.name} for this chat's ${noun}s. The agent starts them there (same as ade devices use).`;
   return args.chooseUnavailableReason ?? undefined;
 }
 
@@ -158,16 +158,8 @@ function rowLabel(asking: boolean, viewOnly: boolean): string {
   return viewOnly ? "Show from" : "Runs on";
 }
 
-/** The row's one quiet note on the right: who cannot run it, or why nothing can be picked. */
-function rowNote(args: {
-  kind: DeviceKind;
-  unable: readonly ToolMachine[];
-  enabled: boolean;
-  asking: boolean;
-  viewOnly: boolean;
-  chooseUnavailableReason: string | null;
-}): string | null {
-  if (args.kind === "ios" && args.unable.length) return `${joinNames(args.unable.map(railMachineName))}: needs a Mac`;
+/** The row's one quiet note on the right: why nothing can be picked, or what a view-only pick means. */
+function rowNote(args: { enabled: boolean; asking: boolean; viewOnly: boolean; chooseUnavailableReason: string | null }): string | null {
   if (!args.enabled || (args.viewOnly && !args.asking)) return args.chooseUnavailableReason;
   return null;
 }
@@ -192,17 +184,18 @@ function MachineRow({
   chooseUnavailableReason: string | null;
   onPick: (machine: ToolMachine) => void;
 }) {
-  const { able, unable } = machinesForKind(kind, machines, tile.machine);
-  if (!able.length && !unable.length) return null;
+  // Only the machines that can run it: a machine that can't is not a choice.
+  const able = machinesForKind(kind, machines, tile.machine);
+  if (!able.length) return null;
   const enabled = asking || canChoose;
   const noun = toolNoun(tile);
-  const note = rowNote({ kind, unable, enabled, asking, viewOnly, chooseUnavailableReason });
+  const note = rowNote({ enabled, asking, viewOnly, chooseUnavailableReason });
   return (
-    <div className={cn(WORK_TOOL_CHROME_ROW, "gap-1 px-3")} data-testid="work-tool-machine-bar">
+    <div className={cn(WORK_TOOL_CHROME_ROW, "@container gap-1 px-3")} data-testid="work-tool-machine-bar">
       <span className="mr-1 shrink-0 font-sans text-[12px] text-muted-fg">
         {rowLabel(asking, viewOnly)}
       </span>
-      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
+      <div role="radiogroup" aria-label={`${tile.label} runs on`} className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none]">
         {able.map((machine) => {
           const chosen = Boolean(tile.machine && sameMachineKey(tile.machine.key, machine.key));
           const title = machineChipTitle({ noun, machine, chosen, asking, enabled, viewOnly, chooseUnavailableReason });
@@ -226,15 +219,15 @@ function MachineRow({
               data-machine-key={machine.key}
             >
               <MachineOsMark machine={machine} size={12} />
-              <span className="max-w-[140px] truncate">{railMachineName(machine)}</span>
+              <span className="min-w-0 max-w-[140px] truncate">{railMachineName(machine)}</span>
               {!machine.online ? <span className="text-[10.5px] text-muted-fg">offline</span> : null}
             </button>
           );
         })}
         {kind === "ios" ? (
-          <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title="ADE Cloud iPhone: a phone that runs on no machine of yours">
-            <CloudArrowUp size={12} weight="bold" aria-hidden="true" />
-            ADE Cloud soon
+          <span className="inline-flex h-6 shrink-0 items-center gap-1 px-1.5 font-sans text-[11.5px] text-muted-fg/70" title="ADE Cloud: a simulator that runs on no machine of yours. Coming soon.">
+            <CloudArrowUp size={12} weight="bold" aria-label="ADE Cloud, coming soon" />
+            <span className="hidden @[480px]:inline">ADE Cloud soon</span>
           </span>
         ) : null}
       </div>
