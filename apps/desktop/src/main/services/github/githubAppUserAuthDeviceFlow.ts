@@ -112,6 +112,8 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
         error: described.message,
         status: described.status,
         oauthError: described.oauthError,
+        // "fetch failed" alone cannot tell a connect timeout from DNS or TLS.
+        transport: describeFetchTransportFailure(error),
       });
       if (described.status === 429) throw new Error(GITHUB_SIGN_IN_RATE_LIMITED_COPY);
       // The user's network, not ADE: say so, and keep it out of crash reports.
@@ -178,6 +180,8 @@ export function createGitHubAppUserDeviceFlow(deps: GitHubAppUserDeviceFlowDeps)
         error: described.message,
         status: described.status,
         oauthError: described.oauthError,
+        // "fetch failed" alone cannot tell a connect timeout from DNS or TLS.
+        transport: describeFetchTransportFailure(error),
       });
       return {
         status: "error",
