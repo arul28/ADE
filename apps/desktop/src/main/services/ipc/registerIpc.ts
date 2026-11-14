@@ -212,25 +212,14 @@ import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
 } from "../analytics/reliabilityTelemetry";
-import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { projectSecretScopeForRoot, type createProjectSecretService } from "../secrets/projectSecretService";
 import { purgeAccountApiKeys } from "../ai/apiKeyStore";
-import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
+import { parseProjectSecretEnv, PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
+import { PASSWORDS_PERSON_CHECK_DECLINED, type PasswordEnvFile, type PasswordsProject } from "../../../shared/types/passwords";
 import { lookupOpenPrForBranch } from "../git/ghOpenPrLookup";
 import type {
   AdeCleanupResult,
   AdeProjectSnapshot,
-  ProjectSecretDeleteArgs,
-  ProjectSecretEnvFile,
-  ProjectSecretGetArgs,
-  ProjectSecretPullResult,
-  ProjectSecretsExportResult,
-  ProjectSecretsImportArgs,
-  ProjectSecretsImportPreview,
-  ProjectSecretsImportResult,
-  ProjectSecretsListResult,
-  ProjectSecretSetArgs,
-  ProjectSecretSummary,
-  ProjectSecretValueResult,
 } from "../../../shared/types";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
@@ -6358,41 +6347,29 @@ export function registerIpc({
     return { lastFetchedAt: getModelsDevLastFetchedAt() };
   });
 
-  handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    // Same freshness as the `project_secret` action domain (adeActions/registry.ts).
-    return await ctx.projectSecretService.listFresh();
+  // Passwords & Secrets: the projects on this computer a secret can be for,
+  // each by the key its secrets are saved under (its repository, so every
+  // clone on every computer shares them).
+  handle(IPC.passwordsProjects, async (): Promise<PasswordsProject[]> => {
+    const out = new Map<string, PasswordsProject>();
+    const refusalPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+    for (const root of localRecentRoots()) {
+      // A project the brain refused as too slow to open is left out: reading
+      // its git config here could freeze this process's main thread.
+      if (refusalPool?.isKnownRefused(root)) continue;
+      const scope = projectSecretScopeForRoot(root);
+      if (!out.has(scope)) out.set(scope, { scope, name: path.basename(root), rootPath: root });
+    }
+    return [...out.values()];
   });
 
-  handle(IPC.projectSecretsGet, async (_event, arg: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return await ctx.projectSecretService.getFresh(arg);
-  });
-
-  handle(IPC.projectSecretsSet, async (_event, arg: ProjectSecretSetArgs): Promise<ProjectSecretSummary> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.set(arg);
-  });
-
-  handle(IPC.projectSecretsDelete, async (_event, arg: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.delete(arg);
-  });
-
-  handle(IPC.projectSecretsPullFromAccount, async (): Promise<ProjectSecretPullResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return await ctx.projectSecretService.pullFromAccount();
-  });
-
-  handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
+  // Passwords & Secrets › Import .env: the person picks a file on this
+  // computer; its entries come back to pick from, and are saved through
+  // `passwords.importSecrets`.
+  handle(IPC.passwordsChooseEnvFile, async (event): Promise<PasswordEnvFile | null> => {
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const options: Electron.OpenDialogOptions = {
-      title: "Import ADE secrets from .env",
+      title: "Import secrets from a .env file",
       defaultPath: app.getPath("home"),
       properties: ["openFile", "showHiddenFiles"],
     };
@@ -6400,30 +6377,12 @@ export function registerIpc({
     const selectedPath = result.canceled ? null : result.filePaths[0];
     if (!selectedPath) return null;
     const stat = await fs.promises.stat(selectedPath);
-    if (!stat.isFile()) throw new Error("Select a .env file to import.");
-    if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new Error("The selected .env file is larger than 1 MB.");
+    if (!stat.isFile()) throw new AdeExpectedError("Pick a .env file to import.", "user");
+    if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new AdeExpectedError("That .env file is larger than 1 MB.", "user");
     return {
       fileName: path.basename(selectedPath),
-      content: await fs.promises.readFile(selectedPath, "utf8"),
+      entries: parseProjectSecretEnv(await fs.promises.readFile(selectedPath, "utf8")),
     };
-  });
-
-  handle(IPC.projectSecretsPreviewEnvImport, async (_event, arg: ProjectSecretEnvFile): Promise<ProjectSecretsImportPreview> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.previewEnvImport(arg);
-  });
-
-  handle(IPC.projectSecretsImportEnv, async (_event, arg: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.importEnv(arg);
-  });
-
-  handle(IPC.projectSecretsExportEnv, async (): Promise<ProjectSecretsExportResult> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["projectSecretService"] as const);
-    return ctx.projectSecretService.exportEnv();
   });
 
   handle(
@@ -12645,13 +12604,6 @@ export function registerIpc({
       }
       for (const context of openAccountContexts()) {
         try {
-          context.projectSecretService?.purgeAccountCredentials();
-        } catch (error) {
-          getCtx().logger.warn("account.local_project_secrets_purge_failed", {
-            error: error instanceof Error ? error.message : String(error ?? ""),
-          });
-        }
-        try {
           context.linearCredentialService?.purgeAccountCredentials();
         } catch (error) {
           getCtx().logger.warn("account.local_linear_credentials_purge_failed", {
@@ -12935,7 +12887,7 @@ export function registerIpc({
     return await callLocalMachineDomain("providerLogins.call", "provider_logins", action, args);
   });
 
-  // Passwords with no project bound: this computer's brain, through its
+  // Settings › Passwords & Secrets: always this computer's brain, through its
   // machine route (`passwords.call`). Summaries and the person's own writes
   // only — the value reads (`resolveForFill`, `loginsForPage`) are refused
   // here, so a renderer can never ask for one.
@@ -12949,32 +12901,33 @@ export function registerIpc({
     "saveSecret",
     "remove",
     "importCsv",
+    "importSecrets",
+    "exportSecrets",
     "sync",
     "activity",
     "code",
   ]);
   handle(IPC.passwordsCall, async (_event, arg: unknown): Promise<unknown> => {
     const { action, args } = readActionRequest(arg);
-    // A reset Settings sends to another machine: the person proves it is them
-    // here, on the computer they sit at, first.
-    if (action === "confirmReset") {
-      return Boolean(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"));
-    }
     if (!PASSWORDS_CALL_ACTIONS.has(action)) {
       throw new Error(`passwords has no ${action || "?"} action.`);
     }
     // Starting over deletes every saved item on every computer: the person
     // proves it is them first (Touch ID / Windows Hello, else a confirm).
-    if (action === "reset" && !(await checkPerson("reset Passwords and delete every saved login and secret", "Reset"))) {
-      throw new AdeExpectedError("Reset cancelled.", "user");
+    if (action === "reset" && !(await checkPerson("reset Passwords & Secrets and delete every saved login and secret in your account", "Reset"))) {
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
+    }
+    // An export writes every value unencrypted to Downloads: the person proves it is them.
+    if (action === "exportSecrets" && !(await checkPerson("export secrets to a plain .env file", "Export"))) {
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     return await callLocalMachineDomain("passwords.call", "passwords", action, args);
   });
 
-  // Settings › Passwords › Reveal / Copy. The person proves it is them first;
+  // Settings › Passwords & Secrets › Reveal / Copy. The person proves it is them first;
   // a copy goes to the clipboard here in main (the value never reaches the
   // renderer) and is cleared after 90 s if it is still there. This computer's
-  // own brain answers, whatever machine the page follows: values are the account's.
+  // own brain answers: the page always shows this computer's vault.
   let clearCopiedTimer: ReturnType<typeof setTimeout> | null = null;
   handle(IPC.passwordsReveal, async (_event, arg: unknown): Promise<{ value?: string; copied?: true }> => {
     const request = arg && typeof arg === "object" ? arg as Record<string, unknown> : {};
@@ -12985,7 +12938,7 @@ export function registerIpc({
     if (!itemId) throw new Error("passwords.reveal needs an itemId.");
     // A username is not a secret: no prompt for it.
     if (field !== "username" && !(await checkPerson(`${copy ? "copy" : "show"} the saved ${field === "value" ? "secret" : field} for ${label}`, copy ? "Copy" : "Show"))) {
-      throw new AdeExpectedError("Cancelled.", "user");
+      throw new AdeExpectedError(PASSWORDS_PERSON_CHECK_DECLINED, "user");
     }
     const revealed = await callLocalMachineDomain("passwords.call", "passwords", "revealValue", { itemId, field });
     const value = typeof revealed === "string" ? revealed : null;

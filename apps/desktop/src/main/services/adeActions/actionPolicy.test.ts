@@ -13,7 +13,7 @@ import {
 } from "./actionPolicy";
 import { settingsEntryById } from "../../../shared/settingsManifest";
 import type { AdeActionDomain } from "./domains";
-import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction, thisDesktopOnlyRefusal } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
@@ -398,8 +398,11 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
   });
 
-  it("keeps plaintext project secret export CTO-only", () => {
-    expect(isCtoOnlyAdeAction("project_secret", "exportEnv")).toBe(true);
+  // A .env export writes every value in plain text: only the person, from the
+  // desktop app on the computer they are using, and never an agent.
+  it("keeps the plaintext secrets export the person's, on this computer", () => {
+    expect(isUserOnlyAdeAction("passwords", "exportSecrets")).toBe(true);
+    expect(thisDesktopOnlyRefusal("passwords", "exportSecrets")).toEqual(expect.any(String));
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
@@ -643,7 +646,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
   it("leaves the privileged neighbours of those surfaces CTO-only", () => {
     for (const [domain, action] of [
       ["search", "rebuildIndex"],
-      ["project_secret", "exportEnv"],
       ["budget", "updateConfig"],
       ["usage", "forceRefresh"],
       ["computer_use_artifacts", "deleteArtifacts"],

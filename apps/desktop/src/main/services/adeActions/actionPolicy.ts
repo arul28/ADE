@@ -182,7 +182,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // `harnessLaunchEnv` returns a routed launch's environment WITH its tokens
   // (it is how `ade harness env` runs a custom provider in the user's own
   // terminal), and `testHarnessRoute` spends the user's key on a live request.
-  // Both are operator work, like `project_secret.exportEnv`. `museSettings`
+  // Both are operator work, like `project_secret.get`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
   ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "verifyProviderSignIn", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
@@ -200,7 +200,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // not any agent's. Deleting is the person's alone (ADE_ACTION_USER_ONLY).
   archive: { only: ["restore"] },
   search: { only: ["rebuildIndex"] },
-  project_secret: { only: ["exportEnv"] },
   account_vault: { only: ["get", "set", "remove"] },
   // The person's settings. What an agent may and may not change is listed in
   // `shared/settingsAgentAccess.ts`; these are the writes behind the "only
@@ -317,9 +316,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   //   • search.query / indexStatus — reads over an index agents already build.
   //     `search.rebuildIndex` stays CTO-only above (it is a privileged rebuild).
   //   • project_config.get and project_secret.list — reads with no secret VALUES
-  //     in them. `project_secret.get`/`exportEnv` return values, so the CTO's
-  //     generic action tool refuses them (`isSecretBearingAdeAction`), and no
-  //     other CTO tool calls either one.
+  //     in them. `project_secret.get` returns a value, so the CTO's generic
+  //     action tool refuses it (`isSecretBearingAdeAction`), and no other CTO
+  //     tool calls it.
   // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
   // Session-bound agents use the dedicated RPC tools, which derive an owner
   // and filesystem jail from their authenticated chat context.
@@ -403,10 +402,10 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   // A secret's value is the person's to read (Settings, or the desktop's own
   // calls). Agents use secrets by name with `ade secrets exec`, which puts
   // them in a command's environment and returns its output masked.
-  project_secret: ["get", "exportEnv"],
+  project_secret: ["get"],
   // Passwords: only the person adds, changes, imports or removes saved items;
   // agents use logins through `ade browser signin` and never read a value.
-  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
+  passwords: ["saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse", "revealValue", "passkeysForRp", "savePasskey"],
   // Sharing a gh sign-in with the account hands it to every computer the
   // person signs in to; only the person decides, from Settings › GitHub.
   github: ["setGhAccountSharing"],
@@ -473,7 +472,7 @@ export const ADE_ACTION_MACHINE_SCOPED = {
   // The account's sign-ins, from a window with no project here (`providerLogins.call`).
   provider_logins: PROVIDER_LOGIN_ACTIONS,
   // Passwords is the account's, not a project's (`passwords.call`).
-  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "recordUse"],
 } as const satisfies Partial<Record<AdeActionDomain, readonly string[]>>;
 
 export type AdeMachineScopedDomain = keyof typeof ADE_ACTION_MACHINE_SCOPED;
@@ -494,7 +493,7 @@ export function isMachineScopedAdeAction(domain: AdeMachineScopedDomain, action:
 export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly string[]>> = {
   account: ["getToken", "createToken"],
   account_vault: ["get"],
-  project_secret: ["get", "exportEnv"],
+  project_secret: ["get"],
   // The values of a saved login, for desktop main to fill a page with.
   passwords: ["resolveForFill", "revealValue", "passkeysForRp"],
   // A custom provider's launch env, tokens included.
@@ -1195,10 +1194,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   project_config: ["diffAgainstDisk", "get", "resolveAccountSettingNotice", "save", "setPrTranscriptGists", "validate"],
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
-  project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request", "exec"],
+  project_secret: ["list", "get", "set", "delete", "request", "exec"],
   // Passwords: `list`/`loginsForPage` return summaries only (agents use them
   // to pick a login); every write and `resolveForFill` are user-only below.
-  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse"],
+  passwords: ["status", "activity", "code", "revealValue", "passkeysForRp", "savePasskey", "list", "loginsForPage", "saveLogin", "saveSecret", "remove", "importCsv", "importSecrets", "exportSecrets", "sync", "resolveForFill", "setEnabled", "setCloudEnabled", "reset", "requestLogin", "signin", "signup", "recordUse"],
   messages: ["status", "recent", "chats", "send", "codeWait"],
   // `request` raises the connect card in the caller's own chat; the person
   // types the key, and the host saves it. `status` reports connected or not,
@@ -1236,7 +1235,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   account_settings: ["list", "deletedKeys", "get", "set", "remove", "sync"],
   // `list` reports names and readability, never values, which is why it sits
   // beside the harmless actions. `get` returns a credential and is gated below
-  // for the same reason `project_secret.exportEnv` is.
+  // for the same reason `project_secret.get` is.
   account_vault: ["list", "get", "set", "remove", "sync", "pendingKeys"],
   linear_credentials: [
     "clearOAuthClientCredentials",

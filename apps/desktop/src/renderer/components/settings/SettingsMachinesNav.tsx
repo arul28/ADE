@@ -37,26 +37,17 @@ import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTa
  *    predates the route (or the domain). Every online computer and This
  *    computer show up whichever project window is open. A section of this
  *    kind renders under `routedPageFor`.
- *  - `account`: the account's settings as one computer holds them
- *    (Passwords), reached the same way.
  */
-export type MachineSectionKind = "routed" | "local" | "bound" | "machine" | "account";
+export type MachineSectionKind = "routed" | "local" | "bound" | "machine";
 
 /** The kinds a page can pick its machine for: each reaches a machine through a pin. */
-export type PickableSectionKind = Extract<MachineSectionKind, "routed" | "machine" | "account">;
-
-/** The kinds whose sections run under a routed scope (`routedPageFor`). */
-export type RoutedSectionKind = Extract<MachineSectionKind, "machine" | "account">;
-
-export function isRoutedSectionKind(kind: MachineSectionKind | null | undefined): kind is RoutedSectionKind {
-  return kind === "machine" || kind === "account";
-}
+export type PickableSectionKind = Extract<MachineSectionKind, "routed" | "machine">;
 
 /** A Machines page's machine: its scope plus what the page header shows. */
 export type SettingsMachinePage = SettingsMachineScope & {
   /**
    * The machine's own route, with no project (`shared/machineScope.ts`). Set
-   * for every online machine; `machine` and `account` sections use it.
+   * for every online machine; `machine` sections use it.
    * Project pages (`ProjectCopyScope`) never do.
    */
   machineRoute: OpenProjectBinding | null;
@@ -122,13 +113,6 @@ export function settingsMachinePageFor(machine: ProjectMachine): SettingsMachine
   };
 }
 
-/**
- * The domain an `account` section needs on the machine route: Passwords is
- * its only one. A `machine` section names its own, when it came after the
- * route's first version.
- */
-const ACCOUNT_SECTION_DOMAIN: MachineScopeLaterDomain = "passwords";
-
 /** Whether the page's machine route answers `domain` (`machineScopeDomainAnswered`). */
 export function machineRouteAnswers(page: SettingsMachinePage, domain?: MachineScopeLaterDomain | null): boolean {
   return page.machineRoute != null
@@ -137,7 +121,7 @@ export function machineRouteAnswers(page: SettingsMachinePage, domain?: MachineS
 }
 
 /**
- * The scope a `machine` or `account` section runs under: the page with its
+ * The scope a `machine` section runs under: the page with its
  * machine route as the pin, so a read about the computer never goes through
  * a project (whose drive can stall). `projectTarget` keeps the copy of this
  * repository there, for the few parts that are the project's (Providers'
@@ -146,12 +130,10 @@ export function machineRouteAnswers(page: SettingsMachinePage, domain?: MachineS
  * (`MachineUnavailableNotice` says why).
  */
 export function routedPageFor(
-  kind: RoutedSectionKind,
   page: SettingsMachinePage,
   domain?: MachineScopeLaterDomain | null,
 ): SettingsMachinePage | null {
-  const needs = domain ?? (kind === "account" ? ACCOUNT_SECTION_DOMAIN : null);
-  if (page.machineRoute && machineRouteAnswers(page, needs)) {
+  if (page.machineRoute && machineRouteAnswers(page, domain)) {
     if (page.pin?.key === page.machineRoute.key) return page;
     return {
       ...page,
@@ -168,12 +150,11 @@ export function routedPageFor(
  * nothing else reaches it, so the section says to update ADE there.
  */
 export function machineRouteNeedsUpdate(
-  kind: RoutedSectionKind,
   page: SettingsMachinePage,
   domain?: MachineScopeLaterDomain | null,
 ): boolean {
   if (page.target || !page.machineRoute) return false;
-  return !machineRouteAnswers(page, domain ?? (kind === "account" ? ACCOUNT_SECTION_DOMAIN : null));
+  return !machineRouteAnswers(page, domain);
 }
 
 /**
@@ -199,7 +180,7 @@ export function machineSectionAvailable(kind: MachineSectionKind, page: Settings
   if (!page.online) return false;
   if (kind === "local") return page.isThisMachine;
   if (kind === "bound") return page.isActiveBinding;
-  if (kind === "machine" || kind === "account") return page.target != null || page.machineRoute != null;
+  if (kind === "machine") return page.target != null || page.machineRoute != null;
   return page.target != null;
 }
 

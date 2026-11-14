@@ -217,7 +217,6 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     }
     for (const context of options.getContexts()) {
       for (const [source, service] of [
-        ["project_secrets", context.projectSecretService],
         ["linear_credentials", context.linearCredentialService],
         ["jira_credentials", context.jiraCredentialService],
         ["github_pat", context.githubService ? { purgeAccountCredentials: context.githubService.purgeAccountPat } : null],
@@ -317,7 +316,8 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     hydrationInFlight = (async () => {
       for (const context of options.getContexts()) {
         try {
-          await context.projectSecretService?.hydrateFromVault();
+          // Old per-project secrets move into Passwords & Secrets (a no-op once done).
+          await context.projectSecretService?.migrateLegacy();
           // Integration connections follow the project too (Linear, Jira).
           await context.linearCredentialService?.hydrateFromVault();
           await context.jiraCredentialService?.hydrateFromVault();

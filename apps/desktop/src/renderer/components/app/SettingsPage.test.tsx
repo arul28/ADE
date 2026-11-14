@@ -58,7 +58,6 @@ vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSectio
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));
 vi.mock("../settings/NotificationsSection", () => ({ NotificationsSection: stubSection(["notification-events"]) }));
-vi.mock("../settings/SecretsSection", () => ({ SecretsSection: stubSection(["secrets"]) }));
 vi.mock("../settings/lanes/LanesSettingsPage", () => ({
   LanesSettingsPage: stubSection(["lane-list", "new-lane-start", "lane-templates"]),
   StorageSettingsPage: stubSection(["storage", "archive"]),
@@ -217,8 +216,8 @@ describe("SettingsPage", () => {
   });
 
   it("says so when nothing on the current tab matches", async () => {
-    renderSettings("/settings?tab=secrets");
-    await screen.findByRole("heading", { name: "Secrets" });
+    renderSettings("/settings?tab=appearance");
+    await screen.findByRole("heading", { name: "Appearance" });
 
     fireEvent.change(searchBox(), { target: { value: "zzzznotasetting" } });
 

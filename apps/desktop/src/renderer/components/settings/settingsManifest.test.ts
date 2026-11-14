@@ -249,7 +249,7 @@ describe("settings manifest", () => {
   });
 
   it("finds settings by keyword when the label does not contain the query", () => {
-    expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
+    expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("passwords.secrets");
     expect(searchSettingsEntries("uncommitted").map((e) => e.id)).toContain("lanes-git.new-lane-start");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
     expect(searchSettingsEntries("all machines").map((e) => e.id)).toContain("activity.dock-badge");
@@ -445,7 +445,7 @@ describe("settings command palette entries", () => {
       ["font size", "setting-appearance.chat-font-size"],
       ["scrollback", "setting-appearance.terminal"],
       ["do not disturb", "setting-notifications.focus-suppression"],
-      ["api key", "setting-secrets.secrets"],
+      ["api key", "setting-passwords.secrets"],
       ["crash", "setting-general.diagnostics-sharing"],
     ];
     for (const [query, expectedId] of cases) {
@@ -555,7 +555,6 @@ describe("standalone settings availability", () => {
           .map((entry) => entry.id),
       );
       expect(searchSettingsEntries("reset").map((entry) => entry.id)).toContain("general.reset");
-      expect(searchSettingsEntries("secrets").some((entry) => entry.id === "secrets.secrets")).toBe(false);
 
       // Another page's cleanup must not end this page's mode.
       clearStandaloneSettingsResolver(() => true);

@@ -344,6 +344,10 @@ type ProvidersSectionProps = {
   harnessesParam?: boolean;
 };
 
+function toastActionError(title: string, err: unknown): void {
+  showToast({ tone: "error", title, message: err instanceof Error ? err.message : String(err) });
+}
+
 /**
  * Settings › Providers for the place the title picker names: one machine, or
  * ADE Cloud. Two components, so switching place never changes a component's
@@ -392,7 +396,6 @@ function MachineProvidersSection({
   const [localProviderDrafts, setLocalProviderDrafts] = useState<Record<LocalProviderFamily, LocalProviderDraft>>(() =>
     buildLocalProviderDrafts(null, null),
   );
-  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissedApiKeyStoreWarning, setDismissedApiKeyStoreWarning] = useState<string | null>(null);
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
@@ -564,9 +567,9 @@ function MachineProvidersSection({
         // reads the saved logins again and leaves OpenCode's server alone.
         void refreshStatusRef.current({ force: true, silent: true });
       }
-      if (event.state === "error" && event.error) setError(event.error);
+      if (event.state === "error" && event.error) showToast({ tone: "error", title: "Cursor sign-in failed", message: event.error });
       if (event.state === "success") {
-        setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
+        showToast({ tone: "success", title: event.email ? `Signed in as ${event.email}` : "Signed in with Cursor" });
       }
     }, pin);
     return unsubscribe;
@@ -796,8 +799,6 @@ function MachineProvidersSection({
   }, []);
 
   const deleteApiKey = useCallback(async (provider: string, options?: { alsoOpenCode?: boolean }) => {
-    setError(null);
-    setNotice(null);
     try {
       if (options?.alsoOpenCode) {
         const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider }, pin);
@@ -810,7 +811,7 @@ function MachineProvidersSection({
       const label =
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
         ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
-      setNotice(`${label} disconnected.`);
+      showToast({ tone: "success", title: `${label} disconnected` });
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -818,15 +819,13 @@ function MachineProvidersSection({
       });
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't disconnect", err);
       // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
       throw err instanceof Error ? err : new Error(String(err));
     }
   }, [pin, refreshStatus]);
 
   const verifyApiKey = useCallback(async (provider: string) => {
-    setError(null);
-    setNotice(null);
     setVerifyingProvider(provider);
     setVerificationByProvider((prev) => {
       const next = { ...prev };
@@ -840,25 +839,23 @@ function MachineProvidersSection({
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
       if (result.ok) {
-        setNotice(`${provider} connection verified.`);
+        showToast({ tone: "success", title: `${provider} connection verified` });
       } else {
-        setError(result.message || `${provider} verification failed.`);
+        showToast({ tone: "error", title: `${provider} verification failed`, message: result.message || undefined });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't verify the key", err);
     } finally {
       setVerifyingProvider(null);
     }
   }, [pin, refreshStatus]);
 
   const loginWithCursor = useCallback(async (): Promise<CursorSignInOutcome> => {
-    setError(null);
-    setNotice(null);
     setCursorLoginBusy(true);
     try {
       const result = await window.ade.ai.cursorAuthLogin(pin);
       if (!result.ok) {
-        setError(result.error || "Cursor sign-in failed.");
+        showToast({ tone: "error", title: "Cursor sign-in failed", message: result.error || undefined });
         return { ok: false, error: result.error || "Cursor sign-in failed." };
       }
       setVerifyingProvider("cursor");
@@ -879,15 +876,15 @@ function MachineProvidersSection({
         },
       }));
       if (verification.ok) {
-        setNotice(result.email ? `Signed in as ${result.email}.` : "Cursor connection verified.");
+        showToast({ tone: "success", title: result.email ? `Signed in as ${result.email}` : "Cursor connection verified" });
         setCursorLoginUrl(null);
         return { ok: true, email: result.email ?? null };
       }
-      setError(verification.message || "Cursor verification failed.");
+      showToast({ tone: "error", title: "Cursor verification failed", message: verification.message || undefined });
       return { ok: false, error: verification.message || "Cursor verification failed." };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      showToast({ tone: "error", title: "Cursor sign-in failed", message });
       return { ok: false, error: message };
     } finally {
       setCursorLoginBusy(false);
@@ -896,12 +893,10 @@ function MachineProvidersSection({
   }, [pin, refreshStatus]);
 
   const logoutCursor = useCallback(async () => {
-    setError(null);
-    setNotice(null);
     try {
       const result = await window.ade.ai.cursorAuthLogout(pin);
       if (!result.ok) {
-        setError(result.error || "Cursor sign-out failed.");
+        showToast({ tone: "error", title: "Cursor sign-out failed", message: result.error || undefined });
         return;
       }
       invalidateAiDiscoveryCache();
@@ -916,9 +911,9 @@ function MachineProvidersSection({
         delete next.cursor;
         return next;
       });
-      setNotice("Signed out of Cursor.");
+      showToast({ tone: "success", title: "Signed out of Cursor" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't sign out of Cursor", err);
     }
   }, [pin, refreshStatus]);
 
@@ -926,7 +921,7 @@ function MachineProvidersSection({
     try {
       await window.ade.ai.cursorAuthCancel(pin);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't cancel Cursor sign-in", err);
     } finally {
       setCursorLoginBusy(false);
     }
@@ -938,7 +933,7 @@ function MachineProvidersSection({
       await window.ade.ai.refreshModelsDev(pin);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't refresh the model catalog", err);
     } finally {
       setRefreshingCatalog(false);
     }
@@ -967,17 +962,15 @@ function MachineProvidersSection({
   const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
     setSavingAdvanced(true);
-    setError(null);
-    setNotice(null);
     try {
       await projectCall(window.ade.ai.updateConfig({
         customModelSlugs: slugs,
       }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice("Custom model slugs saved.");
+      showToast({ tone: "success", title: "Custom model slugs saved" });
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't save custom model slugs", err);
     } finally {
       setSavingAdvanced(false);
     }
@@ -998,8 +991,6 @@ function MachineProvidersSection({
 
   const beginEditingLocalRuntime = useCallback((provider: LocalProviderFamily) => {
     setEditingLocalProvider(provider);
-    setError(null);
-    setNotice(null);
   }, []);
 
   const cancelEditingLocalRuntime = useCallback(() => {
@@ -1011,8 +1002,6 @@ function MachineProvidersSection({
     const draft = localProviderDrafts[provider];
     if (!draft) return;
     setSavingLocalProvider(provider);
-    setError(null);
-    setNotice(null);
     try {
       await projectCall(window.ade.ai.updateConfig({
         localProviders: {
@@ -1025,11 +1014,11 @@ function MachineProvidersSection({
         } as AiConfig["localProviders"],
       }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
+      showToast({ tone: "success", title: `${LOCAL_PROVIDER_LABELS[provider]} settings saved` });
       setEditingLocalProvider(null);
       await refreshStatus({ force: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't save settings", err);
     } finally {
       setSavingLocalProvider(null);
     }
@@ -1046,8 +1035,6 @@ function MachineProvidersSection({
   ) => {
     const descriptor = providerDescriptor(provider);
     setSavingDisabledFor(provider);
-    setError(null);
-    setNotice(null);
     try {
       // The whole authoritative list, not a delta: `mergeAiConfig` replaces
       // this field, so a patch carrying only the change could never re-enable
@@ -1060,10 +1047,10 @@ function MachineProvidersSection({
         ),
       } as Partial<AiConfig>, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
+      showToast({ tone: "success", title: `${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}` });
       await refreshStatus({ force: false, silent: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't update the provider", err);
     } finally {
       setSavingDisabledFor(null);
     }
@@ -1206,8 +1193,7 @@ function MachineProvidersSection({
     actions: {
       refreshStatus,
       loadAuthMethods,
-      setError,
-      setNotice,
+      setError: (message) => { if (message) showToast({ tone: "error", title: "Something went wrong", message }); },
       deleteApiKey,
       verifyApiKey,
       loginWithCursor,
@@ -1268,10 +1254,6 @@ function MachineProvidersSection({
     // The `ai-providers` anchor lives on the section below. This wrapper is
     // layout only — giving it the id too would put the anchor in the DOM twice.
     <div className={selectedDescriptor ? "ade-pv-detail" : "ade-pv-page"}>
-      {notice && (
-        <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
-      )}
-
       {error && (
         <AlertBanner tone="error" message={error} onDismiss={() => setError(null)} />
       )}
@@ -1349,7 +1331,7 @@ function MachineProvidersSection({
             void refreshStatus({ force: true, silent: true });
           }}
           onSignedIn={() => {
-            setNotice(`Signed in to ${terminalSignIn.label}.`);
+            showToast({ tone: "success", title: `Signed in to ${terminalSignIn.label}` });
             // The "login changed" path, then the provider's own check.
             void verifySignIn(signInRequest.provider);
           }}
@@ -1385,7 +1367,7 @@ function MachineProvidersSection({
               delete next[detailProvider.id];
               return next;
             });
-            setNotice(`${detailProvider.name} key saved.`);
+            showToast({ tone: "success", title: `${detailProvider.name} key saved` });
             await refreshStatus({ force: true, refreshOpenCodeInventory: true });
           }}
           onDeleteKey={async () => {

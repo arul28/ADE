@@ -120,9 +120,11 @@ export const ANDROID_MACHINE_ACTIONS = [
 ] as const;
 
 /**
- * The Passwords actions the Passwords page sends to the computer it shows.
- * Never a value: `resolveForFill`, `revealValue` and `passkeysForRp` stay with
- * this computer's own desktop (actionPolicy), and neither are the agent verbs.
+ * The Passwords actions the machine route answers. This ADE's Passwords page
+ * calls only this computer (`passwords.call`); the list stays for older
+ * desktops whose page still asks the computer it shows. Never a value:
+ * `resolveForFill`, `revealValue` and `passkeysForRp` stay with this
+ * computer's own desktop (actionPolicy), and neither are the agent verbs.
  */
 const PASSWORDS_PAGE_ACTIONS = [
   "status",

@@ -1052,15 +1052,6 @@ export const IPC = {
   aiGetToolsCache: "ade.ai.getToolsCache",
   aiEnsureToolsCache: "ade.ai.ensureToolsCache",
   aiToolsCacheEvent: "ade.ai.toolsCacheEvent",
-  projectSecretsList: "ade.projectSecrets.list",
-  projectSecretsGet: "ade.projectSecrets.get",
-  projectSecretsSet: "ade.projectSecrets.set",
-  projectSecretsDelete: "ade.projectSecrets.delete",
-  projectSecretsPullFromAccount: "ade.projectSecrets.pullFromAccount",
-  projectSecretsChooseEnvFile: "ade.projectSecrets.chooseEnvFile",
-  projectSecretsPreviewEnvImport: "ade.projectSecrets.previewEnvImport",
-  projectSecretsImportEnv: "ade.projectSecrets.importEnv",
-  projectSecretsExportEnv: "ade.projectSecrets.exportEnv",
   aiCursorCloudListRepositories: "ade.ai.cursorCloud.listRepositories",
   aiCursorCloudListAgents: "ade.ai.cursorCloud.listAgents",
   aiCursorCloudListRuns: "ade.ai.cursorCloud.listRuns",
@@ -1267,8 +1258,12 @@ export const IPC = {
    * person-only writes; it never exposes `resolveForFill` or a value.
    */
   passwordsCall: "ade.passwords.call",
-  /** Settings › Passwords: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
+  /** Settings › Passwords & Secrets: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
   passwordsReveal: "ade.passwords.reveal",
+  /** Passwords & Secrets: pick a .env file on this computer; its entries come back to choose from. */
+  passwordsChooseEnvFile: "ade.passwords.chooseEnvFile",
+  /** Passwords & Secrets: this computer's projects, by the key their secrets are saved under. */
+  passwordsProjects: "ade.passwords.projects",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and

@@ -1,4 +1,5 @@
 import { githubReminderKey, resetGithubReminders, migrateGithubReminder, useBannerDismissals } from "../../lib/bannerDismiss";
+import { showToast } from "../app/toast/toastStore";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
@@ -268,8 +269,6 @@ export function GitHubSection() {
   const issueTopBar = useIssueTopBarPreferences();
   const { repo: issueRepo } = useProjectGitHubRepo();
   const issueAccess = useGitHubIssueWriteAccess(issueRepo);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   // A failed status read left every row on "…" and the credential ladder
   // offering sign-in to a person who is already signed in. Say it failed.
@@ -345,12 +344,10 @@ export function GitHubSection() {
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
     if (!token) {
-      setActionError("Paste a token first.");
+      showToast({ tone: "error", title: "Paste a token first", report: false });
       return;
     }
     setGithubBusy(true);
-    setActionError(null);
-    setSaveNotice(null);
     window.ade.github
       .setToken(token, pin)
       .then((status) => {
@@ -359,27 +356,32 @@ export function GitHubSection() {
         const verification = describeGithubPatVerification(status);
         if (verification.verified) {
           setShowPatSetup(false);
-          setSaveNotice(verification.message);
+          showToast({ tone: "success", title: verification.message });
           return;
         }
-        setActionError(verification.message);
+        // Only a token GitHub refused is "not accepted"; a paused or failed check is not the token's fault.
+        const failureKind = status.credentialVerification.failure?.kind;
+        const rejected = failureKind === "invalid_token" || failureKind === "permission_denied";
+        showToast({
+          tone: rejected ? "error" : "warning",
+          title: rejected ? "GitHub token not accepted" : "Token saved, not verified yet",
+          message: verification.message,
+        });
       })
-      .catch((err) => setActionError(extractError(err)))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
       .finally(() => setGithubBusy(false));
   };
 
   const handleClearToken = () => {
     setGithubBusy(true);
-    setActionError(null);
-    setSaveNotice(null);
     window.ade.github
       .clearToken(pin)
       .then((status) => {
         setGithubStatus(status);
         setShowPatSetup(false);
-        setSaveNotice(status.authSource === "gh" ? "Token removed. ADE is using your GitHub CLI sign-in." : "Token removed.");
+        showToast({ tone: "success", title: "Token removed", message: status.authSource === "gh" ? "ADE is using your GitHub CLI sign-in." : undefined });
       })
-      .catch((err) => setActionError(extractError(err)))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
       .finally(() => setGithubBusy(false));
   };
 
@@ -399,14 +401,12 @@ export function GitHubSection() {
       if (!confirmed) return;
     }
     setGithubBusy(true);
-    setActionError(null);
-    setSaveNotice(null);
     setGhAccountSharing({ enabled }, pin)
       .then((status) => {
         setGithubStatus(status);
-        setSaveNotice(enabled ? "Shared with your ADE account." : "Removed from your ADE account.");
+        showToast({ tone: "success", title: enabled ? "Shared with your ADE account" : "Removed from your ADE account" });
       })
-      .catch((err) => setActionError(extractError(err)))
+      .catch((err) => showToast({ tone: "error", title: "GitHub action failed", message: extractError(err) }))
       .finally(() => setGithubBusy(false));
   };
 
@@ -688,9 +688,6 @@ export function GitHubSection() {
       />
 
       <div className="ade-ig-alerts">
-        {saveNotice ? (
-          <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
-        ) : null}
         {statusError ? (
           <Banner
             layout="inline"
@@ -708,9 +705,6 @@ export function GitHubSection() {
               }],
             }}
           />
-        ) : null}
-        {actionError ? (
-          <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
         ) : null}
         {credentialStoreUnreadable ? (
           <Banner

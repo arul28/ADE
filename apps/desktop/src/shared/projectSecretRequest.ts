@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "./types/chat";
+import { SECRET_NAME_PATTERN, SECRET_NAME_RULE } from "./types/passwords";
 
 /**
  * The private secret card: an agent asks the person for a project secret, and
@@ -13,17 +14,11 @@ import type { PendingInputRequest } from "./types/chat";
  * a client that does not falls back to a password question.
  */
 
-/** The one name rule, shared by the service and every form that asks for a name. */
-export const PROJECT_SECRET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/;
-
-export const PROJECT_SECRET_NAME_RULE =
-  "Secret names must start with a letter and contain only letters, numbers, '.', '_', or '-' (max 128 characters).";
-
 /** Null when the name is valid, else the sentence to show. */
 export function projectSecretNameError(name: string | null | undefined): string | null {
   const trimmed = typeof name === "string" ? name.trim() : "";
   if (!trimmed) return "Secret name is required.";
-  return PROJECT_SECRET_NAME_PATTERN.test(trimmed) ? null : PROJECT_SECRET_NAME_RULE;
+  return SECRET_NAME_PATTERN.test(trimmed) ? null : SECRET_NAME_RULE;
 }
 
 /** `providerMetadata` key on the card. Its presence makes the card user-only. */
@@ -50,7 +45,7 @@ export const PROJECT_SECRET_REASON_MAX_CHARS = 500;
 
 /** The one line of copy every surface uses to say where the value goes. */
 export const PROJECT_SECRET_WHERE_IT_GOES =
-  "Saved encrypted to this project's secrets. The agent only sees the name.";
+  "Saved to Passwords & Secrets for this project. The agent only sees the name.";
 
 /**
  * The same line for a temporary file. Honest about the trade: the value stays
@@ -64,7 +59,7 @@ export const PROJECT_SECRET_DELIVERY_OPTIONS: ReadonlyArray<{
   label: string;
   description: string;
 }> = [
-  { value: "secrets", label: "Save to ADE secrets", description: PROJECT_SECRET_WHERE_IT_GOES },
+  { value: "secrets", label: "Save to Passwords & Secrets", description: PROJECT_SECRET_WHERE_IT_GOES },
   { value: "file", label: "Temporary private file", description: PROJECT_SECRET_FILE_WHERE_IT_GOES },
 ];
 
@@ -111,7 +106,7 @@ export function readProjectSecretRequestCard(
   const record = readRecord(request?.providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
   if (!record) return null;
   const name = typeof record.name === "string" ? record.name.trim() : "";
-  if (!name || !PROJECT_SECRET_NAME_PATTERN.test(name)) return null;
+  if (!name || !SECRET_NAME_PATTERN.test(name)) return null;
   return {
     name,
     reason: typeof record.reason === "string" ? record.reason.trim() : "",

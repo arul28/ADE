@@ -6996,13 +6996,6 @@ button, [role="button"] {
   white-space: nowrap;
 }
 
-/* Settings → Secrets: one row per secret. */
-.ade-secret-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 .ade-settings-button[data-variant="ghost"] {
   border-color: transparent;
   background: transparent;

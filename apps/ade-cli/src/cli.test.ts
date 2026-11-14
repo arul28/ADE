@@ -3233,15 +3233,14 @@ describe("ADE CLI", () => {
           { name: "ACCOUNT_TOKEN", valueLength: 8, storage: "account", updatedAt: "2026-09-17T12:00:00.000Z" },
           { name: "LOCAL_TOKEN", valueLength: 5, storage: "device", updatedAt: "2026-09-17T12:01:00.000Z" },
         ],
-        storage: { path: "/repo/.ade/secrets/project-secrets.v1.enc" },
+        storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" },
       },
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "project-secrets",
     );
-    expect(listText).toContain("where");
-    expect(listText).toContain("account");
-    expect(listText).toContain("device");
-    expect(listText).toContain("Local cache:");
+    // Each row says where the secret lives: synced, or this computer only.
+    expect(listText.split("\n").find((line) => line.startsWith("ACCOUNT_TOKEN"))).toContain("every computer");
+    expect(listText.split("\n").find((line) => line.startsWith("LOCAL_TOKEN"))).toContain("this computer");
 
     const remove = expectExecutePlan(buildCliPlan(["secrets", "rm", "TOKEN"]));
     expect(remove.steps[0]?.params).toEqual({
