@@ -142,6 +142,50 @@ function freshestPeerReadings(peers: readonly PeerLiveQuota[], nowMs: number): M
   return best;
 }
 
+/** A peer that can spend a login's banked resets, and how many it holds. */
+type PeerCreditHolder = {
+  credits: NonNullable<UsageAccount["resetCredits"]>;
+  on: NonNullable<UsageAccount["resetCreditsOn"]>;
+  atMs: number;
+};
+
+/**
+ * For each login, the freshest peer whose own working login reports its
+ * banked resets. Only that peer can spend them: a credit is claimed with the
+ * login's token, which an expired or absent login here does not have. A count
+ * of zero competes too, so a newer "none left" beats an older count.
+ */
+function peerCreditHolders(peers: readonly PeerLiveQuota[]): Map<string, PeerCreditHolder> {
+  const best = new Map<string, PeerCreditHolder>();
+  for (const peer of peers) {
+    for (const account of peer.accounts) {
+      if (!account.email?.trim() || !loginUsable(account)) continue;
+      const credits = account.resetCredits;
+      if (!credits) continue;
+      const key = liveAccountPoolKey(account);
+      const atMs = readingAtMs(account);
+      const current = best.get(key);
+      if (current && !(atMs > current.atMs)) continue;
+      best.set(key, {
+        credits,
+        on: { machineKey: peer.machineKey, label: peer.label, accountId: account.id },
+        atMs,
+      });
+    }
+  }
+  return best;
+}
+
+/**
+ * `account` with a peer's credits, when it cannot spend its own: it has none,
+ * or its login expired or signed out, so a cached count here is not spendable.
+ */
+function withPeerCredits(account: UsageAccount, holder: PeerCreditHolder | undefined): UsageAccount {
+  if (!holder || holder.credits.availableCount <= 0) return account;
+  if (loginUsable(account) && (account.resetCredits?.availableCount ?? 0) > 0) return account;
+  return { ...account, resetCredits: holder.credits, resetCreditsOn: holder.on };
+}
+
 function readingMachine(reading: PeerReading): UsageAccountMachine & { machineKey: string } {
   return {
     machineKey: reading.peer.machineKey,
@@ -190,12 +234,14 @@ function swapAccountWindows(
  * has not polled it lately, shows what another machine read a minute ago
  * instead of "No usage yet" or a window whose reset already passed. A local
  * reading from a working token wins whenever it is at least as fresh.
- * Accounts, ids, login state and reset credits stay local: they describe what
- * this machine can do with the login.
+ * Accounts, ids and login state stay local: they describe what this machine
+ * can do with the login. Reset credits stay local too, unless this machine has
+ * none to spend; then a peer that holds some lends its count and its address.
  */
 function overlayPeerReadings<T extends { windows: UsageWindow[]; accounts?: UsageAccount[] }>(
   local: T,
   readings: ReadonlyMap<string, PeerReading>,
+  holders: ReadonlyMap<string, PeerCreditHolder>,
   nowMs: number,
 ): T {
   const accounts = local.accounts ?? [];
@@ -203,21 +249,30 @@ function overlayPeerReadings<T extends { windows: UsageWindow[]; accounts?: Usag
   let changed = false;
   const nextAccounts = accounts.map((account) => {
     if (!account.email?.trim()) return account;
+    // Credits do not depend on whose windows win: a login with none here can
+    // still spend a peer's, whether or not that peer's windows are shown.
+    const withCredits = (): UsageAccount => {
+      const next = withPeerCredits(account, holders.get(liveAccountPoolKey(account)));
+      if (next !== account) changed = true;
+      return next;
+    };
     const reading = readings.get(liveAccountPoolKey(account));
-    if (!reading) return account;
+    if (!reading) return withCredits();
     const ownUsable = loginUsable(account) && liveWindowsFor(local.windows, account.id, nowMs).length > 0;
     // An undated peer reading only fills a hole; it never displaces a live local one.
-    if (ownUsable && !(reading.atMs > readingAtMs(account))) return account;
+    if (ownUsable && !(reading.atMs > readingAtMs(account))) return withCredits();
     windows = swapAccountWindows(windows, account.id, reading, nowMs);
     changed = true;
     const machine = readingMachine(reading);
     // The peer's numbers answer the question; this machine's throttle notice no longer does.
     const { notice: _notice, ...rest } = account;
-    return {
+    // This machine could not read the login, so it could not read its banked
+    // resets either; the peer that can shows them and spends them.
+    return withPeerCredits({
       ...rest,
       machines: [machine, ...account.machines.filter((known) => known.label !== machine.label)],
       readingFrom: machine,
-    };
+    }, holders.get(liveAccountPoolKey(account)));
   });
   return changed ? { ...local, windows, accounts: nextAccounts } : local;
 }
@@ -230,6 +285,7 @@ function overlayPeerReadings<T extends { windows: UsageWindow[]; accounts?: Usag
 function appendElsewhereLogins<T extends { windows: UsageWindow[]; accounts?: UsageAccount[] }>(
   view: T,
   readings: ReadonlyMap<string, PeerReading>,
+  holders: ReadonlyMap<string, PeerCreditHolder>,
   nowMs: number,
 ): T {
   const accounts = view.accounts ?? [];
@@ -243,7 +299,7 @@ function appendElsewhereLogins<T extends { windows: UsageWindow[]; accounts?: Us
     const id = `${reading.account.provider}:elsewhere:${email.toLowerCase()}`;
     const machine = readingMachine(reading);
     extraWindows.push(...reading.windows.map((window) => rebased(window, id, nowMs)));
-    extraAccounts.push({
+    extraAccounts.push(withPeerCredits({
       id,
       provider: reading.account.provider,
       email,
@@ -252,7 +308,7 @@ function appendElsewhereLogins<T extends { windows: UsageWindow[]; accounts?: Us
       machines: [machine],
       readingFrom: machine,
       notSignedInHere: true,
-    });
+    }, holders.get(poolKey)));
   }
   if (extraAccounts.length === 0) return view;
   return { ...view, windows: [...view.windows, ...extraWindows], accounts: [...accounts, ...extraAccounts] };
@@ -273,7 +329,8 @@ export function poolPeerQuota<T extends { windows: UsageWindow[]; accounts?: Usa
 ): { forPicking: T; forDisplay: T } {
   if (peers.length === 0) return { forPicking: local, forDisplay: local };
   const readings = freshestPeerReadings(peers, nowMs);
-  if (readings.size === 0) return { forPicking: local, forDisplay: local };
-  const forPicking = overlayPeerReadings(local, readings, nowMs);
-  return { forPicking, forDisplay: appendElsewhereLogins(forPicking, readings, nowMs) };
+  const holders = peerCreditHolders(peers);
+  if (readings.size === 0 && holders.size === 0) return { forPicking: local, forDisplay: local };
+  const forPicking = overlayPeerReadings(local, readings, holders, nowMs);
+  return { forPicking, forDisplay: appendElsewhereLogins(forPicking, readings, holders, nowMs) };
 }

@@ -114,7 +114,7 @@ describe("readClaudeLogin", () => {
     }));
 
     // ADE never spends the refresh token itself; the CLI does on its next run.
-    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({ state: "expired" });
+    await expect(readClaudeLogin({ allowKeychain: false })).resolves.toEqual({ state: "expired", source: "claude-credentials-file" });
   });
 
   it("reports an expired token with no refresh token as signed out", async () => {

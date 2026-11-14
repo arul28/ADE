@@ -166,6 +166,15 @@ export function groupProcesses(
 }
 
 /**
+ * What the iOS simulators use in a snapshot (the `ios_simulator` group), in
+ * MB: 0 when none run, null when there is no snapshot.
+ */
+export function simulatorGroupMb(snapshot: Pick<ProcessGroupSnapshot, "groups"> | null | undefined): number | null {
+  if (!snapshot) return null;
+  return snapshot.groups.find((group) => group.group === "ios_simulator")?.mb ?? 0;
+}
+
+/**
  * This machine's processes by group, now. Null when the listing could not be
  * read at all. Never throws.
  */
