@@ -1014,9 +1014,10 @@ final class HiddenMachineStore: ObservableObject {
 }
 
 /// Whether a machine's chats, sessions and lanes show in a project's lists.
-/// Live machines and ADE Cloud computers (also asleep) list. A computer the
-/// user disconnected, one parked past the live limit, or one not wanted live
-/// does not. One that lost its link lists only inside the reconnect window.
+/// A computer the user disconnected does not list. Live machines and ADE
+/// Cloud computers (also asleep) list. One parked past the live limit, or one
+/// not wanted live, does not. One that lost its link lists only inside the
+/// reconnect window.
 func fleetMachineListsWork(
   isLive: Bool,
   isCloud: Bool,
@@ -1027,8 +1028,11 @@ func fleetMachineListsWork(
   now: Date,
   window: TimeInterval
 ) -> Bool {
+  // The user's Disconnect wins, also for a cloud computer, as it does for
+  // one this phone never paired (`publishRestingCloudMachines`).
+  if isDisconnectedByUser { return false }
   if isCloud || isLive { return true }
-  if isDisconnectedByUser || isParked || !isWanted { return false }
+  if isParked || !isWanted { return false }
   guard let notLiveSince else { return true }
   return now.timeIntervalSince(notLiveSince) < window
 }

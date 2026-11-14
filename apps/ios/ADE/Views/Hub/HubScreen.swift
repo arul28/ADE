@@ -1084,8 +1084,9 @@ struct HubScreen: View {
     let merge = hubMergeFleetRosters(
       focused: focusedRosters,
       // An asleep ADE Cloud computer lists its saved work too, also when this
-      // phone never connected to it and no other computer is connected.
-      machines: (machineFleet.machines.filter(\.isWanted) + machineFleet.restingCloudMachines)
+      // phone never connected to it, when no other computer is connected, and
+      // when it was paired for a project that is no longer open.
+      machines: (machineFleet.machines.filter { $0.isWanted || $0.isCloud } + machineFleet.restingCloudMachines)
         .map(hubMachineWithListedWork),
       resolver: resolver,
       focusedMachineKey: syncService.focusedMachineKey

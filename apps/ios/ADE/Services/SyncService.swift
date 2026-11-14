@@ -28611,8 +28611,11 @@ extension SyncService {
       let choiceBefore = userConnectionChoiceGeneration
       let pausedBefore = autoReconnectPausedByUser
       _ = await machineFleet.connect(machineKey: machineKey)
+      // A Disconnect of this computer in Settings during the wait changes only
+      // the fleet's choice, so check it here too.
       guard choiceBefore == userConnectionChoiceGeneration,
-            pausedBefore || !autoReconnectPausedByUser
+            pausedBefore || !autoReconnectPausedByUser,
+            machineFleet.machine(for: machineKey)?.isDisconnectedByUser != true
       else { return false }
     }
     if let previous = focusedMachineKey, previous != machineKey, connectionState == .connected {
