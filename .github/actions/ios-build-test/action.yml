@@ -102,17 +102,18 @@ runs:
     # Xcode compares each input's modification time, device and inode with
     # what it recorded in the build folder. A fresh checkout changes all
     # three. The setting below drops the device and inode check, and
-    # ios-mtimes.py gives every input whose content did not change the time
-    # it had when the build folder was saved.
+    # ios-mtimes.py gives every app source whose content did not change the
+    # time it had when the build folder was saved. The Swift packages need
+    # no such step: they come out of the spm-v1 entry with the times it
+    # stored, the same on every restore. (Hashing them read ~17,000 freshly
+    # extracted files and took 3.5 minutes.) A new spm-v1 entry rebuilds the
+    # packages once, which is slow but never wrong.
     - name: Prepare the incremental build
       shell: bash
       run: |
         set -euo pipefail
-        start=$SECONDS
         defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
-        echo "EXPERIMENT defaults write: $((SECONDS - start)) s; python3 is $(command -v python3)"
-        time python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" \
-          apps/ios ~/spm-packages/checkouts ~/spm-packages/artifacts
+        python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" apps/ios
 
     # A concrete simulator destination builds only the arch the tests run on;
     # 'generic/platform=iOS Simulator' also compiled x86_64. The index store
@@ -188,8 +189,7 @@ runs:
         # Logs hold the test results of this run; the next build needs none
         # of them.
         rm -rf "$dd/Logs" "$dd/Index.noindex"
-        python3 scripts/ci/ios-mtimes.py save "$dd/ade-mtimes.tsv" \
-          apps/ios ~/spm-packages/checkouts ~/spm-packages/artifacts
+        python3 scripts/ci/ios-mtimes.py save "$dd/ade-mtimes.tsv" apps/ios
         echo "Build folder: $(du -sh "$dd" | cut -f1)"
 
     - name: Save the build folder

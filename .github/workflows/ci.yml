@@ -996,10 +996,6 @@ jobs:
         # EXPERIMENT (remove before review): save the build folder from this pull request.
         with:
           save-caches: "true"
-          # EXPERIMENT (remove before review): count what recompiles after one change.
-          probe-files: |
-            apps/ios/ADE/Views/FilesTabView.swift
-            apps/ios/ADE/Models/RemoteModels.swift
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:

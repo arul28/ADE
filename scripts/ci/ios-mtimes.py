@@ -11,7 +11,7 @@ input whose content did not change its old time back.
     ios-mtimes.py save    <manifest> <root>...
     ios-mtimes.py restore <manifest> <root>...
 
-A root is a directory (the app sources, the Swift package checkouts). Files
+A root is a directory (the app sources). Files
 and directories under it are recorded; a directory's hash covers the sorted
 names of its entries, because a build step that reads a folder also reads
 its listing. `.git` folders and symbolic links are skipped.
