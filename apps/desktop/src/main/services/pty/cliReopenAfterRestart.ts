@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { fileRecordTimeMs, recordIsOwn, recordWriterGone } from "../processes/processStartTime";
+import { fileRecordTimeMs, processStartTimeReader, recordIsOwn, recordWriterGone } from "../processes/processStartTime";
 
 /**
  * The tracked agent CLIs (Claude Code, Codex, ...) a runtime had open when it
@@ -673,6 +673,15 @@ export function findCliSessionsCutOffByCrash(args: {
   }
   const cutOff: CliCutOffByCrash[] = [];
   const seen = new Set<string>();
+  // Many sessions have the same owner: one `ps` and one liveness check for
+  // each owner pid, not for each session.
+  const startTimeOf = processStartTimeReader();
+  const runsByPid = new Map<number, boolean>();
+  const ownerRuns = (pid: number): boolean => {
+    let runs = runsByPid.get(pid);
+    if (runs === undefined) runsByPid.set(pid, (runs = isProcessRunning(pid)));
+    return runs;
+  };
   let stale = 0;
   for (const row of args.rows) {
     if (seen.has(row.id) || args.exclude?.has(row.id)) continue;
@@ -688,7 +697,7 @@ export function findCliSessionsCutOffByCrash(args: {
     // This runtime's own pid: its current run, unless last seen before it
     // started (an earlier process with the same pid, often before a reboot).
     if (ownerPid === args.ownPid && recordIsOwn(lastSeenMs)) continue;
-    if (!recordWriterGone(ownerPid, lastSeenMs, isProcessRunning, nowMs)) continue;
+    if (!recordWriterGone(ownerPid, lastSeenMs, ownerRuns, nowMs, startTimeOf)) continue;
     if (nowMs - lastSeenMs > args.maxAgeMs) {
       stale += 1;
       continue;

@@ -82,6 +82,19 @@ export function readProcessStartTimesMs(
 }
 
 /**
+ * A reader of start times for one pass over many records: it asks the OS
+ * once for each pid and keeps the answer (also "cannot tell"). Make a new
+ * reader for each pass; an answer must not outlive it.
+ */
+export function processStartTimeReader(): (pid: number) => number | null {
+  const known = new Map<number, number | null>();
+  return (pid) => {
+    if (!known.has(pid)) known.set(pid, readProcessStartTimeMs(pid));
+    return known.get(pid) ?? null;
+  };
+}
+
+/**
  * When this computer booted, in epoch ms, from `os.uptime()`. With Windows
  * Fast Startup, "Shut down" hibernates the kernel and keeps `os.uptime()`
  * counting, so a restart across it reads as a service restart, not a
@@ -138,17 +151,22 @@ export function recordIsOwn(writtenAtMs: number): boolean {
  *   time is not in the future.
  * - Otherwise, and for a record time that cannot be read, the writer runs.
  *   A live writer never reads as gone.
+ *
+ * `startTimeOf` reads the start time (one blocking `ps`). A caller that
+ * checks many records in one pass gives `processStartTimeReader()`, so that
+ * each pid costs one `ps`.
  */
 export function recordWriterGone(
   pid: number,
   writtenAtMs: number,
   pidRuns: (pid: number) => boolean,
   nowMs = Date.now(),
+  startTimeOf: (pid: number) => number | null = readProcessStartTimeMs,
 ): boolean {
   if (pid === process.pid) return !recordIsOwn(writtenAtMs);
   if (!pidRuns(pid)) return true;
   if (!Number.isFinite(writtenAtMs)) return false;
-  const startedAtMs = readProcessStartTimeMs(pid);
+  const startedAtMs = startTimeOf(pid);
   if (startedAtMs != null) return startedAtMs - writtenAtMs > RECORD_WRITER_GAP_MS;
   return writtenAtMs <= nowMs && computerBootedAtMs(nowMs) - writtenAtMs > RECORD_WRITER_GAP_MS;
 }
