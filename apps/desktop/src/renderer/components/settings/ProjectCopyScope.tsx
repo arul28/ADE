@@ -80,6 +80,7 @@ function copyPageFor(
     }),
     // A project page reads the copy, never the machine route.
     machineRoute: null,
+    machineRouteOutdated: false,
     hasRepo: true,
     version: base?.version ?? null,
   };

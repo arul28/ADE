@@ -88,8 +88,10 @@ export function isMachineScopeRootPath(rootPath: string | null | undefined): boo
 }
 
 /**
- * What a machine scope answers: Settings › Providers on a computer. `all`
- * means every action of the domain except those in `except`.
+ * What a machine scope answers: a computer's own settings (Providers, the
+ * Machines page's Restarts, Update track, Shell and load, Behaviour's Terminal
+ * shell, Passwords). `all` means every action of the domain except those in
+ * `except`.
  */
 const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, { all: true; except?: readonly string[] } | readonly string[]>> = {
   // A project copy saves its AI config (disabled providers, local model
@@ -103,6 +105,11 @@ const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, { all: true; except?: reado
   lane: ["list"],
   usage: ["getAdeUsageStats"],
   chat: ["listCodexPlugins"],
+  machine_stats: ["get"],
+  // Settings › Passwords: the summaries and person-only writes its page
+  // sends to the machine it shows (`callPasswords` in preload). Never a
+  // value read (`revealValue`, passkeys, a browser fill).
+  passwords: ["status", "setEnabled", "setCloudEnabled", "reset", "list", "activity", "code", "saveLogin", "saveSecret", "remove", "importCsv", "sync"],
 };
 
 export function machineScopeActionAllowed(domain: string, action: string): boolean {
@@ -116,4 +123,17 @@ export function machineScopeActionAllowed(domain: string, action: string): boole
 /** The sentence for a computer whose ADE predates the machine route. */
 export function machineScopeUpdateMessage(machineName: string): string {
   return `${machineName} runs an older ADE. Update ADE on ${machineName} to manage it from here.`;
+}
+
+/** The same for This computer: its ADE service is older than this app. */
+export const THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE =
+  "This computer's ADE service is older than this app. Restart ADE to update it, then manage it from here.";
+
+/**
+ * How a brain that predates the machine route answers a machine-scope call:
+ * it looks the scope's id up as a project and does not find it.
+ */
+export function isMachineScopeUnknownProjectError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  return message.includes(`Unknown projectId: ${MACHINE_SCOPE_PROJECT_ID}`);
 }

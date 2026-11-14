@@ -10,7 +10,7 @@ import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes } from "../../../lib/format";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { freeSpaceLevel } from "../storage/storageView";
-import { machineSectionAvailable, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
+import { machineRoutedPage, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
 import type { MachineStats } from "../../../../shared/types/machineStats";
 import { useMachineStatsMap, type MachineStatsRequest } from "../../../state/machineStats";
 import { useMachinePlacementPreferences } from "../../../state/machinePlacement";
@@ -47,11 +47,12 @@ function MachinesList() {
   const facts = useMachineFacts(machines, update.currentVersion || null);
   const local = useThisComputerFacts();
   const known = useKnownAdeVersions();
-  // Each machine's load, read through its own pin once when the list opens.
+  // Each machine's load, read through its own pin once when the list opens:
+  // its copy of this repository, else its machine route.
   const statsRequests = useMemo<MachineStatsRequest[]>(() => machines.flatMap((machine) => {
     if (!machine.online && !machine.isThisMachine) return [];
-    const page = settingsMachinePageFor(machine);
-    return machineSectionAvailable("routed", page) ? [{ id: machine.machineId, pin: page.pin }] : [];
+    const page = machineRoutedPage(settingsMachinePageFor(machine));
+    return page && page.online ? [{ id: machine.machineId, pin: page.pin }] : [];
   }), [machines]);
   const { stats } = useMachineStatsMap(statsRequests, true);
   const { preferenceOf } = useMachinePlacementPreferences();
