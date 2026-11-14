@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowUpRight, Github, Star } from "lucide-react";
+import { Link, useLocation } from "react-router-dom";
+import { ArrowUpRight, Github, Menu, Star, X } from "lucide-react";
+import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
+import { linkToPricing } from "../../lib/siteFlags";
 import type { InstallPlatform } from "../../lib/installTargets";
 import {
   MARKETING_CTA_LABELS,
@@ -52,37 +54,63 @@ function useGithubStars(): number | null {
   return stars;
 }
 
-const linkClass = "text-[13px] text-white/60 transition-colors hover:text-white";
+const linkClass = "rounded-md text-[13px] text-white/60 transition-colors hover:text-white focus-ring";
 
+const CHANGELOG_URL = `${LINKS.docs}/changelog`;
+
+/**
+ * The site's one header, on every page: the logo, three links, and the
+ * download button. Below `md` the links move into a menu.
+ */
 export function SiteNav() {
   const { openInstall } = useInstallDialog();
   const platform = guessPlatform();
   const stars = useGithubStars();
+  const location = useLocation();
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => setMenuOpen(false), [location.pathname, location.hash]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [menuOpen]);
+
+  const onPricing = location.pathname === "/pricing";
 
   return (
     <header className="sticky top-0 z-50 border-b border-white/[0.07] bg-[#0a0a0f]/75 backdrop-blur-xl">
       <div className="mx-auto flex h-[60px] max-w-[1320px] items-center gap-7 px-5 sm:px-8">
-        <a href="/" aria-label="ADE home" className="flex shrink-0 items-center">
+        <Link to="/" aria-label="ADE home" className="focus-ring flex shrink-0 items-center rounded-md">
           <img src="/logo.png" alt="ADE" className="h-[22px] w-auto" />
-        </a>
+        </Link>
 
-        <nav className="hidden items-center gap-6 md:flex">
-          <Link to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING} className={linkClass}>
-            Pricing
-          </Link>
-          <a
-            href={LINKS.docs}
-            target="_blank"
-            rel="noreferrer"
-            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS}
-            className={linkClass}
-          >
+        <nav className="hidden items-center gap-6 md:flex" aria-label="Main">
+          {linkToPricing ? (
+            <Link
+              to="/pricing"
+              aria-current={onPricing ? "page" : undefined}
+              data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}
+              className={cn(linkClass, onPricing && "text-white")}
+            >
+              Pricing
+            </Link>
+          ) : null}
+          <a href={LINKS.docs} target="_blank" rel="noreferrer" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_DOCS} className={linkClass}>
             Docs
           </a>
-          <a href={`${LINKS.docs}/changelog`} target="_blank" rel="noreferrer" className={linkClass}>
+          <a href={CHANGELOG_URL} target="_blank" rel="noreferrer" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_RELEASES} className={linkClass}>
             Changelog
           </a>
-
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
@@ -92,13 +120,7 @@ export function SiteNav() {
             rel="noopener noreferrer"
             className="hidden transition-transform duration-200 hover:-translate-y-px lg:inline-flex"
           >
-            <img
-              alt="ADE on Product Hunt"
-              width={150}
-              height={32}
-              src={PRODUCT_HUNT_BADGE}
-              className="h-[32px] w-auto"
-            />
+            <img alt="ADE on Product Hunt" width={150} height={32} src={PRODUCT_HUNT_BADGE} className="h-[32px] w-auto" />
           </a>
           <a
             href={LINKS.github}
@@ -124,7 +146,7 @@ export function SiteNav() {
             data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
             data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.07] px-4 text-[14px] font-medium text-white transition-colors hover:border-white/40 hover:bg-white/[0.12]"
+            className="hidden h-9 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.07] px-4 text-[14px] font-medium text-white transition-colors hover:border-white/40 hover:bg-white/[0.12] md:inline-flex"
           >
             Open web app <ArrowUpRight className="h-4 w-4" />
           </a>
@@ -139,8 +161,73 @@ export function SiteNav() {
           >
             Download
           </button>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((open) => !open)}
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={menuOpen}
+            aria-controls="ade-site-menu"
+            className="focus-ring -mr-1 inline-flex h-9 w-9 items-center justify-center rounded-full text-white/80 transition-colors hover:bg-white/[0.08] hover:text-white md:hidden"
+          >
+            {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
         </div>
       </div>
+
+      {menuOpen && (
+        <div className="fixed inset-x-0 bottom-0 top-[60px] z-40 md:hidden">
+          <button type="button" aria-label="Close menu" className="absolute inset-0 bg-black/60" onClick={() => setMenuOpen(false)} />
+          <nav
+            id="ade-site-menu"
+            aria-label="Main"
+            className="relative border-b border-white/[0.08] bg-[#0c0c12] px-5 pb-6 pt-3"
+          >
+            {linkToPricing ? <MenuLink to="/pricing" feature={MARKETING_FEATURES.VIEW_PRICING}>Pricing</MenuLink> : null}
+            <MenuLink href={LINKS.docs} feature={MARKETING_FEATURES.VIEW_DOCS}>Docs</MenuLink>
+            <MenuLink href={CHANGELOG_URL} feature={MARKETING_FEATURES.VIEW_RELEASES}>Changelog</MenuLink>
+            <MenuLink href={LINKS.github} feature={MARKETING_FEATURES.VIEW_GITHUB}>GitHub</MenuLink>
+            <a
+              href={LINKS.webClient}
+              target="_blank"
+              rel="noreferrer"
+              data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+              data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
+              data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
+              className="mt-4 flex h-11 items-center justify-center gap-1.5 rounded-full border border-white/20 bg-white/[0.06] text-[15px] font-medium text-white"
+            >
+              Open web app <ArrowUpRight className="h-4 w-4" />
+            </a>
+          </nav>
+        </div>
+      )}
     </header>
+  );
+}
+
+function MenuLink({
+  to,
+  href,
+  feature,
+  children,
+}: {
+  to?: string;
+  href?: string;
+  feature: (typeof MARKETING_FEATURES)[keyof typeof MARKETING_FEATURES];
+  children: string;
+}) {
+  const className =
+    "focus-ring flex items-center justify-between border-b border-white/[0.06] py-3.5 font-serif text-[26px] leading-none text-white";
+  if (to) {
+    return (
+      <Link to={to} data-ade-analytics-feature={feature} className={className}>
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer" data-ade-analytics-feature={feature} className={className}>
+      {children}
+      <ArrowUpRight className="h-5 w-5 text-white/40" />
+    </a>
   );
 }

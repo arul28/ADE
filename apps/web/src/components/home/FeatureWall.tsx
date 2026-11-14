@@ -1,10 +1,11 @@
-import type { ComponentType, ReactNode } from "react";
+import { useState, type ComponentType, type ReactNode } from "react";
 import {
   AppWindow,
   Bell,
   BellRing,
   Boxes,
   CalendarClock,
+  ChevronDown,
   Clapperboard,
   Columns3,
   Crown,
@@ -37,13 +38,17 @@ import {
   Webhook,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
+import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 import { WindowsMark } from "./marks";
+
+const GRID = "grid auto-rows-[150px] grid-flow-dense grid-cols-2 gap-3 md:grid-cols-4 lg:auto-rows-[170px] lg:grid-cols-6";
 
 /*
  * Everything else ADE does, as one wall in the manner of Apple's feature
  * walls: tiles of many sizes packed into one grid, a bright tile at the
  * middle, the big features as large tiles with a screenshot, and small tiles
  * with an icon and one line. No filters. Every screenshot is the real app.
+ * The first block shows the best of them; "See every feature" adds the rest.
  */
 
 type Icon = ComponentType<{ className?: string }>;
@@ -138,9 +143,10 @@ function Small({ span = "1x1", icon: I, title, body, tint, className }: { span?:
 }
 
 export function FeatureWall() {
+  const [showAll, setShowAll] = useState(false);
   return (
-    <section className="mx-auto max-w-[1320px] px-5 pb-[clamp(80px,10vw,140px)] pt-10 sm:px-8">
-      <div className="grid auto-rows-[150px] grid-flow-dense grid-cols-2 gap-3 md:grid-cols-4 lg:auto-rows-[170px] lg:grid-cols-6">
+    <section id="features" className="mx-auto max-w-[1320px] scroll-mt-20 px-5 pb-[clamp(80px,10vw,140px)] pt-10 sm:px-8">
+      <div className={GRID}>
         {/* The big four: tall, so each screenshot has room to read */}
         <ScreenTile
           span="3x3"
@@ -206,157 +212,175 @@ export function FeatureWall() {
         </Tile>
         <Small icon={Mic} title="Voice" body="Dictate, or talk with an agent out loud, live." tint="text-rose-400" />
 
-        <PhoneTile />
-        <ScreenTile
-          span="3x3"
-          icon={Import}
-          tint="text-violet-300"
-          title="Import your chats"
-          body="Bring in past chats from Claude Code, Codex, Cursor and more, and keep going."
-          src="/images/home/wall/import.webp"
-          alt="ADE's import window: past Claude, Codex and Cursor chats on this computer, with one open"
-          glow="rgba(167,139,250,0.2)"
-        />
-
-        <ScreenTile
-          span="3x3"
-          icon={LayoutDashboard}
-          tint="text-sky-300"
-          title="Home screen"
-          body="Customize your home screen."
-          detail="Pick from widgets for projects, pull requests, usage limits, machine health, weather, a focus timer, clipboard history, contributions, music and more."
-          src="/images/home/wall/widgets.webp"
-          alt="ADE's home page: projects, open pull requests, the weather and a 3D chart of a year of contributions, over a painted background"
-          glow="rgba(125,211,252,0.18)"
-        />
-        <ScreenTile
-          span="3x2"
-          icon={Palette}
-          tint="text-fuchsia-300"
-          title="Themes and backgrounds"
-          body="26 themes, your own colours, fonts and backgrounds."
-          src="/images/home/wall/themes.webp"
-          alt="ADE's appearance settings: 26 themes and a live preview over a painted background"
-          glow="rgba(240,171,252,0.16)"
-        />
-
-        <ScreenTile
-          span="3x2"
-          icon={Clapperboard}
-          tint="text-violet-300"
-          title="Proof"
-          body="Agents file screenshots and videos of what they did, with the chat."
-          src="/images/home/wall/proof.webp"
-          alt="An agent's answer with the screenshot it filed as proof, and the chat's proof drawer"
-          glow="rgba(139,92,246,0.2)"
-        />
         <Small icon={RotateCcw} title="Rewind files" body="Undo edits back to any message." tint="text-emerald-400" />
-        <Small icon={Sparkles} title="Scenes" body="Live charts and views in the chat." tint="text-fuchsia-400" />
-        <Small span="2x1" icon={PanelRight} title="Chat actions" body="Each chat's subagents, schedules, background tasks, sources and proof, in one pane." tint="text-sky-300" />
-
-        <ScreenTile
-          span="3x2"
-          icon={LayoutGrid}
-          tint="text-cyan-300"
-          title="Grid view"
-          body="Watch many chats work side by side."
-          src="/images/home/wall/grid.webp"
-          alt="Two agent chats side by side in ADE's grid view, with the chat list on the left"
-          glow="rgba(103,232,249,0.16)"
-        />
-        <ScreenTile
-          span="3x2"
-          icon={MessageSquareQuote}
-          tint="text-amber-300"
-          title="Comments"
-          body="Comment on any reply, then send it to the chat."
-          src="/images/home/wall/comments.webp"
-          alt="A comment on a highlighted line of an agent's reply, set to send with the next message"
-          glow="rgba(252,211,77,0.16)"
-        />
-        <ScreenTile
-          span="2x2"
-          icon={Crown}
-          tint="text-teal-300"
-          title="CTO"
-          body="A project manager for each project that knows its lanes, PRs and history."
-          src="/images/home/wall/cto.webp"
-          alt="ADE's CTO introducing itself: it runs point on the project and can drive ADE"
-          glow="rgba(94,234,212,0.16)"
-        />
-
-        <Small span="2x1" icon={SquareTerminal} title="ade CLI" body="Agents and scripts drive every lane, chat and PR from the command line." tint="text-violet-300" />
-        <Small icon={Repeat2} title="Hand off" body="Move a chat to another model or machine." tint="text-pink-300" />
-        <Small icon={ListTodo} title="Issues" body="Linear, Jira and GitHub. Start work from any." tint="text-indigo-300" />
-
-        <ScreenTile
-          span="2x2"
-          icon={Columns3}
-          tint="text-lime-300"
-          title="Board"
-          body="Every chat on a board: needs you, working, waiting, done."
-          src="/images/home/wall/board.webp"
-          alt="ADE's Work board with columns for chats that need you, are working, are waiting, and are done"
-          glow="rgba(190,242,100,0.14)"
-        />
-        <ScreenTile
-          span="3x2"
-          icon={Gauge}
-          tint="text-orange-300"
-          title="Usage"
-          body="Limits, pace and spend for every plan, on every machine."
-          src="/images/home/wall/spend.webp"
-          alt="ADE's usage page: cost, sessions and pull requests, and the rate limits left on Claude, Codex, Copilot, Grok and OpenCode"
-          glow="rgba(253,186,116,0.16)"
-        />
-
-        <ScreenTile
-          span="3x2"
-          icon={Moon}
-          tint="text-indigo-300"
-          title="Keep awake"
-          body="Agents keep working while you are away, even with the lid closed."
-          src="/images/home/wall/awake.webp"
-          alt="ADE's setting to keep the Mac awake: never, while I'm away, or even with the lid closed"
-          glow="rgba(165,180,252,0.16)"
-        />
-        <Small span="2x1" icon={Plug} title="ADE MCP" body="Let ChatGPT, Claude, Grok and other AI apps use ADE on your computer." tint="text-cyan-300" />
-        <Small icon={Boxes} title="One MCP setup" body="Add a server once, every agent gets it." tint="text-cyan-400" />
-
-        <Small span="2x1" icon={Globe} title="Web app" body="Control every machine and agent from a browser. It works like the desktop app." tint="text-blue-300" />
-        <Small span="2x1" icon={Server} title="Headless brain" body="Run ADE on a server with no screen. Sign in, and it joins your other machines." tint="text-slate-300" />
-        <Small span="2x1" icon={Scale} title="Smart balance" body="Spreads chats across all your accounts, so one plan never runs dry first." tint="text-lime-400" />
-
-        <Small icon={CalendarClock} title="Scheduled sends" body="Write now, send later." tint="text-yellow-300" />
-        <Small icon={Monitor} title="Mac desktop" body="A private screen agents drive, so yours stays free." tint="text-slate-300" />
-        <Small icon={WindowsMark} title="Windows desktop" body="The same, on your PC." tint="text-sky-400" />
-        <Small icon={AppWindow} title="App Control" body="Drives and records Electron apps." tint="text-teal-300" />
-        <Small icon={Link2} title="Deep links" body="Link to any chat, file or PR." tint="text-violet-300" />
-        <Small icon={BellRing} title="Notifications" body="Know when an agent needs you, on any device." tint="text-rose-300" />
-
-        <ScreenTile
-          span="3x2"
-          icon={GitMerge}
-          tint="text-pink-300"
-          title="History graph"
-          body="Every branch and commit, drawn."
-          src="/images/home/wall/history.webp"
-          alt="ADE's history: the commit graph across lanes, with an agent's commit selected"
-          glow="rgba(249,168,212,0.16)"
-        />
-        <Tile span="3x2" className="flex items-center gap-6 p-6 sm:p-8">
-          <div className="flex shrink-0 items-center gap-3">
-            <AppleMusicIcon className="h-16 w-16" />
-            <span className="grid h-16 w-16 place-items-center rounded-[15px] bg-black">
-              <img src="/images/home/marks/spotify.svg" alt="" aria-hidden className="h-11 w-11" />
-            </span>
-          </div>
-          <div>
-            <div className="text-[24px] font-semibold leading-tight text-white">Music</div>
-            <div className="mt-1 text-[14px] leading-snug text-white/55">Apple Music and Spotify while you work.</div>
-          </div>
-        </Tile>
       </div>
+
+      {showAll ? (
+        <div id="ade-all-features" className={cn(GRID, "mt-3")}>
+          <PhoneTile />
+          <ScreenTile
+            span="3x3"
+            icon={Import}
+            tint="text-violet-300"
+            title="Import your chats"
+            body="Bring in past chats from Claude Code, Codex, Cursor and more, and keep going."
+            src="/images/home/wall/import.webp"
+            alt="ADE's import window: past Claude, Codex and Cursor chats on this computer, with one open"
+            glow="rgba(167,139,250,0.2)"
+          />
+
+          <ScreenTile
+            span="3x3"
+            icon={LayoutDashboard}
+            tint="text-sky-300"
+            title="Home screen"
+            body="Customize your home screen."
+            detail="Pick from widgets for projects, pull requests, usage limits, machine health, weather, a focus timer, clipboard history, contributions, music and more."
+            src="/images/home/wall/widgets.webp"
+            alt="ADE's home page: projects, open pull requests, the weather and a 3D chart of a year of contributions, over a painted background"
+            glow="rgba(125,211,252,0.18)"
+          />
+          <ScreenTile
+            span="3x2"
+            icon={Palette}
+            tint="text-fuchsia-300"
+            title="Themes and backgrounds"
+            body="26 themes, your own colours, fonts and backgrounds."
+            src="/images/home/wall/themes.webp"
+            alt="ADE's appearance settings: 26 themes and a live preview over a painted background"
+            glow="rgba(240,171,252,0.16)"
+          />
+
+          <ScreenTile
+            span="3x2"
+            icon={Clapperboard}
+            tint="text-violet-300"
+            title="Proof"
+            body="Agents file screenshots and videos of what they did, with the chat."
+            src="/images/home/wall/proof.webp"
+            alt="An agent's answer with the screenshot it filed as proof, and the chat's proof drawer"
+            glow="rgba(139,92,246,0.2)"
+          />
+          <Small icon={Sparkles} title="Scenes" body="Live charts and views in the chat." tint="text-fuchsia-400" />
+          <Small span="2x1" icon={PanelRight} title="Chat actions" body="Each chat's subagents, schedules, background tasks, sources and proof, in one pane." tint="text-sky-300" />
+
+          <ScreenTile
+            span="3x2"
+            icon={LayoutGrid}
+            tint="text-cyan-300"
+            title="Grid view"
+            body="Watch many chats work side by side."
+            src="/images/home/wall/grid.webp"
+            alt="Two agent chats side by side in ADE's grid view, with the chat list on the left"
+            glow="rgba(103,232,249,0.16)"
+          />
+          <ScreenTile
+            span="3x2"
+            icon={MessageSquareQuote}
+            tint="text-amber-300"
+            title="Comments"
+            body="Comment on any reply, then send it to the chat."
+            src="/images/home/wall/comments.webp"
+            alt="A comment on a highlighted line of an agent's reply, set to send with the next message"
+            glow="rgba(252,211,77,0.16)"
+          />
+          <ScreenTile
+            span="2x2"
+            icon={Crown}
+            tint="text-teal-300"
+            title="CTO"
+            body="A project manager for each project that knows its lanes, PRs and history."
+            src="/images/home/wall/cto.webp"
+            alt="ADE's CTO introducing itself: it runs point on the project and can drive ADE"
+            glow="rgba(94,234,212,0.16)"
+          />
+
+          <Small span="2x1" icon={SquareTerminal} title="ade CLI" body="Agents and scripts drive every lane, chat and PR from the command line." tint="text-violet-300" />
+          <Small icon={Repeat2} title="Hand off" body="Move a chat to another model or machine." tint="text-pink-300" />
+          <Small icon={ListTodo} title="Issues" body="Linear, Jira and GitHub. Start work from any." tint="text-indigo-300" />
+
+          <ScreenTile
+            span="2x2"
+            icon={Columns3}
+            tint="text-lime-300"
+            title="Board"
+            body="Every chat on a board: needs you, working, waiting, done."
+            src="/images/home/wall/board.webp"
+            alt="ADE's Work board with columns for chats that need you, are working, are waiting, and are done"
+            glow="rgba(190,242,100,0.14)"
+          />
+          <ScreenTile
+            span="3x2"
+            icon={Gauge}
+            tint="text-orange-300"
+            title="Usage"
+            body="Limits, pace and spend for every plan, on every machine."
+            src="/images/home/wall/spend.webp"
+            alt="ADE's usage page: cost, sessions and pull requests, and the rate limits left on Claude, Codex, Copilot, Grok and OpenCode"
+            glow="rgba(253,186,116,0.16)"
+          />
+
+          <ScreenTile
+            span="3x2"
+            icon={Moon}
+            tint="text-indigo-300"
+            title="Keep awake"
+            body="Agents keep working while you are away, even with the lid closed."
+            src="/images/home/wall/awake.webp"
+            alt="ADE's setting to keep the Mac awake: never, while I'm away, or even with the lid closed"
+            glow="rgba(165,180,252,0.16)"
+          />
+          <Small span="2x1" icon={Plug} title="ADE MCP" body="Let ChatGPT, Claude, Grok and other AI apps use ADE on your computer." tint="text-cyan-300" />
+          <Small icon={Boxes} title="One MCP setup" body="Add a server once, every agent gets it." tint="text-cyan-400" />
+
+          <Small span="2x1" icon={Globe} title="Web app" body="Control every machine and agent from a browser. It works like the desktop app." tint="text-blue-300" />
+          <Small span="2x1" icon={Server} title="Headless brain" body="Run ADE on a server with no screen. Sign in, and it joins your other machines." tint="text-slate-300" />
+          <Small span="2x1" icon={Scale} title="Smart balance" body="Spreads chats across all your accounts, so one plan never runs dry first." tint="text-lime-400" />
+
+          <Small icon={CalendarClock} title="Scheduled sends" body="Write now, send later." tint="text-yellow-300" />
+          <Small icon={Monitor} title="Mac desktop" body="A private screen agents drive, so yours stays free." tint="text-slate-300" />
+          <Small icon={WindowsMark} title="Windows desktop" body="The same, on your PC." tint="text-sky-400" />
+          <Small icon={AppWindow} title="App Control" body="Drives and records Electron apps." tint="text-teal-300" />
+          <Small icon={Link2} title="Deep links" body="Link to any chat, file or PR." tint="text-violet-300" />
+          <Small icon={BellRing} title="Notifications" body="Know when an agent needs you, on any device." tint="text-rose-300" />
+
+          <ScreenTile
+            span="3x2"
+            icon={GitMerge}
+            tint="text-pink-300"
+            title="History graph"
+            body="Every branch and commit, drawn."
+            src="/images/home/wall/history.webp"
+            alt="ADE's history: the commit graph across lanes, with an agent's commit selected"
+            glow="rgba(249,168,212,0.16)"
+          />
+          <Tile span="3x2" className="flex items-center gap-6 p-6 sm:p-8">
+            <div className="flex shrink-0 items-center gap-3">
+              <AppleMusicIcon className="h-16 w-16" />
+              <span className="grid h-16 w-16 place-items-center rounded-[15px] bg-black">
+                <img src="/images/home/marks/spotify.svg" alt="" aria-hidden className="h-11 w-11" />
+              </span>
+            </div>
+            <div>
+              <div className="text-[24px] font-semibold leading-tight text-white">Music</div>
+              <div className="mt-1 text-[14px] leading-snug text-white/55">Apple Music and Spotify while you work.</div>
+            </div>
+          </Tile>
+        </div>
+      ) : (
+        <div className="mt-8 flex justify-center">
+          <button
+            type="button"
+            onClick={() => setShowAll(true)}
+            aria-expanded={false}
+            aria-controls="ade-all-features"
+            data-ade-analytics-feature={MARKETING_FEATURES.VIEW_ALL_FEATURES}
+            className="focus-ring inline-flex h-11 items-center gap-2 rounded-full border border-white/15 bg-white/[0.04] px-5 text-[14px] font-medium text-white/85 transition-colors hover:border-white/35 hover:bg-white/[0.08] hover:text-white"
+          >
+            See every feature <ChevronDown className="h-4 w-4" />
+          </button>
+        </div>
+      )}
     </section>
   );
 }

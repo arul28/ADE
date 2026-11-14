@@ -1,7 +1,9 @@
 import { Link } from "react-router-dom";
+import { CloudMark } from "./cloud/CloudMark";
 import { ArrowUpRight } from "lucide-react";
 import { Container } from "./Container";
 import { LINKS } from "../lib/links";
+import { linkToPricing } from "../lib/siteFlags";
 import { useInstallDialog } from "./install/InstallDialogProvider";
 import {
   MARKETING_CTA_LABELS,
@@ -48,14 +50,17 @@ export function SiteFooter() {
                 <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
                   Download for iOS
                 </a>
-                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}>
-                  Pricing
-                </Link>
+                {linkToPricing ? (
+                  <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}>
+                    Pricing
+                  </Link>
+                ) : null}
                 <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#features" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_FEATURES}>
                   Features
                 </Link>
-                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#quickstart" data-ade-analytics-feature={MARKETING_FEATURES.GET_STARTED} data-ade-analytics-cta={MARKETING_CTA_LABELS.GET_STARTED_FREE} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER}>
-                  Get Started
+                <Link className="focus-ring inline-flex w-fit items-center gap-1.5 rounded-md text-muted-fg hover:text-fg" to="/#ade-cloud" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_ADE_CLOUD}>
+                  <CloudMark className="h-3.5" />
+                  ADE Cloud
                 </Link>
               </div>
             </div>

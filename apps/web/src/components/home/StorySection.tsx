@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { CloudMark } from "../cloud/CloudMark";
 import { AnimatePresence, motion, useReducedMotion, useScroll, useSpring } from "framer-motion";
 import { ALL_PROVIDERS, OPENCODE_PROVIDERS, ProviderMark, ProviderTile, providerById, type Provider } from "./providers";
 import { useWideScreen } from "./story";
@@ -96,7 +97,7 @@ const BEATS: Beat[] = [
   },
   {
     title: "Every machine, one account.",
-    sub: "Your computers connect through your ADE account, so every agent can reach every machine.",
+    sub: "Your own computers, plus cloud computers from ADE Cloud, on one account. Every agent can reach every machine.",
     at: (s) => segmentStart(s, "network") + 10,
   },
 ];
@@ -757,6 +758,7 @@ function MachineMap({ els, beams }: { els: Els; beams: Beam[] }) {
         <div className="relative grid place-items-center">
           <div className="absolute h-[620px] w-[620px] rounded-full" style={{ background: "radial-gradient(closest-side, rgba(124,58,237,0.5), rgba(124,58,237,0.1) 55%, transparent)" }} />
           <img src="/images/home/ade-icon.png" alt="" aria-hidden className="relative h-[230px] w-[230px] drop-shadow-[0_24px_70px_rgba(124,58,237,0.7)]" />
+          <CloudMachine />
         </div>
       </div>
 
@@ -779,6 +781,36 @@ function MachineMap({ els, beams }: { els: Els; beams: Beam[] }) {
     </>
   );
 }
+
+/**
+ * ADE Cloud, the machine you do not own: a cloud computer above ADE, between
+ * the Mac Studio and the Windows PC, joined to ADE by a short link. It fades
+ * in with the hub, and leads into the ADE Cloud section under the story.
+ */
+function CloudMachine() {
+  return (
+    <div className="absolute bottom-[calc(100%+26px)] left-1/2 flex -translate-x-1/2 flex-col items-center">
+      <div className="flex w-[520px] flex-col items-center rounded-[40px] border-[3px] border-[color:var(--color-violet-bright)]/40 bg-[linear-gradient(180deg,#221a52,#120f2e)] px-10 pb-10 pt-9 shadow-[0_40px_120px_-20px_rgba(139,92,246,0.7)]">
+        <div className="flex items-center gap-5">
+          <CloudMark className="h-[74px]" />
+          <span className="text-[60px] font-semibold tracking-[-0.02em] text-white">ADE Cloud</span>
+        </div>
+        <div className="mt-8 grid w-full grid-cols-6 gap-3">
+          {CLOUD_WINDOWS.map((lit, index) => (
+            <span
+              key={index}
+              className={lit ? "h-[22px] rounded-[5px] bg-[color:var(--color-lamp)] shadow-[0_0_18px_rgba(255,210,122,0.7)]" : "h-[22px] rounded-[5px] bg-[#2a2466]"}
+            />
+          ))}
+        </div>
+      </div>
+      <div className="h-[26px] w-[4px] rounded-full bg-[rgba(196,181,253,0.55)]" />
+    </div>
+  );
+}
+
+/** Which windows of the cloud machine are lit: a few agents at work. */
+const CLOUD_WINDOWS = [true, false, false, true, false, false, false, true, false, false, false, true];
 
 /**
  * One of the other machines, facing front. The Mac Studio is a silver Studio
@@ -880,9 +912,27 @@ function StackedStory() {
           <Kicker index={item.chapter} />
           <Title beat={BEATS[item.beat]!} />
           <img src={item.src} alt={item.alt} loading="lazy" className="mt-6 w-full rounded-[12px] border border-white/10" />
+          {item.chapter === 2 ? <StackedMachines /> : null}
         </div>
       ))}
     </section>
+  );
+}
+
+/** The stacked story's machines: your own, and a cloud computer from ADE Cloud. */
+function StackedMachines() {
+  return (
+    <ul className="mt-4 flex flex-wrap gap-2 text-[13.5px]">
+      {["MacBook Pro", "Mac Studio", "Windows PC"].map((name) => (
+        <li key={name} className="rounded-full border border-white/15 bg-white/[0.04] px-3 py-1.5 text-white/80">
+          {name}
+        </li>
+      ))}
+      <li className="flex items-center gap-2 rounded-full border border-[color:var(--color-violet-bright)]/45 bg-[linear-gradient(180deg,#221a52,#120f2e)] py-1.5 pl-2 pr-3 font-medium text-white">
+        <CloudMark className="h-4" />
+        ADE Cloud
+      </li>
+    </ul>
   );
 }
 

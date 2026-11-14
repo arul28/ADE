@@ -2351,12 +2351,25 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
 
-The pricing page (`/pricing`, screen `pricing`) reuses the same events: each
-plan card's button records the CTA event with `choose_plan_free`,
+The pricing page (`/pricing`, screen `pricing`) reuses the same events. It is
+hidden until ADE Cloud launches (`PRICING_PAGE_LIVE` in
+`apps/web/src/lib/siteFlags.ts`): no link points to it and production builds
+send the route home. A plan is bought inside ADE, so each plan card's button
+opens the install dialog and records the CTA event with `choose_plan_free`,
 `choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
-`pricing_page` (it opens the install dialog, which records its own feature
-event), and every link to the page (site header, home page masthead and
-ADE Cloud teaser, footer) records the `view_pricing` feature.
+`pricing_page`; the CTA names the plan, which shows which plan people want.
+The page's "Start free" button records `get_started_free` at `pricing_page`.
+Every link to the page (site header and its phone menu, the home page's ADE
+Cloud section, footer) records the `view_pricing` feature. The plan finder
+records `use_plan_finder` once per page view, on the visitor's first change to
+one of its controls; the numbers chosen are never sent. Its button under the
+suggested plan records the matching `choose_plan_*` CTA at position
+`plan_finder`, so a finder-led choice is told apart from a plan card's.
+
+On the home page, the hero's ADE Cloud link records `view_ade_cloud`, the ADE
+Cloud section's "Start free" opens the install dialog and records the
+`get_started_free` CTA at position `home_cloud`, and the feature wall's "See every feature" button records
+`view_all_features`.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

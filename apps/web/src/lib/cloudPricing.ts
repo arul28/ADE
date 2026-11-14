@@ -127,3 +127,74 @@ export const formatCents = (cents: number): string => `${Number(cents.toFixed(2)
 
 /** "1,600". */
 export const formatCount = (value: number): string => value.toLocaleString("en-US");
+
+/** The month the plan finder counts in. */
+export const FINDER_DAYS_A_MONTH = 30;
+
+export type PlanCost = {
+  plan: PricingPlan;
+  /** What the month costs on this plan, extra hours included. */
+  costUsd: number;
+  /** Hours past the plan's own that the month needs. */
+  extraHours: number;
+  /** Hours of the plan left unused. */
+  spareHours: number;
+};
+
+/**
+ * What a month of `hours` costs on each plan that can run it, cheapest
+ * first. Free can run it only inside its own hours (work stops there); a
+ * paid plan runs past its hours with extra hours turned on.
+ */
+export function planCostsFor(hours: number): PlanCost[] {
+  const needed = Math.max(0, hours);
+  return PRICING_PLANS.flatMap((plan): PlanCost[] => {
+    const extraHours = Math.max(0, needed - plan.hours);
+    if (extraHours > 0 && plan.extraHourCents == null) return [];
+    const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100;
+    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed) }];
+  }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
+}
+
+/** "$5", "$13.40". */
+export const formatUsd = (usd: number): string =>
+  Number.isInteger(usd) ? `$${usd}` : `$${usd.toFixed(2)}`;
+
+/**
+ * The plan the finder suggests for a month of `hours`, and the other plan
+ * worth naming. A plan that covers the month with its own hours wins over a
+ * cheaper one that runs on extra hours, unless it costs more than $5 or 30%
+ * more: a person rarely wants a bill that grows with every hour to save a
+ * dollar or two.
+ */
+export function suggestPlan(hours: number): { pick: PlanCost; other: PlanCost | null } | null {
+  const costs = planCostsFor(hours);
+  const cheapest = costs[0];
+  if (!cheapest) return null;
+  const covered = costs.find((cost) => cost.extraHours === 0) ?? null;
+  if (cheapest.extraHours === 0 || !covered) return { pick: cheapest, other: null };
+  const gap = covered.costUsd - cheapest.costUsd;
+  return gap <= Math.max(5, cheapest.costUsd * 0.3)
+    ? { pick: covered, other: cheapest }
+    : { pick: cheapest, other: covered };
+}
+
+/** What one included hour costs on a paid plan, in cents: "1.7¢". Null on Free. */
+export function centsPerIncludedHour(plan: PricingPlan): string | null {
+  if (plan.priceUsd === 0 || plan.hours === 0) return null;
+  return `${Number(((plan.priceUsd * 100) / plan.hours).toFixed(1))}¢`;
+}
+
+/**
+ * A month of the plan's hours as a day of work: "3 hours a day" while one
+ * computer could do it, then "7 agents, day and night".
+ */
+export function planDayLine(plan: PricingPlan): string {
+  const perDay = plan.hours / FINDER_DAYS_A_MONTH;
+  if (perDay <= 24) {
+    const rounded = Math.max(1, Math.round(perDay));
+    return `${rounded} ${rounded === 1 ? "hour" : "hours"} a day`;
+  }
+  const agents = Math.round(perDay / 24);
+  return `${agents} ${agents === 1 ? "agent" : "agents"}, day and night`;
+}
