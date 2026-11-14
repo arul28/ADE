@@ -901,6 +901,36 @@ function machineAccountAppGithubOptions(accountUserId: () => string | null) {
   };
 }
 
+/** One overlay per machine-owned runtime, so every connection shares it. */
+const lentAccountSettingsRuntimes = new WeakMap<AdeRuntime, AdeRuntime>();
+
+/**
+ * The machine-owned runtime (sync off, no account store of its own) with this
+ * brain's account settings store lent to it, for the machine route only. A
+ * prototype overlay keeps the runtime's getters and methods live. It is made
+ * once per runtime: what the action registry hangs on a runtime (the sign-in
+ * status bridges) is then added once, and disposing the runtime runs the
+ * overlay's teardown first, then the runtime's own.
+ */
+function withLentAccountSettings(
+  runtime: AdeRuntime,
+  settings: NonNullable<AdeRuntime["accountSettingsStore"]>,
+): AdeRuntime {
+  const cached = lentAccountSettingsRuntimes.get(runtime);
+  if (cached) return cached;
+  const scoped = Object.create(runtime) as AdeRuntime;
+  Object.defineProperty(scoped, "accountSettingsStore", { value: settings, enumerable: true });
+  // The overlay's own `dispose` starts as the runtime's; whatever wraps it
+  // (`ensureAuthStatusRelayBridges`) ends in the runtime's own teardown.
+  Object.defineProperty(scoped, "dispose", { value: runtime.dispose, writable: true, enumerable: true });
+  runtime.dispose = (reason) => {
+    lentAccountSettingsRuntimes.delete(runtime);
+    return scoped.dispose(reason);
+  };
+  lentAccountSettingsRuntimes.set(runtime, scoped);
+  return scoped;
+}
+
 async function createMachineProjectScaffoldService() {
   const account = getMachineAccountStores(machineProjectLogger);
   const githubService = createHeadlessGitHubService(
@@ -1963,13 +1993,7 @@ export function createMultiProjectRpcRequestHandler(
     }
     const runtime = await personalChatScope.runtimeForDelivery();
     const settings = options.machineScopeAccountSettings?.();
-    if (!settings) return runtime;
-    // The machine-owned runtime runs with sync off, so it opens no account
-    // store of its own; this brain's are lent to it here, for this route only.
-    // A prototype overlay keeps the runtime's getters and methods live.
-    const scoped = Object.create(runtime) as AdeRuntime;
-    Object.defineProperty(scoped, "accountSettingsStore", { value: settings, enumerable: true });
-    return scoped;
+    return settings ? withLentAccountSettings(runtime, settings) : runtime;
   };
 
   /**
