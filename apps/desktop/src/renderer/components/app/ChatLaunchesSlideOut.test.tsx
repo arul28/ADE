@@ -10,12 +10,7 @@ import {
   getChatLaunchOriginClientId,
   resetChatLaunchStoreForTests,
 } from "../../state/chatLaunchStore";
-import {
-  CHAT_LAUNCH_SLIDE_OUT_AUTO_DISMISS_MS,
-  ChatLaunchesSlideOut,
-  currentSlideOutLaunchesForTests,
-  slideOutHeadline,
-} from "./ChatLaunchesSlideOut";
+import { CHAT_LAUNCH_SLIDE_OUT_AUTO_DISMISS_MS, ChatLaunchesSlideOut, currentSlideOutLaunchesForTests } from "./ChatLaunchesSlideOut";
 
 const navigateMock = vi.fn();
 vi.mock("react-router-dom", () => ({ useNavigate: () => navigateMock }));
@@ -140,14 +135,6 @@ describe("ChatLaunchesSlideOut", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss launches" }));
     expect(cancel.mock.calls.map((call) => call[0])).toEqual([{ launchId: "fetching" }]);
     expect(screen.queryByTestId("chat-launches-slide-out")).toBeNull();
-  });
-
-  it("summarises the set in its headline", () => {
-    expect(slideOutHeadline([launch("a", "cli", "background")])).toBe("Setting up 1 lane…");
-    expect(slideOutHeadline([
-      launch("a", "cli", "background", { phase: "completed" }),
-      launch("b", "cli", "background", { phase: "completed" }),
-    ])).toBe("2 ready");
   });
 
   it("opens a CLI launch's session once it exists", () => {

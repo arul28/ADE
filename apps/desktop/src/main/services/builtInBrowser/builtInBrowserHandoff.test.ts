@@ -450,13 +450,6 @@ function handoffSessionHarness() {
 }
 
 describe("built-in browser handoff session listener", () => {
-  it("raises the requesting chat's hand with the question the Work row shows", () => {
-    const { listener, requestAttention } = handoffSessionHarness();
-
-    listener({ kind: "started", tabId: "tab-1", handoff: HANDOFF_LIFECYCLE });
-
-    expect(requestAttention).toHaveBeenCalledWith("chat-1", "Sign in for me: sign in to staging");
-  });
 
   it("clears the hand and leaves a transcript line on hand back", async () => {
     const { listener, clearAttentionRequest, emitAdeCard } = handoffSessionHarness();

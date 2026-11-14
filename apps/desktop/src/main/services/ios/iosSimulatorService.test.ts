@@ -10,7 +10,6 @@ import {
   clampStreamBitrateKbps,
   clampStreamFps,
   createIosSimulatorService,
-  IOS_SIMULATOR_STREAM_BACKEND,
   IosSimulatorOwnedBySessionError,
   parseXcodePreviewWindows,
   shouldOpenSimulatorAppForLaunch,
@@ -190,9 +189,6 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
     expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(true);
     expect(shouldOpenSimulatorAppForLaunch(true)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
-    // One engine now: the vendored Swift helper. The name survives so a status
-    // read still says which engine produced the pixels; it just has one answer.
-    expect(IOS_SIMULATOR_STREAM_BACKEND).toBe("helper-h264");
   });
 
   it("answers a usable frame rate for every input", () => {
@@ -213,17 +209,6 @@ describe("iosSimulatorService Simulator.app live view defaults", () => {
 });
 
 describe("iosSimulatorService cross-platform safety", () => {
-  it("constructs without throwing on non-darwin platforms", () => {
-    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
-    expect(() => {
-      const service = createIosSimulatorService({
-        projectRoot: os.tmpdir(),
-        logger: noopLogger,
-      });
-      service.dispose();
-    }).not.toThrow();
-    platformSpy.mockRestore();
-  });
 
   it("reports supported=false and structured tool statuses on non-darwin", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");

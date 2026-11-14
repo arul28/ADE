@@ -7,7 +7,6 @@ import {
   getDefaultModelDescriptor,
   MODEL_REGISTRY,
   getModelPricing,
-  listModelDescriptorsForProvider,
   resolveModelDescriptor,
   updateModelPricingInRegistry,
   type ModelDescriptor,
@@ -46,19 +45,6 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
 const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-6-astra";
 
-// CLI-wrapped Anthropic models (claude provider)
-export const CLAUDE_MODELS: ModelEntry[] = MODEL_REGISTRY
-  .filter((m) => m.family === "anthropic" && m.isCliWrapped && !m.deprecated)
-  .map((d) => descriptorToEntry(d, {
-    recommended: d.id === DEFAULT_CLAUDE_MODEL_ID,
-  }));
-
-// CLI-wrapped OpenAI models (codex provider)
-export const CODEX_MODELS: ModelEntry[] = listModelDescriptorsForProvider("codex")
-  .map((d) => descriptorToEntry(d, {
-    recommended: d.id === DEFAULT_CODEX_MODEL_ID,
-  }));
-
 export const ALL_MODELS: ModelEntry[] = MODEL_REGISTRY
   .filter((m) => !m.deprecated)
   .map((m) => descriptorToEntry(m));
@@ -79,7 +65,7 @@ export function getModelsForProvider(provider: ModelProvider): ModelEntry[] {
 
 export type ThinkingOption = { value: ThinkingLevel; label: string };
 
-export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
+const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
@@ -88,7 +74,7 @@ export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
   { value: "ultracode", label: "Ultracode" },
 ];
 
-export const CODEX_THINKING_LEVELS: ThinkingOption[] = [
+const CODEX_THINKING_LEVELS: ThinkingOption[] = [
   { value: "low", label: "Light" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },

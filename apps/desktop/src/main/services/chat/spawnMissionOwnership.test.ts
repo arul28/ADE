@@ -48,41 +48,16 @@ describe("isHumanChildMessage", () => {
     expect(isHumanChildMessage({ type: "user_message", text: "…", metadata: { kind: "handoff" } })).toBe(true);
   });
 
-  it("does not count a parent dispatch", () => {
-    expect(isHumanChildMessage({
-      type: "user_message",
-      text: "Ship it.",
-      metadata: { spawnDispatch: { parentSessionId: PARENT, dispatchedAt: "x" } },
-    })).toBe(false);
+  it.each([
+    ["a parent dispatch", { metadata: { spawnDispatch: { parentSessionId: PARENT, dispatchedAt: "x" } } }],
+    ["a scheduled wake", { metadata: { scheduledWake: { scheduleId: "s", kind: "wakeup", firedAt: "x" } } }],
+    ["an automation's prompt", { metadata: { automationRun: { automationId: "a", runId: "r", name: "Daily report" } } }],
+    ["a queued copy", { deliveryState: "queued" }],
+    ["an orchestration directive", { metadata: { orchestrationOrigin: { runId: "r", fromSessionId: "lead", kind: "queue", intent: "directive" } } }],
+  ])("does not count %s as a human message", (_label, extra) => {
+    expect(isHumanChildMessage({ type: "user_message", text: "Ship it.", ...extra } as never)).toBe(false);
   });
 
-  it("does not count a scheduled wake", () => {
-    expect(isHumanChildMessage({
-      type: "user_message",
-      text: "…",
-      metadata: { scheduledWake: { scheduleId: "s", kind: "wakeup", firedAt: "x" } },
-    })).toBe(false);
-  });
-
-  it("does not count an automation's prompt", () => {
-    expect(isHumanChildMessage({
-      type: "user_message",
-      text: "Write the daily report.",
-      metadata: { automationRun: { automationId: "a", runId: "r", name: "Daily report" } },
-    })).toBe(false);
-  });
-
-  it("does not count a queued copy", () => {
-    expect(isHumanChildMessage({ type: "user_message", text: "…", deliveryState: "queued" })).toBe(false);
-  });
-
-  it("does not count an orchestration directive as a human message", () => {
-    expect(isHumanChildMessage({
-      type: "user_message",
-      text: "Ship the worker task.",
-      metadata: { orchestrationOrigin: { runId: "r", fromSessionId: "lead", kind: "queue", intent: "directive" } },
-    })).toBe(false);
-  });
 });
 
 describe("countHumanChildMessagesForTurn", () => {
@@ -238,10 +213,6 @@ describe("formatHumanChildMessageAnnotation", () => {
     expect(formatHumanChildMessageAnnotation(0)).toBeNull();
   });
 
-  it("uses singular and plural copy", () => {
-    expect(formatHumanChildMessageAnnotation(1)).toBe("The user also sent 1 message to this chat.");
-    expect(formatHumanChildMessageAnnotation(3)).toBe("The user also sent 3 messages to this chat.");
-  });
 });
 
 describe("formatChildRaisedHandAnnotation", () => {

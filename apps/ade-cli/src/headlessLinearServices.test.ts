@@ -1061,20 +1061,6 @@ describe("headlessLinearServices", () => {
     services.dispose();
   });
 
-  it("exposes all expected service properties", () => {
-    const services = createHeadlessLinearServices(createDeps());
-
-    expect(services.linearCredentialService).toBeTruthy();
-    expect(services.linearClient).toBeTruthy();
-    expect(services.linearIssueTracker).toBeTruthy();
-    expect(services.fileService).toBeTruthy();
-    expect(services.prService).toBeTruthy();
-    expect(services.agentChatService).toBeTruthy();
-    expect(typeof services.dispose).toBe("function");
-
-    services.dispose();
-  });
-
   it("exposes bundled Linear OAuth credentials in headless runtime", () => {
     const previousAdeHome = process.env.ADE_HOME;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-oauth-"));

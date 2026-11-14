@@ -1,0 +1,68 @@
+name: Restore a release build
+description: >-
+  Puts one cached native release build (the transcribe-cli binary or the
+  Swift helpers) at its paths, and keeps it only when it carries the
+  attestation of warm-release-caches.yml. It restores the Actions cache entry,
+  fetches the artifact of the same name on a miss
+  (scripts/fetch-warm-release-build.sh), then runs
+  scripts/verify-cached-release-builds.sh, which deletes any file it cannot
+  verify. A deleted file makes the caller build from source. Run it after
+  actions/checkout and .github/actions/release-cache-keys.
+
+inputs:
+  key:
+    description: the cache key, which is also the artifact name (from release-cache-keys)
+    required: true
+  paths:
+    description: the files, one per line, relative to the checkout root; no path holds a space
+    required: true
+  flag:
+    description: the GITHUB_ENV variable set to 1 when every file verifies, or "-" for none
+    required: false
+    default: "-"
+  restore:
+    description: >-
+      "false" when the caller restored the cache itself with actions/cache,
+      which also saves it, and calls this action only on a miss. Then this
+      action only fetches and verifies.
+    required: false
+    default: "true"
+
+outputs:
+  cache-hit:
+    description: the cache-hit output of the restore ("" when restore is "false")
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: restore
+      if: ${{ inputs.restore == 'true' }}
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.paths }}
+        key: ${{ inputs.key }}
+
+    # The cache drops these small entries within hours (see
+    # warm-release-caches.yml); the artifact of the same name stays.
+    - name: Fetch the build the cache no longer holds
+      if: ${{ inputs.restore != 'true' || steps.restore.outputs.cache-hit != 'true' }}
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        KEY: ${{ inputs.key }}
+        BUILD_PATHS: ${{ inputs.paths }}
+      run: |
+        # One path per line, none with spaces; split them into arguments.
+        # shellcheck disable=SC2086
+        scripts/fetch-warm-release-build.sh "$KEY" $BUILD_PATHS
+
+    - name: Verify the build
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FLAG: ${{ inputs.flag }}
+        BUILD_PATHS: ${{ inputs.paths }}
+      run: |
+        # shellcheck disable=SC2086
+        scripts/verify-cached-release-builds.sh "$FLAG" $BUILD_PATHS

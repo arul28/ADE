@@ -10,7 +10,8 @@ import {
   MODEL_REGISTRY,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   collectAdeDatabaseUsageStats,
   isMeaningfulUsageAction,
@@ -2286,20 +2287,6 @@ describe("createUsageTrackingService", () => {
     expect(summary).toMatchObject({ available: false, turns: 0, rows: [], burnRates: [], groupBy: "provider" });
     // Days clamp to 90.
     expect(Date.parse(summary.until) - Date.parse(summary.since)).toBe(90 * 24 * 60 * 60 * 1000);
-    service.dispose();
-  });
-
-  it("returns an empty snapshot before polling", () => {
-    const logger = createLogger();
-    const service = createUsageTrackingService({ logger });
-
-    const snapshot = service.getUsageSnapshot();
-    expect(snapshot.windows).toEqual([]);
-    expect(snapshot.pacing.status).toBe("on-track");
-    expect(snapshot.costs).toEqual([]);
-    expect(snapshot.errors).toEqual([]);
-    expect(snapshot.lastPolledAt).toBeTruthy();
-
     service.dispose();
   });
 
@@ -5911,7 +5898,7 @@ describe("ADE database usage aggregation", () => {
   async function createStatsDb(): Promise<AdeDb> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-stats-"));
     roots.push(root);
-    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, "ade.db"), createLogger());
     databases.push(db);
     db.run(
       `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)

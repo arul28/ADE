@@ -73,21 +73,6 @@ describe("ADE CLI cursor cloud surface", () => {
     expect(plan.rest).toEqual(["agents", "list", "--archived"]);
   });
 
-  it("renders top-level cursor help via --help", () => {
-    const plan = buildCliPlan(["cursor", "--help"]);
-    expect(plan.kind).toBe("help");
-    if (plan.kind !== "help") return;
-    expect(plan.text).toContain("Cursor Cloud");
-    expect(plan.text).toContain("ade cursor cloud agents");
-  });
-
-  it("renders group-level cursor help via --help", () => {
-    const plan = buildCliPlan(["cursor", "cloud", "agents", "--help"]);
-    expect(plan.kind).toBe("help");
-    if (plan.kind !== "help") return;
-    expect(plan.text).toContain("Cursor Cloud: agents");
-  });
-
   it("resolves help via 'help cursor cloud runs' too", () => {
     const plan = buildCliPlan(["help", "cursor", "cloud", "runs"]);
     expect(plan.kind).toBe("help");

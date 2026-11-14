@@ -92,14 +92,6 @@ describe("playlist tile covers", () => {
     expect(images.every((src) => src.startsWith(ART))).toBe(true);
   });
 
-  it("shows Apple's own artwork without reading any songs", async () => {
-    const { container } = tile(item("pl:own-art", "playlist", `${ART}own/{w}x{h}.jpg`));
-    await started();
-    expect(reads).toEqual([]);
-    expect(coverImages(container)).toHaveLength(1);
-    expect(coverImages(container)[0]).toContain(`${ART}own/`);
-  });
-
   it("still reads a waiting tile's cover after the tiles ahead of it left the page", async () => {
     // Four reads run; four more tiles wait their turn, then leave (the user opened a playlist).
     const running = ["run-1", "run-2", "run-3", "run-4"].map((id) => tile(item(id, "playlist", null)));

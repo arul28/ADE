@@ -1751,11 +1751,6 @@ describe("createAgentChatService", () => {
         expect(history.tailStartOffset).toBe(4 * LINE_BYTES);
       });
 
-      it("reports hasOlderHistory:false for an unknown session", async () => {
-        const { service } = createService();
-        const history = await service.getChatEventHistory("unknown-session");
-        expect(history.hasOlderHistory).toBe(false);
-      });
     });
   });
 

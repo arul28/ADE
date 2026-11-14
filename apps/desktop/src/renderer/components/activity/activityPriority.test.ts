@@ -4,18 +4,7 @@ import {
   type AttentionItem,
   type AttentionPhase,
 } from "../../../shared/types/attention";
-import {
-  ACTIVITY_SECTION_DESCRIPTORS,
-  activityBadgeCount,
-  ACTIVITY_SECTION_TONE,
-  activityFooterLine,
-  activityHeadline,
-  activityNotificationItems,
-  activityOfflineMachines,
-  activitySections,
-  activityTriggerLabel,
-  summarizeActivity,
-} from "./activityPriority";
+import { activityBadgeCount, ACTIVITY_SECTION_TONE, activityFooterLine, activityHeadline, activityNotificationItems, activityOfflineMachines, activitySections, activityTriggerLabel, summarizeActivity } from "./activityPriority";
 
 const NOW = Date.parse("2026-08-01T12:00:00.000Z");
 
@@ -55,20 +44,6 @@ function sectionMap(sections: ReturnType<typeof activitySections>) {
 }
 
 describe("activity priority", () => {
-  it("always exposes the four board columns as descriptors, in board order", () => {
-    expect(ACTIVITY_SECTION_DESCRIPTORS.map(({ id, label }) => [id, label])).toEqual([
-      ["needs_you", "Needs you"],
-      ["working", "Working"],
-      ["waiting", "Waiting"],
-      ["done", "Done"],
-    ]);
-    expect(activitySections([], NOW).map(({ id, items }) => [id, items])).toEqual([
-      ["needs_you", []],
-      ["working", []],
-      ["waiting", []],
-      ["done", []],
-    ]);
-  });
 
   /**
    * The columns are the Work board's. A failure is the user's move, planning

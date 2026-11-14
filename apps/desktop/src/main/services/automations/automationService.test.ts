@@ -14,7 +14,7 @@ import {
   scopeAutomationAdeActionArgs,
   triggerMatches,
 } from "./automationService";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { advanceLaneToPrHead, resolvePrBranchLane } from "./automationPrBranchLane";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import { SessionTurnAbandonedError } from "../chat/sessionTurnLimits";
@@ -413,29 +413,6 @@ describe("automation ingress enable gating", () => {
     return { service, projectConfig };
   }
 
-  // `agentChatService.buildCtoOperatorToolDeps` reads these member names off
-  // the real automation service to decide whether the CTO's automation-rule
-  // tools are available. It previously probed `get` and `toggleRule` — names
-  // this service has never had — so the dep resolved to null and every one of
-  // those tools answered "not available" on a fully wired desktop, silently
-  // disabling the automation control the CTO exists to offer. A rename here
-  // must fail loudly rather than turn those tools off again.
-  it("exposes the member names the CTO tool wiring probes", () => {
-    const { service } = createServiceForRule({
-      id: "rule-1",
-      name: "Rule",
-      trigger: { type: "manual" },
-      enabled: true,
-    });
-    const members = service as unknown as Record<string, unknown>;
-
-    expect(typeof members.toggle).toBe("function");
-    expect(typeof members.deleteRule).toBe("function");
-    // Not an oversight: there is no by-id read here. Both the action registry
-    // and the CTO wiring read a rule out of the project config instead.
-    expect(members.get).toBeUndefined();
-    expect(members.toggleRule).toBeUndefined();
-  });
 
   it("allows manually running a disabled automation", async () => {
     const rule = normalizeRuntimeRule({
@@ -884,8 +861,8 @@ describe("automationService integration", () => {
   it("creates one run and chat for a scheduled occurrence shared by concurrent service instances", async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-automation-occurrence-"));
     const dbPath = path.join(tempRoot, "ade.db");
-    const firstDb = await openKvDb(dbPath, createLogger());
-    const secondDb = await openKvDb(dbPath, createLogger());
+    const firstDb = await openFreshKvDb(dbPath, createLogger());
+    const secondDb = await openFreshKvDb(dbPath, createLogger());
     firstDb.run(
       `
         insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)

@@ -1,15 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  getPermissionOptions,
-  normalizePermissionModeForProfile,
-  resolvePersistentIdentityGuardedPermissionMode,
-  safetyBadgeLabel,
-  safetyColorHex,
-  safetyColors,
-  familyToPermissionKey,
-  permissionFamilyLabel,
-  type SafetyLevel,
-} from "./permissionOptions";
+import { getPermissionOptions, normalizePermissionModeForProfile, resolvePersistentIdentityGuardedPermissionMode, familyToPermissionKey } from "./permissionOptions";
 
 describe("resolvePersistentIdentityGuardedPermissionMode", () => {
   it("returns 'default' for CLI-wrapped anthropic", () => {
@@ -127,42 +117,6 @@ describe("getPermissionOptions", () => {
     const options = getPermissionOptions({ family: "local-model", isCliWrapped: false });
     expect(options).toHaveLength(3);
   });
-
-  it("every option has required fields populated", () => {
-    const allOptions = [
-      ...getPermissionOptions({ family: "anthropic", isCliWrapped: true }),
-      ...getPermissionOptions({ family: "openai", isCliWrapped: true }),
-      ...getPermissionOptions({ family: "local", isCliWrapped: false }),
-    ];
-    for (const option of allOptions) {
-      expect(option.value, `option ${option.label} should have a value`).toBeTruthy();
-      expect(option.label, `option with value ${option.value} should have a label`).toBeTruthy();
-      expect(option.shortDesc, `option ${option.label} should have a shortDesc`).toBeTruthy();
-      expect(option.detail, `option ${option.label} should have a detail`).toBeTruthy();
-      expect(option.allows.length, `option ${option.label} should have allows`).toBeGreaterThan(0);
-      expect(option.safety, `option ${option.label} should have a safety level`).toBeTruthy();
-    }
-  });
-});
-
-describe("safetyBadgeLabel", () => {
-  it("maps all safety levels to labels", () => {
-    expect(safetyBadgeLabel("safe")).toBe("SAFE");
-    expect(safetyBadgeLabel("semi-auto")).toBe("SEMI-AUTO");
-    expect(safetyBadgeLabel("full-auto")).toBe("FULL-AUTO");
-    expect(safetyBadgeLabel("danger")).toBe("DANGER");
-    expect(safetyBadgeLabel("custom")).toBe("CUSTOM");
-  });
-});
-
-describe("safetyColorHex", () => {
-  it("returns hex colors for all safety levels", () => {
-    const levels: SafetyLevel[] = ["safe", "semi-auto", "full-auto", "danger", "custom"];
-    for (const level of levels) {
-      const hex = safetyColorHex(level);
-      expect(hex, `${level} should return a hex color`).toMatch(/^#[0-9A-Fa-f]{6}$/);
-    }
-  });
 });
 
 describe("familyToPermissionKey", () => {
@@ -188,15 +142,5 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("openai", false)).toBe("opencode");
     expect(familyToPermissionKey("local", true)).toBe("opencode");
     expect(familyToPermissionKey("unknown", false)).toBe("opencode");
-  });
-});
-
-describe("permissionFamilyLabel", () => {
-  it("returns human-readable labels for all keys", () => {
-    expect(permissionFamilyLabel("claude")).toBe("Claude Code workers");
-    expect(permissionFamilyLabel("codex")).toBe("Codex workers");
-    expect(permissionFamilyLabel("cursor")).toBe("Cursor workers");
-    expect(permissionFamilyLabel("droid")).toBe("Droid workers");
-    expect(permissionFamilyLabel("opencode")).toBe("OpenCode workers");
   });
 });

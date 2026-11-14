@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createConflictService } from "./conflictService";
 import { missingFeatureModelMessage } from "../ai/aiIntegrationService";
 
@@ -136,7 +136,7 @@ describe("conflictService conflict context integrity", () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-stale-sha-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
     const baseHeadSha = git(repoRoot, ["rev-parse", "main"]);
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const db = await openFreshKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = "proj-stale-sha";
     try {
       await seedProjectAndLane(db, projectId, repoRoot);
@@ -179,7 +179,7 @@ describe("conflictService conflict context integrity", () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-ctx-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
     const dbPath = path.join(repoRoot, "kv.sqlite");
-    const db = await openKvDb(dbPath, createLogger());
+    const db = await openFreshKvDb(dbPath, createLogger());
     const projectId = "proj-ctx";
     await seedProjectAndLane(db, projectId, repoRoot);
 
@@ -265,7 +265,7 @@ describe("conflictService conflict context integrity", () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-no-model-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
     const dbPath = path.join(repoRoot, "kv.sqlite");
-    const db = await openKvDb(dbPath, createLogger());
+    const db = await openFreshKvDb(dbPath, createLogger());
     const projectId = "proj-no-model";
     await seedProjectAndLane(db, projectId, repoRoot);
 
@@ -325,7 +325,7 @@ describe("conflictService conflict context integrity", () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-insufficient-"));
     const { laneHeadSha } = seedRepoWithLaneWork(repoRoot);
     const dbPath = path.join(repoRoot, "kv.sqlite");
-    const db = await openKvDb(dbPath, createLogger());
+    const db = await openFreshKvDb(dbPath, createLogger());
     const projectId = "proj-insufficient";
     await seedProjectAndLane(db, projectId, repoRoot);
 
@@ -386,7 +386,7 @@ describe("conflictService conflict context integrity", () => {
 
   it("rebases a lane built on a squash-merged lane without replaying the merged commits", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-built-on-merged-"));
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const db = await openFreshKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = randomUUID();
     const now = "2026-03-24T12:00:00.000Z";
     const commitFile = (name: string, content: string, message: string) => {
@@ -459,7 +459,7 @@ describe("conflictService conflict context integrity", () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-"));
     const remoteRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-origin-"));
     const remoteWorkRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflicts-root-base-remote-work-"));
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const db = await openFreshKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = randomUUID();
     const now = "2026-03-24T12:00:00.000Z";
 

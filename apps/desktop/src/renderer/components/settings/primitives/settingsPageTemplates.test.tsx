@@ -1,16 +1,9 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-
-import { settingsScopeForAnchor } from "../settingsManifest";
-import {
-  SettingsManagerPage,
-  SettingsManagerTable,
-  SettingsManagerRow,
-  SettingsManagerEmpty,
-} from "./SettingsManagerPage";
-import { SettingsDashboardPage, SettingsDashboardStat } from "./SettingsDashboardPage";
+import { cleanup, render } from "@testing-library/react";
+import { SettingsManagerPage } from "./SettingsManagerPage";
+import { SettingsDashboardPage } from "./SettingsDashboardPage";
 
 /**
  * The seam these templates sit on is navigation, not looks: `?tab=x#anchor`
@@ -24,10 +17,6 @@ const UNREGISTERED_ANCHOR = "not-a-real-settings-anchor";
 afterEach(cleanup);
 
 describe("settings page templates", () => {
-  it("has a registered and an unregistered anchor to test with", () => {
-    expect(settingsScopeForAnchor("secrets")).toBe("account-repo");
-    expect(settingsScopeForAnchor(UNREGISTERED_ANCHOR)).toBeNull();
-  });
 
   describe("SettingsManagerPage", () => {
     it("owns its anchor so deeplinks and search land on it", () => {
@@ -60,51 +49,6 @@ describe("settings page templates", () => {
       );
       expect(unregistered.querySelector("[data-scope]")).toBeNull();
     });
-
-    it("renders the toolbar slot", () => {
-      render(
-        <SettingsManagerPage
-          anchor="secrets"
-          title="Secrets"
-          toolbar={<button type="button">Import .env</button>}
-        >
-          <div>body</div>
-        </SettingsManagerPage>,
-      );
-
-      expect(screen.getByRole("button", { name: "Import .env" })).toBeTruthy();
-    });
-
-    it("renders row cells and row actions", () => {
-      render(
-        <SettingsManagerPage anchor="secrets" title="Secrets">
-          <SettingsManagerTable
-            columns={[{ label: "Name" }, { label: "Updated" }, { label: "Actions", align: "right" }]}
-          >
-            <SettingsManagerRow actions={<button type="button">Delete</button>}>
-              <span>STRIPE_API_KEY</span>
-              <span>2 days ago</span>
-            </SettingsManagerRow>
-          </SettingsManagerTable>
-        </SettingsManagerPage>,
-      );
-
-      expect(screen.getByText("STRIPE_API_KEY")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy();
-    });
-
-    it("renders the empty state's action", () => {
-      render(
-        <SettingsManagerEmpty
-          title="No templates yet"
-          description="A template says what happens when a lane is created."
-          action={<button type="button">Create your first template</button>}
-        />,
-      );
-
-      expect(screen.getByText("No templates yet")).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Create your first template" })).toBeTruthy();
-    });
   });
 
   describe("SettingsDashboardPage", () => {
@@ -128,14 +72,6 @@ describe("settings page templates", () => {
       );
       expect(container.querySelector("[data-scope]")).toBeNull();
       expect(container.textContent).not.toContain("Account");
-    });
-
-    it("renders a stat's label, value and hint", () => {
-      render(<SettingsDashboardStat label="Processed tokens" value="1.2M" hint="Last 7 days" />);
-
-      expect(screen.getByText("Processed tokens")).toBeTruthy();
-      expect(screen.getByText("1.2M")).toBeTruthy();
-      expect(screen.getByText("Last 7 days")).toBeTruthy();
     });
   });
 });

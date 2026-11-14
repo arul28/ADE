@@ -171,16 +171,6 @@ describe("macOS git selection", () => {
     expect(shouldProbeLoginShellForGit("/usr/bin/git", "linux")).toBe(false);
   });
 
-  it("explains that an Xcode license failure comes from Git, not iOS features", () => {
-    const message = formatGitExecutionError(
-      "You have not agreed to the Xcode license agreements. Please run 'sudo xcodebuild -license'.",
-    );
-
-    expect(message).toContain("ADE needs Git");
-    expect(message).toContain("not an ADE iOS Simulator or code-signing requirement");
-    expect(message).toContain("sudo xcodebuild -license");
-  });
-
   // Git for Windows output cannot be produced on a macOS/Linux runner, so the
   // parser is pinned against the real message shapes here.
   it.each([

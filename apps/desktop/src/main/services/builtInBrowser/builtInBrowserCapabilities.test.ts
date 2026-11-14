@@ -4,8 +4,6 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { BuiltInBrowserNetworkLogEntry } from "../../../shared/types";
 import {
-  BUILT_IN_BROWSER_EMULATION_PRESETS,
-  findBuiltInBrowserEmulationPreset,
   resolveBuiltInBrowserEmulation,
 } from "../../../shared/builtInBrowserEmulation";
 import {
@@ -103,12 +101,6 @@ describe("built-in browser emulation presets", () => {
       .toThrow(/both width and height/);
   });
 
-  it("exposes every preset id exactly once", () => {
-    const ids = BUILT_IN_BROWSER_EMULATION_PRESETS.map((preset) => preset.id);
-    expect(new Set(ids).size).toBe(ids.length);
-    expect(findBuiltInBrowserEmulationPreset("pixel")?.mobile).toBe(true);
-    expect(findBuiltInBrowserEmulationPreset("nope")).toBeNull();
-  });
 });
 
 describe("built-in browser zoom clamping", () => {

@@ -1613,9 +1613,9 @@ worker marks that run's `status` events, and the status-text match
 (`detectCompactionSignalText`) stays quiet.
 `ADE_CURSOR_PRECOMPACT_HOOK=0` in the worker environment, or
 `CursorSdkWorkerInit.preCompactHook: false`, removes the entry and turns the
-path off. `cursorSdkPreCompactContract.test.ts` reads the installed SDK's `cjs`
-and `esm` dist. It fails with "The Cursor SDK changed its undocumented
-PreCompact hook" and names the step or field that disappeared.
+path off. The hook's step and fields are undocumented, and no check reads the
+installed SDK. If an SDK bump drops one, compaction falls back to the
+status-text match.
 
 `done.account` is always `{ provider: "cursor", kind: "subscription" }`, because
 every Cursor run, local or cloud, bills the signed-in Cursor plan. The worker

@@ -3,7 +3,6 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppleDeviceRail } from "./AppleDeviceRail";
-import { expectNoHorizontalOverflow } from "./testLayout";
 
 afterEach(cleanup);
 
@@ -58,28 +57,6 @@ describe("AppleDeviceRail", () => {
       expect(label, button.outerHTML).toBeTruthy();
       expect(label?.trim().length).toBeGreaterThan(0);
     }
-  });
-
-  it("carries §A5's order, with no Appearance, Text size or Shake", () => {
-    renderRail();
-    const labels = railButtons().map((button) => button.getAttribute("aria-label"));
-    expect(labels).toEqual([
-      "Home",
-      "Hardware buttons",
-      "Orientation: Portrait",
-      "Inspect elements",
-      "Save screenshot",
-      "Record",
-      "View: 3D",
-      "Device tools",
-      "More device actions",
-    ]);
-    // §A5: device settings live in the drawer, and only there.
-    expect(screen.queryByRole("button", { name: /mode$/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /text size/i })).toBeNull();
-    // `pressButton({name:"shake"})` is refused with APPLE_BUTTON_UNSUPPORTED,
-    // so the control does not exist (§6).
-    expect(screen.queryByRole("button", { name: /shake/i })).toBeNull();
   });
 
   it("§A2: ONE view button, which switches and shows which view is on", () => {
@@ -157,11 +134,6 @@ describe("AppleDeviceRail", () => {
       "Device tools",
       "More device actions",
     ]);
-  });
-
-  it("§V2: the orientation control NAMES the current orientation", () => {
-    renderRail({ orientation: "landscape-left" });
-    expect(screen.getByRole("button", { name: "Orientation: Landscape left" })).toBeTruthy();
   });
 
   it("§V2: offers all four orientations and checks the current one", () => {

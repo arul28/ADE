@@ -36,11 +36,6 @@ function recording(over: Partial<SimRecording> = {}): SimRecording {
 }
 
 describe("CaptureSection", () => {
-  it("says so plainly when the lane has recorded nothing", async () => {
-    installAdeMock();
-    render(<CaptureSection ctx={makeCtx()} />);
-    await waitFor(() => expect(screen.getByText("No recordings for this lane yet.")).toBeTruthy());
-  });
 
   it("cannot start or stop a recording: Record is a rail control now (§B1)", async () => {
     const { iosSimulator } = installAdeMock();

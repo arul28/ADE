@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PrWatchStopReason } from "../../../shared/prWatch";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createPrChatWatchStore } from "./prChatWatchStore";
 
 function createLogger() {
@@ -15,7 +15,7 @@ const NOW = "2026-10-08T00:00:00Z";
 describe("prChatWatchStore.activeBySession", () => {
   it("folds each chat's live watches for its row, and drops a watch for every stop reason", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pr-chat-watches-"));
-    const db = await openKvDb(path.join(root, ".ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, ".ade.db"), createLogger());
     try {
       db.run(
         "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
