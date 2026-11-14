@@ -121,7 +121,8 @@ export function buildPasswordsDomainService(runtime: Partial<Pick<AdeRuntime, "p
         value: text(input.value),
         projectScope: typeof input.projectScope === "string" ? input.projectScope : null,
         ...(typeof input.notes === "string" ? { notes: input.notes } : {}),
-        deviceOnly: input.deviceOnly === true,
+        // Unset keeps the name where it is; only an explicit choice moves it.
+        ...(typeof input.deviceOnly === "boolean" ? { deviceOnly: input.deviceOnly } : {}),
       });
     },
     // A `.env` file's entries, read on this computer: each saved as a secret

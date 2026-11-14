@@ -143,6 +143,14 @@ export function createPasswordService(args: {
   /** Opened items, by id; rebuilt from the cache whenever it changes. Values live only here. */
   let opened = new Map<string, PasswordItemSecret>();
   let openedFor: string | null = null;
+  /**
+   * Counts purges (sign-out, off, reset). An open or a key fetch that started
+   * before one never installs what it got after it: a purge means this
+   * computer forgot the key and the values.
+   */
+  let purgeCount = 0;
+  const purgedSince = (count: number): boolean => purgeCount !== count;
+  const purgedError = (): Error => new PasswordsUnavailableError("Passwords & Secrets was signed out or turned off here while it opened.");
   let syncing: Promise<void> | null = null;
   let periodicSync: ReturnType<typeof setInterval> | null = null;
 
@@ -177,8 +185,10 @@ export function createPasswordService(args: {
 
   async function vaultKey(accountId: string): Promise<{ key: Buffer; epoch: number }> {
     if (memoryKey?.accountId === accountId) return memoryKey;
+    const startedAt = purgeCount;
     if (keepKeyOnDisk) {
       const cached = await store.get(KEY_CACHE_KEY);
+      if (purgedSince(startedAt)) throw purgedError();
       if (cached) {
         try {
           const parsed = JSON.parse(cached) as { accountId: string; dek: string; epoch: number };
@@ -195,6 +205,7 @@ export function createPasswordService(args: {
     if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
     const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind });
     if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
+    if (purgedSince(startedAt)) throw purgedError();
     memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
     if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
     logger.info("passwords.key_ready", { epoch: released.epoch, source: "relay" });
@@ -239,6 +250,7 @@ export function createPasswordService(args: {
     carried: Map<string, PasswordItemSecret> | null = null,
   ): Promise<void> {
     const retried = carried !== null;
+    const startedAt = purgeCount;
     const { key, epoch } = await vaultKey(accountId);
     const next = new Map<string, PasswordItemSecret>();
     let unopenable = 0;
@@ -278,6 +290,7 @@ export function createPasswordService(args: {
       }
     }
     if (unopenable) logger.warn("passwords.items_unopenable", { count: unopenable });
+    if (purgedSince(startedAt)) throw purgedError();
     opened = next;
     openedFor = accountId;
   }
@@ -422,17 +435,28 @@ export function createPasswordService(args: {
           }
           await withCache(async () => {
             const cache = await readCache(accountId);
+            const recordAccepted = (accepted: { id: string; deleted: boolean; envelope: string | null }, revision: string | null): void => {
+              const updated: StoredItem = { id: accepted.id, revision, deleted: accepted.deleted, envelope: accepted.envelope };
+              const existing = cache.items.find((item) => item.id === accepted.id);
+              if (existing) Object.assign(existing, updated);
+              else cache.items.push(updated);
+            };
             cache.pending = cache.pending.filter((write) => {
               const pushed = sent.get(write.id);
-              // A newer save of the same item, made while this push was out: keep it.
-              if (!pushed || pushed.envelope !== write.envelope || pushed.deleted !== write.deleted) return true;
+              if (!pushed) return true;
               const answer = answered.get(write.id);
+              // A newer save of the same item, made while this push was out: keep
+              // it, based on the revision the push just got, so it is not refused as stale.
+              if (pushed.envelope !== write.envelope || pushed.deleted !== write.deleted) {
+                if (answer?.status === "ok") {
+                  recordAccepted(pushed, answer.revision);
+                  write.ifRevision = answer.revision;
+                }
+                return true;
+              }
               if (!answer || answer.status === "stale_key") return true;
               if (answer.status === "ok") {
-                const updated: StoredItem = { id: write.id, revision: answer.revision, deleted: write.deleted, envelope: write.envelope };
-                const existing = cache.items.find((item) => item.id === write.id);
-                if (existing) Object.assign(existing, updated);
-                else cache.items.push(updated);
+                recordAccepted(write, answer.revision);
               } else if (answer.status === "stale") {
                 // Another machine changed it first: theirs stands, this edit is dropped and said so.
                 logger.warn("passwords.write_superseded", { itemId: write.id });
@@ -481,6 +505,7 @@ export function createPasswordService(args: {
 
   async function purgeLocal(): Promise<void> {
     await withCache(async () => {
+      purgeCount += 1;
       await dropKey();
       opened = new Map();
       openedFor = null;
