@@ -13,8 +13,10 @@ Use them only when the user names a secret or clearly asks you to use a stored
 credential. You use a secret, you never read it: `ade secrets exec` runs a
 command on this computer with the project's secrets in its environment and
 prints its output with every value of 8 characters or more masked. A shorter
-value is not masked (the command says which), so do not run a command that
-prints a short secret, and never copy such output into chat or a log.
+value is not masked (the command says which). Masking is best effort: a
+command that changes a value (reverses, splits or re-encodes it) can print it
+unmasked, whatever its length. So never run a command that prints a secret,
+and never copy output that could hold one into chat or a log.
 `ade secrets get` is the person's, in the ADE desktop app.
 
 ```

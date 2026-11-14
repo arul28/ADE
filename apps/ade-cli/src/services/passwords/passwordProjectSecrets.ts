@@ -83,7 +83,8 @@ export type ProjectSecretSaveInput = {
   projectScope: string | null;
   notes?: string;
   /**
-   * Where it goes: true for this computer only, false for the account.
+   * Where it goes: true for this computer only, false for the account (and
+   * this computer's own copy of the name, which would win over it, goes).
    * Unset updates a this-computer-only copy of the name already here, and
    * otherwise saves to the account.
    */
@@ -240,6 +241,14 @@ export function createProjectSecrets(ctx: ProjectSecretsContext) {
         return summarizePasswordItem(saved!.id, saved!, true);
       }
       const { opened } = await ctx.ensureOpened();
+      // Saved to the account on purpose: this computer's own copy of the name
+      // would keep winning over it here, so it goes.
+      if (!input.id && input.deviceOnly === false) {
+        await device.update((items) => {
+          const kept = items.filter((item) => !(item.name === name && item.projectScope === input.projectScope));
+          return kept.length === items.length ? undefined : kept;
+        });
+      }
       const existingEntry = input.id
         ? [input.id, opened.get(input.id)] as const
         : findSecret(opened, name, input.projectScope);

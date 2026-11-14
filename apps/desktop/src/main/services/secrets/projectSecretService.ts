@@ -317,8 +317,9 @@ export function createProjectSecretService(projectRoot: string, options: Project
       const vault = options.getAccountVault?.() ?? null;
       const accountId = service.accountUserId();
       const status = await service.status();
-      // Off means nothing moves: what moved would stop reaching processes.
-      if (!status.enabled) return { moved: 0, waiting: file?.length ?? 0, done: !file?.length };
+      // Off means nothing moves: what moved would stop reaching processes. The
+      // account's old rows are unread, so with a vault the move is not done.
+      if (!status.enabled) return { moved: 0, waiting: file?.length ?? 0, done: !file?.length && !vault };
       const accountReady = Boolean(accountId) && status.signedIn;
       let vaultRead: LegacyVaultRead | null = null;
       const canonical = repoScopeForRoot(projectRoot);
@@ -328,9 +329,11 @@ export function createProjectSecretService(projectRoot: string, options: Project
           return null;
         });
       }
+      // Done needs the account's old rows read too (signed out, or unreadable now: not yet).
+      const vaultChecked = !vault || vaultRead !== null;
       if (!file?.length && !vaultRead?.live.length) {
         if (file) removeLegacyFile();
-        return { moved: 0, waiting: 0, done: !accountReady || !vault || vaultRead !== null };
+        return { moved: 0, waiting: 0, done: vaultChecked };
       }
 
       const scope = canonical ?? `path:${path.resolve(projectRoot)}`;
@@ -355,7 +358,13 @@ export function createProjectSecretService(projectRoot: string, options: Project
         }
         candidates.push({ ...entry, deviceOnly: entry.deviceOnly || !shared, vaultScope: null });
       }
-      for (const entry of vaultRead?.live ?? []) candidates.push({ ...entry, deviceOnly: !shared, vaultScope: entry.scope });
+      /** Old account rows a newer deletion (under either key) replaced: removed, never moved. */
+      const supersededRows: Array<{ scope: string; name: string }> = [];
+      for (const entry of vaultRead?.live ?? []) {
+        const deletedAt = vaultRead?.deletedAt.get(entry.name);
+        if (deletedAt && deletedAt > entry.updatedAt) supersededRows.push({ scope: entry.scope, name: entry.name });
+        else candidates.push({ ...entry, deviceOnly: !shared, vaultScope: entry.scope });
+      }
       if (accountReady) await service.sync().catch((error: unknown) => {
         // What other computers moved or deleted first, so this one neither duplicates nor brings back a secret.
         logger?.warn?.("project_secret.legacy_pull_failed", { error: errorText(error) });
@@ -382,6 +391,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       // Signed out or switched account while this ran: leave every old copy for the next run.
       if (service.accountUserId() !== accountId) return { moved, waiting: waiting + adopted.length, done: false };
 
+      for (const row of supersededRows) await vault?.remove(row.scope, LEGACY_VAULT_KIND, row.name);
       const doneFileNames = new Set(dropped);
       for (const { entry, result } of adopted) {
         if (result.id !== null && !uploaded.has(result.id)) {
@@ -394,7 +404,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
       if (file?.length && file.every((entry) => doneFileNames.has(entry.name))) removeLegacyFile();
       else for (const name of doneFileNames) removeLegacyName(name);
       if (moved || waiting) logger?.info?.("project_secret.legacy_moved", { moved, waiting });
-      return { moved, waiting, done: waiting === 0 };
+      return { moved, waiting, done: waiting === 0 && vaultChecked };
     })().catch((error: unknown): LegacySecretMoveResult => {
       logger?.warn?.("project_secret.legacy_move_failed", { error: errorText(error) });
       return { moved: 0, waiting: 0, done: false };
@@ -545,23 +555,21 @@ export function createProjectSecretService(projectRoot: string, options: Project
       if (confirmName !== name) throw new AdeExpectedError(`Deleting ${name} needs confirmName set to the same name.`, "user");
       const service = passwords();
       const scope = accountScope();
-      let deleted = false;
+      // The old store's copies first (its file and its account rows), or the
+      // name would come back from them. A failure here stops the delete before
+      // anything else changes, so it is never reported done while one remains.
+      let deleted = removeLegacyName(name);
+      const vault = options.getAccountVault?.() ?? null;
+      if (vault && service.accountUserId()) {
+        for (const legacyScope of legacyVaultScopes(repoScopeForRoot(projectRoot))) {
+          const listed = await vault.list(legacyScope);
+          if (!listed.ok) throw new AdeExpectedError(`ADE couldn't check the account's old copies of ${name}. Try again in a moment.`, "environment");
+          const live = listed.value.some((item) => item.scope === legacyScope && item.kind === LEGACY_VAULT_KIND && item.key === name && !item.deleted);
+          if (live) await vault.remove(legacyScope, LEGACY_VAULT_KIND, name);
+        }
+      }
       for (const entry of await service.allSecretEntries()) {
         if (entry.name === name && entry.projectScope === scope) deleted = (await service.remove(entry.id)) || deleted;
-      }
-      // The old store's copies go too (its file and its account rows), or the name would come back from them.
-      try {
-        deleted = removeLegacyName(name) || deleted;
-        const vault = options.getAccountVault?.() ?? null;
-        if (vault && service.accountUserId()) {
-          for (const legacyScope of legacyVaultScopes(repoScopeForRoot(projectRoot))) {
-            const listed = await vault.list(legacyScope);
-            const live = listed.ok && listed.value.some((item) => item.scope === legacyScope && item.kind === LEGACY_VAULT_KIND && item.key === name && !item.deleted);
-            if (live) await vault.remove(legacyScope, LEGACY_VAULT_KIND, name);
-          }
-        }
-      } catch (error) {
-        logger?.warn?.("project_secret.legacy_remove_failed", { error: errorText(error) });
       }
       return { deleted, name };
     },

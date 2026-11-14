@@ -308,9 +308,12 @@ describe("a project's secrets in Passwords & Secrets", () => {
     await mac.passwords.sync();
     expect(relay.rows.size).toBe(0);
 
+    // Saved to the account on purpose: this computer's copy no longer wins over it.
     await mac.passwords.saveSecret({ name: "TOKEN", value: "account", projectScope: SCOPE, deviceOnly: false });
+    expect(secrets.get({ name: "TOKEN" }).value).toBe("account");
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "local-3", projectScope: SCOPE, deviceOnly: true });
     await expect(secrets.delete({ name: "TOKEN", confirmName: "OTHER" })).rejects.toThrow(/confirmName/);
-    expect(secrets.get({ name: "TOKEN" }).value).toBe("local-2");
+    expect(secrets.get({ name: "TOKEN" }).value).toBe("local-3");
     expect(await secrets.delete({ name: "TOKEN", confirmName: "TOKEN" })).toEqual({ deleted: true, name: "TOKEN" });
     expect(await mac.passwords.allSecretEntries()).toEqual([]);
     // The old file's copy went too, so the name does not come back from it.
