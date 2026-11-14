@@ -404,16 +404,26 @@ export async function removeAutomationRules(
   return true;
 }
 
+/**
+ * Whether a chat started by another chat reports back to it: `subagent`
+ * reports, `peer` (the stored name) does not. `parentName` is how the toast
+ * names the parent chat.
+ */
 export async function setChatSpawnKind(
   session: Pick<TerminalSessionSummary, "id">,
   spawnKind: "subagent" | "peer",
   pin?: OpenProjectBinding | null,
+  parentName = "the chat that started it",
 ): Promise<void> {
-  const action = spawnKind === "peer" ? "Take over" : "Promote to subagent";
+  const reports = spawnKind === "subagent";
   try {
     await withChatPin(pin, (target) => window.ade.agentChat.updateSession({ sessionId: session.id, spawnKind }, target));
+    showToast({
+      title: reports ? `Reports back to ${parentName}` : `Stopped reports to ${parentName}`,
+      tone: "success",
+    });
   } catch (error) {
-    reportFailure(action, session.id, error);
+    reportFailure(reports ? "Report back" : "Stop reports", session.id, error);
   }
 }
 

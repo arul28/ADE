@@ -319,7 +319,8 @@ import { buildIntegrationConnectAdapters } from "../integrations/integrationConn
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
 import { ADE_CLOUD_HOME_UNAVAILABLE } from "../../../shared/automationCloud";
-import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import { cloudAccessDepsFor, cloudAccessEnabled, cloudNoProviderSentence, cloudServerFor, cloudVaultFromStore, getCloudProvider, requireCloudProvider, type CloudAccessDeps } from "../adeCloud/cloudAccess";
+import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { CloudSignInVaults } from "../adeCloud/cloudSignInStore";
 import { buildCloudSignInActions } from "../adeCloud/cloudSignInActions";
 import { claudePassVaultFromStore } from "../adeCloud/claudePassStore";
@@ -4584,8 +4585,51 @@ function buildCloudDomainService(runtime: AccountDomainRuntime): OpaqueService {
   return {
     ...verbs,
     ...cloudSignIns,
+    ...savedChatReads(credentials),
     /** Whether ADE Cloud exists for this account; the only `cloud` action served when it doesn't. */
     access: async () => ({ enabled: await cloudAccessEnabled(credentials) }),
+  };
+}
+
+/**
+ * The account's saved chats (what each ADE Cloud computer saved before it
+ * slept), for a client that has no cloud credential of its own: ADE Web asks
+ * a connected brain through `cloud.read`, the way the desktop asks its main
+ * process (`registerCloudSavedChatsIpc.ts`). Reads only, and not in the
+ * agents' action list. Null is "couldn't ask"; the caller keeps what it shows.
+ */
+function savedChatReads(credentials: CloudAccessDeps): {
+  saved_chats_list: (args?: unknown) => Promise<CloudSavedChatList | null>;
+  saved_chats_read: (args?: unknown) => Promise<CloudSavedChatPage | null>;
+} {
+  const text = (value: unknown): string | null => (typeof value === "string" && value.trim() ? value.trim() : null);
+  const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.min(Math.floor(value), 500) : undefined);
+  const input = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+  return {
+    saved_chats_list: async (args) => {
+      const request = input(args);
+      const server = cloudServerFor(credentials);
+      if (!server) return null;
+      return await server.listSavedChats({
+        machineKey: text(request.machineKey),
+        projectKey: text(request.projectKey),
+        limit: count(request.limit),
+        cursor: text(request.cursor),
+      });
+    },
+    saved_chats_read: async (args) => {
+      const request = input(args);
+      const machineKey = text(request.machineKey);
+      const chatId = text(request.chatId);
+      const server = cloudServerFor(credentials);
+      if (!server || !machineKey || !chatId) return null;
+      return await server.readSavedChat({
+        machineKey,
+        chatId,
+        before: typeof request.before === "number" && Number.isFinite(request.before) ? request.before : null,
+        limit: count(request.limit),
+      });
+    },
   };
 }
 

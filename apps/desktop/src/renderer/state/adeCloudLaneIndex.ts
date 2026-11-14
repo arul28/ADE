@@ -91,7 +91,8 @@ export function forgetCloudLaneComputer(instanceId: string): void {
   noteCloudLaneComputers(computers);
 }
 
-function subscribe(listener: () => void): () => void {
+/** Hears each change of the lane computers (not a fresher read of the same list). */
+export function subscribeAdeCloudLaneComputers(listener: () => void): () => void {
   listeners.add(listener);
   return () => listeners.delete(listener);
 }
@@ -114,7 +115,7 @@ export function cloudLaneIndexFresh(nowMs: number = Date.now()): boolean {
 
 /** The lane computers as last read, and whether any read filled the list yet. */
 export function useAdeCloudLaneComputers(): IndexState {
-  return useSyncExternalStore(subscribe, readState, readState);
+  return useSyncExternalStore(subscribeAdeCloudLaneComputers, readState, readState);
 }
 
 /** A chat's ADE Cloud lane, and its computer's ADE Cloud id once known. */

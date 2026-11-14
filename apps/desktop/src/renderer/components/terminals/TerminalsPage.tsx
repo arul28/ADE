@@ -77,6 +77,7 @@ import {
   formatToolTypeLabel,
   isChatToolType,
   isPtyContextInsertableToolType,
+  primarySessionLabel,
 } from "../../lib/sessions";
 import {
   addSessionBesideTarget,
@@ -1592,6 +1593,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [work]);
 
   const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
+  // The chat that started the menu's chat, named by its report items.
+  const contextMenuParentId = contextMenu?.session.orchestrationParentSessionId ?? null;
+  const contextMenuParent = contextMenuParentId ? work.sessionsById.get(contextMenuParentId) ?? null : null;
+  const contextMenuParentTitle = contextMenuParent ? primarySessionLabel(contextMenuParent) : null;
   const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
 
   // A selected row on another machine, as the Lanes tab will see it. The row's
@@ -2334,6 +2339,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
       <SessionContextMenu
         menu={contextMenu}
+        parentSessionTitle={contextMenuParentTitle}
         onClose={() => setContextMenu(null)}
         onStopRuntime={({ ptyId, sessionId }, runtimePin) => {
           const stop = runtimePin

@@ -65,6 +65,7 @@ import {
   type WebClientStorage,
 } from "./envStore";
 import { randomHex, uuid } from "./ids";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { decodeChatLaunchEventPayload } from "./chatLaunchEvents";
 import {
   applyProjectHostHello,
@@ -267,6 +268,9 @@ function terminalPayloadRange(
   return { startOffset: inferredStart, endOffset: endOffset as number };
 }
 
+/** The shortest gap between two of this client's requests to host its own project again. */
+const OWN_PROJECT_REASSERT_MIN_MS = 15_000;
+
 function openProjectFromCatalog(projects: SyncMobileProjectSummary[] | undefined): string | null {
   return projects?.find((project) => project.isOpen)?.id ?? projects?.[0]?.id ?? null;
 }
@@ -293,6 +297,19 @@ export class AdeSyncClient {
   private readonly connection: SyncConnection;
   private selectedEnvId: string | null = null;
   private activeProjectId: string | null = null;
+  /** When this client last asked the brain to host its own project again (`ensureHostOnOwnProject`). */
+  private ownProjectReassertedAtMs = 0;
+  /** A request that came inside the 15 s gap, run when the gap ends with the catalog of that time. */
+  private ownProjectReassertTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * This connection's catalog showed this browser's project open after a
+   * reassert. A move away on the same live connection is then another client
+   * that wants the brain on its project, not a restart (a restart closes the
+   * connection first and clears this).
+   */
+  private ownProjectHeldAfterReassert = false;
+  /** The reassert in flight, if any: a person's switch waits for it (`switchProject`). */
+  private ownProjectReassert: Promise<void> | null = null;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
   private readiness: AdeSyncClientStatus["readiness"] = "disconnected";
@@ -400,6 +417,7 @@ export class AdeSyncClient {
       void this.removeEnvironment(envId);
     });
     this.connection.on("close", ({ code, reason }) => {
+      this.ownProjectHeldAfterReassert = false;
       this.invalidateGeneration(new AdeSyncError(
         "Connection lost — outcome unknown. Check the current state before retrying.",
         "connection_lost_outcome_unknown",
@@ -424,7 +442,31 @@ export class AdeSyncClient {
       this.resolveProjectCatalog(payload, this.clientGeneration);
       this.emit("projectCatalog", payload);
       const openProject = payload.projects.find((project) => project.isOpen) ?? null;
-      if (openProject && openProject.id !== this.activeProjectId) {
+      if (openProject && openProject.id === this.activeProjectId && this.ownProjectReassertedAtMs > 0) {
+        this.ownProjectHeldAfterReassert = true;
+      }
+      // Moved away again after this browser asked for its project back, on the
+      // same connection: another client wants this brain on its project. This
+      // browser follows the brain, so the two do not keep moving it.
+      const contested = openProject != null
+        && this.activeProjectId != null
+        && openProject.id !== this.activeProjectId
+        && this.ownProjectHeldAfterReassert;
+      if (contested) {
+        this.ownProjectHeldAfterReassert = false;
+        this.ownProjectReassertedAtMs = 0;
+        if (this.ownProjectReassertTimer != null) {
+          clearTimeout(this.ownProjectReassertTimer);
+          this.ownProjectReassertTimer = null;
+        }
+        forwardSignalToSentry("web.sync_own_project_yielded", {}, "own_project_yielded", "info");
+      }
+      // Another client moved this brain to another project, or the brain
+      // restarted on its default one. This browser keeps the project it shows
+      // and asks the brain for it again.
+      if (openProject && this.activeProjectId != null && openProject.id !== this.activeProjectId && !contested) {
+        this.ensureHostOnOwnProject(payload);
+      } else if (openProject && openProject.id !== this.activeProjectId) {
         const previousProjectId = this.activeProjectId;
         this.activeProjectId = openProject.id;
         if (this.readiness === "restoring") {
@@ -606,8 +648,10 @@ export class AdeSyncClient {
       this.disconnect();
       throw accountSessionChangedError();
     }
-    paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects)
-      ?? paired.environment.activeProjectId
+    // A computer paired again keeps the project this browser had there; only
+    // a first pairing takes the brain's open project.
+    paired.environment.activeProjectId = paired.environment.activeProjectId
+      ?? openProjectFromCatalog(paired.helloOk.projects)
       ?? null;
     if (!accountSessionIsCurrent()) {
       this.disconnect();
@@ -628,6 +672,7 @@ export class AdeSyncClient {
     this.selectedEnvId = paired.environment.envId;
     this.activeProjectId = paired.environment.activeProjectId ?? null;
     await this.awaitCurrentRestoration();
+    if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
     this.emitStatus();
     return paired.environment;
   }
@@ -712,6 +757,7 @@ export class AdeSyncClient {
     envId: string,
     relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS,
     firstEndpoint: string | null = null,
+    options: { preserveTerminalInputs?: boolean } = {},
   ): Promise<void> {
     const environment = await this.envStore.getEnvironment(envId);
     if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
@@ -728,7 +774,7 @@ export class AdeSyncClient {
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
     this.currentCatalog = null;
-    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"));
+    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"), options);
     await this.envStore.setSelectedEnvId(envId);
     await this.connection.connect(
       environment,
@@ -1051,6 +1097,17 @@ export class AdeSyncClient {
     projectId: string,
     rootPath: string | null = null,
   ): Promise<SyncProjectSwitchResultPayload> {
+    // A reassert in flight ends with a re-dial that rejects every pending
+    // request, this one too. The person's choice waits for it, then wins.
+    const reassert = this.ownProjectReassert;
+    if (reassert) await reassert;
+    return await this.sendProjectSwitch(projectId, rootPath);
+  }
+
+  private async sendProjectSwitch(
+    projectId: string,
+    rootPath: string | null = null,
+  ): Promise<SyncProjectSwitchResultPayload> {
     const generation = this.requireReadyGeneration();
     const requestId = uuid();
     const promise = new Promise<SyncProjectSwitchResultPayload>((resolve, reject) => {
@@ -1074,6 +1131,7 @@ export class AdeSyncClient {
     const result = await promise;
     if (result.ok) {
       const envId = this.selectedEnvId;
+      const previousProjectId = this.activeProjectId;
       // The route this connection is on works right now: the re-dial below
       // starts with it instead of walking the direct routes again.
       const liveEndpoint = this.connection.getStatus().endpoint ?? null;
@@ -1084,8 +1142,16 @@ export class AdeSyncClient {
           this.connection.disconnect({ reconnect: false, code: 1000, reason: "Project switch" });
           this.currentCatalog = null;
         }
-        this.invalidateGeneration(new AdeSyncError("Project connection changed.", "disconnected"));
-        this.retireActiveProjectStreams();
+        // The project in front did not change (the brain was asked to host
+        // this browser's project again): its chat and terminal streams stay,
+        // and the next hello subscribes them again. Typed terminal input waits
+        // for that reconnect too, instead of failing.
+        const sameProject = this.activeProjectId === previousProjectId;
+        this.invalidateGeneration(
+          new AdeSyncError("Project connection changed.", "disconnected"),
+          { preserveTerminalInputs: sameProject && envId != null },
+        );
+        if (!sameProject) this.retireActiveProjectStreams();
         await this.persistCurrentEnvironment((environment) => ({
           ...environment,
           port: result.connection?.port ?? environment.port,
@@ -1094,7 +1160,7 @@ export class AdeSyncClient {
           activeProjectId: this.activeProjectId,
         }));
         if (envId) {
-          await this.connect(envId, this.relayAccess, liveEndpoint);
+          await this.connect(envId, this.relayAccess, liveEndpoint, { preserveTerminalInputs: sameProject });
         }
       } finally {
         this.streamSubscriptionsPaused = false;
@@ -1186,6 +1252,8 @@ export class AdeSyncClient {
 
   dispose(): void {
     this.disconnect();
+    if (this.ownProjectReassertTimer != null) clearTimeout(this.ownProjectReassertTimer);
+    this.ownProjectReassertTimer = null;
     this.connection.dispose();
     // A disposed client must not keep answering for the recovery store — but
     // only if it is the one bound. Disposing a background session must leave
@@ -1209,10 +1277,14 @@ export class AdeSyncClient {
         "terminal_input_ack_unavailable",
       ));
     }
-    const restoredProject = payload.projects?.find((project) => project.isOpen)
-      ?? payload.projects?.[0]
-      ?? null;
     const previousProjectId = this.activeProjectId;
+    // A reconnect never moves this browser to another project: a restarted
+    // brain hosts its own default (ADE_PROJECT_ROOT, or its newest project),
+    // and a brain whose project host is not up yet has no open project at
+    // all. Only a client with no project of its own takes a default.
+    const restoredProject = previousProjectId != null
+      ? payload.projects?.find((project) => project.id === previousProjectId) ?? null
+      : payload.projects?.find((project) => project.isOpen) ?? payload.projects?.[0] ?? null;
     const crossedProjectBoundary = Boolean(
       restoredProject && restoredProject.id !== previousProjectId,
     );
@@ -1258,6 +1330,7 @@ export class AdeSyncClient {
       this.readinessError = null;
       this.pumpTerminalInputQueue();
       this.emitStatus();
+      if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
     })();
     this.restorationPromise = restoration;
     void restoration.catch((error) => {
@@ -1270,11 +1343,56 @@ export class AdeSyncClient {
   }
 
   private async awaitCurrentRestoration(): Promise<void> {
-    const restoration = this.restorationPromise;
+    const restoration = this.restorationPromise ?? (await this.nextRestoration())?.restoration;
     if (!restoration) {
       throw new AdeSyncError("The computer connected without restoring the workspace.", "restoration_missing");
     }
     await restoration;
+  }
+
+  /**
+   * The restoration of the next hello, when the link dropped after its hello
+   * and is dialing again on its own. A first pairing saves the new computer
+   * between its hello and this wait; a socket that closed in that gap (a new
+   * computer hands it to its project host as soon as that host is up) used
+   * to fail a connect that was seconds from working ("connected without
+   * restoring the workspace", then fine on a second try). Null when nothing
+   * is dialing, the dial gives up, or no hello comes in time.
+   *
+   * The restoration comes back boxed: a promise resolved with a promise
+   * takes on that promise's result, and the caller needs the promise itself.
+   */
+  private nextRestoration(): Promise<{ restoration: Promise<void> } | null> {
+    const state = this.connection.getStatus().state;
+    if (state !== "connecting" && state !== "reconnecting") return Promise.resolve(null);
+    // A drop between two dials passes through "disconnected"; these end the wait.
+    const gaveUp = (next: string) => next === "idle" || next === "auth_failed" || next === "error";
+    return new Promise((resolve) => {
+      let done = false;
+      let off: (() => void) | null = null;
+      const finish = (restoration: Promise<void> | null) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        off?.();
+        resolve(restoration ? { restoration } : null);
+      };
+      const timer = setTimeout(() => finish(this.restorationPromise), this.restorationTimeoutMs);
+      off = this.on("status", () => {
+        if (this.restorationPromise) {
+          finish(this.restorationPromise);
+          return;
+        }
+        if (!gaveUp(this.connection.getStatus().state)) return;
+        // A failed dial reports "error" and then, in the same turn, schedules
+        // the next one; give up only when nothing was scheduled.
+        queueMicrotask(() => {
+          if (this.restorationPromise) finish(this.restorationPromise);
+          else if (gaveUp(this.connection.getStatus().state)) finish(null);
+        });
+      });
+      if (done) off();
+    });
   }
 
   private handleEnvelope(envelope: SyncEnvelope): void {
@@ -1821,6 +1939,47 @@ export class AdeSyncClient {
       "The active project changed before the request completed.",
       "project_changed",
     );
+  }
+
+  /**
+   * The brain hosts one project for every client, and this browser's project
+   * is not it (a restart, or another client's switch): ask the brain to host
+   * this browser's project again. The project in front never changes here.
+   * At most once per `OWN_PROJECT_REASSERT_MIN_MS`. Two clients that show
+   * different projects of one brain do not keep moving it: once the brain
+   * moves away again after a reassert, this browser follows it (see the
+   * `projectCatalog` handler).
+   */
+  private ensureHostOnOwnProject(catalog: SyncProjectCatalogPayload): void {
+    const own = this.activeProjectId;
+    if (!own || this.readiness !== "ready" || this.pendingProjectSwitches.size > 0) return;
+    const open = catalog.projects.find((project) => project.isOpen) ?? null;
+    if (open?.id === own) return;
+    if (!catalog.projects.some((project) => project.id === own)) return;
+    const now = Date.now();
+    const waitMs = OWN_PROJECT_REASSERT_MIN_MS - (now - this.ownProjectReassertedAtMs);
+    if (waitMs > 0) {
+      // Not dropped: a quick second restart still needs the request. It runs
+      // once the gap ends, against the latest catalog, and only if still due.
+      forwardSignalToSentry("web.sync_own_project_reassert_skipped", {}, "own_project_reassert_skipped", "info");
+      if (this.ownProjectReassertTimer == null) {
+        this.ownProjectReassertTimer = setTimeout(() => {
+          this.ownProjectReassertTimer = null;
+          if (this.currentCatalog) this.ensureHostOnOwnProject(this.currentCatalog);
+        }, waitMs);
+      }
+      return;
+    }
+    this.ownProjectReassertedAtMs = now;
+    const reassert: Promise<void> = this.sendProjectSwitch(own).then(
+      (result) => {
+        if (!result.ok) forwardSignalToSentry("web.sync_own_project_reassert_failed", { reason: "refused" }, "own_project_reassert_failed:refused", "warn");
+      },
+      () => forwardSignalToSentry("web.sync_own_project_reassert_failed", { reason: "error" }, "own_project_reassert_failed:error", "warn"),
+    ).finally(() => {
+      if (this.ownProjectReassert === reassert) this.ownProjectReassert = null;
+    });
+    this.ownProjectReassert = reassert;
   }
 
   private publishActiveProjectBoundary(

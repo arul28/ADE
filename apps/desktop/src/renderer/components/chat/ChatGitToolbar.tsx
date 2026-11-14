@@ -538,7 +538,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // machine, on a surface whose PR pane (which explains the same thing) is
   // absent. With a pane present the click opens it and the pane speaks.
   const createBlockedReason = foreignPin && !linkedPr && !onTogglePrPane
-    ? `Switch to ${foreignPin.kind === "remote" ? foreignPin.runtimeName : "this lane's machine"} to open a pull request for it.`
+    ? `This lane is on ${foreignPin.kind === "remote" ? foreignPin.runtimeName : "another machine"}. Open its pull request from the lane in Lanes.`
     : null;
   const prPillActive = onTogglePrPane ? Boolean(prPaneOpen) : prMenuOpen;
   const prBadge = useMemo(() => {

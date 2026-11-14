@@ -402,8 +402,9 @@ export function ProjectWelcomePage() {
         const key = recentKey(rp);
         const targetId = rp.remote.targetId;
         const projectId = rp.remote.projectId;
-        // A copy on a machine this computer has no connection to: nothing to
-        // connect, so the repository opens with no machine.
+        // A copy on a machine this computer has no connection to: the
+        // repository opens with no machine, and that page connects the
+        // computer and opens the copy (no pick).
         if (targetId.startsWith(ACCOUNT_MACHINE_TARGET_PREFIX)) {
           if (!openNoMachineTab(rp)) setRowError("No computer with this project is online.");
           return;

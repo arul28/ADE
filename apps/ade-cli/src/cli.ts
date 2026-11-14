@@ -605,6 +605,7 @@ import {
 import {
   CHAT_PARENT_FLAGS,
   DEFAULT_PARENT_FLAGS,
+  NO_REPORT_FLAGS,
   SPAWN_TYPE_FLAGS,
 } from "./launchFlagNames";
 import {
@@ -2531,8 +2532,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --from <default|primary|branch>  Start source for an auto-created lane.
     --on <remote|local|uncommitted>  Which copy of the branch to start from.
     --existing-branch <branch>  Work directly on an existing branch.
-    --type <subagent|peer>  From an agent the new session is a subagent that
-                           reports back (the default). peer: no report.
+    --no-report            From an agent the new session is a subagent that
+                           reports back (the default). --no-report: it does not.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
                            CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
     --model <id>           Runtime model id.
@@ -2556,8 +2557,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Spawn lineage:
     From an agent, the new session is a subagent of that agent's chat and
-    reports back to it. --type peer: no report. --no-parent: a separate chat,
-    only when the user asks. Plain shell terminals do not record lineage.
+    reports back to it. --no-report: it does not report back. --no-parent: a
+    separate chat, only when the user asks. Plain shell terminals do not record
+    lineage.
 
   Compatibility:
     ade chat create still creates persistent Work chats.
@@ -2581,8 +2583,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   From an agent, the new session is a subagent of that agent's chat and
-  reports back to it. --type peer: no report. --no-parent: a separate chat,
-  only when the user asks. --parent <sessionId> names a different parent.
+  reports back to it. --no-report: it does not report back. --no-parent: a
+  separate chat, only when the user asks. --parent <sessionId> names a
+  different parent.
   Without --permissions, both modes start where a chat would: a full-auto
   parent's subagent runs full-auto, otherwise the project's default (full
   access unless configured), never above the agent that started it.
@@ -2599,7 +2602,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                    [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
-                   [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
+                   [--linear-issue-json '{...}' [--start-chat [--no-report] --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
 ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   ade lanes defaults set [--from default|primary|<branch>] [--on remote|local] [--template <id>|--no-template]
@@ -3194,10 +3197,10 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Also a CLI session: one at its prompt stops (Resume picks it up); mid-turn it finishes first.
                                                     ade chat delete <cli-session> stops it and keeps it in Recently deleted.
                                                     --dry-run prints the call without running it
-    $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
-    $ ade chat promote <session>                    Restore a peer as a subagent so it reports to its parent again
+    $ ade chat demote <session>                     Take over a subagent: its reports to its parent stop
+    $ ade chat promote <session>                    Make the chat report back to its parent again
     $ ade chat set-parent <session> --parent <chat> Make <chat> this chat's parent; reports go there from the next turn
-                                                    [--type subagent|peer]; a chat whose old parent is gone becomes a subagent
+                                                    [--no-report]; a chat whose old parent is gone becomes a subagent
     $ ade chat set-parent <session> --no-parent     Detach the chat from its parent
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
@@ -3229,8 +3232,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -3312,8 +3315,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             tracked agent shell (the spawning chat).
     --no-parent             A separate top-level chat that does not report back.
                             Only when the user asks for one.
-    --type <subagent|peer>  subagent (default with a parent) reports back after
-                            every turn; peer leaves quiet notes.
+    --no-report             With a parent, the chat does not report back. By
+                            default it reports back after every turn.
 
   With --lane, chat create warns on stderr when another chat on that lane is in
   a turn or waiting on input: the two chats then share one worktree.
@@ -5520,7 +5523,7 @@ function readDroidPermissionMode(args: string[]): AgentChatDroidPermissionMode |
 /**
  * The non-consuming half of `readValue`: the NAME from `names` that the first
  * matching token in `args` spells, whether it was written bare (`--type`) or
- * joined (`--type=peer`), or `null` when no token matches.
+ * joined (`--type=subagent`), or `null` when no token matches.
  *
  * Two callers need to know a flag was WRITTEN without taking it out of argv —
  * `readAgentSpawnLineage` distinguishing an explicit parent from an ambient
@@ -9122,7 +9125,7 @@ function buildChatCreateConfigPreview(
  * command the flag names the parent LANE, which is meaningful with or without
  * a chat.
  */
-const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...CHAT_PARENT_FLAGS];
+const CHAT_ONLY_LINEAGE_FLAGS = [...SPAWN_TYPE_FLAGS, ...NO_REPORT_FLAGS, ...CHAT_PARENT_FLAGS];
 
 function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPlan {
   const explicitName = readValue(args, ["--name"]);
@@ -13782,11 +13785,15 @@ function buildChatPlan(args: string[]): CliPlan {
     if (detach === Boolean(parent)) {
       throw new Error("Pass --parent <session> to set the parent, or --no-parent to detach the chat.");
     }
-    const spawnKind = readValue(args, [...SPAWN_TYPE_FLAGS]);
-    if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer") {
-      throw new Error("--type must be subagent or peer.");
+    const noReport = readFlag(args, [...NO_REPORT_FLAGS]);
+    const typeArg = readValue(args, [...SPAWN_TYPE_FLAGS]);
+    // `peer` is the stored value behind `--no-report`; old scripts still pass it.
+    if (typeArg && typeArg !== "subagent" && typeArg !== "peer") {
+      throw new Error("--type must be subagent. Use --no-report for a chat that does not report back.");
     }
-    if (detach && spawnKind) throw new Error("--type needs a parent; drop it with --no-parent.");
+    if (noReport && typeArg === "subagent") throw new Error("--no-report cannot be combined with --type subagent.");
+    const spawnKind = noReport ? "peer" : typeArg;
+    if (detach && spawnKind) throw new Error("--type and --no-report need a parent; drop them with --no-parent.");
     return {
       kind: "execute",
       label: "chat set-parent",

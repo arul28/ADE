@@ -390,6 +390,10 @@ export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
   "Remote machine was manually disconnected. Connect again to use this remote project.";
 
+/** What a development ADE says when it would dial a machine the person did not connect in it. */
+export const REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE =
+  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
+
 export type RemoteRuntimeParsedPairingInput = {
   hostIdentity: SyncPairingHostIdentity;
   machineName?: string;

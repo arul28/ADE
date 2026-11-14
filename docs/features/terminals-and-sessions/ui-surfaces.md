@@ -362,13 +362,14 @@ reads **needs you**. A row opens its child chat on the parent's machine (the
 chat's pin). A subagent of a tracked CLI or a shell is never filed: a terminal
 has no subagent list, so that child stays a top-level row.
 
-Filing has not changed. Peers stay top-level. Grandchildren count toward the
+Filing has not changed. A chat that does not report back (`spawnKind: "peer"`) stays top-level. Grandchildren count toward the
 root parent. A quiet parent (snoozed or settled) pulls not-done children
 (working, needs you, failed, stale, starting) up to full top-level cards. A
 child whose parent is hidden (by search, or deleted) stays top-level. Status,
 time, and Kanban stay flat. Foreign by-lane rows file the same way.
-Demote-to-peer un-nests; promote files again. Cross-lane children stay
-top-level in their own lane with the existing lineage chip. The old drawer
+**Stop reports to <parent>** un-nests; **Report back to <parent>** files again. Cross-lane children stay
+top-level in their own lane; a subagent keeps its **Subagent** chip, and a chat that does not report
+back has no chip. Its hover card says **Started by <parent>**, which opens the parent. The old drawer
 keys (`chat-subagents:<parentId>`, `drawer-open:`) do nothing now. `ade chat list` stays a flat table.
 
 Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
@@ -443,16 +444,22 @@ cards use the same collapsed quiet tails as local lanes. A fully quiet foreign
 lane starts as the same minimal header with inline counts and uses
 `lane-open:<machineId>:<laneId>` for explicit expansion. When active work
 returns, `SessionListPane` clears that marker so the next all-quiet state starts
-collapsed — except on an offline machine, whose chats only look active because
-that is the last thing it reported. Card selection and context actions still
-carry the owning runtime binding. **Manage lane** opens the shared dialog with
-every read and mutation pinned to that machine. An offline machine's lane group
-is dimmed and folds shut like a quiet one; expanding it is allowed, but every
-card in it is disabled and reads "<machine> is offline". The other disabled
-foreign row is one whose reachable machine has not resolved a project binding
-yet. A one-session reachable foreign lane is allowed to use the same headerless
-shape as a local singleton; an offline machine remains grouped so its folded,
-dimmed state has a header to live on.
+collapsed. Card selection and context actions still carry the owning runtime
+binding. **Manage lane** opens the shared dialog with every read and mutation
+pinned to that machine.
+
+Rows never name their machine: no machine chip, glyph or lane-header marker.
+The machine shows in the row's hover card, in the composer of an open chat, and
+in the Start on picker for new work. A machine that drops keeps its rows through
+the short reconnect window (`applyReachability` in `crossMachineLanes.ts`, 45 s
+to 2 min). After that its rows are not listed at all, and they come back when it
+reconnects. An ADE Cloud computer that is asleep is the exception
+(`machineIsCloudResting` in `cloudRestingRows.ts`): its work stays listed as
+normal rows, and opening one wakes the computer (`wakeRestingCloudMachine` in
+`lib/cloudMachineWake.ts`). The opened chat shows "Waking <machine>…"
+(`ChatMachineWakeBanner`), and the opened lane in the Lanes tab shows the same
+progress (`RestingCloudLaneDetail`). The only disabled foreign row left is one
+whose reachable machine has not resolved a project binding yet.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
@@ -2012,7 +2019,13 @@ carries a 13px duotone Phosphor glyph so the list is scannable:
   text input, `manuallyNamed: true`), alongside optional Set tag, pin, and grid
   removal.
 - **Lifecycle** carries runtime stop, Snooze/Wake, and Settle/Un-settle.
-- **Go to** carries lane and optional web navigation.
+- **Go to** carries lane and optional web navigation. A child chat also gets
+  **Open <parent>**. A chat child gets **Stop reports to <parent>** (a subagent)
+  or **Report back to <parent>** (a chat that does not report back); the toast
+  repeats the same words.
+- Keyboard: Shift+F10 or the Menu key on a focused row opens the menu. The menu
+  takes focus; the arrow keys, Home and End move between rows, Enter runs one,
+  and Escape closes it and gives focus back (`ContextMenuSurface`).
 - **Copy** is a hover/keyboard submenu for the session ID and deep link.
 - Destructive Stop & delete / Delete chat / Delete session actions are fenced
   into the final red block.

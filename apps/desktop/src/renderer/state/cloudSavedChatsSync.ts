@@ -7,6 +7,7 @@
 import { findMachineProject, remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type { CloudSavedChatRow } from "../../shared/cloudSavedChats";
 import type { OpenProjectBinding } from "../../shared/types/core";
+import type { LaneSummary } from "../../shared/types/lanes";
 import type { RemoteRuntimeConnectionStatus } from "../../shared/types/remoteRuntime";
 import type { AgentChatApi } from "../components/chat/agentChatApi";
 import { isRuntimeTransportTimeoutError } from "../../shared/runtimeErrors";
@@ -51,6 +52,8 @@ export type SavedChatsContext = {
 let timer: ReturnType<typeof setTimeout> | null = null;
 let lastReadAtMs = 0;
 let inFlight = false;
+/** A forced read is waiting in the debounce. */
+let forcePending = false;
 /** A read asked for while one was running (a project switch); it runs next. */
 let queuedContext: SavedChatsContext | null = null;
 
@@ -58,9 +61,12 @@ let queuedContext: SavedChatsContext | null = null;
 export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext, options?: { force?: boolean }): void {
   if (!window.ade?.cloud?.savedChats) return;
   if (timer) clearTimeout(timer);
-  const force = options?.force === true;
+  // A plain request that replaces a forced one inside the debounce keeps it forced.
+  forcePending ||= options?.force === true;
   timer = setTimeout(() => {
     timer = null;
+    const force = forcePending;
+    forcePending = false;
     // Inside the debounce, so a window just opened has its access answer by now.
     if (!adeCloudEnabled()) return;
     if (!force && Date.now() - lastReadAtMs < MIN_REFRESH_INTERVAL_MS) return;
@@ -202,6 +208,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         ) ownerByChatId.set(row.chatId, { machineKey, connected, updatedAt: row.updatedAt });
       }
     }
+    // Machines whose own saved chats show (the lane fallback below is for the rest).
+    const showsSavedChats = new Set<string>();
     for (const [machineKey, machineRows] of byMachine) {
       const { connection, gone, name } = machineFacts.get(machineKey)!;
       const rows = machineRows.filter((row) => {
@@ -229,6 +237,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         }
         continue;
       }
+      showsSavedChats.add(machineKey);
       const first = rows[0]!;
       // Connected: the live list owns this machine. Nothing saved shows.
       if (connection?.state === "connected") continue;
@@ -276,6 +285,49 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         });
       }
     }
+    // A lane computer of this project that is asleep or not connected here,
+    // with no saved chat: its lane still belongs in the list, as a normal row.
+    // Opening it reaches the computer by its key, which wakes it.
+    for (const computer of adeCloudLaneComputersNow()) {
+      const machineKey = computer.machineKey;
+      // A machine whose every saved chat now shows from another computer
+      // still gets its lane row here.
+      if (!machineKey || showsSavedChats.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      if (!computer.projectOrigin || computer.projectOrigin !== context.projectKey) continue;
+      const connection = connectionFor(context.connections, machineKey, computer.instanceId);
+      if (connection?.state === "connected") continue;
+      const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
+      const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
+      // A connection's slice from its live reads keeps its own lanes.
+      if (previous && previous.lanes.length > 0 && !isSavedChatsMachineId(machineId)) continue;
+      if (!connection) keptSyntheticIds.add(machineId);
+      const machineName = connection?.target.name ?? computer.laneName;
+      const binding: OpenProjectBinding = previous?.binding ?? {
+        kind: "remote",
+        key: `${machineId}:${computer.projectOrigin}`,
+        targetId: machineId,
+        runtimeName: machineName,
+        transport: "paired",
+        hostname: computer.instanceId,
+        projectId: computer.projectOrigin,
+        rootPath: "",
+        displayName: machineName,
+      };
+      store.mergeCrossMachineLanes({
+        machineId,
+        machineName,
+        targetId: connection?.target.id ?? null,
+        projectId: binding.kind === "remote" ? binding.projectId : null,
+        binding,
+        online: false,
+        lanes: [laneComputerLane(computer, previous?.lanes.find((lane) => lane.id === computer.laneId))],
+        // This computer shows no saved chat of its own (they moved to another
+        // computer, or there were none): saved copies an earlier read left on
+        // its slice are stale and would show as duplicates.
+        sessions: (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
+        error: null,
+      });
+    }
     replaceSavedChatLocations(nextLocations);
     const staleSynthetic = Object.keys(store.crossMachineLanesByMachineId)
       .filter((machineId) => isSavedChatsMachineId(machineId) && !keptSyntheticIds.has(machineId));
@@ -289,6 +341,27 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     queuedContext = null;
     if (next) void refreshCloudSavedChats(next);
   }
+}
+
+/**
+ * The one lane an ADE Cloud lane computer holds, as a row while the computer
+ * can't answer. Keeps the row's first-seen time so the list does not reorder.
+ */
+function laneComputerLane(computer: { laneId: string; laneName: string }, previous: LaneSummary | undefined): LaneSummary {
+  return {
+    id: computer.laneId,
+    name: computer.laneName,
+    laneType: "worktree",
+    baseRef: "",
+    branchRef: "",
+    worktreePath: "",
+    isEditProtected: false,
+    status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
+    color: null,
+    icon: null,
+    tags: [],
+    createdAt: previous?.createdAt ?? new Date().toISOString(),
+  };
 }
 
 const machineOnline = (machineId: string): boolean =>

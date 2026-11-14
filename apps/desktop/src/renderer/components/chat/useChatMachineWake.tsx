@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { clearCloudMachineWakeFailure, useCloudMachineWakeFailure, useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
+import { Banner } from "../ui/notice";
 
 export type ChatMachineWake = {
   /** The chat's machine is an ADE Cloud computer that is asleep, stopped, or coming up. */
@@ -91,8 +93,27 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // show this machine's wake or its late failure.
   const [wakingTargetId, setWakingTargetId] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ targetId: string; message: string } | null>(null);
-  const waking = targetId != null && wakingTargetId === targetId;
-  const error = failure && failure.targetId === targetId ? failure.message : null;
+  // Opening the chat from a list wakes its computer (`wakeRestingCloudMachine`);
+  // the computer reads "starting" while any wake runs. Either is this chat's
+  // wake too, so the view shows its progress and its failure.
+  const machineKey = box?.machineKey ?? null;
+  const listWaking = useCloudMachineWakeInFlight(machineKey);
+  const listFailure = useCloudMachineWakeFailure(machineKey);
+  const error = (failure && failure.targetId === targetId ? failure.message : null) ?? (resting ? listFailure : null);
+  // A list wake's failure is over once the computer is up. The computer is
+  // not read while the chat is online, so its key is the last one read for
+  // this chat's target.
+  const lastMachineKeyRef = useRef<{ targetId: string | null; machineKey: string } | null>(null);
+  useEffect(() => {
+    if (machineKey) lastMachineKeyRef.current = { targetId, machineKey };
+    else if (scope.online && lastMachineKeyRef.current?.targetId === targetId) {
+      clearCloudMachineWakeFailure(lastMachineKeyRef.current.machineKey);
+    }
+  }, [machineKey, scope.online, targetId]);
+  // A failed wake from here wins over the inferred progress: a computer stuck
+  // in "starting" must still show the failure and its Try again.
+  const waking = (targetId != null && wakingTargetId === targetId)
+    || (resting && error == null && (listWaking || box?.state === "starting"));
   const machineName = scope.machineName;
   // `scope.online` follows the connection snapshot: main pushes
   // `onConnectionSnapshotChanged` once the connect succeeds, and
@@ -124,14 +145,24 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
 
   const wake = useCallback(async (): Promise<boolean> => {
     const connect = window.ade?.remoteRuntime?.connect;
-    if (!targetId || !connect || inFlightTargetRef.current === targetId) return false;
+    // An ADE Cloud computer wakes through the account connect, the same call
+    // a list's wake uses: on ADE Web a plain connect only dials, and a
+    // sleeping computer does not answer it.
+    const connectCloud = machineKey ? window.ade?.machines?.connect : undefined;
+    if (!targetId || (!connect && !connectCloud) || inFlightTargetRef.current === targetId) return false;
     inFlightTargetRef.current = targetId;
     const fail = (message: string) => setFailure({ targetId, message });
     try {
       setWakingTargetId(targetId);
       setFailure(null);
+      if (machineKey) clearCloudMachineWakeFailure(machineKey);
       try {
-        await connect(targetId);
+        if (machineKey && connectCloud) {
+          const result = await connectCloud(machineKey);
+          if (!result.ok) throw new Error(result.message);
+        } else if (connect) {
+          await connect(targetId);
+        }
       } catch (connectFailure) {
         console.warn("[cloud] waking the chat's machine failed", connectFailure);
         fail(`ADE couldn't wake ${machineName}. Try again.`);
@@ -154,7 +185,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       if (inFlightTargetRef.current === targetId) inFlightTargetRef.current = null;
       setWakingTargetId((current) => (current === targetId ? null : current));
     }
-  }, [machineName, refresh, settle, targetId]);
+  }, [machineKey, machineName, refresh, settle, targetId]);
 
   const wakeThen = useCallback(async (run: () => void): Promise<boolean> => {
     const online = await wake();
@@ -172,4 +203,38 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
 /** The chat's machine as `ChatMachineWakeProvider` found it; outside a chat, never resting. */
 export function useChatMachineWake(): ChatMachineWake {
   return useContext(ChatMachineWakeContext) ?? NOT_RESTING;
+}
+
+/**
+ * The opened chat's own progress line while its ADE Cloud computer wakes, and
+ * why the last wake failed. Nothing for a machine that is up or not a cloud
+ * computer. The list row stays as it is; the progress lives here.
+ */
+export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
+  const machine = useChatMachineWake();
+  const scope = useChatRuntimeScope();
+  if (machine.gone || !machine.resting) return null;
+  if (machine.waking) {
+    return (
+      <Banner
+        layout="inline"
+        style={style}
+        model={{ id: "chat-machine-waking", tone: "info", busy: true, title: `Waking ${scope.machineName}…` }}
+      />
+    );
+  }
+  if (!machine.error) return null;
+  return (
+    <Banner
+      layout="inline"
+      style={style}
+      model={{
+        id: "chat-machine-wake-failed",
+        tone: "error",
+        title: machine.error,
+        report: false,
+        actions: [{ label: "Try again", onClick: () => void machine.wake() }],
+      }}
+    />
+  );
 }

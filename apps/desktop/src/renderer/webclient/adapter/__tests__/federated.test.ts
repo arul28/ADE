@@ -7,6 +7,7 @@ import type { AdeSyncClient } from "../../sync";
 import type { WebMachineSessionManager } from "../../workspace/WebMachineSessionManager";
 import { createFederatedWebAdapter } from "../federated";
 import { createReconnectHold } from "../reconnectHold";
+import type * as WebCloudMachines from "../../workspace/webCloudMachines";
 
 const adapters = vi.hoisted(() => new Map<object, {
   ade: Window["ade"];
@@ -17,6 +18,13 @@ const adapters = vi.hoisted(() => new Map<object, {
 
 vi.mock("../index", () => ({
   createAdeWebAdapter: (client: object) => adapters.get(client),
+}));
+
+// The wake goes through a connected computer's sync client; a test holds it open.
+const cloudWake = vi.hoisted(() => ({ wake: vi.fn((): Promise<void> => Promise.resolve()) }));
+vi.mock("../../workspace/webCloudMachines", async (importOriginal) => ({
+  ...(await importOriginal<typeof WebCloudMachines>()),
+  wakeWebCloudMachine: cloudWake.wake,
 }));
 
 function fakeAdapter(label: string) {
@@ -915,6 +923,49 @@ describe("createFederatedWebAdapter", () => {
     federated.activateHub();
 
     expect(fixture.manager.setProtectedTargetId).toHaveBeenLastCalledWith("machine-a");
+  });
+
+  it.each([
+    { name: "a Disconnect during a wake that works stops the connect", wake: "succeeds", disconnectDuringWake: true, dials: 0, ok: false },
+    { name: "a Disconnect during a wake that fails stops the fallback connect", wake: "fails", disconnectDuringWake: true, dials: 0, ok: false },
+    { name: "a Disconnect from before the click does not stop the connect", wake: "succeeds", disconnectDuringWake: false, dials: 1, ok: true },
+  ])("connecting a sleeping computer: $name", async ({ wake, disconnectDuringWake, dials, ok }) => {
+    const fixture = managerFixture();
+    const machine = { machineKey: "cloud-1", name: "Cloud", online: false, sleepState: null, sleepStateAt: null, lastSeenAt: Date.now() - 1_000 };
+    const environment = { envId: "env-cloud", machineName: "Cloud", addressCandidates: [] };
+    // The person disconnected it earlier; their Connect click clears that.
+    const disconnected = new Set([environment.envId]);
+    const connectAccountMachine = vi.fn(async () => ({ targetId: environment.envId, environment }));
+    Object.assign(fixture.manager, {
+      findAccountMachineEnvironment: vi.fn(() => environment),
+      acceptUserConnect: vi.fn((targetId: string) => disconnected.delete(targetId)),
+      connectAccountMachine,
+      getConnectionSnapshot: vi.fn(() => ({
+        connections: [{ target: { id: environment.envId }, reconnectBlocked: disconnected.has(environment.envId) ? "disconnected" : null }],
+        connectedCount: 0,
+        updatedAt: 0,
+      })),
+    });
+    let finishWake!: () => void;
+    cloudWake.wake.mockImplementationOnce(() => new Promise<void>((resolve, reject) => {
+      finishWake = wake === "succeeds" ? resolve : () => reject(new Error("no computer can wake it"));
+    }));
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient: { getSnapshot: () => ({ machines: [machine] }) } as unknown as BrowserAccountClient,
+      accountKey: `wake-disconnect-${wake}-${disconnectDuringWake}`,
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    const connecting = federated.ade.machines.connect("cloud-1");
+    await vi.waitFor(() => expect(cloudWake.wake).toHaveBeenCalled());
+    if (disconnectDuringWake) disconnected.add(environment.envId);
+    finishWake();
+    const result = await connecting;
+
+    expect(result.ok).toBe(ok);
+    if (!result.ok) expect(result.reason).toBe("declined");
+    expect(connectAccountMachine).toHaveBeenCalledTimes(dials);
   });
 });
 

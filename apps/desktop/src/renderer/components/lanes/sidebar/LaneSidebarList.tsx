@@ -78,15 +78,15 @@ export type LaneSidebarListProps = {
   onOpenPr: (pr: LaneTabPrTag) => void;
   onOpenAgent: (agent: LaneAgent) => void;
   onClearMultiSelection: () => void;
-  /** Machine chip per row key; absent on a single-machine project. */
-  machineChipByLaneId?: ReadonlyMap<string, MachineChipModel>;
+  /** The machine per row key, for the row's hover card; absent on a single-machine project. */
+  machineByLaneId?: ReadonlyMap<string, MachineChipModel>;
   /** Foreign rows: the lane's own id and its machine's pin, for the share mark. */
   shareTargetByLaneId?: ReadonlyMap<string, { laneId: string; pin: OpenProjectBinding | null }>;
   /** Why a row cannot be acted on (its machine is offline), per row key. */
   disabledReasonByLaneId?: ReadonlyMap<string, string>;
   /** Row keys of lanes on machines other than the tab's. */
   foreignLaneIds?: ReadonlySet<string>;
-  /** Rendered between the filter row and the list (the machine filter). */
+  /** Rendered between the filter row and the list (the ADE Cloud notices). */
   toolbar?: React.ReactNode;
 };
 
@@ -134,7 +134,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     onOpenPr,
     onOpenAgent,
     onClearMultiSelection,
-    machineChipByLaneId,
+    machineByLaneId,
     shareTargetByLaneId,
     disabledReasonByLaneId,
     foreignLaneIds,
@@ -192,7 +192,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
           : null}
         creating={!deleting && settingUpLaneIds.has(laneId)}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
-        machineChip={machineChipByLaneId?.get(laneId) ?? null}
+        machine={machineByLaneId?.get(laneId) ?? null}
         shareTarget={shareTargetByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
         foreign={foreignLaneIds?.has(laneId) ?? false}

@@ -6,7 +6,6 @@ import {
   CircleDashed,
   CircleNotch,
   Desktop,
-  RadioButton,
   Trash,
   UploadSimple,
   XCircle,
@@ -14,12 +13,12 @@ import {
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
 import { ContextMenuSurface } from "../ui/ContextMenu";
 import { MENU_ITEM_CLASS, MenuSectionLabel, MenuSeparator } from "../ui/MenuSubmenu";
-import { computerCountLabel, type CopyComputers } from "../../../shared/repositoryTab";
+import type { CopyComputers } from "../../../shared/repositoryTab";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
-import { offlineMachinesLabel, splitOfflineMachines, type CopyMachine } from "./projectCopies";
+import { splitUnconnectedMachines, unconnectedMachinesLabel, type CopyMachine } from "./projectCopies";
 import { retryCopyJob, useCopyJobs, watchCopyJobs, type CopyJob } from "./projectCopyJobs";
 
-/** One machine in a tab's copies menu. */
+/** One machine in a project's "Computers with a copy" list. */
 export type CopiesMenuRow = {
   machine: CopyMachine;
   /** The copy this machine has, as the tab knows it; null when it has none. */
@@ -29,20 +28,24 @@ export type CopiesMenuRow = {
     /** The copy's address when the tab has no saved binding for it yet (a shared copy). */
     binding?: RemoteOpenProjectBinding | null;
   } | null;
-  /** The copy the tab is on now. */
+  /**
+   * The copy the tab uses for calls that name no machine. Internal: the list
+   * never shows it as a choice (the remove dialog starts from it).
+   */
   inUse: boolean;
 };
 
 const ROW_CLASS = `${MENU_ITEM_CLASS} min-w-0`;
 
 /**
- * The copies of the project a tab holds, one row per machine: the copy in use,
- * the other copies (picking one moves the tab there), machines without a copy
- * ("Add a copy"), and machines that are not connected. A project with no git
- * origin cannot be joined across machines, so its menu says it lives on one
- * machine only and offers Publish as the way to share it.
+ * "Computers with a copy": every computer that has a copy of the project, with
+ * its state and folder, and the computers without one ("Add a copy"). It is a
+ * list, not a switch: the project's tab shows the work of all of them at once,
+ * and new work picks its computer in "Start on". A project with no git origin
+ * cannot be joined across machines, so its list says it lives on one machine
+ * only and offers Publish as the way to share it.
  *
- * The menu reads nothing on its own: the rows come from state the tab bar
+ * The list reads nothing on its own: the rows come from state the tab bar
  * already holds, and the clone jobs from the window's job store.
  */
 export function ProjectCopiesMenu({
@@ -52,7 +55,6 @@ export function ProjectCopiesMenu({
   rows,
   onlyOneMachine,
   canAddCopies,
-  onSwitch,
   onAddCopy,
   onPublish,
   onRemove,
@@ -68,7 +70,6 @@ export function ProjectCopiesMenu({
   onlyOneMachine: string | null;
   /** False in the hosted web client, which cannot clone onto a machine. */
   canAddCopies: boolean;
-  onSwitch: (row: CopiesMenuRow) => void;
   onAddCopy: (machine: CopyMachine) => void;
   /** Offered with the "only on one machine" line when Publish can run. */
   onPublish: (() => void) | null;
@@ -80,8 +81,8 @@ export function ProjectCopiesMenu({
 }) {
   const open = menu != null;
   const jobs = useCopyJobs(repoKey);
-  const [offlineExpanded, setOfflineExpanded] = useState(false);
-  const { ref, position } = useClampedFixedPosition(menu, `${rows.length}:${jobs.length}:${offlineExpanded}`);
+  const [unconnectedExpanded, setUnconnectedExpanded] = useState(false);
+  const { ref, position } = useClampedFixedPosition(menu, `${rows.length}:${jobs.length}:${unconnectedExpanded}`);
   const focusedOnOpenRef = useRef(false);
 
   useEffect(() => (open && repoKey ? watchCopyJobs(repoKey) : undefined), [open, repoKey]);
@@ -89,7 +90,7 @@ export function ProjectCopiesMenu({
   useEffect(() => {
     if (!open) {
       focusedOnOpenRef.current = false;
-      setOfflineExpanded(false);
+      setUnconnectedExpanded(false);
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -123,10 +124,10 @@ export function ProjectCopiesMenu({
 
   if (!menu) return null;
   const jobByMachine = new Map(jobs.map((job) => [job.machine.machineId, job]));
-  // A long list of offline machines collapses into one row. An offline
-  // machine with a copy (or a clone job) stays in view: the person needs to
-  // see where the copies are.
-  const { visible, offline } = splitOfflineMachines(
+  // A long list of machines not connected here collapses into one row. One
+  // with a copy (or a clone job) stays in view: the person needs to see where
+  // the copies are.
+  const { visible, unconnected } = splitUnconnectedMachines(
     rows,
     (row) => row.machine,
     (row) => row.copy != null || jobByMachine.has(row.machine.machineId),
@@ -137,10 +138,6 @@ export function ProjectCopiesMenu({
       row={row}
       job={row.copy ? null : jobByMachine.get(row.machine.machineId) ?? null}
       canAddCopies={canAddCopies && repoKey != null}
-      onSwitch={() => {
-        onClose();
-        onSwitch(row);
-      }}
       onAddCopy={() => onAddCopy(row.machine)}
     />
   );
@@ -152,29 +149,29 @@ export function ProjectCopiesMenu({
       top={position?.top ?? menu.y}
       positioned={Boolean(position)}
       onClose={onClose}
-      label={`Copies of ${projectName}`}
+      label={`Computers with a copy of ${projectName}`}
       role="menu"
       className="w-[340px] max-w-[calc(100vw-16px)]"
     >
       <MenuSectionLabel>
-        Copies of {projectName}{computers && computers.count > 0 ? `, on ${computerCountLabel(computers.count)}` : ""}
+        Computers with a copy of {projectName}{computers && computers.count > 0 ? ` (${computers.count})` : ""}
       </MenuSectionLabel>
       {visible.map(renderRow)}
-      {offline.length > 0 ? (
+      {unconnected.length > 0 ? (
         <button
           type="button"
           role="menuitem"
-          aria-expanded={offlineExpanded}
+          aria-expanded={unconnectedExpanded}
           className={`${ROW_CLASS} text-muted-fg/70`}
-          onClick={() => setOfflineExpanded((current) => !current)}
+          onClick={() => setUnconnectedExpanded((current) => !current)}
         >
-          {offlineExpanded
+          {unconnectedExpanded
             ? <CaretUp size={12} weight="bold" aria-hidden className="shrink-0 opacity-60" />
             : <CaretDown size={12} weight="bold" aria-hidden className="shrink-0 opacity-60" />}
-          {offlineMachinesLabel(offline.length)}
+          {unconnectedMachinesLabel(unconnected.length)}
         </button>
       ) : null}
-      {offlineExpanded ? offline.map(renderRow) : null}
+      {unconnectedExpanded ? unconnected.map(renderRow) : null}
       {onlyOneMachine ? (
         <>
           <MenuSeparator />
@@ -221,19 +218,17 @@ function CopyRow({
   row,
   job,
   canAddCopies,
-  onSwitch,
   onAddCopy,
 }: {
   row: CopiesMenuRow;
   job: CopyJob | null;
   canAddCopies: boolean;
-  onSwitch: () => void;
   onAddCopy: () => void;
 }) {
-  const { machine, copy, inUse } = row;
+  const { machine, copy } = row;
   const name = (
-    // The machine is what the person picks: its name keeps up to 45% of the
-    // row, and the path gives way first.
+    // The machine is what the person reads first: its name keeps up to 45%
+    // of the row, and the path gives way first.
     <span className="inline-flex min-w-[104px] max-w-[45%] shrink-0 items-center gap-1.5" title={machine.name}>
       <Desktop size={12} weight="regular" aria-hidden className="shrink-0 opacity-70" />
       <span className="truncate">{machine.name}</span>
@@ -248,8 +243,18 @@ function CopyRow({
   const trailing = (text: string) => (
     <span className="ml-auto shrink-0 rounded border border-border/40 px-1.5 py-px text-[10px] text-fg/80">{text}</span>
   );
+  // A row that only says where a copy is and in what state: nothing to pick.
+  // Not natively disabled, so the arrow keys and screen readers still reach
+  // it; it does nothing when pressed.
   const disabledRow = (glyph: React.ReactNode, body: React.ReactNode, extra?: React.ReactNode, title?: string) => (
-    <button type="button" role="menuitem" disabled aria-disabled className={`${ROW_CLASS} cursor-default`} title={title}>
+    <button
+      type="button"
+      role="menuitem"
+      aria-disabled="true"
+      className={`${ROW_CLASS} cursor-default hover:bg-transparent`}
+      title={title}
+      onClick={(event) => event.stopPropagation()}
+    >
       {glyph}
       {name}
       {body}
@@ -280,20 +285,10 @@ function CopyRow({
       </button>
     );
   }
-  if (copy && inUse) {
-    return (
-      <button type="button" role="menuitem" disabled aria-disabled aria-current="true" className={`${ROW_CLASS} cursor-default`}>
-        <RadioButton size={12} weight="fill" aria-hidden className="shrink-0 text-fg/80" />
-        {name}
-        {path(copy.rootPath)}
-        <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">{machine.online ? "in use" : "in use · offline"}</span>
-      </button>
-    );
-  }
   if (!machine.online) {
-    // An offline machine's copy shows where it is; it cannot be opened now.
-    // A computer known only from the account list has no connection here,
-    // and the account may still show it online: say "not connected", not "offline".
+    // An offline machine's copy shows where it is. A computer known only from
+    // the account list has no connection here, and the account may still show
+    // it online: say "not connected", not "offline".
     const state = machine.targetId == null && !machine.isLocal ? "not connected" : "offline";
     return copy
       ? disabledRow(
@@ -304,18 +299,11 @@ function CopyRow({
       : disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet(state));
   }
   if (copy) {
-    return (
-      <button
-        type="button"
-        role="menuitem"
-        className={ROW_CLASS}
-        aria-label={`Switch to the copy on ${machine.name}, ${copy.rootPath}`}
-        onClick={onSwitch}
-      >
-        <CircleDashed size={12} weight="regular" aria-hidden className="shrink-0 opacity-0" />
-        {name}
-        {path(copy.rootPath)}
-      </button>
+    // Its work is already in the tab, next to every other computer's.
+    return disabledRow(
+      <span className="kit-dot shrink-0" data-state="ok" aria-hidden />,
+      path(copy.rootPath),
+      <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">{machine.isLocal ? "this computer" : "connected"}</span>,
     );
   }
   if (!canAddCopies) {

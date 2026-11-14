@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useRootAppStore } from "../../state/appStore";
@@ -7,12 +7,17 @@ import {
   createLaneMachineRouter,
   machineBlockedReason,
   machineChipFor,
-  rowMachineChip,
   shouldShowMachineChips,
   useAllMachineLanes,
   type MachineChipModel,
   type MachineLane,
 } from "../../state/laneMachineRouting";
+import { SAVED_CHATS_MACHINE_PREFIX } from "../../../shared/cloudSavedChats";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
+import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
+import { machineIsCloudResting } from "../../state/cloudRestingRows";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 /**
  * A lane on another machine is selected here, never in the store's
@@ -37,8 +42,6 @@ export function setForeignLaneSelection(projectStateKey: string | null, key: str
   if (readForeignLaneSelection(projectStateKey) === key) return;
   useForeignLaneSelectionStore.setState((state) => ({ byProject: { ...state.byProject, [projectKey]: key } }));
 }
-
-const machineFilterByProject = new Map<string, string>();
 
 /** Where one row's lane lives: its real id on its machine, and the pin to use. */
 export type LaneTarget =
@@ -100,6 +103,17 @@ export function useLanesPageMachines({
     [crossMachineEntries],
   );
   const goneMachineIds = useMemo(() => new Set(goneMachineKey ? goneMachineKey.split("\u0000") : []), [goneMachineKey]);
+  // ADE Cloud computers that are only asleep: their lanes are listed as normal
+  // rows, and opening one wakes the computer. Any other machine that is
+  // offline after its short reconnect window is not listed at all.
+  const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
+  const restingMachineKey = useMemo(
+    () => Object.values(crossMachineEntries ?? {})
+      .filter((entry) => machineIsCloudResting(entry, cloudLaneComputers))
+      .map((entry) => entry.machineId).sort().join("\u0000"),
+    [cloudLaneComputers, crossMachineEntries],
+  );
+  const restingMachineIds = useMemo(() => new Set(restingMachineKey ? restingMachineKey.split("\u0000") : []), [restingMachineKey]);
 
   const foreignLanes = useMemo<ForeignLaneModel>(() => {
     const rowByKey = new Map<string, MachineLane>();
@@ -108,6 +122,7 @@ export function useLanesPageMachines({
     for (const row of allMachineLanes.lanes) {
       if (row.isActiveBinding) continue;
       if (goneMachineIds.has(row.machineId)) continue;
+      if (!row.online && !restingMachineIds.has(row.machineId)) continue;
       rowByKey.set(row.key, row);
       const machineLanes = realLanesByMachineId.get(row.machineId);
       if (machineLanes) machineLanes.push(row.lane);
@@ -117,7 +132,7 @@ export function useLanesPageMachines({
       viewLanes.push({ ...row.lane, id: row.key });
     }
     return { rowByKey, viewLanes, realLanesByMachineId };
-  }, [allMachineLanes, goneMachineIds]);
+  }, [allMachineLanes, goneMachineIds, restingMachineIds]);
   const foreignRowByKey = foreignLanes.rowByKey;
   const foreignRowByKeyRef = useRef(foreignRowByKey);
   foreignRowByKeyRef.current = foreignRowByKey;
@@ -167,13 +182,14 @@ export function useLanesPageMachines({
   // The tab's own machine has no union slice, so `online` stays true after it
   // drops; its copy pin is null then, and the filter chip shows it offline.
   const tabMachineOffline = activeMachine?.binding?.kind === "remote" && tabCopyPin == null;
+  // The machines whose lanes are listed: the tab's own, the online ones, and
+  // ADE Cloud computers that are only asleep.
   const liveMachines = useMemo(() => {
-    const live = goneMachineIds.size
-      ? allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId))
-      : allMachineLanes.machines;
+    const live = allMachineLanes.machines.filter((machine) => !goneMachineIds.has(machine.machineId)
+      && (machine.isActiveBinding || machine.online || restingMachineIds.has(machine.machineId)));
     if (!tabMachineOffline) return live;
     return live.map((machine) => (machine.isActiveBinding ? { ...machine, online: false } : machine));
-  }, [allMachineLanes.machines, goneMachineIds, tabMachineOffline]);
+  }, [allMachineLanes.machines, goneMachineIds, restingMachineIds, tabMachineOffline]);
   const multiMachine = shouldShowMachineChips(liveMachines.length);
 
   /* ---- Selection ---- */
@@ -182,15 +198,33 @@ export function useLanesPageMachines({
   const setForeignSelectedKey = useCallback((key: string | null) => {
     setForeignLaneSelection(projectStateKey, key);
   }, [projectStateKey]);
+  // A resting ADE Cloud lane is listed under its saved-chats id until its
+  // computer connects, then under the connection's id. The lane the person
+  // opened stays selected across that move (lane ids are unique per lane).
+  const movedForeignKey = useMemo(() => {
+    if (!foreignSelectedKey?.startsWith(SAVED_CHATS_MACHINE_PREFIX) || foreignRowByKey.has(foreignSelectedKey)) return null;
+    const laneId = foreignSelectedKey.slice(foreignSelectedKey.lastIndexOf(":") + 1);
+    const matches = [...foreignRowByKey].filter(([, row]) => row.lane.id === laneId);
+    return matches.length === 1 ? matches[0]![0] : null;
+  }, [foreignRowByKey, foreignSelectedKey]);
+  useEffect(() => {
+    if (movedForeignKey) setForeignSelectedKey(movedForeignKey);
+  }, [movedForeignKey, setForeignSelectedKey]);
   // The page's selection: a foreign row when one is picked and still listed,
   // otherwise the store's lane on the tab's machine.
   const selectedLaneId = foreignSelectedKey && foreignRowByKey.has(foreignSelectedKey)
     ? foreignSelectedKey
-    : storeSelectedLaneId;
-  /** Select a row key: foreign rows stay in page state, local ids go to the store. */
+    : movedForeignKey ?? storeSelectedLaneId;
+  /**
+   * Select a row key: foreign rows stay in page state, local ids go to the
+   * store. Opening a lane of an ADE Cloud computer that is asleep or not
+   * connected here reaches that computer by its key, which wakes it.
+   */
   const selectLane = useCallback((key: string | null) => {
-    if (key && foreignRowByKeyRef.current.has(key)) {
+    const foreignRow = key ? foreignRowByKeyRef.current.get(key) : undefined;
+    if (key && foreignRow) {
       setForeignSelectedKey(key);
+      if (!foreignRow.online) wakeRestingCloudMachine(foreignRow);
       return;
     }
     setForeignSelectedKey(null);
@@ -203,19 +237,6 @@ export function useLanesPageMachines({
     }
   }, [foreignSelectedKey, setForeignSelectedKey]);
 
-  /* ---- Machine filter ---- */
-
-  const [machineFilter, setMachineFilterState] = useState<string>(
-    () => (projectStateKey ? machineFilterByProject.get(projectStateKey) ?? "all" : "all"),
-  );
-  const setMachineFilter = useCallback((next: string) => {
-    if (projectStateKey) machineFilterByProject.set(projectStateKey, next);
-    setMachineFilterState(next);
-  }, [projectStateKey]);
-  // A machine that left the union cannot stay the filter.
-  const effectiveMachineFilter = machineFilter !== "all" && multiMachine && allMachineLanes.machinesById.has(machineFilter)
-    ? machineFilter
-    : "all";
   const machineIdForKey = useCallback(
     (key: string) => foreignRowByKey.get(key)?.machineId ?? activeMachineId,
     [activeMachineId, foreignRowByKey],
@@ -227,50 +248,45 @@ export function useLanesPageMachines({
     () => (foreignLanes.viewLanes.length === 0 ? localLanes : [...localLanes, ...foreignLanes.viewLanes]),
     [foreignLanes.viewLanes, localLanes],
   );
-  // The machine filter chips narrow the list; selection and colors still see
-  // every machine's lanes.
-  const visibleLanes = useMemo(() => {
-    if (effectiveMachineFilter === "all") return allViewLanes;
-    return allViewLanes.filter((lane) => machineIdForKey(lane.id) === effectiveMachineFilter);
-  }, [allViewLanes, effectiveMachineFilter, machineIdForKey]);
+  /* ---- Machines ---- */
 
-  /* ---- Chips ---- */
-
-  /** One filter chip per machine, with its lane count. */
-  const machineFilterChips = useMemo(() => {
-    const byMachineId = new Map<string, MachineChipModel & { laneCount: number }>();
+  // The machine of each row, for its hover card. Rows show no machine; the
+  // hover card names it while the project has lanes on more than one machine.
+  // An ADE Cloud lane's computer reads "Cloud · <lane>".
+  const cloudMachineLabel = useMachineLabelForMachine();
+  const machineByLaneId = useMemo(() => {
+    if (!multiMachine) return undefined;
+    const byMachineId = new Map<string, MachineChipModel>();
     for (const machine of liveMachines) {
-      byMachineId.set(machine.machineId, { ...machineChipFor(machine), laneCount: 0 });
+      const chip = machineChipFor(machine);
+      byMachineId.set(machine.machineId, {
+        ...chip,
+        // An asleep ADE Cloud computer is not offline: opening wakes it.
+        online: chip.online || restingMachineIds.has(chip.machineId),
+        machineName: chip.isThisMachine
+          ? THIS_MACHINE_NAME
+          : cloudMachineLabel({ machineId: chip.machineId, name: chip.machineName }),
+      });
     }
-    for (const lane of allViewLanes) {
-      const machineId = machineIdForKey(lane.id);
-      const chip = machineId ? byMachineId.get(machineId) : undefined;
-      if (chip) chip.laneCount += 1;
-    }
-    return byMachineId;
-  }, [liveMachines, allViewLanes, machineIdForKey]);
-  // A row names its computer only when it is not this one (`rowMachineChip`).
-  // A list filtered down to one machine carries no chips: the active filter
-  // chip already names it.
-  const machineChipByLaneId = useMemo(() => {
-    if (effectiveMachineFilter !== "all") return undefined;
     const map = new Map<string, MachineChipModel>();
     for (const lane of allViewLanes) {
       const machineId = machineIdForKey(lane.id);
-      const chip = rowMachineChip(machineId ? machineFilterChips.get(machineId) : null);
-      if (chip) map.set(lane.id, chip);
+      const machine = machineId ? byMachineId.get(machineId) : undefined;
+      if (machine) map.set(lane.id, machine);
     }
     return map.size > 0 ? map : undefined;
-  }, [allViewLanes, effectiveMachineFilter, machineFilterChips, machineIdForKey]);
+  }, [allViewLanes, cloudMachineLabel, liveMachines, machineIdForKey, multiMachine, restingMachineIds]);
   /** Why a row on an unreachable machine can't be acted on, by row key. */
   const disabledReasonByLaneId = useMemo(() => {
     const map = new Map<string, string>();
     for (const row of foreignRowByKey.values()) {
+      // An asleep ADE Cloud computer's lane opens normally; opening wakes it.
+      if (restingMachineIds.has(row.machineId)) continue;
       const reason = machineBlockedReason(row);
       if (reason) map.set(row.key, reason);
     }
     return map;
-  }, [foreignRowByKey]);
+  }, [foreignRowByKey, restingMachineIds]);
   const foreignLaneIdSet = useMemo(() => new Set(foreignRowByKey.keys()), [foreignRowByKey]);
 
   return {
@@ -285,14 +301,11 @@ export function useLanesPageMachines({
     selectedLaneId,
     selectLane,
     clearForeignSelection,
-    effectiveMachineFilter,
-    setMachineFilter,
     machineIdForKey,
     allViewLanes,
-    visibleLanes,
-    machineFilterChips,
-    machineChipByLaneId,
+    machineByLaneId,
     disabledReasonByLaneId,
     foreignLaneIdSet,
+    restingMachineIds,
   };
 }

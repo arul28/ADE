@@ -80,7 +80,7 @@ import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from
 import { useStableBinding } from "./laneMachineRouting";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
-import { adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -787,6 +787,8 @@ export function buildCrossMachineLaneRows(input: {
    * would render one row and open another. Omit it to get the raw shape.
    */
   localSessionIds?: ReadonlySet<string>;
+  /** The ADE Cloud lane index the caller follows; decides which offline machines are only asleep. */
+  cloudLaneComputers?: readonly AdeCloudLaneComputer[];
 }): CrossMachineLaneRow[] {
   const rows: CrossMachineLaneRow[] = [];
   const activeBinding = input.activeBinding ?? null;
@@ -853,7 +855,7 @@ export function buildCrossMachineLaneRows(input: {
     else sessionsByLaneId.set(laneId, [session]);
   }
   for (const entry of entries) {
-    const cloudResting = machineIsCloudResting(entry);
+    const cloudResting = machineIsCloudResting(entry, input.cloudLaneComputers);
     const sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
     for (const lane of entry.lanes) {
       rows.push({
@@ -1549,17 +1551,23 @@ async function readMachine(
   depth: LaneReadDepth,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
-  const rawCallAction = window.ade?.remoteRuntime?.callAction;
-  if (!isAdeAvailable(rawCallAction)) return;
+  // The pinned reads route by the binding on every client: the desktop
+  // preload sends them through the same remote-runtime IPC (and its
+  // conditional-read cache) as any other pinned call, and ADE Web's federated
+  // proxy sends them to that machine's own adapter. A raw `callAction` would
+  // exist only on the desktop, and the union would read nothing on the web.
+  const listLanes = window.ade?.lanes?.list;
+  const listSessions = window.ade?.sessions?.list;
+  const listPrs = window.ade?.prs?.listAll;
+  if (!isAdeAvailable(listLanes) || !isAdeAvailable(listSessions)) {
+    reportMissingMachineReadBridge(machineId, machineName, targetId, projectId, generation);
+    return;
+  }
   if (machineCallsInFlight.has(machineId)) return;
-  const callAction: typeof rawCallAction = (...args) => trackMachineCall(machineId, rawCallAction(...args));
+  const track = <T,>(promise: Promise<T>): Promise<T> => trackMachineCall(machineId, promise);
   const readLanes = (includeStatus: boolean) =>
     withTimeout(
-      callAction(targetId, projectId, {
-        domain: "lane",
-        action: "list",
-        args: { includeArchived: false, includeStatus },
-      }),
+      track(listLanes({ includeArchived: false, includeStatus }, binding)),
       MACHINE_READ_TIMEOUT_MS,
       `lane.list on ${machineName}`,
     );
@@ -1577,13 +1585,14 @@ async function readMachine(
   // tab's machine from every target this function is called with, so the rows
   // read here are always a machine `useLanePrsByLaneId` cannot answer itself.
   const readPrs = async (): Promise<PrSummary[] | null> => {
+    if (!isAdeAvailable(listPrs)) return null;
     try {
       const response = await withTimeout(
-        callAction(targetId, projectId, { domain: "pr", action: "listAll", args: {} }),
+        track(listPrs(binding)),
         MACHINE_READ_TIMEOUT_MS,
         `pr.listAll on ${machineName}`,
       );
-      return decodeForeignPrs(response.result);
+      return decodeForeignPrs(response);
     } catch {
       return null;
     }
@@ -1597,11 +1606,7 @@ async function readMachine(
     const [laneResult, sessionResult, duePrs] = await Promise.all([
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
-        callAction(targetId, projectId, {
-          domain: "session",
-          action: "list",
-          args: foreignSessionListArgs(machineId),
-        }),
+        track(listSessions(foreignSessionListArgs(machineId), binding)),
         MACHINE_READ_TIMEOUT_MS,
         `session.list on ${machineName}`,
       ),
@@ -1610,17 +1615,17 @@ async function readMachine(
     // Cancellation: a scope change or a newer snapshot bumped the generation
     // while this read was in flight, so its answer is about a different world.
     if (generation !== runtime.generation) return;
-    const sessions = decodeForeignSessions(sessionResult.result);
+    const sessions = decodeForeignSessions(sessionResult);
     noteForeignSessionPage(machineId, sessions);
     // A chat is rendered under its lane, so a chat launched on a lane this
     // machine has never reported would be invisible until the slow lane cadence
     // came round. Seeing one is the signal to pay for the lane read now.
     const lanes = await resolveLaneCadence(
       machineId,
-      laneResult ? decodeLanes(laneResult.result, statusDue) : null,
+      laneResult ? decodeLanes(laneResult, statusDue) : null,
       sessions,
       generation,
-      async () => decodeLanes((await readLanes(false)).result, false),
+      async () => decodeLanes(await readLanes(false), false),
       statusDue,
     );
     if (generation !== runtime.generation) return;
@@ -1672,6 +1677,32 @@ async function readMachine(
     });
     reportPersistentMachineReadFailure(machineId, message);
   }
+}
+
+/**
+ * A client whose `window.ade` lacks the pinned list reads cannot read another
+ * machine at all. That used to return silently, and the union stayed empty
+ * with no trace (ADE Web before it routed pinned reads). Now the machine
+ * carries the error, Work shows it, and Sentry hears of it on the signal budget.
+ */
+function reportMissingMachineReadBridge(
+  machineId: string,
+  machineName: string,
+  targetId: string,
+  projectId: string,
+  generation: number,
+): void {
+  if (generation !== runtime.generation) return;
+  const message = "This window cannot read other machines' lanes.";
+  rootAppStoreApi.getState().mergeCrossMachineLanes({
+    machineId,
+    machineName,
+    targetId,
+    projectId,
+    ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
+    error: message,
+  });
+  forwardSignalToSentry("work.machine_read_bridge_missing", { error: message });
 }
 
 /** Sends a machine's read failure to Sentry once, when Work starts showing it. */
@@ -2234,6 +2265,12 @@ function attach(): void {
   runtime.disposers.push(subscribeAdeCloudAccess(() => {
     if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
   }));
+  // A lane computer with no saved chat gets its row from the lane index. The
+  // index can arrive after the first read, so its change reads again (forced:
+  // that first read is usually inside the 30 s wait). It changes rarely.
+  runtime.disposers.push(subscribeAdeCloudLaneComputers(() => {
+    if (connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+  }));
   retargetTabFeed();
   // The refresh loop stops itself while the window is hidden, so coming back is
   // the only thing that can restart it. Returning to the surface is also when a
@@ -2739,8 +2776,9 @@ export function useCrossMachineLaneUnion(
       machines,
       activeBinding: projectBinding,
       localSessionIds,
+      cloudLaneComputers,
     }),
-    [localLanes, localSessionIds, machines, projectBinding],
+    [cloudLaneComputers, localLanes, localSessionIds, machines, projectBinding],
   );
   return useMemo(() => {
     // Two different questions, and conflating them is what hid every badge when

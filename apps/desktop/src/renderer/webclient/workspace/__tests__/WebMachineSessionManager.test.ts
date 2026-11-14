@@ -274,6 +274,114 @@ describe("WebMachineSessionManager", () => {
     expect(manager.getSession("machine-2")?.state).toBe("parked");
   });
 
+  it("keeps a background connect out of the person's way: no parking for room, and their Disconnect wins", async () => {
+    let clock = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+    // The browser's storage, so the Disconnect can outlive a reload.
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+      removeItem: (key: string) => void stored.delete(key),
+    });
+    try {
+      const clients = Array.from({ length: WEB_MACHINE_SESSION_LIMIT + 1 }, () => new FakeSyncClient());
+      let nextClient = 1;
+      const manager = new WebMachineSessionManager(
+        clients[0].asClient(),
+        accountClient,
+        () => clients[nextClient++].asClient(),
+      );
+      const environments = clients.map((_, index) => environment(index + 1));
+      manager.replaceEnvironments(environments);
+      for (let index = 1; index <= WEB_MACHINE_SESSION_LIMIT; index += 1) {
+        await manager.connectEnvironment(`machine-${index}`);
+      }
+      const connectCalls = () => clients.reduce((count, client) => count + client.connect.mock.calls.length, 0);
+      const newest = `machine-${WEB_MACHINE_SESSION_LIMIT + 1}`;
+
+      // A full pool: the background connect is skipped and nobody is parked for it.
+      await expect(manager.connectEnvironment(newest, { background: true })).rejects.toMatchObject({ reason: "no_room" });
+      expect(manager.getSnapshot().sessions.filter((session) => session.state === "parked")).toHaveLength(0);
+
+      // The person disconnects a machine: a background connect leaves it parked.
+      await manager.disconnectByUser("machine-2");
+      await expect(manager.connectEnvironment("machine-2", { background: true })).rejects.toMatchObject({
+        reason: "user_disconnected",
+      });
+      expect(manager.getSession("machine-2")?.state).toBe("parked");
+
+      // A Disconnect pressed while a background connect waits for its turn wins.
+      const waiting = manager.connectEnvironment(newest, { background: true });
+      const pressed = manager.disconnectByUser(newest);
+      await expect(waiting).rejects.toMatchObject({ reason: "user_disconnected" });
+      await pressed;
+      expect(connectCalls()).toBe(WEB_MACHINE_SESSION_LIMIT);
+
+      // The choice holds across a reload, until the person connects the machine.
+      const reloaded = new WebMachineSessionManager(new FakeSyncClient().asClient(), accountClient, () => new FakeSyncClient().asClient());
+      reloaded.replaceEnvironments(environments);
+      await expect(reloaded.connectEnvironment("machine-2", { background: true })).rejects.toMatchObject({
+        reason: "user_disconnected",
+      });
+      expect(reloaded.getConnectionSnapshot().connections.find((entry) => entry.target.id === "machine-2")?.reconnectBlocked)
+        .toBe("disconnected");
+      await manager.connectEnvironment("machine-2");
+      expect(manager.getSession("machine-2")?.state).toBe("live");
+      expect(manager.getConnectionSnapshot().connections.find((entry) => entry.target.id === "machine-2")?.reconnectBlocked)
+        .toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("gives two requests that arrive during a background connect one shared dial of their own", async () => {
+    const clients = Array.from({ length: 3 }, () => new FakeSyncClient());
+    let nextClient = 1;
+    const manager = new WebMachineSessionManager(
+      clients[0].asClient(),
+      accountClient,
+      () => clients[nextClient++].asClient(),
+    );
+    manager.replaceEnvironments([environment(1)]);
+    // Every dial takes a while to finish, so a second dial would overlap the first.
+    let openDials!: () => void;
+    const dialsOpen = new Promise<void>((resolve) => { openDials = resolve; });
+    for (const client of clients) {
+      const dial = client.connect.getMockImplementation()!;
+      client.connect.mockImplementation(async (envId: string) => {
+        await dialsOpen;
+        await dial(envId);
+      });
+    }
+    let failBackgroundDial!: (error: Error) => void;
+    clients[0].connect.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+      failBackgroundDial = reject;
+    }));
+    const dials = () => clients.reduce((count, client) => count + client.connect.mock.calls.length, 0);
+
+    const background = manager.connectEnvironment("machine-1", { background: true });
+    await vi.waitFor(() => expect(dials()).toBe(1));
+    const first = manager.connectEnvironment("machine-1");
+    const second = manager.connectEnvironment("machine-1");
+    failBackgroundDial(new Error("The background dial failed."));
+    await expect(background).rejects.toThrow("The background dial failed.");
+    // The receipt that both requests passed admission: the follow-up dial has
+    // started, and only one (a dial per request would make three), before any
+    // dial finishes.
+    await vi.waitFor(() => expect(dials()).toBe(2));
+    openDials();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ targetId: "machine-1", state: "live" }),
+      expect.objectContaining({ targetId: "machine-1", state: "live" }),
+    ]);
+    // One dial for the background connect, one for both requests: a second
+    // dial of the same client would cancel the first.
+    expect(dials()).toBe(2);
+    expect(manager.getSession("machine-1")?.state).toBe("live");
+  });
+
   it("reconnects a protected target after it was explicitly parked", async () => {
     const clients = Array.from(
       { length: WEB_MACHINE_SESSION_LIMIT },

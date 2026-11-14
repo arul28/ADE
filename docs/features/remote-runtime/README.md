@@ -586,6 +586,23 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `lane.list` excludes archived lanes, and a chat on an archived lane is
   permanently unresolvable. Foreign reads are bounded,
   timed out, capped at four machines in parallel, and never gate the local list.
+  Each read is a pinned `lanes.list`, `sessions.list` or `prs.listAll` with the
+  machine's binding, so the desktop and ADE Web read the same way; a window
+  without those reads marks the machine with an error
+  (`work.machine_read_bridge_missing`) instead of an empty union.
+- `apps/desktop/src/renderer/state/connectRepositoryCopies.ts` — while a
+  repository tab is in front, every computer with a copy that the account lists
+  as awake (`accountMachinePresence`, sleep-aware) and that has no live
+  connection here joins in the background through `machines.connect(key,
+  { background: true })`. A background connect never wakes a sleeping cloud
+  computer, never starts a brain, never parks another ADE Web connection for
+  room, and answers `declined` for a computer the person disconnected. One pass
+  runs at a time; a failed computer is retried after 60 s, at most five times on
+  the timer, and again on window focus.
+- `apps/desktop/src/main/services/machines/machineConnector.ts` — the main
+  process's `machines.connect`: this computer's own key, a saved connection, or
+  a pairing through the account. One flight per machine key; a connect a person
+  asked for waits for a background flight and then runs its own.
   A machine that drops is **dimmed, not deleted**: its lanes and chats stay on
   screen, collapsed and inert, with the offline form of the machine marker naming
   it. Believing a drop takes a completed, failed reconnect attempt (`connecting`

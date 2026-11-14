@@ -868,7 +868,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run chat.setScheduledWorkPaused --input-json '{\"sessionId\":\"chat-123\",\"paused\":true}' --text",
     },
     setSpawnKind: {
-      description: "Demote a subagent chat to a peer (reports stop) or promote a peer back to a subagent (reports resume). Taking over posts a quiet note on the parent.",
+      description: "Stop a subagent's reports to the chat that started it (spawnKind \"peer\") or make it report back again (spawnKind \"subagent\"). Stopping posts a quiet note on the parent.",
       input: "object { sessionId: string, spawnKind: \"subagent\" | \"peer\" }",
       example: "ade actions run chat.setSpawnKind --input-json '{\"sessionId\":\"chat-123\",\"spawnKind\":\"peer\"}' --text",
     },

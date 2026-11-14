@@ -13014,9 +13014,18 @@ export function registerIpc({
       return id ? { id, name: runtimeBridge.resolveTargetNameForMachineKey(machineKey) ?? "" } : null;
     },
     isConnected: (targetId) => runtimeBridge.isTargetConnected(targetId),
+    // The person's Disconnect, or "Reconnect automatically" off: a repository
+    // tab opening does not connect that machine on its own. A target that never
+    // connected still has the saved default (off); that is not the person's
+    // choice, so its background connects keep trying.
+    declined: (targetId) => {
+      const connection = runtimeBridge.snapshot().connections.find((entry) => entry.target.id === targetId);
+      if (connection?.reconnectBlocked === "disconnected") return true;
+      return connection?.target.autoConnect === false && connection.target.lastConnectedAt != null;
+    },
     listAccountMachines: () => accountBridge.listMachines(),
     pairMachine: (machineKey) => accountBridge.pairMachine(machineKey),
-    connect: (targetId) => runtimeBridge.remoteForMain.connect(targetId),
+    connect: (targetId, options) => runtimeBridge.remoteForMain.connect(targetId, options),
     wake: (machineKey) => cloudWakeForPair?.(machineKey) ?? Promise.resolve({ state: "not_cloud" as const }),
     logger: getMachineMainLogger(),
   });

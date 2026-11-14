@@ -1187,7 +1187,8 @@ function ProjectTabHost() {
   const noMachinePage = noMachineTab && !isMachineRoute && !isAccountRoute && !standaloneSettingsRoute ? (
     <PageErrorBoundary>
       <React.Suspense fallback={GuardLoadingFallback}>
-        <ProjectWelcomeNoMachine tab={noMachineTab} />
+        {/* One page per tab: its automatic connects and failures belong to that project. */}
+        <ProjectWelcomeNoMachine key={noMachineTab.id} tab={noMachineTab} />
       </React.Suspense>
     </PageErrorBoundary>
   ) : null;

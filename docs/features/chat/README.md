@@ -4221,14 +4221,17 @@ session with no type becomes a `subagent`, and `none` is rejected.
 
 The child remains a full ADE agent with normal runtime, permissions, and tools.
 The type is a coordination contract: `subagent` (the default) reports back to
-the parent; `peer` is for fire-and-forget work the parent does not expect to
-consume. A tracked CLI child cannot be read for turn ends, so its launch
+the parent; `peer` is for side work the parent does not wait on. The product
+never shows the word "peer": the CLI flag is `--no-report`, and the UI says
+"Started by <parent>", "Stop reports to <parent>" and "Report back to
+<parent>". A tracked CLI child cannot be read for turn ends, so its launch
 guidance (`buildCliSpawnReportGuidance`) tells it to report with
 `ade chat message` itself.
 
 Where it is set:
 
-- `ade new chat --mode chat|cli --type subagent|peer` (alias `--spawn-type`).
+- `ade new chat --mode chat|cli [--no-report]`. `--type subagent|peer` (alias
+  `--spawn-type`) is still accepted for old scripts.
   Both modes default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID`;
   `--parent` overrides it and `--no-parent` creates a genuinely independent
   top-level session. When an agent creates it, the brain still records the
@@ -4318,9 +4321,9 @@ notice also reaches a parent in another project or on another machine: it goes
 through the brain's external parent router as an `ExternalParentWake` with
 `notice: "awaiting_user"`, and `deliverExternalChildCompletion` posts it as a
 message, not a completion, so the parent's card for the child stays open. A
-peer's parent gets the same fact as one quiet line (`awaitingUserQuietNotice`),
-locally or from another machine, and is not woken, as for the peer's finished
-turns. Across machines the notice goes only to a brain whose `ade/initialize`
+`peer` child's parent is not told: nobody waits on that chat, and its
+questions are the user's. A caller that waits on it with `ade chat wait` still
+hears it from the waiter. Across machines the notice goes only to a brain whose `ade/initialize`
 advertises `externalWakeNotices`: an older brain would read it as a finished
 turn, so the agent machine bridge drops it there (`agent_cross_machine.wake_notice_skipped`)
 and that parent hears of the child only when its turn ends, as before. The chat summary carries `pendingInputUserOnly` and
@@ -4367,12 +4370,13 @@ based on the child's current `spawnKind`:
   `agent_chat.parent_wake_delivered` logs `completions` and `heldMs` per wake,
   which is the measure: parent wakes per finished subagent. A service shutdown drops any held batch, and each
   child's delivery fails through its normal path.
-- **`peer`** — a quiet `system_notice` with `status: "spawn_completed"`
-  carrying the same `spawnCompletion` in its detail. On desktop it is drawn as
-  one quiet navigable line; the parent is not woken. Peers never wake, so they
-  never pay for the ownership transcript read.
+- **`peer`** — nothing is posted to the parent. The child's card in the
+  parent closes (`subagent_result`), and the parent is not woken. A `peer`
+  child never pays for the ownership transcript read.
 
-  The notice reads `Chat "<title>" finished its turn`, minted by
+  Old transcripts still hold a quiet `system_notice` with `status:
+  "spawn_completed"` for these turns, and they still render. The notice reads
+  `Chat "<title>" finished its turn`, minted by
   `spawnCompletedNoticeMessage(childTitle)` in `shared/types/chat.ts`. The line
   re-states that sentence rather than echoing the stored `message`, because a
   persisted one may predate the current wording — the word "peer" is not user
@@ -4450,9 +4454,9 @@ further parent notices and wakes, and emits at most one child
 `This chat used to report back to another chat that was deleted. It will keep working here on its own.`
 
 The parent itself is mutable too. `chat.setParent` (`ade chat set-parent
-<session> --parent <chat> [--type subagent|peer]`, `--no-parent` to detach)
+<session> --parent <chat> [--no-report]`, `--no-parent` to detach)
 points a chat at another chat this machine can reach, refusing a self-parent
-or a loop. Reports go to the new parent from the next turn. Without `--type`
+or a loop. Reports go to the new parent from the next turn. Without `--no-report` or `--type`
 a chat keeps its kind, except that one whose old parent is gone (and so was
 demoted to a peer) becomes a subagent again. A chat-bound agent may move its
 own chat, adopt a chat that has no live parent, or release a chat that

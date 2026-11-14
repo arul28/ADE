@@ -195,27 +195,31 @@ export function existingCopiesForRepo(
 
 /**
  * Splits a list of machines for a long list: the rows that always show (this
- * computer, connected machines, and any row `keepVisible` names, such as an
- * offline machine with a copy), in their order, and the offline rest, which a
- * list collapses into one "N machines offline" row.
+ * computer, connected machines, and any row `keepVisible` names, such as a
+ * machine with a copy), in their order, and the machines not connected here,
+ * which a list collapses into one "N computers not connected" row.
  */
-export function splitOfflineMachines<T>(
+export function splitUnconnectedMachines<T>(
   items: readonly T[],
   machineOf: (item: T) => CopyMachine,
   keepVisible: (item: T) => boolean = () => false,
-): { visible: T[]; offline: T[] } {
+): { visible: T[]; unconnected: T[] } {
   const visible: T[] = [];
-  const offline: T[] = [];
+  const unconnected: T[] = [];
   for (const item of items) {
     const machine = machineOf(item);
     if (machine.isLocal || machine.online || keepVisible(item)) visible.push(item);
-    else offline.push(item);
+    else unconnected.push(item);
   }
-  return { visible, offline };
+  return { visible, unconnected };
 }
 
-export function offlineMachinesLabel(count: number): string {
-  return `${count} ${count === 1 ? "machine" : "machines"} offline`;
+/**
+ * The collapsed row's words. Not "offline": a machine in that group is only
+ * not connected here, and the account may show it online.
+ */
+export function unconnectedMachinesLabel(count: number): string {
+  return `${count} ${count === 1 ? "computer" : "computers"} not connected`;
 }
 
 /**

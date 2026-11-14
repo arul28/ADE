@@ -1,4 +1,5 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
+import { captureError } from "../../../shared/sentry/capture";
 // Loaded on the first read, so the signed-out page does not pay for it.
 import type { AccountProjectListResult } from "../../../shared/accountProject";
 import {
@@ -313,6 +314,25 @@ function parseTokenPayload(value: unknown, priorRefreshToken: string | null): To
   return accessToken ? { accessToken, refreshToken, expiresInSec } : null;
 }
 
+/**
+ * What the screen shows of the account's machines, sleep included (an asleep
+ * cloud computer is not connected in the background). `lastSeenAt` moves on
+ * every read and is left out.
+ */
+function machinesSignature(machines: readonly AdeAccountMachine[]): string {
+  return machines
+    .map((machine) => [
+      machine.machineKey,
+      machine.deviceId ?? "",
+      machine.online ? 1 : 0,
+      machine.sleepState ?? "",
+      machine.sleepStateAt ?? "",
+      machine.customName ?? "",
+      machine.name ?? "",
+    ].join("\u0000"))
+    .join("\u0001");
+}
+
 export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
   private sessionGeneration = 0;
@@ -320,6 +340,7 @@ export class BrowserAccountClient {
   private snapshot: BrowserAccountSnapshot;
   private readonly options: BrowserAccountClientOptions;
   private readonly sessionStore: BrowserAccountSessionPersistence;
+  private readonly machinesListeners = new Set<() => void>();
 
   constructor(options: BrowserAccountClientOptions = {}) {
     this.options = options;
@@ -371,6 +392,19 @@ export class BrowserAccountClient {
 
   getRelayBaseUrls(): string[] {
     return [...this.snapshot.relayBaseUrls];
+  }
+
+  /**
+   * Calls `listener` after a directory read changes which machines the
+   * account has, or their names or online state. Any caller can read the
+   * directory (a background connect does), so the screen follows the list
+   * here instead of only where it read it itself.
+   */
+  onMachinesChanged(listener: () => void): () => void {
+    this.machinesListeners.add(listener);
+    return () => {
+      this.machinesListeners.delete(listener);
+    };
   }
 
   /** The account directory this browser signs in to, or null when none is configured. */
@@ -736,6 +770,7 @@ export class BrowserAccountClient {
       imageUrl: null,
       expiresAtMs: Number.NaN,
     };
+    const before = machinesSignature(this.snapshot.machines);
     this.snapshot = {
       state: result.state === "ok" ? "signed_in" : "directory_unavailable",
       userId: identity.userId,
@@ -749,6 +784,15 @@ export class BrowserAccountClient {
       relayBaseUrls: this.snapshot.relayBaseUrls,
       message: result.message,
     };
+    if (machinesSignature(this.snapshot.machines) === before) return;
+    for (const listener of [...this.machinesListeners]) {
+      try {
+        listener();
+      } catch (error) {
+        // A listener's failure is its own; the directory read still succeeded.
+        captureError(error, { fingerprint: ["web", "account_machines_listener"], tags: { area: "account_machines" }, handled: true });
+      }
+    }
   }
 
   private async restorePersistedSession(

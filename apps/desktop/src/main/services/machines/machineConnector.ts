@@ -21,6 +21,7 @@
 import { getErrorMessage } from "../shared/utils";
 import { isCloudInstanceId } from "../../../shared/adeCloud";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE } from "../../../shared/types/remoteRuntime";
 import {
   sameMachineKey,
   type MachineAddress,
@@ -43,6 +44,11 @@ export type MachineConnectorDeps = {
   savedTarget: (machineKey: string) => MachineConnectorTarget | null;
   isConnected: (targetId: string) => boolean;
   /**
+   * The person disconnected this saved connection, or turned off its
+   * automatic reconnect. A background connect leaves it alone.
+   */
+  declined?: (targetId: string) => boolean;
+  /**
    * The account's row for the machine: its display name, or null when the key
    * is not on the account. Throws when the list can't be read.
    */
@@ -50,7 +56,8 @@ export type MachineConnectorDeps = {
   /** Pairs this computer with the machine through the account; saves the connection. */
   pairMachine: (machineKey: string) => Promise<{ targetId: string; name: string }>;
   /** Opens a saved connection; wakes a sleeping cloud computer. Throws on failure. */
-  connect: (targetId: string) => Promise<unknown>;
+  /** `background`: no person asked; never wakes the computer or starts its brain. */
+  connect: (targetId: string, options?: { background?: boolean }) => Promise<unknown>;
   /**
    * Wakes the machine when it is a sleeping cloud computer, before a pairing
    * (a pairing is a live hello with its ADE, which a sleeping computer can't
@@ -101,7 +108,12 @@ function reasonText(error: unknown): string {
 }
 
 export function createMachineConnector(deps: MachineConnectorDeps): MachineConnector {
-  const inFlight = new Map<string, { wantConnected: boolean; promise: Promise<MachineConnectResult>; paired: Promise<MachineConnectResult> }>();
+  const inFlight = new Map<string, {
+    wantConnected: boolean;
+    background: boolean;
+    promise: Promise<MachineConnectResult>;
+    paired: Promise<MachineConnectResult>;
+  }>();
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
@@ -118,7 +130,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
    * a sleeping cloud computer when the caller wants a connection (a pairing is
    * a live hello its ADE must answer), then pair through the account.
    */
-  const pairThroughAccount = async (key: string, wantConnected: boolean): Promise<MachineConnectResult> => {
+  const pairThroughAccount = async (key: string, wantConnected: boolean, background: boolean): Promise<MachineConnectResult> => {
     if (!deps.signedIn()) {
       return failure(key, "signed_out", "Sign in to your ADE account on this computer to reach your other computers.");
     }
@@ -131,7 +143,9 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
     if (!row) return failure(key, "not_in_account", "That computer is no longer on your ADE account.");
     const name = displayName(row.name);
     let woken = false;
-    if (wantConnected && deps.wake) {
+    // A background connect never wakes a sleeping cloud computer: that is the
+    // person's call (it costs them), made by opening one of its lanes.
+    if (wantConnected && !background && deps.wake) {
       try {
         const wake = await deps.wake(key);
         if (wake.state === "refused") return failure(key, "unreachable", wake.message);
@@ -159,20 +173,33 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
   };
 
   /** `onPaired` hears the address (or the failure) as soon as it is known, before any connect. */
-  const run = async (key: string, wantConnected: boolean, onPaired: (result: MachineConnectResult) => void): Promise<MachineConnectResult> => {
+  const run = async (
+    key: string,
+    wantConnected: boolean,
+    background: boolean,
+    onPaired: (result: MachineConnectResult) => void,
+  ): Promise<MachineConnectResult> => {
     const known = addressFor(key);
     if (known?.kind === "this") return { ok: true, address: known };
+    if (background && known?.kind === "remote" && deps.declined?.(known.targetId)) {
+      return failure(key, "declined", `${known.name} stays disconnected until you connect it.`);
+    }
     let address = known;
     if (!address) {
-      const paired = await pairThroughAccount(key, wantConnected);
+      const paired = await pairThroughAccount(key, wantConnected, background);
       if (!paired.ok || paired.address.kind !== "remote") return paired;
       address = paired.address;
     }
     onPaired({ ok: true, address });
     if (!wantConnected || deps.isConnected(address.targetId)) return { ok: true, address };
     try {
-      await deps.connect(address.targetId);
+      await deps.connect(address.targetId, { background });
     } catch (error) {
+      // A development ADE dials only machines the person connected in it: a
+      // background connect it refuses left the machine alone on purpose.
+      if (background && getErrorMessage(error).includes(REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE)) {
+        return failure(key, "declined", `${address.name} stays disconnected until you connect it.`);
+      }
       deps.logger?.warn?.("machines.connect_failed", { targetId: address.targetId, error: getErrorMessage(error) });
       return failure(key, "unreachable", `ADE couldn't reach ${address.name}: ${reasonText(error)}.`);
     }
@@ -185,8 +212,12 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       const key = machineKey?.trim() ?? "";
       if (!key) return Promise.resolve(failure("", "invalid", "ADE needs to know which computer to reach."));
       const wantConnected = options?.connect !== false;
+      const background = options?.background === true;
       const flightKey = key.toLowerCase();
-      const existing = inFlight.get(flightKey);
+      const found = inFlight.get(flightKey);
+      // A connect the person asked for never takes a background flight's
+      // answer (that one may decline): it waits for it, then runs its own.
+      const existing = found && found.background && !background ? null : found;
       // One flight per machine: a connect that finds a save-only pairing
       // running waits for it, then connects (the pairing is saved by then).
       // A save-only call that finds a connect running takes its pairing, not
@@ -196,10 +227,11 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       let settlePaired!: (result: MachineConnectResult) => void;
       const paired = new Promise<MachineConnectResult>((resolve) => { settlePaired = resolve; });
       const promise = (async (): Promise<MachineConnectResult> => {
-        if (existing) await existing.promise;
+        // Any flight still here is one this call waits for, then follows.
+        if (found) await found.promise;
         try {
-          const result = await run(key, wantConnected, settlePaired);
-          if (!result.ok) deps.logger?.warn?.("machines.connect_refused", { reason: result.reason, wantConnected });
+          const result = await run(key, wantConnected, background, settlePaired);
+          if (!result.ok) deps.logger?.warn?.("machines.connect_refused", { reason: result.reason, wantConnected, background });
           return result;
         } catch (error) {
           // A dependency that throws (the account's status, a saved target read) is a failed reach, never a throw.
@@ -213,7 +245,7 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       }).finally(() => {
         if (inFlight.get(flightKey)?.promise === promise) inFlight.delete(flightKey);
       });
-      inFlight.set(flightKey, { wantConnected, promise, paired });
+      inFlight.set(flightKey, { wantConnected, background, promise, paired });
       return promise;
     },
   };

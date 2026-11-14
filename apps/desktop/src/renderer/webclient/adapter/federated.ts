@@ -1,4 +1,5 @@
 import type {
+  AdeAccountMachine,
   AdeAccountMachinePairResult,
   OpenProjectBinding,
   PersonalChatCallArgs,
@@ -10,12 +11,24 @@ import type {
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
+import {
+  sameMachineKey,
+  type MachineAddress,
+  type MachineConnectOptions,
+  type MachineConnectResult,
+} from "../../../shared/machineAddress";
 import { isWebRuntimePinUnroutableError } from "./runtimePinGuard";
 import type { BrowserAccountClient } from "../account/client";
 import type { AdeSyncClient } from "../sync";
-import type { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
+import { WebMachineConnectSkipped, type WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 import { createReconnectHold } from "./reconnectHold";
+import { resolveMachinePresence } from "../../../shared/types/power";
+import { wakeWebCloudMachine } from "../workspace/webCloudMachines";
+
+/** How long a person's connect keeps dialing a cloud computer it just woke. */
+const WOKEN_CONNECT_WAIT_MS = 120_000;
+const WOKEN_CONNECT_RETRY_MS = 5_000;
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
@@ -669,7 +682,7 @@ export function createFederatedWebAdapter({
       return () => connectionListeners.delete(listener);
     },
     async connect(targetId: string) {
-      const session = await manager.connectEnvironment(targetId);
+      await manager.connectEnvironment(targetId);
       const connection = getConnectionSnapshot().connections.find((entry) => entry.target.id === targetId);
       if (!connection) throw new Error("The machine connection disappeared.");
       return {
@@ -687,7 +700,8 @@ export function createFederatedWebAdapter({
     },
     openProject,
     async disconnect(targetId: string) {
-      await manager.park(targetId);
+      // The person's Disconnect: a repository tab that opens later leaves it off.
+      await manager.disconnectByUser(targetId);
       return { disconnected: true };
     },
     async removeTarget(targetId: string) {
@@ -741,8 +755,134 @@ export function createFederatedWebAdapter({
     },
   };
 
+  // Contract C2 (`shared/machineAddress.ts`) for this tab: any machine of the
+  // account by its key. A machine this tab never paired with is paired
+  // through the account, the same path Connect takes. It never moves the
+  // machine on screen; `background` (a repository tab opening) also skips a
+  // machine the person disconnected and never parks another one for room.
+  const accountMachineFor = (machineKey: string): AdeAccountMachine | null =>
+    accountClient.getSnapshot().machines.find((entry) => sameMachineKey(entry.machineKey, machineKey)) ?? null;
+  const machineDisplayName = (machine: AdeAccountMachine, fallback?: string | null): string =>
+    machine.customName?.trim() || machine.name?.trim() || fallback?.trim() || "your computer";
+  const machinesOverrides = {
+    async connect(machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> {
+      const key = typeof machineKey === "string" ? machineKey.trim() : "";
+      if (!key) return { ok: false, reason: "invalid", machineKey: "", message: "ADE needs to know which computer to reach." };
+      const machine = accountMachineFor(key);
+      if (!machine) {
+        return { ok: false, reason: "not_in_account", machineKey: key, message: "That computer is no longer on your ADE account." };
+      }
+      const saved = manager.findAccountMachineEnvironment(machine);
+      if (options?.connect === false) {
+        // This tab saves a pairing only by connecting; a save-only call
+        // answers with what it has.
+        return saved
+          ? { ok: true, address: { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) } }
+          : { ok: false, reason: "unreachable", machineKey: key, message: `${machineDisplayName(machine)} is not connected to this browser yet.` };
+      }
+      const background = options?.background === true;
+      // A person's connect to a resting ADE Cloud computer wakes it first,
+      // through a connected computer (this browser has no cloud credential),
+      // then dials until it answers. A background connect never wakes one.
+      const presence = resolveMachinePresence({
+        connected: false,
+        online: machine.online,
+        sleepState: machine.sleepState,
+        sleepStateAt: machine.sleepStateAt,
+        lastSeenAt: machine.lastSeenAt,
+      });
+      // A sleep announcement older than the window reads "offline", but an
+      // ADE Cloud computer can sleep for days with no heartbeat: its last word
+      // was that it went to sleep, so a person's connect still wakes it.
+      const asleep = !background && (
+        presence === "asleep" || (presence === "offline" && machine.sleepState === "asleep")
+      );
+      // "Asleep" is also how an ordinary computer with a recent heartbeat
+      // reads, and this browser cannot tell the two apart here: a wake that
+      // fails still tries the saved connection once, and says why only when
+      // that fails too.
+      let woke = false;
+      let wakeFailure: string | null = null;
+      if (asleep) {
+        // The click clears the person's earlier Disconnect now, not at the
+        // first dial: a Disconnect pressed during the wake is then newer.
+        if (saved) manager.acceptUserConnect(saved.envId);
+        try {
+          await wakeWebCloudMachine({
+            snapshot: manager.getSnapshot(),
+            getClient: (targetId) => manager.getClient(targetId),
+            machineKey: key,
+          });
+          woke = true;
+        } catch (error) {
+          wakeFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const connectOnce = () => manager.connectAccountMachine(machine, { activate: false, background });
+      try {
+        // A Disconnect pressed during the wake or the wait ends it: the next
+        // dial would be a foreground connect, which clears that Disconnect.
+        const disconnectedSince = () => {
+          const environment = manager.findAccountMachineEnvironment(machine);
+          return Boolean(environment && manager.getConnectionSnapshot().connections.some(
+            (entry) => entry.target.id === environment.envId && entry.reconnectBlocked === "disconnected",
+          ));
+        };
+        // A failed wake still tries the saved connection once.
+        const session = asleep
+          ? await dialWhileWaking(connectOnce, disconnectedSince, woke ? WOKEN_CONNECT_WAIT_MS : 0)
+          : await connectOnce();
+        return {
+          ok: true,
+          address: {
+            kind: "remote",
+            machineKey: key,
+            targetId: session.targetId,
+            name: machineDisplayName(machine, session.environment.machineName),
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Skipped on purpose (the person's Disconnect, or no room left in
+        // this browser): nothing is wrong with the machine.
+        if (error instanceof WebMachineConnectSkipped) return { ok: false, reason: "declined", machineKey: key, message };
+        if (wakeFailure) {
+          return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${wakeFailure}` };
+        }
+        return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't reach ${machineDisplayName(machine)}: ${message}` };
+      }
+    },
+    async addressFor(machineKey: string): Promise<MachineAddress | null> {
+      const key = typeof machineKey === "string" ? machineKey.trim() : "";
+      const machine = key ? accountMachineFor(key) : null;
+      const saved = machine ? manager.findAccountMachineEnvironment(machine) : null;
+      return machine && saved
+        ? { kind: "remote", machineKey: key, targetId: saved.envId, name: machineDisplayName(machine, saved.machineName) }
+        : null;
+    },
+  };
+
+  /**
+   * A woken cloud computer answers within a minute or two: dial again for
+   * `waitMs`, unless the person disconnected it (`cancelled`), which is
+   * checked before every dial, the first one too.
+   */
+  const dialWhileWaking = async <T,>(attempt: () => Promise<T>, cancelled: () => boolean, waitMs: number): Promise<T> => {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      if (cancelled()) throw new WebMachineConnectSkipped("user_disconnected");
+      try {
+        return await attempt();
+      } catch (error) {
+        if (error instanceof WebMachineConnectSkipped || Date.now() >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, WOKEN_CONNECT_RETRY_MS));
+      }
+    }
+  };
+
   const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
     account: accountOverrides,
+    machines: machinesOverrides,
     app: appOverrides,
     personalChats: personalChatsOverrides,
     project: projectOverrides,
@@ -795,18 +935,23 @@ export function createFederatedWebAdapter({
             // dialed in this tab) is connected first, then the call runs on
             // it. A subscription cannot wait, so it starts the connect and
             // stays off until the caller subscribes again.
-            // The pinned machine may not be the one on screen: connect it
-            // without making it the active machine.
+            // The connect is a background one. Every tab reads every
+            // computer's lanes through pinned calls, so a read in flight
+            // when a computer drops would otherwise dial it again at once:
+            // undoing the person's Disconnect and parking another computer
+            // for room, which the next read dials back. Neither happens
+            // here; the call fails as "not connected" instead.
+            const notConnected = () => markExpected(new Error("The machine is not connected."), "network");
+            const connectPinned = () => manager.connectEnvironment(pinned.targetId, { activate: false, background: true });
             if (isSubscriptionMember(path)) {
-              void manager.connectEnvironment(pinned.targetId, { activate: false }).catch(() => undefined);
+              void connectPinned().catch(() => undefined);
               console.warn("[ade-web] subscription skipped: its machine is connecting", path.join("."));
               return () => {};
             }
-            return manager.connectEnvironment(pinned.targetId, { activate: false }).then((): unknown => (
-              manager.getClient(pinned.targetId)
-                ? callDynamic(...args)
-                : Promise.reject(markExpected(new Error("The machine is not connected."), "network"))
-            ));
+            return connectPinned().then(
+              (): unknown => (manager.getClient(pinned.targetId) ? callDynamic(...args) : Promise.reject(notConnected())),
+              (error: unknown) => Promise.reject(error instanceof WebMachineConnectSkipped ? notConnected() : error),
+            );
           }
           try {
             pinnedAdapter = adapterForBinding(pinned);
