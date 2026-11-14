@@ -3472,3 +3472,35 @@ What the fix round adds, and when it runs:
   already ran) sends one event to its windows and its web clients. The
   desktop reads the list once more one heartbeat later when the first read
   found nothing new. No new poll.
+
+#### Round 2 fixes (2026-11-14)
+
+Same branch on `a587eeef6` plus the round 2 fixes, against `a587eeef6` (the
+same page before the Android change). Mac Studio M4 Max (not the baseline
+machine). Rig: 8 test brains plus a dev desktop brain, ADE Web in headless
+Chrome with 8 of 9 computers connected, alpha-chat open, the Tools pane
+closed, page visible. Each arm was reloaded and given 20 s or more to settle,
+then the page's WebSocket frames were counted for 120 s through CDP
+(uncompressed JSON, KiB; compare only with each other and with the fix round
+rows above).
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| ADE Web, idle, 8 machines: commands sent per minute | 118.5 (`work.listSessions` 44, `android.status` 40, `lanes.list` 14, `prs.list` 14) | 79.5 (`android.status` 0; the rest the same) | not set |
+| ADE Web, idle, 8 machines: WebSocket KiB down / up per minute in the page | 332.4 / 43.2 | 303.3 / 29.2 | not set |
+| ADE Web, Android tool open: `android.status` reads per 30 s | 20 | 20 (2 lanes every 3 s, as before) | — |
+
+- `android.status`: ADE Web made Android events by re-reading lane status
+  every 3 s whenever anything listened, and the running pill, the corner card
+  and the tools grid card listen in every chat. It now re-reads only while
+  the Android tool or the floating player is open; the cards read once. The
+  desktop gets these events from the brain and has no such poll.
+- `work.listSessions` (44 a minute) is the 10 s fallback read of each of the
+  7 computers other than the tab's copy (`FOREIGN_MACHINE_REFRESH_MS`); left
+  as is. A per-machine change feed would replace it on ADE Web, but on the
+  desktop each feed costs a relay pump, so it is a design change, not waste.
+- `brain_status` (29 a minute, 61 KiB): relay peers already get the periodic
+  status every 30 s. The rest follow real changes (each brain's `devices` row
+  write moves its database version, the peers' acks report it). Two frames
+  only ~250 ms apart with nothing but the uptime changed were seen once
+  before the brains restarted, not after; left as is.

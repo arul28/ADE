@@ -2824,11 +2824,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : Array.from(new Set(
               intendedMachineIds.map((machineId) => machineId.trim()).filter(Boolean),
             )).sort();
+      // Preserve the membership needle across the wholesale clear. A later
+      // sync pass replaces it once the new scope's machine set is known. A tab
+      // moving to another copy passes through more than one scope in a row; the
+      // second change finds the slices already cleared, and an empty needle
+      // would read as "no machine belongs here" and drop every retained slice
+      // (and with them every open chat of another machine).
+      const unionMachineIds = Object.keys(prev.crossMachineLanesByMachineId);
       const nextIntendedMachineIds = normalizedIntendedMachineIds === undefined
         ? scopeChanged
-          // Preserve the membership needle across the wholesale clear. A later
-          // sync pass replaces it once the new scope's machine set is known.
-          ? Object.keys(prev.crossMachineLanesByMachineId).sort()
+          ? unionMachineIds.length > 0
+            ? unionMachineIds.sort()
+            : prev.crossMachineLaneIntendedMachineIds
           : prev.crossMachineLaneIntendedMachineIds
         : normalizedIntendedMachineIds;
       const stableIntendedMachineIds = reuseStructurallyEqualArray(

@@ -59,6 +59,7 @@ import {
   type MachineSection,
 } from "./remoteMachineModel";
 import {
+  accountMachinePresence,
   connectedMachineIds,
   isMachineConnected,
 } from "../../../shared/machinePresence";
@@ -1275,6 +1276,8 @@ export function RemoteTargetList({
           hideLocalRemove={extras.hideLocalRemove}
           footer={extras.footer}
           parked={extras.parked}
+          sessionLimit={sessionLimit}
+          accountOnline={pairAgainMachine ? accountMachinePresence(pairAgainMachine) === "online" : null}
         />
       );
     }

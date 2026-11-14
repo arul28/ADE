@@ -79,28 +79,42 @@ type SessionRecord = {
   projects: SyncMobileProjectSummary[];
   lastUsedAt: number;
   parked: boolean;
+  /** When this session's last connection ended in this page; null while connected or never connected. */
+  disconnectedAt: number | null;
   disposers: Array<() => void>;
 };
 
 /**
- * Saved machines the person disconnected in this browser (by `envId`). A
- * background connect leaves them alone until the person connects them again,
- * across reloads too. Per browser, like the saved machines themselves.
+ * Saved machines the person disconnected in this browser (by `envId`), with
+ * when they pressed Disconnect. A background connect leaves them alone until
+ * the person connects them again, across reloads too. Per browser, like the
+ * saved machines themselves.
  */
 const USER_DISCONNECTED_STORAGE_KEY = "ade.web.userDisconnectedMachines.v1";
 
-function readUserDisconnected(): Set<string> {
+/** `envId` → when the person pressed Disconnect (null: stored before the time was kept). */
+function readUserDisconnected(): Map<string, number | null> {
   try {
     const parsed: unknown = JSON.parse(globalThis.localStorage?.getItem(USER_DISCONNECTED_STORAGE_KEY) ?? "[]");
-    return new Set(Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : []);
+    // Older pages stored a bare list of ids.
+    if (Array.isArray(parsed)) {
+      return new Map(parsed.filter((entry): entry is string => typeof entry === "string").map((id) => [id, null]));
+    }
+    if (parsed && typeof parsed === "object") {
+      return new Map(Object.entries(parsed as Record<string, unknown>).map(([id, at]) => [
+        id,
+        typeof at === "number" && Number.isFinite(at) ? at : null,
+      ]));
+    }
+    return new Map();
   } catch {
-    return new Set();
+    return new Map();
   }
 }
 
-function writeUserDisconnected(ids: ReadonlySet<string>): void {
+function writeUserDisconnected(entries: ReadonlyMap<string, number | null>): void {
   try {
-    globalThis.localStorage?.setItem(USER_DISCONNECTED_STORAGE_KEY, JSON.stringify([...ids]));
+    globalThis.localStorage?.setItem(USER_DISCONNECTED_STORAGE_KEY, JSON.stringify(Object.fromEntries(entries)));
   } catch {
     // Storage blocked or full: the choice holds until this page reloads.
   }
@@ -137,7 +151,11 @@ function connectionState(
   session: SessionRecord,
 ): WebMachineSessionState {
   if (session.parked) return "parked";
-  const state = session.client?.getStatus().state ?? session.lastStatus.state;
+  // A session without a client is not dialing. Its last status may still say
+  // "reconnecting" from the connect that failed, but nothing retries it until
+  // a connect runs again (and a background one waits for a free slot).
+  if (!session.client) return "offline";
+  const state = session.client.getStatus().state;
   if (state === "connected") return "live";
   if (state === "connecting" || state === "reconnecting" || state === "restoring") {
     return "reconnecting";
@@ -145,7 +163,10 @@ function connectionState(
   return "offline";
 }
 
-function remoteTarget(environment: WebClientEnvironmentRecord): RemoteRuntimeTarget {
+function remoteTarget(
+  environment: WebClientEnvironmentRecord,
+  userDisconnectedAt: number | null | undefined,
+): RemoteRuntimeTarget {
   return {
     id: environment.envId,
     name: environment.machineName,
@@ -170,7 +191,11 @@ function remoteTarget(environment: WebClientEnvironmentRecord): RemoteRuntimeTar
     lastConnectedAt: environment.lastConnectedAt
       ? Date.parse(environment.lastConnectedAt)
       : null,
-    autoConnect: false,
+    // A repository tab connects every computer with a copy on its own, except
+    // one the person disconnected here. Unknown when the time of an older
+    // Disconnect was not kept, so the row does not invent a reason.
+    autoConnect: userDisconnectedAt === undefined ? true : userDisconnectedAt === null ? undefined : false,
+    ...(userDisconnectedAt != null ? { manuallyDisconnectedAt: userDisconnectedAt } : {}),
   };
 }
 
@@ -376,15 +401,19 @@ export class WebMachineSessionManager {
   getConnectionSnapshot(
     extraProjectsByTarget: ReadonlyMap<string, RemoteRuntimeProjectRecord[]> = new Map(),
   ): RemoteRuntimeConnectionSnapshot {
+    const hasRoom = this.hasRoom();
     const connections: RemoteRuntimeConnectionStatus[] = this.listEnvironments().map((environment) => {
       const session = this.sessions.get(environment.envId);
       const state = session ? connectionState(session) : "offline";
-      const status = session?.client?.getStatus() ?? session?.lastStatus ?? null;
+      // The status of a session that has no client is from a connection that
+      // ended: its route and error ("Retrying…") are not true any more.
+      const status = session?.client?.getStatus() ?? null;
+      const userDisconnected = this.userDisconnected.has(environment.envId);
       const projects = session?.projects.map(remoteProject)
         ?? extraProjectsByTarget.get(environment.envId)
         ?? [];
       return {
-        target: remoteTarget(environment),
+        target: remoteTarget(environment, this.userDisconnected.get(environment.envId)),
         state:
           state === "live"
             ? "connected"
@@ -411,7 +440,11 @@ export class WebMachineSessionManager {
         connectedAt: state === "live" ? session?.lastUsedAt ?? null : null,
         // Same word as the desktop: the person disconnected it, so nothing
         // connects it again on its own.
-        reconnectBlocked: this.userDisconnected.has(environment.envId) ? "disconnected" : null,
+        reconnectBlocked: userDisconnected ? "disconnected" : null,
+        disconnectedAt: session?.disconnectedAt ?? null,
+        // Not connected only because this tab holds its limit of connections:
+        // the computer may well be online, and it connects when a slot frees.
+        waitingForSlot: (state === "offline" || state === "parked") && !userDisconnected && !hasRoom,
       };
     });
     return {
@@ -716,7 +749,7 @@ export class WebMachineSessionManager {
 
   private setUserDisconnected(targetId: string, disconnected: boolean): void {
     if (this.userDisconnected.has(targetId) === disconnected) return;
-    if (disconnected) this.userDisconnected.add(targetId);
+    if (disconnected) this.userDisconnected.set(targetId, Date.now());
     else this.userDisconnected.delete(targetId);
     writeUserDisconnected(this.userDisconnected);
   }
@@ -777,6 +810,7 @@ export class WebMachineSessionManager {
       projects: [],
       lastUsedAt: Date.now(),
       parked: false,
+      disconnectedAt: null,
       disposers: [],
     };
     this.attachClient(session, client);
@@ -790,7 +824,7 @@ export class WebMachineSessionManager {
     session.disposers.push(
       client.subscribe(() => {
         if (session.client !== client) return;
-        session.lastStatus = client.getStatus();
+        this.recordStatus(session, client.getStatus());
         this.touch(session, false);
         this.emit();
         if (
@@ -920,10 +954,19 @@ export class WebMachineSessionManager {
     bindProjectHostRecoveryClient(client);
   }
 
+  /** Takes a new status, and notes when a connection ends ("Last seen"). */
+  private recordStatus(session: SessionRecord, status: AdeSyncClientStatus): void {
+    if (status.state === "connected") session.disconnectedAt = null;
+    else if (session.lastStatus.state === "connected") session.disconnectedAt = Date.now();
+    session.lastStatus = status;
+  }
+
   private releaseClient(session: SessionRecord): void {
     const client = session.client;
     if (!client) return;
-    session.lastStatus = client.getStatus();
+    this.recordStatus(session, client.getStatus());
+    // Parking a live connection ends it here, whatever the client says next.
+    if (session.disconnectedAt == null && session.lastStatus.state === "connected") session.disconnectedAt = Date.now();
     for (const dispose of session.disposers.splice(0)) dispose();
     session.client = null;
     this.releaseUnusedClient(client);

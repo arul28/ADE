@@ -288,8 +288,11 @@ function CopyRow({
   if (!machine.online) {
     // An offline machine's copy shows where it is. A computer known only from
     // the account list has no connection here, and one the person disconnected
-    // may well be on: both say "not connected", not "offline".
-    const state = (machine.targetId == null && !machine.isLocal) || machine.userDisconnected ? "not connected" : "offline";
+    // may well be on, as may one that waits for a free connection slot in
+    // ADE Web: they say "not connected", not "offline".
+    const state = (machine.targetId == null && !machine.isLocal) || machine.userDisconnected || machine.waitingForSlot
+      ? "not connected"
+      : "offline";
     return copy
       ? disabledRow(
         <CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />,

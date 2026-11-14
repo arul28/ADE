@@ -372,6 +372,18 @@ export type RemoteRuntimeConnectionStatus = {
    */
   reconnectBlocked?: "disconnected" | null;
   /**
+   * When the last connection to this machine ended, in this app's run. Null
+   * while it is connected, and before it ever connected here. "Last seen"
+   * counts from this, not from when that connection started.
+   */
+  disconnectedAt?: number | null;
+  /**
+   * ADE Web: this machine is not connected only because the tab already holds
+   * its limit of connections. It is not disconnected and not known offline;
+   * it connects when a connection frees up or when someone opens it.
+   */
+  waitingForSlot?: boolean;
+  /**
    * Set only while a client shows a dropped connection as `connected` during
    * its short reconnect window: when the connection dropped. Lists that hide
    * an unreachable machine count from this time, not from the window's end.

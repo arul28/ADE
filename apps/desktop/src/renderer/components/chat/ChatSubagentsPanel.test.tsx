@@ -1567,7 +1567,7 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     expect(screen.getAllByText("running").length).toBeGreaterThan(0);
   });
 
-  it("renders a dead-runtime subagent row as halted with the plain reason, never running", () => {
+  it("renders a dead-runtime subagent row as stopped with the plain reason, never running", () => {
     render(
       <ChatSubagentsPanel
         snapshots={[orphanAgent]}
@@ -1581,7 +1581,7 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
     // Terminal rows file under the section's Earlier group, like every other
     // settled row — the point is that nothing claims to be running any more.
     fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
-    expect(screen.getByText("halted")).toBeTruthy();
+    expect(screen.getByText("stopped")).toBeTruthy();
     // ...and the row keeps its age frozen at the last thing it reported,
     // instead of a counter that had been climbing for 17 hours.
     expect(screen.getByText("10s")).toBeTruthy();
@@ -1646,7 +1646,7 @@ describe("ChatSubagentsPanel stale-run self-heal", () => {
 
     expect(screen.queryByText("running")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Subagents 1 done/ }));
-    expect(screen.getByText("halted")).toBeTruthy();
+    expect(screen.getByText("stopped")).toBeTruthy();
   });
 });
 

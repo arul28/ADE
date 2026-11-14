@@ -6,13 +6,18 @@ import {
   filedSubagentsOf,
   spawnNestingPhase,
 } from "../../../shared/sessionSpawnNesting";
+import {
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+} from "../../../shared/chatOrphanRunReconcile";
 import type { AgentChatSessionStatus, TerminalSessionSummary } from "../../../shared/types";
 import { primarySessionLabel } from "../../lib/sessions";
 import { useStableIdentity } from "../../lib/stableIdentity";
 import { projectStateKeyForBinding, useAppStore } from "../../state/appStore";
 import { useSessionsForPin } from "../../state/crossMachineLanes";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
-import { paneRowChildSessionId } from "./chatPaneSelfHeal";
+import { isBackgroundShellCommand } from "../../../shared/chatSubagents";
+import { paneRowChildSessionId, selfHealSubagentSnapshots } from "./chatPaneSelfHeal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 
 /**
@@ -208,6 +213,79 @@ export function useChatChildRoster(
 }
 
 /**
+ * The chat's subagent rows as the actions pane shows them: the children that
+ * report back (filed ones added), "running" healed against what the machine
+ * says, and a settled spawned chat worded like its transcript card. The pane
+ * and the toolbar badge both read this, so they cannot disagree.
+ */
+export function useChatSubagentRows(
+  parentId: string | null | undefined,
+  snapshots: ChatSubagentSnapshot[],
+  runtimeChildStatuses: ReadonlyMap<string, AgentChatSessionStatus> | undefined,
+  runtimeAlive: boolean | undefined,
+): { rows: ChatSubagentSnapshot[]; childById: ReadonlyMap<string, ChildChat> } {
+  const { snapshots: withRoster, childById, childStatuses } = useChatChildRoster(
+    parentId,
+    snapshots,
+    runtimeChildStatuses,
+  );
+  const rows = useMemo(
+    () => settleChildRowsLikeCards(
+      selfHealSubagentSnapshots(withRoster, { runtimeAlive, childChatStatuses: childStatuses }),
+      childById,
+    ),
+    [withRoster, runtimeAlive, childStatuses, childById],
+  );
+  return { rows, childById };
+}
+
+/** How many of those rows are running now: the toolbar badge's number. */
+export function runningSubagentRowCount(rows: readonly ChatSubagentSnapshot[]): number {
+  let count = 0;
+  for (const row of rows) {
+    if (row.status !== "running") continue;
+    if (isBackgroundShellCommand({ taskType: row.taskType, agentType: row.agentType, description: row.description })) continue;
+    count += 1;
+  }
+  return count;
+}
+
+/**
+ * The self-heal's "Stopped: … went idle without a report" is written for a
+ * delegate cut short. A spawned chat whose turn simply ended is done: its card
+ * and its Work row say so, and its row here uses the same word.
+ */
+const HEALED_STOP_SUMMARIES: ReadonlySet<string> = new Set([
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+]);
+
+function settleChildRowsLikeCards(
+  rows: ChatSubagentSnapshot[],
+  childById: ReadonlyMap<string, ChildChat>,
+): ChatSubagentSnapshot[] {
+  if (childById.size === 0) return rows;
+  let changed = false;
+  const next = rows.map((row) => {
+    if (row.status === "running") return row;
+    const id = paneRowChildSessionId(row);
+    const child = id != null ? childById.get(id) : undefined;
+    if (!child) return row;
+    const status = childChatPaneStatus(child.phase);
+    if (status === "running" || status === row.status) return row;
+    changed = true;
+    const healedText = (text: string | null | undefined) => text != null && HEALED_STOP_SUMMARIES.has(text);
+    return {
+      ...row,
+      status,
+      summary: healedText(row.summary) ? null : row.summary,
+      finalSummary: healedText(row.finalSummary) ? null : row.finalSummary,
+    };
+  });
+  return changed ? next : rows;
+}
+
+/**
  * The child chat's own kind decides: "Report back" and "Stop reports" change
  * it after the row was written. The row's kind counts only for a child this
  * machine does not list.
@@ -232,6 +310,30 @@ export function useSpawnedChildPaneStatus(
     const session = sessions.find((candidate) => candidate.id === id);
     return session ? childChatPaneStatus(spawnNestingPhase(session, Date.now())) : null;
   }, [id, sessions]);
+}
+
+type SpawnedChildPaneStatus = "running" | "completed" | "failed" | "stopped";
+
+/**
+ * The pane status of several spawned child chats at once, keyed by chat id:
+ * what each card's `useSpawnedChildPaneStatus` reads, for a header that counts
+ * the cards. A chat this machine does not list has no entry.
+ */
+export function useSpawnedChildPaneStatuses(
+  childSessionIds: readonly string[],
+): ReadonlyMap<string, SpawnedChildPaneStatus> {
+  const sessions = useChatMachineSessions();
+  const ids = useStableIdentity(childSessionIds, sameIds);
+  return useMemo(() => {
+    const statuses = new Map<string, SpawnedChildPaneStatus>();
+    if (ids.length === 0 || !sessions?.length) return statuses;
+    const wanted = new Set(ids);
+    const nowMs = Date.now();
+    for (const session of sessions) {
+      if (wanted.has(session.id)) statuses.set(session.id, childChatPaneStatus(spawnNestingPhase(session, nowMs)));
+    }
+    return statuses;
+  }, [ids, sessions]);
 }
 
 function sameChildRows(left: readonly ChatSubagentSnapshot[], right: readonly ChatSubagentSnapshot[]): boolean {

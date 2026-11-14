@@ -998,6 +998,7 @@ export class RemoteConnectionService {
           // Live state, so only while connected: an old wait must not linger on a dropped machine.
           ...(status.hostStorageWait && status.state === "connected" ? { hostStorageWait: status.hostStorageWait } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
+          ...(status.disconnectedAt != null ? { disconnectedAt: status.disconnectedAt } : {}),
           ...(status.recovery && status.state === "error" ? { recovery: status.recovery } : {}),
         };
       });
@@ -2519,6 +2520,10 @@ export class RemoteConnectionService {
     // Who brings a failed link back means nothing once it is up or idle, and
     // must not come back with a later, unrelated failure.
     if (next.state === "connected" || next.state === "idle") next.recovery = null;
+    // "Last seen" is when the link ended, so stamp the moment it leaves
+    // `connected`; a live link has no end yet.
+    if (next.state === "connected") next.disconnectedAt = null;
+    else if (current.state === "connected") next.disconnectedAt = Date.now();
     this.statusById.set(targetId, next);
     // Every successful call re-stamps `lastAttemptedAt` on a healthy machine.
     // Broadcasting that told every window "the connections changed", and the

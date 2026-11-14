@@ -239,6 +239,7 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
@@ -6433,19 +6434,6 @@ export function AgentChatPane({
   // surface a small dot on the panel toggle when the panel is collapsed.
   const hasRunningBackgroundSubagent = useMemo(
     () => selectedSubagentSnapshots.some((s) => s.background === true && s.status === "running"),
-    [selectedSubagentSnapshots],
-  );
-  /**
-   * Subagents still RUNNING, which is what the toolbar badge counts.
-   *
-   * It used to count every tracked subagent, so a fleet that had finished an
-   * hour ago still wore a "7" — a number that only ever grew and told you
-   * nothing about now. A badge on a live-activity toggle has to answer "how
-   * much is happening", and once nothing is running the honest answer is to
-   * show no badge at all.
-   */
-  const runningSubagentCount = useMemo(
-    () => selectedSubagentSnapshots.filter((s) => s.status === "running").length,
     [selectedSubagentSnapshots],
   );
   // Auto-clear the subagent view when the underlying snapshot disappears
@@ -19052,7 +19040,9 @@ export function AgentChatPane({
     chatActionsAvailable,
     chatActionsOpen,
     proofArtifactCount,
-    runningSubagentCount,
+    selectedSubagentSnapshots,
+    knownChatStatusesById,
+    selectedSession?.runtimeAlive,
     selectedTaskProgress?.done,
     selectedTaskProgress?.total,
     chatRuntimePinKey,
@@ -19107,24 +19097,14 @@ export function AgentChatPane({
       aria-pressed={chatActionsOpen}
     >
       <TreeStructure size={16} weight="bold" />
-      {proofArtifactCount > 0 ? (
-        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
-          {proofArtifactCount}
-        </span>
-      ) : runningSubagentCount > 0 ? (
-        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-(color:--ade-on-tone-ink)">
-          {runningSubagentCount}
-        </span>
-      ) : selectedTaskProgress && selectedTaskProgress.total > 0 && selectedTaskProgress.done < selectedTaskProgress.total ? (
-        // Proof, then running subagents, then an unfinished task list: the
-        // badge answers "how much is happening now". A finished list shows none.
-        <span
-          data-testid="chat-actions-task-badge"
-          className="absolute -right-1.5 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-(color:--ade-on-tone-ink)"
-        >
-          {selectedTaskProgress.done}/{selectedTaskProgress.total}
-        </span>
-      ) : null}
+      <ChatActionsToggleBadge
+        proofArtifactCount={proofArtifactCount}
+        sessionId={selectedSessionId}
+        snapshots={selectedSubagentSnapshots}
+        childChatStatuses={knownChatStatusesById}
+        runtimeAlive={selectedSession?.runtimeAlive}
+        taskProgress={selectedTaskProgress}
+      />
     </button>
       ) : null}
     </>

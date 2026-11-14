@@ -14,6 +14,7 @@ import {
   type StreamTicket,
 } from "./streamTicket";
 import type { AdeNamespace } from "./types";
+import { isAndroidStatusWatched } from "../../lib/androidStatusWatch";
 
 /**
  * The `androidEmulator` namespace for the hosted web client.
@@ -35,13 +36,14 @@ import type { AdeNamespace } from "./types";
  * - **No SDK install from a browser.** Google's licences are accepted on the
  *   machine itself, so the setup writes refuse here with a plain message.
  * - **Events come from a status read.** The brain's Android events are not on
- *   the sync bus. While the pane listens and the tab is visible, the lanes it
- *   read most recently are re-read every few seconds, and a changed state (or
- *   a new app crash) becomes the `android.device.state` event the pane already
- *   handles: it reads the full status again.
+ *   the sync bus. While the Android tool or the floating player is open and
+ *   the tab is visible, the lanes read most recently are re-read every few
+ *   seconds, and a changed state (or a new app crash) becomes the
+ *   `android.device.state` event the pane already handles: it reads the full
+ *   status again. With neither open, nothing is re-read.
  */
 
-/** How often a listening, visible tab re-reads its lanes' state. */
+/** How often a visible tab with an Android surface open re-reads its lanes' state. */
 export const ANDROID_WEB_STATE_POLL_MS = 3_000;
 /**
  * The lanes a tab keeps re-reading, newest first: the lane on screen and a few
@@ -100,6 +102,10 @@ export function createAndroidDeviceNamespace(
 
   const pollLanes = async (): Promise<void> => {
     if (polling || listeners.size === 0) return;
+    // Only an open Android tool or floating player needs these events soon.
+    // The cards and pills read once; a status read every few seconds for
+    // each of their lanes was most of an idle tab's commands.
+    if (!isAndroidStatusWatched()) return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
     polling = true;
     try {

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useLiveDurationMs } from "../../lib/liveDuration";
 import { CaretDown, CaretRight, Check, ListChecks, Square, Stop, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -9,7 +9,8 @@ import { ToolLogo } from "../terminals/ToolLogos";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { navigateToSpawnedChat } from "./spawnNavigation";
-import { useSpawnedChildPaneStatus } from "./chatSubagentRoster";
+import { useSpawnedChildPaneStatus, useSpawnedChildPaneStatuses } from "./chatSubagentRoster";
+import { ORPHAN_SUBAGENT_NO_REPORT_SUMMARY } from "../../../shared/chatOrphanRunReconcile";
 import {
   CHAT_CARD_WIDTH_CLASS,
   ChatCard,
@@ -339,7 +340,7 @@ export function SubagentSpawnCard({
   // A spawned chat has its own status on its machine; the spawn event alone
   // never closes for a chat that does not report back, so read the chat's.
   const childStatus = useSpawnedChildPaneStatus(event.childSessionId);
-  const status = childStatus ?? event.status;
+  const status = spawnedChildCardStatus(event, childStatus);
   const isRunning = status === "running";
   const statusWord = isRunning ? "running" : status === "completed" ? "done" : status;
   const liveMs = useLiveDurationMs(event.startedAt, isRunning);
@@ -412,6 +413,30 @@ export function SubagentSpawnCard({
 }
 
 /**
+ * The status a card shows for a spawned chat. A running card follows the
+ * chat's own status on its machine. A settled card keeps its own status, with
+ * one exception: a row the restart sweep closed as "went idle without a
+ * report" while the chat itself is idle and fine reads done, as the chat's
+ * Work row and the actions pane do. Nothing was lost; the chat is still there.
+ */
+export function spawnedChildCardStatus(
+  event: SubagentSpawnAnchorRenderEvent | SubagentResultCardRenderEvent,
+  childStatus: "running" | "completed" | "failed" | "stopped" | null | undefined,
+): SubagentCardStatus {
+  if (event.type === "subagent_spawn_anchor") return childStatus ?? event.status;
+  if (
+    event.status === "stopped"
+    && event.childSessionId
+    && event.stopSource !== "user"
+    && event.summaryPreview?.trim() === ORPHAN_SUBAGENT_NO_REPORT_SUMMARY
+    && childStatus === "completed"
+  ) {
+    return "completed";
+  }
+  return event.status;
+}
+
+/**
  * A settled agent's card, in the running card's place (the row settles in
  * place). Same short layout and chrome as the running card — the agent's name,
  * its glyph now wearing a status badge, one line of what it found (a failure
@@ -435,15 +460,19 @@ export function SubagentResultCard({
   /** Runtime that owns this agent; drives the quiet provider mark. */
   provider?: string | null;
 }) {
-  const isStopped = event.status === "stopped";
-  const isFailed = event.status === "failed";
+  const childStatus = useSpawnedChildPaneStatus(event.childSessionId);
+  const status = spawnedChildCardStatus(event, childStatus);
+  // The sweep's stop sentence is not this chat's story once it reads done.
+  const sweptIdleChild = status !== event.status;
+  const isStopped = status === "stopped";
+  const isFailed = status === "failed";
   const duration = formatSubagentDurationMs(event.durationMs);
   const workflowName = event.workflowName?.trim() || null;
   const name = workflowName ?? deriveSubagentCardName(event);
   // A stopped card's summary is usually just the stop sentence ("Interrupted",
   // "Stopped: the ADE brain restarted"), which the status word already says.
   // Reports are markdown; the one-line preview shows them as plain prose.
-  const summary = subagentSummaryPlainText(
+  const summary = sweptIdleChild ? null : subagentSummaryPlainText(
     firstMeaningfulSummary(isStopped ? meaningfulStoppedSummary(event) : event.summaryPreview),
   );
   const stopCause = isStopped
@@ -498,7 +527,7 @@ export function SubagentResultCard({
   return (
     <SubagentCardFrame
       agentKey={event.agentKey}
-      status={event.status}
+      status={status}
       name={name}
       statusWord={statusWord}
       overview={overview}
@@ -594,7 +623,21 @@ const SUBAGENT_RUN_HEADER_GLYPHS = 4;
  * stays a layout primitive.
  */
 export function SubagentRunHeader({ members }: { members: readonly SubagentCardGridMember[] }) {
-  const counts = subagentStatusTally(members);
+  // A spawned chat's card reads the chat's own status on its machine
+  // (`spawnedChildCardStatus`), so the tally counts what the cards show.
+  const spawnedChildIds = useMemo(
+    () => members.flatMap((member) => {
+      const id = member.event.childSessionId?.trim();
+      return id ? [id] : [];
+    }),
+    [members],
+  );
+  const childStatuses = useSpawnedChildPaneStatuses(spawnedChildIds);
+  const counts = subagentStatusTally(members.map((member) => {
+    const id = member.event.childSessionId?.trim();
+    if (!id) return member;
+    return { event: { status: spawnedChildCardStatus(member.event, childStatuses.get(id)) } };
+  }));
   const parts = subagentStatusParts(counts);
 
   return (

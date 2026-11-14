@@ -8,6 +8,7 @@ import type {
   ProjectInfo,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeDoctorResult,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
@@ -684,6 +685,26 @@ export function createFederatedWebAdapter({
     onConnectionSnapshotChanged(listener: (snapshot: RemoteRuntimeConnectionSnapshot) => void) {
       connectionListeners.add(listener);
       return () => connectionListeners.delete(listener);
+    },
+    // A tab reaches a computer only through its own live connection, so
+    // "Test connection" reports that connection instead of routes it cannot dial.
+    async runDoctor(targetId: string): Promise<RemoteRuntimeDoctorResult> {
+      const connection = getConnectionSnapshot().connections.find((entry) => entry.target.id === targetId);
+      const name = connection?.target.name?.trim() || connection?.target.hostname || "This computer";
+      const route = connection?.state === "connected" ? connection.route : undefined;
+      if (route) {
+        return {
+          checks: [{ route: route.kind, endpoint: route.endpoint, ok: true }],
+          diagnosis: {
+            tone: "success",
+            title: `${name} is connected through ${route.kind === "relay" ? "ADE's relay" : "your local network"}.`,
+          },
+        };
+      }
+      return {
+        checks: [],
+        diagnosis: { tone: "warning", title: `${name} isn't connected to this tab.`, fix: "Connect it, then test again." },
+      };
     },
     // A web tab reaches a machine through the relay, never over SSH, so there
     // is no host key to confirm before Connect.

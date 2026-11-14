@@ -24,6 +24,8 @@ export type CopyMachine = {
   online: boolean;
   /** The person disconnected it here: it is not connected, which says nothing of whether it is on. */
   userDisconnected?: boolean;
+  /** ADE Web: not connected only because the tab holds its limit of connections. */
+  waitingForSlot?: boolean;
 };
 
 /** A copy of the repository that a machine already has. */
@@ -151,6 +153,7 @@ export function copyMachines(
       isLocal: false,
       online: connection.state === "connected",
       userDisconnected: connection.reconnectBlocked === "disconnected",
+      ...(connection.waitingForSlot === true ? { waitingForSlot: true } : {}),
     });
   }
   return machines;

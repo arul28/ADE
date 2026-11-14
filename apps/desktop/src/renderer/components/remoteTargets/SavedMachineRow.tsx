@@ -139,6 +139,14 @@ type SavedMachineRowProps = {
    * (Wake). A sleeping box can't take a connection, so the row never offers one.
    */
   parked?: { label: string; action: ReactNode } | null;
+  /**
+   * ADE Web holds a fixed number of computer connections per tab: the limit
+   * while the tab holds that many, else null. A computer that waits for a
+   * slot says so instead of looking broken.
+   */
+  sessionLimit?: number | null;
+  /** The account directory sees this computer online (true) or offline (false); null when it does not list it. */
+  accountOnline?: boolean | null;
 };
 
 export function SavedMachineRow({
@@ -179,6 +187,8 @@ export function SavedMachineRow({
   hideLocalRemove = false,
   footer = null,
   parked = null,
+  sessionLimit = null,
+  accountOnline = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const { computers: cloudComputers } = useAdeCloudLaneComputers();
@@ -201,8 +211,20 @@ export function SavedMachineRow({
         status ?? null,
         connected?.target.id === target.id,
       );
+  // Not connected only because this tab already holds its limit of
+  // connections: the same words as the account row in that state. A computer
+  // the account sees offline keeps its "Last seen" line, which is the truth.
+  const slotLine = sessionLimit != null && status?.waitingForSlot === true && !row.connected && !targetConnecting
+    && accountOnline !== false
+    ? accountOnline
+      ? `Online · this tab already has ${sessionLimit} computers connected`
+      : `This tab already has ${sessionLimit} computers connected`
+    : null;
   // Says why a machine that is not connected will not come back on its own.
   const autoConnectOff = statusLabel === "Not connected" ? autoConnectOffReason(target) : null;
+  // When the computer was last seen: the end of the last connection when this
+  // run saw it end, else the start of the last connection.
+  const lastSeenAt = status?.disconnectedAt ?? target.lastConnectedAt;
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
@@ -257,14 +279,16 @@ export function SavedMachineRow({
             ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
             : targetConnecting && !connectingStale
               ? "Connecting…"
-              : target.lastConnectedAt || statusLabel !== "Not connected"
+              : slotLine
+                ? slotLine
+              : lastSeenAt || statusLabel !== "Not connected"
                 ? [
                     // The hollow dot and the section already say "not connected".
                     statusLabel === "Not connected" ? null : statusLabel,
                     autoConnectOff,
                     statusLabel === "Not connected"
-                      ? formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "Last seen ")
-                      : formatLastSeen(target.lastConnectedAt).replace(/^Last connected /, "last seen "),
+                      ? formatLastSeen(lastSeenAt).replace(/^Last connected /, "Last seen ")
+                      : formatLastSeen(lastSeenAt).replace(/^Last connected /, "last seen "),
                   ].filter(Boolean).join(" · ")
                 : formatLastSeen(null);
   // A machine restarting for an update drops its connection on purpose. That

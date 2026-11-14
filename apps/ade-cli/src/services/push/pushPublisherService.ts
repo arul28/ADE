@@ -174,6 +174,40 @@ const SESSION_DESCRIPTION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "turn_diagnostics",
 ]);
 /**
+ * Chat events that report on a chat without its agent working: a notice
+ * ("Session ready", a sign-in problem, a take-over note), a child's report
+ * landing, an error outside a turn, a resolved message, a goal edit. They never
+ * start a run and never lift a finished one back to running. A new chat whose
+ * runtime warmed up, or a Done chat that gets a notice, is not working; a real
+ * turn always sends `user_message` or `status: started` first.
+ */
+const CHAT_REPORT_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "system_notice",
+  "error",
+  "subagent_result",
+  "subagent.completed",
+  "completion_report",
+  "user_message_resolution",
+  "transcript_retraction",
+  "conversation_reset",
+  "interrupt_receipt",
+  "queue_reordered",
+  "queue_recovery",
+  "cloud_status",
+  "cloud_artifact",
+  "model_handoff",
+  "turn_diff_summary",
+  "claude_goal_updated",
+  "claude_goal_cleared",
+  "codex_goal_updated",
+  "codex_goal_cleared",
+  "codex_thread_deleted",
+  "codex_moderation_metadata",
+  "linear_issue",
+  "github_issue",
+  "jira_issue",
+]);
+/**
  * How often a live run re-reads its own session summary — its title and its
  * planning mode. Neither is announced on the chat event stream (a chat is
  * renamed out from under the publisher seconds after it is created, and the
@@ -2170,6 +2204,18 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (runs.has(sessionId)) scheduleFlush(false);
       return;
     }
+    const goalNotice = event.type === "system_notice"
+      && (event.status === GOAL_REACHED_NOTICE_STATUS || event.status === GOAL_BLOCKED_NOTICE_STATUS);
+    if (!goalNotice && CHAT_REPORT_EVENT_TYPES.has(event.type)) {
+      // Reported, not worked on: the run (if any) keeps its phase.
+      if (runs.has(sessionId)) scheduleFlush(false);
+      return;
+    }
+    if (goalNotice && !runs.has(sessionId)) {
+      // A goal verdict lands after the turn that reached it. With no run left
+      // to attach it to, the chat is at rest: alert from a settled run.
+      setRunPhase(ensureRun(sessionId, scopeKey), "completed");
+    }
 
     const run = ensureRun(sessionId, scopeKey);
     markRunUpdated(run);
@@ -2302,7 +2348,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         break;
       }
       case "system_notice": {
-        if (event.status === GOAL_REACHED_NOTICE_STATUS || event.status === GOAL_BLOCKED_NOTICE_STATUS) {
+        if (goalNotice) {
           const reached = event.status === GOAL_REACHED_NOTICE_STATUS;
           // The objective stays off the lock screen, like an error's text.
           enqueueAlert({
@@ -2316,9 +2362,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             fingerprintSalt: event.message,
           });
           immediate = true;
-          break;
         }
-        resumeRunOnActivity(run);
         break;
       }
       default: {
