@@ -472,15 +472,15 @@ export function createLaneEnvironmentService({
     worktreePath: string,
     docker: LaneDockerConfig,
     laneId: string
-  ): Promise<{ exitCode: number; stderr: string }> {
+  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
     if (!docker.composePath?.trim()) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath ?? "" });
-      return { exitCode: 0, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "", tail: "" };
     }
     const composePath = resolveCheckedPath(projectRoot, docker.composePath, logger, "lane_env_init.docker_compose_escape", { path: docker.composePath, projectRoot }, { allowMissing: true });
     if (!fs.existsSync(composePath)) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath });
-      return { exitCode: 0, stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "", tail: "" };
     }
 
     const projectName = buildDockerProjectName(laneId, docker.projectPrefix);
@@ -836,7 +836,8 @@ export function createLaneEnvironmentService({
           label: "Start Docker services",
           run: async () => {
             const result = await startDocker(lane.worktreePath, docker, lane.id);
-            return result.exitCode !== 0 ? result.stderr.slice(0, 500) : null;
+            // A pull that fills the disk says so after pages of progress: the whole output is read for it.
+            return result.exitCode !== 0 ? commandFailure(result, result.stderr.slice(0, 500)).text : null;
           },
         });
       }

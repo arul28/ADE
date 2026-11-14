@@ -273,7 +273,7 @@ export function createCloudDiskGrower(deps: {
     || (failedAt != null && now() - failedAt < FAILED_RETRY_MS);
 
   /** Asks the server for one more step of disk. A grow restarts the computer, so `stillIdle` is asked right before. */
-  const growOneStep = async (stillIdle: () => boolean | Promise<boolean>, disk: { space: DiskSpace; pressure: DiskPressureState }): Promise<GrowStep> => {
+  const growOneStep = async (stillIdle: () => boolean | Promise<boolean>, disk: { space: DiskSpace; pressure: DiskPressureState }, signal?: AbortSignal): Promise<GrowStep> => {
     const client = await deps.client();
     if (!client) return { state: "unavailable" };
     const instance = await client.getInstance(deps.instanceId);
@@ -285,6 +285,8 @@ export function createCloudDiskGrower(deps: {
     const catalog = cloudCatalogOf(account);
     // A grow restarts the computer, and work may have started during those reads.
     if (!(await stillIdle())) return { state: "busy" };
+    // Cancelled while it read: nothing grows for a launch that's gone.
+    if (signal?.aborted) return { state: "unavailable" };
     const { cpu, memory, disk: diskGb } = instance.resources;
     const toGb = diskGb + catalog.diskStepGb;
     // The note is what holds the cooldown and the pending grow across the restart: no grow without it.
@@ -410,6 +412,7 @@ export function createCloudDiskGrower(deps: {
      * hasn't grown yet is waited on, not asked again.
      */
     async makeRoomForSetup(args: { stillIdle: () => boolean | Promise<boolean>; signal: AbortSignal }): Promise<ChatLaunchEnvironmentRoom | null> {
+      if (args.signal.aborted) return null;
       const disk = measure();
       if (!disk) return null;
       const asked = readCloudDiskGrowState(stateFile, deps.instanceId);
@@ -424,12 +427,13 @@ export function createCloudDiskGrower(deps: {
       if (inFlight) return { state: "refused", error: "Setup filled this computer's disk while ADE was already growing it. Retry in a minute or two." };
       inFlight = true;
       try {
-        let step = await growOneStep(args.stillIdle, disk);
+        let step = await growOneStep(args.stillIdle, disk, args.signal);
         // Two of the account's computers growing at once: the one that lost the reservation asks again, twice at most.
         for (const waitMs of SETUP_GROW_RACE_RETRY_MS) {
           if (step.state !== "changed" || args.signal.aborted) break;
           await new Promise((resolve) => setTimeout(resolve, waitMs + Math.floor(Math.random() * 1_000)).unref?.());
-          step = await growOneStep(args.stillIdle, disk);
+          // Checked again before it asks: a Cancel during the wait grows nothing.
+          step = await growOneStep(args.stillIdle, disk, args.signal);
         }
         switch (step.state) {
           case "growing":
