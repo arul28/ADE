@@ -1,57 +1,57 @@
 {
   "tool": "cursor-cli",
-  "version": "2026.10.16-e3cb207",
+  "version": "2026.11.13-eacade1",
   "source": "downloads.cursor.com/lab (sha256 computed by tools:pin)",
   "targets": {
     "darwin-arm64": {
       "format": "archive",
       "package": "cursor-agent-darwin-arm64",
-      "version": "2026.10.16-e3cb207",
-      "url": "https://downloads.cursor.com/lab/2026.10.16-e3cb207/darwin/arm64/agent-cli-package.tar.gz",
+      "version": "2026.11.13-eacade1",
+      "url": "https://downloads.cursor.com/lab/2026.11.13-eacade1/darwin/arm64/agent-cli-package.tar.gz",
       "archive": "tar.gz",
       "stripComponents": 1,
-      "sha256": "5f04d196a84ddb5c20a4a466bdd74e3695bfb447e3c4a1e6071364b2b9497dd0",
-      "size": 177839943
+      "sha256": "087220ccf1e124dcdf2753601422892042a45a2c577ef0ea25b8a5b0e47bb691",
+      "size": 174926275
     },
     "darwin-x64": {
       "format": "archive",
       "package": "cursor-agent-darwin-x64",
-      "version": "2026.10.16-e3cb207",
-      "url": "https://downloads.cursor.com/lab/2026.10.16-e3cb207/darwin/x64/agent-cli-package.tar.gz",
+      "version": "2026.11.13-eacade1",
+      "url": "https://downloads.cursor.com/lab/2026.11.13-eacade1/darwin/x64/agent-cli-package.tar.gz",
       "archive": "tar.gz",
       "stripComponents": 1,
-      "sha256": "93372e384e9397b54b1e4fdb1812662f68e7b61c0c60cb3f2f4b788c9e0779c4",
-      "size": 185260358
+      "sha256": "ba86b7c0ea7e456f9d33232e9e1ebf6cac56aac36bea299fdb6da2d4d8ab6a00",
+      "size": 182605315
     },
     "linux-arm64": {
       "format": "archive",
       "package": "cursor-agent-linux-arm64",
-      "version": "2026.10.16-e3cb207",
-      "url": "https://downloads.cursor.com/lab/2026.10.16-e3cb207/linux/arm64/agent-cli-package.tar.gz",
+      "version": "2026.11.13-eacade1",
+      "url": "https://downloads.cursor.com/lab/2026.11.13-eacade1/linux/arm64/agent-cli-package.tar.gz",
       "archive": "tar.gz",
       "stripComponents": 1,
-      "sha256": "4cf077f150eb8d1e270bf1dea69700184c39a4847fe192d523f5bb34d4b62597",
-      "size": 181621480
+      "sha256": "e4ba0611045a24d1cf78f021d34c19461680fc7234c19c1f981f1cc169f70cdc",
+      "size": 175296286
     },
     "linux-x64": {
       "format": "archive",
       "package": "cursor-agent-linux-x64",
-      "version": "2026.10.16-e3cb207",
-      "url": "https://downloads.cursor.com/lab/2026.10.16-e3cb207/linux/x64/agent-cli-package.tar.gz",
+      "version": "2026.11.13-eacade1",
+      "url": "https://downloads.cursor.com/lab/2026.11.13-eacade1/linux/x64/agent-cli-package.tar.gz",
       "archive": "tar.gz",
       "stripComponents": 1,
-      "sha256": "3aa3f48cd7a3909a98c9b3f2a4085f0c021088bf826690b22c61f424c843e552",
-      "size": 183721050
+      "sha256": "c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f",
+      "size": 176790323
     },
     "win32-x64": {
       "format": "archive",
       "package": "cursor-agent-win32-x64",
-      "version": "2026.10.16-e3cb207",
-      "url": "https://downloads.cursor.com/lab/2026.10.16-e3cb207/windows/x64/agent-cli-package.zip",
+      "version": "2026.11.13-eacade1",
+      "url": "https://downloads.cursor.com/lab/2026.11.13-eacade1/windows/x64/agent-cli-package.zip",
       "archive": "zip",
       "stripComponents": 1,
-      "sha256": "8ec735f06234310c062c07d68d2940a249356aff49a40fb158b27af210310848",
-      "size": 78452694
+      "sha256": "5030a7aa0ee2cde95c67df305e26dc38ece0421e695d9725b69b04caddfefa32",
+      "size": 79860009
     }
   }
 }
