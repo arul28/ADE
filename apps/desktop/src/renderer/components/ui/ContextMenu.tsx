@@ -238,6 +238,14 @@ export function ContextMenu({
   );
 }
 
+/** The panel's own enabled, visible rows; an open submenu's rows are its own. */
+function menuRows(panel: HTMLElement): HTMLElement[] {
+  const ownMenu = panel.getAttribute("role") === "menu" ? panel : null;
+  return Array.from(
+    panel.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([disabled]):not([aria-disabled='true'])"),
+  ).filter((row) => row.offsetParent !== null && row.closest("[role='menu']") === ownMenu);
+}
+
 /** Arrow keys, Home and End move focus between the menu's enabled rows. */
 function moveMenuFocus(event: React.KeyboardEvent<HTMLDivElement>): void {
   const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
@@ -248,9 +256,7 @@ function moveMenuFocus(event: React.KeyboardEvent<HTMLDivElement>): void {
   const panel = event.currentTarget;
   const ownMenu = panel.getAttribute("role") === "menu" ? panel : null;
   if (event.target instanceof Element && event.target.closest("[role='menu']") !== ownMenu) return;
-  const rows = Array.from(
-    panel.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([disabled]):not([aria-disabled='true'])"),
-  ).filter((row) => row.offsetParent !== null && row.closest("[role='menu']") === ownMenu);
+  const rows = menuRows(panel);
   if (rows.length === 0) return;
   event.preventDefault();
   const at = rows.indexOf(document.activeElement as HTMLElement);
@@ -319,10 +325,12 @@ export function ContextMenuSurface({
     };
   }, []);
   // A hidden panel cannot take focus, so this waits for the clamp to place it.
+  // The first enabled row takes it, so Enter acts and a screen reader names a
+  // choice; a menu with no row keeps it on the panel.
   useLayoutEffect(() => {
     const panel = panelRef.current;
     if (!positioned || !panel || panel.contains(document.activeElement)) return;
-    panel.focus({ preventScroll: true });
+    (menuRows(panel)[0] ?? panel).focus({ preventScroll: true });
   }, [positioned]);
   const content = (
     <>
