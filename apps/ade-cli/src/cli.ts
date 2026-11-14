@@ -717,17 +717,15 @@ import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
 import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
 import {
+  addBrainRunStopIntent,
   brainRestartCause,
   brainUnplannedRestart,
   markBrainRunStoppedCleanly,
-  recordBrainRunStart,
-} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
-import {
   readBrainUpdateRequest,
-  restartCauseLogFields,
+  recordBrainRunStart,
   writeBrainUpdateRequest,
-  type BrainRestartCauseFacts,
-} from "../../desktop/src/main/services/runtime/brainRestartCause";
+} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import { restartCauseLogFields, type BrainStartFacts } from "../../desktop/src/main/services/runtime/brainRestartCause";
 import {
   clearBrainStopIntent,
   closeLiveTurnProjectsRecord,
@@ -739,7 +737,8 @@ import {
   settleLiveTurnProjectAfterCrash,
   takeLiveTurnProjectsFromStoppedBrains,
 } from "../../desktop/src/main/services/runtime/liveTurnProjects";
-import { RESTART_RESUME_MAX_AGE_MS, type UpdateRequestedBy } from "../../desktop/src/shared/chatAutoResume";
+import { RESTART_RESUME_MAX_AGE_MS } from "../../desktop/src/shared/chatAutoResume";
+import type { UpdateRequestedBy } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -29755,7 +29754,7 @@ async function runServe(
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
   // The open projects the simulators' low-memory pass reaches; set once the scope registry exists.
-  let simulatorReclaimScopes: (() => import("./services/runtime/simulatorMemoryReclaim").SimulatorReclaimScope[]) | null = null;
+  let simulatorReclaimScopes: (() => import("./services/runtime/simulatorMemoryReclaimer").SimulatorReclaimScope[]) | null = null;
   // Freeze kills counted against the project that was opening, read once from
   // this machine's runtime folder; the scope registry refuses a project with
   // enough of them (`projectOpenStrikes.ts`).
@@ -29769,9 +29768,8 @@ async function runServe(
   // What the previous brain left, read before the watchdog, the heartbeat and
   // the pressure monitor below rewrite it: the facts that name why it ended
   // (`brainRestartCause.ts`, used at `recordBrainRunStart`).
-  const restartCauseFacts: Pick<BrainRestartCauseFacts, "wedge" | "memoryPressure" | "updateRequest"> & {
-    lastHeartbeat: { pid: number; ts: number } | null;
-  } = {
+  const restartCauseFacts: BrainStartFacts = {
+    currentVersion: VERSION,
     lastHeartbeat: readBrainHeartbeat(layout.runtimeDir),
     wedge: null,
     memoryPressure: null,
@@ -29883,23 +29881,22 @@ async function runServe(
     // memory, swap, database logs and its own CPU (`resourcePressureMonitor.ts`).
     const { createResourcePressureMonitor } = await import("./services/runtime/resourcePressureMonitor");
     // The iOS simulators give memory back when this computer is short of it
-    // (`simulatorMemoryReclaim.ts`): on the monitor's samples, macOS only.
-    const simulatorReclaimer = process.platform === "darwin"
-      ? (await import("./services/runtime/simulatorMemoryReclaim")).createSimulatorMemoryReclaimer({
-        logger: headlessProjectLogger,
-        readSimulatorMb: async () => {
-          const { readProcessGroups } = await import("../../desktop/src/main/services/machineStats/processGroups");
-          const snapshot = await readProcessGroups({ platform: process.platform });
-          return snapshot?.groups.find((group) => group.group === "ios_simulator")?.mb ?? 0;
-        },
-        listScopes: () => simulatorReclaimScopes?.() ?? [],
-      })
-      : null;
+    // (`simulatorMemoryReclaimer.ts`): on the monitor's samples. The pass
+    // itself does nothing off macOS.
+    const { createSimulatorMemoryReclaimer } = await import("./services/runtime/simulatorMemoryReclaimer");
+    const simulatorReclaimer = createSimulatorMemoryReclaimer({
+      logger: headlessProjectLogger,
+      readSimulatorMb: async () => {
+        const { readProcessGroups, simulatorGroupMb } = await import("../../desktop/src/main/services/machineStats/processGroups");
+        return simulatorGroupMb(await readProcessGroups({ platform: process.platform }));
+      },
+      listScopes: () => simulatorReclaimScopes?.() ?? [],
+    });
     resourcePressureMonitor = createResourcePressureMonitor({
       runtimeDir: layout.runtimeDir,
       logger: headlessProjectLogger,
       capture: (input) => brainProductAnalytics.captureInternal(input),
-      ...(simulatorReclaimer ? { onOpenEpisodeSample: (sample) => simulatorReclaimer.onSample(sample) } : {}),
+      onOpenEpisodeSample: (sample) => simulatorReclaimer.onSample(sample),
     });
   } else {
     headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
@@ -31082,16 +31079,15 @@ async function runServe(
     // not a crash for the restart-loop report.
     if (!stoppingOnFailure) {
       markBrainStoppedCleanly();
-      // The planned-stop record takes the stop intent first, so the run
-      // record can keep it: the next start then says an update ended this brain.
-      let kept: ReturnType<typeof recordPlannedBrainStop> = null;
-      try {
-        kept = options.requested && !embedded
-          ? recordPlannedBrainStop({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: serveSocketPath })
-          : null;
-      } finally {
-        markBrainRunStoppedCleanly(undefined, { stopIntent: kept?.intent ?? null });
-      }
+      // The clean stop first: a kill during the project writes below still
+      // leaves a stopped run record.
+      markBrainRunStoppedCleanly();
+      const kept = options.requested && !embedded
+        ? recordPlannedBrainStop({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: serveSocketPath })
+        : null;
+      // The intent the planned-stop record took, so the next start can say an
+      // update ended this brain.
+      addBrainRunStopIntent(kept?.intent ?? null);
       if (kept) headlessProjectLogger.info("brain.planned_stop_recorded", { ...kept });
       else closeLiveTurnProjectsRecord();
     }
@@ -31131,8 +31127,6 @@ async function runServe(
     const { hostAppPath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
     );
-    // Kept for the next start, which names who asked (`brainRestartCause.ts`).
-    if (!embedded) writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), { targetVersion, requestedBy });
     const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveReachableMachineDesktopBridgeSocketPath();
     let routing = await requestDesktopAppUpdate({ socketPath, targetVersion, requestedBy });
@@ -31578,7 +31572,7 @@ async function runServe(
       return await handler(request);
     }, handler);
   };
-  const createHandler = (context?: { peerDeviceId: string | null }) =>
+  const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
       remoteProviderSignIn,
@@ -31605,6 +31599,7 @@ async function runServe(
         : null,
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
+      peerDeviceName: context?.peerDeviceName ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
       crossScopeChats,
       projectRegistry,
@@ -31649,6 +31644,8 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+            // Kept for the next start, which names who asked (`brainRestartCause.ts`).
+            noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
             updateInstallMode: () => readDesktopUpdateInstallMode(),
             // The app this brain reports as `desktopAppVersion`, on every platform.
             installedApp: async () => {
@@ -32295,7 +32292,7 @@ async function runServe(
       socketPath: serveSocketPath,
       build: computeRuntimeBuildStamp(bundlePath, VERSION),
       writeOwnRecord: writesBrainRun,
-      causeFacts: { ...restartCauseFacts, currentVersion: VERSION },
+      causeFacts: restartCauseFacts,
     });
     const restartCause = brainRestartCause();
     if (restartCause) headlessProjectLogger.info("brain.restart_cause", restartCauseLogFields(restartCause));

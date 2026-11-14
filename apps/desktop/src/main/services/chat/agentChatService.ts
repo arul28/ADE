@@ -1245,7 +1245,6 @@ import {
   resolveUsageLimitResumeState,
   sessionAutoContinueAtUsageLimit,
   stripHostOnlyChatMetadata,
-  UPDATE_RESUME_PROMPT,
   UPDATE_RESUME_REASON,
   UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
   updateResumeScheduleId,
@@ -1254,8 +1253,10 @@ import {
   collectRestartCancelledWork,
   RESTART_RESUME_MAX_AGE_MS,
   MAX_CONSECUTIVE_RESTART_RESUMES,
+  chatRestartResumePrompt,
+  cliReopenedIdlePrompt,
   cliReopenedNotice,
-  restartResumePrompt,
+  cliRestartResumePrompt,
   nextRestartResumeStreak,
   restartInterruptedNotice,
   restartResumeHold,
@@ -23347,7 +23348,7 @@ export function createAgentChatService(args: {
   };
   /**
    * Without `resume`, the continue after a restart that cut the turn off: its
-   * prompt names why ADE restarted (`restartResumePrompt`).
+   * prompt names why ADE restarted (`chatRestartResumePrompt`).
    */
   const armRestartResume = (
     managed: ManagedChatSession,
@@ -23356,7 +23357,7 @@ export function createAgentChatService(args: {
     if (!continueAfterRestartEnabled()) return;
     const restartContinue = customResume === undefined;
     const resume = customResume ?? {
-      prompt: restartResumePrompt({ surface: "chat", cause: brainRestartCause() }),
+      prompt: chatRestartResumePrompt(brainRestartCause()),
       reason: RESTART_RESUME_REASON,
     };
     const sessionId = managed.session.id;
@@ -72147,7 +72148,8 @@ export function createAgentChatService(args: {
           id: updateResumeScheduleId(chat.sessionId),
           sessionId: chat.sessionId,
           kind: "wakeup",
-          prompt: UPDATE_RESUME_PROMPT,
+          // Armed before the stop: no cause yet, so this is the update prompt.
+          prompt: chatRestartResumePrompt(null, { acceptedUpdate: true }),
           reason: UPDATE_RESUME_REASON,
           fireAt: createdAt,
           createdAt,
@@ -72322,7 +72324,7 @@ export function createAgentChatService(args: {
           id: updateResumeScheduleId(sessionId),
           sessionId,
           kind: "wakeup",
-          prompt: restartResumePrompt({ surface: "chat", cause: brainRestartCause(), acceptedUpdate }),
+          prompt: chatRestartResumePrompt(brainRestartCause(), { acceptedUpdate }),
           reason: acceptedUpdate ? UPDATE_RESUME_REASON : RESTART_RESUME_REASON,
           fireAt: createdAt,
           createdAt: current?.createdAt ?? createdAt,
@@ -72552,8 +72554,11 @@ export function createAgentChatService(args: {
     // One at a time: each reopen starts a CLI process.
     for (const entry of entries) {
       if (serviceDisposed) break;
+      // A planned stop for good continues nothing and says nothing, whatever an
+      // older list said about its turn. A crash entry (with an owner) never is one.
+      const stoppedForGood = !entry.owner && entry.stoppedForGood === true;
       // Read first, so every drop below logs for exactly the CLIs owed a continue.
-      const midTurn = entry.owner ? crashMidTurn(entry.owner) : entry.midTurn;
+      const midTurn = entry.owner ? crashMidTurn(entry.owner) : !stoppedForGood && entry.midTurn;
       const row = sessionService.get(entry.sessionId);
       if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) {
         tally.notReopenable += 1;
@@ -72599,7 +72604,7 @@ export function createAgentChatService(args: {
         // signal misses CLIs that wait on background agents, and an idle one
         // answers in one short line. Not a CLI that waits on the user's
         // answer, and not one whose runtime was stopped for good.
-        const wantsContinue = !row.attentionRequestedAt && (midTurn || !entry.stoppedForGood);
+        const wantsContinue = !row.attentionRequestedAt && !stoppedForGood;
         // An update the user accepted starts the count again, as for a chat
         // (`armUpdateResume`): it is not one more restart in a loop. Both
         // wordings count, so a restart loop cannot wake every CLI forever.
@@ -72626,7 +72631,7 @@ export function createAgentChatService(args: {
             kind: "wakeup",
             // Says that its background agents stopped too: a CLI that was only
             // waiting on them would otherwise go on waiting.
-            prompt: restartResumePrompt({ surface: "cli", cause: brainRestartCause(), notSeenWorking: !midTurn }),
+            prompt: midTurn ? cliRestartResumePrompt(brainRestartCause()) : cliReopenedIdlePrompt(brainRestartCause()),
             reason: RESTART_RESUME_REASON,
             fireAt: createdAt,
             createdAt,
@@ -72643,17 +72648,11 @@ export function createAgentChatService(args: {
         }
         // `continued`: told to continue a turn ADE saw running. `informed`:
         // told why it came back, with the idle wording.
-        const sent = continued;
-        ptyService.showSessionNotice?.(row.id, cliReopenedNotice({
-          unexpected,
-          continued: sent && midTurn,
-          informed: sent && !midTurn,
-          cause: brainRestartCause(),
-        }));
+        const told = !continued ? null : midTurn ? "continued" : "informed";
+        ptyService.showSessionNotice?.(row.id, cliReopenedNotice({ unexpected, told, cause: brainRestartCause() }));
         tally.reopened += 1;
         if (!unexpected) tally.plannedReopened += 1;
-        if (sent && midTurn) tally.continued += 1;
-        if (sent && !midTurn) tally.informed += 1;
+        if (told) tally[told] += 1;
       } catch (error) {
         // No resume target, a deleted lane, moved to another machine: it stays ended, as before.
         tally.failed += 1;

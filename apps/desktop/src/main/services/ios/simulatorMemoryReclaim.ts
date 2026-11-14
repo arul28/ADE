@@ -19,6 +19,8 @@
  * `simctl list`, `ps`, the device folders) and acts on the answer.
  */
 
+import { formatGb } from "../../../shared/formatting";
+
 /** The simulators matter when they hold at least this much memory... */
 export const SIMULATOR_RECLAIM_MIN_MB = 3 * 1024;
 /** ...and at least this share of RAM. */
@@ -42,6 +44,11 @@ export const SIMULATOR_RECLAIM_RECENT_USE_MS = 15 * 60_000;
  * gone this long without ADE use, an install change or a boot.
  */
 export const SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS = 2 * 60 * 60_000;
+/**
+ * While the simulators hold less than the mark in an open episode, their
+ * memory is read again at most this often (a process listing each time).
+ */
+export const SIMULATOR_RECLAIM_BELOW_MARK_RECHECK_MS = 30 * 60_000;
 /** `ADE_APPLE_MEMORY_POWER_OFF=0` keeps the warnings and turns the automatic shutdown off. */
 export const SIMULATOR_RECLAIM_ENV = "ADE_APPLE_MEMORY_POWER_OFF";
 
@@ -66,12 +73,15 @@ export type SimulatorReclaimState = {
    * tries again.
    */
   reclaimedAtMs: number | null;
+  /** In this episode, the last sample that found the simulators below the mark. */
+  belowMarkAtMs: number | null;
 };
 
 export const INITIAL_SIMULATOR_RECLAIM_STATE: SimulatorReclaimState = {
   episodeId: null,
   warnedAtMs: null,
   reclaimedAtMs: null,
+  belowMarkAtMs: null,
 };
 
 export type SimulatorReclaimTick = {
@@ -93,7 +103,11 @@ function memoryBreach(tick: SimulatorReclaimTick): boolean {
 export function simulatorReclaimStepPossible(state: SimulatorReclaimState, tick: SimulatorReclaimTick): boolean {
   if (!memoryBreach(tick)) return false;
   const sameEpisode = state.episodeId === tick.episodeId;
-  if (!sameEpisode || state.warnedAtMs === null) return true;
+  if (!sameEpisode) return true;
+  if (state.belowMarkAtMs !== null && tick.nowMs - state.belowMarkAtMs < SIMULATOR_RECLAIM_BELOW_MARK_RECHECK_MS) {
+    return false;
+  }
+  if (state.warnedAtMs === null) return true;
   return reclaimDue(state, tick);
 }
 
@@ -129,11 +143,15 @@ export function nextSimulatorReclaimStep(
   tick: SimulatorReclaimTick & { simulatorMb: number | null; totalMb: number | null },
 ): { step: SimulatorReclaimStep; state: SimulatorReclaimState } {
   if (!memoryBreach(tick)) return { step: "none", state };
-  const current: SimulatorReclaimState = state.episodeId === tick.episodeId
+  let current: SimulatorReclaimState = state.episodeId === tick.episodeId
     ? state
-    : { episodeId: tick.episodeId, warnedAtMs: null, reclaimedAtMs: state.reclaimedAtMs };
+    : { episodeId: tick.episodeId, warnedAtMs: null, reclaimedAtMs: state.reclaimedAtMs, belowMarkAtMs: null };
   const warned = current.warnedAtMs !== null;
-  if (!simulatorsHoldMeaningfulMemory(tick.simulatorMb, tick.totalMb, warned)) return { step: "none", state: current };
+  if (!simulatorsHoldMeaningfulMemory(tick.simulatorMb, tick.totalMb, warned)) {
+    return { step: "none", state: { ...current, belowMarkAtMs: tick.nowMs } };
+  }
+  if (current.belowMarkAtMs !== null) current = { ...current, belowMarkAtMs: null };
+  // The caller keeps `warnedAtMs` only once the warning went out.
   if (!warned) return { step: "warn", state: { ...current, warnedAtMs: tick.nowMs } };
   if (!reclaimDue(current, tick)) return { step: "none", state: current };
   // The cooldown starts only once the pass shut something down (`afterSimulatorReclaimPass`).
@@ -153,14 +171,34 @@ export function afterSimulatorReclaimPass(
   return pass.shutDown > 0 || pass.powerOffDisabled ? { ...state, reclaimedAtMs: pass.nowMs } : state;
 }
 
-/** What the caller knows about one booted simulator. */
-export type SimulatorReclaimDevice = {
+/** One simulator `simctl list` shows as booted. */
+export type BootedSimulator = {
   udid: string;
   name: string;
   /** `simctl list` state. */
   state: string;
   /** CoreSimulator's last boot time, or null when it cannot be read. */
   lastBootedAtMs: number | null;
+};
+
+/**
+ * A lane device of one open project, with what only that project's simulator
+ * service knows about it (`memoryReclaimLaneDevices`).
+ */
+export type SimulatorReclaimLaneDevice = {
+  udid: string;
+  name: string;
+  laneId: string;
+  /** ADE made the device for the lane (not an attached device). */
+  adeOwned: boolean;
+  /** The service streams, records, tests or launches on it, or a viewer watches it. */
+  busyHere: boolean;
+  /** The chat whose agent booted the device, while it stays on. */
+  bootedByChat: string | null;
+};
+
+/** What the caller knows about one booted simulator. */
+export type SimulatorReclaimDevice = BootedSimulator & {
   /** ADE made the device for a lane (not an attached or outside device). */
   adeOwned: boolean;
   /** This brain streams, records, tests or launches on it, or a viewer watches it. */
@@ -193,6 +231,7 @@ export type SimulatorReclaimVerdict =
       | "simulator_app_device"
       | "simulator_app_recent_use"
       | "test_run_unknown_device"
+      | "tool_uses_booted_device"
       | "tool_uses_device"
       | "busy_here"
       | "recent_use"
@@ -205,13 +244,38 @@ export function simulatorAppRunning(psOutput: string): boolean {
   return psOutput.split("\n").some((line) => /Simulator\.app\/Contents\/MacOS\/Simulator(\s|$)/u.test(line));
 }
 
-/** An `xcodebuild` or `simctl` process names the device by udid or by name. */
-function toolNamesDevice(psOutput: string, device: { udid: string; name: string }): boolean {
+/**
+ * The executable path at the start of a `ps -axo command=` line. It can hold
+ * spaces ("iOS 18.0.simruntime"), so it ends where the first argument starts
+ * (a word that starts with `-` or `/`).
+ */
+function executablePath(line: string): string {
+  const trimmed = line.trim();
+  const end = trimmed.search(/\s[-/]/u);
+  return end === -1 ? trimmed : trimmed.slice(0, end);
+}
+
+/**
+ * The simulator's own processes: CoreSimulator's services, a device's
+ * `launchd_sim` and everything under its runtime, and the apps installed on a
+ * device (they run from the device's own folder). Their command lines name
+ * the device while it is booted, so they never make it look in use.
+ */
+const SIMULATOR_OWN_EXECUTABLE =
+  /(?:^|\/)launchd_sim$|\.simruntime\/|\/CoreSimulator\/(?:Devices|Volumes|Profiles)\/|\/CoreSimulator\.framework\//iu;
+
+/**
+ * A process outside the simulator names the device: any command line with
+ * its udid (compared without case), or an `xcodebuild`, `simctl` or `xctest`
+ * line that names it (`name=<device name>`). Pure.
+ */
+export function externalToolUsesDevice(psOutput: string, device: { udid: string; name: string }): boolean {
+  const udid = device.udid.trim().toUpperCase();
   const name = device.name.trim();
   for (const line of psOutput.split("\n")) {
-    if (!/\b(xcodebuild|simctl|xctest)\b/u.test(line)) continue;
-    if (line.includes(device.udid)) return true;
-    if (name && line.includes(`name=${name}`)) return true;
+    if (!line.trim() || SIMULATOR_OWN_EXECUTABLE.test(executablePath(line))) continue;
+    if (udid && line.toUpperCase().includes(udid)) return true;
+    if (name && /\b(xcodebuild|simctl|xctest)\b/u.test(line) && line.includes(`name=${name}`)) return true;
   }
   return false;
 }
@@ -235,22 +299,28 @@ export function testRunWithUnknownDevice(psOutput: string): boolean {
   return false;
 }
 
+/** A `simctl` command for the `booted` device: it uses every booted simulator. Pure. */
+function simctlUsesBootedDevices(psOutput: string): boolean {
+  return psOutput.split("\n").some((line) => /\bsimctl\b/u.test(line) && /\sbooted(\s|$)/u.test(line));
+}
+
 /**
  * Whether ADE may shut this simulator down to free memory. Conservative:
  * any doubt keeps it on. Pure.
  *
  * In use: not booted; no process list; a test run whose device is unknown; a
- * tool that names the device; ADE streaming, recording, testing or launching
- * on it; ADE used it, booted it or installed on it in the last
- * {@link SIMULATOR_RECLAIM_RECENT_USE_MS}. A device ADE did not make is idle
- * only when its boot time can be read and it has been booted at least
- * {@link SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS}.
+ * `simctl` command for the `booted` device; a process outside the simulator
+ * that names the device (`externalToolUsesDevice`); ADE streaming,
+ * recording, testing or launching on it; ADE used it, booted it or installed
+ * on it in the last {@link SIMULATOR_RECLAIM_RECENT_USE_MS}; its boot time
+ * cannot be read. A device ADE did not make is idle only after it has been
+ * booted at least {@link SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS}.
  *
  * Simulator.app open raises the bar for every device, ADE's or not: a person
  * may drive one in its window, which leaves no trace. The device it last
  * showed stays on, and any other device is idle only after
  * {@link SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS} without ADE use, an install
- * change or a boot, with a boot time that can be read.
+ * change or a boot.
  */
 export function classifySimulatorForMemoryReclaim(
   device: SimulatorReclaimDevice,
@@ -260,23 +330,23 @@ export function classifySimulatorForMemoryReclaim(
   const ps = context.psOutput;
   if (ps === null) return { idle: false, reason: "no_process_list" };
   if (testRunWithUnknownDevice(ps)) return { idle: false, reason: "test_run_unknown_device" };
-  if (toolNamesDevice(ps, device)) return { idle: false, reason: "tool_uses_device" };
+  if (simctlUsesBootedDevices(ps)) return { idle: false, reason: "tool_uses_booted_device" };
+  if (externalToolUsesDevice(ps, device)) return { idle: false, reason: "tool_uses_device" };
   if (device.busyHere) return { idle: false, reason: "busy_here" };
   const lastUse = Math.max(device.lastAdeActivityMs, device.lastInstallChangeMs, device.lastBootedAtMs ?? 0);
   if (context.nowMs - lastUse < SIMULATOR_RECLAIM_RECENT_USE_MS) return { idle: false, reason: "recent_use" };
+  // Without a boot time, a boot a moment ago cannot be ruled out.
+  if (device.lastBootedAtMs === null) return { idle: false, reason: "boot_time_unknown" };
   if (simulatorAppRunning(ps)) {
     if (context.simulatorAppDeviceUdid && context.simulatorAppDeviceUdid.toUpperCase() === device.udid.toUpperCase()) {
       return { idle: false, reason: "simulator_app_device" };
     }
-    if (device.lastBootedAtMs === null || context.nowMs - lastUse < SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS) {
+    if (context.nowMs - lastUse < SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS) {
       return { idle: false, reason: "simulator_app_recent_use" };
     }
   }
-  if (!device.adeOwned) {
-    if (device.lastBootedAtMs === null) return { idle: false, reason: "boot_time_unknown" };
-    if (context.nowMs - device.lastBootedAtMs < SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS) {
-      return { idle: false, reason: "booted_recently" };
-    }
+  if (!device.adeOwned && context.nowMs - device.lastBootedAtMs < SIMULATOR_RECLAIM_FOREIGN_MIN_BOOTED_MS) {
+    return { idle: false, reason: "booted_recently" };
   }
   return { idle: true };
 }
@@ -287,17 +357,12 @@ export type SimulatorReclaimFacts = {
   simulatorMb: number | null;
 };
 
-function gb(mb: number): string {
-  const value = mb / 1024;
-  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/u, "");
-}
-
 /** "13 GB swap used, simulators used 20 GB", or null with no facts. */
 export function simulatorReclaimFactsPhrase(facts: SimulatorReclaimFacts | null | undefined): string | null {
   if (!facts) return null;
   const parts: string[] = [];
-  if (facts.swapUsedMb !== null && facts.swapUsedMb > 0) parts.push(`${gb(facts.swapUsedMb)} GB swap used`);
-  if (facts.simulatorMb !== null && facts.simulatorMb > 0) parts.push(`simulators used ${gb(facts.simulatorMb)} GB`);
+  if (facts.swapUsedMb !== null && facts.swapUsedMb > 0) parts.push(`${formatGb(facts.swapUsedMb)} GB swap used`);
+  if (facts.simulatorMb !== null && facts.simulatorMb > 0) parts.push(`simulators used ${formatGb(facts.simulatorMb)} GB`);
   return parts.length > 0 ? parts.join(", ") : null;
 }
 

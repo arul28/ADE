@@ -18,8 +18,8 @@ import type {
   RemoteRuntimeUpdateStep,
   RemoteRuntimeUpdateStepId,
   RemoteRuntimeUpdateStepStatus,
+  UpdateRequestedBy,
 } from "../../../../desktop/src/shared/types/remoteRuntime";
-import type { UpdateRequestedBy } from "../../../../desktop/src/shared/chatAutoResume";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
 import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
 import { resolveSelectedUpdateTrack } from "./updateTrackStore";
@@ -113,6 +113,13 @@ export type MachineUpdateAndRestartDeps = {
     requestedBy?: UpdateRequestedBy | null,
   ) => Promise<DesktopAppUpdateRouting>;
   /**
+   * An update was accepted: the app answered that it installs or downloads
+   * it, or the standalone update installed. Only then is who asked kept for
+   * the next start's message, so a refused or already-current request never
+   * names anybody later. Never throws.
+   */
+  noteAcceptedUpdate?: (request: { targetVersion: string | null; requestedBy: UpdateRequestedBy | null }) => void;
+  /**
    * The update track this machine follows (`update-track.json`). Absent: the
    * track of `currentVersion`.
    */
@@ -131,10 +138,9 @@ export type MachineUpdateControlsArgs = {
    */
   requestRestart: () => Promise<{ status: number | null; stdout: string; stderr: string }>;
   /** See `MachineUpdateAndRestartDeps.requestDesktopAppUpdate`. */
-  requestDesktopAppUpdate?: (
-    targetVersion: string | null,
-    requestedBy?: UpdateRequestedBy | null,
-  ) => Promise<DesktopAppUpdateRouting>;
+  requestDesktopAppUpdate?: MachineUpdateAndRestartDeps["requestDesktopAppUpdate"];
+  /** See `MachineUpdateAndRestartDeps.noteAcceptedUpdate`. */
+  noteAcceptedUpdate?: MachineUpdateAndRestartDeps["noteAcceptedUpdate"];
   /**
    * The installed ADE app on this machine, as the brain reports it
    * (`readInstalledDesktopApp`), or null. The brain update moves the app too,
@@ -308,6 +314,7 @@ export function createMachineUpdateControls(
       return { ok: true, detail: "Restarting the background service." };
     },
     ...(args.requestDesktopAppUpdate ? { requestDesktopAppUpdate: args.requestDesktopAppUpdate } : {}),
+    ...(args.noteAcceptedUpdate ? { noteAcceptedUpdate: args.noteAcceptedUpdate } : {}),
   };
 }
 
@@ -329,6 +336,8 @@ async function runStandaloneUpdateAndRestart(
      * answers "already current" instead of restarting for nothing.
      */
     updateRequested?: boolean;
+    /** Who asked, kept once the update installs (`noteAcceptedUpdate`). */
+    requestedBy?: UpdateRequestedBy | null;
   } = {},
 ): Promise<MachineUpdateAndRestartResult> {
   const steps: RemoteRuntimeUpdateStep[] = [];
@@ -396,6 +405,7 @@ async function runStandaloneUpdateAndRestart(
     }
     updateApplied = true;
     steps.push(step("apply", "ok", applied.detail));
+    deps.noteAcceptedUpdate?.({ targetVersion: check.targetVersion, requestedBy: options.requestedBy ?? null });
 
     if (applied.restartHandledByUpdater) {
       // The updater is already restarting the service. Asking a second time
@@ -623,8 +633,11 @@ async function routeMachineUpdateAndRestart(
           pendingVersion: restart.ok ? answer.currentVersion : null,
         };
       }
+      if (answer.outcome === "installing" || answer.outcome === "downloading") {
+        deps.noteAcceptedUpdate?.({ targetVersion: answer.version ?? targetVersion, requestedBy });
+      }
       if (answer.outcome !== "unsupported") return desktopAppResult(answer, targetVersion);
     }
   }
-  return await runStandaloneUpdateAndRestart(deps, targetVersion, { updateRequested: crossesTrack });
+  return await runStandaloneUpdateAndRestart(deps, targetVersion, { updateRequested: crossesTrack, requestedBy });
 }

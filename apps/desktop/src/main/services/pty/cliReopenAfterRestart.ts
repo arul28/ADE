@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { fileRecordTimeMs, recordIsOwn, recordWriterGone } from "../processes/processStartTime";
 
 /**
  * The tracked agent CLIs (Claude Code, Codex, ...) a runtime had open when it
@@ -88,9 +88,14 @@ function withoutContinues(entries: readonly CliReopenEntry[]): CliReopenEntry[] 
     .map((entry) => ({ sessionId: entry.sessionId, midTurn: false, stoppedForGood: true as const }));
 }
 
-/** Whether a list still makes the next runtime say or continue anything. */
+/**
+ * Whether a list still makes the next runtime say or continue anything:
+ * every entry does, except one stopped for good (a chat, a mid-turn CLI and
+ * an idle CLI all get a message; `mergeEntries` keeps a stop for good free
+ * of continues).
+ */
 function hasContinues(entries: readonly CliReopenEntry[]): boolean {
-  return entries.some((entry) => entry.kind === "chat" || entry.midTurn || entry.acceptedUpdate || !entry.stoppedForGood);
+  return entries.some((entry) => !entry.stoppedForGood);
 }
 
 function isMissing(error: unknown): boolean {
@@ -136,23 +141,31 @@ function readFile(filePath: string): CliReopenFile | null {
 
 /**
  * Two lists of one session: chat and accepted update if either says so,
- * mid-turn likewise. Stopped for good if either says so: the quiet side.
+ * mid-turn likewise. Stopped for good if either says so, and then it wins:
+ * the entry continues nothing (no mid-turn, no accepted update), and a chat
+ * is dropped, as `withoutContinues` does.
  */
 function mergeEntries(lists: Iterable<readonly CliReopenEntry[]>): CliReopenEntry[] {
   const merged = new Map<string, CliReopenEntry>();
   for (const list of lists) {
     for (const entry of list) {
       const earlier = merged.get(entry.sessionId);
-      merged.set(entry.sessionId, {
-        sessionId: entry.sessionId,
-        midTurn: entry.midTurn || earlier?.midTurn === true,
-        ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
-        ...(entry.acceptedUpdate || earlier?.acceptedUpdate ? { acceptedUpdate: true as const } : {}),
-        ...(entry.stoppedForGood || earlier?.stoppedForGood ? { stoppedForGood: true as const } : {}),
-      });
+      merged.set(entry.sessionId, entry.stoppedForGood || earlier?.stoppedForGood
+        ? {
+          sessionId: entry.sessionId,
+          midTurn: false,
+          ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
+          stoppedForGood: true as const,
+        }
+        : {
+          sessionId: entry.sessionId,
+          midTurn: entry.midTurn || earlier?.midTurn === true,
+          ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
+          ...(entry.acceptedUpdate || earlier?.acceptedUpdate ? { acceptedUpdate: true as const } : {}),
+        });
     }
   }
-  return [...merged.values()];
+  return [...merged.values()].filter((entry) => !(entry.stoppedForGood && entry.kind === "chat"));
 }
 
 /**
@@ -590,10 +603,10 @@ export function pruneCliCrashReopenState(projectRoot: string, options: { keepMs:
     try {
       if (name.startsWith(TURNS_PREFIX) && name.endsWith(TURNS_SUFFIX)) {
         const pid = Number(name.slice(TURNS_PREFIX.length, -TURNS_SUFFIX.length));
-        // A file from before this computer booted belongs to a dead runtime,
-        // even when its pid now names a new process.
-        const gone = !isProcessRunning(pid) || fs.statSync(filePath).mtimeMs < nowMs - os.uptime() * 1000;
-        if (Number.isInteger(pid) && pid !== process.pid && gone) fs.rmSync(filePath, { force: true });
+        // A running pid can name a new process with a reused id, and this
+        // process's own pid an earlier run's file (`recordWriterGone`).
+        const gone = recordWriterGone(pid, fileRecordTimeMs(filePath), isProcessRunning, nowMs);
+        if (Number.isInteger(pid) && gone) fs.rmSync(filePath, { force: true });
         continue;
       }
       if (nowMs - fs.statSync(filePath).mtimeMs > options.keepMs) fs.rmSync(filePath, { force: true });
@@ -634,9 +647,11 @@ export type CliKnownOwner = { pid: number; startedAt: string; lastSeen: string }
  *   machines and the registry does not, so this is the boundary that keeps a
  *   row another machine owns from being reopened here (the stale-row sweep
  *   uses it the same way);
- * - is not this process, and does not run (a live peer, or a reused pid: the
- *   safe side). An owner last seen before this computer booted is gone even
- *   when its pid runs again: after a restart that pid is a new process;
+ * - is not this process, and does not run (a live peer: the safe side). A
+ *   running pid whose process started after the owner was last seen is a new
+ *   process with a reused id, so that owner is gone; so is an owner with this
+ *   process's pid that was last seen before this process started
+ *   (`recordIsOwn`, `recordWriterGone`);
  * - was last seen within `maxAgeMs`: its last heartbeat is close to when it
  *   stopped. Older ones only count as `stale`.
  */
@@ -646,11 +661,8 @@ export function findCliSessionsCutOffByCrash(args: {
   ownPid: number;
   exclude?: ReadonlySet<string>;
   maxAgeMs: number;
-  /** When this computer booted (epoch ms); read from `os.uptime()` when absent. */
-  bootMs?: number;
 }): { cutOff: CliCutOffByCrash[]; stale: number } {
   const nowMs = Date.now();
-  const bootMs = args.bootMs ?? nowMs - os.uptime() * 1000;
   const lastSeenByIdentity = new Map<string, number>();
   const lastSeenByPid = new Map<number, number>();
   for (const owner of args.knownOwners) {
@@ -667,13 +679,16 @@ export function findCliSessionsCutOffByCrash(args: {
     seen.add(row.id);
     if ((row.status !== "running" && row.status !== "detached") || row.archivedAt) continue;
     const ownerPid = row.ownerPid;
-    if (ownerPid == null || ownerPid === args.ownPid) continue;
+    if (ownerPid == null) continue;
     const ownerStartedAt = row.ownerProcessStartedAt?.trim() || null;
     const lastSeenMs = ownerStartedAt
       ? lastSeenByIdentity.get(ownerKey(ownerPid, ownerStartedAt))
       : lastSeenByPid.get(ownerPid);
     if (lastSeenMs === undefined) continue;
-    if (lastSeenMs >= bootMs && isProcessRunning(ownerPid)) continue;
+    // This runtime's own pid: its current run, unless last seen before it
+    // started (an earlier process with the same pid, often before a reboot).
+    if (ownerPid === args.ownPid && recordIsOwn(lastSeenMs)) continue;
+    if (!recordWriterGone(ownerPid, lastSeenMs, isProcessRunning, nowMs)) continue;
     if (nowMs - lastSeenMs > args.maxAgeMs) {
       stale += 1;
       continue;

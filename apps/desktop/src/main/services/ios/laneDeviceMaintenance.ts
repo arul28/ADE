@@ -5,7 +5,12 @@ import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, isAdeOwnedLaneDevice } from "../../..
 import { appleDeviceDataRoot, parseSimctlDevices } from "./appleSimulatorCatalog";
 import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
 import { createPerKeyThrottle, deviceIdleMsFromEnv, startDeviceMaintenanceTimers } from "../device/deviceMaintenance";
-import { simulatorReclaimFactsPhrase, type SimulatorReclaimFacts } from "./simulatorMemoryReclaim";
+import {
+  externalToolUsesDevice,
+  simulatorAppRunning,
+  simulatorReclaimFactsPhrase,
+  type SimulatorReclaimFacts,
+} from "./simulatorMemoryReclaim";
 
 /**
  * The two background jobs that keep lane devices from piling up.
@@ -147,9 +152,13 @@ export type AppleDeviceMemoryWarning = { at: string; text: string };
 
 /**
  * The files ADE keeps in a simulator's own folder, for any simulator, an ADE
- * lane's or not. `root`: `appleDeviceDataRoot()`. Every call never throws.
+ * lane's or not. `root`: `appleDeviceDataRoot()`. Every call never throws;
+ * `onWriteError` hears a write that failed.
  */
-export function appleDeviceFiles(root: string) {
+export function appleDeviceFiles(
+  root: string,
+  options: { onWriteError?: (udid: string, fileName: string, error: unknown) => void } = {},
+) {
   const dir = (udid: string) => path.join(root, udid);
   const file = (udid: string, name: string) => path.join(root, udid, name);
   const mtime = (filePath: string): number => {
@@ -165,7 +174,8 @@ export function appleDeviceFiles(root: string) {
       if (!fs.existsSync(dir(udid))) return false;
       fs.writeFileSync(file(udid, name), text, "utf8");
       return true;
-    } catch {
+    } catch (error) {
+      options.onWriteError?.(udid, name, error);
       return false;
     }
   };
@@ -176,13 +186,48 @@ export function appleDeviceFiles(root: string) {
       // A leftover file only adds a stale sentence.
     }
   };
+  const lastActivityMs = (udid: string): number => mtime(file(udid, APPLE_DEVICE_ACTIVITY_FILE));
+  const lastInstallChangeMs = (udid: string): number =>
+    mtime(path.join(dir(udid), "data", "Containers", "Bundle", "Application"));
+  const writePowerOff = (udid: string, record: AppleDevicePowerOffRecord): boolean =>
+    writeInto(udid, APPLE_DEVICE_POWER_OFF_FILE, JSON.stringify(record));
+  const clearMemoryWarning = (udid: string): void => remove(udid, APPLE_DEVICE_MEMORY_WARNING_FILE);
   return {
     /** ADE's last recorded use (`ade-last-activity`); 0 when there is none. */
-    lastActivityMs: (udid: string): number => mtime(file(udid, APPLE_DEVICE_ACTIVITY_FILE)),
+    lastActivityMs,
     /** When an app was last installed or removed on the device, from its bundle folder; 0 when unreadable. */
-    lastInstallChangeMs: (udid: string): number => mtime(path.join(dir(udid), "data", "Containers", "Bundle", "Application")),
-    writePowerOff: (udid: string, record: AppleDevicePowerOffRecord): boolean =>
-      writeInto(udid, APPLE_DEVICE_POWER_OFF_FILE, JSON.stringify(record)),
+    lastInstallChangeMs,
+    writePowerOff,
+    /** Why ADE last powered this device off, or null when it did not (or booted it since). */
+    readPowerOff: (udid: string): AppleDevicePowerOffRecord | null => {
+      try {
+        return parseDevicePowerOffRecord(fs.readFileSync(file(udid, APPLE_DEVICE_POWER_OFF_FILE), "utf8"));
+      } catch {
+        return null;
+      }
+    },
+    clearPowerOff: (udid: string): void => remove(udid, APPLE_DEVICE_POWER_OFF_FILE),
+    /**
+     * ADE shut the device down because the computer was short of memory:
+     * record why for the next command, and drop the warning before it (the
+     * shutdown is the news now). Returns the record.
+     */
+    recordMemoryPowerOff: (
+      udid: string,
+      shutdown: { nowMs: number; name: string; facts: SimulatorReclaimFacts },
+    ): AppleDevicePowerOffRecord => {
+      const lastUse = Math.max(lastActivityMs(udid), lastInstallChangeMs(udid));
+      const record: AppleDevicePowerOffRecord = {
+        at: new Date(shutdown.nowMs).toISOString(),
+        reason: "memory",
+        idleMinutes: lastUse > 0 ? Math.max(0, Math.round((shutdown.nowMs - lastUse) / 60_000)) : 0,
+        name: shutdown.name,
+        facts: shutdown.facts,
+      };
+      writePowerOff(udid, record);
+      clearMemoryWarning(udid);
+      return record;
+    },
     writeMemoryWarning: (udid: string, warning: AppleDeviceMemoryWarning): boolean =>
       writeInto(udid, APPLE_DEVICE_MEMORY_WARNING_FILE, JSON.stringify(warning)),
     /** The unseen warning, removed as it is read: it shows once. */
@@ -203,27 +248,60 @@ export function appleDeviceFiles(root: string) {
         return null;
       }
     },
-    clearMemoryWarning: (udid: string): void => remove(udid, APPLE_DEVICE_MEMORY_WARNING_FILE),
+    clearMemoryWarning,
   };
 }
 
-/** Simulator.app is running: `ps` shows its main executable. */
-export function simulatorAppRunning(psOutput: string): boolean {
-  return psOutput.split("\n").some((line) => /Simulator\.app\/Contents\/MacOS\/Simulator(\s|$)/u.test(line));
-}
+export type AppleDeviceFiles = ReturnType<typeof appleDeviceFiles>;
+
+type MemoryWarningEntry = { device: AppleLaneDevice; warning: AppleDeviceMemoryWarning };
+type MemoryPowerOffEntry = { device: AppleLaneDevice; record: AppleDevicePowerOffRecord & { reason: "memory" } };
 
 /**
- * Is a process outside ADE driving this device? `ps` lines of `xcodebuild`
- * and `simctl` that name the device by udid or by name. Pure, for the test.
+ * What the machine's low-memory pass left for a lane's devices
+ * (`simulatorMemoryReclaim.ts`), for the answer of an agent's next device
+ * command: each unseen warning, shown once, and why ADE shut a device down,
+ * shown until it boots again. An extra's shutdown is named by its own boot
+ * (`bootExtraDevice`). A shutdown record of a device the device list shows
+ * as Booted is stale: it is dropped and removed. With no device list, no
+ * shutdown is named. `restore` puts the warnings back, for a call that fails
+ * or cannot carry a notice.
  */
-export function externalToolUsesDevice(psOutput: string, device: { udid: string; name: string }): boolean {
-  const name = device.name.trim();
-  for (const line of psOutput.split("\n")) {
-    if (!/\b(xcodebuild|simctl|xctest)\b/u.test(line)) continue;
-    if (line.includes(device.udid)) return true;
-    if (name && line.includes(`name=${name}`)) return true;
+export async function takeLaneMemoryNotices(args: {
+  files: AppleDeviceFiles;
+  devices: readonly AppleLaneDevice[];
+  mode: "drive" | "check";
+  /** The udids the device list shows as Booted; null when it cannot be read. Read only when a shutdown record needs it. */
+  bootedUdids: () => Promise<ReadonlySet<string> | null>;
+}): Promise<{ notices: string[]; restore: () => void }> {
+  const { files } = args;
+  const warnings = args.devices
+    .map((device) => ({ device, warning: files.takeMemoryWarning(device.udid) }))
+    .filter((entry): entry is MemoryWarningEntry => entry.warning !== null);
+  const records = args.devices
+    .filter((device) => !device.extra)
+    .map((device) => ({ device, record: files.readPowerOff(device.udid) }))
+    .filter((entry): entry is MemoryPowerOffEntry => entry.record?.reason === "memory");
+  const shutdowns: MemoryPowerOffEntry[] = [];
+  if (records.length > 0) {
+    const booted = await args.bootedUdids().catch(() => null);
+    if (booted) {
+      for (const entry of records) {
+        if (booted.has(entry.device.udid)) files.clearPowerOff(entry.device.udid);
+        else shutdowns.push(entry);
+      }
+    }
   }
-  return false;
+  const next = args.mode === "drive" ? "this command boots it again if it needs it." : "boot it again when needed.";
+  return {
+    notices: [
+      ...shutdowns.map(({ device, record }) => describeDevicePowerOff(record, device.name, next)),
+      ...warnings.map(({ warning }) => warning.text),
+    ],
+    restore: () => {
+      for (const { device, warning } of warnings) files.writeMemoryWarning(device.udid, warning);
+    },
+  };
 }
 
 export type LaneDeviceMaintenanceDeps = {
@@ -273,40 +351,26 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
     }
   };
 
-  const powerOffFile = (udid: string) => path.join(root(), udid, APPLE_DEVICE_POWER_OFF_FILE);
+  /** The device folder's files; a power-off record that cannot be written is logged. */
+  const files = (): AppleDeviceFiles => appleDeviceFiles(root(), {
+    onWriteError: (udid, _fileName, error) => {
+      deps.logger.debug("apple.device_power_off_record_failed", {
+        udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
 
   /** Why ADE last powered this device off, or null when it did not (or booted it since). */
-  const readPowerOff = (udid: string): AppleDevicePowerOffRecord | null => {
-    try {
-      return parseDevicePowerOffRecord(fs.readFileSync(powerOffFile(udid), "utf8"));
-    } catch {
-      return null;
-    }
-  };
+  const readPowerOff = (udid: string): AppleDevicePowerOffRecord | null => files().readPowerOff(udid);
 
   /**
    * ADE booted the device again: the old power-off is no longer the news, and
    * neither is a low-memory warning about the boot before. Never throws.
    */
   const clearPowerOff = (udid: string): void => {
-    try {
-      fs.rmSync(powerOffFile(udid), { force: true });
-    } catch {
-      // A leftover record only adds a stale sentence to an off device.
-    }
-    appleDeviceFiles(root()).clearMemoryWarning(udid);
-  };
-
-  const writePowerOff = (udid: string, record: AppleDevicePowerOffRecord): void => {
-    try {
-      if (!fs.existsSync(path.join(root(), udid))) return;
-      fs.writeFileSync(powerOffFile(udid), JSON.stringify(record), "utf8");
-    } catch (error) {
-      deps.logger.debug("apple.device_power_off_record_failed", {
-        udid,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    files().clearPowerOff(udid);
+    files().clearMemoryWarning(udid);
   };
 
   const bootedByFile = (udid: string) => path.join(root(), udid, APPLE_DEVICE_BOOTED_BY_FILE);
@@ -332,23 +396,6 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       return fs.readFileSync(bootedByFile(udid), "utf8").trim() || null;
     } catch {
       return null;
-    }
-  };
-
-  /** When an app was last installed or removed on the device, from its bundle folder; 0 when unreadable. */
-  const lastInstallChangeMs = (udid: string): number => {
-    try {
-      return fs.statSync(path.join(root(), udid, "data", "Containers", "Bundle", "Application")).mtimeMs;
-    } catch {
-      return 0;
-    }
-  };
-
-  const lastActivityMs = (udid: string): number => {
-    try {
-      return fs.statSync(activityFile(udid)).mtimeMs;
-    } catch {
-      return 0;
     }
   };
 
@@ -417,10 +464,10 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       // ADE: CoreSimulator's last boot (a raw `simctl boot`) and the last
       // app install or removal (a raw `simctl install`).
       const last = Math.max(
-        lastActivityMs(device.udid),
+        files().lastActivityMs(device.udid),
         startedAt,
         listed.lastBootedAtMs ?? 0,
-        lastInstallChangeMs(device.udid),
+        files().lastInstallChangeMs(device.udid),
       );
       if (!options.force && now() - last < idleMs) continue;
       if (psOutput === null) {
@@ -442,7 +489,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
         await deps.powerOffDevice(device);
         poweredOff.push({ udid: device.udid, name: device.name });
         const idleMinutes = Math.round((now() - last) / 60_000);
-        writePowerOff(device.udid, {
+        files().writePowerOff(device.udid, {
           at: new Date(now()).toISOString(),
           reason: options.force ? "cleanup" : "idle",
           idleMinutes,
@@ -515,21 +562,27 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
    * the service's own power path, and record why for the next command. The
    * caller decided it is idle (`classifySimulatorForMemoryReclaim`).
    */
-  const powerOffForMemory = async (device: AppleLaneDevice, facts: SimulatorReclaimFacts): Promise<void> => {
+  const powerOffForMemory = async (
+    device: AppleLaneDevice,
+    facts: SimulatorReclaimFacts,
+  ): Promise<AppleDevicePowerOffRecord> => {
     await deps.powerOffDevice(device);
-    const at = now();
-    const lastUse = Math.max(lastActivityMs(device.udid), lastInstallChangeMs(device.udid));
-    writePowerOff(device.udid, {
-      at: new Date(at).toISOString(),
-      reason: "memory",
-      idleMinutes: lastUse > 0 ? Math.max(0, Math.round((at - lastUse) / 60_000)) : 0,
-      name: device.name,
-      facts,
-    });
-    appleDeviceFiles(root()).clearMemoryWarning(device.udid);
+    return files().recordMemoryPowerOff(device.udid, { nowMs: now(), name: device.name, facts });
   };
 
-  return { touch, readPowerOff, clearPowerOff, recordBootedBy, readBootedBy, runIdlePass, runCleanup, powerOffForMemory, start, stop };
+  return {
+    touch,
+    readPowerOff,
+    clearPowerOff,
+    recordBootedBy,
+    readBootedBy,
+    runIdlePass,
+    runCleanup,
+    powerOffForMemory,
+    files,
+    start,
+    stop,
+  };
 }
 
 export type LaneDeviceMaintenance = ReturnType<typeof createLaneDeviceMaintenance>;

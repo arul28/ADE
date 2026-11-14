@@ -4,9 +4,9 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { thisMachineDisplayName } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
 import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
-import os from "node:os";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
@@ -1901,7 +1901,7 @@ export function registerRuntimeBridge({
           // Who asked, for the other machine's logs and its agents' continue
           // message. An older brain ignores the field.
           requestedBy: {
-            machineName: os.hostname().replace(/\.local$/i, "").trim() || undefined,
+            machineName: (await thisMachineDisplayName()) ?? undefined,
             clientKind: "desktop",
           },
         },

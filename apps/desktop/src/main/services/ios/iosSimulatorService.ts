@@ -183,13 +183,13 @@ import { runXcodebuildTests } from "./appleTestRun";
 import { generateXcodeGenProjects, type XcodeGenOptions } from "./xcodeGenProjects";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
-  appleDeviceFiles,
   createLaneDeviceMaintenance,
   describeDevicePowerOff,
+  takeLaneMemoryNotices,
   type AppleDevicePowerOffRecord,
   type LaneDeviceMaintenance,
 } from "./laneDeviceMaintenance";
-import type { SimulatorReclaimFacts } from "./simulatorMemoryReclaim";
+import type { SimulatorReclaimFacts, SimulatorReclaimLaneDevice } from "./simulatorMemoryReclaim";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -8156,31 +8156,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * This service's lane devices, with what only this process knows about each
    * (`simulatorMemoryReclaim.ts`, run by the machine brain when memory is low).
    */
-  const memoryReclaimLaneDevices = (): Array<{
-    udid: string;
-    name: string;
-    laneId: string;
-    extra: boolean;
-    adeOwned: boolean;
-    busyHere: boolean;
-    bootedByChat: string | null;
-  }> => laneDevices.list().map((device) => ({
+  const memoryReclaimLaneDevices = (): SimulatorReclaimLaneDevice[] => laneDevices.list().map((device) => ({
     udid: device.udid,
     name: device.name,
     laneId: device.laneId,
-    extra: device.extra === true,
     adeOwned: isAdeOwnedLaneDevice(device.origin),
     // A stream counts only while someone watches it, as for the idle timer.
     busyHere: isBusyHere(device.udid, { onlyWatchedStreams: true }),
     bootedByChat: laneMaintenance().readBootedBy(device.udid),
   }));
 
-  /** Shut one of this service's lane devices down for memory. False when it is not one. */
-  const powerOffLaneDeviceForMemory = async (udid: string, facts: SimulatorReclaimFacts): Promise<boolean> => {
+  /** Shut one of this service's lane devices down for memory. Its power-off record, or null when it is not one. */
+  const powerOffLaneDeviceForMemory = async (
+    udid: string,
+    facts: SimulatorReclaimFacts,
+  ): Promise<AppleDevicePowerOffRecord | null> => {
     const device = laneDevices.list().find((entry) => entry.udid === udid);
-    if (!device) return false;
-    await laneMaintenance().powerOffForMemory(device, facts);
-    return true;
+    if (!device) return null;
+    return await laneMaintenance().powerOffForMemory(device, facts);
   };
 
   /* ───────────────────────── simulator runtimes ───────────────────────── */
@@ -8322,17 +8315,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     };
     /**
      * What the machine's low-memory pass left for this lane's devices
-     * (`simulatorMemoryReclaim.ts`): an unseen warning, shown once, and why ADE
-     * shut a device down, shown until it boots again. Added to the answer as
-     * `deviceNotice`, which `ade apple` prints. A call that fails keeps the
-     * warning for the next one.
+     * (`takeLaneMemoryNotices`), added to the answer as `deviceNotice`, which
+     * `ade apple` prints. A call that fails keeps the warning for the next one.
      */
     const withMemoryNotice = async (
       actionArgs: Record<string, unknown>,
       mode: "drive" | "check",
       call: () => Promise<unknown>,
     ): Promise<unknown> => {
-      const files = appleDeviceFiles(appleDeviceDataRoot());
       const runtime = (() => {
         try {
           return resolveRuntimeUntracked(actionArgs as { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null });
@@ -8342,30 +8332,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       })();
       const devices = runtime?.key ? laneDevices.list().filter((device) => device.laneId === runtime.key) : [];
       if (!devices.length) return await call();
-      const warnings = devices
-        .map((device) => ({ device, warning: files.takeMemoryWarning(device.udid) }))
-        .filter((entry) => entry.warning !== null);
-      // An extra's shutdown is named by its own boot (`bootExtraDevice`).
-      const shutdowns = devices
-        .filter((device) => !device.extra)
-        .map((device) => ({ device, record: laneMaintenance().readPowerOff(device.udid) }))
-        .filter((entry) => entry.record?.reason === "memory")
-        .map(({ device, record }) => describeDevicePowerOff(
-          record!,
-          device.name,
-          mode === "drive" ? "this command boots it again if it needs it." : "boot it again when needed.",
-        ));
+      const { notices, restore } = await takeLaneMemoryNotices({
+        files: laneMaintenance().files(),
+        devices,
+        mode,
+        bootedUdids: async () => {
+          const listed = await listDevices();
+          return new Set(listed.filter((device) => device.state === "Booted").map((device) => device.udid));
+        },
+      });
       let result: unknown;
       try {
         result = await call();
       } catch (error) {
-        for (const { device, warning } of warnings) files.writeMemoryWarning(device.udid, warning!);
+        restore();
         throw error;
       }
-      const notices = [...shutdowns, ...warnings.map(({ warning }) => warning!.text)];
       if (!notices.length) return result;
       if (!isPlainResultObject(result)) {
-        for (const { device, warning } of warnings) files.writeMemoryWarning(device.udid, warning!);
+        restore();
         return result;
       }
       const shown = new Set<string>([

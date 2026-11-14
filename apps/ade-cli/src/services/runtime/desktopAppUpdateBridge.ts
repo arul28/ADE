@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
-import type { UpdateRequestedBy } from "../../../../desktop/src/shared/chatAutoResume";
+import type { UpdateRequestedBy } from "../../../../desktop/src/shared/types/remoteRuntime";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.

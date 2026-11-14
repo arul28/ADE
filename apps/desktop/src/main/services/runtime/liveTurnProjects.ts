@@ -1,9 +1,9 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { RESTART_RESUME_MAX_AGE_MS } from "../../../shared/chatAutoResume";
 import { captureError } from "../../../shared/sentry/capture";
+import { fileRecordTimeMs, recordWriterGone } from "../processes/processStartTime";
 import {
   neutralizeCliSessionsToReopen,
   recordCliSessionsToReopen,
@@ -707,19 +707,6 @@ function writePending(state: Holder): void {
  * (`settleLiveTurnProjectAfterCrash`), so a crash during the opens leaves
  * them to the next brain.
  */
-/**
- * The file was last written before this computer booted, so no process that
- * runs now wrote it: its pid running again after a restart is a new process
- * with a reused id. False when the file cannot be read.
- */
-function writtenBeforeBoot(filePath: string): boolean {
-  try {
-    return fs.statSync(filePath).mtimeMs < Date.now() - os.uptime() * 1000;
-  } catch {
-    return false;
-  }
-}
-
 export function takeLiveTurnProjectsFromStoppedBrains(args: {
   runtimeDir: string;
   socketPath: string;
@@ -752,7 +739,11 @@ export function takeLiveTurnProjectsFromStoppedBrains(args: {
     // The process that may still act on the file: its reader, else its
     // writer. A planned stop's record is final, so only a reader counts.
     const actor = match[4] != null ? Number(match[4]) : stopped ? null : Number(match[1]);
-    if (actor != null && (actor === process.pid || (pidRuns(actor) && !writtenBeforeBoot(path.join(dir, name))))) continue;
+    // A running pid whose process started after the file was written (or
+    // claimed) is another process with a reused id, and a file under this
+    // brain's own pid from before it started is an earlier run's
+    // (`recordWriterGone`).
+    if (actor != null && !recordWriterGone(actor, fileRecordTimeMs(path.join(dir, name)), pidRuns)) continue;
     if (match[3]) {
       // A half-written file: its writer is gone (or, for a planned stop,
       // finished writing another way). Only a dead writer's goes.

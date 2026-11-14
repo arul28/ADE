@@ -1,18 +1,11 @@
-import fs from "node:fs";
-import path from "node:path";
-
-import {
-  sanitizeUpdateRequestedBy,
-  type RestartCause,
-  type RestartMemoryFacts,
-  type UpdateRequestedBy,
-} from "../../../shared/chatAutoResume";
+import { restartCauseMemory, type RestartCause, type RestartMemoryFacts } from "../../../shared/restartCause";
+import type { UpdateRequestedBy } from "../../../shared/types/remoteRuntime";
+import type { BrainStopIntent } from "./liveTurnProjects";
 
 /**
  * Why the previous brain on this endpoint ended, decided once per brain start
  * from facts the previous brain and the machine left on disk. The continue
- * prompts and the reopened-CLI line name it (`restartResumePrompt`,
- * `cliReopenedNotice`).
+ * prompts and the reopened-CLI line name it (`chatAutoResume.ts`).
  *
  * The facts, each read once at start before anything rewrites it:
  * - the previous brain's run record (`brain-run/<endpoint>.json`): its start,
@@ -22,15 +15,18 @@ import {
  * - the watchdog breadcrumb this start recovered (`last-wedge.json`);
  * - the resource-pressure record (`resource-pressure.json`) as the previous
  *   brain left it;
- * - the remote update request the previous brain received (`update-request.json`).
+ * - the remote update the previous brain accepted (`update-request.json`).
  *
- * Pure: the caller reads the files.
+ * Pure: the caller reads the files (`brainUnplannedRestart.ts`, `cli.ts`).
  */
 
 /** A memory breach this long before the previous brain's last sign of life still explains its end. */
 export const RESTART_MEMORY_CONTEXT_WINDOW_MS = 15 * 60_000;
-/** A remote update request older than this, or from before the previous brain started, names nobody. */
-export const RESTART_UPDATE_REQUEST_MAX_AGE_MS = 2 * 60 * 60_000;
+/**
+ * A remote update request more than this before the previous brain stopped,
+ * or from before that brain started, names nobody.
+ */
+export const RESTART_UPDATE_REQUEST_MAX_AGE_MS = 30 * 60_000;
 /** Clock slack between the files of one brain (heartbeats every 15 s, samples every 5 min). */
 const SAME_RUN_SLACK_MS = 60_000;
 
@@ -41,7 +37,7 @@ export type PreviousBrainRun = {
   stoppedAtMs: number | null;
   stoppedBy: string | null;
   /** The intent the stopping brain took (`noteBrainStopIntent`), when it stopped on purpose. */
-  stopIntent: "accepted_update" | "stop_for_good" | null;
+  stopIntent: BrainStopIntent | null;
 };
 
 export type BrainRestartCauseFacts = {
@@ -62,8 +58,17 @@ export type BrainRestartCauseFacts = {
     memory: Pick<RestartMemoryFacts, "totalMb" | "swapUsedMb" | "swapTotalMb"> | null;
     simulatorMb: number | null;
   } | null;
-  /** The last `machine.updateAndRestart` the previous brain received. */
+  /** The last `machine.updateAndRestart` the previous brain accepted. */
   updateRequest: { atMs: number; requestedBy: UpdateRequestedBy | null } | null;
+};
+
+/**
+ * What a brain start reads before anything rewrites it (`cli.ts`), for
+ * `recordBrainRunStart`. The heartbeat counts only when the previous brain
+ * wrote it.
+ */
+export type BrainStartFacts = Pick<BrainRestartCauseFacts, "currentVersion" | "wedge" | "memoryPressure" | "updateRequest"> & {
+  lastHeartbeat: { pid: number; ts: number } | null;
 };
 
 function finite(value: number | null | undefined): value is number {
@@ -108,10 +113,13 @@ export function deriveBrainRestartCause(facts: BrainRestartCauseFacts): RestartC
   const buildChanged = Boolean(previous.build && facts.currentBuild && previous.build !== facts.currentBuild);
   const update = (endedAtMs: number | null): RestartCause => {
     const request = facts.updateRequest;
+    // Accepted by the previous brain, in the minutes before it stopped.
+    const stopMs = endedAtMs ?? lastAliveMs;
     const requestFresh = request
       && finite(request.atMs)
       && request.atMs >= previous.startedAtMs - SAME_RUN_SLACK_MS
-      && facts.nowMs - request.atMs <= RESTART_UPDATE_REQUEST_MAX_AGE_MS;
+      && request.atMs <= stopMs + SAME_RUN_SLACK_MS
+      && stopMs - request.atMs <= RESTART_UPDATE_REQUEST_MAX_AGE_MS;
     return {
       kind: "update",
       endedAtMs,
@@ -149,60 +157,18 @@ export function deriveBrainRestartCause(facts: BrainRestartCauseFacts): RestartC
 /** The cause as a log line's fields: kinds, times and counts only. */
 export function restartCauseLogFields(cause: RestartCause | null): Record<string, unknown> {
   if (!cause) return { kind: null };
+  const update = cause.kind === "update" ? cause : null;
+  const memory = restartCauseMemory(cause);
   return {
     kind: cause.kind,
     endedAt: finite(cause.endedAtMs) ? new Date(cause.endedAtMs).toISOString() : null,
-    version: cause.version ?? null,
-    requestedByKind: cause.requestedBy?.clientKind ?? null,
-    requestedByName: cause.requestedBy?.machineName ?? null,
-    freezeCause: cause.freezeCause ?? null,
-    planned: cause.planned ?? null,
-    memoryLow: Boolean(cause.memory),
-    swapUsedMb: cause.memory?.swapUsedMb ?? null,
-    simulatorMb: cause.memory?.simulatorMb ?? null,
+    version: update?.version ?? null,
+    requestedByKind: update?.requestedBy?.clientKind ?? null,
+    requestedByName: update?.requestedBy?.machineName ?? null,
+    freezeCause: cause.kind === "service_restarted_by_watchdog" ? cause.freezeCause : null,
+    planned: cause.kind === "computer_restarted" ? cause.planned : null,
+    memoryLow: memory !== null,
+    swapUsedMb: memory?.swapUsedMb ?? null,
+    simulatorMb: memory?.simulatorMb ?? null,
   };
-}
-
-const UPDATE_REQUEST_FILE = "update-request.json";
-
-/**
- * The brain received `machine.updateAndRestart`: keep who asked, so the next
- * start can name them. One small file in the machine's runtime folder,
- * replaced by each request. Never throws.
- */
-export function writeBrainUpdateRequest(
-  runtimeDir: string,
-  request: { targetVersion: string | null; requestedBy: UpdateRequestedBy | null },
-  nowMs = Date.now(),
-): void {
-  const filePath = path.join(runtimeDir, UPDATE_REQUEST_FILE);
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  try {
-    fs.mkdirSync(runtimeDir, { recursive: true });
-    fs.writeFileSync(tmpPath, JSON.stringify({
-      version: 1,
-      at: new Date(nowMs).toISOString(),
-      targetVersion: request.targetVersion,
-      requestedBy: request.requestedBy,
-    }), { mode: 0o600 });
-    fs.renameSync(tmpPath, filePath);
-  } catch {
-    fs.rmSync(tmpPath, { force: true });
-    // Without it the next start says "an update" and names nobody.
-  }
-}
-
-/** The last update request on this machine, or null. Never throws. */
-export function readBrainUpdateRequest(runtimeDir: string): BrainRestartCauseFacts["updateRequest"] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(runtimeDir, UPDATE_REQUEST_FILE), "utf8")) as {
-      at?: unknown;
-      requestedBy?: unknown;
-    };
-    const atMs = typeof parsed?.at === "string" ? Date.parse(parsed.at) : Number.NaN;
-    if (!Number.isFinite(atMs)) return null;
-    return { atMs, requestedBy: sanitizeUpdateRequestedBy(parsed.requestedBy) };
-  } catch {
-    return null;
-  }
 }

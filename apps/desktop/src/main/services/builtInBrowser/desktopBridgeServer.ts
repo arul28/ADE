@@ -57,7 +57,7 @@ import {
 } from "../../../shared/demoVideo/demoContract";
 import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
-import { sanitizeUpdateRequestedBy } from "../../../shared/chatAutoResume";
+import { sanitizeUpdateRequestedBy } from "../../../shared/types/remoteRuntime";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 import type { BuiltInBrowserService } from "./builtInBrowserService";

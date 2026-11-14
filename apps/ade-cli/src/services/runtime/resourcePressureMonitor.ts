@@ -9,6 +9,7 @@ import {
 } from "../../../../desktop/src/main/services/machineStats/hostMemorySignals";
 import {
   readProcessGroups,
+  simulatorGroupMb,
   type ProcessGroupSnapshot,
   type ProcessGroupName,
   type ProcessGroupUsage,
@@ -20,7 +21,8 @@ import {
 } from "../../../../desktop/src/main/services/state/dbActivity";
 import { writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
-import type { SimulatorReclaimEpisodeNote, SimulatorReclaimSample } from "./simulatorMemoryReclaim";
+import type { BrainStartFacts } from "../../../../desktop/src/main/services/runtime/brainRestartCause";
+import type { SimulatorReclaimEpisodeNote, SimulatorReclaimSample } from "./simulatorMemoryReclaimer";
 
 /*
  * Resource-pressure episodes: the machine running short of memory or swap, a
@@ -97,6 +99,8 @@ export type ResourcePressureSample = {
 export type ResourcePressureState = {
   open: { id: string; openedAtMs: number } | null;
   lastBreachAtMs: number | null;
+  /** What the last breaching sample broke (an episode's `kinds` are its first sample's). */
+  lastBreachKinds?: ResourcePressureKind[] | null;
   hotCpuTicks: number;
   lastWalMaxMb: number | null;
 };
@@ -115,13 +119,13 @@ export type ResourcePressureEpisode = {
   devBrainRunning: boolean | null;
   /** ADE's tables with the most writes in the interval before, at most three. */
   topTables: Array<{ table: string; writes: number }>;
-  /** What the low-memory pass over the iOS simulators did in this episode (`simulatorMemoryReclaim.ts`). */
+  /** What the low-memory pass over the iOS simulators did in this episode (`simulatorMemoryReclaimer.ts`). */
   simulatorReclaim?: SimulatorReclaimEpisodeNote;
 };
 
 export type ResourcePressureRecord = {
   version: 1;
-  state: Pick<ResourcePressureState, "open" | "lastBreachAtMs">;
+  state: Pick<ResourcePressureState, "open" | "lastBreachAtMs" | "lastBreachKinds">;
   lastSample: ResourcePressureSample | null;
   episodes: ResourcePressureEpisode[];
 };
@@ -199,6 +203,7 @@ export function evaluateResourcePressure(
   const next: ResourcePressureState = { ...state, hotCpuTicks, lastWalMaxMb: sample.walMb[0] ?? 0 };
   if (breach) {
     next.lastBreachAtMs = sample.atMs;
+    next.lastBreachKinds = [...breach.kinds];
     if (state.open) return { state: next, breach, opened: false, closed: false };
     next.open = { id: newId(), openedAtMs: sample.atMs };
     return { state: next, breach, opened: true, closed: false };
@@ -233,6 +238,14 @@ export function readResourcePressureRecord(runtimeDir: string): ResourcePressure
           ? parsed.state.open
           : null,
         lastBreachAtMs: Number.isFinite(parsed.state?.lastBreachAtMs) ? parsed.state!.lastBreachAtMs! : null,
+        // Absent in a record an older brain wrote.
+        ...(Array.isArray(parsed.state?.lastBreachKinds)
+          ? {
+            lastBreachKinds: (parsed.state.lastBreachKinds as unknown[]).filter(
+              (kind): kind is ResourcePressureKind => KIND_PRIORITY.includes(kind as ResourcePressureKind),
+            ),
+          }
+          : {}),
       },
       lastSample: parsed.lastSample && typeof parsed.lastSample === "object" ? parsed.lastSample : null,
       episodes: Array.isArray(parsed.episodes) ? parsed.episodes.slice(-RESOURCE_PRESSURE_EPISODES_KEPT) : [],
@@ -245,25 +258,25 @@ export function readResourcePressureRecord(runtimeDir: string): ResourcePressure
 /**
  * The last memory or swap breach in a record, with the facts a restart
  * message names: RAM, swap, and what the iOS simulators held when the episode
- * opened. Null when the last episode was not about memory. Pure.
+ * opened. Null when the last breaching sample (or, in an older record, the
+ * last episode) was not about memory or swap. Pure.
  */
-export function memoryBreachForRestartCause(record: ResourcePressureRecord | null): {
-  lastBreachAtMs: number;
-  memory: { totalMb: number | null; swapUsedMb: number | null; swapTotalMb: number | null } | null;
-  simulatorMb: number | null;
-} | null {
+export function memoryBreachForRestartCause(record: ResourcePressureRecord | null): BrainStartFacts["memoryPressure"] {
   if (!record || record.state.lastBreachAtMs === null) return null;
   const episode = record.episodes[record.episodes.length - 1];
-  if (!episode || !episode.kinds.some((kind) => kind === "memory" || kind === "swap")) return null;
+  if (!episode) return null;
+  // The last breaching sample decides: an episode that opened for its WAL or
+  // CPU can end short of memory. A record without it reads the episode's kinds.
+  const kinds = record.state.lastBreachKinds ?? episode.kinds;
+  if (!kinds.some((kind) => kind === "memory" || kind === "swap")) return null;
   // The sample nearest the end, when it still carries memory; else the episode's own.
   const memory = record.lastSample?.memory ?? episode.memory;
-  const simulator = (episode.processes ?? []).find((group) => group.group === "ios_simulator");
   return {
     lastBreachAtMs: record.state.lastBreachAtMs,
     memory: memory
       ? { totalMb: memory.totalMb ?? null, swapUsedMb: memory.swapUsedMb ?? null, swapTotalMb: memory.swapTotalMb ?? null }
       : null,
-    simulatorMb: simulator ? simulator.mb : null,
+    simulatorMb: simulatorGroupMb(episode.processes ? { groups: episode.processes } : null),
   };
 }
 
@@ -345,6 +358,7 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
     ...INITIAL_RESOURCE_PRESSURE_STATE,
     open: stored?.state.open ?? null,
     lastBreachAtMs: stored?.state.lastBreachAtMs ?? null,
+    lastBreachKinds: stored?.state.lastBreachKinds ?? null,
   };
   let episodes: ResourcePressureEpisode[] = stored?.episodes ?? [];
   let lastCpu = cpuUsage();
@@ -354,7 +368,7 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
   const persist = (sample: ResourcePressureSample): void => {
     const record: ResourcePressureRecord = {
       version: 1,
-      state: { open: state.open, lastBreachAtMs: state.lastBreachAtMs },
+      state: { open: state.open, lastBreachAtMs: state.lastBreachAtMs, lastBreachKinds: state.lastBreachKinds ?? null },
       lastSample: sample,
       episodes: episodes.slice(-RESOURCE_PRESSURE_EPISODES_KEPT),
     };
@@ -483,14 +497,15 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
       }
       if (state.open && deps.onOpenEpisodeSample) {
         const episodeId = state.open.id;
-        const simulatorGroup = processes?.groups.find((group) => group.group === "ios_simulator");
+        const open = episodes[episodes.length - 1];
         const reclaim = await deps.onOpenEpisodeSample({
           nowMs: atMs,
           episodeId,
           breach: result.breach,
           memory: sample.memory ? { totalMb: sample.memory.totalMb, swapUsedMb: sample.memory.swapUsedMb } : null,
           // Listed this sample already: no second listing.
-          ...(processes ? { simulatorMb: simulatorGroup?.mb ?? 0 } : {}),
+          ...(processes ? { simulatorMb: simulatorGroupMb(processes) } : {}),
+          note: open?.id === episodeId ? open.simulatorReclaim ?? null : null,
         }).catch(() => null);
         const last = episodes[episodes.length - 1];
         if (reclaim && last?.id === episodeId) episodes = [...episodes.slice(0, -1), { ...last, simulatorReclaim: reclaim }];

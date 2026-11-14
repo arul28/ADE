@@ -57,3 +57,9 @@ export function compareTextInsensitive(left: string, right: string): number {
 export function compareTextNatural(left: string, right: string): number {
   return NATURAL_COLLATOR.compare(left, right);
 }
+
+/** Megabytes as gigabytes for a sentence: "20", "1.5". Whole numbers from 10 GB up. */
+export function formatGb(mb: number): string {
+  const value = mb / 1024;
+  return value >= 10 ? String(Math.round(value)) : value.toFixed(1).replace(/\.0$/u, "");
+}

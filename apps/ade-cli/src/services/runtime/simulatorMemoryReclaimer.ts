@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import os from "node:os";
 import { promisify } from "node:util";
 
 import { appleDeviceDataRoot, parseSimctlDevices } from "../../../../desktop/src/main/services/ios/appleSimulatorCatalog";
 import {
   appleDeviceFiles,
   describeDevicePowerOff,
+  type AppleDevicePowerOffRecord,
 } from "../../../../desktop/src/main/services/ios/laneDeviceMaintenance";
 import {
   afterSimulatorReclaimPass,
@@ -17,13 +17,18 @@ import {
   simulatorMemoryReclaimSupported,
   simulatorMemoryWarningText,
   simulatorReclaimStepPossible,
+  type BootedSimulator,
   type SimulatorReclaimFacts,
+  type SimulatorReclaimLaneDevice,
   type SimulatorReclaimState,
+  type SimulatorReclaimStep,
+  type SimulatorReclaimTick,
   type SimulatorReclaimVerdict,
 } from "../../../../desktop/src/main/services/ios/simulatorMemoryReclaim";
 import { bareSimulatorPowerOff } from "../../../../desktop/src/main/services/ios/simulatorPower";
 import { TRACKED_AGENT_CLI_TOOL_TYPES } from "../../../../desktop/src/shared/cliChildSession";
 import type { TrackedAgentCliToolType } from "../../../../desktop/src/shared/types/sessions";
+import { thisMachineDisplayName } from "../sync/deviceRegistryService";
 
 /*
  * The machine brain's low-memory pass over the iOS simulators of this
@@ -31,8 +36,10 @@ import type { TrackedAgentCliToolType } from "../../../../desktop/src/shared/typ
  *
  * It runs on the resource-pressure monitor's samples only, while an episode
  * about memory or swap is open: no timer or poll of its own. A sample that
- * could take a step costs one process listing (the simulators' memory); a
- * step costs one `simctl list` and, for a shutdown, one `ps`.
+ * could take a step costs one process listing (the simulators' memory); while
+ * the simulators hold less than the mark, that listing runs at most every
+ * 30 minutes. A step costs one `simctl list` and, for a shutdown pass, one
+ * `ps` (again before each shutdown after the first).
  *
  * Each open project's simulator service names its lane devices and what only
  * it knows (a stream someone watches, a recording, a test). The lane's agents
@@ -55,19 +62,15 @@ const defaultRun: RunCommand = async (file, args, options = {}) => {
   return { stdout: String(result.stdout ?? ""), stderr: String(result.stderr ?? "") };
 };
 
+/** A shutdown never acts on a process list or lane facts older than this. */
+const RECLAIM_FACTS_MAX_AGE_MS = 10_000;
+
 /** One open project, as the pass sees it. Every part may be missing. */
 export type SimulatorReclaimScope = {
   simulator: {
-    memoryReclaimLaneDevices?: () => Array<{
-      udid: string;
-      name: string;
-      laneId: string;
-      extra: boolean;
-      adeOwned: boolean;
-      busyHere: boolean;
-      bootedByChat: string | null;
-    }>;
-    powerOffLaneDeviceForMemory?: (udid: string, facts: SimulatorReclaimFacts) => Promise<boolean>;
+    memoryReclaimLaneDevices?: () => SimulatorReclaimLaneDevice[];
+    /** Its power-off record, or null when the device is not one of this project's. */
+    powerOffLaneDeviceForMemory?: (udid: string, facts: SimulatorReclaimFacts) => Promise<AppleDevicePowerOffRecord | null>;
   } | null;
   chat: { recordSystemNotice?: (args: { sessionId: string; message: string }) => void } | null;
   pty: { showSessionNotice?: (sessionId: string, text: string) => boolean } | null;
@@ -94,19 +97,32 @@ export type SimulatorReclaimEpisodeNote = {
   powerOffDisabled?: true;
 };
 
-export type SimulatorReclaimSample = {
-  nowMs: number;
-  episodeId: string | null;
-  breach: { kinds: readonly string[]; severity: "warn" | "critical" } | null;
+export type SimulatorReclaimSample = SimulatorReclaimTick & {
   memory: { totalMb: number | null; swapUsedMb: number | null } | null;
   /** The simulators' memory, when the caller just listed the processes. */
   simulatorMb?: number | null;
+  /** What the open episode keeps of the pass so far; the episode owns it. */
+  note: SimulatorReclaimEpisodeNote | null;
 };
 
 export type SimulatorMemoryReclaimer = {
-  /** One pressure sample. Never throws. Null when it took no step. */
+  /**
+   * One pressure sample. Never throws. Returns the episode's next note, or
+   * null when the step changed nothing.
+   */
   onSample: (sample: SimulatorReclaimSample) => Promise<SimulatorReclaimEpisodeNote | null>;
 };
+
+/** One lane that holds the device: whom to tell. */
+type LaneTarget = { scope: SimulatorReclaimScope; laneId: string; bootedByChat: string | null };
+
+/**
+ * A device as every open project sees it: busy if any project says so, ADE's
+ * own only if every project says so, and every lane that holds it.
+ */
+type LaneDeviceEntry = { name: string; adeOwned: boolean; busyHere: boolean; targets: LaneTarget[] };
+
+type InUseReason = Extract<SimulatorReclaimVerdict, { idle: false }>["reason"];
 
 export function createSimulatorMemoryReclaimer(deps: {
   logger: {
@@ -117,29 +133,26 @@ export function createSimulatorMemoryReclaimer(deps: {
   /** The simulators' memory now (the `ios_simulator` process group), or null. */
   readSimulatorMb: () => Promise<number | null>;
   listScopes: () => SimulatorReclaimScope[];
-  machineName?: () => string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   deviceDataRoot?: string;
 }): SimulatorMemoryReclaimer {
   const platform = deps.platform ?? process.platform;
   const env = deps.env ?? process.env;
-  const machineName = deps.machineName ?? (() => os.hostname().replace(/\.local$/iu, "").trim());
   const files = () => appleDeviceFiles(deps.deviceDataRoot ?? appleDeviceDataRoot());
   const run = deps.run ?? defaultRun;
   const barePowerOff = bareSimulatorPowerOff(run);
   let state: SimulatorReclaimState = INITIAL_SIMULATOR_RECLAIM_STATE;
-  let note: SimulatorReclaimEpisodeNote | null = null;
 
   /** Show one line in each open agent terminal of the lane. Display only; the agent's input is untouched. */
-  const tellLaneTerminals = (scope: SimulatorReclaimScope, laneId: string, text: string): number => {
-    const sessions = scope.sessions;
-    const show = scope.pty?.showSessionNotice;
+  const tellLaneTerminals = (target: LaneTarget, text: string): number => {
+    const sessions = target.scope.sessions;
+    const show = target.scope.pty?.showSessionNotice;
     if (!sessions || !show) return 0;
     let shown = 0;
     try {
       const rows = sessions.list({
-        laneId,
+        laneId: target.laneId,
         status: "running",
         toolTypes: [...TRACKED_AGENT_CLI_TOOL_TYPES],
         includeArchived: false,
@@ -152,17 +165,30 @@ export function createSimulatorMemoryReclaimer(deps: {
     return shown;
   };
 
-  const tellChat = (scope: SimulatorReclaimScope, chatSessionId: string | null, text: string): number => {
-    if (!chatSessionId || !scope.chat?.recordSystemNotice) return 0;
+  const tellChat = (target: LaneTarget, text: string): number => {
+    const chat = target.scope.chat;
+    if (!target.bootedByChat || !chat?.recordSystemNotice) return 0;
     try {
-      scope.chat.recordSystemNotice({ sessionId: chatSessionId, message: text });
+      chat.recordSystemNotice({ sessionId: target.bootedByChat, message: text });
       return 1;
     } catch {
       return 0;
     }
   };
 
-  const listBooted = async (): Promise<Array<{ udid: string; name: string; state: string; lastBootedAtMs: number | null }> | null> => {
+  /** Every lane of the device hears it: terminals and the chat that booted it. */
+  const tellLanes = (entry: LaneDeviceEntry, text: string): { terminals: number; chats: number } => {
+    let terminals = 0;
+    let chats = 0;
+    for (const target of entry.targets) {
+      terminals += tellLaneTerminals(target, text);
+      chats += tellChat(target, text);
+    }
+    return { terminals, chats };
+  };
+
+  /** The booted simulators, or null when `simctl list` could not be read. */
+  const listBooted = async (): Promise<BootedSimulator[] | null> => {
     try {
       const { stdout } = await run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 });
       return [...parseSimctlDevices(stdout).values()]
@@ -173,49 +199,61 @@ export function createSimulatorMemoryReclaimer(deps: {
     }
   };
 
-  type LaneDeviceEntry = {
-    scope: SimulatorReclaimScope;
-    device: ReturnType<NonNullable<NonNullable<SimulatorReclaimScope["simulator"]>["memoryReclaimLaneDevices"]>>[number];
-  };
   const laneDevicesByUdid = (): Map<string, LaneDeviceEntry> => {
     const byUdid = new Map<string, LaneDeviceEntry>();
     for (const scope of deps.listScopes()) {
-      let devices: LaneDeviceEntry["device"][] = [];
+      let devices: SimulatorReclaimLaneDevice[] = [];
       try {
         devices = scope.simulator?.memoryReclaimLaneDevices?.() ?? [];
       } catch {
         continue;
       }
-      for (const device of devices) if (!byUdid.has(device.udid)) byUdid.set(device.udid, { scope, device });
+      for (const device of devices) {
+        const target: LaneTarget = { scope, laneId: device.laneId, bootedByChat: device.bootedByChat };
+        const earlier = byUdid.get(device.udid);
+        byUdid.set(device.udid, earlier
+          ? {
+            name: earlier.name || device.name,
+            adeOwned: earlier.adeOwned && device.adeOwned,
+            busyHere: earlier.busyHere || device.busyHere,
+            targets: [...earlier.targets, target],
+          }
+          : { name: device.name, adeOwned: device.adeOwned, busyHere: device.busyHere, targets: [target] });
+      }
     }
     return byUdid;
   };
 
-  const warn = async (nowMs: number, booted: NonNullable<Awaited<ReturnType<typeof listBooted>>>): Promise<void> => {
+  const warn = async (
+    sample: SimulatorReclaimSample,
+    booted: readonly BootedSimulator[],
+  ): Promise<SimulatorReclaimEpisodeNote> => {
     const lanes = laneDevicesByUdid();
+    const machineName = (await thisMachineDisplayName()) ?? "";
     let devices = 0;
     let terminals = 0;
     let chats = 0;
-    const at = new Date(nowMs).toISOString();
+    const at = new Date(sample.nowMs).toISOString();
     for (const listed of booted) {
       const entry = lanes.get(listed.udid);
       // Only a lane has someone to tell; a device outside every lane is
       // judged by the strict rule at the shutdown step.
       if (!entry) continue;
-      const text = simulatorMemoryWarningText({ machineName: machineName(), deviceName: entry.device.name || listed.name });
+      const text = simulatorMemoryWarningText({ machineName, deviceName: entry.name || listed.name });
       if (files().writeMemoryWarning(listed.udid, { at, text })) devices += 1;
-      terminals += tellLaneTerminals(entry.scope, entry.device.laneId, text);
-      chats += tellChat(entry.scope, entry.device.bootedByChat, text);
+      const told = tellLanes(entry, text);
+      terminals += told.terminals;
+      chats += told.chats;
     }
-    note = { ...(note ?? emptyNote()), warnedAt: at, warnedDevices: devices };
     // Counts only: an info line stays on this machine.
     deps.logger.info("ios_simulator.memory_warning_sent", {
-      episodeId: state.episodeId,
+      episodeId: sample.episodeId,
       bootedDevices: booted.length,
       warnedDevices: devices,
       terminals,
       chats,
     });
+    return { ...(sample.note ?? emptyNote()), warnedAt: at, warnedDevices: devices };
   };
 
   /**
@@ -232,75 +270,86 @@ export function createSimulatorMemoryReclaimer(deps: {
     }
   };
 
-  /** One shutdown pass. Returns how many devices it shut down. */
-  const reclaim = async (
-    nowMs: number,
-    booted: NonNullable<Awaited<ReturnType<typeof listBooted>>>,
-    facts: SimulatorReclaimFacts,
-  ): Promise<{ shutDown: number; powerOffDisabled?: true }> => {
-    const at = new Date(nowMs).toISOString();
-    if (!simulatorMemoryPowerOffEnabled(env)) {
-      note = { ...(note ?? emptyNote()), reclaimedAt: at, inUse: booted.length, powerOffDisabled: true };
-      deps.logger.info("ios_simulator.reclaimed_for_memory", {
-        episodeId: state.episodeId,
-        bootedDevices: booted.length,
-        shutDown: 0,
-        powerOffDisabled: true,
-      });
-      return { shutDown: 0, powerOffDisabled: true };
-    }
+  /** What a shutdown decision reads: the process list, the shown device and the lanes. */
+  const readReclaimFacts = async () => {
     const psOutput = await run("ps", ["-axo", "command="], { timeoutMs: 10_000 })
       .then((result) => result.stdout)
       .catch(() => null);
     const shownUdid = psOutput !== null && simulatorAppRunning(psOutput) ? await simulatorAppDeviceUdid() : null;
-    const lanes = laneDevicesByUdid();
+    return { readAtMs: Date.now(), psOutput, shownUdid, lanes: laneDevicesByUdid() };
+  };
+
+  /** Shut one device down: through a lane's own service when one holds it, else directly. Its record, or null when it was already off. */
+  const powerOff = async (
+    listed: BootedSimulator,
+    entry: LaneDeviceEntry | undefined,
+    facts: SimulatorReclaimFacts,
+    nowMs: number,
+  ): Promise<AppleDevicePowerOffRecord | null> => {
+    for (const target of entry?.targets ?? []) {
+      const record = await target.scope.simulator?.powerOffLaneDeviceForMemory?.(listed.udid, facts);
+      if (record) return record;
+    }
+    // False: it was already off (someone else shut it down first).
+    if (!(await barePowerOff(listed.udid))) return null;
+    return files().recordMemoryPowerOff(listed.udid, { nowMs, name: listed.name, facts });
+  };
+
+  /** One shutdown pass. */
+  const reclaim = async (
+    sample: SimulatorReclaimSample,
+    booted: readonly BootedSimulator[],
+    facts: SimulatorReclaimFacts,
+  ): Promise<{ note: SimulatorReclaimEpisodeNote; shutDown: number; powerOffDisabled?: true }> => {
+    const nowMs = sample.nowMs;
+    const at = new Date(nowMs).toISOString();
+    const earlier = sample.note ?? emptyNote();
+    if (!simulatorMemoryPowerOffEnabled(env)) {
+      deps.logger.info("ios_simulator.reclaimed_for_memory", {
+        episodeId: sample.episodeId,
+        bootedDevices: booted.length,
+        shutDown: 0,
+        powerOffDisabled: true,
+      });
+      return {
+        note: { ...earlier, reclaimedAt: at, inUse: booted.length, powerOffDisabled: true },
+        shutDown: 0,
+        powerOffDisabled: true,
+      };
+    }
+    let current = await readReclaimFacts();
+    let attemptsSinceRead = 0;
     let shutDown = 0;
     let failed = 0;
     let alreadyOff = 0;
-    const inUse: Partial<Record<Exclude<SimulatorReclaimVerdict, { idle: true }>["reason"], number>> = {};
+    const inUse: Partial<Record<InUseReason, number>> = {};
     for (const listed of booted) {
-      const entry = lanes.get(listed.udid);
+      // Each shutdown after the first, and any decision on old facts, reads them again.
+      if (attemptsSinceRead > 0 || Date.now() - current.readAtMs > RECLAIM_FACTS_MAX_AGE_MS) {
+        current = await readReclaimFacts();
+        attemptsSinceRead = 0;
+      }
+      const entry = current.lanes.get(listed.udid);
       const verdict = classifySimulatorForMemoryReclaim({
-        udid: listed.udid,
-        name: listed.name,
-        state: listed.state,
-        lastBootedAtMs: listed.lastBootedAtMs,
-        adeOwned: entry?.device.adeOwned ?? false,
-        busyHere: entry?.device.busyHere ?? false,
+        ...listed,
+        adeOwned: entry?.adeOwned ?? false,
+        busyHere: entry?.busyHere ?? false,
         lastAdeActivityMs: files().lastActivityMs(listed.udid),
         lastInstallChangeMs: files().lastInstallChangeMs(listed.udid),
-      }, { nowMs, psOutput, simulatorAppDeviceUdid: shownUdid });
+      }, { nowMs, psOutput: current.psOutput, simulatorAppDeviceUdid: current.shownUdid });
       if (!verdict.idle) {
         inUse[verdict.reason] = (inUse[verdict.reason] ?? 0) + 1;
         continue;
       }
+      attemptsSinceRead += 1;
       try {
-        const viaLane = entry?.scope.simulator?.powerOffLaneDeviceForMemory
-          ? await entry.scope.simulator.powerOffLaneDeviceForMemory(listed.udid, facts)
-          : false;
-        if (!viaLane) {
-          // False: it was already off (someone else shut it down first).
-          if (!(await barePowerOff(listed.udid))) {
-            alreadyOff += 1;
-            continue;
-          }
-          files().writePowerOff(listed.udid, {
-            at,
-            reason: "memory",
-            idleMinutes: 0,
-            name: listed.name,
-            facts,
-          });
+        const record = await powerOff(listed, entry, facts, nowMs);
+        if (!record) {
+          alreadyOff += 1;
+          continue;
         }
-        // The shutdown is the news now; the warning before it is not.
-        files().clearMemoryWarning(listed.udid);
         shutDown += 1;
-        if (entry) {
-          const record = { at, reason: "memory" as const, idleMinutes: 0, name: listed.name, facts };
-          const text = describeDevicePowerOff(record, entry.device.name || listed.name, "boot it again when needed.", nowMs);
-          tellLaneTerminals(entry.scope, entry.device.laneId, text);
-          tellChat(entry.scope, entry.device.bootedByChat, text);
-        }
+        if (entry) tellLanes(entry, describeDevicePowerOff(record, entry.name || listed.name, "boot it again when needed.", nowMs));
       } catch (error) {
         failed += 1;
         deps.logger.warn("ios_simulator.reclaim_for_memory_failed", {
@@ -310,9 +359,8 @@ export function createSimulatorMemoryReclaimer(deps: {
       }
     }
     const inUseCount = Object.values(inUse).reduce((sum, count) => sum + (count ?? 0), 0);
-    note = { ...(note ?? emptyNote()), reclaimedAt: at, shutDown: (note?.shutDown ?? 0) + shutDown, inUse: inUseCount, failed };
     deps.logger.info("ios_simulator.reclaimed_for_memory", {
-      episodeId: state.episodeId,
+      episodeId: sample.episodeId,
       bootedDevices: booted.length,
       shutDown,
       failed,
@@ -322,31 +370,54 @@ export function createSimulatorMemoryReclaimer(deps: {
       swapUsedMb: facts.swapUsedMb,
       simulatorMb: facts.simulatorMb,
     });
-    return { shutDown };
+    return {
+      note: { ...earlier, reclaimedAt: at, shutDown: earlier.shutDown + shutDown, inUse: inUseCount, failed },
+      shutDown,
+    };
   };
 
   return {
     onSample: async (sample) => {
       if (!simulatorMemoryReclaimSupported(platform)) return null;
+      let step: SimulatorReclaimStep = "none";
       try {
-        if (state.episodeId !== sample.episodeId) note = null;
         if (!simulatorReclaimStepPossible(state, sample)) return null;
         const simulatorMb = sample.simulatorMb !== undefined ? sample.simulatorMb : await deps.readSimulatorMb().catch(() => null);
         const decision = nextSimulatorReclaimStep(state, { ...sample, simulatorMb, totalMb: sample.memory?.totalMb ?? null });
-        state = decision.state;
-        if (decision.step === "none") return null;
-        const booted = await listBooted();
-        if (!booted || booted.length === 0) return null;
-        if (decision.step === "warn") {
-          await warn(sample.nowMs, booted);
-        } else {
-          const pass = await reclaim(sample.nowMs, booted, { swapUsedMb: sample.memory?.swapUsedMb ?? null, simulatorMb });
-          // The cooldown starts only after a pass that shut something down.
-          state = afterSimulatorReclaimPass(state, { nowMs: sample.nowMs, ...pass });
+        step = decision.step;
+        if (decision.step === "none") {
+          state = decision.state;
+          return null;
         }
-        return note ? { ...note } : null;
+        const booted = await listBooted();
+        if (booted === null) {
+          // The state stays as it was, so the next sample tries the step again.
+          deps.logger.warn("ios_simulator.memory_reclaim_failed", {
+            step,
+            error: "The simulator list could not be read.",
+          });
+          return null;
+        }
+        if (decision.step === "warn") {
+          // Nobody to warn: the state stays, so the warning still comes first.
+          if (booted.length === 0) return null;
+          const note = await warn(sample, booted);
+          state = decision.state;
+          return note;
+        }
+        state = decision.state;
+        if (booted.length === 0) return null;
+        const pass = await reclaim(sample, booted, { swapUsedMb: sample.memory?.swapUsedMb ?? null, simulatorMb });
+        // The cooldown starts only after a pass that shut something down.
+        state = afterSimulatorReclaimPass(state, {
+          nowMs: sample.nowMs,
+          shutDown: pass.shutDown,
+          powerOffDisabled: pass.powerOffDisabled,
+        });
+        return pass.note;
       } catch (error) {
         deps.logger.warn("ios_simulator.memory_reclaim_failed", {
+          step,
           error: error instanceof Error ? error.message : String(error),
         });
         return null;

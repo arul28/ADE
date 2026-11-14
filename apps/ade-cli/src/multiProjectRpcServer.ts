@@ -9,7 +9,6 @@ import { markExpected } from "../../desktop/src/shared/expectedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { conditionalActionResult } from "./conditionalActionResult";
 import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../desktop/src/shared/conditionalActionResult";
-import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -119,7 +118,13 @@ import { requestMachineRemovalFromUser } from "./services/account/machineRemoval
 import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
-import { sanitizeUpdateRequestedBy, type UpdateRequestedBy } from "../../desktop/src/shared/chatAutoResume";
+import {
+  isRemoteRuntimeEventCategory,
+  sanitizeMachineName,
+  sanitizeUpdateRequestedBy,
+  type UpdateRequestClientKind,
+  type UpdateRequestedBy,
+} from "../../desktop/src/shared/types/remoteRuntime";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -354,6 +359,11 @@ export type MultiProjectRpcHandlerOptions = {
    * (`AGENT_REMOTE_CLIENT_NAME`); their calls are attributed to this device.
    */
   peerDeviceId?: string | null;
+  /**
+   * The device name the host stored in that peer's paired record. It names
+   * who asked for a remote update in place of the client's own claim.
+   */
+  peerDeviceName?: string | null;
   /**
    * Backs `machines.call` / `machines.list`: this brain's agents reaching the
    * account's other machines. Absent on embedded and test runtimes, which then
@@ -3328,11 +3338,12 @@ export function createMultiProjectRpcRequestHandler(
         && params.targetVersion.trim()
         ? params.targetVersion.trim()
         : null;
-      // Who asked, for the logs and the next start's continue message. A
-      // client's own claim, sanitized; an older client sends none, and the
-      // kind of connection stands in for it. It never changes the routing.
-      const requestedBy = sanitizeUpdateRequestedBy(params.requestedBy)
-        ?? updateRequesterFromClientName(callerClientName());
+      // Who asked, for the logs and the next start's continue message. It
+      // never changes the routing.
+      const requestedBy = updateRequester(params.requestedBy, {
+        authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
+        clientName: callerClientName(),
+      });
       if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
       const run = (async () => {
         const { runMachineUpdateAndRestart } = await import(
@@ -4768,12 +4779,28 @@ export function createPersonalChatScope(
 }
 
 /**
- * The kind of client an older caller of `machine.updateAndRestart` is, from
- * the name its connection gave: it sends no `requestedBy` of its own.
+ * The kind of client a caller of `machine.updateAndRestart` is, from the name
+ * its connection gave, for a caller that names no known kind of its own.
  */
-function updateRequesterFromClientName(name: string | null): UpdateRequestedBy {
-  if (isDesktopClientName(name)) return { clientKind: "desktop" };
-  if (isRemoteBrainCallerClientName(name)) return { clientKind: "agent" };
-  if (name === "ade-cli") return { clientKind: "cli" };
-  return { clientKind: "unknown" };
+function updateRequestClientKindFromClientName(name: string | null): UpdateRequestClientKind {
+  if (isDesktopClientName(name)) return "desktop";
+  if (isRemoteBrainCallerClientName(name)) return "agent";
+  if (name === "ade-cli") return "cli";
+  return "unknown";
+}
+
+/**
+ * Who asked for a remote update. The machine name comes from the paired
+ * device record the connection authenticated with; the client's own claim
+ * counts only when there is none. The client kind comes from the claim when
+ * it is a known kind, else from the connection's client name.
+ */
+function updateRequester(
+  claimed: unknown,
+  connection: { authenticatedName: string | null; clientName: string | null },
+): UpdateRequestedBy {
+  const claim = sanitizeUpdateRequestedBy(claimed);
+  const machineName = sanitizeMachineName(connection.authenticatedName) ?? claim?.machineName ?? null;
+  const clientKind = claim?.clientKind ?? updateRequestClientKindFromClientName(connection.clientName);
+  return { ...(machineName ? { machineName } : {}), clientKind };
 }
