@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleDashed, CircleNotch, UsersThree } from "@phosphor-icons/react";
+import { CircleDashed, CircleNotch, DesktopTower, UsersThree } from "@phosphor-icons/react";
 import type { LaneListSnapshot, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
@@ -16,7 +16,7 @@ import { LaneCatchUpButton, LaneCatchUpMenu, type LaneCatchUpTarget } from "../L
 import { laneHasCurrentPr } from "../laneCatchUp";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
-import { MachineChip } from "../../shared/MachineChip";
+import { SessionHoverCard, useSessionHoverCard } from "../../terminals/SessionHoverCard";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
 import { LaneShareMark } from "../../laneShare/LaneShareMark";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
@@ -57,10 +57,10 @@ export type LaneSidebarRowProps = {
   /** Why the lane needs the user (an agent waiting, a failing PR…), or null. */
   needsYouReason?: string | null;
   /**
-   * The machine chip, shown when the project has lanes on more than one
-   * machine. Null keeps the single-machine row unchanged.
+   * The lane's machine, set when the project has lanes on more than one
+   * machine. The row shows no machine; its hover card names it.
    */
-  machineChip?: MachineChipModel | null;
+  machine?: MachineChipModel | null;
   /**
    * Set when the lane's machine cannot be reached ("<Machine> is offline").
    * The row is dimmed, says why on hover, and offers no menu or drag.
@@ -226,7 +226,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     onStopDelete = null,
     creating,
     needsYouReason = null,
-    machineChip = null,
+    machine = null,
     disabledReason = null,
     foreign = false,
     shareTarget = null,
@@ -243,11 +243,13 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   const showBranch = Boolean(branch) && branch !== lane.name;
   // Nothing left for line two: the row is one line rather than an empty band.
   const secondLineEmpty = !deleting && !creating && !showBranch && !rebaseLine
-    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0 && !machineChip;
+    && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0;
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
   // The lane color lives on the name only, as in the Work list.
   const accent = getLaneAccent(lane, fallbackColorIndex);
+  // The machine is named here and in the composer only, never on the row.
+  const hoverCard = useSessionHoverCard({ disabled: !machine, rowId: `lane-row:${lane.id}` });
 
   return (
     <div
@@ -255,7 +257,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       aria-selected={selected}
       aria-disabled={deleting || unreachable || undefined}
       data-lane-id={lane.id}
-      data-machine-id={machineChip?.machineId}
+      data-machine-id={machine?.machineId}
+      {...hoverCard.triggerProps}
       title={disabledReason ?? undefined}
       data-testid="lane-sidebar-row"
       data-tour={selected && lane.laneType !== "primary" && !deleting ? "lanes.laneTab" : undefined}
@@ -304,6 +307,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       onContextMenu={(event) => {
         event.preventDefault();
         if (deleting || unreachable) return;
+        // One floating panel next to the row at a time.
+        hoverCard.close();
         onContextMenu(lane.id, event);
       }}
     >
@@ -390,11 +395,23 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 {devicesOpen.length > 1 ? devicesOpen.length : null}
               </span>
             ) : null}
-            {machineChip ? <MachineChip machine={machineChip} subject="This lane" /> : null}
           </>
         )}
       </div>
       )}
+      {hoverCard.anchor && machine ? (
+        <SessionHoverCard
+          anchor={hoverCard.anchor}
+          title={lane.name}
+          rows={[{
+            id: "machine",
+            icon: <DesktopTower size={13} weight="duotone" className="text-amber-400/85" />,
+            value: machine.online ? machine.machineName : `${machine.machineName}, offline`,
+            testId: "lane-hover-machine",
+          }]}
+          cardProps={hoverCard.cardProps}
+        />
+      ) : null}
     </div>
   );
 });

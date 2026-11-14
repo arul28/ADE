@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useRootAppStore } from "../../state/appStore";
@@ -7,7 +7,6 @@ import {
   createLaneMachineRouter,
   machineBlockedReason,
   machineChipFor,
-  rowMachineChip,
   shouldShowMachineChips,
   useAllMachineLanes,
   type MachineChipModel,
@@ -15,6 +14,8 @@ import {
 } from "../../state/laneMachineRouting";
 import { SAVED_CHATS_MACHINE_PREFIX, savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
 import { connectMachine } from "../../lib/machineConnect";
 import { showToast } from "../app/toast/toastStore";
 
@@ -70,8 +71,6 @@ export function setForeignLaneSelection(projectStateKey: string | null, key: str
   if (readForeignLaneSelection(projectStateKey) === key) return;
   useForeignLaneSelectionStore.setState((state) => ({ byProject: { ...state.byProject, [projectKey]: key } }));
 }
-
-const machineFilterByProject = new Map<string, string>();
 
 /** Where one row's lane lives: its real id on its machine, and the pin to use. */
 export type LaneTarget =
@@ -254,19 +253,6 @@ export function useLanesPageMachines({
     }
   }, [foreignSelectedKey, setForeignSelectedKey]);
 
-  /* ---- Machine filter ---- */
-
-  const [machineFilter, setMachineFilterState] = useState<string>(
-    () => (projectStateKey ? machineFilterByProject.get(projectStateKey) ?? "all" : "all"),
-  );
-  const setMachineFilter = useCallback((next: string) => {
-    if (projectStateKey) machineFilterByProject.set(projectStateKey, next);
-    setMachineFilterState(next);
-  }, [projectStateKey]);
-  // A machine that left the union cannot stay the filter.
-  const effectiveMachineFilter = machineFilter !== "all" && multiMachine && allMachineLanes.machinesById.has(machineFilter)
-    ? machineFilter
-    : "all";
   const machineIdForKey = useCallback(
     (key: string) => foreignRowByKey.get(key)?.machineId ?? activeMachineId,
     [activeMachineId, foreignRowByKey],
@@ -278,41 +264,32 @@ export function useLanesPageMachines({
     () => (foreignLanes.viewLanes.length === 0 ? localLanes : [...localLanes, ...foreignLanes.viewLanes]),
     [foreignLanes.viewLanes, localLanes],
   );
-  // The machine filter chips narrow the list; selection and colors still see
-  // every machine's lanes.
-  const visibleLanes = useMemo(() => {
-    if (effectiveMachineFilter === "all") return allViewLanes;
-    return allViewLanes.filter((lane) => machineIdForKey(lane.id) === effectiveMachineFilter);
-  }, [allViewLanes, effectiveMachineFilter, machineIdForKey]);
+  /* ---- Machines ---- */
 
-  /* ---- Chips ---- */
-
-  /** One filter chip per machine, with its lane count. */
-  const machineFilterChips = useMemo(() => {
-    const byMachineId = new Map<string, MachineChipModel & { laneCount: number }>();
+  // The machine of each row, for its hover card. Rows show no machine; the
+  // hover card names it while the project has lanes on more than one machine.
+  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>".
+  const cloudMachineLabel = useAdeCloudMachineLabel();
+  const machineByLaneId = useMemo(() => {
+    if (!multiMachine) return undefined;
+    const byMachineId = new Map<string, MachineChipModel>();
     for (const machine of liveMachines) {
-      byMachineId.set(machine.machineId, { ...machineChipFor(machine), laneCount: 0 });
+      const chip = machineChipFor(machine);
+      byMachineId.set(machine.machineId, {
+        ...chip,
+        machineName: chip.isThisMachine
+          ? THIS_MACHINE_NAME
+          : cloudMachineLabel({ machineId: chip.machineId, name: chip.machineName }),
+      });
     }
-    for (const lane of allViewLanes) {
-      const machineId = machineIdForKey(lane.id);
-      const chip = machineId ? byMachineId.get(machineId) : undefined;
-      if (chip) chip.laneCount += 1;
-    }
-    return byMachineId;
-  }, [liveMachines, allViewLanes, machineIdForKey]);
-  // A row names its computer only when it is not this one (`rowMachineChip`).
-  // A list filtered down to one machine carries no chips: the active filter
-  // chip already names it.
-  const machineChipByLaneId = useMemo(() => {
-    if (effectiveMachineFilter !== "all") return undefined;
     const map = new Map<string, MachineChipModel>();
     for (const lane of allViewLanes) {
       const machineId = machineIdForKey(lane.id);
-      const chip = rowMachineChip(machineId ? machineFilterChips.get(machineId) : null);
-      if (chip) map.set(lane.id, chip);
+      const machine = machineId ? byMachineId.get(machineId) : undefined;
+      if (machine) map.set(lane.id, machine);
     }
     return map.size > 0 ? map : undefined;
-  }, [allViewLanes, effectiveMachineFilter, machineFilterChips, machineIdForKey]);
+  }, [allViewLanes, cloudMachineLabel, liveMachines, machineIdForKey, multiMachine]);
   /** Why a row on an unreachable machine can't be acted on, by row key. */
   const disabledReasonByLaneId = useMemo(() => {
     const map = new Map<string, string>();
@@ -336,13 +313,9 @@ export function useLanesPageMachines({
     selectedLaneId,
     selectLane,
     clearForeignSelection,
-    effectiveMachineFilter,
-    setMachineFilter,
     machineIdForKey,
     allViewLanes,
-    visibleLanes,
-    machineFilterChips,
-    machineChipByLaneId,
+    machineByLaneId,
     disabledReasonByLaneId,
     foreignLaneIdSet,
   };

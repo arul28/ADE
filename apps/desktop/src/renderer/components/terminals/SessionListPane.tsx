@@ -33,7 +33,7 @@ import {
 } from "../../state/crossMachineLanes";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
-import { LaneCloudMarker, LaneMachineMarker } from "./LaneMachineMarker";
+import { LaneCloudMarker } from "./LaneMachineMarker";
 import { laneCloudProvider } from "../../../shared/cloudLanes";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
@@ -1309,9 +1309,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     const gone = new Set(goneMachineIds.split("\u0000").filter(Boolean));
     return unionForeignRows.filter((row) => !gone.has(row.machineId));
   }, [goneMachineIds, unionForeignRows]);
-  // Lanes from more than one computer are on screen: a lane header that is not
-  // on this computer names its computer (see `LaneMachineMarker`).
-  const listShowsSeveralComputers = foreignRows.length > 0;
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
   // Standalone callers can omit the hook's full-roster filing map, so keep the
@@ -2319,9 +2316,8 @@ export const SessionListPane = React.memo(function SessionListPane({
    *      not lose its header for the second it takes the real session to land.
    * A pinned lane also keeps its header — the pin glyph lives there — and so
    * does a lane on an unreachable machine, whose folded-shut group treatment has
-   * nowhere else to live. The machine badge itself does NOT force a header: a
-   * headerless lane carries it on the card instead (see
-   * `RenderCardOptions.machineMarker`), so nothing is lost.
+   * nowhere else to live. The lane's machine does NOT force a header: rows
+   * show no machine, and each card's hover card names it.
    *
    * This covers BOTH sides of the cross-machine union. Local lanes are keyed by
    * lane id and foreign ones by `machineId:laneId`, which is how every other
@@ -2643,20 +2639,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     onOpenLanePrs?: () => void;
     laneActions?: SessionContextMenuLaneActions | null;
     /**
-     * Set for cards rendered UNDER a lane header that already shows a machine
-     * marker. Every row in that group is on that machine by construction, so the
-     * row's own chip is the header's label repeated once per card. Never set for
-     * the singleton/headerless form: with no header above it, the chip is the
-     * only place the machine is named at all.
-     */
-    suppressMachineChip?: boolean;
-    /**
-     * The marker for a headerless lane, whose card stands in for the divider.
-     *
-     * Handed down rather than re-derived on the card. The card used to infer its
-     * machine from `runtimePin`, which is only ever set for foreign rows — so a
-     * singleton lane on the tab's own machine could never show one even when
-     * that machine was somewhere else entirely. One resolver, one answer.
+     * The lane's machine. The row shows no machine; its hover card names it.
+     * Handed down so every card in a lane resolves the machine the same way.
      */
     machineMarker?: CrossMachineLaneMarker | null;
     /** The Apple device a headerless lane holds; its card shows the mark. */
@@ -2812,8 +2796,6 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneCloud={options?.laneCloud ?? (showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
         laneAppControl={options?.laneAppControl ?? (showLaneIdentity && !foreignRow && laneToolUse.appControl.has(session.laneId))}
         laneBrowserTabs={options?.laneBrowserTabs ?? (showLaneIdentity && !foreignRow ? laneToolUse.browserTabs.get(session.laneId) : 0) ?? 0}
-        suppressMachineChip={options?.suppressMachineChip}
-        machineNamed={listShowsSeveralComputers}
         suppressStatusLabel={options?.suppressStatusLabel}
         subagentMark={options?.subagentMark ?? null}
         deltaEnabled={!foreignRow}
@@ -3395,15 +3377,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         })}`)}
       />
     ) : null;
-    // Never populated for a lane on the Mac you're sitting at. Note this list is
-    // the ACTIVE BINDING's lanes, which is not necessarily this machine; the
-    // marker draws while its machine is offline, or names the machine while
-    // lanes from several computers are on screen.
+    // The lane's machine, for the hover cards of its rows. No row or header
+    // draws it: the machine is named only in the hover card and the composer.
     const machineMarker = markersByLaneId.get(lane.id) ?? null;
-    // A header that marks the machine makes every row beneath it a repetition.
-    // A headerless lane has no such header, so its lone card carries the marker
-    // itself — handed down explicitly below rather than suppressed here.
-    const suppressMachineChip = Boolean(machineMarker) && !headerless;
     // A lane already filed into a quiet shelf renders its rows flat: the shelf
     // states the tier once, for everything under it.
     // The Working shelf is not quiet: its lanes keep their live cards and tails.
@@ -3429,7 +3405,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         prBadge={prBadge}
         machineMarker={laneCloudProvider(lane)
           ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
-          : machineMarker ? <LaneMachineMarker marker={machineMarker} named={listShowsSeveralComputers} /> : null}
+          : null}
         appleDevice={laneAppleDevice || laneAndroidDevice || laneDesktop || laneAppControl || laneBrowserTabs > 0 ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
@@ -3517,7 +3493,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           : renderLaneSessionLists(lane.id, list, {
               quiet: laneQuiet,
               flat: inQuietShelf,
-              cardOptions: suppressMachineChip ? { suppressMachineChip: true } : undefined,
+              cardOptions: machineMarker ? { machineMarker } : undefined,
             })}
       </StickyGroupHeader>
     );
@@ -3565,12 +3541,10 @@ export const SessionListPane = React.memo(function SessionListPane({
       row.lane,
       lanePrs,
     );
-    // A group WITH a header names the machine there, so its rows never repeat
-    // it. A headerless group has no such header, so its lone card takes the
-    // marker instead — the same trade `renderLaneGroup` makes.
+    // Every card of the group names the lane's machine in its hover card.
     const cardOptions: RenderCardOptions = {
       foreignRow: row,
-      suppressMachineChip: true,
+      machineMarker: headerMarker,
       nesting,
       markNesting: fullNesting,
     };
@@ -3613,7 +3587,6 @@ export const SessionListPane = React.memo(function SessionListPane({
             onOpen={(target) => openLanePr(target, { foreign: true, navigate })}
           />
         ) : null}
-        machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} named={listShowsSeveralComputers} /> : null}
         laneStatus={entry.focusStatus}
         laneFailed={entry.focusFailed}
         quietCounts={laneQuiet && collapsed
