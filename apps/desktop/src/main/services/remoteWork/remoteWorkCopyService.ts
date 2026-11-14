@@ -275,6 +275,8 @@ type ProjectState = {
    */
   making: Map<string, BackgroundMake>;
   shellRunsIn: ((owner: string, ignoring: ReadonlySet<string>) => boolean) | null;
+  /** Stops every shell the owner runs in this project (its chat ended). */
+  stopShells: ((owner: string) => void) | null;
   deviceInUse: Set<(laneId: string) => boolean>;
   released: Set<(laneId: string) => void>;
   copyApps: Set<RemoteWorkCopyApp>;
@@ -299,7 +301,7 @@ function projectStateFor(projectRoot: string): ProjectState {
   const key = pathComparisonKey(path.resolve(projectRoot));
   let state = projectStates.get(key);
   if (!state) {
-    state = { locks: new Map(), starting: new Map(), making: new Map(), shellRunsIn: null, deviceInUse: new Set(), released: new Set(), copyApps: new Set() };
+    state = { locks: new Map(), starting: new Map(), making: new Map(), shellRunsIn: null, stopShells: null, deviceInUse: new Set(), released: new Set(), copyApps: new Set() };
     projectStates.set(key, state);
   }
   return state;
@@ -1127,9 +1129,9 @@ export type RemoteWorkReleasedCopy = { projectRoot: string; path: string };
  * call landed in: a machine can hold two, and the pick between them has
  * changed between days, leaving a copy in each. Each removal names its
  * folder, so the caller says only what was deleted, and where. With `ended`
- * every copy the chat has here goes (any project), and one that is still
- * busy is kept for the hourly sweep instead of failing the rest (the caller
- * stops the chat's shells first). `keepUnsynced`: a copy holding work nobody
+ * every copy the chat has here goes (any project): its shells in each copy's
+ * project stop first, and one that is still busy is kept for the hourly sweep
+ * instead of failing the rest. `keepUnsynced`: a copy holding work nobody
  * pushed stays, as the sweep keeps it.
  */
 export async function releaseChatRemoteWork(args: {
@@ -1149,6 +1151,14 @@ export async function releaseChatRemoteWork(args: {
     : remoteWorkCopiesInRepo(projectRoot, owner, adeHome, logger))
     .filter((copy) => !pathsEqual(copy.projectRoot, projectRoot));
   const releaseOne = async (root: string, copyPath: string, service: RemoteWorkCopyService) => {
+    if (ended) {
+      // Its shells run in the copy's own project's runtime, not only the one this call landed in.
+      try {
+        projectStateFor(root).stopShells?.(owner);
+      } catch (error) {
+        logger?.warn("remote_work.ended_shell_stop_failed", { owner, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
     try {
       if (await service.release(owner, { keepUnsynced })) removed.push({ projectRoot: root, path: copyPath });
       else if (service.get(owner)) kept.push({ projectRoot: root, path: copyPath });
@@ -1193,19 +1203,25 @@ export function withRemoteWorkLaneResolvers(
 
 /**
  * How a project's runtime tells whether a shell still runs in a copy (its
- * terminals). Registered once when the runtime starts; the returned function
- * removes it when the runtime is disposed. A project with no runtime has no
- * running shells. `ignoring` holds terminal ids not to count (the copy's own
- * App Control app, which the removal stops itself).
+ * terminals), and stops an owner's shells when its chat ended
+ * (`releaseChatRemoteWork`). Registered once when the runtime starts; the
+ * returned function removes it when the runtime is disposed. A project with
+ * no runtime has no running shells. `ignoring` holds terminal ids not to
+ * count (the copy's own App Control app, which the removal stops itself).
  */
 export function registerRemoteWorkShellCheck(
   projectRoot: string,
   shellRunsIn: (owner: string, ignoring: ReadonlySet<string>) => boolean,
+  stopShells?: (owner: string) => void,
 ): () => void {
   const state = projectStateFor(projectRoot);
   state.shellRunsIn = shellRunsIn;
+  state.stopShells = stopShells ?? null;
   return () => {
-    if (state.shellRunsIn === shellRunsIn) state.shellRunsIn = null;
+    if (state.shellRunsIn === shellRunsIn) {
+      state.shellRunsIn = null;
+      state.stopShells = null;
+    }
   };
 }
 

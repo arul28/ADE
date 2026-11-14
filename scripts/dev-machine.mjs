@@ -410,7 +410,14 @@ async function remove(paths, options) {
     process.stdout.write(`[ade] signed out and stopped. Its sign-in had expired, so its row may still be on your account: remove it from Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
     return;
   }
-  process.stdout.write(`[ade] signed out and stopped; its account row is gone. Delete ${paths.home} too if you no longer need its files.\n`);
+  const rowState = await accountRowState(row);
+  if (rowState === "gone") {
+    process.stdout.write(`[ade] signed out and stopped; its account row is gone. Delete ${paths.home} too if you no longer need its files.\n`);
+  } else if (rowState === "present") {
+    process.stdout.write(`[ade] signed out and stopped, but the account still lists it: remove it from Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
+  } else {
+    process.stdout.write(`[ade] signed out and stopped. Couldn't check its account row (no signed-in ADE here answered): look in Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
+  }
 }
 
 async function main() {

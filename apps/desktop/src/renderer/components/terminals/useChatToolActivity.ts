@@ -62,6 +62,9 @@ const DOMAIN_TOOL: Readonly<Record<ComputerUseDomain, ToolActivityTool | null>> 
 };
 
 const MAX_COMMAND_CHARS = 2_000;
+/** The recent history read once when the pane opens, so a call already running shows. */
+const SEED_HISTORY_EVENTS = 200;
+const SEED_HISTORY_MAX_BYTES = 256_000;
 const MAX_LINE_CHARS = 56;
 
 /** The command text of a shell tool call, across providers' argument shapes. */
@@ -146,6 +149,10 @@ type Pending = { tool: ToolActivityTool; command: string; remoteShell: boolean }
  * copy, the tab's own included). `sessionId` or `pin` null subscribes to
  * nothing. Keyed on the pin's key: a rebuilt pin is the same machine.
  * `onDeviceChoice` runs after the agent's `ade devices use` answers.
+ *
+ * It starts from the chat's recent history (one bounded read), so a call
+ * already running when the pane opens shows as the agent's; live events that
+ * land during that read are applied after it, each once.
  */
 export function useChatToolActivity(
   sessionId: string | null,
@@ -188,14 +195,23 @@ export function useChatToolActivity(
       pending.set(itemId, { tool: classified.tool, command, remoteShell: classified.remoteShell });
       record({ tool: classified.tool, text: classified.text, running: true, at });
     };
+    let replaying = false;
     const finishCommand = (itemId: string, at: number, failed: boolean, output?: string | null, command?: string) => {
-      if (deviceChoiceItems.delete(itemId)) onDeviceChoiceRef.current?.();
+      if (deviceChoiceItems.delete(itemId) && !replaying) onDeviceChoiceRef.current?.();
       const started = pending.get(itemId);
       pending.delete(itemId);
       const text = command ?? started?.command;
       if (!text) return;
       const classified = classifyToolCommand(text, failed ? "failed" : "completed", output);
       if (!classified) return;
+      // Another call on the same tool still runs (parallel commands): the tool stays the agent's.
+      let still: Pending | null = null;
+      for (const entry of pending.values()) if (entry.tool === classified.tool) still = entry;
+      if (still) {
+        const running = classifyToolCommand(still.command, "running");
+        record({ tool: classified.tool, text: running?.text ?? classified.text, running: true, at });
+        return;
+      }
       record({ tool: classified.tool, text: classified.text, running: false, at });
     };
     const endTurn = (at: number) => {
@@ -210,7 +226,7 @@ export function useChatToolActivity(
       if (next) byTool = next;
     };
 
-    const onEnvelope = (envelope: AgentChatEventEnvelope) => {
+    const apply = (envelope: AgentChatEventEnvelope) => {
       if (envelope.sessionId !== sessionId) return;
       const event = envelope.event;
       const at = Date.parse(envelope.timestamp) || Date.now();
@@ -249,10 +265,56 @@ export function useChatToolActivity(
       if (byTool !== before || pending.size !== pendingBefore) publish();
     };
 
-    return subscribeWhenChatApiReady(
+    // Live events wait while the history read is out, then go after it,
+    // skipping any the history already held (by `sequence`).
+    let seeded = false;
+    let stopped = false;
+    let lastSeeded = Number.NEGATIVE_INFINITY;
+    const waiting: AgentChatEventEnvelope[] = [];
+    const onEnvelope = (envelope: AgentChatEventEnvelope) => {
+      if (!seeded) {
+        waiting.push(envelope);
+        return;
+      }
+      if (typeof envelope.sequence === "number" && envelope.sequence <= lastSeeded) return;
+      apply(envelope);
+    };
+    const finishSeed = (history: readonly AgentChatEventEnvelope[]) => {
+      if (stopped || seeded) return;
+      replaying = true;
+      for (const envelope of history) {
+        apply(envelope);
+        if (typeof envelope.sequence === "number" && envelope.sequence > lastSeeded) lastSeeded = envelope.sequence;
+      }
+      replaying = false;
+      seeded = true;
+      for (const envelope of waiting.splice(0)) onEnvelope(envelope);
+    };
+    const unsubscribe = subscribeWhenChatApiReady(
       () => window.ade?.agentChat,
-      (api) => api.onEvent(onEnvelope, feedPin),
+      (api) => {
+        const off = api.onEvent(onEnvelope, feedPin);
+        const readHistory = api.getEventHistory;
+        if (typeof readHistory !== "function") {
+          finishSeed([]);
+        } else {
+          void Promise.resolve()
+            .then(() => readHistory({ sessionId, maxEvents: SEED_HISTORY_EVENTS, maxBytes: SEED_HISTORY_MAX_BYTES }, feedPin))
+            .then(
+              (snapshot) => finishSeed(snapshot?.sessionId === sessionId && Array.isArray(snapshot.events) ? snapshot.events : []),
+              (error: unknown) => {
+                console.warn("[tools-pane] could not read this chat's recent tool calls", error);
+                finishSeed([]);
+              },
+            );
+        }
+        return off;
+      },
     );
+    return () => {
+      stopped = true;
+      unsubscribe();
+    };
     // Keyed on the pin's key, not the object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, sessionId, pinKey]);

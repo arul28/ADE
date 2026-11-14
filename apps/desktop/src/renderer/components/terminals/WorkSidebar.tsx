@@ -317,6 +317,17 @@ export function WorkSidebar({
     onToolChange(twin);
   }, [onToolChange, tool, toolContext]);
 
+  // The screen shows on the tool named for its machine. Choosing a Windows PC
+  // from a Mac-hosted chat's Mac Desktop (or a Mac from Windows Desktop) moves
+  // the open tool with it: the old one stays available here, so the fallback
+  // above never fires, and it would keep showing the chat's own screen.
+  const chosenScreenMachine = chosenRemote.screen ?? null;
+  const chosenScreenTool = chosenScreenMachine ? deviceKindTool("screen", chosenScreenMachine) : null;
+  useEffect(() => {
+    if (!tool || !isDesktopWorkTool(tool) || !chosenScreenTool || chosenScreenTool === tool) return;
+    if (isAvailableWorkSidebarTab(chosenScreenTool, toolContext)) onToolChange(chosenScreenTool);
+  }, [chosenScreenTool, onToolChange, tool, toolContext]);
+
   // Hiding the native browser view is the pane's one non-React obligation: the
   // WebContentsView lives in main and keeps painting over whatever replaces it
   // unless it is explicitly parked. Fires on tool switch, on close, on the pane

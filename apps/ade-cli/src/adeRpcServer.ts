@@ -8710,20 +8710,12 @@ async function runTool(args: {
     }
     // In every checkout of this repository here (`releaseChatRemoteWork`).
     // `ended`: the chat was archived or deleted on its own machine, which says
-    // so at once (the hourly sweep is the fallback); its shells here stop
-    // first. `keepUnsynced`: a copy holding work nobody pushed stays.
+    // so at once (the hourly sweep is the fallback); its shells in each
+    // copy's project stop first. `keepUnsynced`: a copy holding work nobody
+    // pushed stays.
     const ended = toolArgs.ended === true;
     const keepUnsynced = toolArgs.keepUnsynced === true;
     try {
-      if (ended) {
-        for (const row of runtime.ptyService.list({ chatSessionId: owner, status: "running", limit: null })) {
-          try {
-            if (row.ptyId) runtime.ptyService.dispose({ ptyId: row.ptyId, sessionId: row.id });
-          } catch (error) {
-            runtime.logger.warn("remote_work.ended_shell_stop_failed", { error: error instanceof Error ? error.message : String(error) });
-          }
-        }
-      }
       const { removed, kept } = await releaseChatRemoteWork({
         projectRoot: runtime.projectRoot,
         owner,

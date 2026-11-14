@@ -130,11 +130,15 @@ export function chosenMachineFor(
  * than the chat's: its device choice (`ade devices use`), else the machine
  * its CURRENT turn drives that kind on with `--machine` (`activeUses`, the
  * row's machines in use this turn). Not a machine it used in an earlier turn.
+ * `pickedHere` holds, per kind, the newest such use (`lastStartedAt`, ms) when
+ * the person chose the chat's own machine: those uses no longer say where the
+ * device is, only a newer one does.
  */
 export function currentRemoteDeviceMachines(
   sources: ChatDeviceSources | null,
   machines: readonly ToolMachine[],
   activeUses: readonly AgentChatRemoteWorkUse[],
+  pickedHere: Partial<Record<DeviceKind, number>> = {},
 ): Partial<Record<DeviceKind, ToolMachine>> {
   const out: Partial<Record<DeviceKind, ToolMachine>> = {};
   for (const kind of DEVICE_KIND_ORDER) {
@@ -145,8 +149,10 @@ export function currentRemoteDeviceMachines(
       if (chosen && !chosen.isChat && deviceKindRunsOnPlatform(kind, chosen.platform)) out[kind] = chosen;
       continue;
     }
+    const pickedAt = pickedHere[kind];
     const use = activeUses
-      .filter((entry): entry is RemoteWorkCopyUse => entry[DEVICE_KINDS[kind].flag] === true && isRemoteWorkCopyUse(entry))
+      .filter((entry): entry is RemoteWorkCopyUse => entry[DEVICE_KINDS[kind].flag] === true && isRemoteWorkCopyUse(entry)
+        && (pickedAt === undefined || Date.parse(entry.lastStartedAt) > pickedAt))
       .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt))[0];
     if (!use) continue;
     const listed = machines.find((machine) => sameMachineKey(machine.key, use.machineKey));
@@ -161,6 +167,17 @@ export function currentRemoteDeviceMachines(
     };
   }
   return out;
+}
+
+/** The newest `lastStartedAt` (ms) among the uses that drive `kind`, or -Infinity. */
+export function newestDeviceUseAt(kind: DeviceKind, uses: readonly AgentChatRemoteWorkUse[]): number {
+  let newest = Number.NEGATIVE_INFINITY;
+  for (const use of uses) {
+    if (use[DEVICE_KINDS[kind].flag] !== true) continue;
+    const at = Date.parse(use.lastStartedAt);
+    if (at > newest) newest = at;
+  }
+  return newest;
 }
 
 /**

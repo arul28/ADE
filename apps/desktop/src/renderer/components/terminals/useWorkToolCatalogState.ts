@@ -6,7 +6,7 @@ import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
 import { setChatDeviceSource, useChatDeviceSources } from "./chatDeviceSources";
 import { cleanUpRemoteWork } from "./remoteWorkCleanup";
 import type { ToolMachine } from "./useToolMachines";
-import { currentRemoteDeviceMachines, leftoverMachines } from "./workToolCatalog";
+import { currentRemoteDeviceMachines, leftoverMachines, newestDeviceUseAt } from "./workToolCatalog";
 
 /**
  * Where this chat's devices are, and what it left on other machines: the tools
@@ -45,15 +45,22 @@ export function useWorkToolCatalogState(args: {
   viewOnlyRef.current = viewOnly;
 
   const activeRemoteUses = useMemo(() => activeRemoteWorkOnRow(session), [session]);
+  const activeRemoteUsesRef = useRef(activeRemoteUses);
+  activeRemoteUsesRef.current = activeRemoteUses;
+  // A kept pick of the chat's own machine clears the kind's choice, which
+  // would fall back to where this turn drove it: that use is set aside (per
+  // kind, up to its `lastStartedAt`), so the pick stays until a newer one.
+  const [pickedHere, setPickedHere] = useState<Partial<Record<DeviceKind, number>>>({});
+  useEffect(() => { setPickedHere({}); }, [sessionId, chatPinKey]);
   const chosenRemote = useMemo(() => {
-    const out = currentRemoteDeviceMachines(deviceSources.sources, machines, activeRemoteUses);
+    const out = currentRemoteDeviceMachines(deviceSources.sources, machines, activeRemoteUses, pickedHere);
     if (!viewOnly) return out;
     for (const [kind, pick] of Object.entries(viewPicks) as Array<[DeviceKind, ToolMachine]>) {
       if (pick.isChat) delete out[kind];
       else if (deviceKindRunsOnPlatform(kind, pick.platform)) out[kind] = pick;
     }
     return out;
-  }, [activeRemoteUses, deviceSources.sources, machines, viewOnly, viewPicks]);
+  }, [activeRemoteUses, deviceSources.sources, machines, pickedHere, viewOnly, viewPicks]);
 
   // The open tool's machine switch: `ade devices use <kind>@<machine>`, on the
   // chat's machine (its pin), the same setting the agent's commands read and
@@ -64,11 +71,28 @@ export function useWorkToolCatalogState(args: {
       setViewPicks((current) => ({ ...current, [kind]: machine }));
       return;
     }
+    const newestUse = newestDeviceUseAt(kind, activeRemoteUsesRef.current);
+    setPickedHere((current) => {
+      const next = { ...current };
+      if (machine.isChat && Number.isFinite(newestUse)) next[kind] = newestUse;
+      else delete next[kind];
+      return next;
+    });
     void setChatDeviceSource({
       sessionId,
       pin: chatPinRef.current,
       kind,
       machine: machine.isChat ? null : { key: machine.key, name: machine.name },
+    }).then((kept) => {
+      // Not kept: the device is where it was, so this turn's use counts again.
+      if (!kept && machine.isChat) {
+        setPickedHere((current) => {
+          if (current[kind] !== newestUse) return current;
+          const next = { ...current };
+          delete next[kind];
+          return next;
+        });
+      }
     });
   }, [sessionId]);
 

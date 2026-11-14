@@ -40,6 +40,8 @@ import type { ExternalWakeDeliveryResult } from "../../../../desktop/src/main/se
 import {
   MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,
   MachineAccountSignedOutError,
+  MachineCallTimeoutError,
+  MachineConnectionDroppedError,
   clampMachineCallTimeout,
   createMachineConnectionPool,
   errorMessage,
@@ -402,8 +404,11 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       // The usual pick when it holds a copy too: a second copy elsewhere must not move the chat.
       choice = holdsCopy(picked) ? picked : candidates.find(holdsCopy) ?? picked;
     } catch (error) {
-      // An older ADE there has no such tool: the usual pick, kept from now on.
       options.logger?.info("agent_cross_machine.checkout_pick_unknown", { machineKey: machine.machineKey, error: errorMessage(error) });
+      // No answer (timed out, connection dropped): the usual pick this once,
+      // asked again next call, so a slow moment never pins the wrong checkout.
+      if (error instanceof MachineCallTimeoutError || error instanceof MachineConnectionDroppedError) return picked;
+      // An older ADE there has no such tool: the usual pick, kept from now on.
     }
     rememberCheckoutPick(key, choice.projectId);
     return choice;
