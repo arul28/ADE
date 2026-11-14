@@ -610,14 +610,6 @@ function HeaderActionPill({
   );
 }
 
-const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
-  connected: "Connected",
-  connecting: "Reconnecting",
-  parked: "Parked",
-  idle: "Disconnected",
-  error: "Disconnected",
-};
-
 function ProjectTabIcon({
   rootPath,
   isCurrent,
@@ -2548,7 +2540,6 @@ export function TopBar({
                   const remoteTabConnecting = remoteTabState === "connecting";
                   const remoteTabDisconnected =
                     remoteTabState === "error" || remoteTabState === "idle";
-                  const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                   const remoteTabKey = tabOrderKey(group);
                   return (
                     <div
@@ -2564,8 +2555,8 @@ export function TopBar({
                       data-remote-state={remoteTabState}
                       aria-current={isCurrentRemote && !isNewTabOpen ? "true" : undefined}
                       // A project tab looks the same wherever its checkout
-                      // lives. The machine is in the tooltip; only a connection
-                      // problem, which stops the tab from loading, is marked.
+                      // lives. Only a connection problem, which stops the tab
+                      // from loading, is marked.
                       className={cn(
                         "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[260px] items-center gap-1.5 px-2.5",
                         "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
@@ -2578,7 +2569,9 @@ export function TopBar({
                           ...projectTabDrag.tabDragStyle(remoteTabKey),
                         } as React.CSSProperties
                       }
-                      title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
+                      // The tab is the project: its tooltip is its name, never
+                      // one computer or the folder of one copy.
+                      title={recordNameFor(group) ?? remoteTab.displayName}
                       onClick={() => {
                         if (projectTabDrag.isDragClick()) return;
                         handleSwitchRemoteProject(remoteTab);
@@ -2607,14 +2600,14 @@ export function TopBar({
                           size={11}
                           weight="bold"
                           className="shrink-0 animate-spin text-amber-300"
-                          aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                          aria-label="Reconnecting"
                         />
                       ) : remoteTabDisconnected ? (
                         <WarningCircle
                           size={11}
                           weight="fill"
                           className="shrink-0 text-red-300"
-                          aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                          aria-label="Not connected"
                         />
                       ) : null}
                       <button
@@ -2711,7 +2704,7 @@ export function TopBar({
                         handleSwitchProject(rp.rootPath);
                       }
                     }}
-                    title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
+                    title={isMissing ? `Missing: ${rp.rootPath}` : recordNameFor(group) ?? rp.displayName}
                   >
                     <ProjectTabIcon
                       rootPath={rp.rootPath}

@@ -9,6 +9,7 @@ import { ToolLogo } from "../terminals/ToolLogos";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { useSpawnedChildPaneStatus } from "./chatSubagentRoster";
 import {
   CHAT_CARD_WIDTH_CLASS,
   ChatCard,
@@ -294,8 +295,8 @@ function subagentQuietMetadata(
   },
   provider?: string | null,
 ): string[] {
+  // `spawnKind` is internal: whether a child reports back is never printed.
   const metadata: string[] = [];
-  if (event.spawnKind) metadata.push(event.spawnKind);
   const resolvedProvider = event.provider?.trim() || provider?.trim() || "";
   if (resolvedProvider) metadata.push(providerDisplayLabel(resolvedProvider, resolvedProvider));
   const agentType = event.agentType?.trim() || "";
@@ -335,7 +336,12 @@ export function SubagentSpawnCard({
   /** Runtime that owns this agent; drives the quiet provider mark. */
   provider?: string | null;
 }) {
-  const isRunning = event.status === "running";
+  // A spawned chat has its own status on its machine; the spawn event alone
+  // never closes for a chat that does not report back, so read the chat's.
+  const childStatus = useSpawnedChildPaneStatus(event.childSessionId);
+  const status = childStatus ?? event.status;
+  const isRunning = status === "running";
+  const statusWord = isRunning ? "running" : status === "completed" ? "done" : status;
   const liveMs = useLiveDurationMs(event.startedAt, isRunning);
   const elapsed = formatSubagentDurationMs(liveMs);
 
@@ -356,9 +362,9 @@ export function SubagentSpawnCard({
   const metrics = [tools, elapsed].filter((part): part is string => Boolean(part)).join(" · ");
   const metaTitle = [
     name,
-    "running",
+    statusWord,
     ...subagentQuietMetadata(event, provider),
-    activity,
+    isRunning ? activity : null,
     tools,
     elapsed,
     event.parentLabel ? `spawned by ${event.parentLabel}` : null,
@@ -368,7 +374,7 @@ export function SubagentSpawnCard({
   const open = childSessionId
     ? () => navigateToSpawnedChat(childSessionId, laneId ?? null)
     : onOpenTranscript ?? null;
-  const stopControl = onStop && event.taskId ? (
+  const stopControl = onStop && event.taskId && isRunning ? (
     <button
       type="button"
       aria-label={`Stop ${name}`}
@@ -389,10 +395,10 @@ export function SubagentSpawnCard({
   return (
     <SubagentCardFrame
       agentKey={event.agentKey}
-      status={event.status}
+      status={status}
       name={name}
-      statusWord="running"
-      overview={activity ?? (workflowName ? event.description : null)}
+      statusWord={statusWord}
+      overview={(isRunning ? activity : null) ?? (workflowName ? event.description : null)}
       metrics={metrics || null}
       workflowName={workflowName}
       metaTitle={metaTitle}

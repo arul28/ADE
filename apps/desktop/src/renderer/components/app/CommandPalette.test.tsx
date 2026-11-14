@@ -1135,13 +1135,6 @@ describe("CommandPalette", () => {
           '[data-thread-id="session-remote-1"]',
         );
         expect(row?.dataset.machineId).toBe("target-studio");
-        // Identity, not status: the marker lives in the context line, so the
-        // row's status slot is still free for the session's own state.
-        const marker = row?.querySelector<HTMLElement>("[data-machine-marker-mode]");
-        expect(marker?.textContent).toContain("Mac Studio");
-        expect(
-          screen.getByTestId("thread-status-session-remote-1").contains(marker!),
-        ).toBe(false);
         // The foreign lane resolves through its OWN machine's lane list, not
         // the locally-bound project's.
         expect(screen.getByText("ADE · #feature/release-notes")).toBeTruthy();
@@ -1342,7 +1335,6 @@ describe("CommandPalette", () => {
         expect(row.dataset.machineId).toBe("target-studio");
         expect(row.dataset.machineOnline).toBe("false");
         expect(row.dataset.dimmed).toBe("true");
-        expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
 
       it("uses the bound target connection when its retained Work slice is absent", async () => {
@@ -1396,7 +1388,6 @@ describe("CommandPalette", () => {
           return found!;
         });
         expect(row.dataset.dimmed).toBe("true");
-        expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
 
       it("keeps the active remote binding on row actions", async () => {

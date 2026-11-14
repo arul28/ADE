@@ -185,7 +185,6 @@ describe("SubagentResultCard", () => {
       .find((evt): evt is CustomEvent => evt instanceof CustomEvent && evt.type === "ade:work:select-session");
     expect(navEvent).toBeTruthy();
     expect(navEvent!.detail).toEqual({ sessionId: "child-abc", laneId: "lane-1" });
-    expect(screen.getByTitle(/peer · ran for/)).toBeTruthy();
     expect(screen.queryByText("View transcript")).toBeNull();
   });
 

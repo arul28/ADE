@@ -17,7 +17,7 @@ import {
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
-import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
+import { isTrackedAgentCliToolType, type PtyExitEvent, type TerminalSessionStatus, type TerminalToolType } from "../../../../desktop/src/shared/types/sessions";
 import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
 import type {
@@ -160,6 +160,19 @@ const MAX_ALERT_DELIVERY_ATTEMPTS = 20;
  * fingerprint (i.e. a notification).
  */
 const TERMINAL_RESUME_GRACE_MS = 10_000;
+
+/**
+ * Chat events that describe the session rather than an agent at work: a
+ * rename, a context reading, a suggestion. They never start a run and never
+ * lift a finished one back to running, or a new chat with no turn (and a Done
+ * chat that gets renamed) reads as working on every Activity surface.
+ */
+const SESSION_DESCRIPTION_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "session_meta_updated",
+  "context_usage",
+  "prompt_suggestion",
+  "turn_diagnostics",
+]);
 /**
  * How often a live run re-reads its own session summary — its title and its
  * planning mode. Neither is announced on the chat event stream (a chat is
@@ -1317,7 +1330,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         const record = scope?.resolveCliSession?.(run.sessionId) ?? null;
         // Unknown session or a chat-attached shell: the chat run (or nothing)
         // represents this work — a duplicate CLI row would double-count it.
-        if (!record || record.chatSessionId) {
+        // A plain shell is no agent at all: it never counts as a chat working.
+        if (!record || record.chatSessionId || (record.toolType != null && !isTrackedAgentCliToolType(record.toolType as TerminalToolType))) {
           runs.delete(run.sessionId);
           continue;
         }
@@ -2151,6 +2165,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const run = runs.get(sessionId);
       if (!run) return;
     }
+    if (SESSION_DESCRIPTION_EVENT_TYPES.has(event.type)) {
+      // A tracked run may have a new title to publish; nothing else changes.
+      if (runs.has(sessionId)) scheduleFlush(false);
+      return;
+    }
 
     const run = ensureRun(sessionId, scopeKey);
     markRunUpdated(run);
@@ -2336,6 +2355,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (disposed || !signal.sessionId) return;
     const existing = runs.get(signal.sessionId);
     const session = scopes.get(scopeKey)?.resolveCliSession?.(signal.sessionId) ?? null;
+    // A plain shell is no agent: its output never makes a chat "working".
+    if (session?.toolType != null && !isTrackedAgentCliToolType(session.toolType as TerminalToolType)) return;
     const atRest = session?.status !== "running" || signal.runtimeState === "idle";
     if (
       atRest

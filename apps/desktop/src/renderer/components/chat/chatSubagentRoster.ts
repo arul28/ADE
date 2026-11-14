@@ -187,10 +187,13 @@ export function useChatChildRoster(
     sameRoster,
   );
   const withFiled = useMemo(() => {
-    if (roster.filed.length === 0) return snapshots;
     const covered = new Set(namedChildIds);
     const missing = roster.filed.filter((child) => !covered.has(child.session.id));
-    return missing.length === 0 ? snapshots : [...snapshots, ...missing.map(filedSubagentRow)];
+    const rows = missing.length === 0 ? snapshots : [...snapshots, ...missing.map(filedSubagentRow)];
+    // Only children that report back are this chat's subagents. A chat that
+    // does not report back is a normal chat, listed in Work, not here.
+    const reporting = rows.filter((row) => !childDoesNotReport(row, roster.byId));
+    return reporting.length === snapshots.length && missing.length === 0 ? snapshots : reporting;
   }, [namedChildIds, roster, snapshots]);
   const childStatuses = useMemo(() => {
     let merged: Map<string, AgentChatSessionStatus> | null = null;
@@ -202,6 +205,28 @@ export function useChatChildRoster(
     return merged ?? runtimeChildStatuses;
   }, [roster, runtimeChildStatuses]);
   return { snapshots: withFiled, childById: roster.byId, childStatuses };
+}
+
+function childDoesNotReport(row: ChatSubagentSnapshot, childById: ReadonlyMap<string, ChildChat>): boolean {
+  if (row.spawnKind === "peer") return true;
+  const id = paneRowChildSessionId(row);
+  return id != null && childById.get(id)?.session.spawnKind === "peer";
+}
+
+/**
+ * The pane status of one spawned child chat, read from its machine's sessions:
+ * running, completed, failed or stopped. Null when the chat is not known here.
+ */
+export function useSpawnedChildPaneStatus(
+  childSessionId: string | null | undefined,
+): "running" | "completed" | "failed" | "stopped" | null {
+  const sessions = useChatMachineSessions();
+  const id = childSessionId?.trim() || null;
+  return useMemo(() => {
+    if (!id || !sessions?.length) return null;
+    const session = sessions.find((candidate) => candidate.id === id);
+    return session ? childChatPaneStatus(spawnNestingPhase(session, Date.now())) : null;
+  }, [id, sessions]);
 }
 
 function sameChildRows(left: readonly ChatSubagentSnapshot[], right: readonly ChatSubagentSnapshot[]): boolean {
@@ -235,7 +260,8 @@ export function useCliParentChildRows(parentId: string | null | undefined): Chat
     const children = sessions
       .filter((session) => session.id !== id
         && session.orchestrationParentSessionId?.trim() === id
-        && (session.spawnKind === "subagent" || session.spawnKind === "peer")
+        // Only children that report back; one that does not is a normal chat.
+        && session.spawnKind === "subagent"
         && !session.archivedAt)
       .sort((left, right) => (left.startedAt < right.startedAt ? -1 : left.startedAt > right.startedAt ? 1 : 0));
     if (children.length === 0) return EMPTY_CHILD_ROWS;
