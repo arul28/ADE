@@ -3435,8 +3435,9 @@ rows come before the brain's own, drawn from the server's record
 (`cloudLaneComputerStages.ts`):
 
 1. **Make computer**: the server's create (the launch id is its request id).
-2. **Join your account**: the computer's own sign-in. In the rare case its
-   headless sign-in stops on a page a person must confirm, the row says so
+2. **Join your account**: the computer's own sign-in, completed without a
+   browser (see the ADE Cloud README's server launcher). If it still can't
+   sign itself in, the row says so
    with the page (`needs_approval`), the card's **Approve** opens it in
    ADE's browser (`snapshot.cloud.approvalUrl`), and the CLI prints it.
 3. **Clone repository**: the computer's clone, as it reports it.

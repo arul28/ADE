@@ -734,9 +734,7 @@ export function startCloudBootLaunch(launchEnv: { launchId: string; joinCode: st
         startDeviceLogin: () => account.startDeviceLogin({ retryUnreachableForMs: 60_000 }),
         pollDeviceLogin: (sessionId) => account.pollDeviceLogin(sessionId),
       },
-      approveHeadless: chromium
-        ? (url, signal) => headless.approveInHeadlessChromium({ url, signal, binary: chromium, logger })
-        : null,
+      approveHeadless: (url, signal) => headless.approveSignInLink({ url, signal, binary: chromium, logger }),
       setUpProject: async (originUrl) => await setUpRepositoryOnThisMachine(host.projectRegistry, originUrl, host.holdCloudWork),
       waitForChatEnd: host.waitForChatEnd,
       launches: async (projectId) => {

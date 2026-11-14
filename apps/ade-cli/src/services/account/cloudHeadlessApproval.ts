@@ -1,18 +1,25 @@
 /**
- * The desktop's hidden approval window, for a brain with no desktop: the same
- * one-time sign-in link (`/device/approve` answers it for this machine's
- * account), opened in a headless Chromium on this machine. The provider
- * template ships Chromium, so a cloud machine can approve the sign-in of a
- * machine it made itself, and a chat there that needs a VM never waits on a
- * tap. The brain decides when this is allowed (cloudBrainMaker.ts). A new
- * cloud computer of a server launch also opens its own join link here
- * (`cloudBootLaunch.ts`). This file only opens the link and reports how it
- * ended, as the window does. One implementation for both: it lives in the
- * CLI so a brain with no desktop code path still has it.
+ * Approves a one-time sign-in link (`/device/approve`, or a server launch's
+ * join) on a machine with nobody at it: the computer of a server launch
+ * joining its account (`cloudBootLaunch.ts`), and a cloud machine approving
+ * the sign-in of a machine it made itself (cloudBrainMaker.ts decides when).
+ * One implementation for both; it lives in the CLI so a brain with no desktop
+ * code path still has it.
+ *
+ * The link is a Clerk sign-in ticket on Clerk's hosted page
+ * (`accounts.…/sign-in?__clerk_ticket=…&redirect_url=<oauth authorize>`).
+ * From a datacenter address that page is behind a Cloudflare bot check
+ * ("Just a moment…", Turnstile) that a headless browser often can't pass in
+ * time, and the join then fell back to a person. So the link is first
+ * completed without a browser (`approveSignInLinkDirectly`): the same ticket
+ * sign-in through Clerk's Frontend API, which answers these computers, then
+ * the authorize step with that session, then the account service's
+ * `/device/callback`. A headless Chromium is the fallback, only while the
+ * ticket is unused.
  *
  * It never types or clicks. A page that stops on something a person has to
- * confirm (a consent screen, a challenge) ends it as `closed`, and the caller
- * falls back to the sign-in link for the person.
+ * confirm ends it as `closed`, and the caller falls back to the sign-in link
+ * for the person.
  */
 
 import { spawn } from "node:child_process";
@@ -248,4 +255,141 @@ export async function approveInHeadlessChromium(args: {
   } finally {
     cleanup();
   }
+}
+
+/** Each request of the direct approval; the whole thing takes about a second. */
+const DIRECT_STEP_TIMEOUT_MS = 20_000;
+/** Redirects followed from the authorize step to the account service's callback. */
+const DIRECT_MAX_REDIRECTS = 8;
+
+/**
+ * The direct approval's answer. `unused`: it stopped before the ticket was
+ * spent (a link it doesn't know, Clerk unreachable or refusing the ticket), so
+ * a browser may still open the same link.
+ */
+export type DirectApprovalResult = "signed_in" | "closed" | "cancelled" | "unused";
+
+/**
+ * Completes a sign-in link without a browser: the ticket sign-in through
+ * Clerk's Frontend API (the origin of the link's `redirect_url`), the OAuth
+ * authorize step with the session it made, and the account service's
+ * `/device/callback`, which approves the device sign-in exactly as the page
+ * does. Clerk's cookies only ever go back to Clerk's own host. Never the
+ * link, ticket or code in a log.
+ */
+export async function approveSignInLinkDirectly(args: {
+  url: string;
+  signal: AbortSignal;
+  logger?: Logger;
+}): Promise<DirectApprovalResult> {
+  const logger = args.logger ?? {};
+  if (args.signal.aborted) return "cancelled";
+  let link: URL;
+  let authorize: URL;
+  let ticket: string | null;
+  try {
+    link = new URL(args.url);
+    ticket = link.searchParams.get("__clerk_ticket");
+    authorize = new URL(link.searchParams.get("redirect_url") ?? "");
+  } catch {
+    return "unused";
+  }
+  if (!ticket || link.protocol !== "https:" || authorize.protocol !== "https:" || authorize.pathname !== "/oauth/authorize") {
+    logger.info?.("cloud.direct_approval_unknown_link", { host: link.host });
+    return "unused";
+  }
+  const step = (signal: AbortSignal) => AbortSignal.any([signal, AbortSignal.timeout(DIRECT_STEP_TIMEOUT_MS)]);
+  const clerk = authorize.origin;
+  const cookies = new Map<string, string>();
+  const keepCookies = (response: Response) => {
+    for (const line of response.headers.getSetCookie?.() ?? []) {
+      const pair = line.split(";")[0] ?? "";
+      const at = pair.indexOf("=");
+      if (at > 0) cookies.set(pair.slice(0, at).trim(), pair.slice(at + 1));
+    }
+  };
+  const cookieHeader = () => [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
+
+  // 1. The ticket sign-in, as Clerk's hosted page sends it.
+  let signIn: Response;
+  try {
+    signIn = await fetch(`${clerk}/v1/client/sign_ins`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json", origin: link.origin },
+      body: new URLSearchParams({ strategy: "ticket", ticket }).toString(),
+      redirect: "manual",
+      signal: step(args.signal),
+    });
+  } catch {
+    if (args.signal.aborted) return "cancelled";
+    logger.warn?.("cloud.direct_approval_unreachable", { host: authorize.host });
+    return "unused";
+  }
+  keepCookies(signIn);
+  const signedIn = await signIn.json().catch(() => null) as { response?: { status?: unknown }; status?: unknown } | null;
+  const signInStatus = signedIn?.response?.status ?? signedIn?.status;
+  if (!signIn.ok || signInStatus !== "complete" || cookies.size === 0) {
+    // Refused before it was spent (an expired or wrong ticket reads the same): a browser can try the link.
+    logger.warn?.("cloud.direct_approval_sign_in_refused", { status: signIn.status, signIn: typeof signInStatus === "string" ? signInStatus : null });
+    return "unused";
+  }
+
+  // 2. The authorize step with that session, to the account service's callback.
+  let next = authorize;
+  for (let hop = 0; hop < DIRECT_MAX_REDIRECTS; hop += 1) {
+    if (args.signal.aborted) return "cancelled";
+    let response: Response;
+    try {
+      response = await fetch(next.toString(), {
+        headers: next.origin === clerk ? { cookie: cookieHeader() } : {},
+        redirect: "manual",
+        signal: step(args.signal),
+      });
+    } catch {
+      if (args.signal.aborted) return "cancelled";
+      logger.warn?.("cloud.direct_approval_step_failed", { host: next.host, path: next.pathname });
+      return "closed";
+    }
+    if (next.origin === clerk) keepCookies(response);
+    if (next.pathname === "/device/callback") {
+      const html = await response.text().catch(() => "");
+      const title = /<title>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ?? "";
+      if (response.status === 200 && /signed in/i.test(title)) return "signed_in";
+      logger.warn?.("cloud.direct_approval_callback_failed", { status: response.status, title: title.slice(0, 80) });
+      return "closed";
+    }
+    const location = response.status >= 300 && response.status < 400 ? response.headers.get("location") : null;
+    if (!location) {
+      // Clerk answered with a page (a consent or a challenge): only a person goes on from here.
+      logger.warn?.("cloud.direct_approval_stopped", { host: next.host, path: next.pathname, status: response.status });
+      return "closed";
+    }
+    try {
+      next = new URL(location, next);
+    } catch {
+      return "closed";
+    }
+    if (next.protocol !== "https:") return "closed";
+  }
+  logger.warn?.("cloud.direct_approval_too_many_redirects", {});
+  return "closed";
+}
+
+/**
+ * The one way a machine with nobody at it approves a sign-in link: without a
+ * browser first, then a headless Chromium (`binary`, when this machine has
+ * one) while the ticket is still unused.
+ */
+export async function approveSignInLink(args: {
+  url: string;
+  signal: AbortSignal;
+  binary: string | null;
+  logger?: Logger;
+  platform?: NodeJS.Platform;
+}): Promise<HeadlessApprovalResult> {
+  const direct = await approveSignInLinkDirectly(args);
+  args.logger?.info?.("cloud.direct_approval", { result: direct });
+  if (direct !== "unused") return direct;
+  if (!args.binary) return "closed";
+  return await approveInHeadlessChromium({ url: args.url, signal: args.signal, binary: args.binary, logger: args.logger, platform: args.platform });
 }

@@ -65,7 +65,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Area | File (under `services/adeCloud/`) |
 |---|---|
 | Machine list and box actions | `cloudMachines.ts` |
-| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the headless approval a brain runs is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` |
+| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the approval a machine with nobody at it runs (browserless first, headless Chromium as the fallback) is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` (`approveSignInLink`) |
 | Half-made machines after a quit | `cloudPendingCreates.ts` |
 | Copy and move | `cloudMachineCopy.ts` |
 | Reconnect a machine removed from ADE | `cloudReconnect.ts` |
@@ -831,10 +831,9 @@ a terminal in.
   server launcher below). The `computer`, `join` and `clone` rows show the
   server's record, read every 3 s (every 10 s once nothing changed for a
   minute); then the brain names the computer's account row after the lane,
-  pairs and follows the computer's own launch. In the rare case the
-  computer's headless sign-in stops on a page a person must confirm
-  (`needs_approval`; seen live once in three launches on 2026-11-14), the
-  join row names the page, the launch's snapshot carries it
+  pairs and follows the computer's own launch. If the computer still can't
+  sign itself in (Clerk's API down or refusing the ticket, and the browser
+  fallback stopped too: `needs_approval`), the join row names the page, the launch's snapshot carries it
   (`cloud.approvalUrl`), the card shows **Approve** (it opens the page in
   ADE's browser, where the person is signed in) and the CLI prints it
   (`approvalUrl` in the status); the server's 30-minute join window still
@@ -919,9 +918,20 @@ launch
   server still makes the computer (a lost create answer, before a retried
   start adopts it) gets a retryable `409 join_not_ready`, and the brain asks
   again with a backoff for up to 10 minutes.
-  The answer is a sign-in link for the launch's account only, opened in the
-  computer's headless Chromium (`cloudHeadlessApproval.ts`, now in
-  `apps/ade-cli`). When the page stops on a confirm step, the launch shows
+  The answer is a sign-in link for the launch's account only: a Clerk
+  sign-in ticket on Clerk's hosted page, continuing to the OAuth authorize
+  step and the account service's `/device/callback`. The computer completes
+  it without a browser (`approveSignInLinkDirectly` in
+  `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts`): the ticket
+  sign-in through Clerk's Frontend API (the authorize URL's origin), the
+  authorize step with that session, then the callback, in about a second.
+  The hosted page sits behind a Cloudflare bot check ("Just a moment…",
+  Turnstile) that a headless Chromium on a datacenter address often can't
+  pass in 25 s; until 2026-11-14 the computer opened the link there, and
+  most joins (3 of 3 probes that day) fell back to a person. Clerk's
+  Frontend API isn't behind that check. A headless Chromium is the fallback
+  only while the ticket is still unused (a link of another shape, Clerk
+  unreachable or refusing the ticket). When that stops too, the launch shows
   `needs_approval` with the device page and code, and the caller offers one
   Approve tap in the person's own browser. The computer waits no longer than
   the join window (`joinExpiresAt` in the join's answer), the minute cron's

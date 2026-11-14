@@ -334,7 +334,7 @@ import {
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
 import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
+import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
@@ -4480,7 +4480,8 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
   });
   // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
+  const onCloudMachine = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+  const chromium = onCloudMachine ? findHeadlessChromium() : null;
   return {
     client: () => requireCloudProvider(credentials),
     getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
@@ -4493,9 +4494,10 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
     account: () => machines.account(),
     removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
     // No window here: the sign-in of a machine this brain made with an
-    // unattended yes opens in a headless Chromium (the template ships one).
-    ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-      approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
+    // unattended yes is approved without a browser, a headless Chromium (the
+    // template ships one) as the fallback.
+    ...(onCloudMachine ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveSignInLink({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
     logger: runtime.logger,
   };
 }
