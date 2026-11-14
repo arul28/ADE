@@ -780,17 +780,19 @@ session on the new computer through `snapshot.cloud.binding`. The brain's
 a terminal in.
 
 - **Who runs it.** This computer's brain (`ade serve`), not the CLI process:
-  the brain holds the account and the provider key. The CLI calls
+  the brain holds the account. The launch itself goes through the server
+  launcher (below), as every cloud lane launch does, the app's too. The CLI calls
   `cloud.lane_launch` and then reads `cloud.lane_launch_status` every 2 s,
   printing the card's own status line on stderr. The core is the desktop's
   (`cloudLaneLaunchService.ts`); `cloudLaneLaunchBrainHost.ts` fills its deps
   in the brain. One host per process; only a process that set the machine
   transport (`ade serve`) builds one.
-- **How it reaches the new computer.** Through the brain's agent machine
-  bridge, by account machine key, the path `--machine <name>` takes: the
-  connect probe is `projects.list`, the clone is `machines.cloneForAgent` (the
-  computer's own Git sign-in), and the hand-off is `chat.startLaunch` there.
-  The bridge has no event stream, so the brain reads the computer's
+- **How it reaches the new computer.** The server makes it, and the
+  computer joins, clones and starts the launch itself. Once it is in the
+  account, the brain reaches it through its agent machine bridge, by account
+  machine key, the path `--machine <name>` takes: the connect probe is
+  `projects.list`, and the launch is read with `chat.getLaunch` there. The
+  bridge has no event stream, so the brain reads the computer's
   `chat.listLaunches` every 5 s until the launch ends.
 - **Asking first.** `lane_launch` and `lane_launch_cancel` get the RPC
   server's caller stamp (`CLOUD_APPROVED_ACTIONS`), and `lane_launch` asks
@@ -824,76 +826,47 @@ a terminal in.
   new computers, the refusal reads "your agents hit today's limit of N new
   computers a day. Change it in Settings › Integrations › ADE Cloud › What
   agents may do › New computers a day." A person is never counted.
-- **The join.** When a desktop app is attached to the brain, the brain
-  sends it the computer's sign-in code (`cloud.approveWindow` over the
-  desktop bridge, `desktopApprovalWindow` in `cloudLaneLaunchBrainHost.ts`;
-  cancelling the launch closes it with `cloud.closeApprovalWindow`). The
-  desktop asks its own account service for the one-time ticket
-  (`requestCloudApprovalTicket`), so its window opens only what that service
-  gave it, and the window signs the computer in with no click. At a step
-  only a person can take (a consent screen, or no ticket to mint) the window
-  ends at once with `needs_person` instead of waiting on a screen the person
-  may not be at, and the brain sends the link right away: the same code when
-  it was never claimed, else a fresh one. If the window can't finish for
-  another reason (the desktop left or closed it, or is too old to have it),
-  the brain waits the moment a landed approval needs, then sends a fresh
-  code's link. With no desktop, the brain approves itself only for an
-  unattended yes with a headless browser here (a cloud computer); otherwise
-  the agent's chat gets a `cloud_join_approval` card (`buildCloudJoinApprovalCard`
-  in `shared/cloudLaneLife.ts`) whose Approve opens the account service's
-  own `/device?user_code=…` page in this computer's ADE browser, where the
-  person confirms the computer by name; the card turns into "joined" or "no
-  longer waits" when the join ends. Only the brain posts it (agents can't
-  post cards), and a client that doesn't know the card shows its text, link
-  included. The CLI prints the link (stderr, and `approvalUrl` in the
-  status). A join that fails puts the computer to sleep (`restWhileFailed`),
-  and the server's no-check-in sleep catches one ADE never looked at again.
-  `ade cloud status` shows a computer that never signed in as "not joined to
-  ADE yet", never "up to date".
-- **The approval after a restart.** The launch record keeps the asking chat
-  and where it lives on this machine (`madeByChat`, `madeByChatScope`, from
-  the brain's cross-scope chat finder at the start), and the link of the card
-  still waiting there (`approvalCardUrl`). A brain that restarts resumes the
-  launch on its machine-level runtime, which has no chat service, so the card
-  goes through `setCloudLaneLaunchBrainServices` (set by `ade serve`): the
-  chat is found in its own scope (booted if it isn't yet) as the wake router
-  finds a parent. The resumed join starts a fresh sign-in, which ends the old
-  code, so the card first turns into "Getting a fresh approval link" with no
-  link (a client shows it as text), then into the fresh Approve card (same
-  card id, so it replaces the old one in place). A deleted chat gets nothing
-  (logged, and the card is no longer tracked). A chat on another machine (a
-  caller over the bridge) is never posted into from here; the phone push and
-  the CLI's status still carry the link. Posts for one launch go out in order.
-- **Phone push.** Each time the join hands its approval to the person (no
-  window approved it), the brain also pushes to its phones: "Approve <computer>
-  joining your ADE account", opening `ade://device?user_code=…`, the phone's
-  own approval sheet. It goes through the push publisher's alert queue
+- **The join.** No approval: the server puts a one-time join key in the new
+  computer's env, and the computer signs itself in to the account (see the
+  server launcher below). The `computer`, `join` and `clone` rows show the
+  server's record, read every 3 s (every 10 s once nothing changed for a
+  minute); then the brain names the computer's account row after the lane,
+  pairs and follows the computer's own launch. In the rare case the
+  computer's headless sign-in stops on a page a person must confirm
+  (`needs_approval`; seen live once in three launches on 2026-11-14), the
+  join row names the page, the launch's snapshot carries it
+  (`cloud.approvalUrl`), the card shows **Approve** (it opens the page in
+  ADE's browser, where the person is signed in) and the CLI prints it
+  (`approvalUrl` in the status); the server's 30-minute join window still
+  applies. `ade cloud status` shows a computer that never signed in as "not
+  joined to ADE yet", never "up to date".
+- **What goes with it.** The server's facts (kind, size, repository, lane id
+  and name, its start or existing branch, `autoName`, the chat's provider,
+  model, effort, permissions, Fast and first message) and the whole launch as
+  the app or CLI set it up (`launch`, at most 256 KB): plan mode, a
+  provider's own permission modes, a lane template, a branch name, a color,
+  linked Linear, GitHub and Jira issues and a PR. `madeBy` is
+  `{ kind: "agent", agent, chatSessionId }` for an agent's launch, so the
+  computer carries `ade_made_by_agent` and `ade_made_by_chat` and the agent
+  limits count it.
+- **Approvals elsewhere.** A machine the brain makes itself (`ade cloud
+  create`, copy, move with no desktop attached) still joins with a device
+  sign-in: its link goes to the agent's chat as a notice, to `make_status`,
+  and as a push to the person's phones ("Approve <computer> joining your ADE
+  account", opening `ade://device?user_code=…`, the phone's own approval
+  sheet; `setCloudJoinApprovalPush` in `cloudBrainMaker.ts`, set by `ade
+  serve`). It goes through the push publisher's alert queue
   (`handleSessionNotice`), so notifications off, quiet hours and the chat's
-  mute apply; one push per code, so a fresh code after a restart pushes
-  again. A brain with no push publisher yet (no project open) logs
-  `cloud_lane_launch.approval_push_skipped`.
-- **Why agent launches don't use the server launcher yet.** The server
-  launcher (below) needs no approval on this machine at all, but it runs a
-  different stage model (the computer runs its own launch and posts its
-  stages) and hasn't been checked live on an agent's path. Moving agent and
-  CLI launches to it is a follow-up once a beta with it is in the cloud
-  template. A computer's ADE answers before its
-  network is always up, so the sign-in start is retried: `ade login`
-  (device mode) keeps trying an account directory it can't reach, that times
-  out or answers without JSON for 45 s, and says which it was; the launcher
-  starts the sign-in again for up to a minute while the computer's reason is
-  one of those (`startCloudBoxSignInWhenReady`, for computers made from an
-  older image). A sign-in that still didn't start puts the computer's own
-  reason (the last line of `cloud-sign-in.log` that says something, without
-  colour codes, tokens, links or ids: `cloudSignInFailureReason`) on the join
-  step and in Copy details.
+  mute apply; one push per code. A brain with no push publisher yet (no
+  project open) logs `cloud.join_approval_push_skipped`.
 - **One computer per id.** The launch id is printed first (stderr, `--json`
   too). The same `--launch-id` again answers that launch, and a failed one
-  goes on from its failed step; `--prompt` is not needed again (the launch
+  is retried (a computer that failed on its own side begins again on a new
+  one); `--prompt` is not needed again (the launch
   keeps it), and an id this ADE doesn't hold asks for `--prompt`. A step
-  resumed after the brain restarted keeps its first start time, and the join
-  publishes only when what it shows changes; the server returns the same computer for a
-  repeated request id. Ctrl-C stops only the waiting: the launch goes on in
+  resumed after the brain restarted keeps its first start time, and a row
+  publishes only when what it shows changes; the server answers the same
+  launch for a repeated id. Ctrl-C stops only the waiting: the launch goes on in
   the brain, which resumes saved records 5 s after it starts.
   `ade chat launch-status <id> --machine cloud` reads it, and
   `ade chat launch-cancel <id> --machine cloud` stops it and deletes its
@@ -905,9 +878,11 @@ a terminal in.
 
 ### A new lane with no computer of your own (the server launcher)
 
-A person with a computer launches from it, as above. A caller with none (the
-web client, the phone, an automation on ADE Cloud) starts the lane through
-ADE's server, and the new computer runs its own launch
+Every new lane on its own computer starts here: from the app and the CLI
+(their launch owner, `cloudLaneLaunchService.ts`, sends it and follows the
+computer's launch once it joins), and from a caller with no computer (the web
+client, the phone, an automation on ADE Cloud). The new computer runs its own
+launch
 (`apps/account-directory/src/cloud/launches.ts`, migration `0029`; plan:
 `docs/plans/cloud-6/c6-c8-launcher-spec.md`).
 
@@ -919,7 +894,13 @@ ADE's server, and the new computer runs its own launch
   `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
   A caller whose lane name came from the prompt sends `lane.autoName: true`:
   the computer's brain then names the lane and its branch with the AI name, as
-  a local lane is named.
+  a local lane is named. The kind is `chat`, `lane` or `cli` (a CLI session
+  the launching app starts once the computer's brain has the launch). An ADE
+  app also sends its own launch args (`launch`, kept as sent, at most
+  256 KB); the computer starts from them, and the facts win where both say
+  something. `retry: true` on a launch whose computer failed before its agent
+  started (it couldn't join in time, clone or start) deletes that computer
+  and begins again under the same id; the start then makes a new one.
 - **Join.** The computer's env carries `ADE_LAUNCH_ID` and an
   `ADE_LAUNCH_JOIN` code. The code is an HMAC under the Worker secret
   `CLOUD_LAUNCH_JOIN_KEY` of the launch id and a salt the row keeps from the
@@ -1079,8 +1060,10 @@ Each call is account level: it names a computer of the account, never a pin.
   a size at all: `cloud.resize` is declined for it.
 - **Push this branch?** `lane.cloudStartBranch` and `lane.pushCloudStartBranch`
   run on the machine that has the project (pinned), before a cloud launch.
-- **Files on the first message** go to the clone on the new computer at the
-  hand-off (`uploadAttachment`), once per launch.
+- **Files on the first message** go to the server launcher before the start
+  names them (`uploadLaunchFile`), once per launch; files on a message queued
+  meanwhile go to the clone on the new computer after the hand-off
+  (`uploadAttachment`).
 - **Cancel** forgets this app's saved connection to the deleted computer.
 
 The launch writes the lane's branch into the computer's metadata
@@ -1229,8 +1212,8 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
 
 - Busy: a running chat turn, a real running command, an agent CLI actually working,
   setup, a new-lane launch still setting up (`lane_setup`: fetch, checkout,
-  environment), first clone, move, copy, a lane launch between join and its
-  hand-off (`lane_launch`, a 30-minute hold the desktop sets and releases)
+  environment), first clone, move, copy, a server launch between its join and
+  its hand-off (the computer holds itself, `cloudBootLaunch.ts`)
   (holds in `$ADE_HOME/cloud/holds/*.json`), someone
   watching a tool (`work_tools.noteWatching`, once a minute, from the desktop, while
   its window is in front and the person moved in the last 3 minutes).

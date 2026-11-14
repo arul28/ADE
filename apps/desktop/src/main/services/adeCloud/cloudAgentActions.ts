@@ -71,7 +71,6 @@ import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
 import type { CloudLogger } from "./cloudProvider";
 import type { CloudMoveResult } from "./cloudMachineCopy";
-import type { CloudApprovalWindowAnswer, CloudApprovalWindowRequest } from "./cloudDesktopActions";
 import type { CloudBrainMaker, CloudMakeInput } from "./cloudBrainMaker";
 import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
@@ -110,9 +109,6 @@ export type CloudDesktopBridge = {
   create(args: CloudCreateMachineArgs & CloudMadeBy): Promise<CloudCreateMachineResult>;
   copy(args: { instanceId: string; name?: string | null; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudCreateMachineResult & { copiedFrom: string; forkMs: number }>;
   move(args: { instanceId: string; machineKey?: string | null; to: CloudMachineKind; shape?: CloudShapeId | null } & CloudMadeBy): Promise<CloudMoveResult>;
-  /** The desktop's approval window for a machine this brain signs in (`CloudDesktopActions.approveWindow`). An older desktop answers "not exposed". */
-  approveWindow?(args: CloudApprovalWindowRequest): Promise<CloudApprovalWindowAnswer>;
-  closeApprovalWindow?(args: { id: string }): Promise<void>;
 };
 
 export type CloudChatApprovals = {
@@ -719,23 +715,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         originUrl: text(args, "originUrl") ?? deps.projectOriginUrl?.() ?? null,
         madeByChat: madeByChat(approval),
         caller: { chatSessionId, permissionLevel: chatSessionId ? deps.approvals?.permissionLevel(chatSessionId) ?? null : null },
-        notice: chatSessionId && deps.approvals ? ((message: string) => deps.approvals!.notice(chatSessionId, message)) : null,
-        card: chatSessionId && deps.approvals?.postCard
-          ? ((card: AdeCardPayload) => {
-            void deps.approvals!.postCard!(chatSessionId, card).catch((error: unknown) => {
-              deps.logger?.warn?.("cloud.lane_launch_card_failed", { cardId: card.cardId, error: getErrorMessage(error) });
-              // The card's words still reach the chat (the approval link among them).
-              deps.approvals!.notice(chatSessionId, card.fallbackText);
-            });
-          })
-          : null,
       };
       if (existing) {
         // Already approved and counted when it started.
         if (approval.by === "agent" && existing.madeByChat !== chatSessionId) {
           throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can follow it here.");
         }
-        return (await host.start({ ...startArgs, selfApprove: false })).status;
+        return (await host.start(startArgs)).status;
       }
       // Refused before the question, never after a yes: the launch itself,
       // then the account (hours, computers, disk), with the sentences
@@ -757,7 +743,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         personPlace: CLOUD_LANE_PERSON_PLACE,
       });
       try {
-        const started = await host.start({ ...startArgs, madeByAgent: yes.maker, selfApprove: yes.unattended });
+        const started = await host.start({ ...startArgs, madeByAgent: yes.maker });
         if (started.created) yes.counted();
         return started.status;
       } finally {

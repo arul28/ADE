@@ -3,8 +3,8 @@ import path from "node:path";
 import type { ChatLaunchArgs, ChatLaunchSnapshot } from "../../../shared/types";
 import type { CloudTier } from "../../../shared/cloudTiers";
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
+import type { CloudLaunchAttachment } from "../../../../../account-directory/src/cloud/contract";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
-import type { ExternalChatScope } from "../chat/externalChats";
 import { getErrorMessage } from "../shared/utils";
 
 /**
@@ -19,7 +19,7 @@ export type CloudLaneLaunchRecord = {
   v: 1;
   /** Always carries `cloud`. After the hand-off, the computer's brain's snapshot as last seen. */
   snapshot: ChatLaunchSnapshot & { cloud: NonNullable<ChatLaunchSnapshot["cloud"]> };
-  /** What the computer's brain gets at the hand-off: the launch minus its cloud target. */
+  /** What the computer's brain starts from (sent to the server launcher): the launch minus its cloud target. */
   launch: Omit<ChatLaunchArgs, "cloud" | "priorStages">;
   project: {
     /** `github.com/owner/repo`, as `normalizeGitRemoteIdentity` writes it. */
@@ -27,14 +27,22 @@ export type CloudLaneLaunchRecord = {
     cloneUrl: string;
     repoName: string;
   };
-  /** The size, read from the catalog once the `computer` stage starts. */
+  /** The size, read from the catalog once the `computer` stage starts (for the row's words). */
   tier: CloudTier | null;
   /** The computer's name on ADE Cloud and in the account. */
   computerName: string;
   /** This app's saved remote target for the computer, once paired. */
   targetId: string | null;
-  /** Sign-ins started on the computer; a repeat needs a fresh code. */
-  joinAttempts: number;
+  /**
+   * `server`: the launch runs through ADE's server launcher. Records from an
+   * ADE before it lack it; their computer was made here and never joins by
+   * itself, so it is deleted and the launch starts again on the server.
+   */
+  via?: "server";
+  /** The next start asks the server to begin a launch whose computer failed again (a Retry). */
+  retryOnServer?: boolean;
+  /** Files from this computer already sent to the server launcher: local path to the file there. */
+  serverFiles?: Record<string, CloudLaunchAttachment>;
   /**
    * The local sequence at the hand-off. The brain counts its own sequence from
    * 1, so every brain snapshot is served above this to stay newer for clients.
@@ -50,21 +58,9 @@ export type CloudLaneLaunchRecord = {
   cleanupDone: boolean;
   /** The agent's chat that started it, or null for a person's launch. Older records lack it. */
   madeByChat?: string | null;
-  /**
-   * Where `madeByChat` lives on this machine (its project, or the personal
-   * chats), so a brain that restarted can post into it without a caller.
-   * Null when unknown (a chat on another machine, an older record).
-   */
-  madeByChatScope?: ExternalChatScope | null;
-  /**
-   * The link on the approval card still waiting in `madeByChat`, or null.
-   * Kept so a brain that restarted retires a card whose code it replaced,
-   * and settles it when the join ends.
-   */
-  approvalCardUrl?: string | null;
   /** The kind of agent that started it (written on the computer for the daily limit); null for a person's. */
   madeByAgent?: CloudAgentMaker | null;
-  /** Files from this computer already sent to the new one: local path to the path there. */
+  /** Files from this computer already sent to the new one (queued messages): local path to the path there. */
   carriedFiles?: Record<string, string>;
   /** The branch last written into the computer's metadata (`ade_lane_branch`). */
   branchRecorded?: string | null;

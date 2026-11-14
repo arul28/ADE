@@ -1,57 +1,59 @@
-import {
-  cloudCatalogOf,
-  CLOUD_JOIN_WATCH_MS,
-  cloudMadeByMetadata,
-  CLOUD_WAKE_PORT,
-  CLOUD_WAKE_PORT_LABEL,
-} from "../../../shared/adeCloud";
-import {
-  CLOUD_LANE_ID_METADATA,
-  CLOUD_LANE_NAME_METADATA,
-  CLOUD_PROJECT_ORIGIN_METADATA,
-} from "../../../shared/cloudLaneLaunch";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { CLOUD_JOIN_WATCH_MS, cloudCatalogOf } from "../../../shared/adeCloud";
 import { cloudTier, type CloudTier } from "../../../shared/cloudTiers";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { createCloudApiClient, CloudApiError } from "../../../shared/cloudApiClient";
 import type {
+  AgentChatFileRef,
   ChatLaunchCloudStageId,
+  ChatLaunchSnapshot,
   ChatLaunchStage,
   ChatLaunchStageId,
   ChatLaunchStageStatus,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
+import { CLOUD_LAUNCH_MAX_ARGS_BYTES } from "../../../../../account-directory/src/cloud/contract";
+import type {
+  CloudLaunchAttachment,
+  CloudLaunchRecord,
+  CloudLaunchStage,
+  CloudServerLaunchRequest,
+} from "../../../../../account-directory/src/cloud/contract";
 import { getErrorMessage } from "../shared/utils";
-import {
-  approveCloudMachineSignIn,
-  cloudMinAdeVersion,
-  readCloudBoxAuth,
-  waitForCloudAccountRow,
-  waitForCloudBoxAuth,
-} from "./cloudMachineCreator";
-import { cloudSignInNotStartedMessage, startCloudBoxSignInWhenReady } from "./cloudBoxSignInStart";
+import { waitForCloudAccountRow } from "./cloudMachineCreator";
 import type { CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
-  CANT_MAKE_COMPUTER,
   CONNECT_RETRY_MS,
   CREATE_IN_PROGRESS_POLL_MS,
   CREATE_IN_PROGRESS_WAIT_MS,
-  LANE_LAUNCH_HOLD,
-  LANE_LAUNCH_HOLD_MS,
-  LOST_CREATE_LOOK_MS,
   LaunchStepError,
+  SERVER_LAUNCH_POLL_MS,
+  SERVER_LAUNCH_SLOW_POLL_MS,
+  SERVER_LAUNCH_BIND_WAIT_MS,
   clip,
-  mayHaveMadeComputer,
+  cloudLaneConfig,
   type CloudLaneLaunchDeps,
   type Logger,
 } from "./cloudLaneLaunchSteps";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { CloudProviderError, type CloudInstance, type CloudProvider } from "./cloudProvider";
-import { cloudHoldCommand, cloudReleaseHoldCommand, enableCloudSleep } from "./cloudSleep";
 
 /**
- * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`):
- * the `computer`, `join` and `clone` stages, the hold that keeps the computer
- * awake until the hand-off, and the cancel's delete of the computers this
- * launch made. The service hands in how a stage row changes and is saved.
+ * The computer half of an ADE Cloud lane launch (`cloudLaneLaunchService.ts`),
+ * run by ADE's server launcher (`/cloud/launches`, docs/plans/cloud-6/
+ * c6-c8-launcher-spec.md): this app sends the launch, and the server makes
+ * the computer with a one-time join key in its env. The new computer signs
+ * itself in to the account, clones the repository, starts the launch on its
+ * own brain (same launch id and lane id) and posts its stages. No device
+ * approval from here, ever.
+ *
+ * This side shows the server's stages on the `computer`, `join` and `clone`
+ * rows, and once the computer is in the account it pairs with it, finds the
+ * project there and the brain's launch, which it follows from then on (the
+ * service's hand-off). A cancel before the agent starts deletes the computer
+ * (the server's cancel, and this app's own delete of computers with the
+ * launch's request id).
  */
 
 /** How a stage changes the launch's record, from the service that owns it. */
@@ -69,6 +71,34 @@ export type CloudLaneStageHandle = {
   assertActive: (record: CloudLaneLaunchRecord, signal: AbortSignal) => void;
 };
 
+/** The server's no that a later ask gets past: no answer, a busy server, a create still in flight. */
+const retryableStart = (error: unknown): boolean =>
+  error instanceof CloudApiError && (error.status === 0 || error.status === 429 || error.status >= 500 || error.code === "create_in_progress");
+
+const CONTENT_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".heic": "image/heic",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".json": "application/json",
+  ".csv": "text/csv",
+};
+
+function contentTypeOf(file: AgentChatFileRef): string {
+  const known = CONTENT_TYPES[path.extname(file.path).toLowerCase()];
+  if (known) return known;
+  return file.type === "image" ? "image/png" : "application/octet-stream";
+}
+
+/** Only links: files from this computer travel as the server's files, never as paths here. */
+const linksOnly = (list: AgentChatFileRef[] | undefined): AgentChatFileRef[] | undefined =>
+  list ? list.filter((file) => file.type === "image-url") : list;
+
 export function createCloudLaneComputerStages(
   deps: CloudLaneLaunchDeps,
   handle: CloudLaneStageHandle,
@@ -79,214 +109,192 @@ export function createCloudLaneComputerStages(
 
   const providerClient = async (): Promise<CloudProvider> => await deps.creator.client();
 
-  /** The size picked at Send, read from the server's catalog (rates included). */
-  const resolveTier = async (client: CloudProvider, sizeId: string): Promise<CloudTier> => {
-    const account = await client.getAccount();
-    const tier = cloudTier(cloudCatalogOf(account), sizeId);
-    if (!tier) throw new LaunchStepError("ADE Cloud doesn't offer that size right now. Pick another one.");
-    return tier;
+  /** ADE's server launcher for this account, or a plain sentence why there is none. */
+  const launcher = () => {
+    const baseUrl = deps.creator.directoryBaseUrl();
+    if (!baseUrl) throw new LaunchStepError("ADE's account service isn't set up on this computer, so it can't add a computer to your account.");
+    return createCloudApiClient({
+      baseUrl,
+      accessToken: () => deps.creator.getAccountToken(),
+      ...(deps.creator.fetch ? { fetch: deps.creator.fetch } : {}),
+    });
   };
 
-  /** A computer this launch made: the one on the record, else the one carrying its request id. */
-  const findOwnComputer = async (client: CloudProvider, record: CloudLaneLaunchRecord): Promise<CloudInstance | null> => {
-    const launchId = record.snapshot.launchId;
-    const known = record.snapshot.cloud.instanceId;
-    if (known) {
-      try {
-        const instance = await client.getInstance(known);
-        if (instance.status !== "deleted" && instance.metadata.ade_request_id === launchId) return instance;
-      } catch (error) {
-        if (!(error instanceof CloudProviderError && error.status === 404)) throw error;
-      }
-      record.snapshot.cloud.instanceId = null;
-      persist(record);
+  /** The size picked at Send, read from the server's catalog, for the row's words. Unreadable: no words. */
+  const resolveTier = async (record: CloudLaneLaunchRecord): Promise<CloudTier | null> => {
+    if (record.tier) return record.tier;
+    try {
+      const account = await (await providerClient()).getAccount();
+      record.tier = cloudTier(cloudCatalogOf(account), record.snapshot.cloud.sizeId) ?? null;
+    } catch (error) {
+      logger.warn("cloud_lane_launch.tier_read_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
     }
-    const listed = await client.listInstances();
-    return listed.find((instance) => instance.metadata.ade_request_id === launchId && instance.status !== "deleted") ?? null;
+    return record.tier;
+  };
+  const tierWords = (tier: CloudTier | null): string | null => (tier ? `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB` : null);
+
+  /**
+   * Files from this computer named in the first message, sent to the server
+   * before the start names them. Each goes once per launch
+   * (`record.serverFiles`): a resumed or retried start names the same ones.
+   */
+  const uploadFiles = async (record: CloudLaneLaunchRecord, api: ReturnType<typeof launcher>): Promise<CloudLaunchAttachment[]> => {
+    const local = (record.launch.chat?.message.attachments ?? []).filter((file) => file.type !== "image-url");
+    if (!local.length) return [];
+    const sent = (record.serverFiles ??= {});
+    const out: CloudLaunchAttachment[] = [];
+    for (const [index, file] of local.entries()) {
+      const known = sent[file.path];
+      if (known) {
+        out.push(known);
+        continue;
+      }
+      const name = path.basename(file.path) || "attachment";
+      try {
+        const bytes = await fs.readFile(file.path);
+        const fileId = `f${index}-${record.snapshot.launchId.slice(0, 8)}`;
+        const contentType = contentTypeOf(file);
+        const uploaded = await api.uploadLaunchFile(record.snapshot.launchId, fileId, new Uint8Array(bytes), contentType);
+        const attachment: CloudLaunchAttachment = { fileId, name, contentType, sizeBytes: uploaded.sizeBytes };
+        sent[file.path] = attachment;
+        persist(record);
+        out.push(attachment);
+      } catch (error) {
+        throw new LaunchStepError(`ADE couldn't send ${name} to ADE Cloud: ${getErrorMessage(error).replace(/\.$/, "")}. Retry to send it again.`);
+      }
+    }
+    return out;
   };
 
-  const createComputer = async (
-    client: CloudProvider,
-    record: CloudLaneLaunchRecord,
-    tier: CloudTier,
-    signal: AbortSignal,
-  ): Promise<CloudInstance> => {
-    const launchId = record.snapshot.launchId;
-    // No sign-in value in the env (the Worker and the host would see it): the
-    // computer's brain takes them from the account vault (cloudMachineCreator.ts).
-    const minAdeVersion = cloudMinAdeVersion(deps.creator.minAdeVersion?.() ?? null);
-    const env: Record<string, string> = minAdeVersion ? { ADE_MIN_VERSION: minAdeVersion } : {};
-    assertActive(record, signal);
-    const input = {
-      name: record.computerName,
-      type: tier.type,
-      resources: { cpu: tier.cpu, memory: tier.memoryGb },
-      metadata: {
-        [CLOUD_LANE_ID_METADATA]: record.snapshot.laneId,
-        [CLOUD_LANE_NAME_METADATA]: record.snapshot.laneName.slice(0, 200),
-        [CLOUD_PROJECT_ORIGIN_METADATA]: record.project.identity,
-        ...cloudMadeByMetadata(record),
-        created_by: "ade",
-        ade_request_id: launchId,
-      },
-      ...(Object.keys(env).length ? { env } : {}),
-      // The wake URL: the computer's brain requests it while it works (cloudSleep.ts).
-      publicPorts: [{ port: CLOUD_WAKE_PORT, label: CLOUD_WAKE_PORT_LABEL }],
+  /** The launch as the server takes it: its facts, and this app's own args for a computer that reads them. */
+  const serverRequestOf = (record: CloudLaneLaunchRecord, files: CloudLaunchAttachment[], retry: boolean): CloudServerLaunchRequest => {
+    const launch = record.launch;
+    const snapshot = record.snapshot;
+    const lane = cloudLaneConfig(launch.laneConfig);
+    const create = launch.chat?.create;
+    const kind = snapshot.kind;
+    const madeByChat = record.madeByChat ?? null;
+    const madeByAgent = record.madeByAgent ?? (madeByChat ? "chat" : null);
+    // The first message travels once, in `chat.prompt`: the whole start is one body of at most 256 KB.
+    const chatFacts = kind === "chat" && Boolean(create && launch.chat);
+    const { prompt: _prompt, ...rest } = launch;
+    let appArgs: Record<string, unknown> = {
+      ...(chatFacts ? rest : launch),
+      ...(launch.attachments ? { attachments: linksOnly(launch.attachments) } : {}),
+      ...(launch.chat
+        ? { chat: { ...launch.chat, message: { ...launch.chat.message, ...(chatFacts ? { text: "" } : {}), attachments: linksOnly(launch.chat.message.attachments) } } }
+        : {}),
+      laneConfig: lane,
     };
+    if (JSON.stringify(appArgs).length > CLOUD_LAUNCH_MAX_ARGS_BYTES) {
+      // A long display text is the only big part left: without it the computer shows the message itself.
+      const { displayPrompt: _displayPrompt, ...lighter } = appArgs;
+      const chat = lighter.chat as { message?: Record<string, unknown> } | undefined;
+      appArgs = chat?.message ? { ...lighter, chat: { ...chat, message: { ...chat.message, displayText: null } } } : lighter;
+    }
+    const sendArgs = JSON.stringify(appArgs).length <= CLOUD_LAUNCH_MAX_ARGS_BYTES;
+    if (!sendArgs) logger.warn("cloud_lane_launch.app_args_too_big", { launchId: snapshot.launchId });
+    return {
+      launchId: snapshot.launchId,
+      kind,
+      sizeId: snapshot.cloud.sizeId as CloudServerLaunchRequest["sizeId"],
+      project: { origin: record.project.identity },
+      lane: {
+        id: snapshot.laneId,
+        name: snapshot.laneName,
+        ...(lane.mode === "existing" && lane.branchRef ? { existingBranch: lane.branchRef } : {}),
+        ...(lane.mode !== "existing" && lane.start?.from === "branch" && lane.start.branch ? { from: lane.start.branch } : {}),
+        ...(lane.mode !== "existing" && lane.autoName ? { autoName: true } : {}),
+      },
+      ...(kind === "chat" && create && launch.chat
+        ? {
+          chat: {
+            provider: create.provider,
+            modelId: create.modelId ?? create.model,
+            ...(create.reasoningEffort ? { effort: create.reasoningEffort } : {}),
+            permissions: create.permissionMode ?? "default",
+            ...(create.fastMode ? { fast: true } : {}),
+            prompt: launch.chat.message.text,
+            ...(files.length ? { attachments: files } : {}),
+          },
+        }
+        : {}),
+      madeBy: madeByAgent ? { kind: "agent", agent: madeByAgent, chatSessionId: madeByChat } : { kind: "person" },
+      channel: deps.updateChannel?.() === "beta" ? "beta" : "stable",
+      ...(sendArgs ? { launch: appArgs } : {}),
+      ...(retry ? { retry: true } : {}),
+    };
+  };
+
+  /** Starts (or, the same id again, reads) the launch on the server, asking again while a create is in flight. */
+  const startOnServer = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<CloudLaunchRecord> => {
+    const api = launcher();
+    if (!(await deps.creator.getAccountToken())) throw new LaunchStepError("Sign in to ADE on this computer first. The new computer joins your account.");
+    const files = await uploadFiles(record, api);
+    assertActive(record, signal);
+    const body = serverRequestOf(record, files, record.retryOnServer === true);
     const waitUntil = Date.now() + CREATE_IN_PROGRESS_WAIT_MS;
     for (;;) {
       try {
-        return await client.createInstance(input, signal);
+        const answer = await api.startLaunch(body);
+        if (record.retryOnServer) {
+          record.retryOnServer = false;
+          persist(record);
+        }
+        return answer;
       } catch (error) {
         assertActive(record, signal);
-        // The server is still making it for this request id: ask again, never twice at once.
-        if (error instanceof CloudProviderError && error.code === "create_in_progress" && Date.now() < waitUntil) {
+        if (retryableStart(error) && Date.now() < waitUntil) {
+          logger.info("cloud_lane_launch.server_start_again", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
           await sleep(CREATE_IN_PROGRESS_POLL_MS);
           continue;
         }
-        if (!mayHaveMadeComputer(error)) throw error;
-        // The answer was lost, but the computer may exist: look for its tag
-        // instead of asking again, so an older server never makes two.
-        logger.warn("cloud_lane_launch.create_answer_lost", { launchId, error: getErrorMessage(error) });
-        const lookUntil = Date.now() + LOST_CREATE_LOOK_MS;
-        while (Date.now() < lookUntil) {
-          assertActive(record, signal);
-          const found = await findOwnComputer(client, record).catch((lookError: unknown) => {
-            logger.warn("cloud_lane_launch.lost_create_look_failed", { launchId, error: getErrorMessage(lookError) });
-            return null;
-          });
-          if (found) return found;
-          await sleep(CREATE_IN_PROGRESS_POLL_MS);
-        }
+        // The server's own sentence (hours, computers, disk, a private repository) is the one to show.
+        if (error instanceof CloudApiError && error.status >= 400 && error.status < 500) throw new LaunchStepError(error.message);
         throw error;
       }
     }
   };
 
-  const runComputerStage = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<void> => {
-    setStage(record, "computer", "running", { detail: null });
-    publish(record);
-    const client = await providerClient();
-    if (!deps.creator.directoryBaseUrl()) {
-      throw new LaunchStepError("ADE's account service isn't set up on this computer, so it can't add a computer to your account.");
-    }
-    if (!(await deps.creator.getAccountToken())) throw new LaunchStepError("Sign in to ADE on this computer first. The new computer joins your account.");
-    record.tier ??= await resolveTier(client, record.snapshot.cloud.sizeId);
-    const tier = record.tier;
-    assertActive(record, signal);
-    let instance = await findOwnComputer(client, record);
-    // A computer ADE Cloud gave up on never answers: delete it and make a new one.
-    if (instance?.status === "failed") {
-      logger.warn("cloud_lane_launch.failed_computer_replaced", { launchId: record.snapshot.launchId, instanceId: instance.id });
-      await deleteCloudInstanceConfirmed(client, instance.id, { logger, sleep, reason: "lane_launch_failed_computer" });
-      instance = null;
-    }
-    if (!instance) {
-      if (!(await client.hasTemplate())) throw new LaunchStepError(CANT_MAKE_COMPUTER);
-      const stage = stageOf(record, "computer");
-      if (stage) stage.detail = `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB`;
-      publish(record, { persist: false });
-      instance = await createComputer(client, record, tier, signal);
-      deps.onComputerCreated?.();
-      logger.info("cloud_lane_launch.computer_created", { launchId: record.snapshot.launchId, instanceId: instance.id, tier: tier.id });
-    }
-    record.snapshot.cloud.instanceId = instance.id;
-    publish(record);
-    assertActive(record, signal);
-    // The computer counts as made once its ADE answers.
-    await waitForCloudBoxAuth(client, instance.id, { signal, sleep, machine: "the new computer" });
-    finishStage(record, "computer", `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB`);
-  };
-
-  const runJoinStage = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<void> => {
-    const launchId = record.snapshot.launchId;
-    const instanceId = record.snapshot.cloud.instanceId;
-    if (!instanceId) throw new LaunchStepError("ADE lost track of the new computer. Cancel and send again.");
-    setStage(record, "join", "running", { detail: null });
-    publish(record);
-    const client = await providerClient();
-    const directory = deps.creator.directoryBaseUrl();
-    if (!directory) throw new LaunchStepError("ADE's account service isn't set up on this computer, so it can't add a computer to your account.");
-    const name = record.computerName;
-    // Wakes a computer a failure put to sleep.
-    const auth = await waitForCloudBoxAuth(client, instanceId, { signal, sleep, machine: "the new computer" });
-    assertActive(record, signal);
-    if (auth.signedIn !== true) {
-      // A code an earlier attempt sent for approval may be used up: start a fresh one.
-      const fresh = record.joinAttempts > 0;
-      record.joinAttempts += 1;
-      persist(record);
-      // The fresh sign-in ends the code an earlier attempt sent (before a restart, say).
-      if (fresh) deps.onApprovalCodeRetired?.(launchId);
-      // A computer that just came up (or woke into a fresh boot) can start its
-      // sign-in before its network is ready: started again for a minute then.
-      const started = await startCloudBoxSignInWhenReady(client, instanceId, "login", {
-        signal,
-        fresh,
-        sleep,
-        logger: { info: (event, meta) => logger.info(event, { launchId, ...meta }) },
-      });
-      assertActive(record, signal);
-      if (!started.userCode) {
-        logger.warn("cloud_lane_launch.sign_in_no_code", { launchId, instanceId, exitCode: started.exitCode, reason: started.reason });
-        // The computer's own reason goes on the card and into Copy details.
-        throw new LaunchStepError(cloudSignInNotStartedMessage("The new computer", started));
+  /** The server's rows for this app's three: what the computer reported, else what the launch's state says. */
+  const showServerRecord = (record: CloudLaneLaunchRecord, server: CloudLaunchRecord): void => {
+    const reported = new Map<string, CloudLaunchStage>(server.stages.map((stage) => [stage.id, stage]));
+    const show = (id: ChatLaunchCloudStageId, status: ChatLaunchStageStatus, detail: string | null) => {
+      const row = stageOf(record, id);
+      if (!row) return;
+      if (row.status === status && (row.detail ?? null) === detail) return;
+      if (status === "done") {
+        finishStage(record, id, detail);
+        return;
       }
-      await approveCloudMachineSignIn(deps.creator, {
-        userCode: started.userCode,
-        name,
-        instanceId,
-        requestId: launchId,
-        restartSignIn: async () => (await startCloudBoxSignInWhenReady(client, instanceId, "login", {
-          signal,
-          fresh: true,
-          sleep,
-          logger: { info: (event, meta) => logger.info(event, { launchId, ...meta }) },
-        })).userCode,
-        directory,
-        signal,
-        readSignedIn: async () => (await readCloudBoxAuth(client, instanceId, signal))?.signedIn === true,
-        onApprovalSent: () => undefined,
-        progress: (stage, message, _instanceId, approvalUrl) => {
-          if (stage === "approve_elsewhere" && approvalUrl) deps.onApprovalLink?.(launchId, approvalUrl);
-          // Only the steps that ask something of the person reach the row.
-          const row = stageOf(record, "join");
-          if (!row || row.status !== "running") return;
-          const detail = stage === "confirm_in_window" || stage === "approve_elsewhere" ? clip(message, 160) : null;
-          // The sign-in reports on every poll: only a change goes out.
-          if (row.detail === detail) return;
-          row.detail = detail;
-          publish(record, { persist: false });
-        },
-      });
+      if (row.status !== status) setStage(record, id, status, { detail });
+      else row.detail = detail;
+      publish(record, { persist: false });
+    };
+    const repository = record.project.identity.replace(/^github\.com\//i, "");
+    const state = server.state;
+    const computerMade = Boolean(server.instanceId) && state !== "making";
+    show("computer", computerMade ? "done" : "running", tierWords(record.tier));
+    if (!computerMade) return;
+    const joined = state === "joined" || state === "running" || state === "done" || reported.get("join")?.status === "done";
+    if (!joined) {
+      const approval = state === "needs_approval" ? server.approval : null;
+      if (approval?.url) record.snapshot.cloud.approvalUrl = approval.url;
+      else delete record.snapshot.cloud.approvalUrl;
+      show("join", "running", approval ? `Approve "${record.computerName}" joining your account: open ${approval.url} on your phone or in a browser signed in to ADE.` : null);
+      return;
     }
-    assertActive(record, signal);
-    const joinRow = stageOf(record, "join");
-    if (joinRow) joinRow.detail = "Adding it to your computers…";
-    publish(record, { persist: false });
-    const row = await waitForCloudAccountRow(deps.creator, { client, instanceId, name, requestId: launchId, signal });
-    if (!row.machineKey) throw new LaunchStepError("The new computer signed in, but ADE couldn't tell which computer it is.");
-    record.snapshot.cloud.machineKey = row.machineKey;
-    persist(record);
-    // Signed in, so its brain keeps itself awake while it works; let ADE Cloud sleep it otherwise.
-    const sleepResult = await enableCloudSleep(client, instanceId, { logger });
-    if (sleepResult.state !== "on") logger.warn("cloud_lane_launch.sleep_not_enabled", { launchId, instanceId, state: sleepResult.state });
-    // Nothing on its busy list sees the pairing and clone ahead: hold it awake until the hand-off.
-    await client.exec(instanceId, cloudHoldCommand(LANE_LAUNCH_HOLD, LANE_LAUNCH_HOLD_MS), { timeoutMs: 30_000 }).catch((error: unknown) => {
-      logger.warn("cloud_lane_launch.hold_failed", { launchId, instanceId, error: getErrorMessage(error) });
-    });
-    finishStage(record, "join", row.joined ? null : "Still starting");
+    delete record.snapshot.cloud.approvalUrl;
+    show("join", "done", null);
+    const clone = reported.get("clone");
+    show("clone", clone?.status === "done" ? "done" : "running", clone?.detail?.trim() || repository);
   };
 
-  const releaseHold = async (record: CloudLaneLaunchRecord): Promise<void> => {
-    const instanceId = record.snapshot.cloud.instanceId;
-    if (!instanceId) return;
-    try {
-      await (await providerClient()).exec(instanceId, cloudReleaseHoldCommand(LANE_LAUNCH_HOLD), { timeoutMs: 30_000 });
-    } catch (error) {
-      // It expires on its own.
-      logger.warn("cloud_lane_launch.hold_release_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
-    }
+  /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */
+  const serverFailure = (server: CloudLaunchRecord): LaunchStepError => {
+    if (server.state === "cancelled") return new LaunchStepError("This launch was cancelled on ADE Cloud.");
+    const failed = server.stages.find((stage) => stage.status === "failed");
+    return new LaunchStepError(clip(server.error ?? failed?.error ?? "The new computer couldn't start the lane.", 400));
   };
 
   /** Pairs and connects, retrying while the computer's account row and relay route come up. */
@@ -314,28 +322,117 @@ export function createCloudLaneComputerStages(
     throw new LaunchStepError("ADE couldn't connect to the new computer in time.");
   };
 
-  const runCloneStage = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<void> => {
-    const machineKey = record.snapshot.cloud.machineKey;
-    if (!machineKey) throw new LaunchStepError("ADE lost track of the new computer. Cancel and send again.");
-    setStage(record, "clone", "running", { detail: record.project.identity.replace(/^github\.com\//i, "") });
+  /**
+   * The launch on the server until the computer's brain holds it: the
+   * server's stages on the rows, then the computer in the account, paired,
+   * its project found and the brain's launch read. Answers that snapshot
+   * (the service adopts it as the hand-off). Safe to run again (Retry, ADE
+   * opening after a quit): the same id answers the same launch.
+   */
+  const runServerLaunch = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<ChatLaunchSnapshot> => {
+    const launchId = record.snapshot.launchId;
+    if (!stageOf(record, "computer")?.startedAt) setStage(record, "computer", "running", { detail: null });
     publish(record);
-    const targetId = await pairAndConnect(record, machineKey, signal);
-    persist(record);
-    assertActive(record, signal);
-    const identity = record.project.identity;
-    const sameRepo = (project: RemoteRuntimeProjectRecord) =>
-      project.exists !== false && normalizeGitRemoteIdentity(project.gitOriginUrl) === identity;
-    let project = (await deps.listProjects(targetId)).find(sameRepo) ?? null;
-    if (!project) {
-      const parentDir = await deps.defaultParentDir(targetId);
+    await resolveTier(record);
+    let server = await startOnServer(record, signal);
+    let joinedAt: number | null = null;
+    let lastProgress = Date.now();
+    for (;;) {
       assertActive(record, signal);
-      // The computer's own brain joins a second request for the same folder
-      // and answers with a checkout that is already there.
-      project = await deps.cloneProject(targetId, { url: record.project.cloneUrl, parentDir, name: record.project.repoName });
+      if (server.instanceId && record.snapshot.cloud.instanceId !== server.instanceId) {
+        const earlier = record.snapshot.cloud.instanceId;
+        if (earlier) {
+          // A Retry began again on a new computer (the server deleted the failed one): nothing of the old one is kept.
+          try {
+            deps.forgetMachineConnections?.({ machineKey: record.snapshot.cloud.machineKey, instanceId: earlier });
+          } catch (error) {
+            logger.warn("cloud_lane_launch.connection_left", { launchId, error: getErrorMessage(error) });
+          }
+          record.snapshot.cloud.machineKey = null;
+          record.snapshot.cloud.binding = null;
+          record.targetId = null;
+          for (const id of ["join", "clone"] as const) setStage(record, id, "pending");
+        }
+        record.snapshot.cloud.instanceId = server.instanceId;
+        deps.onComputerCreated?.();
+        logger.info("cloud_lane_launch.computer_created", { launchId, instanceId: server.instanceId, tier: record.tier?.id ?? null });
+        persist(record);
+      }
+      showServerRecord(record, server);
+      if (server.state === "failed" || server.state === "cancelled") throw serverFailure(server);
+      const signedIn = server.state === "joined" || server.state === "running" || server.state === "done";
+      if (signedIn && record.snapshot.cloud.instanceId) {
+        joinedAt ??= Date.now();
+        const snapshot = await bindToComputer(record, server, signal);
+        if (snapshot) return snapshot;
+        // Signed in, yet no project or launch shows up there: say so instead of waiting forever.
+        if (Date.now() - joinedAt > SERVER_LAUNCH_BIND_WAIT_MS && server.state !== "joined") {
+          throw new LaunchStepError("The new computer started the lane, but ADE can't find it there. Retry to look again.");
+        }
+      }
+      const polledAt = Date.now();
+      await sleep(polledAt - lastProgress > 60_000 ? SERVER_LAUNCH_SLOW_POLL_MS : SERVER_LAUNCH_POLL_MS);
+      assertActive(record, signal);
+      const before = server.updatedAt;
+      server = await launcher().launchStatus(launchId).catch((error: unknown) => {
+        // A read that didn't land is read again; the server's own refusal ends the launch here.
+        if (error instanceof CloudApiError && error.status === 404) throw new LaunchStepError("ADE Cloud no longer has this launch. Cancel it and send again.");
+        logger.info("cloud_lane_launch.server_read_failed", { launchId, error: getErrorMessage(error) });
+        return server;
+      });
+      if (server.updatedAt !== before) lastProgress = Date.now();
     }
-    assertActive(record, signal);
-    record.snapshot.cloud.binding = await deps.resolveBinding(targetId, project.projectId, project.rootPath);
-    finishStage(record, "clone", record.project.identity.replace(/^github\.com\//i, ""));
+  };
+
+  /**
+   * Once the computer signed in: its account row (named as the lane),
+   * pairing, the project there and the brain's launch. Null while one isn't
+   * there yet (the computer still clones); each step is kept on the record,
+   * so the next pass goes on from it.
+   */
+  const bindToComputer = async (record: CloudLaneLaunchRecord, server: CloudLaunchRecord, signal: AbortSignal): Promise<ChatLaunchSnapshot | null> => {
+    const launchId = record.snapshot.launchId;
+    const instanceId = record.snapshot.cloud.instanceId!;
+    if (!record.snapshot.cloud.machineKey) {
+      const row = await waitForCloudAccountRow(deps.creator, { client: await providerClient(), instanceId, name: record.computerName, requestId: launchId, signal });
+      assertActive(record, signal);
+      if (!row.machineKey) return null;
+      record.snapshot.cloud.machineKey = row.machineKey;
+      persist(record);
+    }
+    if (!record.snapshot.cloud.binding) {
+      // The computer clones the repository itself; its project shows once the clone is done.
+      const cloned = server.state !== "joined" || server.stages.some((stage) => stage.id === "clone" && stage.status === "done");
+      if (!cloned) return null;
+      const targetId = await pairAndConnect(record, record.snapshot.cloud.machineKey!, signal);
+      persist(record);
+      assertActive(record, signal);
+      const identity = record.project.identity;
+      const project = (await deps.listProjects(targetId)).find((entry: RemoteRuntimeProjectRecord) =>
+        entry.exists !== false && normalizeGitRemoteIdentity(entry.gitOriginUrl) === identity) ?? null;
+      if (!project) return null;
+      assertActive(record, signal);
+      record.snapshot.cloud.binding = await deps.resolveBinding(targetId, project.projectId, project.rootPath);
+      persist(record);
+    }
+    const binding = record.snapshot.cloud.binding;
+    if (!binding) return null;
+    const brain = await deps.callChatAction(binding, "getLaunch", { args: { launchId } })
+      .catch((error: unknown) => {
+        logger.info("cloud_lane_launch.brain_launch_read_failed", { launchId, error: getErrorMessage(error) });
+        return null;
+      }) as ChatLaunchSnapshot | null;
+    return brain?.launchId === launchId ? brain : null;
+  };
+
+  /** The server's cancel: before the agent starts it deletes the computer. Its refusal is logged; this app's own delete follows. */
+  const cancelOnServer = async (record: CloudLaneLaunchRecord): Promise<void> => {
+    try {
+      await launcher().cancelLaunch(record.snapshot.launchId);
+    } catch (error) {
+      // No launch there (it never started) or an agent that already runs: nothing more for the server to do.
+      logger.info("cloud_lane_launch.server_cancel_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+    }
   };
 
   /** Deletes only computers made for this launch (its request id), then takes a joined one off the account. */
@@ -383,7 +480,7 @@ export function createCloudLaneComputerStages(
     return { found: own.size, deleted };
   };
 
-  return { providerClient, runComputerStage, runJoinStage, runCloneStage, releaseHold, deleteOwnComputers };
+  return { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers };
 }
 
 export type CloudLaneComputerStages = ReturnType<typeof createCloudLaneComputerStages>;

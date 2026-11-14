@@ -31570,46 +31570,34 @@ async function runServe(
   // bridge. Set off the boot path; a launch a quit left behind goes on once
   // the brain is up.
   if (!embedded) {
-    void import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost").then(({ setCloudLaneLaunchTransport, setCloudLaneLaunchBrainServices }) => {
+    void Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost"),
+      import("../../desktop/src/main/services/adeCloud/cloudBrainMaker"),
+    ]).then(([{ setCloudLaneLaunchTransport }, { setCloudJoinApprovalPush }]) => {
       setCloudLaneLaunchTransport({
         call: async (input) => await (await getAgentMachineBridge()).call(input),
-        setUpRepository: async (input) => await (await getAgentMachineBridge()).setUpRepository(input),
-        chatLaunchKinds: async (machine) => await (await getAgentMachineBridge()).chatLaunchKinds(machine),
       });
-      // A launch resumed after a restart has no caller: its approval card goes
-      // to the chat its record names (the router children report through),
-      // and the join's approval to this brain's phones.
-      const chats = crossScopeChats;
-      if (chats) {
-        setCloudLaneLaunchBrainServices({
-          chatScope: async (chatSessionId) => await chats.findChat(chatSessionId),
-          postChatCard: async ({ chatSessionId, scope, card }) => {
-            const located = await chats.locateChat(chatSessionId, { boot: true, hint: scope });
-            if (!located?.runtime.agentChatService) return "chat_gone";
-            await located.runtime.agentChatService.emitAdeCard({ sessionId: chatSessionId, card });
-            return "delivered";
-          },
-          notifyPhones: (notice) => {
-            void import("./services/push/pushPublisherService").then(({ peekSharedPushPublisherService, resolvePushRelayStateFile }) => {
-              // Peek, never create: the publisher is the one the project scopes made.
-              const publisher = peekSharedPushPublisherService(resolvePushRelayStateFile(layout.secretsDir));
-              if (!publisher) {
-                headlessProjectLogger.info("cloud_lane_launch.approval_push_skipped", { reason: "no_publisher" });
-                return;
-              }
-              publisher.handleSessionNotice({
-                sessionId: notice.chatSessionId,
-                dedupeKey: notice.dedupeKey,
-                title: notice.title,
-                body: notice.body,
-                deepLink: notice.deepLink,
-              });
-            }).catch((error: unknown) => {
-              headlessProjectLogger.warn("cloud_lane_launch.approval_push_failed", { error: error instanceof Error ? error.message : String(error) });
-            });
-          },
+      // A machine this brain makes (`ade cloud create`, copy, move with no
+      // desktop) waits for the person's approval: the push reaches their phones.
+      setCloudJoinApprovalPush((notice) => {
+        void import("./services/push/pushPublisherService").then(({ peekSharedPushPublisherService, resolvePushRelayStateFile }) => {
+          // Peek, never create: the publisher is the one the project scopes made.
+          const publisher = peekSharedPushPublisherService(resolvePushRelayStateFile(layout.secretsDir));
+          if (!publisher) {
+            headlessProjectLogger.info("cloud.join_approval_push_skipped", { reason: "no_publisher" });
+            return;
+          }
+          publisher.handleSessionNotice({
+            sessionId: notice.chatSessionId,
+            dedupeKey: notice.dedupeKey,
+            title: notice.title,
+            body: notice.body,
+            deepLink: notice.deepLink,
+          });
+        }).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.join_approval_push_failed", { error: error instanceof Error ? error.message : String(error) });
         });
-      }
+      });
       const resumeTimer = setTimeout(() => {
         void (async () => {
           const { resumeCloudLaneLaunches } = await import("../../desktop/src/main/services/adeActions/registry");

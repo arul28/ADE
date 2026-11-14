@@ -198,7 +198,12 @@ const safeFileName = (name: string): string => name.replace(/[/\\\u0000-\u001f]/
 
 /**
  * The launch as `chat.startLaunch`'s raw payload, before `parseChatLaunchArgs`
- * checks it as it checks every other entry's.
+ * checks it as it checks every other entry's. A launch from an ADE app
+ * carries its own args (`request.launch`): they are the base, so its plan
+ * mode, permission modes, lane template and the rest carry. The facts win
+ * over them where both say something: the ids, names and kind, the lane's
+ * start (always the pushed copy), the files this computer downloaded, and the
+ * stages and clock of this launch.
  */
 function launchPayloadOf(
   launchId: string,
@@ -209,7 +214,45 @@ function launchPayloadOf(
 ): Record<string, unknown> {
   const chat = request.chat;
   const endedAt = new Date().toISOString();
+  const base = request.launch && typeof request.launch === "object" ? request.launch : null;
+  const baseChat = base?.chat && typeof base.chat === "object" ? base.chat as Record<string, unknown> : null;
+  const baseMessage = baseChat?.message && typeof baseChat.message === "object" ? baseChat.message as Record<string, unknown> : null;
+  const baseLane = base?.laneConfig && typeof base.laneConfig === "object" ? base.laneConfig as Record<string, unknown> : null;
+  // Links need no download: they stay as the app sent them, after the files.
+  const links = (list: unknown) => (Array.isArray(list) ? list : []).filter((entry) => entry && typeof entry === "object" && (entry as { type?: unknown }).type === "image-url");
+  const facts = laneConfigOf(request);
+  const laneConfig: Record<string, unknown> = baseLane
+    ? {
+        ...baseLane,
+        mode: facts.mode,
+        ...(facts.mode === "existing"
+          ? { branchRef: facts.branchRef, start: null }
+          : { start: { ...(baseLane.start && typeof baseLane.start === "object" ? baseLane.start : {}), ...facts.start } }),
+        ...(facts.autoName ? { autoName: true } : { autoName: undefined }),
+      }
+    : facts;
+  const chatPayload = chat
+    ? {
+        chat: {
+          create: {
+            ...(baseChat?.create && typeof baseChat.create === "object" ? baseChat.create as Record<string, unknown> : {}),
+            provider: chat.provider,
+            model: chat.modelId,
+            modelId: chat.modelId,
+            ...(chat.effort ? { reasoningEffort: chat.effort } : {}),
+            permissionMode: chat.permissions,
+            ...(chat.fast ? { fastMode: true } : {}),
+          },
+          message: {
+            ...(baseMessage ?? {}),
+            text: chat.prompt,
+            attachments: [...attachments, ...links(baseMessage?.attachments)],
+          },
+        },
+      }
+    : {};
   return {
+    ...(base ?? {}),
     kind: request.kind,
     mode: "background",
     launchId,
@@ -217,23 +260,13 @@ function launchPayloadOf(
     ...(Number.isFinite(record.createdAt) ? { setupStartedAt: new Date(record.createdAt).toISOString() } : {}),
     laneId: request.lane.id,
     laneName: request.lane.name,
-    prompt: chat?.prompt ?? "",
-    laneConfig: laneConfigOf(request),
-    ...(chat ? {
-      provider: chat.provider,
-      modelId: chat.modelId,
-      chat: {
-        create: {
-          provider: chat.provider,
-          model: chat.modelId,
-          modelId: chat.modelId,
-          ...(chat.effort ? { reasoningEffort: chat.effort } : {}),
-          permissionMode: chat.permissions,
-          ...(chat.fast ? { fastMode: true } : {}),
-        },
-        message: { text: chat.prompt, ...(attachments.length ? { attachments } : {}) },
-      },
-    } : {}),
+    prompt: chat?.prompt ?? (typeof base?.prompt === "string" ? base.prompt : ""),
+    attachments: [...attachments, ...links(base?.attachments)],
+    laneConfig,
+    ...(chat ? { provider: chat.provider, modelId: chat.modelId } : {}),
+    ...chatPayload,
+    // Never a target again: this computer is the launch's.
+    cloud: null,
     priorStages: priorStages.map((stage) => ({ id: stage.id, status: "done", endedAt, detail: stage.detail ?? null })),
   };
 }
