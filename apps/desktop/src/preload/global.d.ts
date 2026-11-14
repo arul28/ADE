@@ -1,4 +1,5 @@
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
@@ -2765,6 +2766,19 @@ declare global {
           args: AgentChatEndSideChatArgs,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatEndSideChatResult>;
+        /**
+         * The chat's device choice per kind (`ade devices use`), on the chat's
+         * machine. Absent where no brain keeps choices (the hosted web client).
+         */
+        getDeviceSources?: (
+          args: { sessionId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatDeviceSourcesResult>;
+        /** Sets one kind's choice: the same setting as `ade devices use`. */
+        setDeviceSource?: (
+          args: ChatSetDeviceSourceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatDeviceSourcesResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
           pin: OpenProjectBinding,
@@ -4239,7 +4253,11 @@ declare global {
       /** Work copies on a machine for chats on other machines (Settings › Machines). */
       remoteWork: {
         list: (pin?: OpenProjectBinding | null) => Promise<RemoteWorkCopyListing[]>;
-        delete: (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
+        /** `keepUnsynced`: a copy holding work nobody pushed stays; `keptReason` says why. */
+        delete: (
+          args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ deleted: boolean; keptReason?: string }>;
       };
       /** A machine's load and capabilities, read by its own brain (Settings › Machines, "Least loaded"). */
       machineStats?: {

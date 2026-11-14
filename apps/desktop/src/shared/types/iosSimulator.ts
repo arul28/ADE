@@ -429,6 +429,10 @@ export type IosSimulatorLaunchArgs = {
   chatSessionId?: string | null;
   build?: boolean;
   mode?: IosSimulatorLaunchMode;
+  /**
+   * `false` opens Simulator.app in the foreground (`ade apple launch
+   * --foreground`). Unset or true leaves it closed: the device runs inside ADE.
+   */
   keepSimulatorInBackground?: boolean | null;
   force?: boolean | null;
   environment?: Record<string, string> | null;
@@ -1275,7 +1279,11 @@ export type IosSimulatorOpenDeviceArgs = {
   deviceUdid?: string | null;
   chatSessionId?: string | null;
   laneId?: string | null;
-  /** Open Simulator.app as well. False keeps the device headless. */
+  /**
+   * Open Simulator.app as well, only when true. Unset keeps the device
+   * headless, shown in ADE's own stream: once Simulator.app runs, every booted
+   * simulator gets a window.
+   */
   openWindow?: boolean | null;
   /** Take a device session another chat owns. */
   force?: boolean | null;
@@ -2736,6 +2744,33 @@ export type AppleDeviceStopResult = {
   released: boolean;
   /** The lane still owns this device. Always true unless the lane owned none. */
   stillRegistered: boolean;
+  /**
+   * What the lane's device is now, in one sentence for an agent: still
+   * registered on this Mac, booted again by the next start, and deleted with
+   * the lane (an attached simulator is released, not deleted). Null when the
+   * lane owns none. An older Mac sends none; the CLI says it itself then.
+   */
+  note: string | null;
+};
+
+/**
+ * How `deviceStart` came by the lane's device: `created` (a new simulator ADE
+ * made, or a copy of one), `attached` (an installed simulator ADE did not
+ * make, named with `udid` or borrowed for a chat on another machine), or
+ * `reused` (the lane had its device already).
+ */
+export type AppleDeviceStartDeviceAction = "created" | "attached" | "reused";
+
+/**
+ * `deviceStart`'s answer: the live view's status, and which device the lane
+ * drives and how it got it. An older Mac sends the status alone; the CLI
+ * names the device itself then.
+ */
+export type AppleDeviceStartResult = IosSimulatorStreamStatus & {
+  laneDevice: AppleLaneDevice;
+  laneDeviceAction: AppleDeviceStartDeviceAction;
+  /** That, in one sentence. */
+  note: string;
 };
 
 /**

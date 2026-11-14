@@ -298,7 +298,8 @@ describe("iosDeviceHub device sessions", () => {
       laneId: "lane-1",
       bootedByAde: true,
     });
-    expect(harness.openSimulatorApp).toHaveBeenCalledTimes(1);
+    // Headless unless asked: Simulator.app would give every booted simulator a window.
+    expect(harness.openSimulatorApp).not.toHaveBeenCalled();
     expect(harness.events[0]).toEqual({ type: "device-session-started", deviceSession: session });
   });
 
@@ -337,10 +338,12 @@ describe("iosDeviceHub device sessions", () => {
     expect(session.bootedByAde).toBe(false);
   });
 
-  it("keeps the device headless when the caller asks for no window", async () => {
+  it("opens Simulator.app only when the caller asks for the window", async () => {
     const harness = createHarness();
     await harness.hub.openDevice({ chatSessionId: "chat-a", openWindow: false });
     expect(harness.openSimulatorApp).not.toHaveBeenCalled();
+    await harness.hub.openDevice({ chatSessionId: "chat-a", openWindow: true });
+    expect(harness.openSimulatorApp).toHaveBeenCalledTimes(1);
   });
 
   it("shuts the device down on close only when ADE booted it", async () => {

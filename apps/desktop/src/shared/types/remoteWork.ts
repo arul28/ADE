@@ -60,4 +60,10 @@ export type RemoteWorkCopyListing = {
   running: boolean;
   /** Bytes on disk with installed deps and build output; null when too large to count quickly. */
   sizeBytes: number | null;
+  /**
+   * This machine's `remote_work.delete` honours `keepUnsynced` (keeps a copy
+   * holding work nobody pushed). Absent from an older ADE, which would delete
+   * it anyway, so the tools pane's Clean up leaves such a machine alone.
+   */
+  keepsUnsynced?: boolean;
 };

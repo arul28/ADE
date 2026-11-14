@@ -10,7 +10,7 @@ import {
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
-import type { RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
+import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
@@ -1080,6 +1080,8 @@ export async function createAdeRuntime(args: {
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
   /** The brain's way to let go of what a chat holds on other machines when its turn ends. */
   releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
+  /** The brain's way to remove what an archived or deleted chat added on other machines. */
+  releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /**
@@ -2053,9 +2055,22 @@ export async function createAdeRuntime(args: {
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
     // A row still marked running after its PTY ended does not count: only a live PTY does.
-    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner, ignoring) =>
-      ptyService.list({ chatSessionId: owner, status: "running", limit: null })
-        .some((row) => !ignoring.has(row.id) && ptyService.hasLivePty(row.id))));
+    teardown.push(registerRemoteWorkShellCheck(
+      projectRoot,
+      (owner, ignoring) =>
+        ptyService.list({ chatSessionId: owner, status: "running", limit: null })
+          .some((row) => !ignoring.has(row.id) && ptyService.hasLivePty(row.id)),
+      // Its chat was archived or deleted on its own machine: every shell it runs here stops.
+      (owner) => {
+        for (const row of ptyService.list({ chatSessionId: owner, status: "running", limit: null })) {
+          try {
+            if (row.ptyId) ptyService.dispose({ ptyId: row.ptyId, sessionId: row.id });
+          } catch (error) {
+            logger.warn("remote_work.ended_shell_stop_failed", { error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+      },
+    ));
     ptyServiceForSessionChanges = ptyService;
     // The runtime is stopping (an update, a reboot, the brain quitting): its
     // open agent CLIs reopen when the project's next runtime starts.
@@ -3329,6 +3344,9 @@ export async function createAdeRuntime(args: {
         ...(typeof args !== "string" && args.releaseRemoteWorkDevices
           ? { onRemoteWorkTurnSettled: args.releaseRemoteWorkDevices }
           : {}),
+        ...(typeof args !== "string" && args.releaseRemoteWorkOfEndedChat
+          ? { onRemoteWorkChatEnded: args.releaseRemoteWorkOfEndedChat }
+          : {}),
         onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3454,6 +3472,7 @@ export async function createAdeRuntime(args: {
       laneTeardownDeps.agentChatService = {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+        releaseRemoteWorkForLane: (laneId, ended) => agentChatService.releaseRemoteWorkForLane(laneId, ended),
       };
       lateSettle.bind(createSettleWiring({
         agentChatService,

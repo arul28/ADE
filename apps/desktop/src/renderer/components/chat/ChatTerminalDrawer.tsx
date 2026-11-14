@@ -253,11 +253,15 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
    * so a pane showing another tool falls back to its own read rather than to a
    * stale count from a panel that is no longer there.
    */
+  // The tools pane's count is this chat's LIVE shells. A command another
+  // machine ran for it and finished (a one-shot `--no-code` check) keeps its
+  // tab to read, but it is not a shell the chat has.
+  const liveShellCount = tabs.filter((tab) => !(tab.remote && tab.exited)).length;
   useEffect(() => {
     if (!chatSessionId || !open) return undefined;
-    publishWorkTerminalShellCount(chatSessionId, tabs.length);
+    publishWorkTerminalShellCount(chatSessionId, liveShellCount);
     return () => clearWorkTerminalShellCount(chatSessionId);
-  }, [chatSessionId, open, tabs.length]);
+  }, [chatSessionId, open, liveShellCount]);
 
   useEffect(() => {
     if (restoringUiStateRef.current) return;

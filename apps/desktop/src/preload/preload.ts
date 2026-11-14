@@ -6,6 +6,7 @@ import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
@@ -8996,6 +8997,25 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "endSideChat", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatEndSideChat, args),
       ),
+    // The chat's device choice per kind (`ade devices use`), kept by the
+    // chat's own brain: every call takes that chat's pin. Runtime-only: a
+    // window with no runtime has no chat that keeps one.
+    getDeviceSources: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "getDeviceSources", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
+    setDeviceSource: async (
+      args: ChatSetDeviceSourceArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "setDeviceSource", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
     prepareCrossMachineHandoff: async (
       args: AgentChatPrepareCrossMachineHandoffArgs,
       pin?: OpenProjectBinding | null,
@@ -11836,8 +11856,11 @@ const adeBridge = {
   remoteWork: {
     list: async (pin?: OpenProjectBinding | null): Promise<RemoteWorkCopyListing[]> =>
       callPinnedOrBoundRuntimeActionOr<RemoteWorkCopyListing[]>(pin, "remote_work", "list", {}, async () => []),
-    delete: async (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
-      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
+    delete: async (
+      args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ deleted: boolean; keptReason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean; keptReason?: string }>(pin, "remote_work", "delete", { args }, async () => {
         throw new Error("This window has no runtime to delete the work copy on.");
       }),
   },

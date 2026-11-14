@@ -1005,12 +1005,15 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/WorkToolPicker.tsx`,
   `WorkToolPickerBackdrop.tsx`, `WorkToolHeader.tsx`,
   `WorkToolReadOnlyView.tsx`, `workToolPanels.tsx` —
-  the pane's tab strip, its two pages, and the panel mounts. The picker is one centred 512 px
-  column of translucent cards over a slow violet-to-indigo WebGL mesh (the backdrop, at
+  the pane's tab strip, its two pages, and the panel mounts. The picker is two
+  equal columns of tiles (one per tool, Screen standing for Mac and Windows
+  Desktop, Side chat only with a side chat; `workToolCatalog.ts`) over a slow
+  violet-to-indigo WebGL mesh (the backdrop, at
   DPR 1 / 600 k pixels / 30 fps, paused when unwatched and a static CSS
-  gradient with no WebGL) — name plus one line, which is the tool's measured
-  status, else its catalogue `hint`, else the reason it cannot run here — and
-  the only mark a card carries is a red dot for a broken tool; the header is
+  gradient with no WebGL). A tile says what it is (the brand's real mark,
+  `workToolBrandMarks.tsx` / `workToolTileMarks.tsx`), where it runs and what
+  it is doing now: the agent's live action, else the tool's measured status,
+  else its catalogue `hint`, else the reason it cannot run here; the header is
   the 32 px tab strip — the `⊞ Tools` button, one tab per open tool with a
   hover `×` (glyph-only under 420 px, overflowing into a `…` menu when even
   those do not fit — `workToolTabLayout`), a `+`, state-coloured activity dots
@@ -1033,6 +1036,27 @@ Renderer surfaces:
   when the tool is on screen (`useRemoteWorkReach` in `lib/remoteWorkPins.ts`,
   with Retry), says so while it does, and then hands that machine's pin to
   the panel.
+- `apps/desktop/src/renderer/components/terminals/workToolCatalog.ts`,
+  `useWorkToolCatalog.ts`, `useWorkToolCatalogState.ts`, `useToolMachines.ts`,
+  `useRemoteDeviceProbes.ts`, `chatDeviceSources.ts`, `remoteWorkCleanup.ts` —
+  the tiles and where each device is. `workToolCatalog.ts` is pure: a
+  device's machine is the chat's device choice (`ade devices use`, read and
+  written on the chat's machine through `chatDeviceSources.ts`), else the
+  machine its CURRENT turn drives that kind on; a person's pick of the chat's
+  own machine sets that turn's use aside until a newer one. The rails list the
+  account's machines (`useToolMachines`); a chosen other machine's device is
+  probed through the pin this window holds for it, never connecting on its
+  own (`useRemoteDeviceProbes`). Clean up (`remoteWorkCleanup.ts`) deletes the
+  chat's copies on machines it left, each through its own project's pin,
+  keeping a copy with unpushed work and naming it.
+- `apps/desktop/src/renderer/components/terminals/useChatToolActivity.ts`,
+  `useToolHandoff.ts`, `WorkToolPanelBar.tsx` — what the agent is doing with
+  each tool, from the chat's own event stream on its machine (seeded from its
+  recent history once, so a call already running shows; a tool stays the
+  agent's while any call on it runs), and the row above an open tool: the
+  agent's action with Take over, the person's hold with Hand back, or the
+  machine it runs on. Take over and hand-back notes go only inline, only
+  while that chat's own turn runs, never to a queue-only provider.
 - `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
   `WorkToolPickerBackdrop.tsx` is only the React shell. It paints the

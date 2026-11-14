@@ -35,6 +35,8 @@ import { isPathInside, pathComparisonKey, pathsEqual } from "../shared/pathCompa
 import { writeTextAtomic } from "../shared/utils";
 import { isRemoteWorkLaneId, REMOTE_WORK_LANE_PREFIX, REMOTE_WORK_MAX_PATCH_BYTES } from "../../../shared/types/remoteWork";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
+import { readGitOriginUrlFromConfigOrGit } from "../projects/recentProjectSummary";
+import { gitRemoteIdentity } from "../github/githubSshAlias";
 
 /** What the calling chat sends with each command. */
 export type RemoteWorkSource = {
@@ -273,6 +275,8 @@ type ProjectState = {
    */
   making: Map<string, BackgroundMake>;
   shellRunsIn: ((owner: string, ignoring: ReadonlySet<string>) => boolean) | null;
+  /** Stops every shell the owner runs in this project (its chat ended). */
+  stopShells: ((owner: string) => void) | null;
   deviceInUse: Set<(laneId: string) => boolean>;
   released: Set<(laneId: string) => void>;
   copyApps: Set<RemoteWorkCopyApp>;
@@ -297,7 +301,7 @@ function projectStateFor(projectRoot: string): ProjectState {
   const key = pathComparisonKey(path.resolve(projectRoot));
   let state = projectStates.get(key);
   if (!state) {
-    state = { locks: new Map(), starting: new Map(), making: new Map(), shellRunsIn: null, deviceInUse: new Set(), released: new Set(), copyApps: new Set() };
+    state = { locks: new Map(), starting: new Map(), making: new Map(), shellRunsIn: null, stopShells: null, deviceInUse: new Set(), released: new Set(), copyApps: new Set() };
     projectStates.set(key, state);
   }
   return state;
@@ -396,6 +400,28 @@ export function listMachineRemoteWorkCopies(
     }
   }
   return rows;
+}
+
+/**
+ * `owner`'s work copies on this machine in every checkout of `projectRoot`'s
+ * repository (matched by git origin), `projectRoot`'s own first. A machine
+ * can hold two checkouts of one repository (`~/ADE` and a sandbox clone);
+ * which one a `--machine` call lands in has changed between days, so a chat
+ * can have a copy in each.
+ */
+export function remoteWorkCopiesInRepo(
+  projectRoot: string,
+  owner: string,
+  adeHome: string = defaultAdeHome(),
+  logger?: RemoteWorkLogger,
+): Array<RemoteWorkCopy & { projectRoot: string }> {
+  const origin = gitRemoteIdentity(readGitOriginUrlFromConfigOrGit(projectRoot));
+  const mine = listMachineRemoteWorkCopies(adeHome, logger).filter((copy) => copy.owner === owner);
+  const here = readRegistryAt(projectRoot).copies.filter((copy) => copy.owner === owner).map((copy) => ({ ...copy, projectRoot }));
+  const elsewhere = mine.filter((copy) => !pathsEqual(copy.projectRoot, projectRoot)
+    && origin != null
+    && gitRemoteIdentity(readGitOriginUrlFromConfigOrGit(copy.projectRoot)) === origin);
+  return [...here, ...elsewhere];
 }
 
 export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOptions) {
@@ -755,8 +781,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
 
   /**
    * Delete the copy for `owner`. True when one existed. Refused while it is in
-   * use. With `keepUnsynced` (the automatic cleanups that run on a guess), a
-   * copy holding work nobody pushed is kept: false. With `keepDeviceInUse`
+   * use. With `keepUnsynced` (the automatic cleanups that run on a guess, and
+   * the tools pane's Clean up), a copy holding work nobody pushed is kept:
+   * false, and `onKeptUnsynced` hears why. With `keepDeviceInUse`
    * (the idle and low-disk cleanups), so is a copy whose simulator or
    * emulator is booted, streaming or claimed: a chat can drive a device for
    * days without a shell. A person's delete, or the chat being gone, still
@@ -766,7 +793,17 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    */
   const release = async (
     owner: string,
-    releaseOptions: { keepUnsynced?: boolean; keepDeviceInUse?: boolean; onlyIfUnusedBefore?: number } = {},
+    releaseOptions: {
+      keepUnsynced?: boolean;
+      keepDeviceInUse?: boolean;
+      onlyIfUnusedBefore?: number;
+      onKeptUnsynced?: (reason: string) => void;
+      /**
+       * Its chat ended: a copy kept for unpushed work still gives back what it
+       * drove (its app, simulator, emulator, screen). Only its files stay.
+       */
+      releaseDevicesWhenKept?: boolean;
+    } = {},
   ): Promise<boolean> =>
     await withLock(owner, async () => {
       const appShells = releaseOptions.keepDeviceInUse ? new Set<string>() : copyAppShells(owner);
@@ -788,6 +825,11 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         });
         if (reason) {
           logger?.info("remote_work.kept_unsynced", { owner, reason });
+          releaseOptions.onKeptUnsynced?.(reason);
+          if (releaseOptions.releaseDevicesWhenKept) {
+            if (appShells.size) await stopCopyApps(owner, busyError);
+            notifyCopyReleased(projectRoot, owner, logger);
+          }
           return false;
         }
       }
@@ -1072,7 +1114,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           })
           : null;
         // An archived chat can come back: its unpushed work stays until a person deletes it.
-        if (answer?.gone && await releaseIfIdle(copy.owner, answer.archived ? { keepUnsynced: true } : {})) {
+        if (answer?.gone && await releaseIfIdle(copy.owner, answer.archived ? { keepUnsynced: true, releaseDevicesWhenKept: true } : {})) {
           released += 1;
           logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
         }
@@ -1083,6 +1125,65 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
 }
 
 export type RemoteWorkCopyService = ReturnType<typeof createRemoteWorkCopyService>;
+
+/** A work copy a release removed or kept: its checkout here and its folder. */
+export type RemoteWorkReleasedCopy = { projectRoot: string; path: string };
+
+/**
+ * A chat on another machine deleting its own work copies here: `ade shell
+ * clean --machine <this machine>`, or its brain saying the chat was archived
+ * or deleted (`ended`).
+ *
+ * In every checkout of `projectRoot`'s repository here, not only the one the
+ * call landed in: a machine can hold two, and the pick between them has
+ * changed between days, leaving a copy in each. Each removal names its
+ * folder, so the caller says only what was deleted, and where. With `ended`
+ * every copy the chat has here goes (any project): its shells in each copy's
+ * project stop first, and one that is still busy is kept for the hourly sweep
+ * instead of failing the rest. `keepUnsynced`: a copy holding work nobody
+ * pushed stays, as the sweep keeps it.
+ */
+export async function releaseChatRemoteWork(args: {
+  projectRoot: string;
+  owner: string;
+  ended: boolean;
+  keepUnsynced: boolean;
+  logger?: RemoteWorkLogger;
+  adeHome?: string;
+}): Promise<{ removed: RemoteWorkReleasedCopy[]; kept: RemoteWorkReleasedCopy[] }> {
+  const { projectRoot, owner, ended, keepUnsynced, logger } = args;
+  const adeHome = args.adeHome ?? defaultAdeHome();
+  const removed: RemoteWorkReleasedCopy[] = [];
+  const kept: RemoteWorkReleasedCopy[] = [];
+  const others = (ended
+    ? listMachineRemoteWorkCopies(adeHome, logger).filter((copy) => copy.owner === owner)
+    : remoteWorkCopiesInRepo(projectRoot, owner, adeHome, logger))
+    .filter((copy) => !pathsEqual(copy.projectRoot, projectRoot));
+  const releaseOne = async (root: string, copyPath: string, service: RemoteWorkCopyService) => {
+    if (ended) {
+      // Its shells run in the copy's own project's runtime, not only the one this call landed in.
+      try {
+        projectStateFor(root).stopShells?.(owner);
+      } catch (error) {
+        logger?.warn("remote_work.ended_shell_stop_failed", { owner, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    try {
+      if (await service.release(owner, { keepUnsynced, releaseDevicesWhenKept: ended })) removed.push({ projectRoot: root, path: copyPath });
+      else if (service.get(owner)) kept.push({ projectRoot: root, path: copyPath });
+    } catch (error) {
+      if (!(ended && error instanceof RemoteWorkError && error.code === "copy_busy")) throw error;
+      kept.push({ projectRoot: root, path: copyPath });
+    }
+  };
+  const here = createRemoteWorkCopyService({ projectRoot, logger, adeHome });
+  await releaseOne(projectRoot, here.get(owner)?.path ?? projectRoot, here);
+  for (const copy of others) {
+    await releaseOne(copy.projectRoot, copy.path, createRemoteWorkCopyService({ projectRoot: copy.projectRoot, logger, adeHome }));
+  }
+  if (ended) logger?.info("remote_work.chat_ended_released", { removed: removed.length, kept: kept.length, keepUnsynced });
+  return { removed, kept };
+}
 
 type LaneLookup = ((laneId: string) => Promise<string | null> | string | null) | null | undefined;
 
@@ -1111,19 +1212,25 @@ export function withRemoteWorkLaneResolvers(
 
 /**
  * How a project's runtime tells whether a shell still runs in a copy (its
- * terminals). Registered once when the runtime starts; the returned function
- * removes it when the runtime is disposed. A project with no runtime has no
- * running shells. `ignoring` holds terminal ids not to count (the copy's own
- * App Control app, which the removal stops itself).
+ * terminals), and stops an owner's shells when its chat ended
+ * (`releaseChatRemoteWork`). Registered once when the runtime starts; the
+ * returned function removes it when the runtime is disposed. A project with
+ * no runtime has no running shells. `ignoring` holds terminal ids not to
+ * count (the copy's own App Control app, which the removal stops itself).
  */
 export function registerRemoteWorkShellCheck(
   projectRoot: string,
   shellRunsIn: (owner: string, ignoring: ReadonlySet<string>) => boolean,
+  stopShells?: (owner: string) => void,
 ): () => void {
   const state = projectStateFor(projectRoot);
   state.shellRunsIn = shellRunsIn;
+  state.stopShells = stopShells ?? null;
   return () => {
-    if (state.shellRunsIn === shellRunsIn) state.shellRunsIn = null;
+    if (state.shellRunsIn === shellRunsIn) {
+      state.shellRunsIn = null;
+      state.stopShells = null;
+    }
   };
 }
 
