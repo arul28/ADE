@@ -893,8 +893,10 @@ launch
   `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
   A caller whose lane name came from the prompt sends `lane.autoName: true`:
   the computer's brain then names the lane and its branch with the AI name, as
-  a local lane is named. The kind is `chat`, `lane` or `cli` (a CLI session
-  the launching app starts once the computer's brain has the launch). An ADE
+  a local lane is named. The kind is `chat` or `lane`. A CLI launch (a CLI
+  session the launching app starts once the computer's brain has the launch)
+  is sent as `lane` with `cli` in `launch.kind`, so a server or computer
+  that predates it runs the lane alone instead of refusing. An ADE
   app also sends its own launch args (`launch`, kept as sent, at most
   256 KB); the computer starts from them, and the facts win where both say
   something. `retry: true` on a launch whose computer failed before its agent

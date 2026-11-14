@@ -196,7 +196,8 @@ export function createCloudLaneComputerStages(
     if (!sendArgs) logger.warn("cloud_lane_launch.app_args_too_big", { launchId: snapshot.launchId });
     return {
       launchId: snapshot.launchId,
-      kind,
+      // A CLI launch goes as the lane (`cli` stays in `launch.kind`): a server or computer before it runs the lane alone.
+      kind: kind === "cli" ? "lane" : kind,
       sizeId: snapshot.cloud.sizeId as CloudServerLaunchRequest["sizeId"],
       project: { origin: record.project.identity },
       lane: {

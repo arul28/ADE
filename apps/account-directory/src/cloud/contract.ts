@@ -967,11 +967,12 @@ export const CLOUD_LAUNCH_MAX_FILES = 10;
 export const CLOUD_LAUNCH_MAX_PROMPT_CHARS = 100_000;
 
 /**
- * `cli`: a tracked CLI session the launching ADE app starts in the lane once
- * the computer's brain has the launch (it follows the computer itself); the
- * server and the computer run it as the lane alone until then.
+ * A CLI launch (a tracked CLI session the launching ADE app starts in the
+ * lane once the computer's brain has it) is sent as `lane`, with `cli` in
+ * `launch.kind`: a server or computer that predates it runs the lane alone
+ * instead of refusing the launch.
  */
-export type CloudLaunchKind = "chat" | "lane" | "cli";
+export type CloudLaunchKind = "chat" | "lane";
 /**
  * The most an ADE app's full launch args (`CloudServerLaunchRequest.launch`)
  * may weigh, as JSON. The whole start is one request body of at most 256 KB,

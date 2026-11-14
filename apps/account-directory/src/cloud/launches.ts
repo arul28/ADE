@@ -205,8 +205,8 @@ function parseAttachments(value: unknown): CloudLaunchAttachment[] | string {
 export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLaunchRequest | string {
   const launchId = typeof body.launchId === "string" ? body.launchId.trim().toLowerCase() : "";
   if (!UUID.test(launchId)) return "A launch needs a launch id (a UUID).";
-  const kind = body.kind === "chat" || body.kind === "lane" || body.kind === "cli" ? body.kind : null;
-  if (!kind) return "A launch is a chat, a CLI session or a lane.";
+  const kind = body.kind === "chat" || body.kind === "lane" ? body.kind : null;
+  if (!kind) return "A launch is a chat or a lane.";
   if (!cloudSizeForTier(body.sizeId)) return "That size isn't one ADE Cloud offers.";
   const project = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
   const origin = githubOriginOf(project?.origin);
@@ -303,7 +303,7 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
   return {
     launchId: row.launch_id,
     state: neverJoined ? "failed" : row.state,
-    kind: row.kind === "chat" || row.kind === "lane" || row.kind === "cli" ? row.kind : null,
+    kind: row.kind === "chat" || row.kind === "lane" ? row.kind : null,
     sizeId: (row.size_id as CloudTierId | null) ?? null,
     projectOrigin: row.project_origin,
     laneId: row.lane_id,

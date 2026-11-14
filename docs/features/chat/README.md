@@ -3482,8 +3482,10 @@ hand-off the brain owns the launch and finishes it with the desktop closed.
   forwards it to the brain. A `lane` (`ade lanes create --machine cloud`) has
   no `agent` stage and completes when its environment stage ends. It takes no
   queued messages.
-  A server with no `cli` kind refuses one with its own sentence; a computer
-  too old to read the app's args starts from the facts alone.
+  A `cli` goes to the server as `lane` (the server knows only `chat` and
+  `lane`) with `cli` in the app's own args, which the computer reads back. A
+  computer too old to read the app's args starts from the facts alone, so a
+  `cli` there runs as the lane without its CLI session.
 
 The lane setup card (`LaneSetupCard.tsx`) and the ADE Cloud job card
 (`CloudLaneJobCard.tsx`) draw their step rows from one parts module,

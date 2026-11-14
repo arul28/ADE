@@ -253,7 +253,8 @@ function launchPayloadOf(
     : {};
   return {
     ...(base ?? {}),
-    kind: request.kind,
+    // A CLI launch reaches the server as the lane, with `cli` kept in the app's own args.
+    kind: request.kind === "lane" && base?.kind === "cli" ? "cli" : request.kind,
     mode: "background",
     launchId,
     // The server's launch start: the card's total counts making the computer, the join and the clone too.
