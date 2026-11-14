@@ -5780,8 +5780,11 @@ final class SyncService: ObservableObject {
   /// active enough for the chat surface to load (or immediately on the local
   /// fallback path). Errors are surfaced via `lastError`, not thrown — the chat
   /// cover shows a loading/retry state.
-  func openProjectForHubChat(_ project: MobileProjectSummary) async {
-    if isActiveProject(project) { return }
+  /// Returns the project selection this open started, or nil when it started
+  /// none (the project was already active, or the phone pointed at its cache).
+  @discardableResult
+  func openProjectForHubChat(_ project: MobileProjectSummary) async -> UInt64? {
+    if isActiveProject(project) { return nil }
     unhideProject(project)
 
     guard supportsProjectCatalog,
@@ -5795,7 +5798,7 @@ final class SyncService: ObservableObject {
         localStateRevision += 1
         refreshActiveSessionsAndSnapshot()
       }
-      return
+      return nil
     }
 
     let selectionGeneration = beginProjectSelection()
@@ -5821,6 +5824,7 @@ final class SyncService: ObservableObject {
     // follow-up project open, which no-ops because the project is already
     // active — sees a hydrated project instead of a momentarily empty one.
     await awaitFreshActiveProjectWorkHydration(selectionGeneration: selectionGeneration)
+    return selectionGeneration
   }
 
   /// Cancel a Hub-chat project switch that has not committed `activeProjectId`
@@ -6510,15 +6514,17 @@ final class SyncService: ObservableObject {
     dismissHome: Bool = true
   ) async throws {
     beginProjectSwitchTiming()
+    let switchMachineKey = focusedMachineKey
     let raw: Any
     do {
       raw = try await sendProjectSwitchRequest(project, rootPath: rootPath)
     } catch let error as NSError where error.domain == "ADE" && error.code == 26 {
       // The socket closed under the request. A machine whose project host was
       // still starting closes the phone's socket once that host is ready, and
-      // the phone reconnects to it by itself: ask once more on that connection.
+      // the phone reconnects to it by itself: ask once more on that connection,
+      // and only on that machine.
       guard isCurrentProjectSelection(selectionGeneration),
-            await awaitReconnectForProjectSwitch(selectionGeneration: selectionGeneration) else {
+            await awaitReconnectForProjectSwitch(selectionGeneration: selectionGeneration, machineKey: switchMachineKey) else {
         throw error
       }
       syncConnectLog.notice("ADE_SYNC_TRACE project_switch resent_after_reconnect error=\(syncLogErrorSummary(error), privacy: .public)")
@@ -6731,12 +6737,13 @@ final class SyncService: ObservableObject {
   }
 
   /// Waits for the automatic reconnect after a socket closed under a project
-  /// switch. False when it does not come back in time, or when another
-  /// project was chosen meanwhile.
-  private func awaitReconnectForProjectSwitch(selectionGeneration: UInt64, timeout: TimeInterval = 20) async -> Bool {
+  /// switch. False when it does not come back in time, when another project
+  /// was chosen meanwhile, or when the phone moved to another machine.
+  private func awaitReconnectForProjectSwitch(selectionGeneration: UInt64, machineKey: String?, timeout: TimeInterval = 20) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
-      guard !Task.isCancelled, isCurrentProjectSelection(selectionGeneration) else { return false }
+      guard !Task.isCancelled, isCurrentProjectSelection(selectionGeneration),
+            focusedMachineKey == machineKey else { return false }
       if canSendLiveRequests() { return true }
       try? await Task.sleep(nanoseconds: 250_000_000)
     }
@@ -7247,6 +7254,9 @@ final class SyncService: ObservableObject {
       })
     }
 
+    // A restored user pause means the focused computer lists no work; the
+    // `connectionState` observer does not run for its first value.
+    updateFocusedMachineListing()
     refreshActiveSessionsAndSnapshot()
   }
 

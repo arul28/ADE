@@ -1683,7 +1683,10 @@ struct WorkSessionDestinationView: View {
       .wakesCloudComputer(
         machineKey: sessionCloudMachineKey,
         wakingName: syncService.wakingCloudMachineName(fleetKey: sessionCloudMachineKey),
-        wakeFailure: syncService.cloudWakeFailure(fleetKey: sessionCloudMachineKey)
+        wakeFailure: syncService.cloudWakeFailure(fleetKey: sessionCloudMachineKey),
+        // A chat with no cached row loaded nothing while the computer slept:
+        // read it now that the computer answers.
+        onAwake: { if session == nil { await load() } }
       )
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).

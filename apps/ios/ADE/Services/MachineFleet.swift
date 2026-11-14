@@ -97,8 +97,8 @@ final class MachineFleet: ObservableObject {
   static let workListReconnectWindow: TimeInterval = 20
 
   /// The machines whose work the project's lists show: live ones, ones inside
-  /// the reconnect window, and ADE Cloud computers.
-  var listedMachines: [Machine] { machines.filter(\.listsWork) + restingCloudMachines }
+  /// the reconnect window, and ADE Cloud computers the user did not disconnect.
+  var listedMachines: [Machine] { (machines + restingCloudMachines).filter(\.listsWork) }
 
   /// ADE Cloud computers this phone holds no link to (it never paired them):
   /// their rows come from the saved copies on the account server, and
