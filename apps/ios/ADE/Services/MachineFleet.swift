@@ -98,7 +98,17 @@ final class MachineFleet: ObservableObject {
 
   /// The machines whose work the project's lists show: live ones, ones inside
   /// the reconnect window, and ADE Cloud computers.
-  var listedMachines: [Machine] { machines.filter(\.listsWork) }
+  var listedMachines: [Machine] { machines.filter(\.listsWork) + restingCloudMachines }
+
+  /// ADE Cloud computers this phone holds no link to (it never paired them):
+  /// their rows come from the saved copies on the account server, and
+  /// opening one wakes and pairs the computer (`connect`).
+  @Published private(set) var restingCloudMachines: [Machine] = []
+
+  /// The account server's ADE Cloud answer changed: list it.
+  func cloudServerChanged() {
+    schedulePublish()
+  }
 
   /// ADE Cloud computers (fleet keys). Their work always lists, also while
   /// they sleep.
@@ -256,6 +266,8 @@ final class MachineFleet: ObservableObject {
           self.accountOnlineKeys = online
           // The ADE Cloud computers resolve to fleet keys through this list.
           self.syncService?.resolveCloudMachineKeys()
+          // Their saved chats, read from the account server itself.
+          self.syncService?.refreshCloudServerIfStale()
           // Machine names come from the directory: a rename shows at once.
           self.schedulePublish()
           self.machinesCameOnline(machineKeys: cameOnline)
@@ -372,6 +384,7 @@ final class MachineFleet: ObservableObject {
 
   func machine(for machineKey: String) -> Machine? {
     machines.first { $0.machineKey == machineKey }
+      ?? restingCloudMachines.first { $0.machineKey == machineKey }
   }
 
   /// The machine has a live roster link now.
@@ -393,6 +406,12 @@ final class MachineFleet: ObservableObject {
     defer { if waking { syncService?.endCloudWake(fleetKey: machineKey) } }
     if isLive(machineKey) { return true }
     guard choiceBeforeWake == keepLiveChoices else { return false }
+    // A computer this phone never paired: pair it through the account once
+    // it is up. The pairing adds it to the connected set.
+    if connections[machineKey] == nil {
+      guard await syncService?.pairRestingCloudMachine(fleetKey: machineKey) == true else { return false }
+      if isLive(machineKey) { return true }
+    }
     let pinsBefore = pinnedKeys
     let requestedBefore = requestedKey
     keepLive(machineKey: machineKey)
@@ -602,6 +621,7 @@ final class MachineFleet: ObservableObject {
     }
 
     let others = profiles.filter { $0.machineKey != focusedKey }
+    var added: [String] = []
     for entry in others {
       if let existing = connections[entry.machineKey] {
         existing.updateProfile(entry.profile)
@@ -614,8 +634,12 @@ final class MachineFleet: ObservableObject {
         )
         connection.onChange = { [weak self] in self?.connectionChanged(connection) }
         connections[entry.machineKey] = connection
+        added.append(entry.machineKey)
       }
     }
+    // A chat opened before its machine was paired (an ADE Cloud computer
+    // this phone never connected to) subscribes on the new link.
+    for key in added { syncService.subscribeOpenRemoteChats(onMachine: key) }
     // The focused machine keeps its full connection in SyncService.
     if let focusedKey, let focused = connections[focusedKey], focused.isRunning || focused.isLive {
       focused.stop(reason: "Machine focused.")
@@ -741,7 +765,10 @@ final class MachineFleet: ObservableObject {
           machines: AccountService.shared.machines
         ) ?? "Machine",
         state: state,
-        projects: connection.rosterProjectsIncludingOlderChats,
+        // A cloud computer paired but never live here: its saved copies.
+        projects: isCloud && connection.rosterProjects.isEmpty
+          ? (syncService?.cloudSavedRosterProjects(fleetKey: key) ?? [])
+          : connection.rosterProjectsIncludingOlderChats,
         rosterRevision: connection.rosterRevision,
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
@@ -765,6 +792,7 @@ final class MachineFleet: ObservableObject {
       )
     }
     scheduleReconnectWindowEnd(machines: next, now: now)
+    publishRestingCloudMachines(skip: Set(connections.keys))
     if next != machines {
       // A roster can add or drop a copy of the open project.
       let rostersChanged = !next.elementsEqual(machines) {
@@ -773,6 +801,24 @@ final class MachineFleet: ObservableObject {
       machines = next
       if rostersChanged { scheduleProjectMachinesUpdate() }
     }
+  }
+
+  private func publishRestingCloudMachines(skip: Set<String>) {
+    let next = (syncService?.restingCloudMachineRows(skip: skip) ?? []).map { row in
+      Machine(
+        machineKey: row.fleetKey,
+        name: row.name,
+        state: .paused,
+        projects: row.projects,
+        rosterRevision: 0,
+        lastUpdateAt: nil,
+        isPinned: false,
+        isDisconnectedByUser: userDisconnectedKeys.contains(row.fleetKey),
+        isCloud: true,
+        listsWork: !userDisconnectedKeys.contains(row.fleetKey)
+      )
+    }
+    if next != restingCloudMachines { restingCloudMachines = next }
   }
 
   /// Republishes when the first reconnect window among the listed machines

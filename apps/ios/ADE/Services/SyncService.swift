@@ -4778,7 +4778,17 @@ final class SyncService: ObservableObject {
   static let cloudMachineFleetKeysDefaultsKey = "ade.sync.cloudMachineFleetKeys"
   /// The account machine keys of the last cloud list this run; nil until one
   /// answered. `resolveCloudMachineKeys` turns them into fleet keys.
-  private var cloudAccountMachineKeys: Set<String>?
+  var cloudAccountMachineKeys: Set<String>?
+  /// The account's ADE Cloud computers as the account server last listed
+  /// them to this phone itself (`readCloudServer`); empty when it could not
+  /// tell. A wake with no connected computer finds its computer here.
+  var cloudServerInstances: [CloudServerInstance] = []
+  /// The saved copies of the ADE Cloud computers' chats, from the account
+  /// server: the rows a sleeping computer shows (`restingCloudMachines`).
+  var cloudSavedChats: [CloudSavedChatRow] = []
+  /// When this phone last asked the account server; one ask at a time.
+  var cloudServerReadAt: Date?
+  var cloudServerReadTask: Task<Void, Never>?
   /// ADE Cloud computers the phone asked to wake for an open that still
   /// waits for them. The opened chat says "Waking <name>…" meanwhile.
   @Published private(set) var wakingCloudMachineKeys: Set<String> = []
@@ -6484,12 +6494,19 @@ final class SyncService: ObservableObject {
     dismissHome: Bool = true
   ) async throws {
     beginProjectSwitchTiming()
-    let requestId = makeRequestId()
-    let raw = try await awaitResponse(requestId: requestId) {
-      self.sendEnvelope(type: "project_switch_request", requestId: requestId, payload: [
-        "projectId": project.id,
-        "rootPath": rootPath,
-      ])
+    let raw: Any
+    do {
+      raw = try await sendProjectSwitchRequest(project, rootPath: rootPath)
+    } catch let error as NSError where error.domain == "ADE" && error.code == 26 {
+      // The socket closed under the request. A machine whose project host was
+      // still starting closes the phone's socket once that host is ready, and
+      // the phone reconnects to it by itself: ask once more on that connection.
+      guard isCurrentProjectSelection(selectionGeneration),
+            await awaitReconnectForProjectSwitch(selectionGeneration: selectionGeneration) else {
+        throw error
+      }
+      syncConnectLog.notice("ADE_SYNC_TRACE project_switch resent_after_reconnect error=\(syncLogErrorSummary(error), privacy: .public)")
+      raw = try await sendProjectSwitchRequest(project, rootPath: rootPath)
     }
     let result = try decode(raw, as: MobileProjectSwitchResultPayload.self)
     guard result.ok else {
@@ -6685,6 +6702,29 @@ final class SyncService: ObservableObject {
       logProjectSwitchPhase("failed", completed: true)
       throw error
     }
+  }
+
+  private func sendProjectSwitchRequest(_ project: MobileProjectSummary, rootPath: String) async throws -> Any {
+    let requestId = makeRequestId()
+    return try await awaitResponse(requestId: requestId) {
+      self.sendEnvelope(type: "project_switch_request", requestId: requestId, payload: [
+        "projectId": project.id,
+        "rootPath": rootPath,
+      ])
+    }
+  }
+
+  /// Waits for the automatic reconnect after a socket closed under a project
+  /// switch. False when it does not come back in time, or when another
+  /// project was chosen meanwhile.
+  private func awaitReconnectForProjectSwitch(selectionGeneration: UInt64, timeout: TimeInterval = 20) async -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      guard !Task.isCancelled, isCurrentProjectSelection(selectionGeneration) else { return false }
+      if canSendLiveRequests() { return true }
+      try? await Task.sleep(nanoseconds: 250_000_000)
+    }
+    return false
   }
 
   private func beginProjectSelection() -> UInt64 {
@@ -28288,6 +28328,21 @@ extension SyncService {
     remoteMachineChatsBySession[sessionId.trimmingCharacters(in: .whitespacesAndNewlines)]
   }
 
+  /// A machine got its link after a chat of it opened (an ADE Cloud computer
+  /// paired by that open): the open chats subscribe on it, with a snapshot.
+  func subscribeOpenRemoteChats(onMachine machineKey: String) {
+    guard let connection = machineFleet?.connection(for: machineKey) else { return }
+    for (sessionId, remote) in remoteMachineChatsBySession
+    where remote.machineKey == machineKey && viewOwnedRemoteChatIds.contains(sessionId) {
+      _ = connection.subscribeChat(
+        sessionId: sessionId,
+        projectId: remote.projectId,
+        rootPath: remote.rootPath,
+        requestSnapshot: true
+      )
+    }
+  }
+
   func remoteChatConnection(for sessionId: String) -> MachineConnection? {
     guard let remote = routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) else {
       return nil
@@ -28433,6 +28488,11 @@ extension SyncService {
   func chatMachineName(sessionId: String) -> String? {
     if let connection = remoteChatConnection(for: sessionId) {
       return connection.hostName ?? syncNonEmpty(connection.profile.hostName)
+    }
+    // A computer this phone has no link to yet (an ADE Cloud computer it
+    // never paired): the fleet's name for it, never the focused machine's.
+    if let remote = routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) {
+      return machineFleet?.machine(for: remote.machineKey)?.name
     }
     return hostName ?? activeHostProfile?.hostName
   }
@@ -29119,11 +29179,15 @@ extension SyncService {
   /// drop every cloud computer. The fleet calls this again when the account
   /// list loads.
   func resolveCloudMachineKeys() {
-    guard let cloudAccountMachineKeys else { return }
+    // The computers the account server named to this phone itself count
+    // too: a connected computer's list that leaves one out can't drop it.
+    let serverKeys = Set(cloudServerInstances.compactMap(\.machineKey)).union(cloudSavedChats.map(\.machineKey))
+    guard let accountKeys = cloudAccountMachineKeys.map({ $0.union(serverKeys) })
+      ?? (serverKeys.isEmpty ? nil : serverKeys) else { return }
     let account = AccountService.shared
     guard account.machinesState == .loaded else { return }
     let keys = account.machines.compactMap { machine -> String? in
-      guard cloudAccountMachineKeys.contains(machine.machineKey),
+      guard accountKeys.contains(machine.machineKey),
             let deviceId = machine.deviceId, !deviceId.isEmpty else { return nil }
       return HiddenMachineStore.fleetKey(deviceId: deviceId)
     }

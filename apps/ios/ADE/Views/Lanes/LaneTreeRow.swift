@@ -5,6 +5,8 @@ import SwiftUI
 struct LaneTreeRow: View {
   let snapshot: LaneListSnapshot
   let pullRequest: LanePrTag?
+  /// The lane's machine while the list spans several; the peek names it.
+  var machineName: String? = nil
   let isPinned: Bool
   let isOpen: Bool
   let transitionNamespace: Namespace.ID?
@@ -26,7 +28,7 @@ struct LaneTreeRow: View {
       .contextMenu {
         onContextMenu(snapshot)
       } preview: {
-        LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
+        LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest, machineName: machineName)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -48,6 +50,7 @@ struct LaneTreeRow: View {
 struct LanePeekPreview: View {
   let snapshot: LaneListSnapshot
   var pullRequest: LanePrTag? = nil
+  var machineName: String? = nil
 
   var body: some View {
     let laneTint = laneSurfaceTint(forHex: snapshot.lane.color)
@@ -71,6 +74,16 @@ struct LanePeekPreview: View {
           .font(.system(.caption2, design: .monospaced))
           .foregroundStyle(ADEColor.textMuted)
           .lineLimit(1)
+        if let machineName {
+          Image(systemName: "desktopcomputer")
+            .font(.system(size: 10, weight: .regular))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+            .padding(.leading, 6)
+          Text(machineName)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
       }
 
       Divider().opacity(0.2)

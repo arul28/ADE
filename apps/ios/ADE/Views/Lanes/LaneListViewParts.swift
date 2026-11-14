@@ -334,6 +334,7 @@ extension LanesTabView {
     LaneTreeRow(
       snapshot: snapshot,
       pullRequest: pullRequest,
+      machineName: machine?.name,
       isPinned: pinned,
       isOpen: openLaneIds.contains(laneId),
       transitionNamespace: transitionNamespace,

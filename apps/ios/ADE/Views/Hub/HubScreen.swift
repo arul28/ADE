@@ -383,6 +383,7 @@ struct HubScreen: View {
       }
     }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
+    .onChange(of: machineFleet.restingCloudMachines) { _, _ in rebuildHubProjectPresentations() }
     .onChange(of: syncService.focusedMachineListsWork) { _, _ in rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
     .task(id: accountRebuildKey) {
@@ -1073,7 +1074,10 @@ struct HubScreen: View {
       : nil
     let merge = hubMergeFleetRosters(
       focused: focusedRosters,
-      machines: machineFleet.machines.filter(\.isWanted).map(hubMachineWithListedWork),
+      // An asleep ADE Cloud computer lists its saved work too, also when this
+      // phone never connected to it and no other computer is connected.
+      machines: (machineFleet.machines.filter(\.isWanted) + machineFleet.restingCloudMachines)
+        .map(hubMachineWithListedWork),
       resolver: resolver,
       focusedMachineKey: syncService.focusedMachineKey
     )
