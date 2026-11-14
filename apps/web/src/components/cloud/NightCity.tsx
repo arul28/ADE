@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import { cn } from "../../lib/cn";
 
 /*
@@ -135,63 +134,6 @@ export function City({ className, seed = 11, count = 15, scale = 1 }: { classNam
   );
 }
 
-const LOG = [
-  { time: "23:41", text: "Reading the checkout service" },
-  { time: "23:58", text: "Found the rounding bug" },
-  { time: "00:26", text: "Wrote 12 tests" },
-  { time: "01:14", text: "All 412 tests pass", good: true },
-  { time: "01:20", text: "Opened a pull request" },
-  { time: "01:22", text: "Asleep. No hours used." },
-] as const;
-
-/** One cloud computer's night, line by line, once it scrolls into view. */
-export function AgentLog({ className }: { className?: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(false);
-  useEffect(() => {
-    const node = ref.current;
-    if (!node) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setShown(true);
-          observer.disconnect();
-        }
-      },
-      { threshold: 0.4 },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  return (
-    <div
-      ref={ref}
-      data-shown={shown}
-      aria-hidden
-      className={cn(
-        "w-[300px] rounded-[16px] border border-white/[0.09] bg-[#15122d]/85 p-4 shadow-[0_30px_80px_-20px_rgba(124,58,237,0.45)] backdrop-blur-md",
-        className,
-      )}
-    >
-      <div className="flex items-center justify-between text-[12px] text-white/50">
-        <span>fix-checkout</span>
-        <span className="flex items-center gap-1.5 text-[color:var(--color-lamp)]">
-          <span className="ade-pulse-dot h-1.5 w-1.5 rounded-full bg-[color:var(--color-lamp)]" />
-          In the cloud
-        </span>
-      </div>
-      <div className="mt-3 font-mono text-[12px] leading-[1.95] text-white/80">
-        {LOG.map((line, index) => (
-          <div key={line.time} className="ade-log-line flex gap-3" style={{ animationDelay: `${0.25 + index * 0.55}s` }}>
-            <span className="text-white/30">{line.time}</span>
-            <span className={"good" in line ? "text-emerald-300" : undefined}>{line.text}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /**
  * One tower for a plan card: more floors and more lit windows for a bigger

@@ -231,11 +231,6 @@ body {
 .ade-window { animation: ade-window 7s ease-in-out infinite; }
 @keyframes ade-twinkle { 0%, 100% { opacity: 0.25; } 50% { opacity: 0.9; } }
 .ade-twinkle { animation: ade-twinkle 4.5s ease-in-out infinite; }
-@keyframes ade-log-line { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-.ade-log-line { opacity: 0; }
-[data-shown="true"] .ade-log-line { animation: ade-log-line 0.5s var(--ease-out) forwards; }
-@keyframes ade-pulse-dot { 50% { opacity: 0.35; } }
-.ade-pulse-dot { animation: ade-pulse-dot 1.6s ease-in-out infinite; }
 /* Hero sky: clouds drift with transforms only; one shooting star now and then. */
 @keyframes ade-drift { from { transform: translate3d(-4vw, 0, 0); } to { transform: translate3d(4vw, -6px, 0); } }
 .ade-drift { animation: ade-drift 110s ease-in-out infinite alternate; will-change: transform; }
@@ -264,9 +259,7 @@ body {
 }
 @media (prefers-reduced-motion: reduce) {
   .ade-drift, .ade-shooting-star, .ade-cloud-pill { animation: none; }
-  .ade-window, .ade-twinkle, .ade-pulse-dot { animation: none; }
-  .ade-log-line { opacity: 1; }
-  [data-shown="true"] .ade-log-line { animation: none; }
+  .ade-window, .ade-twinkle { animation: none; }
 }
 
 /* The plan finder's sliders. --fill is the filled share, set inline. */

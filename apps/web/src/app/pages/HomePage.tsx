@@ -2,16 +2,17 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { Page } from "../../components/Page";
 
 import { Hero } from "../../components/home/Hero";
-import { StorySection } from "../../components/home/StorySection";
-import { CloudNight } from "../../components/home/CloudNight";
+import { AgentsSection } from "../../components/home/AgentsSection";
 import { ToolsSection } from "../../components/home/ToolsSection";
 import { FeatureWall } from "../../components/home/FeatureWall";
+import { CloudSection } from "../../components/home/CloudSection";
 import { DownloadSection } from "../../components/home/DownloadSection";
 
 /**
- * The home page, in the order a visitor needs it: one app for every agent,
- * the agents working together, ADE Cloud and its free hours, the tools agents
- * check their work with, the best of everything else, and the download.
+ * The home page says two things. ADE runs every agent on your own machines,
+ * with full control of them: the hero's live demo, every agent and model,
+ * the tools agents check their work with, and everything else built in. And
+ * ADE Cloud adds cloud computers for next to nothing. Then the download.
  */
 export function HomePage() {
   useDocumentTitle("ADE — Agentic Development Environment");
@@ -20,10 +21,10 @@ export function HomePage() {
     <Page>
       <div className="overflow-x-clip bg-[color:var(--color-bg)] text-white">
         <Hero />
-        <StorySection />
-        <CloudNight />
+        <AgentsSection />
         <ToolsSection />
         <FeatureWall />
+        <CloudSection />
         <DownloadSection />
       </div>
     </Page>

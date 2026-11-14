@@ -165,7 +165,8 @@ export function ProviderTile({
   className,
 }: {
   provider: Provider;
-  size?: number;
+  /** Pixel size, or "fill" to take the size of its parent. */
+  size?: number | "fill";
   className?: string;
 }) {
   return (
@@ -174,7 +175,7 @@ export function ProviderTile({
         "grid place-items-center rounded-[28%] border border-white/12 bg-[#15151d]/90 shadow-[0_10px_30px_rgba(0,0,0,0.45)] backdrop-blur",
         className,
       )}
-      style={{ width: size, height: size }}
+      style={size === "fill" ? { width: "100%", height: "100%" } : { width: size, height: size }}
       title={provider.name}
     >
       <ProviderMark provider={provider} className="h-[52%] w-[52%]" />
