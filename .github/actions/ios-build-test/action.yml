@@ -75,12 +75,22 @@ runs:
     # stored, the same on every restore. A new spm-v1 entry rebuilds the
     # packages once, which is slow but never wrong. This step runs before the
     # simulator boots: placed after the boot, it took 46-92 s.
+    #
+    # xcodebuild also fetches every package's remote before it builds. When
+    # the packages restored on their exact key, Package.resolved is the one
+    # they were saved for, so the fetch is skipped. On a restore-key hit (a
+    # changed Package.resolved), xcodebuild fetches what is new.
     - name: Prepare the incremental build
       shell: bash
+      env:
+        SPM_EXACT_HIT: ${{ steps.spm_cache.outputs.cache-hit }}
       run: |
         set -euo pipefail
         defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
         python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" apps/ios
+        flags="-onlyUsePackageVersionsFromResolvedFile"
+        if [[ "$SPM_EXACT_HIT" == "true" ]]; then flags="$flags -skipPackageUpdates"; fi
+        echo "ADE_IOS_PACKAGE_FLAGS=$flags" >> "$GITHUB_ENV"
 
     # The simulator cold boot took 4-8 minutes when it started after the
     # build; booting it now overlaps the build.
@@ -121,28 +131,40 @@ runs:
         mkdir -p "$dd"
         marker="$RUNNER_TEMP/ios-build-start"
         touch "$marker"
-        # The full output goes to a file (uploaded when the job fails); the
-        # log shows the errors, a warning count and the timing summary.
+        # The full output goes to a file, each line with the time it was
+        # printed (the file is uploaded when the job fails). The job log
+        # shows the errors, a warning count, when each build phase started,
+        # and the timing summary.
         log="$RUNNER_TEMP/ios-build.log"
         status=0
+        # shellcheck disable=SC2086 # the package flags are separate words
         (cd apps/ios && xcodebuild \
           -project ADE.xcodeproj \
           -scheme ADE \
           -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
           -derivedDataPath "$dd" \
           -clonedSourcePackagesDirPath ~/spm-packages \
+          $ADE_IOS_PACKAGE_FLAGS \
           -skipMacroValidation \
           -skipPackagePluginValidation \
           -showBuildTimingSummary \
           COMPILER_INDEX_STORE_ENABLE=NO \
-          build-for-testing) > "$log" 2>&1 || status=$?
+          build-for-testing 2>&1) \
+          | perl -MPOSIX -ne 'BEGIN { $| = 1 } print strftime("%H:%M:%S ", localtime), $_' > "$log" || status=$?
         echo "Warnings: $(grep -c ': warning: ' "$log" || true)"
         if (( status != 0 )); then
-          grep -E ': error: |^error: ' "$log" | sort -u | head -200 || true
+          grep -E ': error: |^[0-9:]{8} error: ' "$log" | sort -u | head -200 || true
           tail -n 60 "$log"
           exit "$status"
         fi
-        sed -n '/Build Timing Summary/,$p' "$log"
+        echo "Build started $(head -n 1 "$log" | cut -c1-8). First line of each phase:"
+        for phase in 'Resolve Package Graph' 'Resolved source packages' 'Fetching from' \
+          'ComputePackagePrebuildTargetDependencyGraph' 'CreateBuildRequest' 'ComputeTargetDependencyGraph' \
+          'GatherProvisioningInputs' 'CreateBuildDescription' 'Build description path' \
+          'SwiftDriver' 'SwiftEmitModule' 'SwiftCompile' 'Ld ' 'CodeSign' 'TEST BUILD SUCCEEDED'; do
+          grep -m1 -F "$phase" "$log" | cut -c1-140 || true
+        done
+        sed -n '/Build Timing Summary/,$p' "$log" | cut -c10-
         objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
         swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
         echo "Compiled in this build: $objects object files, $swift of them from Swift files."
@@ -152,13 +174,16 @@ runs:
       run: |
         set -euo pipefail
         cd apps/ios
-        xcrun simctl bootstatus "$IOS_SIM_ID" -b
+        echo "Waiting for the simulator from $(date +%T)"
+        xcrun simctl bootstatus "$IOS_SIM_ID" -b > /dev/null
+        echo "Simulator ready at $(date +%T)"
         xcodebuild \
           -project ADE.xcodeproj \
           -scheme ADE \
           -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
           -derivedDataPath "$RUNNER_TEMP/ios-dd" \
           -clonedSourcePackagesDirPath ~/spm-packages \
+          $ADE_IOS_PACKAGE_FLAGS \
           -skipMacroValidation \
           -skipPackagePluginValidation \
           -parallel-testing-enabled NO \
