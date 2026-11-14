@@ -6,6 +6,7 @@ import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
+import os from "node:os";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
@@ -1895,7 +1896,15 @@ export function registerRuntimeBridge({
       >(
         target.id,
         "machine.updateAndRestart",
-        { targetVersion },
+        {
+          targetVersion,
+          // Who asked, for the other machine's logs and its agents' continue
+          // message. An older brain ignores the field.
+          requestedBy: {
+            machineName: os.hostname().replace(/\.local$/i, "").trim() || undefined,
+            clientKind: "desktop",
+          },
+        },
         {
           // Downloading and installing a build can take minutes, and the
           // restart itself drops the connection — a silent retry would run the

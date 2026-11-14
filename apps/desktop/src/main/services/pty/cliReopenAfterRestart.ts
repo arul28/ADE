@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -49,6 +50,11 @@ export type CliReopenEntry = {
   kind?: "chat";
   /** The stop was an update the user accepted: the continue cap starts again. */
   acceptedUpdate?: true;
+  /**
+   * The runtime was stopped for good: the CLI reopens at its prompt and gets
+   * no restart message at all. Older runtimes ignore it.
+   */
+  stoppedForGood?: true;
 };
 
 type CliReopenFile = {
@@ -75,15 +81,16 @@ function listFileWriterPid(name: string): number {
   return Number(name.slice(FILE_PREFIX.length, -FILE_SUFFIX.length));
 }
 
-/** A stop for good: CLIs reopen at their prompt, chats are not continued. */
+/** A stop for good: CLIs reopen at their prompt with no message, chats are not continued. */
 function withoutContinues(entries: readonly CliReopenEntry[]): CliReopenEntry[] {
   return entries
     .filter((entry) => entry.kind !== "chat")
-    .map((entry) => ({ sessionId: entry.sessionId, midTurn: false }));
+    .map((entry) => ({ sessionId: entry.sessionId, midTurn: false, stoppedForGood: true as const }));
 }
 
+/** Whether a list still makes the next runtime say or continue anything. */
 function hasContinues(entries: readonly CliReopenEntry[]): boolean {
-  return entries.some((entry) => entry.kind === "chat" || entry.midTurn || entry.acceptedUpdate);
+  return entries.some((entry) => entry.kind === "chat" || entry.midTurn || entry.acceptedUpdate || !entry.stoppedForGood);
 }
 
 function isMissing(error: unknown): boolean {
@@ -111,6 +118,7 @@ function parseEntries(value: unknown): CliReopenEntry[] {
       midTurn: record.midTurn === true,
       ...(record.kind === "chat" ? { kind: "chat" as const } : {}),
       ...(record.acceptedUpdate === true ? { acceptedUpdate: true as const } : {}),
+      ...(record.stoppedForGood === true ? { stoppedForGood: true as const } : {}),
     });
   }
   return entries;
@@ -126,7 +134,10 @@ function readFile(filePath: string): CliReopenFile | null {
   }
 }
 
-/** Two lists of one session: chat and accepted update if either says so, mid-turn likewise. */
+/**
+ * Two lists of one session: chat and accepted update if either says so,
+ * mid-turn likewise. Stopped for good if either says so: the quiet side.
+ */
 function mergeEntries(lists: Iterable<readonly CliReopenEntry[]>): CliReopenEntry[] {
   const merged = new Map<string, CliReopenEntry>();
   for (const list of lists) {
@@ -137,6 +148,7 @@ function mergeEntries(lists: Iterable<readonly CliReopenEntry[]>): CliReopenEntr
         midTurn: entry.midTurn || earlier?.midTurn === true,
         ...(entry.kind === "chat" || earlier?.kind === "chat" ? { kind: "chat" as const } : {}),
         ...(entry.acceptedUpdate || earlier?.acceptedUpdate ? { acceptedUpdate: true as const } : {}),
+        ...(entry.stoppedForGood || earlier?.stoppedForGood ? { stoppedForGood: true as const } : {}),
       });
     }
   }
@@ -578,7 +590,10 @@ export function pruneCliCrashReopenState(projectRoot: string, options: { keepMs:
     try {
       if (name.startsWith(TURNS_PREFIX) && name.endsWith(TURNS_SUFFIX)) {
         const pid = Number(name.slice(TURNS_PREFIX.length, -TURNS_SUFFIX.length));
-        if (Number.isInteger(pid) && pid !== process.pid && !isProcessRunning(pid)) fs.rmSync(filePath, { force: true });
+        // A file from before this computer booted belongs to a dead runtime,
+        // even when its pid now names a new process.
+        const gone = !isProcessRunning(pid) || fs.statSync(filePath).mtimeMs < nowMs - os.uptime() * 1000;
+        if (Number.isInteger(pid) && pid !== process.pid && gone) fs.rmSync(filePath, { force: true });
         continue;
       }
       if (nowMs - fs.statSync(filePath).mtimeMs > options.keepMs) fs.rmSync(filePath, { force: true });
@@ -620,7 +635,8 @@ export type CliKnownOwner = { pid: number; startedAt: string; lastSeen: string }
  *   row another machine owns from being reopened here (the stale-row sweep
  *   uses it the same way);
  * - is not this process, and does not run (a live peer, or a reused pid: the
- *   safe side);
+ *   safe side). An owner last seen before this computer booted is gone even
+ *   when its pid runs again: after a restart that pid is a new process;
  * - was last seen within `maxAgeMs`: its last heartbeat is close to when it
  *   stopped. Older ones only count as `stale`.
  */
@@ -630,8 +646,11 @@ export function findCliSessionsCutOffByCrash(args: {
   ownPid: number;
   exclude?: ReadonlySet<string>;
   maxAgeMs: number;
+  /** When this computer booted (epoch ms); read from `os.uptime()` when absent. */
+  bootMs?: number;
 }): { cutOff: CliCutOffByCrash[]; stale: number } {
   const nowMs = Date.now();
+  const bootMs = args.bootMs ?? nowMs - os.uptime() * 1000;
   const lastSeenByIdentity = new Map<string, number>();
   const lastSeenByPid = new Map<number, number>();
   for (const owner of args.knownOwners) {
@@ -653,7 +672,8 @@ export function findCliSessionsCutOffByCrash(args: {
     const lastSeenMs = ownerStartedAt
       ? lastSeenByIdentity.get(ownerKey(ownerPid, ownerStartedAt))
       : lastSeenByPid.get(ownerPid);
-    if (lastSeenMs === undefined || isProcessRunning(ownerPid)) continue;
+    if (lastSeenMs === undefined) continue;
+    if (lastSeenMs >= bootMs && isProcessRunning(ownerPid)) continue;
     if (nowMs - lastSeenMs > args.maxAgeMs) {
       stale += 1;
       continue;

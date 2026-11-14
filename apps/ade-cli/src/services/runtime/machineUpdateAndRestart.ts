@@ -19,6 +19,7 @@ import type {
   RemoteRuntimeUpdateStepId,
   RemoteRuntimeUpdateStepStatus,
 } from "../../../../desktop/src/shared/types/remoteRuntime";
+import type { UpdateRequestedBy } from "../../../../desktop/src/shared/chatAutoResume";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
 import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
 import { resolveSelectedUpdateTrack } from "./updateTrackStore";
@@ -107,7 +108,10 @@ export type MachineUpdateAndRestartDeps = {
    * app open the app's own update is the only one that lands. Absent, or
    * `attached: false`: no capable app is open and the standalone path runs.
    */
-  requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
+  requestDesktopAppUpdate?: (
+    targetVersion: string | null,
+    requestedBy?: UpdateRequestedBy | null,
+  ) => Promise<DesktopAppUpdateRouting>;
   /**
    * The update track this machine follows (`update-track.json`). Absent: the
    * track of `currentVersion`.
@@ -127,7 +131,10 @@ export type MachineUpdateControlsArgs = {
    */
   requestRestart: () => Promise<{ status: number | null; stdout: string; stderr: string }>;
   /** See `MachineUpdateAndRestartDeps.requestDesktopAppUpdate`. */
-  requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
+  requestDesktopAppUpdate?: (
+    targetVersion: string | null,
+    requestedBy?: UpdateRequestedBy | null,
+  ) => Promise<DesktopAppUpdateRouting>;
   /**
    * The installed ADE app on this machine, as the brain reports it
    * (`readInstalledDesktopApp`), or null. The brain update moves the app too,
@@ -531,6 +538,8 @@ function alreadyCurrentResult(
 export async function runMachineUpdateAndRestart(
   deps: MachineUpdateAndRestartDeps,
   requestedTargetVersion: string | null = null,
+  /** Who asked (sanitized by the caller); logged and kept for the next start's message. */
+  requestedBy: UpdateRequestedBy | null = null,
 ): Promise<MachineUpdateAndRestartResult> {
   const ownVersion = deps.currentVersion?.trim() || null;
   const install = deps.updateInstallMode?.();
@@ -556,7 +565,7 @@ export async function runMachineUpdateAndRestart(
   const crossesTrack = requestedTargetVersion != null
     && updateTrackOfVersion(requestedTargetVersion) !== selectedTrack;
   const targetVersion = crossesTrack ? null : requestedTargetVersion;
-  const result = await routeMachineUpdateAndRestart(deps, ownVersion, targetVersion, crossesTrack);
+  const result = await routeMachineUpdateAndRestart(deps, ownVersion, targetVersion, crossesTrack, requestedBy);
   if (!crossesTrack || !result.ok) return result;
   return { ...result, message: `Stays on ${updateTrackLabel(selectedTrack)}. ${result.message}` };
 }
@@ -566,11 +575,12 @@ async function routeMachineUpdateAndRestart(
   ownVersion: string | null,
   targetVersion: string | null,
   crossesTrack: boolean,
+  requestedBy: UpdateRequestedBy | null,
 ): Promise<MachineUpdateAndRestartResult> {
   if (deps.requestDesktopAppUpdate) {
     let routing: DesktopAppUpdateRouting;
     try {
-      routing = await deps.requestDesktopAppUpdate(targetVersion);
+      routing = await deps.requestDesktopAppUpdate(targetVersion, requestedBy);
     } catch (error) {
       routing = { attached: false, detail: error instanceof Error ? error.message : String(error) };
     }

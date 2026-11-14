@@ -152,6 +152,7 @@ import {
   APPLE_LONG_PRESS_MIN_MS,
   type IosSimulatorLongPressArgs,
   type IosSimulatorPressKeyArgs,
+  isAdeOwnedLaneDevice,
 } from "../../../shared/types/iosSimulator";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { APPLE_AUTO_RECORD_SETTING_KEY } from "../../../shared/appleDeviceSettings";
@@ -182,11 +183,13 @@ import { runXcodebuildTests } from "./appleTestRun";
 import { generateXcodeGenProjects, type XcodeGenOptions } from "./xcodeGenProjects";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
+  appleDeviceFiles,
   createLaneDeviceMaintenance,
   describeDevicePowerOff,
   type AppleDevicePowerOffRecord,
   type LaneDeviceMaintenance,
 } from "./laneDeviceMaintenance";
+import type { SimulatorReclaimFacts } from "./simulatorMemoryReclaim";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -8149,6 +8152,37 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     laneMaintenance().start();
   }
 
+  /**
+   * This service's lane devices, with what only this process knows about each
+   * (`simulatorMemoryReclaim.ts`, run by the machine brain when memory is low).
+   */
+  const memoryReclaimLaneDevices = (): Array<{
+    udid: string;
+    name: string;
+    laneId: string;
+    extra: boolean;
+    adeOwned: boolean;
+    busyHere: boolean;
+    bootedByChat: string | null;
+  }> => laneDevices.list().map((device) => ({
+    udid: device.udid,
+    name: device.name,
+    laneId: device.laneId,
+    extra: device.extra === true,
+    adeOwned: isAdeOwnedLaneDevice(device.origin),
+    // A stream counts only while someone watches it, as for the idle timer.
+    busyHere: isBusyHere(device.udid, { onlyWatchedStreams: true }),
+    bootedByChat: laneMaintenance().readBootedBy(device.udid),
+  }));
+
+  /** Shut one of this service's lane devices down for memory. False when it is not one. */
+  const powerOffLaneDeviceForMemory = async (udid: string, facts: SimulatorReclaimFacts): Promise<boolean> => {
+    const device = laneDevices.list().find((entry) => entry.udid === udid);
+    if (!device) return false;
+    await laneMaintenance().powerOffForMemory(device, facts);
+    return true;
+  };
+
   /* ───────────────────────── simulator runtimes ───────────────────────── */
 
   let runtimeManagerInstance: AppleRuntimeManager | null = null;
@@ -8217,6 +8251,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         if (!actionArgs || actionArgs.agentCaller !== true) {
           return (original as (...params: unknown[]) => unknown)(actionArgs, ...rest);
         }
+        return await withMemoryNotice(actionArgs, mode, () => guardedCall(actionArgs, rest));
+      };
+      const guardedCall = async (actionArgs: Record<string, unknown>, rest: unknown[]): Promise<unknown> => {
         const { agentCaller: _agent, ...callArgs } = actionArgs;
         const runtime = resolveRuntime(callArgs as { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null });
         if (!runtime.key) {
@@ -8282,6 +8319,63 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         const pinned = mode === "drive" && laneDevice ? { ...callArgs, deviceUdid: laneDevice.udid } : callArgs;
         return (original as (...params: unknown[]) => unknown)(pinned, ...rest);
       };
+    };
+    /**
+     * What the machine's low-memory pass left for this lane's devices
+     * (`simulatorMemoryReclaim.ts`): an unseen warning, shown once, and why ADE
+     * shut a device down, shown until it boots again. Added to the answer as
+     * `deviceNotice`, which `ade apple` prints. A call that fails keeps the
+     * warning for the next one.
+     */
+    const withMemoryNotice = async (
+      actionArgs: Record<string, unknown>,
+      mode: "drive" | "check",
+      call: () => Promise<unknown>,
+    ): Promise<unknown> => {
+      const files = appleDeviceFiles(appleDeviceDataRoot());
+      const runtime = (() => {
+        try {
+          return resolveRuntimeUntracked(actionArgs as { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null });
+        } catch {
+          return null;
+        }
+      })();
+      const devices = runtime?.key ? laneDevices.list().filter((device) => device.laneId === runtime.key) : [];
+      if (!devices.length) return await call();
+      const warnings = devices
+        .map((device) => ({ device, warning: files.takeMemoryWarning(device.udid) }))
+        .filter((entry) => entry.warning !== null);
+      // An extra's shutdown is named by its own boot (`bootExtraDevice`).
+      const shutdowns = devices
+        .filter((device) => !device.extra)
+        .map((device) => ({ device, record: laneMaintenance().readPowerOff(device.udid) }))
+        .filter((entry) => entry.record?.reason === "memory")
+        .map(({ device, record }) => describeDevicePowerOff(
+          record!,
+          device.name,
+          mode === "drive" ? "this command boots it again if it needs it." : "boot it again when needed.",
+        ));
+      let result: unknown;
+      try {
+        result = await call();
+      } catch (error) {
+        for (const { device, warning } of warnings) files.writeMemoryWarning(device.udid, warning!);
+        throw error;
+      }
+      const notices = [...shutdowns, ...warnings.map(({ warning }) => warning!.text)];
+      if (!notices.length) return result;
+      if (!isPlainResultObject(result)) {
+        for (const { device, warning } of warnings) files.writeMemoryWarning(device.udid, warning!);
+        return result;
+      }
+      const shown = new Set<string>([
+        ...(typeof result.deviceNotice === "string" ? [result.deviceNotice] : []),
+        ...(Array.isArray(result.deviceNotices) ? result.deviceNotices.filter((entry): entry is string => typeof entry === "string") : []),
+      ]);
+      const added = notices.filter((notice) => !shown.has(notice));
+      if (!added.length) return result;
+      const existing = typeof result.deviceNotice === "string" && result.deviceNotice.trim() ? [result.deviceNotice.trim()] : [];
+      return { ...result, deviceNotice: [...existing, ...added].join(" ") };
     };
     for (const action of AGENT_DEVICE_DRIVING_ACTIONS) wrap(action, "drive");
     for (const action of AGENT_DEVICE_CHECKED_ACTIONS) wrap(action, "check");
@@ -8379,6 +8473,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
     deviceCleanup,
     powerOffChatStartedDevices,
+    /* Low memory on this computer (`simulatorMemoryReclaim.ts`): the machine brain's pass, not an action. */
+    memoryReclaimLaneDevices,
+    powerOffLaneDeviceForMemory,
 
     /* Simulator runtimes: list, install the one this Xcode expects, remove old ones. */
     runtimeList: async () => darwinRuntimeManager().runtimeList(),

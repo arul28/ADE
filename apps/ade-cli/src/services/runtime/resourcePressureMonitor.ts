@@ -20,6 +20,7 @@ import {
 } from "../../../../desktop/src/main/services/state/dbActivity";
 import { writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
+import type { SimulatorReclaimEpisodeNote, SimulatorReclaimSample } from "./simulatorMemoryReclaim";
 
 /*
  * Resource-pressure episodes: the machine running short of memory or swap, a
@@ -114,6 +115,8 @@ export type ResourcePressureEpisode = {
   devBrainRunning: boolean | null;
   /** ADE's tables with the most writes in the interval before, at most three. */
   topTables: Array<{ table: string; writes: number }>;
+  /** What the low-memory pass over the iOS simulators did in this episode (`simulatorMemoryReclaim.ts`). */
+  simulatorReclaim?: SimulatorReclaimEpisodeNote;
 };
 
 export type ResourcePressureRecord = {
@@ -239,6 +242,31 @@ export function readResourcePressureRecord(runtimeDir: string): ResourcePressure
   }
 }
 
+/**
+ * The last memory or swap breach in a record, with the facts a restart
+ * message names: RAM, swap, and what the iOS simulators held when the episode
+ * opened. Null when the last episode was not about memory. Pure.
+ */
+export function memoryBreachForRestartCause(record: ResourcePressureRecord | null): {
+  lastBreachAtMs: number;
+  memory: { totalMb: number | null; swapUsedMb: number | null; swapTotalMb: number | null } | null;
+  simulatorMb: number | null;
+} | null {
+  if (!record || record.state.lastBreachAtMs === null) return null;
+  const episode = record.episodes[record.episodes.length - 1];
+  if (!episode || !episode.kinds.some((kind) => kind === "memory" || kind === "swap")) return null;
+  // The sample nearest the end, when it still carries memory; else the episode's own.
+  const memory = record.lastSample?.memory ?? episode.memory;
+  const simulator = (episode.processes ?? []).find((group) => group.group === "ios_simulator");
+  return {
+    lastBreachAtMs: record.state.lastBreachAtMs,
+    memory: memory
+      ? { totalMb: memory.totalMb ?? null, swapUsedMb: memory.swapUsedMb ?? null, swapTotalMb: memory.swapTotalMb ?? null }
+      : null,
+    simulatorMb: simulator ? simulator.mb : null,
+  };
+}
+
 /** The memory facts kept for a sample and a report; a signal not read is null. */
 export function memoryOf(
   signals: Pick<HostMemorySignals, "totalMb" | "availableMb"> & Partial<ResourcePressureMemory>,
@@ -290,6 +318,11 @@ export type ResourcePressureMonitorDeps = {
   readProcesses?: () => Promise<ProcessGroupSnapshot | null>;
   takeWrites?: () => Array<{ table: string; writes: number }>;
   cpuUsage?: (previous?: NodeJS.CpuUsage) => NodeJS.CpuUsage;
+  /**
+   * Each sample while an episode is open, after the episode bookkeeping: the
+   * iOS simulators' low-memory pass. What it returns is kept on the episode.
+   */
+  onOpenEpisodeSample?: (sample: SimulatorReclaimSample) => Promise<SimulatorReclaimEpisodeNote | null>;
 };
 
 export type ResourcePressureMonitor = {
@@ -338,7 +371,7 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
     sample: ResourcePressureSample,
     breach: { kinds: ResourcePressureKind[]; severity: ResourcePressureSeverity },
     topTables: Array<{ table: string; writes: number }>,
-  ): Promise<void> => {
+  ): Promise<ProcessGroupSnapshot | null> => {
     const processes = await readProcesses().catch(() => null);
     const episode: ResourcePressureEpisode = {
       id,
@@ -410,6 +443,7 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
     } catch {
       // Analytics never changes what the sample does.
     }
+    return processes;
   };
 
   const tick = async (): Promise<void> => {
@@ -437,14 +471,29 @@ export function createResourcePressureMonitor(deps: ResourcePressureMonitorDeps)
       const topTables = takeWrites();
       const result = evaluateResourcePressure(state, sample);
       state = result.state;
+      let processes: ProcessGroupSnapshot | null | undefined;
       if (result.opened && result.breach && state.open) {
-        await openEpisode(state.open.id, sample, result.breach, topTables);
+        processes = await openEpisode(state.open.id, sample, result.breach, topTables);
       } else if (result.closed) {
         const last = episodes[episodes.length - 1];
         if (last && !last.closedAt) {
           episodes = [...episodes.slice(0, -1), { ...last, closedAt: new Date(atMs).toISOString() }];
         }
         deps.logger.info?.("machine.resource_pressure_ended", { episodeId: last?.id ?? null });
+      }
+      if (state.open && deps.onOpenEpisodeSample) {
+        const episodeId = state.open.id;
+        const simulatorGroup = processes?.groups.find((group) => group.group === "ios_simulator");
+        const reclaim = await deps.onOpenEpisodeSample({
+          nowMs: atMs,
+          episodeId,
+          breach: result.breach,
+          memory: sample.memory ? { totalMb: sample.memory.totalMb, swapUsedMb: sample.memory.swapUsedMb } : null,
+          // Listed this sample already: no second listing.
+          ...(processes ? { simulatorMb: simulatorGroup?.mb ?? 0 } : {}),
+        }).catch(() => null);
+        const last = episodes[episodes.length - 1];
+        if (reclaim && last?.id === episodeId) episodes = [...episodes.slice(0, -1), { ...last, simulatorReclaim: reclaim }];
       }
       persist(sample);
     } catch {

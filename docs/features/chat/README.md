@@ -1779,14 +1779,22 @@ accepted update alike, and the update dialog shows its answer per chat:
   restart loop (`brainStartIsInRestartLoop`, from `brain-starts.json`)
   reopens nothing. With the setting off or in a loop, the crash candidates
   are claimed and stay closed, so a later start does not reopen them.
-  A CLI reopens at its prompt (`ptyService.resumeSession`). A mid-turn one,
-  unless it waits on the user's answer, then gets the durable "continue" row
-  (`RESTART_RESUME_PROMPT`), which fires once the CLI is at its prompt; it
-  counts toward the same restart streak as a chat's. Every reopened CLI shows
-  one line in its own terminal (`ptyService.showSessionNotice`,
-  `cliReopenedNotice`): "ADE restarted (unexpectedly) and reopened this
-  session", with "during a turn … tells the agent to continue" when it is
-  continued. Every viewer of the session sees it. Removing a project deletes
+  A CLI reopens at its prompt (`ptyService.resumeSession`). Then every
+  reopened CLI gets the durable restart row, which fires once the CLI is at
+  its prompt and names why ADE restarted (`restartResumePrompt`, the cause
+  from `brainRestartCause.ts`). A mid-turn one is told to continue. Any other
+  one is told that work or background agents it had were stopped, and that
+  an idle agent answers in one short line and stops: ADE's "was it working"
+  signal misses a CLI that waits on background agents. No row goes to a CLI
+  that waits on the user's answer, or whose runtime was stopped for good
+  (`stoppedForGood` on its list entry). Both wordings count toward the same
+  restart streak as a chat's, so a restart loop stops after
+  `MAX_CONSECUTIVE_RESTART_RESUMES`. The cost is one short turn per reopened
+  idle CLI per restart. Every reopened CLI shows one line in its own terminal
+  (`ptyService.showSessionNotice`, `cliReopenedNotice`): the cause and "reopened
+  this session", with "during a turn … tells the agent to continue" when it
+  is continued, or "tells the agent what happened" for the idle wording. The
+  log line counts the first as `continued` and the second as `informed`. Every viewer of the session sees it. Removing a project deletes
   its lists and crash state. Archived CLIs, ones already open, ones another
   runtime owns, and stops older than 6 h are skipped. The log lines are
   `agent_chat.cli_reopened_after_restart` and `agent_chat.cli_reopen_skipped`,

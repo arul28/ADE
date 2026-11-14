@@ -3,7 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import type { RestartCause } from "../../../shared/chatAutoResume";
 import { captureError } from "../../../shared/sentry/capture";
+import { deriveBrainRestartCause, type BrainRestartCauseFacts } from "./brainRestartCause";
 
 /**
  * Whether this brain started because the one before it on the same endpoint
@@ -48,11 +50,15 @@ type BrainRunRecord = {
   build: string | null;
   stoppedAt?: string;
   stoppedBy?: string;
+  /** The intent of an orderly stop (`noteBrainStopIntent`); absent on older records. */
+  stopIntent?: "accepted_update" | "stop_for_good";
 };
 
 type Holder = {
   own: { filePath: string; pid: number; startedAt: string } | null;
   restart: BrainUnplannedRestart | null;
+  /** Why the previous brain on this endpoint ended (`brainRestartCause.ts`). */
+  cause: RestartCause | null;
 };
 
 const HOLDER_KEY = Symbol.for("ade.brainUnplannedRestart");
@@ -61,7 +67,7 @@ function holder(): Holder {
   const scope = globalThis as { [HOLDER_KEY]?: Holder };
   let value = scope[HOLDER_KEY];
   if (!value) {
-    value = { own: null, restart: null };
+    value = { own: null, restart: null, cause: null };
     scope[HOLDER_KEY] = value;
   }
   return value;
@@ -137,6 +143,14 @@ export function recordBrainRunStart(args: {
    * previous record and marks it taken, but leaves no record of its own.
    */
   writeOwnRecord?: boolean;
+  /**
+   * What this start read before anything rewrote it, to name why the previous
+   * brain ended (`brainRestartCause()`). The heartbeat counts only when the
+   * previous brain wrote it.
+   */
+  causeFacts?: Omit<BrainRestartCauseFacts, "nowMs" | "bootMs" | "currentBuild" | "previous" | "lastHeartbeatMs"> & {
+    lastHeartbeat: { pid: number; ts: number } | null;
+  };
   nowMs?: number;
 }): BrainUnplannedRestart | null {
   const state = holder();
@@ -144,9 +158,33 @@ export function recordBrainRunStart(args: {
   const startedAt = new Date(nowMs).toISOString();
   const filePath = recordPath(args.runtimeDir, args.socketPath);
   let restart: BrainUnplannedRestart | null = null;
+  let cause: RestartCause | null = null;
   try {
     const previous = readRecord(filePath);
     const bootMs = nowMs - os.uptime() * 1000;
+    if (previous && previous.pid !== process.pid && args.causeFacts) {
+      const heartbeat = args.causeFacts.lastHeartbeat;
+      cause = deriveBrainRestartCause({
+        nowMs,
+        bootMs,
+        currentBuild: args.build,
+        currentVersion: args.causeFacts.currentVersion,
+        previous: {
+          pid: previous.pid,
+          startedAtMs: Date.parse(previous.startedAt),
+          build: previous.build,
+          stoppedAtMs: previous.stoppedAt ? Date.parse(previous.stoppedAt) : null,
+          stoppedBy: previous.stoppedBy ?? null,
+          stopIntent: previous.stopIntent === "accepted_update" || previous.stopIntent === "stop_for_good"
+            ? previous.stopIntent
+            : null,
+        },
+        lastHeartbeatMs: heartbeat && heartbeat.pid === previous.pid ? heartbeat.ts : null,
+        wedge: args.causeFacts.wedge,
+        memoryPressure: args.causeFacts.memoryPressure,
+        updateRequest: args.causeFacts.updateRequest,
+      });
+    }
     if (
       previous
       && !previous.stoppedAt
@@ -175,11 +213,19 @@ export function recordBrainRunStart(args: {
     });
   }
   state.restart = restart;
+  state.cause = cause;
   return restart;
 }
 
-/** This brain stops in an orderly way: the next start is not an unplanned restart. */
-export function markBrainRunStoppedCleanly(by?: string): void {
+/**
+ * This brain stops in an orderly way: the next start is not an unplanned
+ * restart. `stopIntent`: the intent this stop took, so the next start can say
+ * an update ended it.
+ */
+export function markBrainRunStoppedCleanly(
+  by?: string,
+  details: { stopIntent?: "accepted_update" | "stop_for_good" | null } = {},
+): void {
   const state = holder();
   const own = state.own;
   if (!own) return;
@@ -187,7 +233,12 @@ export function markBrainRunStoppedCleanly(by?: string): void {
   try {
     const record = readRecord(own.filePath);
     if (!record || record.pid !== own.pid || record.startedAt !== own.startedAt || record.stoppedAt) return;
-    writeRecord(own.filePath, { ...record, stoppedAt: new Date().toISOString(), ...(by ? { stoppedBy: by } : {}) });
+    writeRecord(own.filePath, {
+      ...record,
+      stoppedAt: new Date().toISOString(),
+      ...(by ? { stoppedBy: by } : {}),
+      ...(details.stopIntent ? { stopIntent: details.stopIntent } : {}),
+    });
   } catch (error) {
     // The next start then reads a crash; the banner is the only effect.
     captureError(error, {
@@ -227,6 +278,15 @@ export function markBrainRunStoppedBy(pid: number, by: string, runtimeDir: strin
 export function brainUnplannedRestart(): BrainUnplannedRestart | null {
   const restart = holder().restart;
   return restart ? { ...restart } : null;
+}
+
+/**
+ * Why the brain before this one on the endpoint ended, decided once at start;
+ * null on a first start, or when the start read no facts. A copy.
+ */
+export function brainRestartCause(): RestartCause | null {
+  const cause = holder().cause;
+  return cause ? { ...cause } : null;
 }
 
 /**

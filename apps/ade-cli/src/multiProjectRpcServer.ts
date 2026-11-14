@@ -119,6 +119,7 @@ import { requestMachineRemovalFromUser } from "./services/account/machineRemoval
 import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import { sanitizeUpdateRequestedBy, type UpdateRequestedBy } from "../../desktop/src/shared/chatAutoResume";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -3327,12 +3328,17 @@ export function createMultiProjectRpcRequestHandler(
         && params.targetVersion.trim()
         ? params.targetVersion.trim()
         : null;
+      // Who asked, for the logs and the next start's continue message. A
+      // client's own claim, sanitized; an older client sends none, and the
+      // kind of connection stands in for it. It never changes the routing.
+      const requestedBy = sanitizeUpdateRequestedBy(params.requestedBy)
+        ?? updateRequesterFromClientName(callerClientName());
       if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
       const run = (async () => {
         const { runMachineUpdateAndRestart } = await import(
           "./services/runtime/machineUpdateAndRestart"
         );
-        return await runMachineUpdateAndRestart(controls, targetVersion);
+        return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
       })();
       machineUpdateAndRestartInFlight = run;
       try {
@@ -4759,4 +4765,15 @@ export function createPersonalChatScope(
     // returns the actionable error to the caller.
   });
   return scope;
+}
+
+/**
+ * The kind of client an older caller of `machine.updateAndRestart` is, from
+ * the name its connection gave: it sends no `requestedBy` of its own.
+ */
+function updateRequesterFromClientName(name: string | null): UpdateRequestedBy {
+  if (isDesktopClientName(name)) return { clientKind: "desktop" };
+  if (isRemoteBrainCallerClientName(name)) return { clientKind: "agent" };
+  if (name === "ade-cli") return { clientKind: "cli" };
+  return { clientKind: "unknown" };
 }

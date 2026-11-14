@@ -57,6 +57,7 @@ import {
 } from "../../../shared/demoVideo/demoContract";
 import { DEMO_ENGINE_INPUT_EXTENSIONS } from "../demoVideo/demoMp4Source";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
+import { sanitizeUpdateRequestedBy } from "../../../shared/chatAutoResume";
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import { dispatchBuiltInBrowserAgentCall } from "./builtInBrowserAgentDispatch";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
@@ -436,7 +437,10 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           `Action '${method}' is not exposed by the desktop bridge.`,
         );
       }
-      return await installer.install({ targetVersion: normalizedString(rawParams.targetVersion) });
+      return await installer.install({
+        targetVersion: normalizedString(rawParams.targetVersion),
+        requestedBy: sanitizeUpdateRequestedBy(rawParams.requestedBy),
+      });
     }
     // The brain's attach probe (`probeDesktopBridge`). The name predates the
     // bridge dropping its secret and is kept so older brains' probes answer.
