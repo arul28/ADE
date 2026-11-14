@@ -45,7 +45,8 @@ export function withCloudComputerLabels(
   let out = text;
   for (const [id, label] of labels) {
     // Whole words only: an id is never part of a longer word in a sentence.
-    out = out.replace(new RegExp(`(?<![\\w-])${escapeRegExp(id)}(?![\\w-])`, "gi"), label);
+    // A function, so a lane name's "$&" or "$'" is shown, not expanded.
+    out = out.replace(new RegExp(`(?<![\\w-])${escapeRegExp(id)}(?![\\w-])`, "gi"), () => label);
   }
   return out;
 }
