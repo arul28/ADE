@@ -993,6 +993,9 @@ jobs:
       - name: Build and test
         if: needs.ios-gate.outputs.run == 'true'
         uses: ./.github/actions/ios-build-test
+        # EXPERIMENT (remove before review): save the build folder from this pull request.
+        with:
+          save-caches: "true"
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:
