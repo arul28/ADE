@@ -60,7 +60,7 @@ function Heading() {
     <h2
       id="orchestrate-title"
       className="text-center font-display text-white"
-      style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.04em" }}
+      style={{ fontSize: "clamp(32px, 3.6vw, 52px)", lineHeight: 1.04, letterSpacing: "-0.04em" }}
     >
       Every model, <span className="text-white/45">one team.</span>
     </h2>
@@ -90,18 +90,27 @@ function ScrubbedClip() {
 
   const current = BEATS[beat]!;
   return (
-    <div ref={sectionRef} style={{ height: "260vh" }}>
+    <div ref={sectionRef} style={{ height: "190vh" }}>
       <div className="sticky top-0 flex h-screen flex-col items-center justify-center px-8 pt-[60px]">
         <Heading />
-        <div className="mt-4 flex h-[56px] flex-col items-center text-center">
+        <div className="mt-4 flex h-[72px] flex-col items-center text-center">
           <p key={current.title} className="ade-pop-in text-[clamp(17px,1.4vw,21px)] font-semibold text-white">
             {current.title} <span className="font-normal text-white/55">{current.sub}</span>
           </p>
-          <div className="mt-3 flex gap-1.5" aria-hidden>
+          <ol className="mt-3 flex gap-1.5 text-[12.5px]" aria-label="Steps">
             {BEATS.map((entry, i) => (
-              <span key={entry.title} className={cn("h-1 rounded-full transition-all duration-300", i === beat ? "w-8 bg-white" : "w-4 bg-white/20")} />
+              <li
+                key={entry.title}
+                aria-current={i === beat ? "step" : undefined}
+                className={cn(
+                  "rounded-full border px-3 py-1 transition-colors duration-300",
+                  i === beat ? "border-white/30 bg-white/[0.08] text-white" : i < beat ? "border-white/10 text-white/55" : "border-white/[0.06] text-white/35",
+                )}
+              >
+                {i + 1}. {entry.title.replace(/\.$/, "")}
+              </li>
             ))}
-          </div>
+          </ol>
         </div>
         <div
           className="relative mt-4 w-full max-w-[1180px] overflow-hidden rounded-[18px] border border-white/10 bg-[#0b0b10] shadow-[0_40px_120px_-20px_rgba(124,58,237,0.5)]"

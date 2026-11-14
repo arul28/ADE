@@ -183,7 +183,7 @@ export function FeatureWall() {
         <Small icon={Bell} title="PR watch" body="Wakes the agent on new reviews and failed checks." tint="text-amber-400" />
 
         {/* The middle of the wall */}
-        <Tile span="2x2" className="flex items-center justify-center border-0 bg-[linear-gradient(135deg,#7c3aed_0%,#a855f7_40%,#ec4899_78%,#f59e0b_100%)] text-center">
+        <Tile span="2x2" className="flex items-center justify-center bg-[radial-gradient(120%_120%_at_0%_0%,rgba(139,92,246,0.55),rgba(139,92,246,0.12)_55%,#13111d_100%)] border-white/[0.1] text-center">
           <div className="px-6">
             <div className="text-[clamp(32px,3.2vw,48px)] font-semibold leading-[1.02] tracking-[-0.025em] text-white">
               Everything else,

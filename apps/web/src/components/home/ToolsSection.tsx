@@ -13,7 +13,11 @@ import { AppleMark, ElectronMark, GithubMark, LinearMark, WindowsMark } from "./
  */
 
 /** `glow` tints the tile from its lower corner, so each tile has its own colour. */
-type Tool = { icons: ReactNode[]; title: string; body: string; src: string; alt: string; glow: string };
+/**
+ * `crop` frames the part of the screenshot that shows the tool at work, as
+ * fractions of the full picture: its left and top edge, and its width.
+ */
+type Tool = { icons: ReactNode[]; title: string; body: string; src: string; alt: string; glow: string; crop: [number, number, number] };
 
 const TOOLS: Tool[] = [
   {
@@ -22,6 +26,7 @@ const TOOLS: Tool[] = [
     body: "Simulators and a Mac desktop, for agents.",
     glow: "rgba(148,163,184,0.22)",
     src: "/images/home/tools/slide-apple.webp",
+    crop: [0.46, 0.1, 0.54],
     alt: "An agent's report in ADE beside a live iPhone simulator, with its private Mac desktop showing the same site in Safari",
   },
   {
@@ -30,6 +35,7 @@ const TOOLS: Tool[] = [
     body: "Review, fix and merge, beside the chat.",
     glow: "rgba(16,185,129,0.2)",
     src: "/images/home/tools/slide-work.webp",
+    crop: [0.34, 0.04, 0.64],
     alt: "A real ADE pull request with its checks and merge panel, the worktree's commit history, and a GitHub issue, layered",
   },
   {
@@ -38,6 +44,7 @@ const TOOLS: Tool[] = [
     body: "Test your site, signed in.",
     glow: "rgba(34,211,238,0.2)",
     src: "/images/home/tools/slide-browser.webp",
+    crop: [0.43, 0.06, 0.52],
     alt: "An agent's steps in ADE beside ADE's browser, showing the download dialog it opened on ade-app.dev",
   },
   {
@@ -46,6 +53,7 @@ const TOOLS: Tool[] = [
     body: "A private Windows desktop.",
     glow: "rgba(59,130,246,0.24)",
     src: "/images/home/tools/slide-windows.webp",
+    crop: [0.44, 0.06, 0.53],
     alt: "An agent's screenshot of its private Windows desktop in ADE, beside the live Windows Desktop pane",
   },
   {
@@ -54,6 +62,7 @@ const TOOLS: Tool[] = [
     body: "Drive and record your app.",
     glow: "rgba(159,234,249,0.16)",
     src: "/images/home/tools/slide-appc.webp",
+    crop: [0.43, 0.07, 0.5],
     alt: "ADE's App Control pane driving a small Electron app that shows ADE's v1.2.112 release notes",
   },
 ];
@@ -65,7 +74,7 @@ export function ToolsSection() {
         <h2
           id="tools-title"
           className="font-display text-white"
-          style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.04em" }}
+          style={{ fontSize: "clamp(32px, 3.6vw, 52px)", lineHeight: 1.04, letterSpacing: "-0.04em" }}
         >
           Your machines, or ours.
           <br />
@@ -105,7 +114,7 @@ function ToolTile({ tool, wide }: { tool: Tool; wide: boolean }) {
         </div>
         <p className="mt-2.5 truncate text-[clamp(18px,1.5vw,22px)] font-semibold leading-[1.2] tracking-[-0.015em] text-white">{tool.body}</p>
       </figcaption>
-      <div className={cn("relative ml-6 mt-auto overflow-hidden rounded-tl-[14px] border-l border-t border-white/10 sm:ml-8", wide ? "h-[clamp(220px,24vw,340px)]" : "h-[clamp(190px,16vw,240px)]")}>
+      <div className={cn("relative mx-5 mb-5 mt-auto overflow-hidden rounded-[14px] border border-white/10 bg-[#0b0b10] sm:mx-6 sm:mb-6", wide ? "h-[clamp(240px,26vw,360px)]" : "h-[clamp(200px,17vw,250px)]")}>
         <img
           src={tool.src}
           alt={tool.alt}
@@ -113,7 +122,8 @@ function ToolTile({ tool, wide }: { tool: Tool; wide: boolean }) {
           height={1447}
           loading="lazy"
           decoding="async"
-          className="absolute left-0 top-0 h-auto w-[150%] max-w-none transition-transform duration-700 ease-out group-hover:-translate-x-1 group-hover:-translate-y-1 md:w-[135%]"
+          className="absolute left-0 top-0 h-auto max-w-none"
+          style={{ width: `${100 / tool.crop[2]}%`, transform: `translate(-${tool.crop[0] * 100}%, -${tool.crop[1] * 100}%)` }}
         />
       </div>
     </figure>

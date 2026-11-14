@@ -19,7 +19,7 @@ const PAIRINGS: Array<{ model: Part; harness: Part; via: string }> = [
   { model: { id: "x-openai", name: "GPT-6 Luna" }, harness: { id: "opencode", name: "OpenCode" }, via: "your ChatGPT plan" },
 ];
 
-const WALL = [...AGENTS, ...MODEL_SOURCES, ...OPENCODE_PROVIDERS].slice(0, 47);
+const SOURCES = [...MODEL_SOURCES, ...OPENCODE_PROVIDERS].slice(0, 23);
 const TURN_MS = 3200;
 
 export function AgentsSection() {
@@ -29,7 +29,7 @@ export function AgentsSection() {
         <h2
           id="agents-title"
           className="font-display text-white"
-          style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.04em" }}
+          style={{ fontSize: "clamp(32px, 3.6vw, 52px)", lineHeight: 1.04, letterSpacing: "-0.04em" }}
         >
           Every plan you <span className="text-white/45">already pay for.</span>
         </h2>
@@ -38,16 +38,34 @@ export function AgentsSection() {
         </p>
       </div>
 
-      <ul aria-label="Agents and model sources ADE runs" className="mt-[clamp(32px,4vw,48px)] grid grid-cols-6 gap-2 sm:grid-cols-8 lg:grid-cols-12">
-        {WALL.map((provider) => (
-          <li key={provider.id} className="aspect-square">
-            <ProviderTile provider={provider} size="fill" />
-          </li>
-        ))}
-        <li className="grid aspect-square place-items-center rounded-[28%] border border-dashed border-white/15 text-[12px] font-medium text-white/55">
-          and more…
-        </li>
-      </ul>
+      <div className="mt-[clamp(32px,4vw,48px)] grid gap-3 lg:grid-cols-[1.15fr_1fr]">
+        <div className="rounded-[20px] border border-white/[0.08] bg-[#0f0e16] p-5 sm:p-7">
+          <h3 className="text-[16px] font-semibold text-white">Agents</h3>
+          <p className="mt-1 text-[14px] text-white/55">Each runs as itself, signed in with your own plan.</p>
+          <ul aria-label="Agents ADE runs" className="mt-6 grid grid-cols-3 gap-x-3 gap-y-5 sm:grid-cols-4 lg:grid-cols-6">
+            {AGENTS.map((agent) => (
+              <li key={agent.id} className="flex min-w-0 flex-col items-center gap-2 text-center">
+                <ProviderTile provider={agent} size={56} />
+                <span className="w-full truncate text-[12.5px] text-white/70">{agent.name}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="rounded-[20px] border border-white/[0.08] bg-[#0f0e16] p-5 sm:p-7">
+          <h3 className="text-[16px] font-semibold text-white">Model providers</h3>
+          <p className="mt-1 text-[14px] text-white/55">Plans, API keys and local models, through any agent.</p>
+          <ul aria-label="Model providers ADE connects to" className="mt-6 grid grid-cols-6 gap-2 sm:grid-cols-8">
+            {SOURCES.map((provider) => (
+              <li key={provider.id} className="aspect-square" title={provider.name}>
+                <ProviderTile provider={provider} size="fill" />
+              </li>
+            ))}
+            <li className="grid aspect-square place-items-center rounded-[28%] border border-dashed border-white/15 text-[11.5px] font-medium text-white/55">
+              200+
+            </li>
+          </ul>
+        </div>
+      </div>
 
       <MixCard />
     </section>

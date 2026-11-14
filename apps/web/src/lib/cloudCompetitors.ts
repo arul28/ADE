@@ -23,6 +23,10 @@ export type Rival = {
   perHourCents?: number;
   /** Cloud hours a month that cost nothing, or null when the vendor does not say. */
   freeHours: number | null;
+  /** The plan you must be on to get a cloud computer at all, and what it includes. */
+  plan: string;
+  /** What the hourly price is: an average over a plan's included hours, a metered usage rate, or the rate past a plan's hours. */
+  rateKind: "plan average" | "usage rate" | "overage";
   /** True when the numbers are our arithmetic from the vendor's page, not a price it prints. */
   estimate?: boolean;
   /** One line: what the price includes or leaves out. */
@@ -31,6 +35,8 @@ export type Rival = {
 };
 
 /** ADE Cloud's own bill: the cheapest plan that runs `hours` of a Small computer (2 CPUs, 4 GB). */
+export const ADE_MACHINE = "2 CPUs · 4 GB";
+
 export function adeMonthlyUsd(hours: number): number {
   return planCostsFor(hours)[0]?.costUsd ?? 0;
 }
@@ -40,7 +46,9 @@ export const RIVALS: Rival[] = [
     id: "capy",
     name: "Capy",
     logo: "/images/competitors/logo-capy.webp",
-    machine: "Medium, 2 vCPU · 8 GB",
+    machine: "2 vCPU · 8 GB",
+    plan: "Lite plan, $20 with $20 of credits",
+    rateKind: "usage rate",
     // $0.20 an hour from plan credits; Lite ($20 a month, $20 of credits) is the least you can pay.
     monthlyUsd: (hours) => Math.max(20, hours * 0.2),
     perHourCents: 20,
@@ -52,7 +60,9 @@ export const RIVALS: Rival[] = [
     id: "paradev",
     name: "Paradev",
     logo: "/images/competitors/logo-paradev.webp",
-    machine: "Workspace, 4 vCPU · 8 GB",
+    machine: "4 vCPU · 8 GB",
+    plan: "Team seat, $60 with 150 hours",
+    rateKind: "overage",
     // Team: $60 a seat with 150 workspace hours, then $0.06 per GB-hour ($0.48 an hour at 8 GB).
     monthlyUsd: (hours) => 60 + Math.max(0, hours - 150) * 0.48,
     perHourCents: 48,
@@ -64,7 +74,9 @@ export const RIVALS: Rival[] = [
     id: "cloudroom",
     name: "Cloudroom",
     logo: "/images/competitors/logo-cloudroom.webp",
-    machine: "Cloud sandbox, size not published",
+    machine: "Size not published",
+    plan: "Pro, $50 for about 500 hours",
+    rateKind: "plan average",
     // Free: 3,000 credits each 30 days; Pro: $50 for 50,000 credits; the page puts a typical agent hour at about 100 credits.
     monthlyUsd: (hours) => (hours <= 30 ? 0 : hours <= 500 ? 50 : null),
     perHourCents: 10,
@@ -77,7 +89,9 @@ export const RIVALS: Rival[] = [
     id: "copilot",
     name: "GitHub Copilot",
     logo: "/images/competitors/logo-copilot.svg",
-    machine: "Cloud sandbox, 4 GiB",
+    machine: "4 GiB, CPUs not published",
+    plan: "Any Copilot plan, compute metered",
+    rateKind: "usage rate",
     // $0.000024 per compute second plus $0.000003 per GiB-second, at 4 GiB; a Copilot plan comes on top.
     monthlyUsd: (hours) => hours * 0.1296,
     perHourCents: 12.96,
@@ -92,6 +106,8 @@ export const RIVALS: Rival[] = [
     name: "Superconductor",
     logo: "/images/competitors/logo-superconductor.webp",
     machine: "2 vCPU · 4 GB",
+    plan: "Pro, $100 with a credit allowance",
+    rateKind: "overage",
     // 200 credits an hour; Pro ($100) overage is $25 per 10,000 credits. Free is 20,000 starting credits, once.
     perHourCents: 50,
     freeHours: 0,
