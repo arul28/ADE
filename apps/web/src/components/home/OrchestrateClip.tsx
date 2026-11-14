@@ -15,6 +15,8 @@ const FPS = 30;
 const FRAMES = 254;
 const APP_W = 1512;
 const APP_H = 982;
+/** How much of the window's height the frame shows: the bottom of the finished chat is empty, so the frame stops above it. */
+const VIEW_H = 780;
 /** The composer, where the camera starts, in the app's own pixels. */
 const START_CAM: [number, number, number, number] = [471, 254, 900, 520];
 /** The camera pulls back to the whole window over these frames. */
@@ -114,9 +116,9 @@ function ScrubbedClip() {
         </div>
         <div
           className="relative mt-4 w-full max-w-[1180px] overflow-hidden rounded-[18px] border border-white/10 bg-[#0b0b10] shadow-[0_40px_120px_-20px_rgba(124,58,237,0.5)]"
-          style={{ aspectRatio: `${APP_W} / ${APP_H}`, maxHeight: "calc(100vh - 230px)" }}
+          style={{ aspectRatio: `${APP_W} / ${VIEW_H}`, maxHeight: "calc(100vh - 240px)" }}
         >
-          <div ref={frameRef} className="absolute inset-0 origin-top-left will-change-transform" style={{ transform: cameraAt(0) }}>
+          <div ref={frameRef} className="absolute inset-x-0 top-0 origin-top-left will-change-transform" style={{ aspectRatio: `${APP_W} / ${APP_H}`, transform: cameraAt(0) }}>
             <video
               ref={videoRef}
               src="/film/compose.mp4"

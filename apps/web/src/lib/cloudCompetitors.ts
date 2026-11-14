@@ -109,6 +109,8 @@ export const RIVALS: Rival[] = [
     plan: "Pro, $100 with a credit allowance",
     rateKind: "overage",
     // 200 credits an hour; Pro ($100) overage is $25 per 10,000 credits. Free is 20,000 starting credits, once.
+    // Pro's credit allowance at $100 is not stated, so no monthly bill can be worked out.
+    monthlyUsd: () => null,
     perHourCents: 50,
     freeHours: 0,
     estimate: true,

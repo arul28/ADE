@@ -26,7 +26,7 @@ const TOOLS: Tool[] = [
     body: "Simulators and a Mac desktop, for agents.",
     glow: "rgba(148,163,184,0.22)",
     src: "/images/home/tools/slide-apple.webp",
-    crop: [0.46, 0.1, 0.54],
+    crop: [0.4, 0.12, 0.5],
     alt: "An agent's report in ADE beside a live iPhone simulator, with its private Mac desktop showing the same site in Safari",
   },
   {
@@ -35,7 +35,7 @@ const TOOLS: Tool[] = [
     body: "Review, fix and merge, beside the chat.",
     glow: "rgba(16,185,129,0.2)",
     src: "/images/home/tools/slide-work.webp",
-    crop: [0.34, 0.04, 0.64],
+    crop: [0.335, 0.03, 0.3],
     alt: "A real ADE pull request with its checks and merge panel, the worktree's commit history, and a GitHub issue, layered",
   },
   {
@@ -44,7 +44,7 @@ const TOOLS: Tool[] = [
     body: "Test your site, signed in.",
     glow: "rgba(34,211,238,0.2)",
     src: "/images/home/tools/slide-browser.webp",
-    crop: [0.43, 0.06, 0.52],
+    crop: [0.46, 0.34, 0.4],
     alt: "An agent's steps in ADE beside ADE's browser, showing the download dialog it opened on ade-app.dev",
   },
   {
@@ -53,7 +53,7 @@ const TOOLS: Tool[] = [
     body: "A private Windows desktop.",
     glow: "rgba(59,130,246,0.24)",
     src: "/images/home/tools/slide-windows.webp",
-    crop: [0.44, 0.06, 0.53],
+    crop: [0.45, 0.08, 0.5],
     alt: "An agent's screenshot of its private Windows desktop in ADE, beside the live Windows Desktop pane",
   },
   {
@@ -62,14 +62,14 @@ const TOOLS: Tool[] = [
     body: "Drive and record your app.",
     glow: "rgba(159,234,249,0.16)",
     src: "/images/home/tools/slide-appc.webp",
-    crop: [0.43, 0.07, 0.5],
+    crop: [0.47, 0.18, 0.36],
     alt: "ADE's App Control pane driving a small Electron app that shows ADE's v1.2.112 release notes",
   },
 ];
 
 export function ToolsSection() {
   return (
-    <section aria-labelledby="tools-title" className="mx-auto max-w-[1320px] px-5 pt-[clamp(64px,7vw,104px)] sm:px-8">
+    <section aria-labelledby="tools-title" className="mx-auto max-w-[1320px] px-5 pt-[clamp(24px,3vw,48px)] sm:px-8">
       <div className="mx-auto max-w-[760px] text-center">
         <h2
           id="tools-title"
@@ -122,7 +122,7 @@ function ToolTile({ tool, wide }: { tool: Tool; wide: boolean }) {
           height={1447}
           loading="lazy"
           decoding="async"
-          className="absolute left-0 top-0 h-auto max-w-none"
+          className="absolute left-0 top-0 h-auto max-w-none brightness-[1.15] contrast-[1.05]"
           style={{ width: `${100 / tool.crop[2]}%`, transform: `translate(-${tool.crop[0] * 100}%, -${tool.crop[1] * 100}%)` }}
         />
       </div>
