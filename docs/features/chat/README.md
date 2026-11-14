@@ -3828,22 +3828,18 @@ re-sends the prompt on its own. The bullets below describe the error-driven
 recoveries (a transport error before any event, an expired token), which still
 recycle and re-send once.
 
-- **The watchdog.** `CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS` is 90 s from the send.
-  Any streamed worker event — text, reasoning, a tool call, a status change —
-  disarms it. `run_started` deliberately does not count (the wedged-thread
-  failure is exactly "the run is created and then nothing streams"), and neither
-  does the terminal `run_result` or the synthetic terminal `status: ERROR` the
-  worker posts just before it — both are the run *ending*, not progress.
-  Counting that terminal error as activity is what previously made the
-  transport-recovery branch unreachable in production. The budget is generous on
-  purpose: unlike Codex's advisory 120 s stall watchdog, tripping this one is
-  destructive, so it has to cover a full send round trip plus first token
-  including attachment upload on a slow link. It is armed once per turn and
-  never re-armed on progress, so a legitimately long tool call can never trip
-  it. The watch is run-scoped as well as turn-scoped, so late events from an
-  abandoned run cannot disarm the next turn's watchdog.
-- **Recycling.** When the watchdog fires, or a send rejects with a transport
-  error before any event arrived, `recycleCursorSdkAgentThread` best-effort
+- **The quiet card.** `CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS` (90 s, the Cursor
+  entry in `PROVIDER_QUIET_THRESHOLDS`) is how long a local turn may go without
+  a first event before the shared quiet watchdog posts "Cursor hasn't answered"
+  with Restart / Keep waiting. It is advisory: the run is left alone, nothing is
+  cancelled or re-sent. The per-run `sdkSilenceWatch` still records whether any
+  worker event (`seen`) or visible output arrived, which the transport and
+  stale-token recoveries key on. `run_started`, the terminal `run_result`, and
+  the synthetic terminal `status: ERROR` do not count as events, and late
+  events from an abandoned run cannot mark the next turn's watch.
+- **Recycling.** When a send rejects with a transport error before any event
+  arrived (or the user presses Restart on the quiet card, reason
+  `quiet_restart`), `recycleCursorSdkAgentThread` best-effort
   cancels whatever is nominally running (bounded at 3 s), force-evicts the
   pooled worker via `poisonCursorSdkConnection`, drops the live runtime, and
   arms a forced rotation. The next `ensureCursorSdkRuntime` then acquires with
@@ -3859,10 +3855,8 @@ recycle and re-send once.
   `local.force` through `forceExpireActiveRun`, because the previous run may
   still be registered as active on the thread that stopped answering. A second
   failure surfaces to the user rather than looping. The re-send announces itself
-  in the transcript ("Cursor stopped responding. ADE opened a fresh Cursor
-  thread and is resending your message." / "Cursor's connection dropped. …"),
-  and when no recovery is left the turn fails with "Cursor stopped responding.
-  ADE opened a fresh Cursor thread — try sending again." under
+  in the transcript ("Cursor's connection dropped. …"), and when no recovery is
+  left the turn fails with the classified transport error under
   `errorInfo.category: "network"`.
 - **Expired access tokens keep the thread.** The Cursor SDK exchanges the user
   API key for a short-lived access token once per worker and only re-exchanges
@@ -4009,8 +4003,9 @@ of leaving contradictory cards.
 
 Every provider runs on one shared quiet watchdog behind that contract
 (`chatQuietWatchdog.ts`, fed from `emitChatEvent`): `status: started` arms
-it, agent output counts as activity (not ADE's own `activity` placeholder,
-notices or cards), `done` ends it, and an open compaction counts as activity
+it, the agent's own output counts as activity (an allowlist: text, reasoning,
+tools, commands, plans, subagents, provider retries; never ADE's `activity`
+placeholder, diagnostics, metadata, notices or cards), `done` ends it, and an open compaction counts as activity
 with its own budget. Budgets are 2 minutes to the first event and 10 minutes of
 mid-turn silence, with per-provider exceptions only where needed (Cursor's
 first event is 90 s; Codex fails a compaction silent for 3 minutes). A silence
@@ -4026,7 +4021,9 @@ request. Restart is the user's: Codex interrupts, restarts the app-server and
 resumes the thread with its own queue held until the resumed turn ends; every
 other provider stops the turn (queued follow-ups set aside as a restorable
 group), ends the provider process like Restart session, and picks up the last
-request. The resume message is ADE's (`metadata.hostContinuation`), so every
+request. Cursor's Restart also rotates onto a fresh agent seeded with the
+conversation (`recycleCursorSdkAgentThread`, reason `quiet_restart`), because a
+silent Cursor thread may be wedged server-side. The resume message is ADE's (`metadata.hostContinuation`), so every
 client draws it as an "ADE" row with the reason, never as the user's bubble.
 The card's clients send the action with the chat's pin, so it reaches the
 machine the chat runs on.
