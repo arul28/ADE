@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeEach } from "vitest";
+import { afterAll, afterEach, beforeEach, vi } from "vitest";
 
 type TestTempTrackerState = {
   installed: boolean;
@@ -174,7 +174,45 @@ function ensureWritableWindowAde(): void {
   });
 }
 
+// jsdom runs every requestAnimationFrame callback from one setInterval, and
+// starts that interval only when its count of waiting frames goes from 0 to 1.
+// A test that fakes timers while a frame waits, then restores real timers,
+// drops the interval with the frame still counted: no later frame in that file
+// ever runs, and motion's frame loop (which keeps jsdom's rAF from import time
+// and waits on its one scheduled frame) stops with it. Every later animation in
+// the file then never starts or finishes. So each test starts by handing any
+// frame still waiting back to jsdom, on the clock that test runs with.
+const waitingFrames = new Map<number, FrameRequestCallback>();
+if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  const cancelFrame = window.cancelAnimationFrame.bind(window);
+  const request = (callback: FrameRequestCallback): number => {
+    const handle = requestFrame((now) => {
+      waitingFrames.delete(handle);
+      callback(now);
+    });
+    waitingFrames.set(handle, callback);
+    return handle;
+  };
+  const cancel = (handle: number): void => {
+    waitingFrames.delete(handle);
+    cancelFrame(handle);
+  };
+  window.requestAnimationFrame = request;
+  window.cancelAnimationFrame = cancel;
+  globalThis.requestAnimationFrame = request;
+  globalThis.cancelAnimationFrame = cancel;
+}
+
+function restartWaitingFrames(): void {
+  if (waitingFrames.size === 0 || vi.isFakeTimers()) return;
+  const waiting = [...waitingFrames];
+  for (const [handle] of waiting) window.cancelAnimationFrame(handle);
+  for (const [, callback] of waiting) window.requestAnimationFrame(callback);
+}
+
 beforeEach(() => {
+  restartWaitingFrames();
   ensureUsableLocalStorage();
   if (typeof window !== "undefined") {
     try {
