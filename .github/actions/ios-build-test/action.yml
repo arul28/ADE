@@ -144,6 +144,21 @@ runs:
         fi
         echo "Simulator: $dest_name ($dest_id)"
         echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
+        # EXPERIMENT: switch off simulator daemons the tests do not need,
+        # before the first boot, so the boot loads the runner less.
+        ddir="$HOME/Library/Developer/CoreSimulator/Devices/$dest_id/data/var/db/com.apple.xpc.launchd"
+        mkdir -p "$ddir"
+        ls -la "$ddir" || true
+        plist="$ddir/disabled.plist"
+        [ -f "$plist" ] || plutil -create xml1 "$plist"
+        for label in healthd homed searchd spotlightknowledged suggestd siriactionsd corespeechd gamed appstored \
+          maild navd routined fitcored amsengagementd financed intelligenceplatformd icloudmailagent \
+          photoanalysisd mediaanalysisd newsd tipsd weatherd mobileassetd siriknowledged parsecd \
+          assistantd passd itunesstored mediaremoted donotdisturbd contactsd calaccessd remindd \
+          cloudd bird nsurlsessiond.disabled-not healthappd linkd BackgroundShortcutRunner; do
+          plutil -replace "com\.apple\.$label" -bool true "$plist" || true
+        done
+        plutil -p "$plist" | head -5
         xcrun simctl boot "$dest_id" || true
 
     # A concrete simulator destination builds only the arch the tests run on;
@@ -212,6 +227,7 @@ runs:
         echo "Waiting for the simulator from $(date +%T)"
         xcrun simctl bootstatus "$IOS_SIM_ID" -b > /dev/null
         echo "Simulator ready at $(date +%T)"
+        xcrun simctl spawn "$IOS_SIM_ID" launchctl print-disabled system 2>&1 | head -60 || true
         (
           set +e +o pipefail
           for i in $(seq 1 18); do
