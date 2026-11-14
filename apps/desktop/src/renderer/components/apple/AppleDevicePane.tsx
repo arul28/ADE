@@ -141,13 +141,18 @@ export type AppleDriverChat = {
  * when it is the pane's own chat ("“Fix login” on Studio Mac", the machine
  * only when it is not the one viewing), else "An agent on <machine>".
  */
+/** The holder is the chat this pane serves: showing it a banner about itself says nothing. */
+function holderIsDriverChat(holderChatSessionId: string | null, driverChat: AppleDriverChat | null): boolean {
+  const chatId = parseForeignCallerSessionId(holderChatSessionId)?.chatSessionId ?? null;
+  return Boolean(driverChat && chatId && chatId === driverChat.sessionId);
+}
+
 function remoteDriverLabel(
   holder: { machineName: string | null },
   holderChatSessionId: string | null,
   driverChat: AppleDriverChat | null,
 ): string {
-  const chatId = parseForeignCallerSessionId(holderChatSessionId)?.chatSessionId ?? null;
-  if (driverChat && chatId && chatId === driverChat.sessionId) {
+  if (driverChat && holderIsDriverChat(holderChatSessionId, driverChat)) {
     const name = driverChat.title ? `“${driverChat.title}”` : "This chat";
     return driverChat.machineName ? `${name} on ${driverChat.machineName}` : name;
   }
@@ -1268,13 +1273,18 @@ function AppleDevicePaneOnMachine({
   const remoteHolderLabel = remoteHolder
     ? remoteDriverLabel(remoteHolder, status?.activeSession?.chatSessionId ?? null, driverChat)
     : null;
+  // This pane's own chat driving it is what the pane is for: the tools pane
+  // already shows what that agent does, with Take over. Only another agent's
+  // hold earns a strip.
+  const otherAgentHolds = Boolean(remoteHolder)
+    && !holderIsDriverChat(status?.activeSession?.chatSessionId ?? null, driverChat);
   async function freeDeviceFromRemoteAgent(): Promise<void> {
     const holderSessionId = status?.activeSession?.chatSessionId ?? null;
     if (!holderSessionId) return;
     const confirmed = await confirmDialog({
-      title: "Free this device?",
-      message: `${remoteHolderLabel} is driving this device. Freeing it ends that agent's session here and stops its live view. If the agent is still working, it can take the device again.`,
-      confirmLabel: "Free device",
+      title: "Take the simulator back?",
+      message: `${remoteHolderLabel} is using this simulator. Taking it back ends that agent's hold on it; the simulator keeps running and nothing on it is lost. If that agent is still working, it can take it again.`,
+      confirmLabel: "Take it back",
       destructive: true,
     });
     if (!confirmed) return;
@@ -1339,14 +1349,14 @@ function AppleDevicePaneOnMachine({
             onSecondaryAction={chooseAnotherDevice}
           />
         )
-        /* An agent on another machine (`ade apple … --machine`) holds this
-           device. Said here, on the pane the person is looking at, so the
-           simulator moving on its own has a reason; ending it asks first. */
-        : remoteHolder && state !== "no-device"
+        /* ANOTHER agent on another machine (`ade apple … --machine`) holds
+           this device: said here, so the simulator moving on its own has a
+           reason; taking it back asks first. Never for this pane's own chat. */
+        : otherAgentHolds && state !== "no-device"
           ? (
             <AppleDeviceNoticeStrip
-              sentence={`${remoteHolderLabel} is driving this device.`}
-              actionLabel="Free device"
+              sentence={`${remoteHolderLabel} is using this simulator.`}
+              actionLabel="Take it back"
               onAction={() => { void freeDeviceFromRemoteAgent(); }}
               busy={endingRemoteSession}
             />
