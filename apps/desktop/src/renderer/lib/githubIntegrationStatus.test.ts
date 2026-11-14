@@ -9,6 +9,7 @@ import {
   GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY,
 } from "../../shared/types";
 import {
+  GITHUB_AUTHORIZATION_PAUSED_COPY,
   deriveGithubAccountAuthState,
   deriveGithubRealtimeBlock,
   deriveGithubRepoConnectionState,
@@ -18,6 +19,7 @@ import {
   describeGithubCliBanner,
   describeGithubOutage,
   describeGithubPatVerification,
+  deviceAuthErrorCopy,
   githubAccountIssueCopy,
   githubCredentialPresentation,
   githubRepoIssueCopy,
@@ -636,6 +638,34 @@ describe("isGithubRateLimitMessage", () => {
     expect(isGithubRateLimitMessage("You have exceeded a secondary rate limit.")).toBe(true);
     expect(isGithubRateLimitMessage("Bad credentials")).toBe(false);
     expect(isGithubRateLimitMessage(null)).toBe(false);
+  });
+});
+
+describe("deviceAuthErrorCopy", () => {
+  // A thrown sign-in error crosses IPC with Electron's developer prefix in
+  // front of it. Both sign-in cards read this helper, and the person must read
+  // the brain's sentence instead of "Error invoking remote method '…'".
+  const wrapped = (message: string) =>
+    new Error(`Error invoking remote method 'github:startAppUserDeviceAuth': Error: ${message}`);
+
+  it.each([
+    [
+      "the old undici wording",
+      wrapped("fetch failed (UND_ERR_CONNECT_TIMEOUT)"),
+      "ADE couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again.",
+    ],
+    [
+      "the brain's own unreachable sentence",
+      wrapped("ADE couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again."),
+      "ADE couldn't reach GitHub (UND_ERR_CONNECT_TIMEOUT). Check your connection, then try again.",
+    ],
+    ["a throttled sign-in", wrapped("GitHub OAuth request failed (429)"), GITHUB_AUTHORIZATION_PAUSED_COPY],
+    ["other wrapped text", wrapped("GitHub refused the sign-in"), "GitHub refused the sign-in"],
+    ["text that never crossed IPC", "GitHub refused the sign-in", "GitHub refused the sign-in"],
+  ] as const)("shows clean copy for %s", (_case, error, expected) => {
+    const copy = deviceAuthErrorCopy(error);
+    expect(copy).toBe(expected);
+    expect(copy).not.toContain("Error invoking remote method");
   });
 });
 
