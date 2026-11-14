@@ -182,21 +182,37 @@ function ensureWritableWindowAde(): void {
 // and waits on its one scheduled frame) stops with it. Every later animation in
 // the file then never starts or finishes. So each test starts by handing any
 // frame still waiting back to jsdom, on the clock that test runs with.
-const waitingFrames = new Map<number, FrameRequestCallback>();
+// The handle a caller holds stays the same across that hand-back, so a later
+// cancelAnimationFrame of it still cancels the frame.
+const waitingFrames = new Map<number, { callback: FrameRequestCallback; scheduled: number }>();
+let restartFrame: ((handle: number) => void) | null = null;
 if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
   const requestFrame = window.requestAnimationFrame.bind(window);
   const cancelFrame = window.cancelAnimationFrame.bind(window);
-  const request = (callback: FrameRequestCallback): number => {
-    const handle = requestFrame((now) => {
+  let nextHandle = 0;
+  const schedule = (handle: number, callback: FrameRequestCallback): void => {
+    const scheduled = requestFrame((now) => {
       waitingFrames.delete(handle);
       callback(now);
     });
-    waitingFrames.set(handle, callback);
-    return handle;
+    waitingFrames.set(handle, { callback, scheduled });
+  };
+  const request = (callback: FrameRequestCallback): number => {
+    nextHandle += 1;
+    schedule(nextHandle, callback);
+    return nextHandle;
   };
   const cancel = (handle: number): void => {
+    const waiting = waitingFrames.get(handle);
+    if (!waiting) return;
     waitingFrames.delete(handle);
-    cancelFrame(handle);
+    cancelFrame(waiting.scheduled);
+  };
+  restartFrame = (handle) => {
+    const waiting = waitingFrames.get(handle);
+    if (!waiting) return;
+    cancelFrame(waiting.scheduled);
+    schedule(handle, waiting.callback);
   };
   window.requestAnimationFrame = request;
   window.cancelAnimationFrame = cancel;
@@ -205,10 +221,8 @@ if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "fu
 }
 
 function restartWaitingFrames(): void {
-  if (waitingFrames.size === 0 || vi.isFakeTimers()) return;
-  const waiting = [...waitingFrames];
-  for (const [handle] of waiting) window.cancelAnimationFrame(handle);
-  for (const [, callback] of waiting) window.requestAnimationFrame(callback);
+  if (waitingFrames.size === 0 || vi.isFakeTimers() || !restartFrame) return;
+  for (const handle of [...waitingFrames.keys()]) restartFrame(handle);
 }
 
 beforeEach(() => {

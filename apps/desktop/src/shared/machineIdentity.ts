@@ -155,5 +155,31 @@ export function distinctMachineNames(machines: readonly NamedMachine[]): Map<str
     const tags = hostsTellApart ? hosts : shortIdTags(others.map((machine) => machine.deviceId?.trim() || machine.id));
     others.forEach((machine, index) => names.set(machine.id, `${machine.name.trim()} (${tags[index]})`));
   }
+  return withoutLabelClashes(machines, names);
+}
+
+/**
+ * A label made in one group can match a name in another ("Studio (office)"
+ * made for one of two Studios, beside a machine named "Studio (office)"), and
+ * "This computer" can match a machine named so. One label of each clash is
+ * kept (This computer's, else one shown as it is named), and the rest take
+ * their whole id, which no other machine shares.
+ */
+function withoutLabelClashes(machines: readonly NamedMachine[], names: Map<string, string>): Map<string, string> {
+  const byId = new Map(machines.map((machine) => [machine.id, machine]));
+  const byLabel = new Map<string, string[]>();
+  for (const [id, label] of names) byLabel.set(nameKey(label), [...(byLabel.get(nameKey(label)) ?? []), id]);
+  for (const ids of byLabel.values()) {
+    if (ids.length < 2) continue;
+    const keep = ids.find((id) => byId.get(id)?.isThisMachine && names.get(id) === THIS_MACHINE_NAME)
+      ?? ids.find((id) => names.get(id) === byId.get(id)?.name)
+      ?? ids[0]!;
+    for (const id of ids) {
+      if (id === keep) continue;
+      const machine = byId.get(id);
+      const tag = (machine?.deviceId?.trim() || id).replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+      names.set(id, `${(machine?.name ?? id).trim()} (${tag})`);
+    }
+  }
   return names;
 }

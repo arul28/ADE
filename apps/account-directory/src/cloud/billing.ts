@@ -719,15 +719,24 @@ async function ensureExtraDiskItem(env: CloudEnv, subscriptionId: string, diskPr
   if (held) return held === "older" ? 1 : 0;
   const key = `ade-cloud-disk-item-${subscriptionId}`;
   const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price: diskPrice }, idempotencyKey);
+  // A reread finds the item another turn-on (or the create whose answer was
+  // lost) added: its price is the one billed, older or current.
+  const reread = async () => await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
   try {
-    await create(key).catch(async (error: unknown) => {
+    try {
+      await create(key);
+    } catch (error) {
       if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
-      if (await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice)) return;
+      const found = await reread();
+      if (found) return found === "older" ? 1 : 0;
       await create(`${key}-${now}`);
-    });
+    }
   } catch (error) {
     // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
-    if (error instanceof StripeRequestError && error.status === 409 && await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice) === "current") return 0;
+    if (error instanceof StripeRequestError && error.status === 409) {
+      const found = await reread();
+      if (found) return found === "older" ? 1 : 0;
+    }
     throw error;
   }
   return 0;

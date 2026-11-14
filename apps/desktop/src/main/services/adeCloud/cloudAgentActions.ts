@@ -687,8 +687,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
      * lane, the repository there, and the chat started there, if any. With no
      * `cloud.sizeId`, the person's saved size for new lanes. Returns at once with
      * the launch's status; read it again with `lane_launch_status`. The same
-     * launch id again answers that launch (a failed one goes on from its
-     * failed step): never a second computer.
+     * launch id again answers that launch: never a second computer at once.
+     * A failed one goes on from its failed step, after the same checks as a
+     * first start, since the server may give it a new computer.
      */
     async lane_launch(rawArgs?: unknown) {
       const args = record(rawArgs);
@@ -716,12 +717,17 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         madeByChat: madeByChat(approval),
         caller: { chatSessionId, permissionLevel: chatSessionId ? deps.approvals?.permissionLevel(chatSessionId) ?? null : null },
       };
+      // The same id on a launch that failed before its computer's brain took
+      // it is a retry, and the server may make it a new computer: it passes
+      // the same gates as a first start, now (the person may have changed
+      // what agents may do since). Any other repeat only reads it.
+      const replaces = existing?.launch.phase === "failed" && existing.launch.cloud?.handedOff !== true;
       if (existing) {
-        // Already approved and counted when it started.
         if (approval.by === "agent" && existing.madeByChat !== chatSessionId) {
           throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can follow it here.");
         }
-        return (await host.start(startArgs)).status;
+        // Already approved and counted when it started.
+        if (!replaces) return (await host.start(startArgs)).status;
       }
       // Refused before the question, never after a yes: the launch itself,
       // then the account (hours, computers, disk), with the sentences
@@ -744,7 +750,8 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       });
       try {
         const started = await host.start({ ...startArgs, madeByAgent: yes.maker });
-        if (started.created) yes.counted();
+        // A retry counts once it is on its way again, as a first start counts once made.
+        if (started.created || (replaces && started.status.launch.phase !== "failed")) yes.counted();
         return started.status;
       } finally {
         yes.release();

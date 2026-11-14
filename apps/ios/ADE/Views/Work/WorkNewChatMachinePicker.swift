@@ -66,6 +66,25 @@ func distinctMachineNames(_ machines: [(id: String, tagSource: String, name: Str
     }
     for (index, machine) in group.enumerated() { names[machine.id] = "\(machine.name.trimmingCharacters(in: .whitespacesAndNewlines)) (\(tags[index]))" }
   }
+  return machineNamesWithoutClashes(machines, names)
+}
+
+/// A label made in one group can match a name in another ("Studio (abcd)"
+/// made for one of two Studios, beside a machine named "Studio (abcd)"). One
+/// label of each clash is kept (one shown as it is named, when there is one)
+/// and the rest take their whole key, which no other machine shares.
+private func machineNamesWithoutClashes(_ machines: [(id: String, tagSource: String, name: String)], _ start: [String: String]) -> [String: String] {
+  var names = start
+  let byId = Dictionary(machines.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  let clashes = Dictionary(grouping: names.keys.sorted()) { (names[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .values.filter { $0.count > 1 }
+  for ids in clashes {
+    let keep = ids.first { names[$0] == byId[$0]?.name } ?? ids[0]
+    for id in ids where id != keep {
+      let tag = String((byId[id]?.tagSource ?? id).filter { $0.isASCII && ($0.isLetter || $0.isNumber) }).lowercased()
+      names[id] = "\((byId[id]?.name ?? id).trimmingCharacters(in: .whitespacesAndNewlines)) (\(tag))"
+    }
+  }
   return names
 }
 

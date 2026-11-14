@@ -34,6 +34,7 @@ import {
 } from "./openCodeCustomProviders";
 import { providerActionMessage } from "../providerErrorMessage";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { withProjectSettingsBound } from "../../ProjectCopyScope";
 import { useApiCredentialsPin } from "./useApiCredentials";
 import "./customProviderOptions.css";
 import { isAdeAvailable } from "../../../../lib/adeAvailability";
@@ -139,9 +140,14 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
   // machine (`ctx.projectPin`; the machine route refuses it rather than
   // misrouting it). The key store follows the same rule as every other key
   // read on this page (This computer stays on desktop IPC).
-  const { pin: machinePin } = useSettingsMachineScope();
+  const { pin: machinePin, isThisMachine } = useSettingsMachineScope();
   const pin = ctx.projectPin ?? machinePin;
   const credentialPin = useApiCredentialsPin();
+  // The copy's folder can sit on a drive that stops answering: each config
+  // write is bounded, so the sheet and the options control always finish.
+  const { machineName } = ctx;
+  const bounded = useCallback(<T,>(call: Promise<T>): Promise<T> =>
+    withProjectSettingsBound(call, machineName, isThisMachine), [isThisMachine, machineName]);
 
   const save = useCallback(async (draft: ApiKeyDraft) => {
     const id = draft.providerId.trim();
@@ -162,18 +168,18 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
         models: draft.models,
       }, credentialPin);
     }
-    await persistOpenCodeProviderBlock(entries, draft, pin);
+    await bounded(persistOpenCodeProviderBlock(entries, draft, pin));
     invalidateAiDiscoveryCache();
     setSheet(null);
     setError(null);
     await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
-  }, [credentialPin, ctx.actions, entries, pin]);
+  }, [bounded, credentialPin, ctx.actions, entries, pin]);
 
   const [savingOptionsFor, setSavingOptionsFor] = useState<string | null>(null);
   const saveOptions = useCallback(async (next: AiCustomProviderConfig) => {
     setSavingOptionsFor(next.id);
     try {
-      await saveCustomProviders(withCustomProvider(entries, next), pin);
+      await bounded(saveCustomProviders(withCustomProvider(entries, next), pin));
       setError(null);
       await ctx.actions.refreshStatus({ force: true });
     } catch (err) {
@@ -181,7 +187,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     } finally {
       setSavingOptionsFor(null);
     }
-  }, [ctx.actions, entries, pin]);
+  }, [bounded, ctx.actions, entries, pin]);
 
   const remove = useCallback(async (entry: AiCustomProviderConfig) => {
     const ok = await confirmDialog({
@@ -192,7 +198,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     });
     if (!ok) return;
     try {
-      await saveCustomProviders(withoutCustomProvider(entries, entry.id), pin);
+      await bounded(saveCustomProviders(withoutCustomProvider(entries, entry.id), pin));
       // The hosted web client cannot reach the key store; the provider block is
       // what it removes, so a failed key removal must not strand that half-done.
       if (isAdeAvailable(window.ade.apiCredentials.remove)) {
@@ -204,7 +210,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     } catch (err) {
       setError(providerActionMessage(err, "That custom provider change did not go through."));
     }
-  }, [credentialPin, ctx.actions, entries, pin]);
+  }, [bounded, credentialPin, ctx.actions, entries, pin]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
