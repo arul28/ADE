@@ -3744,6 +3744,39 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("keeps unacknowledged terminal input when the brain hosts the same project again", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const received: string[] = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOkWithTerminalInputAck() });
+      if (envelope.type === "project_switch_request") {
+        socket.serverSend({ type: "project_switch_result", requestId: envelope.requestId, payload: { ok: true, project: helloOk("project-1").projects![0] } } as never);
+      }
+      if (envelope.type !== "terminal_input") return;
+      const input = envelope.payload as { sessionId: string; data: string; inputId?: string };
+      const index = script.sockets.indexOf(socket);
+      received.push(`${index}:${input.data}`);
+      if (index < 1) return;
+      socket.serverSend({ type: "terminal_input_ack", requestId: envelope.requestId, payload: { sessionId: input.sessionId, inputId: input.inputId, ok: true, duplicate: false } } as never);
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null, terminalInputAckTimeoutMs: 60_000 });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+    client.subscribeTerminal("term-1", {}, {});
+    let outcome = "pending";
+    void client.sendTerminalInput("term-1", "ls").then(() => { outcome = "ok"; }, (error) => { outcome = `rejected:${(error as Error).message}`; });
+    await flush();
+    const switching = client.switchProject("project-1");
+    await completeRelayReadyV2AfterOpen(script.sockets, 1);
+    await switching;
+    for (let i = 0; i < 10; i += 1) await flush();
+    // Sent once on the old link, unacknowledged, then sent again on the new one.
+    expect({ outcome, received }).toEqual({ outcome: "ok", received: ["0:ls", "1:ls"] });
+    client.dispose();
+  });
+
   it("queues stream subscriptions attempted during project switch for the new project", async () => {
     const storage = new DelayedPutStorage();
     const environment = await makeEnvironment(storage);

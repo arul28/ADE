@@ -755,6 +755,7 @@ export class AdeSyncClient {
     envId: string,
     relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS,
     firstEndpoint: string | null = null,
+    options: { preserveTerminalInputs?: boolean } = {},
   ): Promise<void> {
     const environment = await this.envStore.getEnvironment(envId);
     if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
@@ -771,7 +772,7 @@ export class AdeSyncClient {
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
     this.currentCatalog = null;
-    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"));
+    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"), options);
     await this.envStore.setSelectedEnvId(envId);
     await this.connection.connect(
       environment,
@@ -1146,7 +1147,7 @@ export class AdeSyncClient {
           activeProjectId: this.activeProjectId,
         }));
         if (envId) {
-          await this.connect(envId, this.relayAccess, liveEndpoint);
+          await this.connect(envId, this.relayAccess, liveEndpoint, { preserveTerminalInputs: sameProject });
         }
       } finally {
         this.streamSubscriptionsPaused = false;
