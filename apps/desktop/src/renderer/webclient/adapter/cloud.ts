@@ -6,22 +6,30 @@ import type {
   CloudStatus,
 } from "../../../shared/adeCloud";
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
+import type { BrowserAccountClient } from "../account/client";
+import { createWebCloudBilling } from "./cloudBilling";
 import type { AdapterInfra } from "./types";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
- * dashboard) and the machine lists to read the account and its computers.
+ * dashboard) and the machine lists to read the account and its computers,
+ * and to pick and pay for a plan.
  *
- * The browser never holds the cloud credential. Every ADE brain of the
+ * The browser never holds the cloud provider's key. Every ADE brain of the
  * account can read the account's ADE Cloud (the phone's cloud page uses the
  * same `cloud.read` / `cloud.write` commands), so the web asks the machine
  * this tab is connected to. Account level: no project pin.
  *
+ * The plan and billing calls (checkout, the billing portal, the free plan's
+ * card, extra hours and disk, a plan's cleanup pick) go to the account
+ * server itself with this browser's own account token, as the desktop's main
+ * process sends its own (`cloudBilling.ts`): no computer has to be connected.
+ *
  * What only the desktop app can do stays out, so each caller's own guard
  * hides it: the life of a lane's computer (`laneLife`, `onLaneJob`), saving a
- * key or a Claude pass, plans and billing pages. Making a computer and the
- * machine actions that delete or resize refuse with a plain sentence. The
- * account's cloud sign-ins (saved keys, passes) are read, never written.
+ * key or a Claude pass. Making a computer and the machine actions that delete
+ * or resize refuse with a plain sentence. The account's cloud sign-ins (saved
+ * keys, passes) are read, never written.
  */
 
 const DESKTOP_ONLY = "Do this in the ADE desktop app. The web app reads ADE Cloud but can't change computers.";
@@ -52,8 +60,12 @@ function machinesResultOf(value: unknown): CloudMachinesResult | null {
   };
 }
 
-export function createWebCloudNamespace(infra: Pick<AdapterInfra, "client" | "commands">): NonNullable<Window["ade"]["cloud"]> {
+export function createWebCloudNamespace(
+  infra: Pick<AdapterInfra, "client" | "commands">,
+  accountClient: Pick<BrowserAccountClient, "cloudRequest" | "startSignIn">,
+): NonNullable<Window["ade"]["cloud"]> {
   const { client, commands } = infra;
+  const billing = createWebCloudBilling(accountClient);
 
   const access = async (): Promise<boolean> => {
     const answer = await commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
@@ -128,5 +140,12 @@ export function createWebCloudNamespace(infra: Pick<AdapterInfra, "client" | "co
     onCloudSignInChanged: () => () => undefined,
     onCreateProgress: () => () => undefined,
     cancelCreate: async () => ({ cancelled: false }),
+    // The plan and Stripe's pages, from this browser (`cloudBilling.ts`). The page reads the account again after each.
+    openCheckout: (plan, cleanup) => billing.openCheckout(plan, cleanup),
+    openBillingPortal: () => billing.openBillingPortal(),
+    openFreeUnlock: () => billing.openFreeUnlock(),
+    setExtraHours: (enabled) => billing.setExtraHours(enabled),
+    setExtraDisk: (choice) => billing.setExtraDisk(choice),
+    pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
   };
 }

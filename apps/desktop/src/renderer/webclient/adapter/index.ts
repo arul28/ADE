@@ -169,8 +169,9 @@ export function createAdeWebAdapter(
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
     cloudAccess: misc.cloudAccess,
-    // Settings › ADE Cloud and the machine lists read the account through the connected machine.
-    cloud: createWebCloudNamespace(infra),
+    // Settings › ADE Cloud and the machine lists read the account through the connected machine;
+    // the plan and billing calls go to the account server with this browser's own sign-in.
+    cloud: createWebCloudNamespace(infra, accountClient),
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

@@ -1,7 +1,7 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours } from "./billing";
+import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type CloudBillingReturnUrl } from "./billing";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
@@ -1231,6 +1231,20 @@ const BILLING_PATHS = new Set<string>([CLOUD_PATHS.billingCheckout, CLOUD_PATHS.
 /** The most a person may set as extra disk's monthly limit, in dollars. */
 const EXTRA_DISK_LIMIT_MAX_USD = 1000;
 
+/**
+ * Where Stripe sends the person back: this server's own page, or the hosted
+ * web client when the request asks for it (`returnTo: "web"`). The web
+ * address is this server's own `WEB_CLIENT_ORIGIN`, never one the request
+ * names, so no request can make Stripe send anyone anywhere else. Null for a
+ * `returnTo` this server can't honour (an unknown value, or no web client).
+ */
+function billingReturnOf(env: CloudEnv, url: URL, returnTo: unknown): CloudBillingReturnUrl | null {
+  if (returnTo === undefined) return accountReturnUrl(url.origin);
+  if (returnTo !== "web") return null;
+  const webOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
+  return webOrigin ? webReturnUrl(webOrigin) : null;
+}
+
 /** The billing routes, or null when `path` isn't one of them. */
 async function routeBilling(request: Request, url: URL, path: string, env: CloudEnv, userId: string, { now, waitUntil }: CloudRequestContext): Promise<Response | null> {
   if (!BILLING_PATHS.has(path)) return null;
@@ -1239,12 +1253,15 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
   // Not set up yet: as if it didn't exist.
   if (path === CLOUD_PATHS.billingExtraDisk && !offers.extraDisk) return notFound();
   try {
-    if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, url.origin, now));
-    // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
-    if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, url.origin, { now, waitUntil }));
+    // The desktop sends the portal no body, which reads as `{}`.
     const body = await readJson(request);
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-    if (path === CLOUD_PATHS.billingCheckout) {
+    if (path === CLOUD_PATHS.billingPortal || path === CLOUD_PATHS.billingFreeUnlock || path === CLOUD_PATHS.billingCheckout) {
+      const back = billingReturnOf(env, url, body.returnTo);
+      if (!back) return badRequest("ADE Cloud can't send you back there after billing.");
+      if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, back, now));
+      // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
+      if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, back, { now, waitUntil }));
       // Builds that know one paid plan send no body: that's Plus.
       if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
         return badRequest("That plan isn't one ADE Cloud offers.");
@@ -1261,7 +1278,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
           return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
         }
       }
-      return json(await createCheckoutUrl(env, userId, url.origin, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
+      return json(await createCheckoutUrl(env, userId, back, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
     }
     if (path === CLOUD_PATHS.billingPlanCleanup) {
       const pick = readPlanCleanupPick(body);

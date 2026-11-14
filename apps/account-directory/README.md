@@ -852,6 +852,11 @@ separate products, so Checkout names each line and shows its one-line
 description (Managed Payments refuses `custom_text`); the customer
 is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
 a URL for the person's browser, which comes back to `/billing/return`.
+With `returnTo: "web"` (the hosted web client; `/free-unlock` too) Stripe
+sends the person back to `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`
+instead, and the web app opens Settings › ADE Cloud. The address comes from
+this server's own `WEB_CLIENT_ORIGIN`, never from the request, so it is not
+an open redirect; any other `returnTo`, or no web client set, is a 400.
 `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
 
 `POST /webhooks/stripe` is outside the access list and is checked with the

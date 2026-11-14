@@ -1637,9 +1637,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     ],
     tab: "ade-cloud",
     anchor: "cloud-connection",
-    // The account's cloud machines.
+    // The account's cloud machines. On the web the page reads them through a connected computer
+    // and pays through the account server (`webclient/adapter/cloud.ts`).
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1650,7 +1651,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "cloud-sign-ins",
     // The provider sign-ins ADE Cloud uses: one line and one off switch (Settings › Providers › ADE Cloud has the rest).
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1661,7 +1662,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "cloud-lanes",
     // Every lane and every computer the account pays for, read from the server.
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1672,7 +1673,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "cloud-plan",
     // The plans side by side, extra hours and extra disk; the account's Stripe subscription.
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1683,7 +1684,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "cloud-invite",
     // The account's invite link and code box; the Work sidebar's invite pill lands here.
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1694,7 +1695,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "cloud-sizes",
     // The size new cloud lanes start on: an account setting.
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {
@@ -1705,7 +1706,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "cloud-agent-limits",
     // What unattended agents may spend alone, and the optional cap, in the account vault.
     scope: "account",
-    web: "hidden",
+    web: "account",
     group: "ADE Cloud",
   },
   {

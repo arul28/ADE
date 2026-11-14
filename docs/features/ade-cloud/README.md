@@ -110,6 +110,18 @@ that stops (see Sleep and busy rules).
   Sizes, Invite friends, Sign-ins and what agents may do alone, with the
   80% / 95% / out-of-hours banners and computers due for deletion. Settings
   entries are `integrations.ade-cloud*`.
+- **The web app:** the same page (`web: "account"` in the manifest). It reads
+  through a connected computer; the plan and billing calls go from the
+  browser to the account server with the browser's own account token
+  (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`,
+  only `GET /cloud/access`, `GET /cloud/account` and the `/cloud/billing/*`
+  routes). Stripe opens in the same tab with `returnTo: "web"`, so it sends
+  the person back to the web app's Settings › ADE Cloud, not the server's
+  "go back to ADE" page. The billing routes ask for no recent sign-in. A
+  browser whose sign-in ended signs in again from the click and comes back
+  to the page (a checkout to its plan's checkout). The website's plan
+  buttons link to `app.ade-app.dev/?cloudPlan=<plan>`; see
+  [Web client deeplinks](../web-client/README.md#deeplinks).
 - **Add a computer:** a new lane on ADE Cloud makes its own computer. The old
   "New ADE Cloud computer" form and the ready machines are gone (Cloud 5);
   `ade cloud create` and the phone still make a bare computer.

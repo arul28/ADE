@@ -1,4 +1,5 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
+import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 // Loaded on the first read, so the signed-out page does not pay for it.
 import type { AccountProjectListResult } from "../../../shared/accountProject";
 import {
@@ -41,6 +42,16 @@ const OAUTH_PENDING_TTL_MS = 10 * 60_000;
 const REFRESH_SKEW_MS = 2 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 3_000;
 const DIRECTORY_MUTATION_TIMEOUT_MS = 8_000;
+/** The desktop waits as long for ADE Cloud (`cloudServerProvider.ts`). */
+const CLOUD_REQUEST_TIMEOUT_MS = 20_000;
+const CLOUD_BILLING_PATHS: ReadonlySet<string> = new Set([
+  CLOUD_PATHS.billingCheckout,
+  CLOUD_PATHS.billingPortal,
+  CLOUD_PATHS.billingFreeUnlock,
+  CLOUD_PATHS.billingExtraHours,
+  CLOUD_PATHS.billingExtraDisk,
+  CLOUD_PATHS.billingPlanCleanup,
+]);
 const REMOVAL_TIMEOUT_MESSAGE =
   "Removal timed out. Refresh Your computers — if it's still listed, try again.";
 const ACTIVITY_PURGE_FAILED_MESSAGE =
@@ -857,12 +868,33 @@ export class BrowserAccountClient {
     return await this.allowedDirectoryRequest(request);
   }
 
+  /**
+   * One ADE Cloud call with this browser's own account token: the account's
+   * access and plan reads, and the plan and billing calls (Stripe's checkout,
+   * the billing portal, the free plan's card, extra hours and disk, a plan's
+   * cleanup pick). Only those paths: the rest of ADE Cloud goes through a
+   * connected computer (`adapter/cloud.ts`). The cloud provider's own key
+   * stays on the server; this token is the account's, as on the desktop.
+   */
+  async cloudRequest(request: {
+    method: "GET" | "POST";
+    path: string;
+    body?: Record<string, unknown>;
+  }): Promise<{ status: number; body: unknown }> {
+    const allowed = request.method === "GET"
+      ? request.path === CLOUD_PATHS.access || request.path === CLOUD_PATHS.account
+      : CLOUD_BILLING_PATHS.has(request.path);
+    if (!allowed) throw new Error(encodeCodedErrorMessage("invalid_args", "That account call is not allowed here."));
+    // A checkout asks Stripe several things in a row; 8 s is too short for it.
+    return await this.allowedDirectoryRequest(request, { timeoutMs: CLOUD_REQUEST_TIMEOUT_MS });
+  }
+
   /** A directory call whose path the caller already checked; one retry after a 401. */
   private async allowedDirectoryRequest(request: {
     method: "GET" | "POST" | "DELETE";
     path: string;
     body?: Record<string, unknown>;
-  }): Promise<{ status: number; body: unknown }> {
+  }, options: { timeoutMs?: number } = {}): Promise<{ status: number; body: unknown }> {
     const config = this.config;
     if (!config) throw new Error(encodeCodedErrorMessage("no_directory", "Account sign-in isn't configured for this web client."));
     const signedOut = () => new Error(encodeCodedErrorMessage("signed_out", "Sign in to your ADE account."));
@@ -874,7 +906,7 @@ export class BrowserAccountClient {
     }
     const send = async (accessToken: string): Promise<Response> => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DIRECTORY_MUTATION_TIMEOUT_MS);
       try {
         return await (this.options.fetchImpl ?? fetch)(`${config.directoryBaseUrl}${request.path}`, {
           method: request.method,

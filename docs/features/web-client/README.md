@@ -1532,6 +1532,24 @@ URL contract.
 - Links reach the web client from the website's `/open` page ("Open in your
   browser", or a remembered browser choice), which forwards the query
   unchanged; see [Deeplinks](../deeplinks/README.md).
+- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`, `WebCloudPlanLink.tsx`).
+  `https://app.ade-app.dev/?cloudPlan=<free|plus|pro|max>` comes from the
+  website's plan buttons; `/?cloudReturn=<done|cancelled|portal|card|card_cancelled>`
+  is where Stripe sends the person back (the account server builds it from
+  its `WEB_CLIENT_ORIGIN`). The value must be exactly one of those, once;
+  anything else is ignored. On load the request is kept in localStorage for
+  10 minutes (so it survives the sign-in, and the sign-in card says a link
+  is waiting) and both parameters leave the address bar at once. Once
+  signed in, the app opens Settings › ADE Cloud at Plans (on its own, as the
+  top bar's Settings opens it, when no project came back) instead of the
+  restored route. A paid plan then starts Stripe's checkout in this tab, but
+  only when `GET /cloud/access` says ADE Cloud lets the account in and `GET
+  /cloud/account` shows no paid plan (a paid account would otherwise change
+  plans with no question; it sees the page and a toast instead). Both reads
+  go to the account server with the browser's own token, so a person with no
+  computer online can still buy. Free only shows the page. A return shows a
+  toast saying how Stripe ended. An owned link in the same boot wins and the
+  plan link is dropped. The link never starts a sign-in itself.
 
 Entry points:
 
@@ -1613,6 +1631,13 @@ Ops checks after deploy:
 - No native directory picker.
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
+- Settings › ADE Cloud reads the account and its computers through a
+  connected computer (`adapter/cloud.ts`), so with none online the tab is not
+  listed (a plan link still reaches Stripe, see Deeplinks). Plans, Manage
+  billing, the free plan's card, extra hours and extra disk work from the web
+  (`adapter/cloudBilling.ts`, straight to the account server). A lane's size,
+  its delete, freeing its computer, Clear caches, Keep it on an idle notice
+  and the invite code box stay in the desktop app.
 - No ADE Browser, computer use, or iOS Simulator surface. App Control is
   watch-only: the Work tool shows the lane's live frames and session state, and
   no driving action runs from the web. Projectless Chats therefore shows its

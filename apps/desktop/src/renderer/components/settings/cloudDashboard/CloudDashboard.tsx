@@ -23,6 +23,7 @@ import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
@@ -690,7 +691,7 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
   })), [usage, lane.state]);
   const clearableGb = (usage?.items ?? []).filter((part) => part.clearable).reduce((total, part) => total + part.gb, 0);
   const total = usage?.totalGb ?? 0;
-  const canClear = clearableGb > 0 && Boolean(window.ade.cloud?.clearCaches) && lane.state !== "failed";
+  const canClear = clearableGb > 0 && isAdeAvailable(window.ade.cloud?.clearCaches) && lane.state !== "failed";
   const backRef = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     backRef.current?.focus();
