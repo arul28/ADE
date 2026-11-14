@@ -1,37 +1,56 @@
 /* @vitest-environment jsdom */
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DiagnosticReportPayload } from "../../../shared/types/diagnostics";
 import { ReportIssueButton } from "./ReportIssueButton";
+import { closeReportDialog } from "./ReportIssueDialog";
 
-const CONTEXT = {
-  surface: "project_recovery",
-  headline: "ADE couldn't open this project",
-  code: "db_integrity",
-  technicalDetail: "sqlite disk image is malformed",
-  projectRoot: "/tmp/photon",
-};
+let failureCount = 0;
 
-function payload(over: Partial<DiagnosticReportPayload> = {}): DiagnosticReportPayload {
+/**
+ * A failure no earlier test has reported. The dialog keeps each failure's sent
+ * reference for a while, so a repeated failure would start with the old result.
+ */
+function newFailure() {
+  failureCount += 1;
   return {
-    report: "# ADE diagnostic report\n\n- Surface: project_recovery\n",
-    filePath: "/tmp/userData/diagnostic-reports/report.md",
-    issueUrl: "https://github.com/arul28/ADE/issues/new?title=x",
-    installId: "ade_0123456789abcdef0123456789abcdef",
-    copied: true,
-    opened: true,
-    ...over,
+    surface: "project_recovery",
+    headline: `ADE couldn't open this project (${failureCount})`,
+    code: "db_integrity",
+    technicalDetail: "sqlite disk image is malformed",
+    projectRoot: "/tmp/photon",
   };
 }
 
-function installBridge(openIssue: ReturnType<typeof vi.fn>, sendManual?: ReturnType<typeof vi.fn>) {
+const REPORT = "# ADE diagnostic report\n\n- Surface: project_recovery\n";
+
+function installBridge(overrides: Record<string, unknown> = {}) {
+  const prepareReport = vi.fn().mockResolvedValue({
+    ok: true,
+    id: "draft-1",
+    report: REPORT,
+    bytes: REPORT.length,
+    expiresAtMs: Date.now() + 600_000,
+    noteMaxChars: 2000,
+  });
+  const sendReport = vi.fn().mockResolvedValue({
+    ok: true,
+    reference: "abcd1234",
+    reportPath: "/tmp/userData/diagnostic-reports/report.md",
+  });
+  const discardReport = vi.fn().mockResolvedValue(undefined);
   (window as unknown as { ade?: unknown }).ade = {
-    diagnostics: { openIssue, ...(sendManual ? { sendManual } : {}) },
+    diagnostics: { prepareReport, sendReport, discardReport, ...overrides },
   };
+  return { prepareReport, sendReport, discardReport };
+}
+
+function openDialog() {
+  fireEvent.click(screen.getByRole("button", { name: /Report this error to ADE/ }));
 }
 
 afterEach(() => {
+  closeReportDialog();
   cleanup();
   delete (window as unknown as { ade?: unknown }).ade;
 });
@@ -39,96 +58,65 @@ afterEach(() => {
 describe("ReportIssueButton", () => {
   it("renders nothing when the preload has no diagnostics bridge", () => {
     delete (window as unknown as { ade?: unknown }).ade;
-    const { container } = render(<ReportIssueButton context={CONTEXT} />);
+    const { container } = render(<ReportIssueButton context={newFailure()} />);
 
     expect(container.innerHTML).toBe("");
   });
 
-  it("sends the caller's context and confirms the report is on the clipboard", async () => {
-    const openIssue = vi.fn().mockResolvedValue(payload());
-    installBridge(openIssue);
+  it("opens a dialog that previews the report it prepared, and sends nothing", async () => {
+    const { prepareReport, sendReport } = installBridge();
 
+    const CONTEXT = newFailure();
     render(<ReportIssueButton context={CONTEXT} />);
-    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    openDialog();
 
     await waitFor(() => {
-      expect(openIssue).toHaveBeenCalledWith(CONTEXT);
+      expect(prepareReport).toHaveBeenCalledWith(CONTEXT);
     });
-    await screen.findByText(/Report copied/i);
-    expect(screen.getByRole("button", { name: "Copy again" })).toBeTruthy();
+    expect((await screen.findByLabelText("Report text")).textContent).toContain("ADE diagnostic report");
+    expect(sendReport).not.toHaveBeenCalled();
   });
 
-  it("says so plainly when the report could not be prepared", async () => {
-    const openIssue = vi.fn().mockRejectedValue(new Error("ENOSPC: no space left on device"));
-    installBridge(openIssue);
+  it("cancel discards the prepared report and sends nothing", async () => {
+    const { discardReport, sendReport } = installBridge();
 
+    const CONTEXT = newFailure();
     render(<ReportIssueButton context={CONTEXT} />);
-    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    openDialog();
+    await screen.findByLabelText("Report text");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
-    await screen.findByText(/couldn't prepare the report/i);
-    // The raw errno never reaches the user on a screen that is already failing.
-    expect(screen.queryByText(/ENOSPC/)).toBeNull();
+    await waitFor(() => {
+      expect(discardReport).toHaveBeenCalledWith("draft-1");
+    });
+    expect(sendReport).not.toHaveBeenCalled();
   });
 
-  it("ignores a GitHub issue reply that belongs to a report the user already replaced", async () => {
-    // "Open GitHub issue" can still be in flight when the user reports again,
-    // so its reply can land after a second report was sent. Showing it then
-    // would describe the wrong report.
-    let settleFirstIssue: (result: DiagnosticReportPayload) => void = () => {};
-    const openIssue = vi.fn().mockImplementationOnce(
-      () => new Promise<DiagnosticReportPayload>((resolve) => { settleFirstIssue = resolve; }),
-    );
-    const sendManual = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, reference: "first123", reportPath: "", report: "first report" })
-      .mockResolvedValueOnce({ ok: true, reference: "second45", reportPath: "", report: "second report" });
-    installBridge(openIssue, sendManual);
+  it("send uploads the prepared report by its id and shows the reference", async () => {
+    const { sendReport } = installBridge();
 
+    const CONTEXT = newFailure();
     render(<ReportIssueButton context={CONTEXT} />);
-    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
-    await screen.findByText(/reference first123/);
-    fireEvent.click(screen.getByRole("button", { name: "Open GitHub issue" }));
-    await screen.findByRole("button", { name: "Opening…" });
+    openDialog();
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
-    // A second report, sent while the first issue is still opening.
-    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
-    await screen.findByText(/reference second45/);
-
-    settleFirstIssue(payload({ report: "first report" }));
-
-    // The stale reply frees the link again but never lands under the newer report.
-    await screen.findByRole("button", { name: "Open GitHub issue" });
-    expect(screen.queryByText(/Report copied/)).toBeNull();
+    await waitFor(() => {
+      expect(sendReport).toHaveBeenCalledWith("draft-1", undefined);
+    });
+    expect((await screen.findAllByText(/abcd1234/)).length).toBeGreaterThan(0);
   });
 
-  it("starts clean when the failure it reports changes, and drops the old failure's reply", async () => {
-    // One notice can swap its failure for another without unmounting (the
-    // chat pane's line). A send for the old failure must not mark the new one
-    // as sent, or the new failure could never be reported.
-    let settleOld: (result: unknown) => void = () => {};
-    const sendManual = vi
-      .fn()
-      .mockImplementationOnce(() => new Promise((resolve) => { settleOld = resolve; }))
-      .mockResolvedValueOnce({ ok: true, reference: "new777", reportPath: "", report: "new report" });
-    installBridge(vi.fn(), sendManual);
-    const next = { ...CONTEXT, headline: "Couldn't deliver the message", technicalDetail: "runtime exited with code 1" };
-
-    const { rerender } = render(<ReportIssueButton context={CONTEXT} />);
-    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
-    await screen.findByRole("button", { name: "Sending report…" });
-
-    rerender(<ReportIssueButton context={next} />);
-    // Settle the old send and let its reply land before looking.
-    await act(async () => {
-      settleOld({ ok: true, reference: "old111", reportPath: "", report: "old report" });
+  it("a failed send shows an alert and offers Try again", async () => {
+    installBridge({
+      sendReport: vi.fn().mockResolvedValue({ ok: false, reason: "unavailable" }),
     });
 
-    const button = screen.getByRole("button", { name: "Report issue" });
-    expect(button.hasAttribute("disabled")).toBe(false);
-    expect(screen.queryByText(/reference old111/)).toBeNull();
+    const CONTEXT = newFailure();
+    render(<ReportIssueButton context={CONTEXT} />);
+    openDialog();
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
-    fireEvent.click(button);
-    await screen.findByText(/reference new777/);
-    expect(sendManual).toHaveBeenLastCalledWith(next);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
   });
 });

@@ -182,24 +182,30 @@ case a share made by an agent cannot change anything on the host.
   **Share lane…**, and for a lane with live shares **Manage sharing…** and
   **Stop sharing with all**.
 - **Share sheet** (`LaneShareSheet.tsx`, `LaneShareSheetHost.tsx`,
-  `LaneShareRightsPanel.tsx`): people on the left (invite form, one row per
-  guest with state and preset), the selected person's rights on the right,
-  with the risk level and reasons live.
+  `LaneShareRightsPanel.tsx`): one column. The email field, then the people
+  with access (hidden while empty), then the access level of the selected
+  person or of the next invite, with the risk level live. The end date, the
+  privacy switches and every single right are under one "More options" fold.
 - **Share mark** (`LaneShareMark.tsx`) on the lane sidebar row and the lane
   header, while the lane has a pending or active share.
-- **Composer line** (`LaneShareComposerChip.tsx`) in a chat of a shared
-  lane: who has access and who is connected now.
+- **Chat header icon** (`LaneShareHeaderButton.tsx`) in a chat of a shared
+  lane, filled while a guest is connected. Its panel lists who has access,
+  their access level, messages left and end date, "Move this chat to them…"
+  for an accepted guest, and **Manage sharing**.
 - **Author labels**: the host stamps a guest's messages, drafts and thread
   comments with an author (see [Message author](#message-author)). The
   transcript shows "From <name>" under a guest's message
   (`AgentChatMessageList.tsx`), and a guest's draft names its author
   (`draftsFormat.ts`). The owner's own messages stay unlabelled.
-- **Settings › Sharing** (`SharingSettingsPage.tsx`, account level, desktop
-  only): "Shared by me" across every machine of the account, grouped by
-  project; "Shared with me" with Accept, Open and Leave; and **My default
-  rights** (`laneShareDefaults.tsx`, account settings key
+- **Settings › Sharing** (`SharingSettingsPage.tsx`, `sharingSettings.css`,
+  account level, desktop only), three sections on one page: **Lanes you
+  shared** across every machine of the account, grouped by project, one row
+  per person (person, lane, access, state, and a menu with Change access,
+  Re-send invite and Remove access; **Stop sharing all** per project);
+  **Lanes shared with you** with Accept, Open, Decline and Leave; and
+  **Default access** (`laneShareDefaults.tsx`, account settings key
   `laneShare.defaultRights`, scope `all`), the start value of the sheet for a
-  new person. "Shared by me" is read from the account directory
+  new person. "Lanes you shared" is read from the account directory
   (`laneShareGuest.listGiven`, `GET /lane-shares/given`), so it lists every
   share with no project open and no computer online; an online copy of the
   open project adds its own rows' rights, usage and connections. Revoke goes
@@ -313,6 +319,18 @@ grant at the same time.
   in a list, a read, a subscribe, a command and a live event.
   `laneShare.getGuestState` and `laneShare.move` are answered by the host
   itself (`LANE_SHARE_GUEST_HOST_COMMANDS`).
+  The chat pane's reads have their own limits:
+  - `chat.getImageDataUrl` reads only an image in the granted lane's
+    worktree that is not under `.ade/` or `.git`, or a staged
+    `.ade/attachments` file. A worktree file that git does not ignore needs
+    `tools.file`. Any other file must be named by this chat's events after
+    the history cut. A guest's own message does not count.
+  - `chat.getTurnFileDiff` needs `tools.diff`, and the shas and file must
+    match a `turn_diff_summary` event of the chat. It reads in the lane's
+    worktree.
+  - `chat.listPendingInputs` needs only a visible session.
+  - A chat's `session_meta_updated` and `status` events also send the
+    debounced `lane_share_guest_changed`.
 - **Outbound envelopes**: replies to the guest's own requests, session
   payloads of the granted lane and kinds the rights see, and
   `lane_share_guest_changed` (only the grant id; the guest reads its state
@@ -353,19 +371,38 @@ refresh. `laneShareGuestGates.ts` applies the policy to each envelope.
 - `laneShareGuestStore.ts` holds the received list (one directory read,
   cached 5 minutes) and one connection per opened shared lane.
 - **Work sidebar shelf** (`LaneShareGuestShelf.tsx`): a "Shared with me"
-  group, apart from the project's own lanes. It renders only with an
-  accepted share, and opens no connection until the user expands or opens a
-  shared lane.
+  group, apart from the project's own lanes. Each shared lane is a tree of
+  its sessions (`LaneShareGuestLaneTree`, also used by the `/shared` page).
+  It renders only with an accepted share, and opens no connection until the
+  user expands or opens a shared lane.
 - **Shared lanes page** (`LaneShareGuestPage.tsx`, route `/shared`, no
-  project needed; also in the web client): `?grant=<id>` is where an invite
-  link lands. Signed out: sign in. Not this account's grant: say so.
-  Pending: accept. Active: open.
-- **Shared lane view** (`LaneShareGuestView.tsx`, `LaneShareGuestChat.tsx`):
-  the header, the lane's sessions, and the open chat or read-only terminal.
-  The transcript is plain text (`laneShareGuestTranscript.ts`): no link
-  opens, no image loads, no path of the owner's computer is used. The
-  composer shows only what the rights allow, and a host refusal shows as an
-  inline notice.
+  project needed; also in the web client): a sidebar with Back, the open
+  invites and the shared lanes. `?grant=<id>` is where an invite link lands:
+  - signed out: sign in;
+  - not this account's grant: say so, with Switch account;
+  - the owner's own link: the owner's lane opens in the Work tab with a
+    note (Settings › Sharing when this tab does not hold the lane);
+  - pending: the lane opens with one Accept strip ("Accept and open");
+  - active: the lane opens on its newest chat (`view=lane` shows the
+    lane's own page, to start a chat).
+  With nothing picked, the first shared lane or invite opens.
+- **Shared lane view** (`LaneShareGuestView.tsx`): the header (lane,
+  owner, end date, messages left), the open chat or read-only terminal, and
+  Clone this project.
+- **Shared chat** (`LaneShareGuestChatPane.tsx`): ADE's real chat pane
+  (`AgentChatPane`) with a `lane_share_guest` chat scope. Its API
+  (`laneShareGuestAgentChatApi.ts`) sends every call through the guest
+  connection; history is the connection's chat subscription. The bound
+  scope hides project-only parts (files, PRs, other lanes). Controls the
+  rights lock show disabled: the mode with its reason as the tooltip, the
+  reasoning level, the models (only the allowed ones), and Send with the
+  reason (watch only, paused, no messages left, not connected). Without the
+  send right but with drafts, a message becomes a draft for the owner.
+- **Home** (`LaneShareHomeRows.tsx`): "Shared with you" in the Projects
+  card lists invites and shared lanes; each opens the lane. A web account
+  with no computer and no project sees "Shared lanes need no computer".
+- The "Access changed" notice shows only when the rights or the lane state
+  differ after the host let the guest back in.
 
 Invite links are `https://ade-app.dev/open?type=lane-share&id=<grant>` and
 `ade://lane-share/<grant>` (`shared/deeplinks.ts`). The grant id
@@ -483,5 +520,5 @@ still refuses each typed line and each first line with
 | `apps/desktop/src/main/services/chat/laneShareMoveChat.ts`, `laneShareMoveTransfer.ts` | Landing a moved chat; the bundle bytes. |
 | `apps/desktop/src/main/services/account/accountBridge.ts` | `laneShareGuest()` directory calls with this machine's token. |
 | `apps/desktop/src/renderer/components/laneShare/*.tsx`, `*.ts` | Owner UI, share list store, actions, defaults. |
-| `apps/desktop/src/renderer/components/laneShare/guest/**` | Guest connection, store, shelf, page, view, transcript, move. |
+| `apps/desktop/src/renderer/components/laneShare/guest/**` | Guest connection, store, shelf, page, view, chat pane and its API, home rows, move. |
 | `apps/desktop/src/renderer/webclient/sync/relayReady.ts` | Relay ready handshake for browser-side sockets. |

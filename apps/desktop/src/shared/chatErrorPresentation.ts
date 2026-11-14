@@ -1,5 +1,6 @@
 import { cut } from "./cutText";
 import { providerDisplayLabel } from "./pendingInputLabels";
+import type { ProviderAccountRefusal } from "./providerAccountRefusal";
 
 /**
  * Host-emitted failed-turn copy. Clients (desktop, iOS, hosted web, CLI)
@@ -278,6 +279,32 @@ export function presentDiskFullRefusal(message: string | null | undefined): Chat
     body: trimText(message) ?? "This computer is almost out of storage, so ADE didn't start this turn.",
     nextAction: "Free up space, then retry.",
   };
+}
+
+/**
+ * The card for a plan or model refusal. A sign-in refusal keeps the agent
+ * card, which offers the sign-in; these two have no button that fixes them.
+ */
+export function presentProviderAccountRefusal(args: {
+  refusal: Exclude<ProviderAccountRefusal, "auth">;
+  provider?: string | null;
+  message?: string | null;
+  detail?: string | null;
+}): ChatErrorPresentation {
+  const provider = providerCardLabel(args.provider);
+  const technical = uniqueTechnicalLines([trimText(args.message), trimText(args.detail)]);
+  const copy = args.refusal === "plan"
+    ? {
+        title: "Not included in your plan",
+        body: provider ? `Your ${provider} plan does not include this.` : "Your plan with this provider does not include this.",
+        nextAction: provider ? `Upgrade your ${provider} plan, or choose another model.` : "Upgrade your plan, or choose another model.",
+      }
+    : {
+        title: "Model not available",
+        body: provider ? `${provider} does not offer this model to your account.` : "This provider does not offer this model to your account.",
+        nextAction: "Choose another model, then retry.",
+      };
+  return { ...copy, ...(technical ? { technicalDetail: technical } : {}) };
 }
 
 const PRESENTABLE_ERROR_CATEGORIES = new Set(["rate_limit", "auth", "network", "busy"]);

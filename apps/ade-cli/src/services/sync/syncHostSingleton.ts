@@ -14,6 +14,7 @@ import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/sr
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import { adeHomeForChannel, liveChannelFromEnv } from "../projects/machineLayout";
 import { commandLineIsDevTestMachine, isDevTestMachineProcess } from "./devTestMachine";
+import { markExpected } from "../../../../desktop/src/shared/expectedError";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -117,6 +118,9 @@ export class SyncHostSingletonConflictError extends Error {
     super(formatSyncHostSingletonConflictMessage(conflict));
     this.name = "SyncHostSingletonConflictError";
     this.conflict = conflict;
+    // Another ADE brain on this computer holds mobile sync, and the message
+    // names it and how to quit it: the machine's state, not a defect here.
+    markExpected(this, "environment");
   }
 }
 

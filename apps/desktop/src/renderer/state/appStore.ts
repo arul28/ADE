@@ -424,6 +424,16 @@ export type NoMachineRepositoryTab = {
   id: string;
   displayName: string;
   iconDataUrl: string | null;
+  /**
+   * The copy the tab showed before its computer left (a binding key). When
+   * that computer is back, the tab opens this copy again, not another one.
+   */
+  lastCopyKey?: string | null;
+  /**
+   * The repository, when `id` is a copy's own key: a second folder of one
+   * repository on one computer has its own tab, keyed by that folder.
+   */
+  repositoryId?: string | null;
 };
 
 /**
@@ -441,7 +451,13 @@ function readNoMachineTabs(): NoMachineRepositoryTab[] {
       if (!entry || typeof entry !== "object") return [];
       const row = entry as Record<string, unknown>;
       if (typeof row.id !== "string" || !row.id || typeof row.displayName !== "string") return [];
-      return [{ id: row.id, displayName: row.displayName, iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null }];
+      return [{
+        id: row.id,
+        displayName: row.displayName,
+        iconDataUrl: typeof row.iconDataUrl === "string" ? row.iconDataUrl : null,
+        lastCopyKey: typeof row.lastCopyKey === "string" && row.lastCopyKey ? row.lastCopyKey : null,
+        repositoryId: typeof row.repositoryId === "string" && row.repositoryId ? row.repositoryId : null,
+      }];
     });
   } catch {
     return [];
@@ -453,7 +469,12 @@ function writeNoMachineTabs(tabs: readonly NoMachineRepositoryTab[]): void {
     // No icons: a data URL can be large, and the tab reads the icon again from the account.
     window.sessionStorage.setItem(
       NO_MACHINE_TABS_STORAGE_KEY,
-      JSON.stringify(tabs.map((tab) => ({ id: tab.id, displayName: tab.displayName }))),
+      JSON.stringify(tabs.map((tab) => ({
+        id: tab.id,
+        displayName: tab.displayName,
+        lastCopyKey: tab.lastCopyKey ?? null,
+        repositoryId: tab.repositoryId ?? null,
+      }))),
     );
   } catch {
     // Storage unavailable: the tabs still hold until the window reloads.
@@ -2038,7 +2059,22 @@ export type AppState = {
   trustGitFolderAndOpen: () => Promise<ProjectInfo | null>;
   /** The user said Cancel: nothing is trusted, the folder stays closed. */
   dismissGitFolderTrustPrompt: () => void;
-  switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
+  /**
+   * Opens a remote copy in front. `keepNoMachineTab`: a waiting tab in front
+   * stays on its page until this copy is open, instead of showing the project
+   * under it while the open runs.
+   */
+  switchRemoteProject: (
+    targetId: string,
+    projectId: string,
+    options?: { keepNoMachineTab?: boolean },
+  ) => Promise<OpenProjectBinding>;
+  /**
+   * True once for the binding of a remote open that Home superseded: the
+   * open still reports its project, which then opens under Home instead of
+   * replacing it.
+   */
+  takeRemoteOpenSupersededByHome: (binding: { targetId: string; projectId: string }) => boolean;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
   /// when closing because a remote *disconnected*, not because the user closed
@@ -2225,6 +2261,25 @@ const createAppState: StateCreator<AppState> = (set, get) => {
    *  Slower responses whose token doesn't match the latest value are discarded. */
   let laneRefreshVersion = 0;
   let remoteProjectSwitchGeneration = 0;
+  /** The remote project open still on its way, if any, with its transition. */
+  let pendingRemoteSwitch: { transition: AppState["projectTransition"]; targetId: string; projectId: string } | null = null;
+  /** The remote open that Home superseded, until its project report arrives or another open starts. */
+  let remoteOpenSupersededByHome: { targetId: string; projectId: string } | null = null;
+  /**
+   * Home or a no-machine tab opened in front wins over a remote project open
+   * still on its way: that open must not finish over it, and its "switching"
+   * state ends here, since the open's own end skips a superseded switch. The
+   * open still reports its project when it lands (`app.onProjectChanged`, the
+   * web adapter's swap); for Home that report opens it under Home.
+   */
+  const supersedeRemoteProjectSwitch = (prev: AppState, by: "home" | "no-machine-tab"): Partial<AppState> => {
+    if (!pendingRemoteSwitch) return {};
+    ++remoteProjectSwitchGeneration;
+    const ownsTransition = prev.projectTransition === pendingRemoteSwitch.transition;
+    if (by === "home") remoteOpenSupersededByHome = { targetId: pendingRemoteSwitch.targetId, projectId: pendingRemoteSwitch.projectId };
+    pendingRemoteSwitch = null;
+    return ownsTransition ? { projectTransition: null } : {};
+  };
   let laneRefreshInFlight: Promise<void> | null = null;
   let activeLaneRefreshProjectKey: string | null = null;
   let activeLaneRefreshToken = 0;
@@ -3191,7 +3246,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         : prev,
     ),
   // A new tab is the new-project screen, so it also ends Settings-without-a-project.
-  openNewTab: () => set({ isNewTabOpen: true, showWelcome: true, standaloneSettingsOpen: false, activeNoMachineTabId: null }),
+  openNewTab: () => set((prev) => ({
+    isNewTabOpen: true,
+    showWelcome: true,
+    standaloneSettingsOpen: false,
+    activeNoMachineTabId: null,
+    ...supersedeRemoteProjectSwitch(prev, "home"),
+  })),
   cancelNewTab: () => {
     const hasProject = get().project != null;
     set({ isNewTabOpen: false, showWelcome: !hasProject, activeNoMachineTabId: null });
@@ -3204,7 +3265,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? [...prev.noMachineTabs, tab]
         : prev.noMachineTabs.map((entry, at) => (at === index ? { ...entry, ...tab } : entry));
       return activate
-        ? { noMachineTabs, activeNoMachineTabId: tab.id, isNewTabOpen: false, standaloneSettingsOpen: false }
+        ? {
+            noMachineTabs,
+            activeNoMachineTabId: tab.id,
+            isNewTabOpen: false,
+            standaloneSettingsOpen: false,
+            ...supersedeRemoteProjectSwitch(prev, "no-machine-tab"),
+          }
         : { noMachineTabs };
     });
     writeNoMachineTabs(get().noMachineTabs);
@@ -3895,21 +3962,24 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }
   },
 
-  switchRemoteProject: async (targetId: string, projectId: string) => {
+  switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
-    if (get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
+    if (!options?.keepNoMachineTab && get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {
       laneId: get().selectedLaneId,
       sessionId: get().focusedSessionId,
     };
+    const transition: AppState["projectTransition"] = {
+      kind: "switching",
+      rootPath: null,
+      startedAtMs: Date.now(),
+    };
+    pendingRemoteSwitch = { transition, targetId, projectId };
+    remoteOpenSupersededByHome = null;
     set((prev) => ({
-      projectTransition: {
-        kind: "switching",
-        rootPath: null,
-        startedAtMs: Date.now(),
-      },
+      projectTransition: transition,
       projectTransitionError: null,
       ...(outgoingProjectKey
         ? {
@@ -3925,6 +3995,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
+      pendingRemoteSwitch = null;
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
@@ -3972,6 +4043,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           projectTransitionError: null,
           isNewTabOpen: false,
           standaloneSettingsOpen: false,
+          // A no-machine tab put in front during the open superseded it, so
+          // the one still in front here is the tab this open replaces.
+          activeNoMachineTabId: null,
           openRemoteProjectTabs,
           laneSnapshots: cachedLanes?.laneSnapshots ?? [],
           lanes: cachedLanes?.lanes ?? [],
@@ -3997,6 +4071,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return binding;
     } catch (error) {
       if (switchGeneration === remoteProjectSwitchGeneration) {
+        pendingRemoteSwitch = null;
         set({
           projectTransition: null,
           lanesLoading: false,
@@ -4005,6 +4080,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       }
       throw error;
     }
+  },
+
+  takeRemoteOpenSupersededByHome: (binding) => {
+    const superseded = remoteOpenSupersededByHome;
+    if (!superseded || superseded.targetId !== binding.targetId || superseded.projectId !== binding.projectId) return false;
+    remoteOpenSupersededByHome = null;
+    return true;
   },
 
   closeProject: async (options) => {

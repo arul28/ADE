@@ -16,6 +16,8 @@ import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agent
 import { buildTrackedCliSessionActivityGuidance } from "../../desktop/src/shared/cliLaunch";
 import { MAC_DESKTOP_USER_CLI_HOLDER_ID } from "../../desktop/src/shared/types/macDesktop";
 import { getSessionInputOrigin } from "../../desktop/src/main/services/chat/sessionInputOrigins";
+import { noteExternalChatTurn } from "../../desktop/src/main/services/chat/externalChats";
+import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -2094,6 +2096,8 @@ describe("adeRpcServer", () => {
 
       // Self-reporting, billing, and prompts or schedules that arrive as the
       // user's stay on the caller's own chat.
+      (runtime.agentChatService as any).getDeviceSources = vi.fn();
+      (runtime.agentChatService as any).setDeviceSource = vi.fn();
       for (const [domain, action] of [
         ["chat", "sendMessage"],
         ["chat", "createScheduledWork"],
@@ -2101,6 +2105,9 @@ describe("adeRpcServer", () => {
         ["chat", "setScheduledWorkPaused"],
         ["chat", "resumeUsageLimitNow"],
         ["session", "setSessionStatusNote"],
+        // `ade devices use|current`: a chat picks and reads only its own device sources.
+        ["chat", "getDeviceSources"],
+        ["chat", "setDeviceSource"],
       ] as const) {
         const denied = await callTool(handler, "run_ade_action", {
           domain,
@@ -2110,6 +2117,7 @@ describe("adeRpcServer", () => {
         expect(denied.isError, action).toBe(true);
         expect(JSON.stringify(denied), action).toContain("chat access is limited to the caller's own chat session");
       }
+      expect((runtime.agentChatService as any).setDeviceSource).not.toHaveBeenCalled();
 
       // A wake wait wakes its caller: a bound agent may only ask for itself.
       const otherWake = await callTool(handler, "run_ade_action", {
@@ -7185,7 +7193,7 @@ describe("adeRpcServer", () => {
             ...(callerRoot ? { callerRoot } : {}),
           });
       };
-      return { click, launch, screenshot, getStatus, noteAgentAppControlActivity, lane1Root, connect };
+      return { fixture, click, launch, screenshot, getStatus, noteAgentAppControlActivity, lane1Root, connect };
     }
 
     it.each([
@@ -7252,6 +7260,93 @@ describe("adeRpcServer", () => {
       expect(click).toHaveBeenCalledWith({ x: 1, y: 1, laneId: "lane-3", chatSessionId: "chat-b" });
       expect(noteAgentAppControlActivity).not.toHaveBeenCalled();
     });
+
+    it("binds a chat on another machine to its work copy's lane, and makes no copy for a read or a refusal", async () => {
+      // `ade app-control … --machine` / `ade screen … --machine`: the caller has
+      // no lane here; the copy of its code here stands in for one.
+      const { fixture, click, getStatus, connect } = await setup();
+      const remoteChat = { callerId: "agent-remote", role: "agent", chatSessionId: "remote:peer-1:chat-9" };
+      const remoteWork = { head: "a".repeat(40), fetchRef: "main" };
+      const copies = path.join(fixture.runtime.projectRoot, ".ade", "remote-work");
+      const call = await connect(remoteChat);
+
+      // Another lane here is refused.
+      const otherLane = await call("click", { x: 1, y: 1, laneId: "lane-2", remoteWork });
+      expect(otherLane?.isError).toBe(true);
+      expect(JSON.stringify(otherLane)).toContain("--lane lane-2 was refused");
+      expect(click).not.toHaveBeenCalled();
+
+      // A lane-free read with no copy here names no lane.
+      expect((await call("getStatus", { remoteWork }))?.isError).toBeUndefined();
+      expect(getStatus.mock.calls.at(-1)?.[0]).not.toHaveProperty("laneId");
+      // An acting call before the copy exists acts on the copy's lane, as the calling chat.
+      expect((await call("click", { x: 1, y: 1, remoteWork }))?.isError).toBeUndefined();
+      const clicked = click.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+      expect(isRemoteWorkLaneId(clicked.laneId as string)).toBe(true);
+      expect(clicked.chatSessionId).toBe("remote:peer-1:chat-9");
+      expect(fs.existsSync(copies)).toBe(false);
+
+      // A chat on this machine cannot take a copy's lane by sending `remoteWork`.
+      const local = await connect({ callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+      expect((await local("click", { x: 1, y: 1, remoteWork }))?.isError).toBe(true);
+      expect(click).toHaveBeenCalledTimes(1);
+
+      // The screen: asks a person answers with a card in a chat here, and the
+      // person-only viewing actions, are refused.
+      const requestInputLease = vi.fn(async (args: unknown) => args);
+      const startStream = vi.fn(async () => ({ token: "secret" }));
+      const screenStatus = vi.fn(async () => ({ supported: true, running: true }));
+      fixture.runtime.macDesktopService = { getStatus: screenStatus, requestInputLease, startStream } as any;
+      const screen = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(screen, remoteChat);
+      for (const action of ["requestInputLease", "startStream"]) {
+        const refused = await callTool(screen, "run_ade_action", { domain: "mac_desktop", action, args: { remoteWork } });
+        expect(refused?.isError, action).toBe(true);
+      }
+      expect(requestInputLease).not.toHaveBeenCalled();
+      expect(startStream).not.toHaveBeenCalled();
+      expect(fs.existsSync(copies)).toBe(false);
+    });
+  });
+
+  it("lets go of what a chat on another machine holds here at its turn end, unless a newer turn of it already called", async () => {
+    // Its brain sends the release without waiting, so it can land after the
+    // chat's next turn already claimed something here.
+    const fixture = createRuntime();
+    const owner = "remote:peer-1:chat-release";
+    const iosRelease = vi.fn(async (_owner: string, _options: unknown) => ({ released: true }));
+    const desktopRelease = vi.fn(async (_owner: string) => ({ released: true }));
+    fixture.runtime.iosSimulatorService = { releaseIfOwnedBy: iosRelease } as any;
+    fixture.runtime.macDesktopService = { releaseIfOwnedBy: desktopRelease } as any;
+    fixture.runtime.androidEmulatorService = null as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-remote", role: "agent", chatSessionId: owner });
+    const release = async (turnId: string) => (await callTool(handler, "release_remote_work_devices", { turnId })).structuredContent;
+    const turn1 = "2026-11-13T10:00:00.000Z";
+    const turn2 = "2026-11-13T10:05:00.000Z";
+    const turn3 = "2026-11-13T10:09:00.000Z";
+
+    // Turn 2 already called here: turn 1's late release frees nothing.
+    noteExternalChatTurn(owner, turn2);
+    expect(await release(turn1)).toEqual({ released: [], skipped: "newer_turn" });
+    // A late call from turn 1 does not make turn 1 current again.
+    noteExternalChatTurn(owner, turn1);
+    expect(await release(turn1)).toMatchObject({ skipped: "newer_turn" });
+    expect(iosRelease).not.toHaveBeenCalled();
+    expect(desktopRelease).not.toHaveBeenCalled();
+
+    // Turn 2's own end releases that chat's claims only; the simulator stays on.
+    expect(await release(turn2)).toEqual({ released: ["simulator", "desktop"] });
+    expect(iosRelease).toHaveBeenCalledWith(owner, { keepRunning: true });
+    expect(desktopRelease).toHaveBeenCalledWith(owner);
+
+    // Turn 3 calls here while turn 2's release is under way: the rest is kept.
+    iosRelease.mockImplementationOnce(async () => {
+      noteExternalChatTurn(owner, turn3);
+      return { released: true };
+    });
+    expect(await release(turn2)).toEqual({ released: ["simulator"] });
+    expect(desktopRelease).toHaveBeenCalledTimes(1);
   });
 
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {

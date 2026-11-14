@@ -806,7 +806,15 @@ Reused desktop renderer (web-mode adaptation):
   `ConnectionsPanel.tsx` above), and logical repository tabs in the tab strip. Checkouts with the same repository origin
   collapse into one tab; when that repository exists on multiple machines, the
   machine becomes a compact selector inside the tab. Parked and offline bindings
-  remain visible and reconnect when chosen.
+  remain visible and reconnect when chosen. A computer that leaves this tab
+  never closes a tab (`moveWebTabsOffGoneTargets`): it was forgotten or removed
+  (it leaves the connection list), or it stopped (still listed, not connected
+  3 s after the reconnect hold reports it; a project open passes through
+  "idle" for a moment). Each of its tabs moves to a copy on another connected
+  computer and keeps its place in front; a tab with no other copy stays open on
+  its no-machine page (`ProjectWelcomeNoMachine.tsx`), which offers **Open**
+  only on a computer that can answer. When a stopped computer connects again,
+  its waiting tabs open their copy again by themselves.
 - `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx` - the launch
   gate, split into a web variant and a desktop variant so neither constrains the
   other. The web variant gates on account state alone and offers no way past it:

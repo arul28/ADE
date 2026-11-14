@@ -1223,11 +1223,11 @@ import type {
 } from "../shared/types/workTools";
 import type { WorkToolShowAck, WorkToolShowRequest } from "../shared/types/workToolShow";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
@@ -1507,6 +1507,8 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<ClearLocalAdeDataResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
+        /** This computer's folders as its brain registers them; `null` when the catalog cannot be read (no connected brain, or a failed read). Optional: the hosted web client has none. */
+        listThisComputer?: () => Promise<RecentProjectSummary[] | null>;
         /** The account's project list as this computer (or the pinned machine) last read it. Optional: the hosted web client has none yet. */
         accountList?: (pin?: OpenProjectBinding | null) => Promise<AccountProjectListResult>;
         /** Adds a GitHub repository (URL or origin) to the account's project list, with no copy anywhere (S13). Desktop only. */
@@ -1553,13 +1555,11 @@ declare global {
       /**
        * Optional as a GROUP, because an older preload has no `diagnostics` at
        * all: every call site must tolerate `undefined` and simply not offer the
-       * button. The members inside are not optional — they all shipped
-       * together, so a build that exposes the group exposes all of them, and
-       * marking them individually optional would only teach call sites to write
-       * `?.()` chains that can never fire.
+       * button. The members that shipped with the group are not optional; the
+       * report members are, because the group shipped before them (and the
+       * web client offers `sendReport` only while its Sentry runs).
        */
       diagnostics?: {
-        openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
         /**
          * Ask main to consider ONE automatic send for a failure the renderer
          * detected. Main owns the setting and the budget, so this is a request,
@@ -1567,17 +1567,21 @@ declare global {
          */
         autoReport: (context: DiagnosticReportRequestPayload) => Promise<void>;
         /**
-         * The one member here that IS individually optional, and the exception
-         * proves the group's rule: `diagnostics` shipped before this existed,
-         * so a preload that exposes the group need not expose this. The
-         * settings control checks for it and hides itself rather than offering
-         * a button that cannot work, and "Report issue" falls back to
-         * `openIssue`. Pass an error screen's context to report about it.
+         * Builds and redacts a report for the person to read first (the
+         * report dialog; Settings' "Send a report" passes no context). Sends
+         * nothing and spends no budget. Optional: an older preload lacks it,
+         * and the report controls hide themselves then.
          */
-        sendManual?: (
-          context?: DiagnosticReportRequestPayload,
-          options?: DiagnosticsManualSendOptions,
-        ) => Promise<DiagnosticsManualSendResult>;
+        prepareReport?: (context?: DiagnosticReportRequestPayload) => Promise<DiagnosticsPrepareResult>;
+        /**
+         * Sends a prepared report by its id, exactly as it was shown. Absent
+         * where sending is impossible (the web client with Sentry off): the
+         * dialog then offers only "Copy report". `expired` means nothing was
+         * sent; prepare again and show the new text.
+         */
+        sendReport?: (id: string, options?: DiagnosticsManualSendOptions) => Promise<DiagnosticsManualSendResult>;
+        /** Drops a prepared report (Cancel, Esc). */
+        discardReport?: (id: string) => Promise<void>;
         /**
          * True when a `userMessage` sent with a report reaches ADE (as Sentry
          * User Feedback). Absent on older preloads and false where Sentry is off.

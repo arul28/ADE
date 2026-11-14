@@ -76,7 +76,7 @@ describe("createAutoDiagnosticsService", () => {
     });
     expect(capture.mock.calls[0]?.[0]).toMatchObject({
       event: "ade_feature_used",
-      properties: { feature: "connections", action: "auto_sent", outcome: "completed" },
+      properties: { feature: "issue_report", action: "auto_sent", outcome: "completed" },
     });
   });
 
@@ -104,7 +104,7 @@ describe("createAutoDiagnosticsService", () => {
 
     expect(upload).toHaveBeenCalledTimes(1);
     expect(capture.mock.calls.at(-1)?.[0]).toMatchObject({
-      properties: { feature: "connections", action: "auto_sent", outcome: "skipped_budget" },
+      properties: { feature: "issue_report", action: "auto_sent", outcome: "skipped_budget" },
     });
   });
 
@@ -265,55 +265,209 @@ describe("createAutoDiagnosticsService", () => {
   });
 });
 
-describe("createAutoDiagnosticsService.sendManual", () => {
-  it("sends the same report the failure screens send, tagged as not automatic", async () => {
+describe("createAutoDiagnosticsService.prepareManual and sendPrepared", () => {
+  const TEN_MINUTES_MS = 10 * 60_000;
+
+  /** One prepare and one send, for the budget tests. */
+  async function prepareAndSend(service: ReturnType<typeof harness>["service"]) {
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+    return service.sendPrepared(prepared.id);
+  }
+
+  it("prepares the redacted report for reading, with no upload and no budget spent", async () => {
     const { service, upload, writeReportFile, onSent } = harness();
 
-    await expect(service.sendManual()).resolves.toEqual({
+    const prepared = await service.prepareManual();
+
+    expect(prepared).toEqual({
       ok: true,
-      reference: "abcd1234",
-      reportPath: "/tmp/reports/report.md",
+      id: expect.any(String),
       report: "# report for user_requested",
+      bytes: Buffer.byteLength("# report for user_requested", "utf8"),
+      expiresAtMs: T0 + TEN_MINUTES_MS,
+      noteMaxChars: 2000,
+    });
+    // Opening the dialog and pressing Cancel must cost the person nothing.
+    expect(upload).not.toHaveBeenCalled();
+    expect(writeReportFile).not.toHaveBeenCalled();
+    expect(onSent).not.toHaveBeenCalled();
+    expect(service.getStatus().manualSendsInWindow).toBe(0);
+  });
+
+  it("uploads exactly the prepared text, tagged as not automatic, and claims the budget once", async () => {
+    const { service, upload, writeReportFile, onSent } = harness();
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+
+    await expect(service.sendPrepared(prepared.id)).resolves.toEqual({
+      result: {
+        ok: true,
+        reference: "abcd1234",
+        reportPath: "/tmp/reports/report.md",
+      },
+      context: { surface: "settings_manual" },
+      claimed: true,
     });
 
-    expect(writeReportFile).toHaveBeenCalledWith("/tmp/reports/report.md", "# report for user_requested");
-    // `auto: false` is what keeps these separable server-side from the reports
-    // nobody chose to file.
+    expect(writeReportFile).toHaveBeenCalledWith("/tmp/reports/report.md", prepared.report);
+    expect(upload).toHaveBeenCalledTimes(1);
+    // `auto: false` keeps these separable server-side from the reports nobody chose to file.
     expect(upload.mock.calls[0]?.[0]).toMatchObject({
       auto: false,
       failureCode: "user_requested",
-      report: "# report for user_requested",
+      report: prepared.report,
       installId: "install-1",
     });
     // No toast: the person who pressed the button is already reading the answer.
     expect(onSent).not.toHaveBeenCalled();
     expect(service.listPendingNotices()).toEqual([]);
+    expect(service.getStatus().manualSendsInWindow).toBe(1);
+    // One use: the same text is not sent again under the same id.
+    await expect(service.sendPrepared(prepared.id)).resolves.toMatchObject({
+      result: { ok: false, reason: "expired" },
+    });
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["an unknown id", { unknownId: true, discard: false, expire: false }],
+    ["a discarded id", { unknownId: false, discard: true, expire: false }],
+    ["an id past its ten minutes", { unknownId: false, discard: false, expire: true }],
+  ])("uploads nothing for %s", async (_label, { unknownId, discard, expire }) => {
+    let clock = T0;
+    const { service, upload } = harness({ now: () => clock });
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+    if (discard) service.discardPrepared(prepared.id);
+    if (expire) clock = T0 + TEN_MINUTES_MS + 1;
+    const id = unknownId ? "not-a-real-id" : prepared.id;
+
+    await expect(service.sendPrepared(id)).resolves.toEqual({
+      result: { ok: false, reason: "expired" },
+      context: null,
+    });
+    expect(upload).not.toHaveBeenCalled();
+    expect(service.getStatus().manualSendsInWindow).toBe(0);
+  });
+
+  it("answers a build failure as a prepare failure that claims nothing", async () => {
+    const { service, upload } = harness({
+      buildReport: async () => {
+        throw new Error("collector wedged");
+      },
+    });
+
+    await expect(service.prepareManual()).resolves.toEqual({ ok: false, reason: "failed" });
+    expect(upload).not.toHaveBeenCalled();
+    expect(service.getStatus().manualSendsInWindow).toBe(0);
+  });
+
+  it("keeps at most four drafts, and the oldest one expires first", async () => {
+    const { service, upload } = harness();
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const prepared = await service.prepareManual();
+      if (!prepared.ok) throw new Error("prepare failed in test setup");
+      ids.push(prepared.id);
+    }
+
+    await expect(service.sendPrepared(ids[0] as string)).resolves.toMatchObject({
+      result: { ok: false, reason: "expired" },
+    });
+    await expect(service.sendPrepared(ids[4] as string)).resolves.toMatchObject({
+      result: { ok: true },
+    });
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives a second send for a running id the same answer, with one upload and one claim", async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const upload = vi.fn(async (_request: { auto?: boolean }) => {
+      await gate;
+      return { ok: true as const, id: "abcd1234-rest", reference: "abcd1234" };
+    });
+    const { service } = harness({ upload });
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+
+    const first = service.sendPrepared(prepared.id);
+    const second = service.sendPrepared(prepared.id);
+    release();
+
+    const [firstAnswer, secondAnswer] = await Promise.all([first, second]);
+    expect(firstAnswer.result).toMatchObject({ ok: true, reference: "abcd1234" });
+    expect(secondAnswer).toMatchObject({ result: { ok: true, reference: "abcd1234" }, joined: true });
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(service.getStatus().manualSendsInWindow).toBe(1);
+  });
+
+  it("keeps a failed send's text, so Try again sends the same report", async () => {
+    const upload = vi
+      .fn<[{ report: string }], Promise<{ ok: false; reason: "network" } | { ok: true; id: string; reference: string }>>()
+      .mockResolvedValueOnce({ ok: false, reason: "network" })
+      .mockResolvedValueOnce({ ok: true, id: "abcd1234-rest", reference: "abcd1234" });
+    const { service } = harness({ upload });
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+
+    await expect(service.sendPrepared(prepared.id)).resolves.toMatchObject({
+      result: { ok: false, reason: "failed" },
+    });
+    await expect(service.sendPrepared(prepared.id)).resolves.toMatchObject({
+      result: { ok: true, reference: "abcd1234" },
+    });
+    expect(upload.mock.calls[0]?.[0].report).toBe(prepared.report);
+    expect(upload.mock.calls[1]?.[0].report).toBe(prepared.report);
+  });
+
+  // The IPC handler files the person's note for a send that was tried and
+  // failed, and for no other: a send that tried nothing must not file notes
+  // past the daily limit.
+  it.each([
+    ["an upload that failed", "upload_failed", true],
+    ["a ledger that cannot be read", "ledger_unreadable", undefined],
+  ] as const)("says whether a failed send was tried: %s", async (_label, failure, claimed) => {
+    const stateFilePath = stateFile();
+    const upload = vi.fn(async () => ({ ok: false as const, reason: "network" as const }));
+    const { service } = harness({ stateFilePath, ...(failure === "upload_failed" ? { upload } : {}) });
+    const prepared = await service.prepareManual();
+    if (!prepared.ok) throw new Error("prepare failed in test setup");
+    if (failure === "ledger_unreadable") {
+      fs.mkdirSync(path.dirname(stateFilePath), { recursive: true });
+      fs.writeFileSync(stateFilePath, "not json");
+    }
+
+    const answer = await service.sendPrepared(prepared.id);
+
+    expect(answer.result).toMatchObject({ ok: false, reason: "failed" });
+    expect(answer.claimed).toBe(claimed);
   });
 
   it("refuses past the fifth send of the day, in the user's own words", async () => {
     const { service, upload } = harness();
 
     for (let i = 0; i < 5; i += 1) {
-      await expect(service.sendManual()).resolves.toMatchObject({ ok: true });
+      await expect(prepareAndSend(service)).resolves.toMatchObject({ result: { ok: true } });
     }
-    await expect(service.sendManual()).resolves.toEqual({
-      ok: false,
-      reason: "local_limit",
-      limit: 5,
-    });
-    // Refused HERE, so the request never reaches the account directory and
-    // never spends one of the caller's server-side slots.
+    const refused = await prepareAndSend(service);
+    expect(refused.result).toEqual({ ok: false, reason: "local_limit", limit: 5 });
+    // Nothing was tried, so no note is filed for it either.
+    expect(refused.claimed).toBeUndefined();
+    // Refused HERE, so the request never reaches the account directory.
     expect(upload).toHaveBeenCalledTimes(5);
   });
 
   it("keeps the manual budget and the automatic one out of each other's way", async () => {
     const { service } = harness();
 
-    for (let i = 0; i < 5; i += 1) await service.sendManual();
-    expect((await service.sendManual()).ok).toBe(false);
+    for (let i = 0; i < 5; i += 1) await prepareAndSend(service);
+    await expect(prepareAndSend(service)).resolves.toMatchObject({ result: { ok: false } });
 
-    // A user asking for help must not silence the reports that explain the
-    // failure they are asking about.
+    // A user asking for help must not silence the reports that explain the failure.
     await expect(service.report({ failureCode: "disk_full", surface: "project_recovery" }))
       .resolves.toBe("completed");
     expect(service.getStatus()).toMatchObject({
@@ -330,7 +484,7 @@ describe("createAutoDiagnosticsService.sendManual", () => {
 
     // The toggle is about what ADE does BY ITSELF. Refusing a deliberate click
     // would leave this user with no way to report anything at all.
-    await expect(service.sendManual()).resolves.toMatchObject({ ok: true });
+    await expect(prepareAndSend(service)).resolves.toMatchObject({ result: { ok: true } });
     expect(upload).toHaveBeenCalledTimes(1);
     expect(service.isEnabled()).toBe(false);
 
@@ -339,41 +493,24 @@ describe("createAutoDiagnosticsService.sendManual", () => {
       .resolves.toBe("skipped_disabled");
   });
 
-  it("carries each refusal through as its own reason, never a status code", async () => {
-    for (
-      const [uploadReason, reason] of [
-        ["rate_limited", "rate_limited"],
-        ["unavailable", "unavailable"],
-        ["too_large", "too_large"],
-        ["network", "failed"],
-        ["rejected", "failed"],
-      ] as const
-    ) {
-      const { service } = harness({
-        upload: async () => ({ ok: false as const, reason: uploadReason }),
-      });
-      await expect(service.sendManual()).resolves.toEqual({
+  it.each([
+    ["rate_limited", "rate_limited"],
+    ["unavailable", "unavailable"],
+    ["too_large", "too_large"],
+    ["network", "failed"],
+    ["rejected", "failed"],
+  ] as const)("carries an upload refusal of %s through as the reason %s", async (uploadReason, reason) => {
+    const { service } = harness({
+      upload: async () => ({ ok: false as const, reason: uploadReason }),
+    });
+
+    await expect(prepareAndSend(service)).resolves.toMatchObject({
+      result: {
         ok: false,
         reason,
         // The local copy still exists, so the surface can offer to show it.
         reportPath: "/tmp/reports/report.md",
-        report: "# report for user_requested",
-      });
-    }
-  });
-
-  it("keeps the reservation when the report cannot even be built", async () => {
-    const { service, upload } = harness({
-      buildReport: async () => {
-        throw new Error("collector wedged");
       },
     });
-
-    await expect(service.sendManual()).resolves.toEqual({ ok: false, reason: "failed" });
-    expect(upload).not.toHaveBeenCalled();
-    // Spent on purpose: what the budget bounds is how often this computer
-    // tries, not how often it wins. A collector that wedges every time would
-    // otherwise be an unbounded retry loop behind a button.
-    expect(service.getStatus().manualSendsInWindow).toBe(1);
   });
 });

@@ -107,7 +107,7 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
   const laneGone = () => new AndroidEmulatorFailure(
     "ANDROID_PATH_OUTSIDE_LANE",
     input.workCopy
-      ? "This chat's work copy on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
+      ? "This chat's code on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
       : "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
   );
   let outPath: string | null = null;

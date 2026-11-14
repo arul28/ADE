@@ -441,8 +441,8 @@ describe("ProjectWelcomePage multi-machine recents", () => {
 
     renderWelcome();
 
-    // One card, carrying both machines behind its "2 machines" chip.
-    fireEvent.click(await screen.findByRole("button", { name: /On 2 machines/ }));
+    // One card, carrying both machines behind its count chip.
+    fireEvent.click(await screen.findByRole("button", { name: /^On 2 / }));
     const menu = screen.getByRole("menu", { name: "Open on machine" });
     expect(within(menu).getAllByRole("menuitem")).toHaveLength(2);
     expect(within(menu).getByText("Mac Studio", { exact: true })).toBeTruthy();

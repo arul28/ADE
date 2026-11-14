@@ -4,7 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createMonacoModelRegistry } from "../files/monacoModelRegistry";
 import { resolveLanguageId } from "../files/filePresentation";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
-import { NO_CHAT_MACHINE_MESSAGE } from "./chatMachinePin";
+import { noChatMachineError } from "./chatMachinePin";
 import { editorTabId, type EditorTab } from "../files/v2/editorGroupsStore";
 import { resolveViewerKind } from "../files/v2/viewerRegistry";
 import { ViewerHost } from "../files/v2/ViewerHost";
@@ -65,12 +65,12 @@ export function ChatAttachmentPreviewModal({
 
   // A personal chat's files are in its own store, not in any project
   // workspace, and with no project open there is no file service to ask.
-  const personalChat = useChatPaneScope()?.kind === "personal";
+  const personalChat = useChatPaneScope() != null;
 
   useEffect(() => {
     let cancelled = false;
     if (personalChat) {
-      setState({ status: "error", message: "This attachment can't be previewed in a personal chat." });
+      setState({ status: "error", message: "This attachment can't be previewed in this chat." });
       return undefined;
     }
     setState({ status: "loading" });
@@ -79,7 +79,7 @@ export function ChatAttachmentPreviewModal({
     // read, instead of escaping the effect and taking the transcript down.
     Promise.resolve()
       .then(() => {
-        if (!files) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+        if (!files) throw noChatMachineError();
         return files.listWorkspaces({});
       })
       .then((workspaces) => {

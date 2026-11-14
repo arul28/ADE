@@ -57,8 +57,35 @@ func appleDeviceForeignOwner(
   viewerChatSessionId: String?
 ) -> AppleDeviceStatusOwner? {
   guard let owner, let claimant = owner.chatSessionId, !claimant.isEmpty else { return nil }
-  if let viewerChatSessionId, viewerChatSessionId == claimant { return nil }
+  if deviceClaimIsViewerChat(claimant, viewerChatSessionId: viewerChatSessionId) { return nil }
   return owner
+}
+
+/// Whether a device claim is the viewer's own chat. A chat's calls on another
+/// machine are recorded there as `remote:<its machine's device>:<chat id>`
+/// (desktop `foreignCallerSessionId`), so the simulator or emulator of its
+/// work copy there is claimed under that id, not the bare chat id.
+func deviceClaimIsViewerChat(_ claimant: String, viewerChatSessionId: String?) -> Bool {
+  guard let viewer = viewerChatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines), !viewer.isEmpty else {
+    return false
+  }
+  if claimant == viewer { return true }
+  let parts = claimant.split(separator: ":", omittingEmptySubsequences: false)
+  return parts.count == 3 && parts[0] == "remote" && !parts[1].isEmpty && parts[2] == viewer
+}
+
+/// The chat id the viewer's touches carry. The host takes input only under the
+/// claim's exact id, so the viewer's chat working through another machine
+/// (`remote:<device>:<chat id>`) drives its device there under that id.
+func appleDeviceInputChatSessionId(
+  _ owner: AppleDeviceStatusOwner?,
+  viewerChatSessionId: String?
+) -> String? {
+  if let claimant = owner?.chatSessionId, claimant != viewerChatSessionId,
+     deviceClaimIsViewerChat(claimant, viewerChatSessionId: viewerChatSessionId) {
+    return claimant
+  }
+  return viewerChatSessionId
 }
 
 // MARK: - Geometry

@@ -20,6 +20,7 @@ import { cloudTier, cloudTierOfShape, cloudTiers, isCloudTierId, type CloudTier,
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { ChatLaunchStageStatus, RemoteRuntimeProjectRecord } from "../../../shared/types";
 import { getErrorMessage } from "../shared/utils";
+import { expectedErrorKind } from "../../../shared/expectedError";
 import { moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
 import { CLOUD_MACHINE_KEY_METADATA, type createCloudMachines } from "./cloudMachines";
 import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudProvider } from "./cloudProvider";
@@ -330,7 +331,19 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
     return { ok: true, message: "The work is on GitHub and the computer is removed. The next message makes a new computer on the same branch.", lane: kept };
   };
 
-  const lanesWithoutComputer = async (): Promise<CloudLaneWithoutComputer[]> => (await deps.client()).listLanesWithoutComputer();
+  // Read on window focus by every surface. An account with no ADE Cloud, or a
+  // signed-out app, has no such lanes: the answer is the empty list, not the
+  // refusal, which focus would otherwise report again and again.
+  const lanesWithoutComputer = async (): Promise<CloudLaneWithoutComputer[]> => {
+    let client: CloudProvider;
+    try {
+      client = await deps.client();
+    } catch (error) {
+      if (expectedErrorKind(error) === "user") return [];
+      throw error;
+    }
+    return await client.listLanesWithoutComputer();
+  };
 
   /** Deleting a lane that has no computer: only its record goes. Its saved chats stay. */
   const forgetLaneWithoutComputer = async (args: { laneId: string }): Promise<{ forgotten: boolean }> => {

@@ -28,7 +28,7 @@ import { useChatMachineSessions, useCliParentChildRows } from "../chat/chatSubag
 import type { ChatSubagentSnapshot } from "../chat/chatExecutionSummary";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { cn } from "../ui/cn";
-import { NO_CHAT_MACHINE_MESSAGE, requireChatPin } from "../chat/chatMachinePin";
+import { noChatMachineError, requireChatPin } from "../chat/chatMachinePin";
 import { Banner } from "../ui/notice/Banner";
 
 /**
@@ -235,7 +235,7 @@ function CliActionsStateProvider({
     const child = machineSessions?.find((entry) => entry.id === childSessionId);
     const pin = pinRef.current;
     const stop = !pin
-      ? Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE))
+      ? Promise.reject(noChatMachineError())
       : child && isChatToolType(child.toolType)
       ? window.ade.agentChat.interrupt({ sessionId: childSessionId }, pin)
       : child?.ptyId

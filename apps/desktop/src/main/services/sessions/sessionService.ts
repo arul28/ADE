@@ -43,6 +43,7 @@ import {
 } from "../../../shared/types";
 import { isSettleTupleSettled, isWakingSessionError } from "../../../shared/sessionCanonicalState";
 import { stripAnsi } from "../../../shared/ansiStrip";
+import { isRouteHomeId } from "../../../shared/cliLaunch";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 import {
@@ -285,6 +286,11 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const instanceId = identityField("instanceId");
   const presetId = identityField("presetId");
   const credentialId = identityField("credentialId");
+  // Only the folder-name shape: the id becomes a path on resume.
+  const routeHomeId = !instanceId && !presetId && !credentialId
+    && isRouteHomeId(launchRecord.routeHomeId)
+    ? launchRecord.routeHomeId
+    : null;
   const importedFromRecord = record.importedFrom != null && typeof record.importedFrom === "object" && !Array.isArray(record.importedFrom)
     ? record.importedFrom as Record<string, unknown>
     : null;
@@ -325,6 +331,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(instanceId ? { instanceId } : {}),
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
+      ...(routeHomeId ? { routeHomeId } : {}),
     },
     ...(importedFromProvider && importedFromTargetId && importedFromMode
       ? {

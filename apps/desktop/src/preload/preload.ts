@@ -206,11 +206,11 @@ import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
 import type {
@@ -5671,6 +5671,10 @@ const adeBridge = {
       ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
+    // This computer's folders as its brain registers them (Home's "Only on
+    // this computer"). Machine-local: no pin.
+    listThisComputer: async (): Promise<RecentProjectSummary[] | null> =>
+      ipcRenderer.invoke(IPC.projectListThisComputer),
     // The account's project list as this computer's brain last read it, or
     // as a connected machine read it (a remote pin). A file read on that
     // machine: no server call.
@@ -5788,17 +5792,17 @@ const adeBridge = {
     },
   },
   diagnostics: {
-    openIssue: (
-      context: DiagnosticReportRequestPayload,
-    ): Promise<DiagnosticReportPayload> =>
-      ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
     autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
-    sendManual: (
-      context?: DiagnosticReportRequestPayload,
+    prepareReport: (context?: DiagnosticReportRequestPayload): Promise<DiagnosticsPrepareResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsPrepareReport, context),
+    sendReport: (
+      id: string,
       options?: DiagnosticsManualSendOptions,
     ): Promise<DiagnosticsManualSendResult> =>
-      ipcRenderer.invoke(IPC.diagnosticsSendManual, context, options),
+      ipcRenderer.invoke(IPC.diagnosticsSendReport, id, options),
+    discardReport: (id: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsDiscardReport, id),
     /** Whether a note sent with a report reaches anyone: main's Sentry client is running. */
     userFeedbackAvailable: process.argv.includes(SENTRY_ENABLED_ARGV),
     getSharing: (): Promise<DiagnosticsSharingStatus> =>

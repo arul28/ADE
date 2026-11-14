@@ -2088,52 +2088,74 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectTransitionError).toBeNull();
     });
 
-    it("ignores stale switchRemoteProject completions when a newer switch starts", async () => {
-      const bindingA = {
-        kind: "remote" as const,
-        key: "remote:target-1:project-a",
-        targetId: "target-1",
-        runtimeName: "Remote",
-        projectId: "project-a",
-        rootPath: "/remote/a",
-        displayName: "Project A",
-      };
-      const bindingB = {
-        kind: "remote" as const,
-        key: "remote:target-1:project-b",
-        targetId: "target-1",
-        runtimeName: "Remote",
-        projectId: "project-b",
-        rootPath: "/remote/b",
-        displayName: "Project B",
-      };
-      let resolveSlow: (value: typeof bindingA) => void = () => {};
+    const staleBindingA = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-a",
+      rootPath: "/remote/a",
+      displayName: "Project A",
+    };
+    const staleBindingB = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-b",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-b",
+      rootPath: "/remote/b",
+      displayName: "Project B",
+    };
+    it.each([
+      {
+        what: "a newer switch",
+        supersede: () => useAppStore.getState().switchRemoteProject("target-1", "project-b"),
+        expectFront: () => {
+          expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
+          expect(useAppStore.getState().projectBinding).toEqual(staleBindingB);
+        },
+      },
+      {
+        what: "Home",
+        supersede: () => useAppStore.getState().openNewTab(),
+        expectFront: () => {
+          expect(useAppStore.getState().isNewTabOpen).toBe(true);
+          expect(useAppStore.getState().projectBinding?.key).not.toBe(staleBindingA.key);
+        },
+      },
+      {
+        what: "a no-machine tab",
+        supersede: () => useAppStore.getState().showNoMachineTab({ id: "repo-waiting", displayName: "Waiting", iconDataUrl: null }),
+        expectFront: () => {
+          expect(useAppStore.getState().activeNoMachineTabId).toBe("repo-waiting");
+          expect(useAppStore.getState().projectBinding?.key).not.toBe(staleBindingA.key);
+        },
+      },
+    ])("a pending switchRemoteProject never finishes over $what, and its switching state ends", async ({ supersede, expectFront }) => {
+      let resolveSlow: (value: typeof staleBindingA) => void = () => {};
       (window.ade.remoteRuntime.openProject as any).mockImplementation(
         async (_targetId: string, projectId: string) => {
           if (projectId === "project-a") {
             return await new Promise((resolve) => {
-              resolveSlow = resolve as (value: typeof bindingA) => void;
+              resolveSlow = resolve as (value: typeof staleBindingA) => void;
             });
           }
-          return bindingB;
+          return staleBindingB;
         },
       );
 
       const slowSwitch = useAppStore.getState().switchRemoteProject("target-1", "project-a");
-      await useAppStore.getState().switchRemoteProject("target-1", "project-b");
+      expect(useAppStore.getState().projectTransition?.kind).toBe("switching");
+      await supersede();
 
-      expect(useAppStore.getState().project).toEqual({
-        rootPath: "/remote/b",
-        displayName: "Project B",
-        baseRef: "main",
-      });
-      expect(useAppStore.getState().projectBinding).toEqual(bindingB);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expectFront();
 
-      resolveSlow(bindingA);
+      resolveSlow(staleBindingA);
       await slowSwitch;
 
-      expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
-      expect(useAppStore.getState().projectBinding).toEqual(bindingB);
+      expect(useAppStore.getState().projectTransition).toBeNull();
+      expectFront();
     });
 
     it("restores binding-scoped Work, lane, and session state when returning to a remote project", async () => {

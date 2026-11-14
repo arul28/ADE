@@ -1,5 +1,6 @@
 import path from "node:path";
 import { grokConfigHome } from "../shared/providerConfigHomes";
+import { isGrokContextBlock } from "./events/grok";
 import {
   asEpochMs,
   asRecord,
@@ -11,9 +12,11 @@ import {
   resolveHomeDir,
   safeReadDir,
   safeStat,
+  type ExternalSessionConfigHome,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { adeHarnessConfigHomes, uniqueByPath } from "./adeConfigHomes";
 import {
   acpDiscoveryRecord,
   collectNewestSessions,
@@ -22,6 +25,7 @@ import {
   readJsonlWindow,
   safeLookupId,
   readSmallJson,
+  startsWithAdeGuidance,
   summarizeNeutralRecords,
   type NeutralSessionRecord,
 } from "./discoverAcpShared";
@@ -41,12 +45,36 @@ import {
  * Unlike most providers the folder name is reversible: it is the cwd,
  * percent-encoded.
  *
- * Two kinds of session are not the user's own TUI work and are left out:
- * `session_kind: "subagent"` children, and sessions with `updates.jsonl` —
- * only an ACP client (ADE's Grok chats) produces that file.
+ * Three kinds of session are not the user's own TUI work and are left out:
+ * `session_kind: "subagent"` children; `session_kind: "headless"` one-shot
+ * runs (`grok --single`, which is how ADE runs its naming and metadata
+ * tasks); and sessions whose first prompt opens with ADE's guidance block
+ * (ADE's own Grok chats, as for Qwen and Kimi). A live ADE chat is also
+ * hidden by its chat ref (`acpSessionId`).
+ *
+ * `updates.jsonl` used to mark an ACP client, but Grok 1.0.46 writes it from
+ * its own terminal UI too (verified on a session ADE launched in a terminal,
+ * 2026-11-13), so it no longer tells ADE's chats apart from the user's work.
  */
 function grokSessionsDir(args: ExternalSessionDiscoveryArgs): string {
   return path.join(grokConfigHome({ env: args.env ?? process.env, homeDir: resolveHomeDir(args) }), "sessions");
+}
+
+/**
+ * The default `sessions` folder, then the one in each preset and route home
+ * ADE runs Grok on (`GROK_HOME` names the config folder itself).
+ */
+function grokSessionStores(
+  args: ExternalSessionDiscoveryArgs,
+): Array<{ sessionsDir: string; configHome: ExternalSessionConfigHome | null }> {
+  const stores: Array<{ sessionsDir: string; configHome: ExternalSessionConfigHome | null }> = [
+    { sessionsDir: grokSessionsDir(args), configHome: null },
+    ...adeHarnessConfigHomes("grok", args).map((configHome) => ({
+      sessionsDir: path.join(configHome.dir, "sessions"),
+      configHome,
+    })),
+  ];
+  return uniqueByPath(stores, (store) => store.sessionsDir);
 }
 
 function decodeGrokProjectDir(name: string): string | null {
@@ -69,15 +97,6 @@ function grokContentText(content: unknown): string | null {
   return text || null;
 }
 
-/**
- * Grok opens every conversation with a `<user_info>` workspace-context block
- * written as an ordinary user row. It is not something the user typed; the
- * real prompt follows with a `prompt_index` and a `<user_query>` wrapper.
- */
-function isGrokContextBlock(text: string): boolean {
-  return /^\s*<user_info>/u.test(text) && !/<user_query>/u.test(text);
-}
-
 function neutralGrokRecord(record: Record<string, unknown>): NeutralSessionRecord | null {
   if (record.type === "user") {
     if (asString(record.synthetic_reason)) return null;
@@ -96,10 +115,23 @@ type GrokCandidate = {
   historyPath: string;
   mtimeMs: number;
   size: number;
+  configHome: ExternalSessionConfigHome | null;
 };
 
 function listGrokCandidates(args: ExternalSessionDiscoveryArgs, lookupId: string | null): GrokCandidate[] {
-  const sessionsDir = grokSessionsDir(args);
+  const candidates: GrokCandidate[] = [];
+  for (const { sessionsDir, configHome } of grokSessionStores(args)) {
+    candidates.push(...listGrokStoreCandidates(args, sessionsDir, configHome, lookupId));
+  }
+  return candidates;
+}
+
+function listGrokStoreCandidates(
+  args: ExternalSessionDiscoveryArgs,
+  sessionsDir: string,
+  configHome: ExternalSessionConfigHome | null,
+  lookupId: string | null,
+): GrokCandidate[] {
   const candidates: GrokCandidate[] = [];
   for (const projectEntry of safeReadDir(sessionsDir)) {
     if (!projectEntry.isDirectory()) continue;
@@ -116,8 +148,6 @@ function listGrokCandidates(args: ExternalSessionDiscoveryArgs, lookupId: string
       const historyPath = path.join(sessionDir, "chat_history.jsonl");
       const stat = safeStat(historyPath);
       if (!stat?.isFile()) continue;
-      // ADE's ACP chats are the only writer of `updates.jsonl`.
-      if (safeStat(path.join(sessionDir, "updates.jsonl"))) continue;
       candidates.push({
         id,
         sessionDir,
@@ -125,6 +155,7 @@ function listGrokCandidates(args: ExternalSessionDiscoveryArgs, lookupId: string
         historyPath,
         mtimeMs: Math.floor(stat.mtimeMs),
         size: stat.size,
+        configHome,
       });
     }
   }
@@ -134,16 +165,21 @@ function listGrokCandidates(args: ExternalSessionDiscoveryArgs, lookupId: string
 function grokRecordFromCandidate(
   candidate: GrokCandidate,
   scopeRoots: readonly string[] | null | undefined,
+  includeAdeOwned = false,
 ): ExternalSessionDiscoveryRecord | null {
   const summaryJson = readSmallJson(path.join(candidate.sessionDir, "summary.json"));
-  if (asString(summaryJson?.session_kind) === "subagent") return null;
+  const sessionKind = asString(summaryJson?.session_kind);
+  if (sessionKind === "subagent" || sessionKind === "headless") return null;
   const info = asRecord(summaryJson?.info);
   const cwd = normalizeProviderCwd(asString(info?.cwd) ?? candidate.folderCwd);
   if (!cwdIsInScope(cwd, scopeRoots)) return null;
 
   const window = readJsonlWindow(candidate.historyPath, candidate.size);
+  const head = compact(window.head.map(neutralGrokRecord));
+  const firstUser = head.find((record) => record.type === "user");
+  if (!includeAdeOwned && startsWithAdeGuidance(firstUser?.message.content)) return null;
   const summary = summarizeNeutralRecords("grok", {
-    head: compact(window.head.map(neutralGrokRecord)),
+    head,
     tail: compact(window.tail.map(neutralGrokRecord)),
     all: window.all ? compact(window.all.map(neutralGrokRecord)) : null,
   });
@@ -158,7 +194,7 @@ function grokRecordFromCandidate(
   const model = asString(summaryJson?.current_model_id);
   const updatedAt = asEpochMs(summaryJson?.last_active_at) ?? asEpochMs(summaryJson?.updated_at);
 
-  return acpDiscoveryRecord({
+  const record = acpDiscoveryRecord({
     provider: "grok",
     id: asString(info?.id) ?? candidate.id,
     cwd,
@@ -174,6 +210,9 @@ function grokRecordFromCandidate(
     sourceMtimeMs: candidate.mtimeMs,
     sizeBytes: candidate.size,
   });
+  // The ADE home the session lives in, so an import resumes it there.
+  if (candidate.configHome) record.configHome = candidate.configHome;
+  return record;
 }
 
 /** Lists Grok sessions from the provider's own on-disk store. */
@@ -186,6 +225,6 @@ export async function discoverGrokSessions(
     candidates: listGrokCandidates(args, lookupId),
     limit: normalizeExternalSessionLimit(args.limit),
     lookupId,
-    read: (candidate) => grokRecordFromCandidate(candidate, args.scopeRoots),
+    read: (candidate) => grokRecordFromCandidate(candidate, args.scopeRoots, args.includeAdeOwned === true),
   });
 }

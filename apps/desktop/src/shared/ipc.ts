@@ -131,6 +131,7 @@ export const IPC = {
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
+  projectListThisComputer: "ade.project.listThisComputer",
   projectAccountList: "ade.project.accountList",
   projectAccountAdd: "ade.project.accountAdd",
   projectAccountRemove: "ade.project.accountRemove",
@@ -178,17 +179,22 @@ export const IPC = {
   machineResetStart: "ade.machineReset.start",
   /** Folder picker for the "move lanes out" rescue option. */
   machineResetChooseRescueDir: "ade.machineReset.chooseRescueDir",
-  /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
-  diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   /** Renderer-detected failure asking main to consider one automatic send. */
   diagnosticsAutoReport: "ade.diagnostics.autoReport",
   /**
-   * "Send a report to ADE", pressed by hand in Settings, with nothing visibly
-   * broken. Main owns the report, the per-device manual budget and the upload;
-   * unlike the automatic path it answers with what happened, because someone is
-   * watching.
+   * Build and redact one report for the person to read before it is sent
+   * (the report dialog, Settings' "Send a report"). Sends nothing and claims
+   * no budget; answers the text with a one-use id.
    */
-  diagnosticsSendManual: "ade.diagnostics.sendManual",
+  diagnosticsPrepareReport: "ade.diagnostics.prepareReport",
+  /**
+   * Upload a prepared report by id, byte for byte, and claim the manual
+   * budget then. Main owns the report, the budget and the upload; unlike the
+   * automatic path it answers with what happened, because someone is watching.
+   */
+  diagnosticsSendReport: "ade.diagnostics.sendReport",
+  /** Drop a prepared report (Cancel). */
+  diagnosticsDiscardReport: "ade.diagnostics.discardReport",
   /** Read the automatic-report setting. No UI reads it any more; kept for the preload contract. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
   /** Flip the automatic-report setting. No UI calls it any more; kept for the preload contract. */

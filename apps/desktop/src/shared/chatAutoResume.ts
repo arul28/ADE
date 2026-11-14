@@ -329,6 +329,14 @@ export const RESTART_RESUME_PROMPT =
 export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 
 /**
+ * The continue a reopened agent CLI gets. The restart stopped the CLI process,
+ * and every background agent or task it started stopped with it, so a CLI
+ * that was only waiting on them must hear that their reports will never come.
+ */
+export const CLI_RESTART_RESUME_PROMPT =
+  "ADE restarted while you were working, so your last turn ended early and any background agents or tasks you started were stopped before they reported back. Continue the task from where it stopped: re-run the stopped work you still need, and do not redo work that already completed.";
+
+/**
  * The one line a reopened agent CLI shows in its own terminal, so every viewer
  * of the session (this desktop, another computer, a phone) sees why it came
  * back. `unexpected`: the runtime crashed, was killed, or lost power, rather
@@ -343,11 +351,26 @@ export function cliReopenedNotice(args: { unexpected: boolean; continued: boolea
 }
 
 /**
+ * Written into a CLI's terminal as ADE stops, when ADE cannot reopen that CLI
+ * afterwards (Devin: ADE never learns its resume id). The ended terminal keeps
+ * the line, so the person knows why it stays closed.
+ */
+export const CLI_NOT_REOPENED_NOTICE =
+  "ADE is stopping and cannot reopen this Devin session after it starts again. Start Devin again to go on.";
+
+/**
  * Automatic resumes in a row before a chat waits for the user. A chat whose
  * resumed turn is cut off by another restart, again and again, is likely what
  * keeps stopping ADE (T3 #18461).
  */
 export const MAX_CONSECUTIVE_RESTART_RESUMES = 3;
+
+/**
+ * How long after a restart cut work off ADE still continues it by itself.
+ * Past this the work is stale: a chat, a CLI, or a brain's record of what
+ * was at work when it stopped (`recordPlannedBrainStop`) continues nothing.
+ */
+export const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
 
 /**
  * Why a chat a restart cut short does not continue by itself, or null when it

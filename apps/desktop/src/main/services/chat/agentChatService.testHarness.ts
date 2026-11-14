@@ -1055,6 +1055,7 @@ vi.mock("./droidSdkPool", () => ({
     };
   }),
   releaseDroidSdkConnection: vi.fn(),
+  isDroidSdkPooledAlive: vi.fn(() => true),
 }));
 
 // The Copilot SDK worker is a forked process: the pool is its boundary. The fake

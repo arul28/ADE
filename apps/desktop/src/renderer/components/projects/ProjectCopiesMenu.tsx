@@ -14,6 +14,8 @@ import {
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
 import { ContextMenuSurface } from "../ui/ContextMenu";
 import { MENU_ITEM_CLASS, MenuSectionLabel, MenuSeparator } from "../ui/MenuSubmenu";
+import { computerCountLabel, type CopyComputers } from "../../../shared/repositoryTab";
+import type { RemoteOpenProjectBinding } from "../../../shared/types";
 import { offlineMachinesLabel, splitOfflineMachines, type CopyMachine } from "./projectCopies";
 import { retryCopyJob, useCopyJobs, watchCopyJobs, type CopyJob } from "./projectCopyJobs";
 
@@ -21,7 +23,12 @@ import { retryCopyJob, useCopyJobs, watchCopyJobs, type CopyJob } from "./projec
 export type CopiesMenuRow = {
   machine: CopyMachine;
   /** The copy this machine has, as the tab knows it; null when it has none. */
-  copy: { rootPath: string; bindingKey: string } | null;
+  copy: {
+    rootPath: string;
+    bindingKey: string;
+    /** The copy's address when the tab has no saved binding for it yet (a shared copy). */
+    binding?: RemoteOpenProjectBinding | null;
+  } | null;
   /** The copy the tab is on now. */
   inUse: boolean;
 };
@@ -50,6 +57,7 @@ export function ProjectCopiesMenu({
   onPublish,
   onRemove,
   onClose,
+  computers = null,
 }: {
   menu: FixedAnchor | null;
   projectName: string;
@@ -67,6 +75,8 @@ export function ProjectCopiesMenu({
   /** Opens the remove dialog; null where removing cannot run (the hosted web client). */
   onRemove: (() => void) | null;
   onClose: () => void;
+  /** The shared count (`copyComputers`), the same number as Home and Settings › Location. */
+  computers?: CopyComputers | null;
 }) {
   const open = menu != null;
   const jobs = useCopyJobs(repoKey);
@@ -146,7 +156,9 @@ export function ProjectCopiesMenu({
       role="menu"
       className="w-[340px] max-w-[calc(100vw-16px)]"
     >
-      <MenuSectionLabel>Copies of {projectName}</MenuSectionLabel>
+      <MenuSectionLabel>
+        Copies of {projectName}{computers && computers.count > 0 ? `, on ${computerCountLabel(computers.count)}` : ""}
+      </MenuSectionLabel>
       {visible.map(renderRow)}
       {offline.length > 0 ? (
         <button
@@ -280,13 +292,16 @@ function CopyRow({
   }
   if (!machine.online) {
     // An offline machine's copy shows where it is; it cannot be opened now.
+    // A computer known only from the account list has no connection here,
+    // and the account may still show it online: say "not connected", not "offline".
+    const state = machine.targetId == null && !machine.isLocal ? "not connected" : "offline";
     return copy
       ? disabledRow(
         <CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />,
         path(copy.rootPath),
-        <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">offline</span>,
+        <span className="ml-auto shrink-0 text-[10px] text-muted-fg/70">{state}</span>,
       )
-      : disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet("offline"));
+      : disabledRow(<CircleDashed size={12} aria-hidden className="shrink-0 opacity-60" />, quiet(state));
   }
   if (copy) {
     return (

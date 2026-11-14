@@ -49,6 +49,12 @@ export function McpRefreshChip({
       setStatus(NO_CHANGES);
       return undefined;
     }
+    // The chat's machine is not known yet: there is nothing to compare, and
+    // the effect runs again when the pin arrives.
+    if (!pinRef.current) {
+      setStatus(NO_CHANGES);
+      return undefined;
+    }
     let active = true;
     void withChatPin(pinRef.current, (chatPin) => read({ chatSessionId: sessionId }, chatPin))
       .then((next) => {

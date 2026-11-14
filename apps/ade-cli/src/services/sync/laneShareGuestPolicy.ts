@@ -182,6 +182,25 @@ export const LANE_SHARE_GUEST_COMMANDS: Readonly<Record<string, LaneShareGuestCo
   },
   "chat.listSubagents": { scope: "session", kinds: CHAT, args: [], needs: (rights) => rights.see.subagentChats, kind: "read" },
   "chat.listThreadComments": { scope: "session", kinds: CHAT, args: [], needs: always, kind: "read" },
+  // Open cards of a chat or a tracked CLI. Cards only the owner may answer
+  // reach the guest reduced on the way out (`laneShareScrubOwnerOnlyCards`).
+  "chat.listPendingInputs": { scope: "session", kinds: ["chat", "cli"], args: [], needs: always, kind: "read" },
+  // An image the chat shows. The host resolves the path itself and reads only
+  // a file in the granted lane's worktree (outside `.ade/` and `.git`) or a
+  // staged attachment. Without the file right, and for an attachment or an
+  // ignored file, only when the chat's events (not a guest's) name it
+  // (`laneShareGuestImagePath`).
+  "chat.getImageDataUrl": { scope: "session", kinds: CHAT, args: ["path"], needs: (rights) => rights.see.chats, kind: "read" },
+  // One file of one turn's diff: the shas and the path must be a
+  // `turn_diff_summary` of this chat (checked by the host), and the diff
+  // reads in the granted lane's worktree (`laneId`, set by the host).
+  "chat.getTurnFileDiff": {
+    scope: "session",
+    kinds: CHAT,
+    args: ["beforeSha", "afterSha", "filePath"],
+    needs: (rights) => rights.tools.diff,
+    kind: "read",
+  },
 
   // Speak. The host sets the author of each write and checks ownership of
   // the comment, draft or queued message a guest edits or removes.
@@ -477,6 +496,20 @@ function checkToolArgs(action: string, kept: Record<string, unknown>): string | 
     // on this host and refuses an ignored file (`.env`) or a link to one.
     kept.refuseIgnored = true;
   }
+  if (action === "chat.getTurnFileDiff") {
+    if (typeof kept.beforeSha !== "string" || !COMMIT_SHA.test(kept.beforeSha)) return "Name a commit by its hash.";
+    if (typeof kept.afterSha !== "string" || !COMMIT_SHA.test(kept.afterSha)) return "Name a commit by its hash.";
+    const filePath = laneShareSafeRelativePath(kept.filePath);
+    if (!filePath) return "That path is outside the shared lane.";
+    if (laneShareIsAdeStatePath(filePath)) return "That file is not shared on this lane.";
+    kept.filePath = filePath;
+  }
+  if (action === "chat.getImageDataUrl") {
+    // The host resolves the path (`laneShareGuestImagePath`); here only its shape.
+    const raw = typeof kept.path === "string" ? kept.path.trim() : "";
+    if (!raw || raw.length > 4_096 || raw.includes("\0")) return "That image is not part of this shared lane.";
+    kept.path = raw;
+  }
   return null;
 }
 
@@ -729,6 +762,28 @@ const GUEST_CHAT_SUMMARY_FIELDS = [
   "reasoningEffort",
   "permissionMode",
   "interactionMode",
+  // The provider's own mode settings, which the chat pane reads to show the
+  // mode a turn really runs in (the legacy `permissionMode` can lag them).
+  // Enum values only; the guest's live `session_meta_updated` events carry
+  // the same fields, and the host's locks read them (`laneShareEffectiveModes`).
+  "claudePermissionMode",
+  "claudePrePlanAccessMode",
+  "codexApprovalPolicy",
+  "codexSandbox",
+  "codexConfigSource",
+  "opencodePermissionMode",
+  "droidPermissionMode",
+  "copilotPermissionMode",
+  "musePermissionMode",
+  "cursorModeId",
+  "acpPermissionMode",
+  // Composer and header state: enum and boolean values.
+  "executionMode",
+  "fastMode",
+  // "Waiting for an answer": the card itself comes through the chat's events
+  // and `chat.listPendingInputs`, scrubbed when only the owner may answer it.
+  "awaitingInput",
+  "pendingInputItemId",
   "status",
   "currentTurnStartedAt",
   "idleSinceAt",
@@ -800,6 +855,11 @@ function trimLaneShareGuestResult(
     case "chat.create":
     case "chat.updateSession":
       return trimGuestSessionRecord(result, GUEST_CHAT_SUMMARY_FIELDS, role, resolveSession);
+    case "chat.getImageDataUrl":
+      // Only the picture: nothing else the reader may add.
+      return result && typeof result === "object" && typeof (result as { dataUrl?: unknown }).dataUrl === "string"
+        ? { dataUrl: (result as { dataUrl: string }).dataUrl }
+        : null;
     default:
       return result;
   }

@@ -2669,6 +2669,22 @@ export function trackedCliResumeCredentialId(
   return null;
 }
 
+/** A route home's folder name: `r` and 16 hex digits (`routeConfigHomeId`). */
+export function isRouteHomeId(value: unknown): value is string {
+  return typeof value === "string" && /^r[0-9a-f]{16}$/u.test(value);
+}
+
+/**
+ * The ADE route home a tracked CLI resumes in when no account, preset or key
+ * names its launch (an Import from a route home ADE could not name again).
+ */
+export function trackedCliResumeRouteHomeId(
+  metadata: Pick<TerminalResumeMetadata, "launch"> | null | undefined,
+): string | null {
+  const value = metadata?.launch?.routeHomeId;
+  return isRouteHomeId(value) ? value : null;
+}
+
 export function buildTrackedCliResumeLaunchCommand(
   metadata: TerminalResumeMetadata,
   overrides: TrackedCliResumeOverrides = {},

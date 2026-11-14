@@ -197,7 +197,7 @@ so you can see whether you are looking at your own lane and chat.
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
 - `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade screen proof --caption "…"`, a captioned `ade screen record` and a captioned `ade app-control record` **do** file.
-- `ade proof capture` and `ade proof record` never take the user's real screen unless you pass `--real-screen`. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-computer-use** skill) and record there.
+- `ade proof capture` and `ade proof record` never take the user's real screen unless you pass `--real-screen`. For desktop app work on a Mac, work on the lane's own screen (see the **ade-computer-use** skill) and record there.
 - A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
 Artifacts worth filing:

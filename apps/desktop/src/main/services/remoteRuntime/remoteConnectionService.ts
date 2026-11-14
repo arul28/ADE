@@ -432,6 +432,8 @@ export class RemoteConnectionService {
   private autoconnectTimer: NodeJS.Timeout | null = null;
   /** Strictly increasing, so a window can always tell the newer of two snapshots. */
   private lastSnapshotAt = 0;
+  /** Machine and id pairs already logged by `noteUnroutedProjectId`. */
+  private readonly unroutedProjectIdsLogged = new Set<string>();
   private readonly inFlightStreamEvents = new Map<
     string,
     Promise<RemoteRuntimeStreamEventsResult>
@@ -1649,13 +1651,37 @@ export class RemoteConnectionService {
     known: readonly RemoteRuntimeProjectRecord[] | null = null,
     onPhase?: (phase: RemoteEventSetupPhase) => void,
   ): Promise<string> {
-    if (!projectRootPath) return projectId;
+    if (!projectRootPath) return this.noteUnroutedProjectId(target.id, projectId, false);
     let projects = known;
     if (!projects && !this.statusById.get(target.id)?.projects?.length) {
       projects = coerceProjects(await this.pool.projectsForTarget(target, { onPhase }));
       this.mergeStatus(target.id, { projects: [...projects] });
     }
-    return this.projectIdOnMachine(target.id, projectId, projectRootPath, projects);
+    return this.noteUnroutedProjectId(
+      target.id,
+      this.projectIdOnMachine(target.id, projectId, projectRootPath, projects),
+      true,
+    );
+  }
+
+  /**
+   * A machine names its projects `project_<hash>`. An id of another shape (the
+   * app's own project id) that found no record by folder goes out as asked, and
+   * the machine refuses it as an unknown project. Log the first one for each
+   * machine and id, with the pin's shape, to find the caller that sent it.
+   */
+  private noteUnroutedProjectId(targetId: string, projectId: string, hadRootPath: boolean): string {
+    if (projectId.startsWith("project_")) return projectId;
+    const key = `${targetId}\u0000${projectId}`;
+    if (this.unroutedProjectIdsLogged.has(key)) return projectId;
+    this.unroutedProjectIdsLogged.add(key);
+    this.options.logger?.info("remote.project_id_unrouted", {
+      targetId,
+      projectId,
+      hadRootPath,
+      knownProjectCount: this.statusById.get(targetId)?.projects?.length ?? 0,
+    });
+    return projectId;
   }
 
   /** A machine woken for a call lists its projects, as a Connect does. */

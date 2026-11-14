@@ -134,6 +134,9 @@ export type LaneShareCloseResult = {
   runningTurnSessionIds: string[];
 };
 
+/** Where a lane's worktree is on this host (guest image and turn diff reads). */
+export type LaneShareWorktreeLookup = { getLaneBaseAndBranch(laneId: string): { worktreePath: string } };
+
 export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
   /** The sync host's own arguments that the guest host reads. */
   args: {
@@ -148,6 +151,9 @@ export type LaneShareGuestHostDeps = LaneShareGuestSyncHostDeps & {
     laneShareMoves?: LaneShareMoveService | null;
     onLaneShareEvent?: (event: LaneShareEvent) => void;
     platform?: NodeJS.Platform;
+    /** The project folder and the lanes' worktrees: where a guest's image and turn diff reads may look. */
+    projectRoot?: string | null;
+    laneService?: LaneShareWorktreeLookup | null;
   };
   peers: ReadonlySet<LaneShareGuestPeer>;
   send(target: WebSocket | LaneShareGuestPeer, type: SyncEnvelope["type"], payload: unknown, requestId?: string | null): boolean;

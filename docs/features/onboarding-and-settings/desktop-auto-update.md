@@ -678,6 +678,21 @@ kept, marked `noticeDismissedAt`, for the resumes it still owes — it simply
 stops being surfaced as a notice, including on the next launch — and it is
 dropped entirely once it owes nothing or a later install replaces it.
 
+The brain side does not depend on this list. Before the service uninstall,
+`prepareAutoUpdateInstall` writes the `accepted_update` stop intent
+(`noteBrainStopIntent`, cleared when the uninstall fails), and the stopping
+brain saves its chats and CLIs at work for its next start, with the continue
+cap starting again. `ade brain update` does the same before each service stop
+and the restart, and clears the intent when one fails. Both paths use the same
+durable row id, so a chat is continued once. See
+[work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop).
+
+If the native handoff goes stale and the update re-downloads
+(`recoverStaleInstallHandoff`), the retry is the same request: it keeps the
+resume flag, `requestedRemotely` and `closeAfterInstall`, and carries the
+chats the first attempt listed, because the brain that attempt stopped can no
+longer list them.
+
 Each row delivers the "ADE restarted, so your last turn ended early…" continue prompt (the same rows re-arm chats after a quit-prompt Repair)
 once. Only rows that actually landed `scheduled` (not paused) are reported in
 the post-update "Scheduled N chats to resume" notice, and typing into a chat
@@ -714,7 +729,7 @@ failure names the step in plain words. A failed `swap` is a warning banner in
 the retry). Every other failed step means the background service is down, and
 `BrainDownNotice` owns it: one error banner with the cause, **Fix it** (the real
 service reinstall and restart), then **Restart ADE**, then **Reset ADE**, and
-**Report issue** under the text — see
+**Report this error to ADE…** under the text — see
 [the brain-down notice](../storage-and-recovery/README.md#the-recovery-screen-and-the-brain-down-notice).
 A project open the pool refused mid-update (`LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE`)
 is part of the same notice ("Finishing the update"), never a second banner.
@@ -757,7 +772,9 @@ countdown immediately without querying runtime activity.
 `AutoUpdateBanner` renders the countdown as an "ADE will update in Ns" toast
 that ticks once per second. Reaching the deadline while the policy is still
 enabled and any required idle condition still holds calls the transactional
-`quitAndInstall()` path and emits `ade_update_auto_applied`. Renewed activity
+`quitAndInstall(true)` path and emits `ade_update_auto_applied`. It asks to
+continue chats like a manual install: idle is read before the feed refresh,
+and a chat that starts after that read is continued after the update. Renewed activity
 clears an idle-only countdown. An explicit **Cancel**
 (`updateCancelAutoApply`) sets `autoApplySuppressedUntil` so another countdown
 does not start until that epoch passes. Disabling automatic installation also

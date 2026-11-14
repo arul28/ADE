@@ -1027,7 +1027,12 @@ Renderer surfaces:
   through seven sequential `if` blocks over a 28-entry dependency array and
   could never memoize; each panel now takes the same explicit props object,
   keeps its own guards and empty states, and adding a tool is one entry here
-  plus one in `WORK_TOOL_DEFINITIONS`.
+  plus one in `WORK_TOOL_DEFINITIONS`. `remoteWorkToolPanels.tsx` holds the
+  iOS, Android, Desktop and App Control tools' view of a chat's work copy on
+  another machine: a window that never connected to that machine connects
+  when the tool is on screen (`useRemoteWorkReach` in `lib/remoteWorkPins.ts`,
+  with Retry), says so while it does, and then hands that machine's pin to
+  the panel.
 - `apps/desktop/src/renderer/components/terminals/workToolPickerBackdropShader.ts`,
   `workToolPickerBackdropRenderer.ts` — the backdrop's two halves, split out so
   `WorkToolPickerBackdrop.tsx` is only the React shell. It paints the

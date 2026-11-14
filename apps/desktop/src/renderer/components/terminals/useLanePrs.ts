@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../../lib/prReadCache";
+import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repositoryScope";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
@@ -193,17 +194,27 @@ export function useLanePrsByLaneId(): Map<string, PrSummary[]> {
       })
       .catch(() => {});
     void refresh();
-    const unsubscribe = listPin
-      ? window.ade.prs.onEvent((event) => {
-        if (event.type !== "prs-updated") return;
-        setPrs(event.prs);
-        void readSnapshot()
-          .then((snapshot) => {
-            if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
-          })
-          .catch(() => {});
-      }, listPin)
-      : () => undefined;
+    const subscribe = (): (() => void) => {
+      if (!listPin) return () => undefined;
+      try {
+        return window.ade.prs.onEvent((event) => {
+          if (event.type !== "prs-updated") return;
+          setPrs(event.prs);
+          void readSnapshot()
+            .then((snapshot) => {
+              if (!cancelled) setGithubPrs(snapshot?.repoPullRequests ?? []);
+            })
+            .catch(() => {});
+        }, listPin);
+      } catch (error) {
+        // ADE Web refuses a subscription for a machine it has no path to
+        // (ADE-WEB-8). The list above still loaded; there are no live
+        // updates for that machine, which is the honest answer.
+        if (isWebRuntimePinUnroutableError(error)) return () => undefined;
+        throw error;
+      }
+    };
+    const unsubscribe = subscribe();
     return () => {
       cancelled = true;
       unsubscribe();

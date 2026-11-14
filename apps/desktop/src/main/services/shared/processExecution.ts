@@ -288,7 +288,7 @@ export function windowsCommandLineOverLimitMessage(file: string, args: readonly 
   if (length <= WINDOWS_COMMAND_LINE_MAX_CHARS) return null;
   return `This command is about ${length.toLocaleString("en-US")} characters as Windows builds its command line, `
     + `over Windows' limit of ${WINDOWS_COMMAND_LINE_MAX_CHARS.toLocaleString("en-US")}. A PowerShell command run once is sent `
-    + "as -EncodedCommand, which takes about 2.7 times the script's length. Put the script in a file in the work copy "
+    + "as -EncodedCommand, which takes about 2.7 times the script's length. Put the script in a file in the command's folder "
     + "and run that file (for example `powershell -NoProfile -File script.ps1`), or pipe it to the command on stdin.";
 }
 

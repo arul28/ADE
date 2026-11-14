@@ -304,15 +304,18 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
    *
    * `stopperChatSessionId` only matters for a recording no chat owns: it is
    * then the chat the proof is filed under, as before owners were kept.
+   * `fileProof: false` files nothing here: a caller on another machine files
+   * the video in its own drawer, with the caption the status still carries.
    */
   const stopUserRecording = (
     laneId: string,
     stopperChatSessionId: string | null,
     reason: MacDesktopRecordingStopReason,
+    fileProof = true,
   ): Promise<MacDesktopRecordingStatus> => {
     const inFlight = stopping.get(laneId);
     if (inFlight) return inFlight;
-    const run = finishUserRecording(laneId, stopperChatSessionId, reason);
+    const run = finishUserRecording(laneId, stopperChatSessionId, reason, fileProof);
     stopping.set(laneId, run);
     const forget = (): void => {
       if (stopping.get(laneId) === run) stopping.delete(laneId);
@@ -325,6 +328,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     laneId: string,
     stopperChatSessionId: string | null,
     reason: MacDesktopRecordingStopReason,
+    fileProof: boolean,
   ): Promise<MacDesktopRecordingStatus> => {
     const existing = recordings.get(laneId);
     if (!existing?.running) {
@@ -438,7 +442,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         ? `${macDesktopPaneCaption("recording", await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null), productName)} · ${captionDuration(finished)}`
         : null);
     let proofArtifactId: string | null = null;
-    if (caption && filePath) {
+    if (caption && filePath && fileProof) {
       const filed = await deps.observations.ingestProof({
         laneId,
         // The owner, not whoever stopped it: a recording started in one chat
@@ -616,8 +620,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       return status;
     },
 
-    async stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus> {
-      return await stopUserRecording(args.laneId.trim(), args.chatSessionId?.trim() || null, "requested");
+    async stopRecording(args: { laneId: string; chatSessionId?: string | null; proof?: boolean | null }): Promise<MacDesktopRecordingStatus> {
+      return await stopUserRecording(args.laneId.trim(), args.chatSessionId?.trim() || null, "requested", args.proof !== false);
     },
 
     forgetLane(laneId: string): void {

@@ -17,7 +17,6 @@ import {
   ArrowRight,
   CircleNotch,
   Clock,
-  DesktopTower,
   Folder,
   FolderOpen,
   MagnifyingGlass,
@@ -41,7 +40,6 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
-import { formatMachineVersions } from "../../../shared/machineVersions";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
@@ -128,6 +126,7 @@ import {
 import { openStartChatDraft } from "../../lib/workDraft";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
+import { DIALOG_SCRIM_STYLE } from "../ui/dialog/Dialog";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import {
   CHAT_FIND_PALETTE_GROUP,
@@ -137,7 +136,7 @@ import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanes/lanePageModel";
 import { useCommandPaletteLanePr } from "./commandPaletteLanePr";
 import { writeStoredProjectRoute } from "./projectRouteStorage";
-import { AddProjectChooser } from "../projects/AddProjectChooser";
+import { AddProjectMoreActions } from "../projects/AddProjectMoreActions";
 import { AddProjectForm, openProjectCopy } from "../projects/AddProjectForm";
 import type { CopyOpenTarget } from "../projects/projectCopies";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
@@ -241,6 +240,8 @@ type BrowseRow = {
 type ProjectLocation =
   | { kind: "local"; id: "local"; name: string }
   | { kind: "remote"; targetId: string; name: string };
+
+const LOCAL_PLACE_KEY = "local";
 
 const LOCAL_PROJECT_LOCATION: ProjectLocation = {
   kind: "local",
@@ -436,10 +437,6 @@ export function CommandPalette({
   // re-running on every browseInput keystroke.
   const browseLocationKeyRef = useRef<string | null>(null);
   const dragCounterRef = useRef(0);
-  const openIntentRef = useRef<{
-    open: boolean;
-    intent: CommandPaletteIntent;
-  } | null>(null);
 
   const remoteLocations = useMemo(
     () =>
@@ -458,8 +455,36 @@ export function CommandPalette({
     [remoteSnapshot],
   );
 
+  // Where "Open a folder" and "New empty project" act: this computer or a connected one.
+  const addProjectPlaces = useMemo(
+    () => [
+      { key: LOCAL_PLACE_KEY, name: LOCAL_PROJECT_LOCATION.name },
+      ...remoteLocations.map((location) => ({
+        key: location.kind === "remote" ? location.targetId : LOCAL_PLACE_KEY,
+        name: location.name,
+      })),
+    ],
+    [remoteLocations],
+  );
+
+  const selectedPlaceDisconnected =
+    selectedProjectLocation?.kind === "remote" &&
+    !remoteLocations.some(
+      (location) =>
+        location.kind === "remote" &&
+        location.targetId === selectedProjectLocation.targetId,
+    );
+  // Browsing and creating work on the picked computer's own folders, so they
+  // keep that computer and wait while it is disconnected: a path from it must
+  // never be opened or created on this computer. The add screen and the clone
+  // form only pick a place, so a computer that disconnected falls back to this
+  // computer there, for the actions and the shown place together.
+  const keepsPickedPlace = mode === "project-browse" || mode === "project-create";
+  const placeDisconnected = selectedPlaceDisconnected && keepsPickedPlace;
   const activeProjectLocation =
-    selectedProjectLocation ?? LOCAL_PROJECT_LOCATION;
+    selectedPlaceDisconnected && !keepsPickedPlace
+      ? LOCAL_PROJECT_LOCATION
+      : (selectedProjectLocation ?? LOCAL_PROJECT_LOCATION);
   const activeRemoteTargetId =
     activeProjectLocation.kind === "remote"
       ? activeProjectLocation.targetId
@@ -532,7 +557,14 @@ export function CommandPalette({
     };
   }, [applyRemoteSnapshot, open]);
 
+  // The add screen shows this computer once a picked computer disconnects;
+  // moving on to browse or create keeps that shown place, not the old pick.
+  const commitShownPlace = useCallback(() => {
+    if (selectedPlaceDisconnected) setSelectedProjectLocation(null);
+  }, [selectedPlaceDisconnected]);
+
   const startProjectBrowse = useCallback(() => {
+    commitShownPlace();
     setMode("project-browse");
     setQ("");
     setSelectedIdx(0);
@@ -545,7 +577,7 @@ export function CommandPalette({
     setBrowseResult(null);
     setBrowseError(null);
     setBrowseSelectedIdx(0);
-  }, [activeProjectLocation, browseRootForLocation]);
+  }, [activeProjectLocation, browseRootForLocation, commitShownPlace]);
 
   const startProjectAdd = useCallback(() => {
     setMode("project-add");
@@ -555,9 +587,10 @@ export function CommandPalette({
   }, []);
 
   const startProjectCreate = useCallback(() => {
+    commitShownPlace();
     setMode("project-create");
     setActionOutcome(null);
-  }, []);
+  }, [commitShownPlace]);
 
   const startProjectClone = useCallback(() => {
     setMode("project-clone");
@@ -569,13 +602,23 @@ export function CommandPalette({
     setActionOutcome(null);
   }, []);
 
-  useEffect(() => {
-    const previous = openIntentRef.current;
-    const changed =
-      previous == null || previous.open !== open || previous.intent !== intent;
-    openIntentRef.current = { open, intent };
-    if (!changed) return;
-
+  // The mode follows a new open or intent in the same render, not in an
+  // effect. An effect lets the window commit once in the default mode, which
+  // builds the whole command list (about 290 rows) only for the next commit
+  // to remove it, and the open's forced style passes then cover those rows.
+  const [seenOpenIntent, setSeenOpenIntent] = useState<{
+    open: boolean;
+    intent: CommandPaletteIntent;
+  } | null>(null);
+  if (
+    seenOpenIntent == null
+    || seenOpenIntent.open !== open
+    || seenOpenIntent.intent !== intent
+  ) {
+    setSeenOpenIntent({ open, intent });
+    applyOpenIntent();
+  }
+  function applyOpenIntent() {
     if (!open) {
       setMode("default");
       setQ("");
@@ -620,15 +663,7 @@ export function CommandPalette({
     setFilterMenuKey(null);
     setSelectedIdx(0);
     setBrowseError(null);
-  }, [
-    intent,
-    open,
-    startProjectAdd,
-    startProjectBrowse,
-    startProjectClone,
-    startProjectCreate,
-    startProjectRemote,
-  ]);
+  }
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
@@ -1398,6 +1433,13 @@ export function CommandPalette({
 
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
+    // A picked computer that disconnected keeps its last listing; the read
+    // runs again for the same path once it connects again. A read still
+    // waiting for its delay was cancelled, so nothing is scanning.
+    if (placeDisconnected) {
+      setBrowseLoading(false);
+      return;
+    }
     const requestId = ++browseRequestRef.current;
     setBrowseLoading(true);
     setBrowseError(null);
@@ -1443,6 +1485,7 @@ export function CommandPalette({
     browseInput,
     mode,
     open,
+    placeDisconnected,
   ]);
 
   useEffect(() => {
@@ -1871,6 +1914,10 @@ export function CommandPalette({
       const nextTarget =
         typeof targetPath === "string" ? targetPath.trim() : "";
       if (!nextTarget) return;
+      if (placeDisconnected) {
+        setBrowseError(`${browseMachineName} is not connected. Open this folder once it connects again.`);
+        return;
+      }
       setBrowseError(null);
       setOpenProjectPending(true);
       try {
@@ -1897,7 +1944,9 @@ export function CommandPalette({
     },
     [
       activeRemoteTargetId,
+      browseMachineName,
       onOpenChange,
+      placeDisconnected,
       switchProjectToPath,
       switchRemoteProject,
     ],
@@ -2076,7 +2125,7 @@ export function CommandPalette({
     mode === "project-clone" ||
     mode === "project-remote" ||
     mode === "project-success";
-  const isWideAddFlow = mode === "project-clone" || mode === "project-remote";
+  const isWideAddFlow = mode === "project-add" || mode === "project-clone" || mode === "project-remote";
   // Percentages, not vh/vw: the hosted client scales the UI with `body { zoom }`
   // (`webclient/adapter/misc.ts`), and viewport units ignore that zoom while
   // everything they size gets painted `zoom`x larger. At 110% a `86vh` cap is
@@ -2195,9 +2244,7 @@ export function CommandPalette({
   let addFlowTitle = "";
   switch (mode) {
     case "project-add":
-      addFlowTitle = selectedProjectLocation
-        ? `Add a project on ${browseMachineName}`
-        : "Add a project";
+      addFlowTitle = "Add a project";
       break;
     case "project-create":
       addFlowTitle = `Create a new project${activeRemoteTargetId ? ` on ${browseMachineName}` : ""}`;
@@ -2213,7 +2260,6 @@ export function CommandPalette({
   }
 
   const showAddFlowBack =
-    (mode === "project-add" && selectedProjectLocation !== null) ||
     mode === "project-create" ||
     mode === "project-clone" ||
     mode === "project-remote" ||
@@ -2226,12 +2272,11 @@ export function CommandPalette({
           <Dialog.Portal forceMount>
             <Dialog.Overlay asChild>
               <motion.div
-                // Same overlay language as the app's dialogs (LaneDialogShell,
-                // the import browser): dim, then a light blur. `blur-2xl` over
-                // the whole window read as a different app taking over — and it
-                // is a full-window backdrop filter per frame of the fade.
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-                style={{ zIndex: Z_LAYERS.commandPalette }}
+                // The app's one dialog scrim (its tint and light blur; the fade
+                // is this motion's). `blur-2xl` over the whole window read as a
+                // different app taking over — and it is a full-window backdrop
+                // filter per frame of the fade.
+                style={{ ...DIALOG_SCRIM_STYLE, zIndex: Z_LAYERS.commandPalette }}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
@@ -2338,11 +2383,7 @@ export function CommandPalette({
                         type="button"
                         onClick={() => {
                           setActionOutcome(null);
-                          if (mode === "project-add") {
-                            setSelectedProjectLocation(null);
-                          } else {
-                            setMode("project-add");
-                          }
+                          setMode("project-add");
                         }}
                         className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-[var(--color-muted-fg)] transition-colors hover:border-[var(--color-border)] hover:bg-[var(--color-muted)] hover:text-[var(--color-fg)]"
                         aria-label="Back to chooser"
@@ -2419,31 +2460,35 @@ export function CommandPalette({
                 {isAddFlow ? (
                   <div className="flex-1 overflow-auto p-6">
                     {mode === "project-add" ? (
-                      selectedProjectLocation === null &&
-                      remoteLocations.length > 0 ? (
-                        <ProjectLocationChooser
-                          remoteLocations={remoteLocations}
-                          onChoose={(location) => {
-                            setSelectedProjectLocation(location);
-                          }}
-                        />
-                      ) : (
-                        <AddProjectChooser
-                          onChoose={(choice) => {
-                            if (choice === "open") {
-                              startProjectBrowse();
-                            } else if (choice === "create") {
-                              startProjectCreate();
-                            } else {
-                              startProjectClone();
-                            }
-                          }}
-                        />
-                      )
+                      // The first screen is the form: a repository and the
+                      // computers to put a copy on. Opening a folder and a new
+                      // empty project are the other ways, under it.
+                      <AddProjectForm
+                        onCancel={() => onOpenChange(false)}
+                        onClose={() => onOpenChange(false)}
+                        onOpenProject={openProjectCopyHere}
+                        moreActions={isWebClientMode() ? null : (
+                          <AddProjectMoreActions
+                            places={addProjectPlaces}
+                            placeKey={activeRemoteTargetId ?? LOCAL_PLACE_KEY}
+                            onPlaceChange={(key) => {
+                              const remote = remoteLocations.find((location) => location.kind === "remote" && location.targetId === key);
+                              setSelectedProjectLocation(remote ?? null);
+                            }}
+                            onOpenFolder={startProjectBrowse}
+                            onCreate={startProjectCreate}
+                          />
+                        )}
+                      />
                     ) : mode === "project-create" ? (
                       <CreateProjectForm
                         machineName={
                           activeRemoteTargetId ? browseMachineName : undefined
+                        }
+                        unavailableReason={
+                          placeDisconnected
+                            ? `${browseMachineName} is not connected. Create waits until it connects again.`
+                            : null
                         }
                         getDefaultParentDir={
                           activeRemoteTargetId
@@ -2484,8 +2529,8 @@ export function CommandPalette({
                         initialMachineIds={
                           selectedProjectLocation
                             ? [
-                                selectedProjectLocation.kind === "remote"
-                                  ? selectedProjectLocation.targetId
+                                activeProjectLocation.kind === "remote"
+                                  ? activeProjectLocation.targetId
                                   : THIS_MACHINE_ID,
                               ]
                             : undefined
@@ -2636,7 +2681,7 @@ export function CommandPalette({
                                             ? "border-transparent bg-[var(--color-accent)] text-[var(--color-accent-fg)] hover:brightness-110"
                                             : "border-[color-mix(in_srgb,var(--color-accent)_40%,var(--color-border))] bg-transparent text-[var(--color-accent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)]",
                                         )}
-                                        disabled={openProjectPending}
+                                        disabled={openProjectPending || placeDisconnected}
                                         onClick={(event) => {
                                           event.stopPropagation();
                                           void handleOpenProject(
@@ -2703,6 +2748,8 @@ export function CommandPalette({
                             report={{ surface: "command_palette_browse", headline: "Couldn't open that folder" }}
                             onDismiss={() => setBrowseError(null)}
                           />
+                        ) : placeDisconnected ? (
+                          <span>{browseMachineName} is not connected. Open waits until it connects again.</span>
                         ) : isCurrentProjectTarget ? (
                           <span>Already open.</span>
                         ) : (
@@ -2759,7 +2806,8 @@ export function CommandPalette({
                           disabled={
                             !canOpenHighlighted ||
                             openProjectPending ||
-                            systemPickerPending
+                            systemPickerPending ||
+                            placeDisconnected
                           }
                           onClick={() => {
                             void handleOpenProject(openTarget);
@@ -3082,76 +3130,6 @@ function PaletteFooterHints() {
         Esc
       </kbd>
       <span>Close</span>
-    </div>
-  );
-}
-
-function ProjectLocationChooser({
-  remoteLocations,
-  onChoose,
-}: {
-  remoteLocations: Array<
-    ProjectLocation & { status: RemoteRuntimeConnectionStatus }
-  >;
-  onChoose: (location: ProjectLocation) => void;
-}) {
-  const locations: Array<
-    ProjectLocation & { status?: RemoteRuntimeConnectionStatus }
-  > = [LOCAL_PROJECT_LOCATION, ...remoteLocations];
-  return (
-    <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
-      {locations.map((location) => {
-        const isRemote = location.kind === "remote";
-        const key = isRemote ? location.targetId : location.id;
-        const status = isRemote ? location.status : null;
-        return (
-          <button
-            key={key}
-            type="button"
-            className="group flex min-h-[118px] items-center gap-4 rounded-xl border border-[var(--color-border)] bg-[color-mix(in_srgb,var(--color-card)_92%,transparent)] p-4 text-left transition-all hover:-translate-y-0.5 hover:border-[var(--color-accent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_6%,var(--color-card))]"
-            onClick={() => onChoose(location)}
-          >
-            <span
-              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border"
-              style={{
-                borderColor: isRemote
-                  ? "color-mix(in srgb, #F59E0B 45%, var(--color-border))"
-                  : "color-mix(in srgb, var(--color-accent) 45%, var(--color-border))",
-                background: isRemote
-                  ? "color-mix(in srgb, #F59E0B 12%, transparent)"
-                  : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
-                color: isRemote ? "#F59E0B" : "var(--color-accent)",
-              }}
-            >
-              {isRemote ? (
-                <DesktopTower size={22} weight="duotone" />
-              ) : (
-                <FolderOpen size={22} weight="duotone" />
-              )}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-semibold text-[var(--color-fg)]">
-                {location.name}
-              </span>
-              <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
-                {isRemote
-                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${formatMachineVersions({ brainVersion: status.version, appVersion: status.appVersion })}` : ""}`
-                  : "Projects on this computer"}
-              </span>
-              {isRemote ? (
-                <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-tone-[#FBBF24]">
-                  Connected
-                </span>
-              ) : null}
-            </span>
-            <ArrowRight
-              size={15}
-              weight="bold"
-              className="shrink-0 text-[var(--color-muted-fg)] transition-transform group-hover:translate-x-0.5 group-hover:text-[var(--color-accent)]"
-            />
-          </button>
-        );
-      })}
     </div>
   );
 }

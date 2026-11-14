@@ -7316,7 +7316,45 @@ describe("ptyService", () => {
         }),
       );
     });
+  });
 
+  describe("disposeAll", () => {
+    it.each([
+      // Claude sends Stop as soon as it hands work to a background agent, and the stop kills that agent.
+      ["sent Stop while a background agent it started still runs", true, true],
+      ["sent Stop with no background agent", false, false],
+    ])("a planned stop records a Claude CLI that %s as mid-turn: %s", async (_label, startAgent, midTurn) => {
+      mocks.writeFileSync.mockClear();
+      const { service, loadPty } = createHarness({
+        runtimeSocketPath: "/tmp/ade-test-runtime.sock",
+        getAdeCliAgentEnv: (env) => ({ ...env, ADE_CLI_PATH: path.resolve("/opt/ade/bin/ade") }),
+      });
+      await service.create({
+        sessionId: "cli-planned",
+        allowNewSessionId: true,
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        tracked: true,
+        toolType: "claude",
+        runtimeCliLaunch: { provider: "claude", permissionMode: "default" },
+      });
+      const spawn = (loadPty.mock.results[0]?.value as { spawn: ReturnType<typeof vi.fn> }).spawn;
+      const token = (spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env?.ADE_CLI_TURN_HOOK_TOKEN ?? "";
+      const hook = (payload: Record<string, string>) =>
+        service.reportCliTurnHookEvent({ sessionId: "cli-planned", provider: "claude", payload, token });
+
+      hook({ hook_event_name: "UserPromptSubmit", prompt_id: "p-1" });
+      if (startAgent) hook({ hook_event_name: "SubagentStart", agent_id: "agent-1" });
+      hook({ hook_event_name: "Stop" });
+      service.disposeAll({ reopenAfterRestart: true });
+
+      const written = [...mocks.writeFileSync.mock.calls].reverse()
+        .find((args: unknown[]) => String(args[0]).includes("reopen-cli-after-restart"));
+      expect(written, "the planned stop writes the reopen list").toBeDefined();
+      expect(JSON.parse(String(written![1])).sessions).toEqual([{ sessionId: "cli-planned", midTurn }]);
+    });
   });
 
   describe("PTY data handling", () => {
@@ -10028,6 +10066,37 @@ describe("ptyService", () => {
         expect(result).toEqual({ ok: true });
         expect(freshSpawn).toHaveBeenCalled();
         expect(freshMockPty.write).toHaveBeenCalledWith("hello\n");
+      });
+
+      it("refuses a write to an SDK chat id: no shell is launched and the chat row keeps its status", async () => {
+        const { service, loadPty, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "sdk-chat",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Claude Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "sdk-chat",
+          tracked: true,
+          toolType: "claude-chat",
+          startupCommand: "true",
+        });
+        // An SDK chat has the `chat:<provider>:<id>` marker and no CLI metadata.
+        const record = sessionStore.get("sdk-chat");
+        if (!record) throw new Error("setup precondition: the chat row exists");
+        record.resumeCommand = "chat:claude:sdk-chat";
+        record.resumeMetadata = null;
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+        record.status = "running";
+        const statusBefore = sessionStore.get("sdk-chat")?.status;
+
+        const freshSpawn = vi.fn(() => createMockPty());
+        loadPty.mockImplementation(() => ({ spawn: freshSpawn as any }));
+
+        await expect(service.writeTerminal({ chatSessionId: "sdk-chat", data: "\x03" })).rejects.toThrow();
+        expect(freshSpawn).not.toHaveBeenCalled();
+        expect(sessionStore.get("sdk-chat")?.status).toBe(statusBefore);
       });
 
       it("still throws when called with a stale explicit ptyId", async () => {
