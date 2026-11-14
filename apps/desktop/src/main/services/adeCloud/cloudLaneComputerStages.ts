@@ -457,7 +457,11 @@ export function createCloudLaneComputerStages(
   };
 
   /** Deletes only computers made for this launch (its request id), then takes a joined one off the account. */
-  const deleteOwnComputers = async (record: CloudLaneLaunchRecord): Promise<{ found: number; deleted: number }> => {
+  /**
+   * `accountRowLeft`: every computer is gone but its account row couldn't be
+   * removed; the machine key stays on the record for the next cleanup.
+   */
+  const deleteOwnComputers = async (record: CloudLaneLaunchRecord): Promise<{ found: number; deleted: number; accountRowLeft: boolean }> => {
     const launchId = record.snapshot.launchId;
     const client = await providerClient();
     const own = new Map<string, CloudInstance>();
@@ -484,6 +488,7 @@ export function createCloudLaneComputerStages(
     // deleted (then none is found here): its account row and saved
     // connections go too. The machine key is kept until its row is removed,
     // so a later cleanup tries again.
+    let accountRowLeft = false;
     if (deleted === own.size) {
       const machineKey = record.snapshot.cloud.machineKey;
       if (machineKey) {
@@ -492,6 +497,7 @@ export function createCloudLaneComputerStages(
           return false;
         });
         if (removed) record.snapshot.cloud.machineKey = null;
+        accountRowLeft = !removed;
       }
       // A saved connection left behind points at a computer that is gone,
       // and the Connections list shows it as a machine that never answers.
@@ -507,7 +513,7 @@ export function createCloudLaneComputerStages(
         record.targetId = null;
       }
     }
-    return { found: own.size, deleted };
+    return { found: own.size, deleted, accountRowLeft };
   };
 
   return { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers };

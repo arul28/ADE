@@ -246,7 +246,14 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
    * one, the `cloud` block on it, and any message still waiting here behind
    * the ones the brain already holds.
    */
+  /** The brain's sequence each launch last took (an event, a read or an action's answer). */
+  const brainSequences = new Map<string, number>();
+  /** A read the brain answered before an event this app already took: it would put an older state back. */
+  const isStaleRead = (launchId: string, brain: ChatLaunchSnapshot): boolean =>
+    brain.sequence < (brainSequences.get(launchId) ?? Number.NEGATIVE_INFINITY);
+
   const adoptBrainSnapshot = (record: CloudLaneLaunchRecord, brain: ChatLaunchSnapshot): void => {
+    brainSequences.set(record.snapshot.launchId, brain.sequence);
     const local = record.snapshot;
     const pending = local.queuedMessages.filter((message) => record.pendingMessageIds.includes(message.id));
     const next = clone(brain);
@@ -414,6 +421,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         markRemoved(launchId);
         return;
       }
+      if (isStaleRead(launchId, brain)) return;
       adoptBrainSnapshot(record, brain);
       recordBranch(record);
       publish(record);
@@ -607,22 +615,39 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   // ---------------------------------------------------------------------------
 
   /** Cancel's cleanup; a create still in flight is followed until its computer shows up and is deleted. */
-  const cleanUp = async (record: CloudLaneLaunchRecord): Promise<void> => {
+  const cleanUp = async (record: CloudLaneLaunchRecord, options: { serverCancelled?: boolean } = {}): Promise<void> => {
     const launchId = record.snapshot.launchId;
     try {
       // The server's cancel first: it deletes the computer, also one its create
-      // is still making. `cancel` already asked; this is ADE opening again on a
-      // cancel whose delete didn't finish, which the server tries once more.
-      if (!isHandedOff(record) && record.via === "server" && await cancelOnServer(record) === "started") {
-        // Its agent runs there (a cancel from before the server was asked first): that computer stays.
-        logger.warn("cloud_lane_launch.cancelled_launch_running", { launchId });
-        record.cleanupDone = true;
+      // is still making. `cancel` already asked (`serverCancelled`); this is ADE
+      // opening again on a cancel whose delete didn't finish, which the server
+      // tries once more.
+      if (!options.serverCancelled && !isHandedOff(record) && record.via === "server") {
+        const answer = await cancelOnServer(record);
+        if (answer === "started") {
+          // Its agent runs there (a cancel from before the server was asked first): that computer stays.
+          logger.warn("cloud_lane_launch.cancelled_launch_running", { launchId });
+          record.cleanupDone = true;
+          publish(record);
+          return;
+        }
+        if (answer === "unreached") {
+          // Nobody knows yet whether its agent started: nothing is deleted, and ADE opening again asks again.
+          logger.warn("cloud_lane_launch.cleanup_waits_for_server", { launchId });
+          publish(record);
+          return;
+        }
+      }
+      const { found, deleted, accountRowLeft } = await deleteOwnComputers(record);
+      if (found > deleted) {
+        record.snapshot.error = cantDeleteComputer(record.computerName);
         publish(record);
         return;
       }
-      const { found, deleted } = await deleteOwnComputers(record);
-      if (found > deleted) {
-        record.snapshot.error = cantDeleteComputer(record.computerName);
+      if (accountRowLeft) {
+        // The computers are gone; its account row is tried again when ADE opens again.
+        record.snapshot.error = null;
+        record.snapshot.cloud.instanceId = null;
         publish(record);
         return;
       }
@@ -844,7 +869,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (pipeline) {
       await Promise.race([pipeline, sleep(CANCEL_PIPELINE_WAIT_MS)]);
     }
-    await cleanUp(record);
+    await cleanUp(record, { serverCancelled: !isHandedOff(record) && record.via === "server" });
     return served(record);
   };
 

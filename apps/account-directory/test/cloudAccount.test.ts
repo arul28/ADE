@@ -2077,20 +2077,46 @@ describe("ADE Cloud server launcher", () => {
     expect(record).toEqual(expect.objectContaining({ state: "needs_approval", approval: expect.objectContaining({ userCode: "GHJK-6789" }) }));
   });
 
-  it("a Retry claims the failed launch before deleting its computer: that computer's late report is refused, the launch starts again with a new deadline", async () => {
+  it("a Retry holds the failed launch while it deletes its computer: that computer's reports and a second start change nothing, the launch starts again with a new deadline", async () => {
     await harness.send(OWNER, "POST", "/cloud/launches", launchBody);
     harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", LAUNCH);
     clock = NOW + 2 * HOUR;
-    // The failed computer reports while its delete is in flight, where a real one lands.
-    let lateReport = 0;
+    // A report the failed computer sent before the Retry: read against the old row, its body still arriving.
+    let bodyRead!: () => void;
+    const reading = new Promise<void>((resolve) => { bodyRead = resolve; });
+    let sendBody!: () => void;
+    const body = new ReadableStream<Uint8Array>({
+      pull: (controller) => new Promise<void>((resolve) => {
+        bodyRead();
+        sendBody = () => {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify({ state: "running" })));
+          controller.close();
+          resolve();
+        };
+      }),
+    });
+    const earlyReport = handleCloudRequest(new Request(`https://directory.test/cloud/launches/${LAUNCH}/stages`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${tokens[OWNER]}`, "content-type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit), harness.env);
+    await reading;
+    // While the delete is in flight, where a real one lands: a late report, the early one's body, and a second start.
+    const during: number[] = [];
     harness.net.after.push({ match: /DELETE .*\/instances\/madenew12345$/, run: async () => {
-      lateReport = (await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "joined" })).status;
+      during.push((await harness.send(OWNER, "PUT", `/cloud/launches/${LAUNCH}/stages`, { state: "joined" })).status);
+      sendBody();
+      during.push((await earlyReport).status);
+      during.push((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status);
+      during.push(madeCalls().length);
     } });
 
     const retried = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true });
 
     expect(retried.status).toBe(201);
-    expect(lateReport).toBe(409);
+    // Both reports refused, the second start answered with no computer made.
+    expect(during).toEqual([409, 409, 200, 1]);
     expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(1);
     expect(madeCalls()).toHaveLength(2);
     expect(harness.row("select state, expires_at from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "joining", expires_at: clock + 7 * DAY });

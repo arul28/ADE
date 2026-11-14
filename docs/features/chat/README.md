@@ -3462,9 +3462,12 @@ hand-off the brain owns the launch and finishes it with the desktop closed.
   `retry: true`: a launch whose computer failed before its agent started
   begins again on a new computer under the same id. The server claims the
   retry before it deletes the failed computer (a join or report that landed
-  since keeps that computer; the old computer's later reports are refused),
-  restarts the record's 7-day deadline, and puts the launch back as failed
-  when the provider refuses the delete. A launch whose computer failed after
+  since keeps that computer) and holds the launch `retrying`, with the old
+  computer still on it, until the delete finishes: the old computer's
+  reports and joins are refused (also one read before the claim), and a
+  second start answers the launch instead of making or adopting a computer.
+  The record's 7-day deadline starts again, and a delete the provider
+  refuses puts the launch back as failed with that computer. A launch whose computer failed after
   its agent began is bound and handed off as it is, so Retry goes to the
   computer's own retry. Cancel before the hand-off asks the server first: its
   `launch_started` refusal (the agent can start before this app has paired)
@@ -3472,8 +3475,11 @@ hand-off the brain owns the launch and finishes it with the desktop closed.
   too. Otherwise the server deletes the computer, also one its create is
   still making, then this app deletes computers whose `ade_request_id` is
   this launch, the account row and saved connections (also when the server
-  already deleted the computer; the machine key stays until its row is
-  removed). After the hand-off, Cancel goes to the brain first, and the
+  already deleted the computer; the machine key stays, and the cleanup stays
+  open for ADE's next start, until its row is removed). A cleanup finished
+  when ADE opens again asks the server too, and deletes nothing while the
+  server doesn't answer. A read of the brain older than an event already
+  taken is dropped. After the hand-off, Cancel goes to the brain first, and the
   brain refuses once the agent has started. Each new subscription to the
   brain's events reads its snapshot once, so a change between the hand-off's
   read and the stream is never missed.
