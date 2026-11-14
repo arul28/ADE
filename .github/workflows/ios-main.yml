@@ -84,16 +84,39 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      # Reads the newer runs of this workflow (see "superseded" below).
+      actions: read
     steps:
       - name: Open or close the "iOS main failed" issue
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          RUN_NUMBER: ${{ github.run_number }}
           RESULT: ${{ needs.build-and-test.result }}
           SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+          # A run that finishes late must not close the issue of a newer
+          # failure, or open one after a newer pass. When a newer run on main
+          # already has a finished build, this result is superseded. A failed
+          # lookup goes on: the alert matters more than the order.
+          if newer="$(gh api "repos/$GH_REPO/actions/workflows/ios-main.yml/runs?branch=main&per_page=100" \
+              --jq '.workflow_runs[] | select(.run_number > (env.RUN_NUMBER | tonumber)) | "\(.id) \(.html_url)"' 2>/dev/null)"; then
+            while read -r run_id run_url; do
+              [ -n "$run_id" ] || continue
+              job="$(gh api "repos/$GH_REPO/actions/runs/$run_id/jobs" \
+                --jq '[.jobs[] | select(.name == "build-and-test")][0].conclusion // empty' 2>/dev/null)" || continue
+              case "$job" in
+                success | failure)
+                  echo "Superseded: the newer run $run_url has a finished build ($job). The issue is not changed."
+                  exit 0
+                  ;;
+              esac
+            done <<< "$newer"
+          else
+            echo "::warning::Could not read the newer runs of this workflow; updating the issue anyway."
+          fi
           title="iOS main failed"
           gh label create ci --color 0E8A16 --description "CI on main" >/dev/null 2>&1 || true
           issue="$(gh issue list --state open --label ci --limit 100 --json number,title \

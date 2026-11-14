@@ -39,7 +39,8 @@ else
   bad "release-manifest.json was not downloaded"
 fi
 mac_refs="$(grep -E '^\s*(- )?(url|path):' "$DIR/latest-mac.yml" | awk '{print $NF}' | sort -u)"
-echo "$mac_refs" | grep -q universal && bad "latest-mac.yml references a universal ZIP"
+# A here-string, not a pipe: under pipefail, a SIGPIPE here would hide the fault.
+grep -q universal <<< "$mac_refs" && bad "latest-mac.yml references a universal ZIP"
 echo "$mac_refs" | grep -q "ADE-$V-arm64.zip" || bad "latest-mac.yml does not reference the arm64 ZIP"
 echo "$mac_refs" | grep -q "ADE-$V-x64.zip" || bad "latest-mac.yml does not reference the x64 ZIP"
 for r in $mac_refs; do has "$r" || bad "latest-mac.yml references missing $r"; done

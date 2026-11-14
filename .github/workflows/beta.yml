@@ -266,12 +266,15 @@ jobs:
           # A file being replaced is briefly missing; clients read a 404 as
           # "no beta right now" and check again later.
           manifests=("$out/latest-mac.yml")
+          # Read the names once, then test with a here-string: under pipefail,
+          # `gh | grep -q` can fail with SIGPIPE and skip the delete.
+          feed_assets="$(gh release view beta-feed --json assets --jq '.assets[].name')"
           # A beta without one platform's build must not leave that platform's
           # machines on an older beta's manifest that names a different version.
           for manifest in latest.yml latest-linux.yml latest-linux-arm64.yml; do
             if [ -f "$out/$manifest" ]; then
               manifests+=("$out/$manifest")
-            elif gh release view beta-feed --json assets --jq '.assets[].name' | grep -qx "$manifest"; then
+            elif grep -qxF "$manifest" <<< "$feed_assets"; then
               gh release delete-asset beta-feed "$manifest" --yes
             fi
           done
@@ -325,6 +328,8 @@ jobs:
     permissions:
       contents: write
       issues: write
+      # ios-testflight.yml's gate reads the newest ios-main.yml run.
+      actions: read
     uses: ./.github/workflows/ios-testflight.yml
     with:
       label: ${{ needs.resolve.outputs.tag }}

@@ -48,6 +48,24 @@ runs:
         [[ -n "$build" ]] || { echo "::error::Could not read the Xcode build number."; exit 1; }
         echo "build=$build" >> "$GITHUB_OUTPUT"
 
+    # The one name of this run's build-folder entry, for the restore, the save
+    # and the delete step. A key's entry can never be replaced, so a cold
+    # build saves under its own key (suffix -cold-<run id>); the delete step
+    # then removes the older entry of the same commit.
+    - name: Name the build-folder entry
+      id: dd_key
+      shell: bash
+      env:
+        XCODE_BUILD: ${{ steps.xcode.outputs.build }}
+        COLD: ${{ inputs.cold }}
+      run: |
+        set -euo pipefail
+        prefix="ios-dd-v1-$XCODE_BUILD-"
+        key="$prefix$GITHUB_SHA"
+        if [[ "$COLD" == "true" ]]; then key="$key-cold-$GITHUB_RUN_ID"; fi
+        echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+
     # The Swift packages (~1.2 GB) are restored on every run, saved only on
     # main, and only when Package.resolved changed.
     - name: Restore Swift packages
@@ -62,16 +80,17 @@ runs:
     # build incremental: Xcode recompiles only the Swift files that changed and
     # the files that depend on them. See "Prepare the incremental build".
     # Each main run restores the newest entry and saves the next one, so the
-    # chain starts fresh only when the Xcode build changes. Bump v1 to force
-    # one cold build (or dispatch ios-main.yml with cold).
+    # chain starts fresh only when the Xcode build changes. Bump v1 (in "Name
+    # the build-folder entry") to force one cold build, or dispatch
+    # ios-main.yml with cold.
     - name: Restore the build folder
       id: dd_cache
       if: inputs.cold != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/ios-dd
-        key: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
-        restore-keys: ios-dd-v1-${{ steps.xcode.outputs.build }}-
+        key: ${{ steps.dd_key.outputs.key }}
+        restore-keys: ${{ steps.dd_key.outputs.prefix }}
 
     # Xcode compares each input's modification time, device and inode with
     # what it recorded in the build folder. A fresh checkout changes all
@@ -215,7 +234,7 @@ runs:
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/ios-dd
-        key: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
+        key: ${{ steps.dd_key.outputs.key }}
 
     # The repository's cache space is 10 GB and these are its biggest
     # entries, so main keeps one of each: the entry it just saved. Older
@@ -226,16 +245,21 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
-        DD_PREFIX: ios-dd-v1-${{ steps.xcode.outputs.build }}-
-        KEEP_DD: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
+        DD_PREFIX: ${{ steps.dd_key.outputs.prefix }}
+        KEEP_DD: ${{ steps.dd_key.outputs.key }}
         KEEP_SPM: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
       run: |
         set -euo pipefail
         # An entry saved after this run's own save is never deleted. A slower
         # run of an older commit can replace a newer commit's entry, which
         # costs only rebuild time.
-        kept_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEEP_DD&ref=refs/heads/main" \
-          --jq '[.actions_caches[] | select(.key == env.KEEP_DD)][0].created_at // empty')
+        # A failed request must not fail a build whose tests passed: every
+        # API call here warns and stops, or warns and goes on.
+        if ! kept_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEEP_DD&ref=refs/heads/main" \
+          --jq '[.actions_caches[] | select(.key == env.KEEP_DD)][0].created_at // empty'); then
+          echo "::warning::Could not read the build folder this run saved; nothing deleted."
+          exit 0
+        fi
         if [[ -z "$kept_at" ]]; then
           echo "The build folder this run saved is not listed; nothing deleted."
           exit 0
