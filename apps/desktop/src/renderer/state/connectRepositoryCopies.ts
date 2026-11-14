@@ -33,6 +33,7 @@ import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import { sameMachineKey } from "../../shared/machineAddress";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { fetchAccountMachines } from "../lib/account";
+import { isPageHidden } from "../lib/pageVisibility";
 import type { RepositoryCopy } from "../../shared/repositoryTab";
 import type { AdeAccountMachine } from "../../shared/types";
 import { resolveMachinePresence, type MachinePresence } from "../../shared/types/power";
@@ -79,15 +80,11 @@ function isDue(key: string, now: number, fromTimer: boolean): boolean {
   return !fromTimer && now - retry.triedAt >= RETRY_BASE_MS;
 }
 
-function pageHidden(): boolean {
-  return typeof document !== "undefined" && document.visibilityState === "hidden";
-}
-
 async function connectInBackground(machineKeys: readonly string[], fromTimer: boolean): Promise<void> {
   const connect = window.ade?.machines?.connect;
   if (!isAdeAvailable(connect)) return;
   // A hidden page dials nothing; it passes again when it is shown.
-  if (pageHidden()) return;
+  if (isPageHidden()) return;
   const now = Date.now();
   const due = machineKeys.map((key) => key.toLowerCase()).filter((key) => isDue(key, now, fromTimer));
   if (due.length === 0) return;
@@ -104,6 +101,9 @@ async function connectInBackground(machineKeys: readonly string[], fromTimer: bo
     return;
   }
   for (const key of due) {
+    // Hidden during the read or an earlier dial: stop here. The rest stay due
+    // and the pass runs again when the page is shown.
+    if (isPageHidden()) return;
     const row = machines.machines.find((machine) => sameMachineKey(machine.machineKey, key));
     if (accountMachinePresence(row) !== "online") {
       // Off or asleep: look again later, and never wake it from here.
@@ -194,7 +194,7 @@ export function useConnectRepositoryCopies(): void {
     for (const key of [...retryByMachineKey.keys()]) if (!present.has(key)) retryByMachineKey.delete(key);
     const pass = () => schedule(machineKeys, false);
     const onVisibility = () => {
-      if (!pageHidden()) pass();
+      if (!isPageHidden()) pass();
     };
     pass();
     window.addEventListener("focus", pass);
@@ -202,7 +202,7 @@ export function useConnectRepositoryCopies(): void {
     // Checks every RETRY_BASE_MS; a tick calls nothing unless a computer is due.
     const retry = window.setInterval(() => {
       const now = Date.now();
-      if (pageHidden() || !machineKeys.some((key) => isDue(key.toLowerCase(), now, true))) return;
+      if (isPageHidden() || !machineKeys.some((key) => isDue(key.toLowerCase(), now, true))) return;
       schedule(machineKeys, true);
     }, RETRY_BASE_MS);
     return () => {

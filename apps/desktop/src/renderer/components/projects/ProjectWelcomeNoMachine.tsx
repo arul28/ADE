@@ -27,6 +27,7 @@ import type { AdeAccountMachine } from "../../../shared/types";
 import { sameMachineKey } from "../../../shared/machineAddress";
 import { fetchAccountMachines } from "../../lib/account";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
 import { accountMachinePresence, unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
 import "./ProjectWelcomePage.css";
@@ -187,10 +188,16 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     copy.machineKey ? accountMachines?.find((machine) => sameMachineKey(machine.machineKey, copy.machineKey)) : undefined
   ), [accountMachines]);
   const autoTried = useRef(new Set<string>());
+  // A hidden page connects nothing on its own; the try waits until it is shown.
+  const [pageShown, setPageShown] = useState(() => !isPageHidden());
+  useEffect(() => observePageVisibility({
+    onHidden: () => setPageShown(false),
+    onVisible: () => setPageShown(true),
+  }), []);
   const [autoOpen, setAutoOpen] = useState<{ machineKey: string; machineName: string } | null>(null);
   const [connectFailure, setConnectFailure] = useState<{ machineName: string; detail: string } | null>(null);
   useEffect(() => {
-    if (defaultAddress || autoOpen || !accountMachines) return;
+    if (defaultAddress || autoOpen || !accountMachines || !pageShown) return;
     const connect = window.ade?.machines?.connect;
     if (!isAdeAvailable(connect)) return;
     // ADE Web opens the copy of a tab it moved off a stopped computer again
@@ -229,7 +236,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
         settle();
       },
     );
-  }, [accountMachineOf, accountMachines, autoOpen, copies, defaultAddress, tab.id, tab.lastCopyKey, webMode]);
+  }, [accountMachineOf, accountMachines, autoOpen, copies, defaultAddress, pageShown, tab.id, tab.lastCopyKey, webMode]);
 
   // A row's Connect or Wake: the person asked, so this connect wakes a
   // sleeping ADE Cloud computer and clears a Disconnect.

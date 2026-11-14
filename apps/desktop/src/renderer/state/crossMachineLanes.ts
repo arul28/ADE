@@ -2094,6 +2094,9 @@ function applyReachability(): void {
   const forgotten: string[] = [];
   let soonestDeadlineMs: number | null = null;
   const noteDeadline = (deadlineMs: number) => {
+    // A deadline already passed has nothing left to wait for; scheduling it
+    // would re-run this pass at once, every time.
+    if (deadlineMs <= nowMs) return;
     if (soonestDeadlineMs == null || deadlineMs < soonestDeadlineMs) {
       soonestDeadlineMs = deadlineMs;
     }
@@ -2161,26 +2164,25 @@ function applyReachability(): void {
     else if (drop.sawAttempt) drop.attemptFailed = true;
     runtime.dropsByMachineId.set(machineId, drop);
 
-    // The person's own Disconnect is not a blip to wait out: its rows leave now.
-    if (machine.userDisconnected) {
-      noteDeadline(drop.droppedAtMs + OFFLINE_RETENTION_MS);
-      continue;
-    }
-
-    // `idle` means the target is not dialing and will not start on its own, and
-    // `connected` means it answers but cannot be read for this repository — in
-    // both cases there is no attempt left to wait for.
-    const answered = drop.attemptFailed
-      || machine.state === "idle"
-      || machine.state === "connected";
-    const dimAtMs = drop.droppedAtMs
-      + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS);
-    // A machine that is already dimmed stays dimmed until it is eligible again,
-    // whatever the deadline says — the verdict is the store's, not this tick's.
-    if (entry?.online !== false && nowMs < dimAtMs) {
-      if (entry) reachable.push(machineId);
-      noteDeadline(dimAtMs);
-      continue;
+    // The person's own Disconnect is not a blip to wait out: its rows leave
+    // now, with no floor, and only the retention below still applies.
+    if (!machine.userDisconnected) {
+      // `idle` means the target is not dialing and will not start on its own,
+      // and `connected` means it answers but cannot be read for this
+      // repository — in both cases there is no attempt left to wait for.
+      const answered = drop.attemptFailed
+        || machine.state === "idle"
+        || machine.state === "connected";
+      const dimAtMs = drop.droppedAtMs
+        + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS);
+      // A machine that is already dimmed stays dimmed until it is eligible
+      // again, whatever the deadline says — the verdict is the store's, not
+      // this tick's.
+      if (entry?.online !== false && nowMs < dimAtMs) {
+        if (entry) reachable.push(machineId);
+        noteDeadline(dimAtMs);
+        continue;
+      }
     }
     // Saved chats stay readable however long the computer has been away.
     if (nowMs - drop.droppedAtMs >= OFFLINE_RETENTION_MS && !entry?.sessions.some((session) => session.cloudSavedCopy)) {
