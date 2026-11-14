@@ -8,6 +8,7 @@ import {
   CLOUD_LAUNCH_DRAFT_TTL_MS,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_JOIN_TTL_MS,
+  CLOUD_LAUNCH_MAX_ARGS_BYTES,
   CLOUD_LAUNCH_MAX_FILE_BYTES,
   CLOUD_LAUNCH_MAX_FILES,
   CLOUD_LAUNCH_MAX_PROMPT_CHARS,
@@ -30,10 +31,11 @@ import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, type Cloud
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 
 /**
- * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): a lane
- * on a new computer for a caller with no computer of its own (the web, the
- * phone, an automation on ADE Cloud). A person with a computer still launches
- * from it (`cloudLaneLaunchService.ts`).
+ * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): every
+ * lane on a new computer of its own. An ADE app or CLI sends it and then
+ * follows the computer's own launch (`cloudLaneLaunchService.ts`); a caller
+ * with no computer (the web, the phone, an automation on ADE Cloud) reads
+ * the record here.
  *
  * The new computer drives its own launch. The server never runs a long step:
  * it makes the computer (the one create path, `createComputer`), keeps the
@@ -243,10 +245,20 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     };
   }
   const madeByRaw = body.madeBy && typeof body.madeBy === "object" ? body.madeBy as Record<string, unknown> : null;
+  const agent = madeByRaw?.agent === "chat" || madeByRaw?.agent === "automation" || madeByRaw?.agent === "mcp" ? madeByRaw.agent : null;
   const madeBy: CloudServerLaunchRequest["madeBy"] = madeByRaw?.kind === "automation"
     ? { kind: "automation", ruleId: shortString(madeByRaw.ruleId, 120) }
-    : { kind: "person" };
+    : madeByRaw?.kind === "agent" && agent
+      ? { kind: "agent", agent, chatSessionId: shortString(madeByRaw.chatSessionId, 200) }
+      : { kind: "person" };
   const channel = body.channel === "beta" ? "beta" : "stable";
+  // An ADE app's own launch args, kept as sent: the computer parses them as every entry's.
+  let launch: Record<string, unknown> | null = null;
+  if (body.launch != null) {
+    if (typeof body.launch !== "object" || Array.isArray(body.launch)) return "The launch's settings can't be read.";
+    if (JSON.stringify(body.launch).length > CLOUD_LAUNCH_MAX_ARGS_BYTES) return "The launch's settings are too big.";
+    launch = body.launch as Record<string, unknown>;
+  }
   return {
     launchId,
     kind,
@@ -263,6 +275,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     ...(chat ? { chat } : {}),
     madeBy,
     channel,
+    ...(launch ? { launch } : {}),
   };
 }
 
@@ -330,7 +343,44 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  if (body.retry === true) {
+    const restarted = await restartFailedLaunch(env, userId, parsed.launchId, deps);
+    if (restarted) return restarted;
+  }
   return await startServerLaunch(env, userId, parsed, deps);
+}
+
+/** Whether the computer reported its agent's stage: from then on the lane is the person's, never deleted for them. */
+function agentStartedIn(row: LaunchRow): boolean {
+  const stages = parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" });
+  return stages.some((stage) => stage.id === AGENT_STAGE && stage.status !== "pending");
+}
+
+/**
+ * A Retry of a launch whose computer failed before its agent started (it
+ * couldn't join in time, clone or start): that computer is deleted, and the
+ * launch goes back to `making` with no computer, which the start below then
+ * makes again, under the same id. Anything else (still running, finished, an
+ * agent that started) is left as it is, and the start answers it. A refusal
+ * to delete answers here.
+ */
+async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: string, deps: LaunchRouteDeps): Promise<Response | null> {
+  const row = await ownLaunch(env, userId, launchId);
+  if (!row) return null;
+  const failed = row.state === "failed" || joinNeverFinished(row, deps.now);
+  if (!failed || agentStartedIn(row)) return null;
+  if (row.instance_id) {
+    if (!deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+    await deleteLaunchComputer(env, deps.provider, row, deps.now, { who: "launch_retry", reason: "launch_retried" });
+  }
+  // Only the row this read saw: a start or a report that landed since keeps what it wrote.
+  await env.DB.prepare(`
+    update cloud_launches set state = 'making', instance_id = null, join_expires_at = null, join_used_at = null, join_rejoins = 0,
+      join_user_code = null, approval_url = null, stages_json = null, error = null, session_id = null, updated_at = ?
+    where launch_id = ? and user_id = ? and updated_at = ? and state = ?
+  `).bind(deps.now, launchId, userId, row.updated_at, row.state).run();
+  logCloud("cloud.launch_retried", { userId, launchId, instanceId: row.instance_id });
+  return null;
 }
 
 /**
@@ -414,6 +464,8 @@ export async function startServerLaunch(env: CloudEnv, userId: string, parsed: C
     [CLOUD_LANE_METADATA.projectOrigin]: parsed.project.origin,
     [CLOUD_LAUNCH_METADATA.launchId]: launchId,
     ...(parsed.madeBy?.kind === "automation" ? { ade_made_by_agent: "automation" } : {}),
+    ...(parsed.madeBy?.kind === "agent" ? { ade_made_by_agent: parsed.madeBy.agent } : {}),
+    ...(parsed.madeBy?.kind === "agent" && parsed.madeBy.chatSessionId ? { ade_made_by_chat: parsed.madeBy.chatSessionId } : {}),
     created_by: "ade",
     // The same id as the launch: a repeated start finds the computer it made.
     ade_request_id: launchId,

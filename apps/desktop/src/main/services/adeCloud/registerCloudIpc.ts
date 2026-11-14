@@ -48,7 +48,7 @@ import {
 } from "./cloudAccess";
 import { cloudGitPreflight } from "./cloudGitCredential";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
-import { approveBrainWindow, openCloudApprovalWindow } from "./cloudApprovalWindow";
+import { openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
@@ -130,6 +130,8 @@ export function registerCloudIpc(args: {
    * The lane launch checks it before a computer is made.
    */
   gitPreflight: (originUrl: string | null) => Promise<CloudGitPreflight>;
+  /** This app's update track: a computer it makes follows the same one. */
+  updateChannel: () => "stable" | "beta" | null;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -610,7 +612,6 @@ export function registerCloudIpc(args: {
   };
   // The CLI and agents make, copy and move machines through this app (the
   // new machine signs in through its approval window), over the desktop bridge.
-  const approvalWindows = new Map<string, AbortController>();
   setCloudDesktopActions({
     create: async (machine) => {
       const { madeByChat, madeByAgent, ...shape } = machine;
@@ -631,27 +632,6 @@ export function registerCloudIpc(args: {
       const result = await moveCloudMachine(copyDeps, input, () => undefined);
       sendToAllWindows(IPC.cloudStatusChanged);
       return result;
-    },
-    // A lane launch an agent or the CLI started in the brain: its new
-    // computer signs in through this app's window, as the app's own do.
-    approveWindow: async ({ id, userCode, title }) => {
-      approvalWindows.get(id)?.abort();
-      const controller = new AbortController();
-      approvalWindows.set(id, controller);
-      try {
-        return await approveBrainWindow({
-          userCode,
-          title,
-          signal: controller.signal,
-          directoryBaseUrl: machineCreatorDeps.directoryBaseUrl,
-          getAccountToken: machineCreatorDeps.getAccountToken,
-        }, logger);
-      } finally {
-        if (approvalWindows.get(id) === controller) approvalWindows.delete(id);
-      }
-    },
-    closeApprovalWindow: ({ id }) => {
-      approvalWindows.get(id)?.abort();
     },
   });
 
@@ -773,7 +753,15 @@ export function registerCloudIpc(args: {
     if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
     return result.state === "refused" ? { state: "refused", message: result.message } : { state: result.state };
   };
-  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair, gitPreflight };
+  return {
+    machineCreatorDeps,
+    machines,
+    copyDeps,
+    client: () => requireCloudProvider(credentials),
+    wakeForPair,
+    gitPreflight,
+    updateChannel: () => credentials.updateChannel?.() ?? null,
+  };
 }
 
 /** A pick from the renderer (`CloudPlanCleanupPick`), or null when it isn't one. The server checks it again. */
