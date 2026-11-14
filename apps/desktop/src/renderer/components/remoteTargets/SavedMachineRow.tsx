@@ -1,3 +1,4 @@
+import { isWebClientMode } from "../../lib/webClientMode";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
@@ -360,14 +361,18 @@ export function SavedMachineRow({
                       icon: <Pulse size={14} />,
                       disabled: busy,
                       onSelect: () => onToggleTest(target.id),
-                    }, {
+                    },
+                    // The settings are this computer's SSH route to the
+                    // machine. ADE Web reaches it through the relay only, so
+                    // it has none to edit.
+                    ...(isWebClientMode() ? [] : [{
                       key: "edit",
                       label: formOpen ? "Close settings" : "Rename and settings",
                       ariaLabel: "Edit",
                       icon: <PencilSimple size={14} />,
                       disabled: locked,
                       onSelect: () => onToggleEdit(target),
-                    }]
+                    }])]
                   : []),
                 ...(row.connected
                   ? [{

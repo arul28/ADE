@@ -22,6 +22,8 @@ export type CopyMachine = {
   isLocal: boolean;
   /** Connected now. A machine that is not is never called (and never woken). */
   online: boolean;
+  /** The person disconnected it here: it is not connected, which says nothing of whether it is on. */
+  userDisconnected?: boolean;
 };
 
 /** A copy of the repository that a machine already has. */
@@ -148,6 +150,7 @@ export function copyMachines(
       targetId: connection.target.id,
       isLocal: false,
       online: connection.state === "connected",
+      userDisconnected: connection.reconnectBlocked === "disconnected",
     });
   }
   return machines;

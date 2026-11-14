@@ -360,6 +360,7 @@ function HostedConnectionsPanel({
           onDisconnectRequested={onDisconnectRequested}
           onRemoveRequested={onRemoveRequested}
           accountMachines={accountMachines?.machines}
+          sessionLimit={sessionLimit}
           accountMachinesState={accountMachines?.state}
           accountSignedIn={accountStatus.signedIn}
           onAccountRequested={goToAccount}

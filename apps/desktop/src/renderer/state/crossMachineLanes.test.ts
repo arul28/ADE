@@ -2113,8 +2113,8 @@ describe("believing a drop before a machine dims", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(isOnline()).toBe(true);
 
-    // 45s after the FIRST drop, not after the latest snapshot.
-    await vi.advanceTimersByTimeAsync(22_100);
+    // 40s after the FIRST drop, not after the latest snapshot.
+    await vi.advanceTimersByTimeAsync(17_100);
     expect(isOnline()).toBe(false);
     // Dimmed, not deleted: the lanes and chats are still there to render.
     expect(entry().lanes).toHaveLength(1);
@@ -2137,14 +2137,14 @@ describe("believing a drop before a machine dims", () => {
     stop();
   });
 
-  it("dims a manually disconnected machine at the floor, with no attempt to wait for", async () => {
+  it("dims an idle machine at the floor, with no attempt to wait for", async () => {
     vi.useFakeTimers();
     const { stop, pushState } = await startSeeded();
 
     // `idle` means nothing is dialing and nothing will start on its own, so
     // waiting for a failed attempt would wait forever.
     pushState("idle");
-    await vi.advanceTimersByTimeAsync(44_000);
+    await vi.advanceTimersByTimeAsync(39_000);
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(1_500);
     expect(isOnline()).toBe(false);
@@ -2236,7 +2236,7 @@ describe("believing a drop before a machine dims", () => {
       }],
       connectedCount: 1,
     });
-    await vi.advanceTimersByTimeAsync(44_000);
+    await vi.advanceTimersByTimeAsync(39_000);
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(isOnline()).toBe(false);
@@ -2435,7 +2435,7 @@ describe("believing a drop before a machine dims", () => {
     // A second drop gets a FULL window, not the remainder of the first one.
     pushState("connecting");
     pushState("error");
-    await vi.advanceTimersByTimeAsync(44_000);
+    await vi.advanceTimersByTimeAsync(39_000);
     expect(isOnline()).toBe(true);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(isOnline()).toBe(false);

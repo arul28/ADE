@@ -1057,6 +1057,8 @@ export function assignMachineSections(args: {
   accountMachines?: AdeAccountMachine[];
   /** Keep discovery useful for saved/account dedupe without rendering raw peers. */
   includeDiscoveredRows?: boolean;
+  /** The relays this client trusts besides ADE's own (ADE Web's configured relay): an account machine there can be dialed. */
+  relayBaseUrls?: readonly string[];
 }): MachineSections {
   const {
     targets,
@@ -1176,7 +1178,7 @@ export function assignMachineSections(args: {
       machine,
       matchedTargetId: null,
     };
-    if (accountMachineConnectionState(machine) === "available") {
+    if (accountMachineConnectionState(machine, args.relayBaseUrls ?? []) === "available") {
       sections.available.push(row);
     } else {
       sections.unavailable.push(row);

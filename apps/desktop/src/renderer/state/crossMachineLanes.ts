@@ -131,7 +131,7 @@ const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
  * alone is allowed ten seconds and candidates are tried in sequence, so this
  * floor sits above a full dial cycle.
  */
-const UNREACHABLE_FLOOR_MS = 45_000;
+const UNREACHABLE_FLOOR_MS = 40_000;
 /**
  * Backstop for a machine that never completes a reconnect attempt at all — a
  * dial wedged past its own timeout, or a target whose autoconnect sweep never
@@ -2020,6 +2020,10 @@ type MachineConnectivity = {
   /** Present only for connected machines: the match needs their project list. */
   option: LaneMachineOption | null;
   eligible: boolean;
+  /** The person disconnected it: its rows leave at once, with no floor. */
+  userDisconnected: boolean;
+  /** Shown connected during a reconnect window: when it really dropped. */
+  reconnectingSinceMs: number | null;
 };
 
 function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
@@ -2029,6 +2033,8 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
       state: connection.state,
       option: null,
       eligible: false,
+      userDisconnected: connection.reconnectBlocked === "disconnected",
+      reconnectingSinceMs: typeof connection.reconnectingSinceMs === "number" ? connection.reconnectingSinceMs : null,
     });
   }
   // `deriveLaneMachineOptions` only returns connected machines, so anything it
@@ -2045,6 +2051,8 @@ function resolveMachineConnectivity(): Map<string, MachineConnectivity> {
       state: "connected",
       option,
       eligible: isEligibleMachineOption(option),
+      userDisconnected: false,
+      reconnectingSinceMs: null,
     });
   }
   return byMachineId;
@@ -2093,6 +2101,19 @@ function applyReachability(): void {
 
   for (const [machineId, machine] of connectivity) {
     if (!machine.eligible) continue;
+    if (machine.reconnectingSinceMs != null) {
+      // Shown connected while it reconnects, but it dropped then: the floor
+      // runs from the drop, so every client hides it at the same moment.
+      const drop = runtime.dropsByMachineId.get(machineId)
+        ?? { droppedAtMs: machine.reconnectingSinceMs, sawAttempt: true, attemptFailed: false };
+      runtime.dropsByMachineId.set(machineId, drop);
+      const dimAtMs = drop.droppedAtMs + UNREACHABLE_FLOOR_MS;
+      if (nowMs < dimAtMs) {
+        reachable.push(machineId);
+        noteDeadline(dimAtMs);
+      }
+      continue;
+    }
     runtime.dropsByMachineId.delete(machineId);
     reachable.push(machineId);
   }
@@ -2139,6 +2160,12 @@ function applyReachability(): void {
     if (machine.state === "connecting") drop.sawAttempt = true;
     else if (drop.sawAttempt) drop.attemptFailed = true;
     runtime.dropsByMachineId.set(machineId, drop);
+
+    // The person's own Disconnect is not a blip to wait out: its rows leave now.
+    if (machine.userDisconnected) {
+      noteDeadline(drop.droppedAtMs + OFFLINE_RETENTION_MS);
+      continue;
+    }
 
     // `idle` means the target is not dialing and will not start on its own, and
     // `connected` means it answers but cannot be read for this repository — in

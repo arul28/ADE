@@ -372,6 +372,12 @@ export type RemoteRuntimeConnectionStatus = {
    */
   reconnectBlocked?: "disconnected" | null;
   /**
+   * Set only while a client shows a dropped connection as `connected` during
+   * its short reconnect window: when the connection dropped. Lists that hide
+   * an unreachable machine count from this time, not from the window's end.
+   */
+  reconnectingSinceMs?: number | null;
+  /**
    * Who brings a failed connection back; only set while `state` is "error".
    * `reconnecting`: this app retries on its own. `waiting_for_user`: ADE on
    * the machine went away and this app waits for Reconnect (a dev app after
