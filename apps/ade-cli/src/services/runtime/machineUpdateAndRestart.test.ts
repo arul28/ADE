@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMachineUpdateControls, runMachineUpdateAndRestart } from "./machineUpdateAndRestart";
 
 const runBrainUpdateCommand = vi.fn();
@@ -250,6 +253,14 @@ describe("createMachineUpdateControls", () => {
 
   beforeEach(() => {
     runBrainUpdateCommand.mockReset();
+    // The controls read this machine's update track from ADE_HOME. An empty
+    // home keeps the developer's own track out of the result.
+    vi.stubEnv("ADE_HOME", fs.mkdtempSync(path.join(os.tmpdir(), "ade-update-track-")));
+  });
+
+  afterEach(() => {
+    fs.rmSync(process.env.ADE_HOME!, { recursive: true, force: true });
+    vi.unstubAllEnvs();
   });
 
   it("refuses to update to the version it already runs or an older one, whatever the tag looks like", async () => {

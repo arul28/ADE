@@ -2101,6 +2101,47 @@ measured on an M4 Max: 2.4 ms of brain CPU and one 1.2 ms `sysctl` every five
 minutes on macOS (none on Linux; none on Windows unless memory is short);
 an episode adds about three spawns and 1.3 s of wall time off the loop.
 
+On macOS the same samples drive the iOS simulators' low-memory pass
+(`ade-cli/src/services/runtime/simulatorMemoryReclaimer.ts`, rules in
+`ios/simulatorMemoryReclaim.ts`). It acts only while an episode is open,
+the current sample breaches memory or swap, and the simulators hold
+at least 3 GB and 10% of RAM. The first step warns each lane with a booted
+simulator and logs `ios_simulator.memory_warning_sent` (info: device, terminal
+and chat counts). Ten minutes later, or on a later critical sample, it shuts
+down the simulators that nothing uses (`simctl shutdown`; never erase, delete
+or kill) and logs `ios_simulator.reclaimed_for_memory` (info: counts per
+in-use reason, swap and simulator MB); a failed shutdown logs
+`ios_simulator.reclaim_for_memory_failed` (warn) and does not count. A step
+whose `simctl list` fails logs `ios_simulator.memory_reclaim_failed` (warn,
+with `step`) and is tried again on the next sample. After a
+pass that shut a device down, the next pass waits an hour; a pass that shut
+nothing down tries again on the next sample. While Simulator.app runs, the
+device it last showed (its `CurrentDeviceUDID` setting, one `defaults read`)
+stays on, and any other device must have gone two hours without ADE use, an
+install change or a boot. A device whose boot time cannot be read stays on.
+Any process outside the simulator whose command line names a device keeps
+that device on; a `simctl` command for `booted` keeps every device on.
+`ADE_APPLE_MEMORY_POWER_OFF=0` keeps the warnings and stops the shutdowns.
+The episode in `runtime/resource-pressure.json` keeps the pass's counts as
+`simulatorReclaim`. It sends no analytics event: no closed taxonomy fits it,
+and the episode's own event already counts memory episodes. A sample that
+could take a step costs one process listing; while the simulators hold less
+than the mark, that listing runs at most every 30 minutes. A step costs one
+`simctl list` and, for a shutdown pass, one `ps`, read again before each
+shutdown after the first.
+
+At each start the brain logs `brain.restart_cause` (info) once: why the
+brain before it on the endpoint ended (`update`, `computer_restarted`,
+`service_restarted_by_watchdog`, `service_restarted` or `unknown`), with the
+time, the version, who asked for an update (`requestedByKind`,
+`requestedByName`), the watchdog's freeze cause, and whether memory was low.
+The asker's name comes from the paired device record of its connection
+(the client's own claim only when there is none), and is kept in
+`runtime/update-request.json` only when the update was accepted. A request
+more than 30 minutes before the brain stopped names nobody.
+`brain.remote_update_route` and `autoUpdate.remote_install_requested` carry
+the same `requestedByKind` and `requestedByName` of a remote update.
+
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.

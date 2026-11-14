@@ -700,3 +700,58 @@ export type RemoteRuntimeLocalWorkCheckResult = {
   matches: RemoteRuntimeLocalWorkMatch[];
   hasDirtyWork: boolean;
 };
+
+/** Which ADE client asked a machine for an update (`machine.updateAndRestart`). */
+export type UpdateRequestClientKind = "desktop" | "ios" | "web" | "cli" | "agent" | "unknown";
+
+export type UpdateRequestedBy = {
+  /** The asking machine's name, as `sanitizeUpdateRequestedBy` leaves it. */
+  machineName?: string | null;
+  clientKind?: UpdateRequestClientKind | null;
+};
+
+const REQUESTED_BY_NAME_CHARS = 48;
+const UPDATE_REQUEST_CLIENT_KINDS: ReadonlySet<string> = new Set<UpdateRequestClientKind>([
+  "desktop",
+  "ios",
+  "web",
+  "cli",
+  "agent",
+  "unknown",
+]);
+
+/**
+ * A machine name safe to log and to put in a prompt: no control, format or
+ * line-separator characters; only letters, digits, spaces and `. _ - ' ’ ( )`;
+ * spaces collapsed; at most 48 characters. Null when nothing is left.
+ */
+export function sanitizeMachineName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "")
+    .replace(/[^\p{L}\p{N} ._\-'’()]+/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, REQUESTED_BY_NAME_CHARS)
+    .trim();
+  return cleaned || null;
+}
+
+/** Only a known client kind, lower-cased; null for anything else. */
+export function sanitizeUpdateRequestClientKind(value: unknown): UpdateRequestClientKind | null {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return UPDATE_REQUEST_CLIENT_KINDS.has(raw) ? raw as UpdateRequestClientKind : null;
+}
+
+/**
+ * A `requestedBy` value from the wire, made safe to log and to show. Null
+ * when nothing usable is left.
+ */
+export function sanitizeUpdateRequestedBy(value: unknown): UpdateRequestedBy | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const machineName = sanitizeMachineName(record.machineName);
+  const clientKind = sanitizeUpdateRequestClientKind(record.clientKind);
+  if (!machineName && !clientKind) return null;
+  return { ...(machineName ? { machineName } : {}), ...(clientKind ? { clientKind } : {}) };
+}

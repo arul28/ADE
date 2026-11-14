@@ -4,6 +4,7 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { thisMachineDisplayName } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
 import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
@@ -1895,7 +1896,15 @@ export function registerRuntimeBridge({
       >(
         target.id,
         "machine.updateAndRestart",
-        { targetVersion },
+        {
+          targetVersion,
+          // Who asked, for the other machine's logs and its agents' continue
+          // message. An older brain ignores the field.
+          requestedBy: {
+            machineName: (await thisMachineDisplayName()) ?? undefined,
+            clientKind: "desktop",
+          },
+        },
         {
           // Downloading and installing a build can take minutes, and the
           // restart itself drops the connection — a silent retry would run the

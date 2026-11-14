@@ -2104,6 +2104,15 @@ projectless runtime method `machine.updateAndRestart` does that. It requires the
 inherits the paired/authenticated channel; it is never automatic and never
 silent.
 
+The host records who asked (`requestedBy`: a machine name and a client kind).
+The name comes from the paired device record of the connection; the client's
+own claim counts only when there is none, and it is cleaned and length-capped
+either way. It appears in `brain.remote_update_route` and
+`autoUpdate.remote_install_requested`, and, when the update was accepted, in
+the message agents get after the restart ("an update to 1.2.3 that "Mac Studio"
+asked for"). It never changes the routing, and an older client or app that
+sends or reads no such field keeps working.
+
 The client names the version it believes is newest (`targetVersion`); the host
 refuses to "update" to a version it already runs or has passed. A versioned
 request the machine already satisfies installs nothing and restarts nothing — it

@@ -520,6 +520,11 @@ export class ProjectScopeRegistry {
     };
   }
 
+  /** Every scope whose boot has completed, without opening any. */
+  listReady(): ProjectScope[] {
+    return [...this.readyScopes.values()];
+  }
+
   /** Return only a scope whose boot has already completed. */
   getIfReady(projectId: ProjectId): ProjectScope | null {
     return this.readyScopes.get(projectId) ?? null;
