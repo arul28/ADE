@@ -216,7 +216,7 @@ function MenuLink({
   children: string;
 }) {
   const className =
-    "focus-ring flex items-center justify-between border-b border-white/[0.06] py-3.5 font-serif text-[26px] leading-none text-white";
+    "focus-ring flex items-center justify-between border-b border-white/[0.06] py-3.5 font-display text-[26px] leading-none text-white";
   if (to) {
     return (
       <Link to={to} data-ade-analytics-feature={feature} className={className}>

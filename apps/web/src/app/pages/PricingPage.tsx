@@ -64,7 +64,7 @@ function extraHourList(): string {
   return parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}` : parts.join("");
 }
 
-const serifHeading = "font-serif font-normal text-white";
+const serifHeading = "font-display text-white";
 const wrap = "mx-auto max-w-[1180px] px-5 sm:px-8";
 
 /**
@@ -119,11 +119,11 @@ function PricingHero() {
           <h1
             id="plans-title"
             className={cn(serifHeading, "mt-5")}
-            style={{ fontSize: "clamp(44px, 5.6vw, 84px)", lineHeight: 0.98, letterSpacing: "-0.02em" }}
+            style={{ fontSize: "clamp(44px, 5.6vw, 84px)", lineHeight: 0.98, letterSpacing: "-0.04em" }}
           >
             {formatCount(FREE_PLAN.hours)} hours free, every month.
             <br />
-            <em className="italic text-[color:var(--color-lamp)]">More costs pennies.</em>
+            <span className="text-white/45">More costs pennies.</span>
           </h1>
           <p className="mx-auto mt-5 max-w-[44rem] text-[clamp(16px,1.3vw,19px)] leading-[1.6] text-white/65">
             {CHEAPEST_PAID ? `${formatCount(CHEAPEST_PAID.hours)} hours for $${CHEAPEST_PAID.priceUsd}. ` : ""}A computer that is asleep uses none.
@@ -176,7 +176,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       </div>
       <p className="mt-4 flex items-baseline gap-1.5">
         <span
-          className={cn("font-serif leading-none", lit ? "text-[color:var(--color-lamp)]" : "text-white")}
+          className={cn("font-display leading-none", lit ? "text-[color:var(--color-lamp)]" : "text-white")}
           style={{ fontSize: "clamp(56px, 5vw, 68px)" }}
         >
           ${plan.priceUsd}
@@ -387,7 +387,7 @@ function Slider({
         <label htmlFor={id} className="text-[15px] font-medium text-white/85">
           {label}
         </label>
-        <span className="font-serif text-[30px] leading-none text-white tabular-nums">{display}</span>
+        <span className="font-display text-[30px] leading-none text-white tabular-nums">{display}</span>
       </div>
       <input
         id={id}
@@ -486,7 +486,7 @@ function SizesPanel() {
             />
             <div className="relative flex items-baseline justify-between">
               <h3 className="text-[18px] font-semibold text-white">{size.label}</h3>
-              <span className="font-serif text-[44px] leading-none text-[color:var(--color-lamp)]">{size.rate}×</span>
+              <span className="font-display text-[44px] leading-none text-[color:var(--color-lamp)]">{size.rate}×</span>
             </div>
             <p className="relative mt-1 truncate text-[14px] text-white/65">{size.use}</p>
             <div className="relative mt-5 flex gap-1" aria-label={`Uses ${size.rate} hours of your plan each hour`}>
@@ -530,7 +530,7 @@ function ExtrasPanel() {
               <div key={plan.id} className="flex items-baseline justify-between py-3">
                 <dt className="text-[15px] text-white/70">{plan.name}</dt>
                 <dd className="text-[15px] text-white/55">
-                  <span className="font-serif text-[26px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> an hour
+                  <span className="font-display text-[26px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> an hour
                 </dd>
               </div>
             ))}
@@ -540,7 +540,7 @@ function ExtrasPanel() {
         <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.02] p-6 sm:p-8">
           <h3 className="text-[17px] font-semibold text-white">Extra disk</h3>
           <p className="mt-5 flex items-baseline gap-2">
-            <span className="font-serif text-[60px] leading-none text-white">${EXTRA_DISK_USD_PER_10GB_MONTH}</span>
+            <span className="font-display text-[60px] leading-none text-white">${EXTRA_DISK_USD_PER_10GB_MONTH}</span>
             <span className="text-[15px] text-white/55">for each 10 GB, a month</span>
           </p>
           <ul className="mt-6 flex flex-col gap-2 text-[14px] leading-relaxed text-white/60">
@@ -573,7 +573,7 @@ function CleanupPanel() {
       <ol className="mt-6 grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
         {steps.map((step, index) => (
           <li key={step.title} className="border-t border-white/[0.12] pt-5">
-            <span className="font-serif text-[34px] leading-none text-[color:var(--color-lamp)]">{index + 1}</span>
+            <span className="font-display text-[34px] leading-none text-[color:var(--color-lamp)]">{index + 1}</span>
             <h3 className="mt-4 text-[16px] font-semibold text-white">{step.title}</h3>
             <p className="mt-2 text-[14px] leading-relaxed text-white/55">{step.body}</p>
           </li>
@@ -586,7 +586,7 @@ function CleanupPanel() {
 function FreePanel() {
   return (
     <div className="grid gap-8 rounded-[28px] border border-white/[0.08] bg-[radial-gradient(120%_120%_at_0%_0%,rgba(255,210,122,0.08),transparent_55%)] p-7 sm:p-10 md:grid-cols-[1fr_1.1fr] md:gap-12">
-      <p className="font-serif text-[clamp(26px,2.8vw,36px)] leading-[1.15] text-white">
+      <p className="font-display text-[clamp(26px,2.8vw,36px)] leading-[1.15] text-white">
         {formatCount(FREE_PLAN.hours)} hours and {FREE_PLAN.diskGb} GB every month. You never pay to start.
       </p>
       <ul className="flex flex-col gap-4 self-center text-[15px] leading-relaxed text-white/80">

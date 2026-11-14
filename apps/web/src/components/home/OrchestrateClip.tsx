@@ -59,10 +59,10 @@ function Heading() {
   return (
     <h2
       id="orchestrate-title"
-      className="text-center font-serif font-normal text-white"
-      style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.02em" }}
+      className="text-center font-display text-white"
+      style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.04em" }}
     >
-      Every model, <em className="italic text-[color:var(--color-violet-bright)]">one team.</em>
+      Every model, <span className="text-white/45">one team.</span>
     </h2>
   );
 }

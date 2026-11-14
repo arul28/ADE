@@ -4,61 +4,61 @@ import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { MARKETING_CTA_LABELS, MARKETING_CTA_POSITIONS, type MarketingCtaLabel } from "../../lib/marketingAnalytics";
 import { CloudLockup } from "../cloud/CloudMark";
-import { City, Moon, NightSky } from "../cloud/NightCity";
+import { PlanButton } from "../cloud/PlanButton";
 import { AppleMark } from "./marks";
-import { CloudCharts } from "./CloudCharts";
+import { CloudCharts, CloudSources } from "./CloudCharts";
 
 /**
- * ADE Cloud on the home page, right under the hero. It picks a fight: one
- * card that puts ADE's monthly bill next to every agent app that publishes a
- * cloud computer price (drag the hours and watch), or the free hours each
- * gives; the apps with no cloud at all; then the four plans, each opening
- * the web app at that plan. Competitor numbers live in
+ * ADE Cloud on the home page, right under the hero. It picks a fight: three
+ * benchmark-style charts against every agent app that publishes a cloud
+ * price, the roster of apps with no cloud at all, then the four plans, each
+ * opening the web app at that plan. Competitor numbers live in
  * `lib/cloudCompetitors.ts` with their sources.
  */
 export function CloudSection() {
   return (
-    <section
-      id="ade-cloud"
-      aria-labelledby="ade-cloud-title"
-      className="relative scroll-mt-16 overflow-hidden"
-      style={{ background: "linear-gradient(180deg, #0a0a0f 0%, var(--color-night) 18%, #17123a 58%, var(--color-dusk) 100%)" }}
-    >
-      <NightSky />
-      <Moon className="right-[9%] top-[clamp(56px,8vw,110px)] h-[clamp(40px,4.6vw,68px)] w-[clamp(40px,4.6vw,68px)]" />
-
-      <div className="relative mx-auto max-w-[1180px] px-5 pt-[clamp(72px,8vw,120px)] sm:px-8">
-        <div className="text-center">
-          <CloudLockup className="justify-center text-[17px] text-white" markClassName="h-6" />
-          <h2
-            id="ade-cloud-title"
-            className="mt-5 font-serif font-normal text-white"
-            style={{ fontSize: "clamp(42px, 6vw, 92px)", lineHeight: 0.98, letterSpacing: "-0.02em" }}
-          >
-            Cloud computers for your agents.
-            <br />
-            <em className="italic text-[color:var(--color-lamp)]">For a fraction of the price.</em>
-          </h2>
-          <p className="mx-auto mt-5 max-w-[40rem] text-[clamp(16px,1.3vw,19px)] leading-[1.6] text-white/65">
-            {formatCount(FREE_PLAN.hours)} hours free every month, then the cheapest cloud hours we could find.
-          </p>
+    <section id="ade-cloud" aria-labelledby="ade-cloud-title" className="relative scroll-mt-16 overflow-hidden">
+      <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[520px]" style={{ background: "radial-gradient(60% 100% at 50% 0%, rgba(124,58,237,0.16), transparent 70%)" }} />
+      <div className="relative mx-auto max-w-[1180px] px-5 pb-[clamp(72px,8vw,112px)] pt-[clamp(72px,8vw,120px)] sm:px-8">
+        <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
+          <div className="max-w-[820px]">
+            <CloudLockup className="text-[15px] text-white/80" markClassName="h-5" />
+            <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.08 }}>
+              Cloud computers for your agents.{" "}
+              <span className="text-white/45">
+                {formatCount(FREE_PLAN.hours)} hours free every month, and the cheapest hours after that.
+              </span>
+            </h2>
+          </div>
+          <div className="flex shrink-0 gap-3">
+            <PlanButton cta={MARKETING_CTA_LABELS.GET_STARTED_FREE} position={MARKETING_CTA_POSITIONS.HOME_CLOUD} tone="lamp">
+              Start free
+            </PlanButton>
+            <a
+              href={`${LINKS.webClient}/?cloudPlan=free`}
+              data-ade-analytics-cta={MARKETING_CTA_LABELS.CHOOSE_PLAN_FREE}
+              data-ade-analytics-position={MARKETING_CTA_POSITIONS.HOME_CLOUD}
+              className="focus-ring inline-flex h-11 items-center rounded-full border border-white/15 px-5 text-[15px] font-medium text-white/85 hover:border-white/35 hover:text-white"
+            >
+              Open in the web app
+            </a>
+          </div>
         </div>
 
         <CloudCharts />
         <Plans />
 
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-[14px] text-white/65">
-          <span className="text-[12px] font-medium uppercase tracking-[0.12em] text-[color:var(--color-lamp)]">Coming soon</span>
+        <p className="mt-6 flex flex-wrap items-center gap-x-5 gap-y-2 text-[14px] text-white/55">
+          <span className="text-white/80">Coming soon</span>
           <span className="inline-flex items-center gap-2">
-            <Smartphone className="h-4 w-4 text-white/55" /> iOS Simulator in the cloud
+            <Smartphone className="h-4 w-4" /> iOS Simulator in the cloud
           </span>
           <span className="inline-flex items-center gap-2">
-            <AppleMark className="h-4 w-4 text-white/55" /> Mac computers in the cloud
+            <AppleMark className="h-4 w-4" /> Mac computers in the cloud
           </span>
-        </div>
+        </p>
+        <CloudSources />
       </div>
-
-      <City scale={0.7} count={15} seed={11} className="mt-[clamp(48px,6vw,80px)]" />
     </section>
   );
 }
@@ -83,8 +83,8 @@ function Plans() {
             data-ade-analytics-cta={PLAN_CTA[plan.id]}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.HOME_CLOUD}
             className={cn(
-              "focus-ring group relative flex flex-col rounded-[24px] border p-5 transition-transform hover:-translate-y-0.5",
-              free ? "border-[color:var(--color-lamp)]/45 bg-[rgba(255,210,122,0.08)]" : "border-white/[0.09] bg-[#15112f]/80 hover:border-white/20",
+              "focus-ring group relative flex flex-col rounded-[20px] border bg-[#0f0e16] p-5 transition-colors",
+              free ? "border-[#ffc861]/40 hover:border-[#ffc861]/70" : "border-white/[0.08] hover:border-white/25",
             )}
           >
             <div className="flex items-center justify-between">
@@ -92,11 +92,11 @@ function Plans() {
               <ArrowUpRight className="h-4 w-4 text-white/35 transition-colors group-hover:text-white" />
             </div>
             <p className="mt-3 flex items-baseline gap-1">
-              <span className={cn("font-serif text-[40px] leading-none", free ? "text-[color:var(--color-lamp)]" : "text-white")}>${plan.priceUsd}</span>
+              <span className={cn("font-display text-[36px] leading-none", free ? "text-[#ffc861]" : "text-white")}>${plan.priceUsd}</span>
               <span className="text-[13px] text-white/45">a month</span>
             </p>
             <p className="mt-2 text-[14px] text-white/70">
-              <span className="font-semibold text-white">{formatCount(plan.hours)}</span> hours
+              <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> hours
             </p>
           </a>
         );

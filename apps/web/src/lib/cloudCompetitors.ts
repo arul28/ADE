@@ -39,6 +39,7 @@ export const RIVALS: Rival[] = [
   {
     id: "capy",
     name: "Capy",
+    logo: "/images/competitors/logo-capy.webp",
     machine: "Medium, 2 vCPU · 8 GB",
     // $0.20 an hour from plan credits; Lite ($20 a month, $20 of credits) is the least you can pay.
     monthlyUsd: (hours) => Math.max(20, hours * 0.2),
@@ -50,6 +51,7 @@ export const RIVALS: Rival[] = [
   {
     id: "paradev",
     name: "Paradev",
+    logo: "/images/competitors/logo-paradev.webp",
     machine: "Workspace, 4 vCPU · 8 GB",
     // Team: $60 a seat with 150 workspace hours, then $0.06 per GB-hour ($0.48 an hour at 8 GB).
     monthlyUsd: (hours) => 60 + Math.max(0, hours - 150) * 0.48,
@@ -61,6 +63,7 @@ export const RIVALS: Rival[] = [
   {
     id: "cloudroom",
     name: "Cloudroom",
+    logo: "/images/competitors/logo-cloudroom.webp",
     machine: "Cloud sandbox, size not published",
     // Free: 3,000 credits each 30 days; Pro: $50 for 50,000 credits; the page puts a typical agent hour at about 100 credits.
     monthlyUsd: (hours) => (hours <= 30 ? 0 : hours <= 500 ? 50 : null),
@@ -73,7 +76,7 @@ export const RIVALS: Rival[] = [
   {
     id: "copilot",
     name: "GitHub Copilot",
-    logo: "/images/competitors/github.webp",
+    logo: "/images/competitors/logo-copilot.svg",
     machine: "Cloud sandbox, 4 GiB",
     // $0.000024 per compute second plus $0.000003 per GiB-second, at 4 GiB; a Copilot plan comes on top.
     monthlyUsd: (hours) => hours * 0.1296,
@@ -87,12 +90,13 @@ export const RIVALS: Rival[] = [
   {
     id: "superconductor",
     name: "Superconductor",
+    logo: "/images/competitors/logo-superconductor.webp",
     machine: "2 vCPU · 4 GB",
-    // 200 credits an hour; Pro overage is $25 per 10,000 credits. Its free 20,000 credits are a one-time start.
+    // 200 credits an hour; Pro ($100) overage is $25 per 10,000 credits. Free is 20,000 starting credits, once.
     perHourCents: 50,
-    freeHours: null,
+    freeHours: 0,
     estimate: true,
-    note: "Pro overage rate; free credits are one-time",
+    note: "Pro overage rate; its free credits come once, not monthly",
     source: "https://www.superconductor.com/pricing",
   },
 ];
@@ -100,24 +104,29 @@ export const RIVALS: Rival[] = [
 /** Cloud agents whose price bundles the computer with model use, so there is no compute price to compare. */
 export const NO_PUBLISHED_PRICE = ["Claude", "Cursor", "Codex", "Devin", "Jules", "Warp"] as const;
 
-export type CloudStatus = "yes" | "no" | "closing" | "unclear";
+export type CloudStatus = "cloud" | "none" | "closing" | "unpriced";
 
-/** Every agent app ademark.dev measures, plus Conductor, and whether it hosts cloud computers for you. */
-export const CLOUD_ROSTER: Array<{ name: string; cloud: CloudStatus; detail: string }> = [
-  { name: "Capy", cloud: "yes", detail: "From $0.10 an hour, on a $20 plan" },
-  { name: "Paradev", cloud: "yes", detail: "From the $60 Team seat" },
-  { name: "Cloudroom", cloud: "yes", detail: "30 hours free, by its own estimate" },
-  { name: "Claude", cloud: "yes", detail: "Bundled into Claude plans" },
-  { name: "Traycer", cloud: "yes", detail: "A paid add-on, price not published" },
-  { name: "Emdash", cloud: "unclear", detail: "Mentions a cloud; no price published" },
-  { name: "Zeron", cloud: "unclear", detail: "Lists a cloud option; no details" },
-  { name: "Conductor", cloud: "closing", detail: "Cloud shuts down November 20" },
-  { name: "T3 Code", cloud: "no", detail: "Your own machine or VM" },
-  { name: "super.eng", cloud: "no", detail: "Agents run on your machine" },
-  { name: "Paseo", cloud: "no", detail: "Runs on your own machines" },
-  { name: "Diri", cloud: "no", detail: "Local only" },
-  { name: "MonoCode", cloud: "no", detail: "Local CLI launcher" },
-  { name: "Synara", cloud: "no", detail: "Tunnels to your machine" },
-  { name: "bb", cloud: "no", detail: "Local-first" },
-  { name: "Orca", cloud: "no", detail: "SSH or your own VMs" },
+/**
+ * Every agent app ademark.dev measures, plus Conductor (measured, then hidden
+ * after Meta bought its maker), and whether it hosts cloud computers for you.
+ * super.engineering (Super Dot Engineering LLC) is not Superconductor
+ * (Volition, Inc.); their own terms pages name different companies.
+ */
+export const CLOUD_ROSTER: Array<{ name: string; logo: string; cloud: CloudStatus; detail: string }> = [
+  { name: "Capy", logo: "/images/competitors/logo-capy.webp", cloud: "cloud", detail: "$0.20 an hour, on a $20 plan" },
+  { name: "Paradev", logo: "/images/competitors/logo-paradev.webp", cloud: "cloud", detail: "From the $60 Team seat" },
+  { name: "Cloudroom", logo: "/images/competitors/logo-cloudroom.webp", cloud: "cloud", detail: "Credits; about 30 free hours" },
+  { name: "Claude", logo: "/images/competitors/logo-claude.webp", cloud: "cloud", detail: "Bundled into Claude plans" },
+  { name: "Traycer", logo: "/images/competitors/logo-traycer.webp", cloud: "unpriced", detail: "Paid add-on, no public price" },
+  { name: "Emdash", logo: "/images/competitors/logo-emdash.svg", cloud: "unpriced", detail: "Early access, no public price" },
+  { name: "Zeron", logo: "/images/competitors/logo-zeron.webp", cloud: "unpriced", detail: "Hosted on Boat, no public price" },
+  { name: "Conductor", logo: "/images/competitors/logo-conductor-app.webp", cloud: "closing", detail: "Cloud shuts down November 20" },
+  { name: "T3 Code", logo: "/images/competitors/logo-t3.webp", cloud: "none", detail: "Your own machine or VM" },
+  { name: "super.engineering", logo: "/images/competitors/logo-super-engineering.webp", cloud: "none", detail: "Agents run on your machine" },
+  { name: "Paseo", logo: "/images/competitors/logo-paseo.svg", cloud: "none", detail: "Runs on your own machines" },
+  { name: "Diri", logo: "/images/competitors/logo-diri.webp", cloud: "none", detail: "Local only" },
+  { name: "MonoCode", logo: "/images/competitors/logo-monocode.webp", cloud: "none", detail: "Local launcher" },
+  { name: "Synara", logo: "/images/competitors/logo-synara.webp", cloud: "none", detail: "Tunnels to your machine" },
+  { name: "bb", logo: "/images/competitors/logo-bb.webp", cloud: "none", detail: "Local-first" },
+  { name: "Orca", logo: "/images/competitors/logo-orca.webp", cloud: "none", detail: "SSH to your own VMs" },
 ];

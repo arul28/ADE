@@ -16,12 +16,12 @@ export function DownloadSection() {
       <div className="relative">
         <img src="/images/ade-dock-icon.webp" alt="" className="mx-auto h-16 w-16 rounded-2xl shadow-[0_20px_60px_rgba(124,58,237,0.45)]" />
         <h2
-          className="mt-6 font-serif font-normal text-white"
-          style={{ fontSize: "clamp(36px, 5vw, 68px)", lineHeight: 1.02, letterSpacing: "-0.02em" }}
+          className="mt-6 font-display text-white"
+          style={{ fontSize: "clamp(36px, 5vw, 68px)", lineHeight: 1.02, letterSpacing: "-0.04em" }}
         >
           Free. Open source.
           <br />
-          <em className="italic text-[color:var(--color-violet-bright)]">On every screen.</em>
+          <span className="text-white/45">On every screen.</span>
         </h2>
         <p className="mx-auto mt-5 max-w-[30rem] text-[15px] leading-[1.6] text-white/55">
           The app costs nothing. ADE Cloud is optional, and starts with{" "}

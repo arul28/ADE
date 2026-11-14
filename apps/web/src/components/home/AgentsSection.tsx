@@ -28,10 +28,10 @@ export function AgentsSection() {
       <div className="mx-auto max-w-[760px] text-center">
         <h2
           id="agents-title"
-          className="font-serif font-normal text-white"
-          style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.02em" }}
+          className="font-display text-white"
+          style={{ fontSize: "clamp(36px, 4.4vw, 64px)", lineHeight: 1.02, letterSpacing: "-0.04em" }}
         >
-          Every plan you <em className="italic text-[color:var(--color-violet-bright)]">already pay for.</em>
+          Every plan you <span className="text-white/45">already pay for.</span>
         </h2>
         <p className="mx-auto mt-4 text-[clamp(15px,1.2vw,17px)] leading-[1.6] text-white/60">
           {AGENTS.length} coding agents and 200+ model providers, in one picker.
