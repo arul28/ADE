@@ -2245,8 +2245,8 @@ describe("AgentChatMessageList transcript rendering", () => {
         action: "wait",
       });
     });
-    expect(await screen.findByText("Waiting for Codex output…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Restart & resume" })).toBeTruthy();
+    expect(await screen.findByText("Waiting for Codex…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart Codex" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByRole("button", { name: "Send nudge" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry same server" })).toBeTruthy();
@@ -2268,9 +2268,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "session-1", onCodexRecovery });
 
-    fireEvent.click(screen.getByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart Codex" }));
     expect((await screen.findByRole("alert")).textContent).toContain("no longer active");
-    expect((screen.getByRole("button", { name: "Restart & resume" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Restart Codex" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hides raw moderation rows and keeps cumulative diagnostics behind turn details", () => {
@@ -2387,7 +2387,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.queryByRole("button", { name: "Restart & resume" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart Codex" })).toBeNull();
     expect(screen.getByText("Recovered")).toBeTruthy();
     expect(screen.getByText(/restarted the Codex app-server/)).toBeTruthy();
   });
