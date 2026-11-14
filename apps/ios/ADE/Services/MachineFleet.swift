@@ -362,6 +362,9 @@ final class MachineFleet: ObservableObject {
 
   /// Sign-out or account switch: close everything and forget in-memory rosters.
   func reset() {
+    // A connect still waiting on a cloud wake belongs to the last account: it
+    // stops at its next check and writes nothing into the new account's set.
+    keepLiveChoices += 1
     for connection in connections.values {
       connection.stop(reason: "Signed out.", clearAttention: true)
     }

@@ -6614,7 +6614,17 @@ final class SyncService: ObservableObject {
         + (currentDirectAddress.map { [$0] } ?? [])
         + (activeHostProfile?.savedAddressCandidates ?? []).filter { !syncIsFullWebSocketRoute($0) }
     )
+    // A switch that stops here has not touched the connection yet: put the
+    // project identity back, so the phone does not read as on the new project.
+    func restorePreviousProjectIdentity() {
+      setActiveProjectId(previousActiveProjectId, rootPath: previousActiveProjectRootPath)
+      latestRemoteDbVersion = previousLatestRemoteDbVersion
+      resetOutboundCursorStateForActiveProject()
+      remoteProjectCatalog = previousRemoteProjectCatalog
+      refreshProjectCatalog()
+    }
     guard !addressCandidates.isEmpty || !relayCandidates.isEmpty else {
+      restorePreviousProjectIdentity()
       throw NSError(domain: "ADE", code: 25, userInfo: [
         NSLocalizedDescriptionKey: "The machine did not provide an address for that project."
       ])
@@ -6624,6 +6634,7 @@ final class SyncService: ObservableObject {
     let hasBundledToken = bundledToken?.isEmpty == false
     let resolvedToken = hasBundledToken ? bundledToken : previousToken
     guard let resolvedToken else {
+      restorePreviousProjectIdentity()
       throw NSError(domain: "ADE", code: 26, userInfo: [
         NSLocalizedDescriptionKey: "The machine did not provide credentials for that project, and this phone has no saved pairing for that machine."
       ])
@@ -29242,11 +29253,16 @@ extension SyncService {
   /// answer. False when it is not one, the wake could not be sent, the user
   /// disconnected it, or the focus moved.
   func wakeFocusedCloudMachineIfAsleep() async -> Bool {
+    let choiceBefore = userConnectionChoiceGeneration
     guard let key = focusedMachineKey, cloudMachineFleetKeys.contains(key),
           connectionState != .connected, !autoReconnectPausedByUser,
           await beginCloudWakeIfAsleep(fleetKey: key)
     else { return false }
     defer { endCloudWake(fleetKey: key) }
+    // A computer the user picked during the wake wins: this older wake does
+    // not start a reconnect that would supersede that pick.
+    guard choiceBefore == userConnectionChoiceGeneration, focusedMachineKey == key,
+          !Task.isCancelled else { return false }
     await reconnectIfPossible()
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: Self.cloudWakeConnectTimeout)

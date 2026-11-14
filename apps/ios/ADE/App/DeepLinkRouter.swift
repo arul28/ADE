@@ -791,8 +791,10 @@ final class DeepLinkRouter {
       }
       guard sync.currentProjectSelectionGeneration == selection else { return }
       if sync.connectionState == .connected, sync.focusedMachineKey == ownerKey, !sync.isActiveProject(project) {
-        await sync.openProjectForHubChat(project)
+        let retrySelection = await sync.openProjectForHubChat(project)
         guard !Task.isCancelled else { return }
+        // A project picked during the retry wins too.
+        if let retrySelection, sync.currentProjectSelectionGeneration != retrySelection { return }
       }
     }
     guard sync.isActiveProject(project) else {
