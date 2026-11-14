@@ -1268,6 +1268,25 @@ function seedRemoteChatStore() {
   return rootPath;
 }
 
+describe("AgentChatPane unsent draft of an open chat", () => {
+  it("keeps the draft when the tab moves to another computer's copy of the project", async () => {
+    const session = buildSession("session-draft-move");
+    installAdeMocks({ sessions: [session] });
+    seedDrawerStore();
+    const first = renderPane(session);
+    const textbox = await screen.findByPlaceholderText("Type to vibecode...") as HTMLTextAreaElement;
+    fireEvent.change(textbox, { target: { value: "Unsent words on the first computer." } });
+    // Closing the pane saves the draft.
+    first.unmount();
+
+    // The tab's computer went away: the tab now shows the copy on another
+    // computer, in another folder. The chat itself is the same one.
+    seedRemoteChatStore();
+    renderPane(session);
+    expect(await screen.findByDisplayValue("Unsent words on the first computer.")).toBeTruthy();
+  });
+});
+
 describe("AgentChatPane attachment drop target", () => {
   it("routes a file dropped on the chat header through the composer pipeline", async () => {
     const session = buildSession("session-drop");

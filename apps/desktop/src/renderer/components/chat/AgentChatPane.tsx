@@ -2344,6 +2344,8 @@ function composerDraftStorageKey(scope: {
 /** Draft key for a personal pane before its first message creates the chat. */
 const PERSONAL_DRAFT_COMPANION_STATE_KEY = "personal:draft";
 const PERSONAL_COMPOSER_DRAFT_ROOT = "personal";
+/** The key root of an open project chat's draft: the session id alone names it. */
+const SESSION_COMPOSER_DRAFT_ROOT = "session";
 
 function composerDraftStorageKeys(scope: {
   projectRoot: string | null | undefined;
@@ -5154,13 +5156,26 @@ export function AgentChatPane({
     companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
       ? `draft:${legacyWorkDraftLaneId}`
       : null;
+  // An open chat's draft belongs to the chat, not to the copy the tab shows.
+  // The tab moves to another copy when its computer goes away, and a key with
+  // that copy's folder in it made the typed draft vanish with the move.
+  const sessionDraftRoot = selectedSessionId && !chatScope ? SESSION_COMPOSER_DRAFT_ROOT : null;
   const composerDraftStorageKeyValues = useMemo(() => {
     const primary = composerDraftStorageKeys({
-      projectRoot: composerDraftProjectRoot,
+      projectRoot: sessionDraftRoot ?? composerDraftProjectRoot,
       companionStateKey,
       surfaceProfile,
       workDraftKind: workDraftStorageKind,
     });
+    // Drafts saved before, under the folder of the copy then on screen.
+    const folderKeyed = sessionDraftRoot
+      ? composerDraftStorageKeys({
+          projectRoot: composerDraftProjectRoot,
+          companionStateKey,
+          surfaceProfile,
+          workDraftKind: workDraftStorageKind,
+        })
+      : [];
     const legacy = legacyWorkDraftCompanionStateKey
       ? composerDraftStorageKeys({
           projectRoot: composerDraftProjectRoot,
@@ -5169,8 +5184,8 @@ export function AgentChatPane({
           workDraftKind: workDraftStorageKind,
         })
       : [];
-    return [...new Set([...primary, ...legacy])];
-  }, [companionStateKey, composerDraftProjectRoot, legacyWorkDraftCompanionStateKey, surfaceProfile, workDraftStorageKind]);
+    return [...new Set([...primary, ...folderKeyed, ...legacy])];
+  }, [companionStateKey, composerDraftProjectRoot, legacyWorkDraftCompanionStateKey, sessionDraftRoot, surfaceProfile, workDraftStorageKind]);
   const composerDraftStorageKeyValue = composerDraftStorageKeyValues[0]!;
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);

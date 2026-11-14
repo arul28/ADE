@@ -14,6 +14,7 @@ import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneLi
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
+import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import {
   normalizeHarnessPresetList,
@@ -3964,6 +3965,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchRemoteProject: async (targetId: string, projectId: string, options) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
+    const outgoingBinding = get().projectBinding;
     if (!options?.keepNoMachineTab && get().activeNoMachineTabId) set({ activeNoMachineTabId: null });
     ++laneRefreshVersion;
     const outgoingProjectKey = selectActiveProjectStateKey(get());
@@ -3999,6 +4001,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
+      carryWorkViewToCopy(outgoingBinding, binding);
       set((prev) => {
         const projectKey = normalizeProjectKey(binding.key);
         const cachedLanes =
@@ -4348,6 +4351,43 @@ export function unregisterProjectSurfaceStore(projectKey: string, store: AppStor
   const key = normalizeProjectKey(projectKey);
   if (!key) return;
   if (_projectSurfaceStores.get(key) === store) _projectSurfaceStores.delete(key);
+}
+
+/**
+ * A tab that moves to another copy of the same repository keeps what it had
+ * open: the chat in front, its open tabs and grid. Each copy keeps its own
+ * view under its own key, so without this the open chat closed whenever the
+ * tab's computer went away and the tab moved to a copy on another computer.
+ */
+function carryWorkViewToCopy(
+  from: OpenProjectBinding | null,
+  to: OpenProjectBinding,
+): void {
+  if (!from) return;
+  const fromKey = projectStateKeyForBinding(from);
+  const toKey = projectStateKeyForBinding(to);
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const fromOrigin = normalizeGitRemoteIdentity(originUrlForBinding(from));
+  if (!fromOrigin || fromOrigin !== normalizeGitRemoteIdentity(originUrlForBinding(to))) return;
+  const fromView = (_projectSurfaceStores.get(fromKey) ?? rootAppStore).getState().workViewByProject[fromKey]
+    ?? readPersistedWorkViewForProject(fromKey).view;
+  if (!fromView?.activeItemId) return;
+  const toStore = _projectSurfaceStores.get(toKey) ?? null;
+  const toView = toStore?.getState().workViewByProject[toKey]
+    ?? readPersistedWorkViewForProject(toKey).view
+    ?? rootAppStore.getState().workViewByProject[toKey]
+    ?? null;
+  const carried: WorkProjectViewState = {
+    ...(toView ?? fromView),
+    openItemIds: fromView.openItemIds,
+    activeItemId: fromView.activeItemId,
+    selectedItemId: fromView.selectedItemId,
+    gridSets: fromView.gridSets,
+    activeGridSetId: fromView.activeGridSetId,
+  };
+  persistWorkViewState({ upsertProjects: { [toKey]: carried } });
+  rootAppStore.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
+  toStore?.setState((prev) => ({ workViewByProject: { ...prev.workViewByProject, [toKey]: carried } }));
 }
 
 /** The store that owns per-project view state for `projectRootOrKey`. */
