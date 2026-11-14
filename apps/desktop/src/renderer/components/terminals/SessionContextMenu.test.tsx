@@ -728,45 +728,31 @@ describe("SessionContextMenu spawn kind", () => {
     vi.clearAllMocks();
   });
 
-  it("offers Demote to peer on a subagent child and writes spawnKind peer", async () => {
+  it.each([
+    { from: "subagent" as const, item: "session-menu-stop-reports", writes: "peer", other: "session-menu-report-back" },
+    { from: "peer" as const, item: "session-menu-report-back", writes: "subagent", other: "session-menu-stop-reports" },
+  ])("switches a $from child's reports on its parent's machine", async ({ from, item, writes, other }) => {
     const session = makeSession({
       orchestrationParentSessionId: "parent-1",
-      spawnKind: "subagent",
+      spawnKind: from,
     });
     const { onClose } = renderMenu(session);
 
-    fireEvent.click(screen.getByRole("button", { name: "Demote to peer" }));
+    expect(screen.queryByTestId(other)).toBeNull();
+    fireEvent.click(screen.getByTestId(item));
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(
-        { sessionId: "chat-1", spawnKind: "peer" },
+        { sessionId: "chat-1", spawnKind: writes },
         ROW_PIN,
       );
     });
     expect(onClose).toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
   });
 
-  it("offers Promote to subagent on a peer child", async () => {
-    const session = makeSession({
-      orchestrationParentSessionId: "parent-1",
-      spawnKind: "peer",
-    });
-    renderMenu(session);
-
-    fireEvent.click(screen.getByRole("button", { name: "Promote to subagent" }));
-    await waitFor(() => {
-      expect(updateSession).toHaveBeenCalledWith(
-        { sessionId: "chat-1", spawnKind: "subagent" },
-        ROW_PIN,
-      );
-    });
-    expect(screen.queryByRole("button", { name: "Demote to peer" })).toBeNull();
-  });
-
-  it("hides demote and promote on a chat with no parent", () => {
+  it("offers no report switch on a chat with no parent", () => {
     renderMenu(makeSession({ spawnKind: "subagent" }));
-    expect(screen.queryByRole("button", { name: "Demote to peer" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Promote to subagent" })).toBeNull();
+    expect(screen.queryByTestId("session-menu-stop-reports")).toBeNull();
+    expect(screen.queryByTestId("session-menu-report-back")).toBeNull();
   });
 });
 

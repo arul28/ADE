@@ -188,11 +188,12 @@ export function MenuSubmenu({
     setPosition({ left, top });
   }, [open, panelMinWidth]);
 
+  // A hidden panel cannot take focus, so this waits for the clamp to place it.
   useEffect(() => {
-    if (!open || !focusPanelRef.current) return;
+    if (!open || !position || !focusPanelRef.current) return;
     focusPanelRef.current = false;
     focusFirstItem(panelRef.current);
-  }, [open]);
+  }, [open, position]);
 
   const returnFocusAndClose = useCallback(() => {
     closeNow();

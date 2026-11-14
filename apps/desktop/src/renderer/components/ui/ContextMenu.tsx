@@ -241,12 +241,16 @@ export function ContextMenu({
 /** Arrow keys, Home and End move focus between the menu's enabled rows. */
 function moveMenuFocus(event: React.KeyboardEvent<HTMLDivElement>): void {
   const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
-  if (!keys.includes(event.key)) return;
+  if (!keys.includes(event.key) || event.defaultPrevented) return;
   // A field inside the menu (rename, tag) keeps its own caret keys.
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+  // An open submenu moves its own focus; its keys bubble here but are not ours.
+  const panel = event.currentTarget;
+  const ownMenu = panel.getAttribute("role") === "menu" ? panel : null;
+  if (event.target instanceof Element && event.target.closest("[role='menu']") !== ownMenu) return;
   const rows = Array.from(
-    event.currentTarget.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([aria-disabled='true'])"),
-  ).filter((row) => row.offsetParent !== null);
+    panel.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([aria-disabled='true'])"),
+  ).filter((row) => row.offsetParent !== null && row.closest("[role='menu']") === ownMenu);
   if (rows.length === 0) return;
   event.preventDefault();
   const at = rows.indexOf(document.activeElement as HTMLElement);

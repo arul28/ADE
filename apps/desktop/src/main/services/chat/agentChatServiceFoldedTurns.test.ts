@@ -257,7 +257,7 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("a non-zero exit closes the card as failed; a peer gets a quiet note, not a wake", async () => {
+    it("a non-zero exit closes the card as failed; a chat that does not report back posts no note and no wake", async () => {
       mockIdleClaudeParent("sdk-cli-parent-fail");
       const { service, sessionService, events, fireExit } = createCliHarness({ screen: ["Error: ENOENT: no such file"] });
       const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
@@ -273,11 +273,10 @@ describe("createAgentChatService", () => {
           status: "failed",
           summary: "CLI failed (exit code 2).\nError: ENOENT: no such file",
         });
-        expect(rows.find((e) =>
-          e.event.type === "system_notice" && (e.event as any).status === "spawn_completed"
-        )?.event).toMatchObject({ detail: { spawnCompletion: { status: "failed", spawnKind: "peer" } } });
       });
-      expect(parentEventsFor(events, parent.id, "cli-child-fail").some((e) => e.event.type === "user_message")).toBe(false);
+      const rows = parentEventsFor(events, parent.id, "cli-child-fail");
+      expect(rows.some((e) => e.event.type === "system_notice" && (e.event as any).status === "spawn_completed")).toBe(false);
+      expect(rows.some((e) => e.event.type === "user_message")).toBe(false);
     });
 
     describe("after a brain restart", () => {

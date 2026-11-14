@@ -37,10 +37,11 @@ export type RestingCloudMachine = {
 
 /** The account key of the ADE Cloud computer behind a machine, or null for any other machine. */
 export function restingCloudMachineKey(machine: Pick<RestingCloudMachine, "machineId" | "hostname">): string | null {
-  return adeCloudLaneComputerForMachine({
-    hostname: machine.hostname,
-    machineKey: savedChatsMachineKey(machine.machineId),
-  })?.machineKey ?? null;
+  // A saved-chats copy names its computer's account key itself, so a cloud
+  // computer made without a lane (absent from the lane index) still wakes.
+  const savedKey = savedChatsMachineKey(machine.machineId);
+  if (savedKey) return savedKey;
+  return adeCloudLaneComputerForMachine({ hostname: machine.hostname })?.machineKey ?? null;
 }
 
 /**
