@@ -37,6 +37,9 @@ struct HubScreen: View {
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
+  /// A chat open that waits on a connection. A newer open, or any change of
+  /// the open chat, clears it, so a late connect never replaces that choice.
+  @State private var pendingHubChatOpen: UUID?
   // "Created in <project> · <lane>" toast shown after a drawer send (the chat is
   // created in place and does NOT auto-open; the toast offers an Open shortcut).
   @State private var createdToast: HubCreatedChat?
@@ -369,6 +372,7 @@ struct HubScreen: View {
     }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
+    .onChange(of: openChatTarget?.id) { _, _ in pendingHubChatOpen = nil }
     .task(id: accountRebuildKey) {
       guard accountRebuildKey != nil else { return }
       rebuildHubProjectPresentations()
@@ -665,6 +669,7 @@ struct HubScreen: View {
   }
 
   private func openHubChat(_ chat: RemoteRosterChat, lane: RemoteRosterLane?, project: MobileProjectSummary) {
+    pendingHubChatOpen = nil
     guard let owner = fleetMerge.chatOwners[chat.id] else {
       openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
       return
@@ -681,12 +686,18 @@ struct HubScreen: View {
     // it next to the others and open the chat there. Only when that fails (an
     // older ADE there, or it stays unreachable) does the phone make it the
     // home machine, keeping the previous one connected.
+    let request = UUID()
+    pendingHubChatOpen = request
     Task { @MainActor in
       if state != .needsUpdate, await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(8)) {
+        guard pendingHubChatOpen == request else { return }
         openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
         return
       }
-      guard await syncService.switchFocusKeepingPrevious(toMachineKey: owner.machineKey) else { return }
+      guard pendingHubChatOpen == request,
+            await syncService.switchFocusKeepingPrevious(toMachineKey: owner.machineKey),
+            pendingHubChatOpen == request
+      else { return }
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat)
     }
   }

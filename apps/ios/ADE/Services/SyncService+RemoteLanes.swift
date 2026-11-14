@@ -223,6 +223,10 @@ extension SyncService {
           syncFleetAutoPairLog.notice("auto pair of a project copy's computer failed: \(failure.message, privacy: .public)")
         }
       }
+      // A project change during this batch found it running and did nothing.
+      // This update runs after the flag clears and pairs that project's
+      // copies; each computer above is already marked as tried.
+      fleet.scheduleProjectMachinesUpdate()
     }
   }
 
