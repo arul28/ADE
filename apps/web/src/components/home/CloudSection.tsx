@@ -26,7 +26,7 @@ export function CloudSection() {
             <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.08 }}>
               Cloud computers for your agents.{" "}
               <span className="text-white/45">
-                {formatCount(FREE_PLAN.hours)} hours free every month, and the cheapest hours after that.
+                {formatCount(FREE_PLAN.hours)} hours free every month, then hours from 1¢.
               </span>
             </h2>
           </div>
