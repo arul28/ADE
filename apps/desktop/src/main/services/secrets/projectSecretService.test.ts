@@ -31,16 +31,19 @@ function makeProjectRoot(origin: string | null = "git@github.com:acme/project.gi
   return root;
 }
 
-/** One account's relay: opaque rows, revisions, one key; `ifRevision` as the real relay checks it. */
-function fakeRelay(): PasswordsRelay {
+/** One account's relay: opaque rows, revisions, one key; `ifRevision` as the real relay checks it. Offline answers null. */
+function fakeRelay(control = { online: true }): PasswordsRelay & { rows: Map<string, PasswordRelayItem> } {
   const rows = new Map<string, PasswordRelayItem>();
   let clock = 0;
   const key = { dek: crypto.randomBytes(32).toString("base64"), epoch: 1 };
   return {
+    rows,
     async getPasswordItems() {
+      if (!control.online) return null;
       return { items: [...rows.values()], cursor: null, truncated: false, epoch: key.epoch };
     },
     async putPasswordItems(items: PasswordRelayWrite[]) {
+      if (!control.online) return null;
       return items.map((item) => {
         const stored = rows.get(item.id);
         const allowed = item.ifRevision === "absent" ? !stored : !item.ifRevision || stored?.revision === item.ifRevision;
@@ -57,8 +60,12 @@ function fakeRelay(): PasswordsRelay {
 }
 
 /** This computer's Passwords & Secrets, on a real encrypted file store (a new process can open it). */
-function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?: () => boolean; now?: () => Date } = {}) {
+function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?: () => boolean; now?: () => Date; enabled?: boolean } = {}) {
   const adeDir = options.adeDir ?? tempDir("ade-home-");
+  if (options.enabled === false) {
+    fs.mkdirSync(path.join(adeDir, "passwords"), { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "passwords", "state.json"), JSON.stringify({ enabled: false }));
+  }
   const relay = options.relay ?? fakeRelay();
   const store: CredentialStore = new EncryptedFileCredentialStore({
     credentialsPath: path.join(adeDir, "passwords", "passwords.v1.enc"),
@@ -78,7 +85,10 @@ function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?:
 }
 
 /** Secrets in the old per-project store, exactly as the old service wrote them. */
-function writeLegacyStore(projectRoot: string, secrets: Array<{ name: string; value: string; storage: "account" | "device"; updatedAt: string }>): string {
+function writeLegacyStore(
+  projectRoot: string,
+  secrets: Array<{ name: string; value: string; storage: "account" | "device"; updatedAt: string; source?: "device" | "account"; accountUserId?: string }>,
+): string {
   const dir = path.join(projectRoot, ".ade", "secrets");
   const credentialsPath = path.join(dir, "project-secrets.v1.enc");
   const store = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath: path.join(dir, ".project-secrets-key"), lockPath: `${credentialsPath}.lock` });
@@ -86,7 +96,7 @@ function writeLegacyStore(projectRoot: string, secrets: Array<{ name: string; va
     const entries: Record<string, unknown> = {};
     for (const secret of secrets) {
       values[`secret:${secret.name}`] = secret.value;
-      entries[secret.name] = { createdAt: secret.updatedAt, updatedAt: secret.updatedAt, valueLength: secret.value.length, storage: secret.storage, source: "device", accountUserId: null };
+      entries[secret.name] = { createdAt: secret.updatedAt, updatedAt: secret.updatedAt, valueLength: secret.value.length, storage: secret.storage, source: secret.source ?? "device", accountUserId: secret.accountUserId ?? null };
     }
     values.__ade_project_secrets_index_v1 = JSON.stringify({ version: 1, entries });
   });
@@ -244,6 +254,82 @@ describe("a project's secrets in Passwords & Secrets", () => {
     const coldSecrets = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => cold.passwords });
     expect(coldSecrets.valuesForProcess()).toEqual({ SHARED: "this-project", TOKEN: "local-token" });
     expect(coldSecrets.get({ name: "TOKEN" }).value).toBe("local-token");
+  });
+
+  it("keeps the old file, and gives processes its value, until the relay holds the moved secret", async () => {
+    const control = { online: false };
+    const relay = fakeRelay(control);
+    const mac = computer({ relay });
+    const projectRoot = makeProjectRoot();
+    const legacyFile = writeLegacyStore(projectRoot, [{ name: "STRIPE_KEY", value: "sk_old", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" }]);
+    const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords });
+
+    expect(await secrets.migrateLegacy()).toMatchObject({ done: false, waiting: 1 });
+    expect(fs.existsSync(legacyFile)).toBe(true);
+    expect(secrets.valuesForProcess()).toEqual({ STRIPE_KEY: "sk_old" });
+
+    control.online = true;
+    expect(await secrets.migrateLegacy()).toMatchObject({ done: true, waiting: 0 });
+    expect(fs.existsSync(legacyFile)).toBe(false);
+    expect(relay.rows.size).toBe(1);
+    expect(secrets.valuesForProcess()).toEqual({ STRIPE_KEY: "sk_old" });
+  });
+
+  it("never moves another account's old copy, nor one the account deleted after it was saved", async () => {
+    const mac = computer();
+    const projectRoot = makeProjectRoot();
+    const legacyFile = writeLegacyStore(projectRoot, [
+      { name: "GONE", value: "deleted-later", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" },
+      { name: "THEIRS", value: "user-b-value", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z", source: "account", accountUserId: "user_b" },
+    ]);
+    const vault = legacyVault([
+      { scope: SCOPE, kind: "project_secret", key: "GONE", value: null, updatedAt: "2026-11-03T00:00:00.000Z", deleted: true } as AccountVaultItem,
+    ]);
+    const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords, getAccountVault: () => vault });
+
+    // Before the move, a process never sees the other account's value.
+    expect(secrets.valuesForProcess()).toEqual({ GONE: "deleted-later" });
+    expect(await secrets.migrateLegacy()).toMatchObject({ done: true, moved: 0 });
+    expect(fs.existsSync(legacyFile)).toBe(false);
+    expect(await mac.passwords.allSecretEntries()).toEqual([]);
+    expect(secrets.valuesForProcess()).toEqual({});
+  });
+
+  it("`ade secrets set` keeps a this-computer-only secret on this computer, and delete needs the name twice and removes every copy", async () => {
+    const mac = computer();
+    const projectRoot = makeProjectRoot();
+    writeLegacyStore(projectRoot, [{ name: "TOKEN", value: "old-file", storage: "device", updatedAt: "2026-10-01T00:00:00.000Z" }]);
+    const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords });
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "local", projectScope: SCOPE, deviceOnly: true });
+
+    expect(await secrets.set({ name: "TOKEN", value: "local-2" })).toMatchObject({ name: "TOKEN", storage: "device" });
+    expect((await mac.passwords.allSecretEntries()).map((entry) => [entry.value, entry.deviceOnly])).toEqual([["local-2", true]]);
+    await mac.passwords.sync();
+    expect(JSON.stringify([...mac.relay.rows.values()])).toBe("[]");
+
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "account", projectScope: SCOPE, deviceOnly: false });
+    await expect(secrets.delete({ name: "TOKEN", confirmName: "OTHER" })).rejects.toThrow(/confirmName/);
+    expect(secrets.get({ name: "TOKEN" }).value).toBe("local-2");
+    expect(await secrets.delete({ name: "TOKEN", confirmName: "TOKEN" })).toEqual({ deleted: true, name: "TOKEN" });
+    expect(await mac.passwords.allSecretEntries()).toEqual([]);
+    // The old file's copy went too, so the name does not come back from it.
+    expect(() => secrets.get({ name: "TOKEN" })).toThrow(/No secret named TOKEN/);
+  });
+
+  it("another process on this computer sees a this-computer-only save at once, and sign-in config with Passwords off", async () => {
+    const brain = computer();
+    const cli = computer({ adeDir: brain.adeDir, relay: brain.relay });
+    expect((await cli.passwords.secretsForProject(SCOPE)).size).toBe(0);
+
+    await brain.passwords.saveSecret({ name: "LOCAL", value: "one", projectScope: SCOPE, deviceOnly: true });
+    expect((await cli.passwords.secretsForProject(SCOPE)).get("LOCAL")?.value).toBe("one");
+    expect(cli.passwords.secretsSnapshot(SCOPE).get("LOCAL")?.value).toBe("one");
+
+    await brain.passwords.saveSecret({ name: "CLERK_ISSUER", value: "https://clerk.example", projectScope: SCOPE });
+    const off = computer({ adeDir: brain.adeDir, relay: brain.relay, enabled: false });
+    const offSecrets = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => off.passwords });
+    expect(offSecrets.getSignInConfig({ name: "CLERK_ISSUER" }).value).toBe("https://clerk.example");
+    expect(offSecrets.valuesForProcess()).toEqual({});
   });
 });
 

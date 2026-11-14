@@ -164,7 +164,7 @@ computer that has it (not on the iPhone, not on other computers).
 
 `ade secrets` is a project's view of them (`project_secret`, through
 `projectSecretService`): `list`, `set` (`--storage device` for this computer
-only), `delete` (the project's own), `request` (the private secret card) and
+only; without it, a name this computer keeps for itself stays here), `delete` (the project's own), `request` (the private secret card) and
 `exec`. A caller that cannot wait (a webhook's signature check) reads what this
 computer already holds; the open is kept warm by the minute's sync, and a cold
 process opens the cached copy from disk.
@@ -173,10 +173,26 @@ process opens the cached copy from disk.
 `.ade/secrets/project-secrets.v1.enc`, or old `project_secret` rows in the
 account vault from an older ADE, has them moved into Passwords & Secrets for
 that project when it opens and on each account sync
-(`projectSecretService.migrateLegacy`), without any notice. Device-only ones
-stay this computer only; a name already there with a newer value is left
-alone; each old copy is removed only once its value is saved in the new place;
-account ones wait until Passwords & Secrets is usable here.
+(`projectSecretService.migrateLegacy`), without any notice. The rules:
+
+- Only the runtime that owns the project moves it. Another process (desktop
+  main without a Passwords service) reports the move as not done, so the
+  runtime still runs it.
+- While Passwords & Secrets is off nothing moves. Account entries wait for
+  sign-in and for a fresh pull of the account's rows (at most a minute old).
+- Device-only entries stay this computer only. So do a value too big for the
+  relay, sign-in's own config names, and every entry of a project with no
+  repository remote.
+- A name already there with a newer value is left alone. A name the account
+  deleted after the old copy was saved stays deleted. An entry the old store
+  pulled from another account is dropped, never moved into this one.
+- Two computers that move the same old secret write the same item id (derived
+  under the vault key), so the relay keeps one copy.
+- Each old copy is removed only once the new place holds its value: an account
+  secret once the relay holds it at the same or a newer version. Until then,
+  processes still read it from the old store.
+- `ade secrets delete` removes the old copies of the name too (the file entry
+  and live old account rows), so it cannot come back from them.
 
 `ade secrets get` is the person's (the desktop app); an agent calling it is
 refused. Agents use secrets with

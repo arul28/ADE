@@ -96,7 +96,7 @@ describe("ProjectSidebar footer", () => {
   });
 
   it("reopens the last settings section used in this session before the stored one", () => {
-    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=secrets");
+    window.localStorage.setItem(`ade:project-route:local:${ROOT}`, "/settings?tab=memory");
     renderSidebar("/settings?tab=chat");
     cleanup();
     renderSidebar("/lanes");

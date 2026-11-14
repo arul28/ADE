@@ -225,6 +225,14 @@ describe("password service", () => {
 
     const cloud = createPasswordService({ adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")), relay, getAccountUserId: () => "user_a", getDeviceId: () => "cloud", machineKind: "cloud", getCloudEnabled: () => null, store: memoryStore() });
     expect(await cloud.status()).toMatchObject({ enabled: true });
+
+    // A just-started ADE Cloud computer has not read the account's switch yet:
+    // off until the first settings sync, so a switch the person turned off is never ignored.
+    let settingsSynced = false;
+    const fresh = createPasswordService({ adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")), relay, getAccountUserId: () => "user_a", getDeviceId: () => "cloud", machineKind: "cloud", getCloudEnabled: () => null, cloudSwitchSynced: () => settingsSynced, store: memoryStore() });
+    expect(await fresh.status()).toMatchObject({ enabled: false });
+    settingsSynced = true;
+    expect(await fresh.status()).toMatchObject({ enabled: true });
   });
 
   it("keeps a this-computer-only secret off the relay and other computers, through a reset, and out of use while off", async () => {
