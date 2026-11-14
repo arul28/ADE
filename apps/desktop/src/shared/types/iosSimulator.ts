@@ -2747,9 +2747,10 @@ export type AppleDeviceStopResult = {
   /**
    * What the lane's device is now, in one sentence for an agent: still
    * registered on this Mac, booted again by the next start, and deleted with
-   * the lane (an attached simulator is released, not deleted).
+   * the lane (an attached simulator is released, not deleted). Null when the
+   * lane owns none. An older Mac sends none; the CLI says it itself then.
    */
-  note?: string | null;
+  note: string | null;
 };
 
 /**
@@ -2760,12 +2761,16 @@ export type AppleDeviceStopResult = {
  */
 export type AppleDeviceStartDeviceAction = "created" | "attached" | "reused";
 
-/** `deviceStart`'s answer: the live view's status, and which device the lane drives and how it got it. */
+/**
+ * `deviceStart`'s answer: the live view's status, and which device the lane
+ * drives and how it got it. An older Mac sends the status alone; the CLI
+ * names the device itself then.
+ */
 export type AppleDeviceStartResult = IosSimulatorStreamStatus & {
-  laneDevice?: AppleLaneDevice | null;
-  laneDeviceAction?: AppleDeviceStartDeviceAction;
+  laneDevice: AppleLaneDevice;
+  laneDeviceAction: AppleDeviceStartDeviceAction;
   /** That, in one sentence. */
-  note?: string | null;
+  note: string;
 };
 
 /**

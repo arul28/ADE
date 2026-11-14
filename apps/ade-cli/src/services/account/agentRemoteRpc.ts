@@ -105,6 +105,19 @@ export function childParentSlot(
   return null;
 }
 
+/**
+ * A forwarded call's own result: `ade/actions/call` answers
+ * `{ structuredContent: { result } }` for an action and `{ structuredContent }`
+ * for a tool, and older shapes put it at the top.
+ */
+export function remoteActionResult(answer: unknown): Record<string, unknown> | null {
+  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
+  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
+    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
+  }
+  return null;
+}
+
 /** The new chat's id in a create answer, wherever the action put it. */
 export function createdChatSessionId(value: unknown): string | null {
   // `ade/actions/call` answers `{ structuredContent: { domain, action, result } }`;

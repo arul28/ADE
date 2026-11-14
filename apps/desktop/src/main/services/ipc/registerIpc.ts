@@ -4891,6 +4891,7 @@ export function registerIpc({
           const record = (localProjectRegistryForAuthorization ??= new ProjectRegistry()).findAtRootPath(rootPath);
           return record ? { rootPath: record.rootPath, gitOriginUrl: record.gitOriginUrl } : null;
         },
+        logger: getCtx().logger,
       });
     },
     bindRemoteProject,

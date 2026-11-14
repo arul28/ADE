@@ -229,7 +229,7 @@ function TileStateMark({ tile }: { tile: CatalogCardView }) {
     return <span role="img" aria-label={`${tile.label} · errors`} data-tool-error-dot={tile.id} className="ade-tool-tile-dot bg-[var(--color-error)]" />;
   }
   if (tile.attention) {
-    return <span role="img" aria-label={`${tile.label} · needs you`} className="ade-tool-tile-dot bg-[#fbbf24]" />;
+    return <span role="img" aria-label={`${tile.label} · needs you`} className="ade-tool-tile-dot bg-[var(--color-warning)]" />;
   }
   if (tile.live) {
     return <span role="img" aria-label={tile.agentNow ? `${tile.label} · agent using it` : `${tile.label} · live`} className="ade-tool-tile-dot" style={{ background: "var(--tool-color)" }} />;
@@ -261,7 +261,7 @@ function CleanupLine({
           type="button"
           onClick={onCleanUp}
           disabled={busy}
-          title="Deletes this chat's code there and the devices and app it started. The machine stays."
+          title="Deletes this chat's code there and the devices and app it started. Code with work nobody pushed is kept. The machine stays."
           className="shrink-0 rounded-[7px] px-2 py-0.5 font-sans text-[12px] font-medium text-fg/85 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
         >
           {busy ? "Cleaning up…" : "Clean up"}

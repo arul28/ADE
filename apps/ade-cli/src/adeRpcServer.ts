@@ -34,7 +34,7 @@ import {
   isRemoteWorkSyncMode,
   createRemoteWorkCopyService,
   findRemoteWorkCopyForLane,
-  listMachineRemoteWorkCopies,
+  releaseChatRemoteWork,
   remoteWorkCopiesInRepo,
   remoteWorkLaneIdFor,
   RemoteWorkError,
@@ -8708,22 +8708,13 @@ async function runTool(args: {
     if (!owner || !parseForeignCallerSessionId(owner)) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
-    // In every checkout of this repository here, not only the one the call
-    // landed in: a machine can hold two, and the pick between them has
-    // changed between days, leaving a copy in each. Each removal names its
-    // folder, so the caller says only what was deleted, and where.
-    //
+    // In every checkout of this repository here (`releaseChatRemoteWork`).
     // `ended`: the chat was archived or deleted on its own machine, which says
-    // so at once (the hourly sweep is the fallback). Its shells here stop
-    // first, every copy it has here goes (any project), and a copy that is
-    // still busy is kept for the sweep instead of failing the rest.
-    // `keepUnsynced` (an archived chat can come back): a copy holding work
-    // nobody pushed stays, as the sweep keeps it.
+    // so at once (the hourly sweep is the fallback); its shells here stop
+    // first. `keepUnsynced`: a copy holding work nobody pushed stays.
     const ended = toolArgs.ended === true;
     const keepUnsynced = toolArgs.keepUnsynced === true;
     try {
-      const removed: Array<{ projectRoot: string; path: string }> = [];
-      const kept: Array<{ projectRoot: string; path: string }> = [];
       if (ended) {
         for (const row of runtime.ptyService.list({ chatSessionId: owner, status: "running", limit: null })) {
           try {
@@ -8733,25 +8724,13 @@ async function runTool(args: {
           }
         }
       }
-      const others = (ended
-        ? listMachineRemoteWorkCopies(undefined, runtime.logger).filter((copy) => copy.owner === owner)
-        : remoteWorkCopiesInRepo(runtime.projectRoot, owner, undefined, runtime.logger))
-        .filter((copy) => copy.projectRoot !== runtime.projectRoot);
-      const releaseOne = async (projectRoot: string, copyPath: string, service: ReturnType<typeof createRemoteWorkCopyService>) => {
-        try {
-          if (await service.release(owner, { keepUnsynced })) removed.push({ projectRoot, path: copyPath });
-          else if (service.get(owner)) kept.push({ projectRoot, path: copyPath });
-        } catch (error) {
-          if (!(ended && error instanceof RemoteWorkError && error.code === "copy_busy")) throw error;
-          kept.push({ projectRoot, path: copyPath });
-        }
-      };
-      const hereService = workCopiesFor(runtime);
-      await releaseOne(runtime.projectRoot, hereService.get(owner)?.path ?? runtime.projectRoot, hereService);
-      for (const copy of others) {
-        await releaseOne(copy.projectRoot, copy.path, createRemoteWorkCopyService({ projectRoot: copy.projectRoot, logger: runtime.logger }));
-      }
-      if (ended) runtime.logger.info("remote_work.chat_ended_released", { removed: removed.length, kept: kept.length, keepUnsynced });
+      const { removed, kept } = await releaseChatRemoteWork({
+        projectRoot: runtime.projectRoot,
+        owner,
+        ended,
+        keepUnsynced,
+        logger: runtime.logger,
+      });
       return { released: removed.length > 0, removed, ...(kept.length ? { kept } : {}) };
     } catch (error) {
       if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });

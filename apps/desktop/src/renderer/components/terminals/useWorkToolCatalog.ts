@@ -15,8 +15,9 @@ import { workToolHasError, type WorkToolStatus, type WorkToolStatusMap } from ".
 import {
   CARD_DEVICE_KIND,
   chosenMachineFor,
+  onlineMacElsewhere,
+  remoteDeviceStatus,
   visibleCatalogCards,
-  workCopyUseOn,
   type CatalogCardId,
 } from "./workToolCatalog";
 import type { ChatToolActivity, ToolActivity, ToolActivityTool } from "./useChatToolActivity";
@@ -167,19 +168,7 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
       let line: string | null = availability.available ? status?.line ?? definition?.hint ?? null : availability.reason;
       let detail: string | null = availability.available ? status?.detail ?? null : null;
       if (remote && kind) {
-        const probe = probes[kind] ?? null;
-        running = probe === "running";
-        detail = null;
-        if (!remote.online) {
-          line = `${remote.name} is offline`;
-          detail = "The tool opens there when it is back";
-        } else if (!workCopyUseOn(remoteWork, remote.key)) {
-          line = "Ready there";
-          detail = "Starts with the agent's next command";
-        } else {
-          line = probe === "running" ? "Running" : probe === "off" ? "Off" : "Ready";
-          detail = "This chat's code is there";
-        }
+        ({ line, detail, running } = remoteDeviceStatus(remote, probes[kind] ?? null, remoteWork));
       } else if (card === "ios" || card === "android" || card === "screen" || card === "terminal") {
         running = Boolean(status?.live);
       } else if (card === "app-control") {
@@ -190,9 +179,7 @@ export function useWorkToolCatalog(inputs: WorkToolCatalogInputs): CatalogCardVi
       // A device this machine cannot run: the tool opens on a machine that can.
       if (cannotRunHere || (!remote && availability.reason === IOS_RUNTIME_UNSUPPORTED_REASON)) {
         line = "Runs on a Mac";
-        detail = machines.some((entry) => !entry.isChat && entry.online && entry.platform === "darwin")
-          ? "Open it to pick one"
-          : "No Mac on this account is online";
+        detail = onlineMacElsewhere(machines) ? "Open it to pick one" : "No Mac on this account is online";
       }
       // Another chat holds the lane's device here.
       if (!remote && card === "ios" && heldBy(iosSession?.chatSessionId, panelSessionId)) detail = "In use by another chat";

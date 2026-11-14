@@ -50,8 +50,11 @@ import {
   type RemoteProjectRecord,
 } from "./machineBridge";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
+import { remoteActionResult } from "./agentRemoteRpc";
 
 const AGENT_PAIRED_STORE_FILE = "agent-paired-machines.json";
+/** Checkout picks one process remembers (`preferCheckoutWithCopy`): one per machine, repository and chat. */
+const MAX_CHECKOUT_PICKS = 500;
 
 /** A first clone of a large repository over a slow link. */
 const MACHINE_CLONE_TIMEOUT_MS = 180_000;
@@ -352,9 +355,18 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
    * repository (`~/ADE` and a sandbox clone): the one that holds the chat's
    * work copy there, asked of that machine once (`find_remote_work_copy`)
    * and then kept, so the pick no longer moves with "last opened" and orphans
-   * a copy. Keyed on machine, repository and chat; this process only.
+   * a copy. Keyed on machine, repository and chat; this process only, the
+   * newest `MAX_CHECKOUT_PICKS` kept.
    */
   const checkoutPicks = new Map<string, string>();
+  const rememberCheckoutPick = (key: string, projectId: string): void => {
+    checkoutPicks.delete(key);
+    checkoutPicks.set(key, projectId);
+    if (checkoutPicks.size > MAX_CHECKOUT_PICKS) {
+      const oldest = checkoutPicks.keys().next().value;
+      if (oldest !== undefined) checkoutPicks.delete(oldest);
+    }
+  };
   const preferCheckoutWithCopy = async (
     machine: AdeAccountMachine,
     entry: Awaited<ReturnType<typeof pool.acquire>>,
@@ -369,7 +381,10 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     if (candidates.length < 2) return picked;
     const key = `${machine.machineKey}\u0000${origin}\u0000${chat}`;
     const kept = candidates.find((record) => record.projectId === checkoutPicks.get(key));
-    if (kept) return kept;
+    if (kept) {
+      rememberCheckoutPick(key, kept.projectId);
+      return kept;
+    }
     let choice = picked;
     try {
       const answer = await pool.request(machine, entry, "find_remote_work_copy", "ade/actions/call", {
@@ -378,17 +393,19 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
         projectId: picked.projectId,
         [REMOTE_CALLER_PARAM]: caller,
       }, 8_000);
-      const value = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : answer;
-      const roots = isRecord(value) && Array.isArray(value.projectRoots)
+      const value = remoteActionResult(answer);
+      const roots = Array.isArray(value?.projectRoots)
         ? value.projectRoots.filter((root): root is string => typeof root === "string")
         : [];
       const platform = targetPathPlatform(machine.platform ?? null);
-      choice = candidates.find((record) => roots.some((root) => samePathOnPlatform(record.rootPath, root, platform))) ?? picked;
+      const holdsCopy = (record: RemoteProjectRecord) => roots.some((root) => samePathOnPlatform(record.rootPath, root, platform));
+      // The usual pick when it holds a copy too: a second copy elsewhere must not move the chat.
+      choice = holdsCopy(picked) ? picked : candidates.find(holdsCopy) ?? picked;
     } catch (error) {
       // An older ADE there has no such tool: the usual pick, kept from now on.
       options.logger?.info("agent_cross_machine.checkout_pick_unknown", { machineKey: machine.machineKey, error: errorMessage(error) });
     }
-    checkoutPicks.set(key, choice.projectId);
+    rememberCheckoutPick(key, choice.projectId);
     return choice;
   };
 

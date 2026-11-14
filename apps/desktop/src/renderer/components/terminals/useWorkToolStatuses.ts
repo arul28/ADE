@@ -169,7 +169,7 @@ const PR_REVIEW_WORDS: Record<PrSummary["reviewStatus"], string | null> = {
 };
 
 /** "#212 · Checks passing · Approved": the open PR's number and where it stands. */
-export function pullRequestDetail(pr: PrSummary | null): string | null {
+function pullRequestDetail(pr: PrSummary | null): string | null {
   if (!pr) return null;
   return [`#${pr.githubPrNumber}`, PR_CHECKS_WORDS[pr.checksStatus], PR_REVIEW_WORDS[pr.reviewStatus]]
     .filter(Boolean)
@@ -177,7 +177,7 @@ export function pullRequestDetail(pr: PrSummary | null): string | null {
 }
 
 /** "main · 2 ahead · 1 behind": the branch, and its sync when the line is about something else. */
-export function gitDetail(lane: LaneSummary | null, line: string | null): string | null {
+function gitDetail(lane: LaneSummary | null, line: string | null): string | null {
   const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
   if (!branch) return null;
   const ahead = nonNegativeCount(lane?.status?.ahead);

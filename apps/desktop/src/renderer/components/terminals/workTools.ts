@@ -15,7 +15,6 @@ import {
 import { AppleLogo } from "../ui/appleIcons";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { desktopProductName } from "../../../shared/types/macDesktop";
-import type { RemoteWorkDeviceFlag } from "../../../shared/chatRemoteWork";
 import { remoteMachineHostPlatform } from "../../../shared/machineIdentity";
 
 /**
@@ -305,14 +304,19 @@ export type WorkToolContext = {
    */
   hasSideChat?: boolean;
   /**
-   * The chat chose another machine for its iPhone (`ade devices use
-   * ios@<machine>`, or a chip on the tools pane's rail). The iOS tool then
-   * shows that machine's simulator, so it stays even on a host that cannot
-   * run one. Its CURRENT choice, never a machine it merely used before.
+   * The iOS tool can open on a machine other than the lane's host: the chat
+   * chose (or its current turn drives) another machine for its iPhone (`ade
+   * devices use ios@<machine>`), or a Mac of the account is online for the
+   * tool's machine row to pick. The tool then stays even on a host that
+   * cannot run a simulator. Never a machine the chat merely used before.
    */
-  hasRemoteSimulator?: boolean;
-  /** The same for its Android emulator (`ade devices use android@<machine>`). */
-  hasRemoteAndroidEmulator?: boolean;
+  iosOpensElsewhere?: boolean;
+  /**
+   * The same for the Android emulator: another machine is chosen for it (`ade
+   * devices use android@<machine>`), or any other machine of the account is
+   * online for the row to pick.
+   */
+  androidOpensElsewhere?: boolean;
   /**
    * The chat chose a Mac or Linux machine's screen (`ade devices use
    * screen@<machine>`): that machine's platform. The lane-screen tool then
@@ -428,7 +432,7 @@ export function workToolAvailability(
   // The web client drives Android too: `android.*` commands and the relay's
   // live view, like Apple's. Availability follows the host alone.
   if (id === "android") {
-    if (context.hasRemoteAndroidEmulator) return AVAILABLE;
+    if (context.androidOpensElsewhere) return AVAILABLE;
     if (context.supportsAndroidEmulator === false) {
       const reason = context.androidEmulatorUnsupportedReason?.trim();
       return { available: false, reason: reason || ANDROID_HOST_UNSUPPORTED_REASON };
@@ -436,7 +440,7 @@ export function workToolAvailability(
     return AVAILABLE;
   }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
-  if (id === "ios" && context.hasRemoteSimulator) return AVAILABLE;
+  if (id === "ios" && context.iosOpensElsewhere) return AVAILABLE;
   // The HOST's platform, not this one. The reason says so, because "macOS only"
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE — and "not
   // a Mac" on a Mac without simulators is just as wrong.
@@ -469,7 +473,7 @@ export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolCont
   if (id === "windows-desktop") return platform !== "win32" && context.hasRemoteWindowsDesktop !== true;
   // A Linux host's lane screen is the Mac Desktop pane, named for Linux.
   if (id === "mac-desktop") return platform !== "darwin" && platform !== "linux" && !context.remoteMacDesktopPlatform;
-  if (id === "ios") return platform !== "darwin" && context.hasRemoteSimulator !== true;
+  if (id === "ios") return platform !== "darwin" && context.iosOpensElsewhere !== true;
   return false;
 }
 
@@ -502,45 +506,21 @@ export function desktopToolForMachinePlatform(platform: string | null | undefine
   return remoteMachineHostPlatform(platform) === "win32" ? "windows-desktop" : "mac-desktop";
 }
 
-/** The lane's host can show this lane-screen tool (unanswered counts as yes). */
-export function laneHostRunsDesktopTool(tool: DesktopWorkTool, toolContext: WorkToolContext): boolean {
-  const platform = toolContext.hostPlatform ?? null;
-  if (tool === "windows-desktop") {
-    return toolContext.supportsWindowsDesktop !== false && (platform === null || platform === "win32");
-  }
-  return toolContext.supportsMacDesktop !== false && (platform === null || platform === "darwin" || platform === "linux");
-}
-
 /**
  * What the other machine's screen a chat chose (`ade devices use screen@…`)
- * adds to the tool context, by the tool that shows it. An unknown platform shows
- * in the Mac Desktop pane, which reads the host's own.
+ * adds to the tool context, by the tool that shows it. `platform` is that
+ * machine's: `undefined` when no other machine's screen is chosen, `null`
+ * when one is but its platform is unknown (it shows in the Mac Desktop pane,
+ * which reads the host's own).
  */
 export function remoteDesktopToolContext(
-  uses: ReadonlyArray<{ machinePlatform: string | null }>,
+  platform: NodeJS.Platform | null | undefined,
 ): { remoteMacDesktopPlatform: "darwin" | "linux" | null; hasRemoteWindowsDesktop: boolean } {
-  const platforms = uses.map((use) => remoteMachineHostPlatform(use.machinePlatform));
-  let remoteMacDesktopPlatform: "darwin" | "linux" | null = null;
-  if (platforms.some((platform) => platform === "darwin" || platform === null)) remoteMacDesktopPlatform = "darwin";
-  else if (platforms.includes("linux")) remoteMacDesktopPlatform = "linux";
-  return { remoteMacDesktopPlatform, hasRemoteWindowsDesktop: platforms.includes("win32") };
+  if (platform === undefined) return { remoteMacDesktopPlatform: null, hasRemoteWindowsDesktop: false };
+  const host = remoteMachineHostPlatform(platform);
+  if (host === "win32") return { remoteMacDesktopPlatform: null, hasRemoteWindowsDesktop: true };
+  return { remoteMacDesktopPlatform: host === "linux" ? "linux" : "darwin", hasRemoteWindowsDesktop: false };
 }
-
-/**
- * The tools that can show a device this chat drives on another machine: the
- * `remoteWork` flag that says the chat drove it there, and the noun its card
- * line and target chip put before that machine's name ("Simulator on Studio
- * Mac", "Screen · build-box").
- */
-export const REMOTE_WORK_TOOLS = {
-  ios: { flag: "usesSimulator", noun: "Simulator" },
-  android: { flag: "usesAndroidEmulator", noun: "Emulator" },
-  "app-control": { flag: "usesAppControl", noun: "App Control" },
-  "mac-desktop": { flag: "usesDesktop", noun: "Screen" },
-  "windows-desktop": { flag: "usesDesktop", noun: "Screen" },
-} as const satisfies Partial<Record<WorkSidebarTab, { flag: RemoteWorkDeviceFlag; noun: string }>>;
-
-export type RemoteWorkTool = keyof typeof REMOTE_WORK_TOOLS;
 
 /** The lane-screen tools: one per host platform, never both. */
 export type DesktopWorkTool = "mac-desktop" | "windows-desktop";

@@ -186,6 +186,7 @@ import {
   createdChatSessionId,
   omitRemoteCaller,
   readMachineCallScope,
+  remoteActionResult,
 } from "./services/account/agentRemoteRpc";
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
@@ -1549,15 +1550,6 @@ function remoteWorkCallKind(
   if (call.domain === "android_emulator") return "android";
   if (call.domain === "mac_desktop") return "desktop";
   if (call.domain === "app_control") return "app_control";
-  return null;
-}
-
-/** The action's own result in a forwarded `ade/actions/call` answer (`{ structuredContent: { result } }`, or older shapes). */
-function remoteActionResult(answer: unknown): Record<string, unknown> | null {
-  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
-  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
-    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
-  }
   return null;
 }
 

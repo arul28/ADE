@@ -4025,17 +4025,28 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
         lastUsedAt: copy.lastUsedAt,
         running: isRemoteWorkCopyInUse(copy.projectRoot, copy.owner),
         sizeBytes: await measureRemoteWorkCopy(copy.path),
+        keepsUnsynced: true,
       })));
     },
-    async delete(args: unknown): Promise<{ deleted: boolean }> {
+    /**
+     * `keepUnsynced` (the tools pane's Clean up): a copy holding work nobody
+     * pushed stays, and `keptReason` says why. Settings › Machines deletes
+     * without it, after its own confirm.
+     */
+    async delete(args: unknown): Promise<{ deleted: boolean; keptReason?: string }> {
       const owner = isRecord(args) && typeof args.owner === "string" ? args.owner.trim() : "";
       if (!owner) throw new Error("remote_work.delete requires owner.");
       const projectId = isRecord(args) && typeof args.projectId === "string" ? args.projectId.trim() : "";
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
         throw new Error("That copy of a chat's code belongs to another project here; delete it through that project.");
       }
+      const keepUnsynced = isRecord(args) && args.keepUnsynced === true;
+      const kept: { reason?: string } = {};
       // Refused while a command runs in it (RemoteWorkError "copy_busy").
-      return { deleted: await here().release(owner) };
+      const deleted = await here().release(owner, keepUnsynced
+        ? { keepUnsynced: true, onKeptUnsynced: (reason) => { kept.reason = reason; } }
+        : {});
+      return kept.reason ? { deleted, keptReason: kept.reason } : { deleted };
     },
   };
 }

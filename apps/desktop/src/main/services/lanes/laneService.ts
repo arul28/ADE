@@ -8618,7 +8618,8 @@ export function createLaneService({
           const svc = teardownDeps?.agentChatService;
           if (!svc) return { detail: "no service" };
           // Before the session rows go: what the lane's chats added on other
-          // machines is removed there. Sent, never awaited.
+          // machines is removed there, save a copy holding work nobody
+          // pushed (kept, as for an archive). Sent, never awaited.
           try {
             svc.releaseRemoteWorkForLane?.(laneId, "deleted");
           } catch (error) {

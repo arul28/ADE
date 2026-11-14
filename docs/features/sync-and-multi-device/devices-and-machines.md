@@ -93,7 +93,11 @@ two checkouts of one repository; the calls of a chat keep landing in the one
 that holds its copy (asked of that machine once, then kept), and `clean`
 deletes the chat's copy in every checkout there, naming each folder. It says
 "Deleted" only when it deleted something. The chat's record of that machine
-(its work copy lane, its shells) is cleared with it.
+(its work copy lane, its shells) is cleared with it. The tools pane's
+**Clean up** deletes the same copies for a person, each through its own
+project there, but keeps a copy holding work nobody pushed and names it
+(Settings › Machines deletes it on purpose, after asking). Archiving or
+deleting the chat removes its copies the same way, unpushed work kept.
 
 The old flags keep working as aliases and are no longer shown in help.
 

@@ -3,6 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { ChatDeviceSources, DeviceKind } from "../../../shared/types/deviceSources";
 import { normalizeChatDeviceSources } from "../../../shared/types/deviceSources";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { ipcErrorMessage } from "../../lib/format";
 import { showToast } from "../app/toast/toastStore";
 
 /*
@@ -13,16 +14,14 @@ import { showToast } from "../app/toast/toastStore";
  *
  * One entry per chat and machine, shared by every reader (the catalogue's
  * rails, the panels that open the chosen machine's device). It is read when a
- * reader asks and after a write; the brain sends no event for a choice, so the
- * activity feed re-reads it when the agent itself runs `ade devices use`
- * (`refreshChatDeviceSources`). No timer.
+ * reader mounts and after a write; the brain sends no event for a choice, so
+ * the tools pane re-reads it (the hook's `refresh`) when the agent's own
+ * `ade devices use` answers in the chat's activity feed. No timer.
  */
 
 export type ChatDeviceSourcesState = {
   /** Null until the first read lands, or when this chat keeps no choices. */
   sources: ChatDeviceSources | null;
-  /** The first read has answered (either way). */
-  ready: boolean;
   /** The chat's machine cannot keep a choice (no brain, an older one, a CLI session). */
   unsupported: boolean;
 };
@@ -37,7 +36,7 @@ type Entry = ChatDeviceSourcesState & {
 };
 
 const entries = new Map<string, Entry>();
-const EMPTY_STATE: ChatDeviceSourcesState = { sources: null, ready: false, unsupported: false };
+const EMPTY_STATE: ChatDeviceSourcesState = { sources: null, unsupported: false };
 const MAX_ENTRIES = 64;
 
 function entryKey(sessionId: string, pin: OpenProjectBinding | null): string {
@@ -45,14 +44,13 @@ function entryKey(sessionId: string, pin: OpenProjectBinding | null): string {
 }
 
 function emit(entry: Entry): void {
-  entry.snapshot = { sources: entry.sources, ready: entry.ready, unsupported: entry.unsupported };
+  entry.snapshot = { sources: entry.sources, unsupported: entry.unsupported };
   for (const listener of entry.listeners) listener();
 }
 
 /** Strips Electron's IPC wrapper so no caller ever shows it. */
 export function deviceSourceErrorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/, "").trim();
+  return error instanceof Error ? ipcErrorMessage(error) : String(error).trim();
 }
 
 function isUnsupportedAnswer(text: string): boolean {
@@ -61,17 +59,18 @@ function isUnsupportedAnswer(text: string): boolean {
 
 function apiOf() {
   const chat = typeof window === "undefined" ? undefined : window.ade?.agentChat;
+  const get = chat?.getDeviceSources;
+  const set = chat?.setDeviceSource;
   return {
-    get: isAdeAvailable(chat?.getDeviceSources) ? chat!.getDeviceSources! : null,
-    set: isAdeAvailable(chat?.setDeviceSource) ? chat!.setDeviceSource! : null,
+    get: get && isAdeAvailable(get) ? get : null,
+    set: set && isAdeAvailable(set) ? set : null,
   };
 }
 
 function readEntry(entry: Entry): void {
   const { get } = apiOf();
   if (!get) {
-    if (!entry.ready || !entry.unsupported) {
-      entry.ready = true;
+    if (!entry.unsupported) {
       entry.unsupported = true;
       emit(entry);
     }
@@ -82,19 +81,19 @@ function readEntry(entry: Entry): void {
     .then((answer) => {
       if (seq !== entry.readSeq) return;
       entry.sources = normalizeChatDeviceSources(answer?.sources) ?? {};
-      entry.ready = true;
       entry.unsupported = false;
       emit(entry);
     })
     .catch((error: unknown) => {
       if (seq !== entry.readSeq) return;
-      // A failed read keeps a choice already known: the brain was only slow.
-      entry.ready = true;
       if (isUnsupportedAnswer(deviceSourceErrorText(error))) {
         entry.unsupported = true;
         entry.sources = null;
+        emit(entry);
+        return;
       }
-      emit(entry);
+      // A failed read keeps a choice already known: the brain was only slow.
+      console.warn("[tools-pane] could not read this chat's device choices", error);
     });
 }
 
@@ -117,12 +116,6 @@ function ensureEntry(sessionId: string, pin: OpenProjectBinding | null): Entry {
     entry.pin = pin;
   }
   return entry;
-}
-
-/** Re-reads one chat's choices (after the agent ran `ade devices use`). */
-export function refreshChatDeviceSources(sessionId: string, pin: OpenProjectBinding | null): void {
-  const entry = entries.get(entryKey(sessionId, pin));
-  if (entry && entry.listeners.size > 0) readEntry(entry);
 }
 
 /**
@@ -161,7 +154,6 @@ export async function setChatDeviceSource(args: {
         : { kind: "here" },
     }, args.pin);
     entry.sources = normalizeChatDeviceSources(answer?.sources) ?? {};
-    entry.ready = true;
     emit(entry);
     return true;
   } catch (error) {
@@ -215,5 +207,5 @@ export function useChatDeviceSources(
     if (sessionId) readEntry(ensureEntry(sessionId, pin));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, pinKey]);
-  return { sources: state.sources, ready: state.ready, unsupported: state.unsupported, refresh };
+  return { sources: state.sources, unsupported: state.unsupported, refresh };
 }

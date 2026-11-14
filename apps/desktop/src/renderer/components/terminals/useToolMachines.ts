@@ -22,17 +22,12 @@ export type ToolMachine = {
   name: string;
   platform: NodeJS.Platform | null;
   online: boolean;
-  /** This window holds a live connection to it (or it is this computer). */
-  reachable: boolean;
   isChat: boolean;
   isViewer: boolean;
 };
 
 export type ToolMachines = {
   machines: ToolMachine[];
-  chatMachine: ToolMachine | null;
-  /** The directory answered (signed in); false means only the chat's machine is known. */
-  fromAccount: boolean;
 };
 
 let localKeyCache: string | null = null;
@@ -45,7 +40,11 @@ function readLocalMachineKey(): Promise<string | null> {
       localKeyCache = identity?.machineKey?.trim() || null;
       return localKeyCache;
     })
-    .catch(() => null)
+    .catch((error: unknown) => {
+      // Without it this computer is not marked as the viewer; the rest still lists.
+      console.warn("[tools-pane] could not read this machine's identity", error);
+      return null;
+    })
     .finally(() => { localKeyRead = null; });
   return localKeyRead;
 }
@@ -79,7 +78,11 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     if (!active) return undefined;
     let cancelled = false;
     void Promise.all([
-      fetchAccountMachines().catch(() => null),
+      fetchAccountMachines().catch((error: unknown) => {
+        // Signed out or offline: only the chat's own machine (and connections) list.
+        console.warn("[tools-pane] could not read the account's machines", error);
+        return null;
+      }),
       readLocalMachineKey(),
     ]).then(([result, key]) => {
       if (cancelled) return;
@@ -116,7 +119,6 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
         name: accountMachineDisplayName(machine) ?? machine.machineKey.slice(0, 8),
         platform: remoteMachineHostPlatform(machine.platform),
         online: isViewer || connected || presence === "online",
-        reachable: isViewer || connected,
         isChat: sameMachineKey(machine.machineKey, chatKey),
         isViewer,
       });
@@ -130,7 +132,6 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
         name: entry.target.name,
         platform: remoteMachineHostPlatform(entry.target.lastSeenArch ?? null),
         online: entry.state === "connected",
-        reachable: entry.state === "connected",
         isChat: sameMachineKey(key, chatKey),
         isViewer: false,
       });
@@ -143,7 +144,6 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
         name: isViewer ? "This computer" : bindingName ?? "This chat's machine",
         platform: hostPlatform ?? (isViewer ? viewerPlatformGuess() : null),
         online: true,
-        reachable: true,
         isChat: true,
         isViewer,
       });
@@ -153,7 +153,7 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     out.sort((a, b) => rank(a) - rank(b));
     const chatMachine = out.find((machine) => machine.isChat) ?? null;
     if (chatMachine && !chatMachine.platform && hostPlatform) chatMachine.platform = hostPlatform;
-    return { machines: out, chatMachine, fromAccount: directory != null };
+    return { machines: out };
     // `bindingKey` stands for the binding's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bindingKey, bindingName, directory, hostPlatform, localKey, snapshot, targetId]);

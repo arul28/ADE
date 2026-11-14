@@ -16,7 +16,7 @@ const LOCAL: WorkToolContext = {
 
 /** One card per tool, Screen standing for Mac and Windows Desktop; Side chat only with a side chat. */
 const ALWAYS_LISTED_CARD_COUNT = 10;
-const NO_ACTIVITY = { byTool: {}, remoteShellsRunning: 0, remoteShellMachines: [] } as const;
+const NO_ACTIVITY = { byTool: {}, remoteShellsRunning: 0 } as const;
 
 /** The picker over the catalogue the pane builds, from a tool context and statuses. */
 function Picker({

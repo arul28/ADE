@@ -4,6 +4,7 @@ import type { AgentChatRemoteWorkUse } from "../../shared/types/chat";
 import type { ChatTerminalSession } from "../../shared/types/sessions";
 import type { MachineAddress, MachineConnectResult } from "../../shared/machineAddress";
 import { sameMachineKey } from "../../shared/machineAddress";
+import { stripElectronErrorWrapper } from "../../shared/codedError";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import { useRemoteConnectionSnapshot } from "../state/projectMachines";
 import { isAdeAvailable } from "./adeAvailability";
@@ -308,9 +309,7 @@ export async function listRemoteWorkShells(
  * says what to do instead.
  */
 export function remoteWorkReadErrorText(error: unknown, machineName: string): string {
-  const raw = (error instanceof Error ? error.message : String(error ?? ""))
-    .replace(/^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/, "")
-    .trim();
+  const raw = stripElectronErrorWrapper(error instanceof Error ? error.message : String(error ?? ""));
   if (/Local runtime project is not available for this window|Local ADE runtime connection is not available/i.test(raw)) {
     return `This window hasn't opened this chat's project folder on ${machineName}. Open that project here once, then try again.`;
   }

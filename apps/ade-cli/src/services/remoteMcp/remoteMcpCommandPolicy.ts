@@ -389,6 +389,50 @@ function jsonNamesRestartAdb(text: string): boolean {
   }
 }
 
+/**
+ * An argument that sets `key` to the boolean `value`: `--arg key=value` (the
+ * CLI parses true and false), `--arg=key=value`, or a JSON object or array
+ * with that entry at any depth, parsed so an escaped key cannot hide it.
+ * Keys match in any case. False positives only refuse.
+ */
+function setsActionArg(word: string, key: string, value: boolean): boolean {
+  const wanted = key.toLowerCase();
+  const plain = word.toLowerCase();
+  if (plain === `${wanted}=${value}` || plain.endsWith(`=${wanted}=${value}`)) return true;
+  return [word, ...word.split("=").slice(1).map((_, index, parts) => parts.slice(index).join("="))]
+    .some((candidate) => jsonSetsEntry(candidate, wanted, value));
+}
+
+function jsonSetsEntry(text: string, key: string, value: boolean): boolean {
+  if (!/^\s*[[{]/u.test(text)) return false;
+  try {
+    return holdsEntry(JSON.parse(text), key, value);
+  } catch {
+    // Not JSON: the CLI refuses it before anything runs.
+    return false;
+  }
+}
+
+function holdsEntry(node: unknown, key: string, value: boolean): boolean {
+  if (Array.isArray(node)) return node.some((entry) => holdsEntry(entry, key, value));
+  if (!node || typeof node !== "object") return false;
+  return Object.entries(node).some(([name, entry]) =>
+    (name.toLowerCase() === key && entry === value) || holdsEntry(entry, key, value));
+}
+
+/**
+ * The raw action doors to Simulator.app on the person's Mac, the same switch
+ * as `ade apple … --window/--foreground` (refused above): `openDevice` with
+ * `openWindow: true`, and `launch` with `keepSimulatorInBackground: false`.
+ */
+const SIMULATOR_WINDOW_ACTION_ARGS: ReadonlyMap<string, { key: string; value: boolean }> = new Map([
+  ["openDevice", { key: "openWindow", value: true }],
+  ["launch", { key: "keepSimulatorInBackground", value: false }],
+]);
+
+const SIMULATOR_WINDOW_REASON =
+  "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE, in ADE's stream.";
+
 /** A restart of the machine's adb server cuts every other device and tool on it, so only the person decides it. */
 const ANDROID_RESTART_ADB_REASON =
   "Only the person restarts adb: Restart adb and start in the Android pane, or `ade android start --restart-adb` in a terminal on that machine.";
@@ -492,6 +536,13 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope, ar
   // spelling the CLI reads (`--input-json`, `--arg`, `--arg-json`, `--set`).
   if (target.domain === "android_emulator" && args.some(namesRestartAdb)) {
     return { ok: false, reason: `\`${name}\` with restartAdb is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
+  }
+  const simulatorWindow = target.domain === "ios_simulator" ? SIMULATOR_WINDOW_ACTION_ARGS.get(target.action) : undefined;
+  if (simulatorWindow && args.some((word) => setsActionArg(word, simulatorWindow.key, simulatorWindow.value))) {
+    return {
+      ok: false,
+      reason: `\`${name}\` with ${simulatorWindow.key}: ${simulatorWindow.value} is not available remotely. ${SIMULATOR_WINDOW_REASON}`,
+    };
   }
   const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
   if (signIn === true || signIn?.has(target.action)) {

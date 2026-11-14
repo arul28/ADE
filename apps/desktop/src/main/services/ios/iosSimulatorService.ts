@@ -7630,7 +7630,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const laneDevice = laneDevices.get(runtime.key);
     const udid = stopArgs.udid?.trim() || claimedDeviceUdid(runtime);
     if (!udid) {
-      return { udid: null, poweredOff: false, previousState: null, released: false, stillRegistered: false };
+      return { udid: null, poweredOff: false, previousState: null, released: false, stillRegistered: false, note: null };
     }
     // The lane's session ends only when it is on the device being powered off:
     // a stop that names another udid (the idle pass checked one device, then

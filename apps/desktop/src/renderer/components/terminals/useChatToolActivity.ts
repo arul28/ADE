@@ -37,38 +37,15 @@ export type ToolActivity = {
   running: boolean;
   /** Epoch ms of the call (or its answer). */
   at: number;
-  /** The machine the call named with `--machine`, when it named one. */
-  machine: string | null;
-  /** The last lines of a finished shell command's output, for the Terminal card. */
-  tail: string | null;
 };
 
 export type ChatToolActivity = {
   byTool: Partial<Record<ToolActivityTool, ToolActivity>>;
   /** Commands running on other machines right now (`ade shell start --machine`). */
   remoteShellsRunning: number;
-  /** The machines (as the commands named them) those commands run on. */
-  remoteShellMachines: readonly string[];
 };
 
-const EMPTY: ChatToolActivity = { byTool: {}, remoteShellsRunning: 0, remoteShellMachines: [] };
-
-const MAX_TAIL_CHARS = 160;
-
-/** The last two non-empty lines of an output, ANSI and carriage returns dropped. */
-function outputTail(output: string | null | undefined): string | null {
-  if (!output) return null;
-  const lines = output
-    .slice(-4_000)
-    // eslint-disable-next-line no-control-regex
-    .replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "")
-    .split(/\r?\n/)
-    .map((line) => line.replace(/\r/g, "").trimEnd())
-    .filter((line) => line.trim().length > 0);
-  if (!lines.length) return null;
-  const tail = lines.slice(-2).join("\n");
-  return tail.length > MAX_TAIL_CHARS ? `…${tail.slice(-MAX_TAIL_CHARS)}` : tail;
-}
+const EMPTY: ChatToolActivity = { byTool: {}, remoteShellsRunning: 0 };
 
 const SHELL_TOOLS = new Set([
   "bash", "shell", "terminal", "run_terminal_cmd", "exec_command", "execute", "run_shell_command",
@@ -131,31 +108,30 @@ function innerCommand(text: string): string {
   return shellStart?.[1]?.trim() ?? text;
 }
 
-export type ClassifiedCommand = { tool: ToolActivityTool; text: string; machine: string | null; remoteShell: boolean } | null;
+type ClassifiedCommand = { tool: ToolActivityTool; text: string; remoteShell: boolean } | null;
 
-/** Which card a shell command belongs on, and what to say about it. Exported for the mock and the pane. */
-export function classifyToolCommand(
+/** Which card a shell command belongs on, and what to say about it. */
+function classifyToolCommand(
   command: string,
   status: "running" | "completed" | "failed",
   output?: string | null,
 ): ClassifiedCommand {
   const text = unwrapShell(command);
   if (!text) return null;
-  const machine = machineFlag(text);
   const summary = summarizeComputerUseCommand({ command: text, output: output ?? null, status });
   if (summary) {
     const tool = DOMAIN_TOOL[summary.domain];
-    return tool ? { tool, text: computerUseActionText(summary), machine, remoteShell: false } : null;
+    return tool ? { tool, text: computerUseActionText(summary), remoteShell: false } : null;
   }
   // The agent's own status reports and device choices are not tool use.
   if (/\bade(?:\.exe|\.cmd)?\s+(?:chat\s+(?:activity|note|ask)|devices)\b/.test(text)) return null;
   const isAdeShell = /\bade(?:\.exe|\.cmd)?\s+shell\s+start\b/.test(text);
   const run = shortCommand(isAdeShell ? innerCommand(text) : text);
   const said = status === "running" ? `${run} running` : status === "failed" ? `${run} failed` : `Ran ${run}`;
-  if (/^(?:\S*[\\/])?git\s/.test(text) || /\bade\s+git\s/.test(text)) return { tool: "git", text: said, machine, remoteShell: false };
-  if (/^gh\s+pr\b|\bade\s+prs?\s/.test(text)) return { tool: "pr", text: said, machine, remoteShell: false };
-  if (/^gh\s+issue\b|\bade\s+linear\b/.test(text)) return { tool: "issues", text: said, machine, remoteShell: false };
-  return { tool: "terminal", text: said, machine, remoteShell: isAdeShell && machine != null };
+  if (/^(?:\S*[\\/])?git\s/.test(text) || /\bade\s+git\s/.test(text)) return { tool: "git", text: said, remoteShell: false };
+  if (/^gh\s+pr\b|\bade\s+prs?\s/.test(text)) return { tool: "pr", text: said, remoteShell: false };
+  if (/^gh\s+issue\b|\bade\s+linear\b/.test(text)) return { tool: "issues", text: said, remoteShell: false };
+  return { tool: "terminal", text: said, remoteShell: isAdeShell && machineFlag(text) != null };
 }
 
 /** True for `ade devices use …`: the chat's device choice may have changed. */
@@ -163,7 +139,7 @@ export function isDeviceChoiceCommand(command: string): boolean {
   return /\bade(?:\.exe|\.cmd)?\s+devices\s+use\b/.test(unwrapShell(command));
 }
 
-type Pending = { tool: ToolActivityTool; command: string; machine: string | null; remoteShell: boolean };
+type Pending = { tool: ToolActivityTool; command: string; remoteShell: boolean };
 
 /**
  * The live activity per tool for one chat, on the chat's machine (`pin`: its
@@ -193,29 +169,24 @@ export function useChatToolActivity(
     let byTool: ChatToolActivity["byTool"] = {};
 
     const publish = () => {
-      const remote = [...pending.values()].filter((entry) => entry.remoteShell);
-      const remoteShellMachines = [...new Set(remote.map((entry) => entry.machine).filter((name): name is string => Boolean(name)))];
+      let remoteShellsRunning = 0;
+      for (const entry of pending.values()) if (entry.remoteShell) remoteShellsRunning += 1;
       setActivity((current) => {
-        if (
-          current.byTool === byTool
-          && current.remoteShellsRunning === remote.length
-          && current.remoteShellMachines.join("|") === remoteShellMachines.join("|")
-        ) return current;
-        return { byTool, remoteShellsRunning: remote.length, remoteShellMachines };
+        if (current.byTool === byTool && current.remoteShellsRunning === remoteShellsRunning) return current;
+        return { byTool, remoteShellsRunning };
       });
     };
     const record = (entry: ToolActivity) => {
       const previous = byTool[entry.tool];
-      if (previous && previous.text === entry.text && previous.running === entry.running
-        && previous.machine === entry.machine && previous.tail === entry.tail) return;
+      if (previous && previous.text === entry.text && previous.running === entry.running) return;
       byTool = { ...byTool, [entry.tool]: entry };
     };
     const startCommand = (itemId: string, command: string, at: number) => {
       if (isDeviceChoiceCommand(command)) deviceChoiceItems.add(itemId);
       const classified = classifyToolCommand(command, "running");
       if (!classified) return;
-      pending.set(itemId, { tool: classified.tool, command, machine: classified.machine, remoteShell: classified.remoteShell });
-      record({ tool: classified.tool, text: classified.text, running: true, at, machine: classified.machine, tail: null });
+      pending.set(itemId, { tool: classified.tool, command, remoteShell: classified.remoteShell });
+      record({ tool: classified.tool, text: classified.text, running: true, at });
     };
     const finishCommand = (itemId: string, at: number, failed: boolean, output?: string | null, command?: string) => {
       if (deviceChoiceItems.delete(itemId)) onDeviceChoiceRef.current?.();
@@ -225,14 +196,7 @@ export function useChatToolActivity(
       if (!text) return;
       const classified = classifyToolCommand(text, failed ? "failed" : "completed", output);
       if (!classified) return;
-      record({
-        tool: classified.tool,
-        text: classified.text,
-        running: false,
-        at,
-        machine: classified.machine,
-        tail: classified.tool === "terminal" ? outputTail(output) : null,
-      });
+      record({ tool: classified.tool, text: classified.text, running: false, at });
     };
     const endTurn = (at: number) => {
       pending.clear();

@@ -7,13 +7,8 @@ import { remoteWorkReadErrorText, useRemoteWorkReach } from "../../lib/remoteWor
 import { useAppStore } from "../../state/appStore";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { Banner } from "../ui/notice/Banner";
-import { macDesktopStatusKey, useMacDesktopStatusEntry } from "../chat/macDesktopStatusStore";
 import { HELD_ELSEWHERE_ACTION_LABEL, HELD_ELSEWHERE_STATE_LABEL } from "../remoteTargets/remoteMachineModel";
-import { useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
-
-/** Says whether a use's machine has a device for it (`useRemoteTargetChoice`'s `reportDevice`). */
-export type ReportRemoteDevice = (use: RemoteWorkCopyUse, hasDevice: boolean) => void;
 
 /**
  * A tool's view of the chat's work copy on another machine, once this window
@@ -89,42 +84,27 @@ function RemoteWorkReachGate({
  * A tool that shows this lane's surface, or the one this chat drives on
  * another machine through its work copy there (`ade apple … --machine`,
  * `ade android … --machine`, `ade screen … --machine`,
- * `ade app-control … --machine`), chosen with one row when there is more than
- * one. The other machine's surface is read through that machine's pin, keyed
- * by the work copy's lane, once this window can reach it.
+ * `ade app-control … --machine`). The machine is picked in the row above the
+ * tool (`WorkToolPanelBar`); `use` is that machine's work copy, or null for
+ * this lane's own. The other machine's surface is read through that
+ * machine's pin, keyed by the work copy's lane, once this window can reach it.
  */
 export function RemoteOrLaneTool({
-  uses,
-  laneAvailable,
-  remoteLabel,
+  use,
   testId,
-  stickyKey,
   renderLane,
   renderRemote,
 }: {
-  uses: RemoteWorkCopyUse[];
-  laneAvailable: boolean;
-  remoteLabel: string;
+  use: RemoteWorkCopyUse | null;
   testId: string;
-  /** The chat and tool a person's pick of target holds for (`useRemoteTargetChoice`); null with no chat. */
-  stickyKey: string | null;
   renderLane: () => ReactNode;
-  /**
-   * `reportDevice` says whether that machine has a device for this use, from
-   * a read the panel makes anyway; the default target skips one that has none.
-   */
-  renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding, reportDevice: ReportRemoteDevice) => ReactNode;
+  renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding) => ReactNode;
 }) {
-  // The machine is picked in the row above the tool (`WorkToolPanelBar`),
-  // which sets the chat's device choice; the caller passes that machine's
-  // use alone, so there is nothing to switch between here.
-  const { chosen, reportDevice } = useRemoteTargetChoice(uses, laneAvailable, stickyKey);
-  const use = chosen?.use ?? null;
   if (!use) return <>{renderLane()}</>;
   return (
-    <div className="h-full min-h-0" data-testid={testId} data-remote-label={remoteLabel}>
+    <div className="h-full min-h-0" data-testid={testId}>
       <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
-        {(pin) => renderRemote(use, pin, reportDevice)}
+        {(pin) => renderRemote(use, pin)}
       </RemoteWorkReachGate>
     </div>
   );
@@ -193,8 +173,6 @@ type RemoteDeviceProps = {
   use: RemoteWorkCopyUse;
   remotePin: OpenProjectBinding;
   renderDevice: () => ReactNode;
-  /** Hears whether the copy's lane there has a device, from each read. */
-  onDeviceState?: ReportRemoteDevice;
 };
 
 /**
@@ -202,7 +180,7 @@ type RemoteDeviceProps = {
  * one. Nothing is started or picked from here: with no device yet, it says so.
  * `renderDevice` draws the device through `remotePin` on the copy's lane.
  */
-function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
+function RemoteWorkDevice({ use, remotePin, renderDevice, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
   const laneId = use.workCopyLaneId;
   const [state, setState] = useState<RemoteDeviceState>("loading");
   // Read again when the chat uses the copy anew: set by the subscription below.
@@ -229,9 +207,9 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
     // Keyed by the component's key (pin key + lane); the pin object is stable for it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [laneId, kind]);
-  // A renewed use (same lane, new start) reads again, so its report does not
-  // reuse an old "no device". Only then: a chat sends taps and shots many
-  // times a minute, and a device already seen stays seen through its events.
+  // A renewed use (same lane, new start) reads again, so it does not keep an
+  // old "no device". Only then: a chat sends taps and shots many times a
+  // minute, and a device already seen stays seen through its events.
   const stateRef = useRef(state);
   stateRef.current = state;
   const lastSeenStartRef = useRef(use.lastStartedAt);
@@ -240,10 +218,6 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
     lastSeenStartRef.current = use.lastStartedAt;
     if (stateRef.current !== "device") readAgainRef.current?.();
   }, [use.lastStartedAt]);
-  const hasDevice = state === "device" ? true : state === "none" ? false : null;
-  useEffect(() => {
-    if (hasDevice !== null) onDeviceState?.(use, hasDevice);
-  }, [hasDevice, onDeviceState, use]);
   if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} />;
   if (state === "none") return <WorkToolEmptyLine title={`No ${kind.noun} on ${use.machineName} for this chat right now`} />;
   if (typeof state === "object") {
@@ -253,7 +227,7 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
           layout="inline"
           model={{
             id: `${kind.idPrefix}-${remoteWorkUseKey(use)}`,
-            tone: "warning",
+            tone: "error",
             title: `Couldn't read the ${kind.noun} on ${use.machineName}`,
             detail: state.error,
             // A folder this window has not opened, a machine that is away: not an ADE fault.
@@ -274,26 +248,4 @@ export function RemoteWorkSimulator(props: RemoteDeviceProps) {
 /** The other machine's Android emulator for this chat's work copy (`RemoteWorkDevice`). */
 export function RemoteWorkAndroid(props: RemoteDeviceProps) {
   return <RemoteWorkDevice {...props} kind={REMOTE_ANDROID} />;
-}
-
-/**
- * Says whether the other machine's lane screen for this use is up, from the
- * status the screen pane itself reads into the store; reads nothing itself.
- */
-export function RemoteScreenDeviceReport({
-  use,
-  pin,
-  onDeviceState,
-}: {
-  use: RemoteWorkCopyUse;
-  pin: OpenProjectBinding;
-  onDeviceState: ReportRemoteDevice;
-}) {
-  const entry = useMacDesktopStatusEntry(macDesktopStatusKey(use.workCopyLaneId, pin));
-  const known = entry?.confirmed !== false && entry?.status != null;
-  const hasDevice = known ? Boolean(entry?.status?.display) : null;
-  useEffect(() => {
-    if (hasDevice !== null) onDeviceState(use, hasDevice);
-  }, [hasDevice, onDeviceState, use]);
-  return null;
 }

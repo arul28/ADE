@@ -13,7 +13,7 @@ import type { CrossMachineHandoffTransport } from "../../desktop/src/main/servic
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
-import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
+import type { RemoteWorkChatEnded, RemoteWorkMachineRef, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -582,8 +582,11 @@ import {
 } from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
+  appleElementMissExitCode,
   appleLeaseNotAcquired,
   formatAppleDeviceDelete,
+  formatAppleDeviceStart,
+  formatAppleDeviceStop,
   formatAppleInstall,
   formatAppleLease,
   formatAppleTests,
@@ -16229,36 +16232,6 @@ async function chatNotFoundHintNamingMachine(
  * capture, and clear the launch lock to do a job `--ignore-ownership` does
  * with none of that.
  */
-/**
- * `ade apple start --text`: which device the lane drives and whether ADE made
- * it (the Mac's sentence, `note`), then the live view. An older Mac sends no
- * note; its answer names the device only.
- */
-function formatAppleDeviceStart(value: unknown): string {
-  const record = unwrapActionEnvelope(value);
-  const status = isRecord(record) ? record : {};
-  const device = asString(status.deviceUdid);
-  const note = asString(status.note) ?? (device ? `This lane's simulator (${device}) is booted.` : "Started.");
-  const live = status.running === true ? `Live view: ${asString(status.backend) ?? "on"}.` : asString(status.lastError) ? `Live view: ${asString(status.lastError)}` : null;
-  return [note, live].filter(Boolean).join("\n");
-}
-
-/** `ade apple stop --text`: powered off, and what happens to the device (it stays registered there). */
-function formatAppleDeviceStop(value: unknown): string {
-  const record = unwrapActionEnvelope(value);
-  const result = isRecord(record) ? record : {};
-  const udid = asString(result.udid);
-  if (!udid) return "This lane has no Apple device, so nothing was powered off.";
-  return asString(result.note)
-    ?? `${udid} is ${result.poweredOff === true ? "powered off" : "off"}${result.stillRegistered === true ? " and stays this lane's device: the next ade apple start boots it again" : ""}.`;
-}
-
-/** An Apple element wait or assert that missed (`ok: false`) exits 1. */
-function appleElementMissExitCode(result: unknown): number {
-  const value = unwrapActionEnvelope(result);
-  return isRecord(value) && value.ok === false ? 1 : 0;
-}
-
 function iosSimulatorErrorHint(
   message: string,
   subcommand: string | null = null,
@@ -31293,6 +31266,39 @@ async function runServe(
     setSharedAccountLiveQuotaFetcher(lazyFetcher((factories, deps) => factories.createAccountLiveQuotaFetcher(deps)));
   }
 
+  /**
+   * One `ade/actions/call` to each machine a chat used, as that chat, sent
+   * and never awaited: each machine by its own key, never woken, a failure
+   * there logged and skipped. `logKey` names the logs (`<logKey>_skipped`,
+   * `<logKey>_bridge_failed`, and `<logKey>d` with `logAnswered` when set).
+   */
+  const callRemoteWorkMachines = (
+    uses: readonly RemoteWorkMachineRef[],
+    sessionId: string,
+    call: { name: string; arguments: Record<string, unknown>; timeoutMs: number; logKey: string; logAnswered?: Record<string, unknown> },
+  ): void => {
+    void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+      machine: use.machineKey,
+      scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+      method: "ade/actions/call",
+      params: { name: call.name, arguments: call.arguments },
+      caller: { chatSessionId: sessionId, permissionLevel: null },
+      timeoutMs: call.timeoutMs,
+      wake: false,
+    }).then(() => {
+      if (call.logAnswered) headlessProjectLogger.info(`${call.logKey}d`, { machineKey: use.machineKey, ...call.logAnswered });
+    }).catch((error: unknown) => {
+      headlessProjectLogger.info(`${call.logKey}_skipped`, {
+        machineKey: use.machineKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })))).catch((error: unknown) => {
+      headlessProjectLogger.warn(`${call.logKey}_bridge_failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
   // A chat that drove a simulator, emulator or screen on another machine
@@ -31303,25 +31309,13 @@ async function runServe(
   // device leases there still time out by themselves.
   if (!embedded) {
     releaseRemoteWorkDevices = ({ sessionId, turnId, uses }) => {
-      void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
-        machine: use.machineKey,
-        scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
-        method: "ade/actions/call",
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_devices",
         // The ended turn goes in the arguments, not the caller claim: there
         // it would count as the chat's latest turn, after its next one.
-        params: { name: "release_remote_work_devices", arguments: turnId ? { turnId } : {} },
-        caller: { chatSessionId: sessionId, permissionLevel: null },
+        arguments: turnId ? { turnId } : {},
         timeoutMs: 30_000,
-        wake: false,
-      }).catch((error: unknown) => {
-        headlessProjectLogger.info("remote_work.turn_release_skipped", {
-          machineKey: use.machineKey,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })))).catch((error: unknown) => {
-        headlessProjectLogger.warn("remote_work.turn_release_bridge_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logKey: "remote_work.turn_release",
       });
     };
   }
@@ -31329,30 +31323,17 @@ async function runServe(
   // A chat archived or deleted (on its own or with its lane) has what it
   // added on each machine it used removed there at once: its work copy in
   // every checkout, and with it the devices and App Control app it drove.
-  // Archived keeps a copy holding unpushed work (it can come back). Each
-  // machine is reached by its own key, never woken, never awaited by the
-  // archive; one that is offline is cleaned by its hourly sweep instead.
+  // A copy holding unpushed work stays (`keepUnsynced`). Never awaited by
+  // the archive or delete; a machine that is offline is cleaned by its
+  // hourly sweep instead.
   if (!embedded) {
     releaseRemoteWorkOfEndedChat = ({ sessionId, keepUnsynced, uses }) => {
-      void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
-        machine: use.machineKey,
-        scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
-        method: "ade/actions/call",
-        params: { name: "release_remote_work_copy", arguments: { keepUnsynced, ended: true } },
-        caller: { chatSessionId: sessionId, permissionLevel: null },
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_copy",
+        arguments: { keepUnsynced, ended: true },
         timeoutMs: 120_000,
-        wake: false,
-      }).then(() => {
-        headlessProjectLogger.info("remote_work.chat_end_released", { machineKey: use.machineKey, keepUnsynced });
-      }).catch((error: unknown) => {
-        headlessProjectLogger.info("remote_work.chat_end_release_skipped", {
-          machineKey: use.machineKey,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      })))).catch((error: unknown) => {
-        headlessProjectLogger.warn("remote_work.chat_end_release_bridge_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        logKey: "remote_work.chat_end_release",
+        logAnswered: { keepUnsynced },
       });
     };
   }
@@ -36694,11 +36675,13 @@ function formatIosSimStatus(value: unknown): string {
   const laneDevice = isRecord(status.laneDevice) ? status.laneDevice : null;
   const claimed = isRecord(status.activeSession) || isRecord(status.deviceSession);
   const activeIsLanes = Boolean(laneDevice && asString(laneDevice.udid) && asString(laneDevice.udid) === asString(activeDevice.udid));
-  const laneDeviceText = laneDevice
-    ? `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : ""}`
-    : status.supported === false
-      ? null
-      : "none yet (ade apple start gives this lane its own)";
+  let laneDeviceText: string | null = null;
+  if (laneDevice) {
+    const laneState = activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : "";
+    laneDeviceText = `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${laneState}`;
+  } else if (status.supported !== false) {
+    laneDeviceText = "none yet (ade apple start gives this lane its own)";
+  }
   // The device half and the live view, because `status` is the one command an
   // agent is told to poll. Leaving them to `--json` only meant a reader saw no
   // stream block and concluded the live view was off while it was running.

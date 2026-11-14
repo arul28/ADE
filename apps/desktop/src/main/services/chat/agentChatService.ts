@@ -75957,6 +75957,7 @@ export function createAgentChatService(args: {
       await cancelScheduledWorkFor(trimmedSessionId);
       const deletedCli = await cliLifecycle.deleteCli(existing, { remember: deleteOptions.remember === true });
       releaseRemoteWorkOfEndedChat(trimmedSessionId, "deleted");
+      remoteWorkBySession.delete(trimmedSessionId);
       return deletedCli;
     }
     if (!isChatToolType(existing.toolType)) {
@@ -82124,10 +82125,13 @@ export function createAgentChatService(args: {
   /**
    * This chat was archived or deleted: ask each machine it worked on, now, to
    * remove what it added there (`onRemoteWorkChatEnded`, never awaited). One
-   * request per machine: the release there covers every checkout. A machine
-   * that is offline is cleaned by its own hourly sweep, which asks this one.
-   * The record is live only, so work from before this brain started is left
-   * to that sweep too.
+   * request per machine: the release there covers every checkout. Either way
+   * a copy holding work nobody pushed stays (`keepUnsynced`): a deleted chat
+   * sits in Recently deleted, and that work exists nowhere else. The hourly
+   * sweep there removes it once it is pushed or gone for good, and a person
+   * can delete it in Settings › Machines. A machine that is offline is
+   * cleaned by that sweep too, which asks this one. The record is live only,
+   * so work from before this brain started is left to that sweep as well.
    */
   const releaseRemoteWorkOfEndedChat = (sessionId: string, ended: "archived" | "deleted"): void => {
     const uses = remoteWorkBySession.get(sessionId) ?? [];
@@ -82139,9 +82143,9 @@ export function createAgentChatService(args: {
       }
     }
     try {
-      onRemoteWorkChatEnded({ sessionId, keepUnsynced: ended === "archived", uses: [...machines.values()] });
+      onRemoteWorkChatEnded({ sessionId, keepUnsynced: true, uses: [...machines.values()] });
     } catch (error) {
-      logger.warn("agent_chat.remote_work_chat_end_release_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger.warn("agent_chat.remote_work_chat_end_release_failed", { ended, error: error instanceof Error ? error.message : String(error) });
     }
   };
 

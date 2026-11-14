@@ -2629,14 +2629,6 @@ button, [role="button"] {
   opacity: 1;
 }
 
-/* The glyph, tinted at rest. `--color-accent` at full strength would make the
-   icon compete with the label, and `text-muted-fg` on a coloured gradient reads
-   as a disabled control — 62% of the accent mixed into the muted foreground
-   sits between the two, and hover takes it the rest of the way. */
-.ade-tool-card-icon {
-  color: color-mix(in srgb, var(--color-accent) 62%, var(--color-muted-fg));
-}
-
 /* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
   transform: translateY(-1px) scale(0.99);

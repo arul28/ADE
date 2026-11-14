@@ -1,4 +1,3 @@
-import { activeRemoteWorkOnRow } from "../../../shared/chatRemoteWork";
 import type { DeviceKind } from "../../../shared/types/deviceSources";
 import {
   useCallback,
@@ -52,16 +51,20 @@ import {
   type WorkToolContext,
 } from "./workTools";
 import { useDeviceMachinePin } from "../apple/useDeviceMachinePin";
-import { setChatDeviceSource, useChatDeviceSources } from "./chatDeviceSources";
-import { useToolMachines, type ToolMachine } from "./useToolMachines";
+import { useToolMachines } from "./useToolMachines";
 import { useChatToolActivity } from "./useChatToolActivity";
 import { useRemoteDeviceProbes } from "./useRemoteDeviceProbes";
-import { DEVICE_NOUN, toolNoun, WorkToolPanelBar, type PanelBarMode } from "./WorkToolPanelBar";
-import { deviceSourceErrorText } from "./chatDeviceSources";
-import { useWorkToolCatalog } from "./useWorkToolCatalog";
-import { currentRemoteDeviceMachines, leftoverMachines } from "./workToolCatalog";
-import { cleanUpRemoteWork } from "./remoteWorkCleanup";
-import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { WorkToolPanelBar, type PanelBarMode } from "./WorkToolPanelBar";
+import { agentActivityLine, useWorkToolCatalog } from "./useWorkToolCatalog";
+import { useWorkToolCatalogState } from "./useWorkToolCatalogState";
+import { useToolHandoff } from "./useToolHandoff";
+import {
+  DEVICE_KIND_ORDER,
+  DEVICE_KINDS,
+  deviceKindTool,
+  onlineMacElsewhere,
+  remoteDeviceStatus,
+} from "./workToolCatalog";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
 import { CloudToolGate, type WorkToolOpen } from "./cloudToolGate";
 import { useSideChatView } from "../chat/sideChatState";
@@ -222,51 +225,44 @@ export function WorkSidebar({
     activeSession && activeSession.id === panelChatSessionId ? activeSession.sideChatSessionId ?? null : null,
   );
   const hasSideChat = sideChat.kind !== "none";
-  /*
-   * Where this chat's devices are NOW: its device choice per kind (the same
-   * setting as `ade devices use`, kept by the chat's brain), read on the
-   * chat's machine. A tool shows another machine's device only when the chat
-   * chose that machine for it, never because it once drove one there.
-   */
+  // Where this chat's devices are now, and what it left elsewhere
+  // (`useWorkToolCatalogState`), read on the chat's machine.
   const chatPin = useDeviceMachinePin(runtimePin);
-  const deviceSources = useChatDeviceSources(panelChatSessionId, chatPin, active);
   const toolMachines = useToolMachines(runtimePin, active, feedsToolContext.hostPlatform ?? null);
-  // The chat's choice per kind, else the machine its current turn drives that
-  // kind on (`--machine` on each command). Never an earlier turn's machine.
-  const activeRemoteUses = useMemo(() => activeRemoteWorkOnRow(activeSession), [activeSession]);
-  const chosenRemote = useMemo(
-    () => currentRemoteDeviceMachines(deviceSources.sources, toolMachines.machines, activeRemoteUses),
-    [activeRemoteUses, deviceSources.sources, toolMachines.machines],
-  );
+  const catalogState = useWorkToolCatalogState({
+    sessionId: panelChatSessionId,
+    chatPin,
+    active,
+    machines: toolMachines.machines,
+    session: activeSession,
+  });
+  const chosenRemote = catalogState.chosenRemote;
   // A device opens even where the chat's machine cannot run it, when another
   // machine of the account can: its tool is where the machine is picked.
-  const macElsewhere = toolMachines.machines.some((machine) => !machine.isChat && machine.online && machine.platform === "darwin");
-  const otherMachineOnline = toolMachines.machines.some((machine) => !machine.isChat && machine.online);
-  const hasRemoteSimulator = Boolean(chosenRemote.ios) || macElsewhere;
-  const hasRemoteAndroidEmulator = Boolean(chosenRemote.android) || otherMachineOnline;
-  const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(
-    chosenRemote.screen ? [{ machinePlatform: chosenRemote.screen.platform }] : [],
-  );
+  const iosOpensElsewhere = Boolean(chosenRemote.ios) || onlineMacElsewhere(toolMachines.machines);
+  const androidOpensElsewhere = Boolean(chosenRemote.android)
+    || toolMachines.machines.some((machine) => !machine.isChat && machine.online);
+  const { remoteMacDesktopPlatform, hasRemoteWindowsDesktop } = remoteDesktopToolContext(chosenRemote.screen?.platform);
   const hasRemoteAppControl = Boolean(chosenRemote.app);
-  const toolActivity = useChatToolActivity(panelChatSessionId, chatPin, active, deviceSources.refresh);
+  const toolActivity = useChatToolActivity(panelChatSessionId, chatPin, active, catalogState.refreshDeviceSources);
   const toolContext = useMemo<WorkToolContext>(
     () => ({
       ...feedsToolContext,
       ...(laneCloud ? { cloudLane: laneCloud } : {}),
       hasSideChat,
-      ...(hasRemoteSimulator ? { hasRemoteSimulator } : {}),
-      ...(hasRemoteAndroidEmulator ? { hasRemoteAndroidEmulator } : {}),
+      ...(iosOpensElsewhere ? { iosOpensElsewhere } : {}),
+      ...(androidOpensElsewhere ? { androidOpensElsewhere } : {}),
       ...(remoteMacDesktopPlatform ? { remoteMacDesktopPlatform } : {}),
       ...(hasRemoteWindowsDesktop ? { hasRemoteWindowsDesktop } : {}),
       ...(hasRemoteAppControl ? { hasRemoteAppControl } : {}),
     }),
     [
+      androidOpensElsewhere,
       feedsToolContext,
       hasSideChat,
-      hasRemoteAndroidEmulator,
       hasRemoteAppControl,
-      hasRemoteSimulator,
       hasRemoteWindowsDesktop,
+      iosOpensElsewhere,
       laneCloud,
       remoteMacDesktopPlatform,
     ],
@@ -399,26 +395,37 @@ export function WorkSidebar({
   // The chosen remote device's live state, read through the pin this window
   // already holds for that machine; re-read when the agent's call there answers.
   const { byTool: activityByTool } = toolActivity;
-  const rereadKeys = useMemo(() => ({
-    ios: activityByTool.ios?.running ? null : activityByTool.ios?.at ?? null,
-    android: activityByTool.android?.running ? null : activityByTool.android?.at ?? null,
-    screen: activityByTool.screen?.running ? null : activityByTool.screen?.at ?? null,
-    app: activityByTool["app-control"]?.running ? null : activityByTool["app-control"]?.at ?? null,
-  }), [activityByTool]);
+  const rereadKeys = useMemo(() => {
+    const keys: Partial<Record<DeviceKind, number | null>> = {};
+    for (const kind of DEVICE_KIND_ORDER) {
+      const entry = activityByTool[DEVICE_KINDS[kind].activity];
+      keys[kind] = entry?.running ? null : entry?.at ?? null;
+    }
+    return keys;
+  }, [activityByTool]);
   const pickerVisible = active && !effectiveTool;
   const remoteProbes = useRemoteDeviceProbes({ active: pickerVisible, remoteWork, chosenRemote, rereadKeys });
-  /*
-   * A tool the person took over from the agent: which chat, which tool, and
-   * that chat's machine, so the hand-back note goes where the take-over went
-   * even after the pane moved on.
-   */
-  const [held, setHeld] = useState<{ sessionId: string; tool: WorkSidebarTab; noun: string; pin: OpenProjectBinding | null } | null>(null);
-  const heldTool = held && held.sessionId === panelChatSessionId ? held.tool : null;
+  // A turn of the chat the pane serves runs now: the row says so, or one of
+  // its tool calls is still out.
+  const turnRunning = Boolean(
+    (activeSession?.id === panelChatSessionId && activeSession?.runtimeState === "running")
+    || Object.values(toolActivity.byTool).some((entry) => entry?.running),
+  );
+  const handoff = useToolHandoff({
+    sessionId: panelChatSessionId,
+    pin: chatPin,
+    session: activeSession && activeSession.id === panelChatSessionId ? activeSession : null,
+    turnRunning,
+    active,
+    openTools: availableOpenTools,
+    effectiveTool,
+  });
+  const heldTool = handoff.heldTool;
   const tiles = useWorkToolCatalog({
     context: toolContext,
     statuses: laneStatuses,
     machines: toolMachines.machines,
-    sources: deviceSources.sources,
+    sources: catalogState.sources,
     deviceMachines: chosenRemote,
     activity: toolActivity,
     probes: remoteProbes,
@@ -433,13 +440,22 @@ export function WorkSidebar({
   // The header's dots say what the cards say for a device on another machine.
   const statuses = useMemo<WorkToolStatusMap>(() => {
     let next: WorkToolStatusMap | null = null;
-    for (const card of tiles) {
-      if (!card.kind || !chosenRemote[card.kind]) continue;
+    for (const kind of DEVICE_KIND_ORDER) {
+      const remote = chosenRemote[kind];
+      if (!remote) continue;
+      const tool = deviceKindTool(kind, remote);
+      const status = remoteDeviceStatus(remote, remoteProbes[kind] ?? null, remoteWork);
+      const act = activityByTool[DEVICE_KINDS[kind].activity];
+      const agentNow = Boolean(act?.running);
+      const held = heldTool === tool;
+      let line = status.line;
+      if (held) line = "You took over; the agent waits";
+      else if (agentNow && act) line = agentActivityLine(act);
       next ??= { ...laneStatuses };
-      next[card.tool] = { line: card.line, live: card.live, errorCount: 0, errored: false };
+      next[tool] = { line, live: status.running || agentNow || held, errorCount: 0, errored: false };
     }
     return next ?? laneStatuses;
-  }, [tiles, chosenRemote, laneStatuses]);
+  }, [activityByTool, chosenRemote, heldTool, laneStatuses, remoteProbes, remoteWork]);
 
   // No lane warning: every tool here is this lane's own. Another lane's App
   // Control session is never shown, so there is nothing to warn about.
@@ -620,159 +636,35 @@ export function WorkSidebar({
     onClose();
   }, [browserViewRoot, effectiveTool, onClose]);
 
-  // The open tool's machine switch sets this chat's device choice: `ade devices
-  // use <kind>@<machine>`, on the chat's machine (its pin), the same setting
-  // the agent's commands read and the tile shows.
-  const chatPinKey = chatPin?.key ?? null;
-  const chatPinRef = useRef(chatPin);
-  chatPinRef.current = chatPin;
-  const chooseDeviceMachine = useCallback((kind: DeviceKind, machine: ToolMachine) => {
-    if (!panelChatSessionId) return;
-    void setChatDeviceSource({
-      sessionId: panelChatSessionId,
-      pin: chatPinRef.current,
-      kind,
-      machine: machine.isChat ? null : { key: machine.key, name: machine.name },
-    });
-  }, [panelChatSessionId]);
-
-  // What this chat left on machines it is not using now: one Clean up line.
-  const [cleanedMachines, setCleanedMachines] = useState<ReadonlySet<string>>(() => new Set());
-  useEffect(() => { setCleanedMachines(new Set()); }, [panelChatSessionId, chatPinKey]);
-  const activeMachineKeys = activeSession?.remoteWorkActiveMachineKeys;
-  const leftovers = useMemo(
-    () => leftoverMachines(remoteWork, deviceSources.sources, activeMachineKeys ?? [], cleanedMachines),
-    [activeMachineKeys, cleanedMachines, deviceSources.sources, remoteWork],
-  );
-  const resolveLeftoverPin = useRemoteWorkPinResolver(active && leftovers.length > 0);
-  const [cleaningUp, setCleaningUp] = useState(false);
-  const cleanUp = useCallback(() => {
-    if (!panelChatSessionId || cleaningUp) return;
-    setCleaningUp(true);
-    void cleanUpRemoteWork({ sessionId: panelChatSessionId, leftovers, resolvePin: resolveLeftoverPin })
-      .then((cleaned) => {
-        if (!cleaned.length) return;
-        setCleanedMachines((current) => {
-          const next = new Set(current);
-          for (const key of cleaned) next.add(key);
-          return next;
-        });
-      })
-      .finally(() => setCleaningUp(false));
-  }, [cleaningUp, leftovers, panelChatSessionId, resolveLeftoverPin]);
-
   const catalog = useMemo(() => ({
     tiles,
-    leftovers,
-    cleaningUp,
-    onCleanUp: panelChatSessionId ? cleanUp : null,
-  }), [cleanUp, cleaningUp, leftovers, panelChatSessionId, tiles]);
+    leftovers: catalogState.leftovers,
+    cleaningUp: catalogState.cleaningUp,
+    onCleanUp: catalogState.onCleanUp,
+  }), [catalogState.cleaningUp, catalogState.leftovers, catalogState.onCleanUp, tiles]);
 
-  /*
-   * The rows above an open tool (`WorkToolPanelBar`).
-   *
-   * Notes to the agent go on the chat's own path for a person's message while
-   * it works: `agentChat.steer` on the chat's pin, which steers a provider
-   * that takes input mid-turn and queues it for the next turn otherwise. A
-   * note is only sent while a turn runs: with no turn there is nobody to tell,
-   * and a note would start one.
-   */
+  // The rows above an open tool (`WorkToolPanelBar`): its notes to the agent
+  // and the take-over are `useToolHandoff`'s.
   const openTile = effectiveTool ? tiles.find((tile) => tile.tool === effectiveTool) ?? null : null;
-  const turnRunning = Boolean(
-    (activeSession?.id === panelChatSessionId && activeSession?.runtimeState === "running")
-    || Object.values(toolActivity.byTool).some((entry) => entry?.running),
-  );
-  const turnRunningRef = useRef(turnRunning);
-  turnRunningRef.current = turnRunning;
-  const [sentNote, setSentNote] = useState<string | null>(null);
-  useEffect(() => {
-    if (!sentNote) return undefined;
-    const timer = window.setTimeout(() => setSentNote(null), 3_500);
-    return () => window.clearTimeout(timer);
-  }, [sentNote]);
-  const noteToAgent = useCallback(async (
-    sessionId: string,
-    pin: OpenProjectBinding | null,
-    text: string,
-    options: { onlyDuringTurn: boolean },
-  ): Promise<boolean> => {
-    if (options.onlyDuringTurn && !turnRunningRef.current) return false;
-    try {
-      const result = await withChatPin(pin, (chatPin) => window.ade.agentChat.steer({ sessionId, text }, chatPin));
-      if (result.reason === "queue_full") {
-        showToast({ tone: "warning", title: "The agent's queue is full", message: "Send it again once the queue clears.", report: false });
-        return false;
-      }
-      return true;
-    } catch (error) {
-      showToast({ tone: "error", title: "Couldn't reach the agent", message: deviceSourceErrorText(error), report: false });
-      return false;
-    }
-  }, []);
-  const askMachine = useCallback((kind: DeviceKind, machine: ToolMachine) => {
-    if (!panelChatSessionId) return;
-    const noun = DEVICE_NOUN[kind];
-    const id = `${kind}@${machine.isChat ? "here" : machine.name}`;
-    void noteToAgent(
-      panelChatSessionId,
-      chatPinRef.current,
-      `Please switch the ${noun} to ${machine.name} (ade devices use "${id}").`,
-      { onlyDuringTurn: false },
-    ).then((sent) => { if (sent) setSentNote("Sent to the agent"); });
-  }, [noteToAgent, panelChatSessionId]);
-  const takeOver = useCallback(() => {
-    if (!panelChatSessionId || !openTile) return;
-    const noun = toolNoun(openTile);
-    setHeld({ sessionId: panelChatSessionId, tool: openTile.tool, noun, pin: chatPinRef.current });
-    void noteToAgent(
-      panelChatSessionId,
-      chatPinRef.current,
-      `The person took over the ${noun}; leave it alone until they hand it back.`,
-      { onlyDuringTurn: true },
-    );
-  }, [noteToAgent, openTile, panelChatSessionId]);
-  const handBack = useCallback(() => {
-    const current = heldRef.current;
-    if (!current) return;
-    setHeld(null);
-    void noteToAgent(
-      current.sessionId,
-      current.pin,
-      `The person is done with the ${current.noun}; you can use it again.`,
-      { onlyDuringTurn: true },
-    );
-  }, [noteToAgent]);
-  const heldRef = useRef(held);
-  heldRef.current = held;
-  // Closing the tool's tab, the pane, or moving to another chat hands it back
-  // (with its note). Looking at the tiles meanwhile keeps the hold.
-  const handBackRef = useRef(handBack);
-  handBackRef.current = handBack;
-  const heldToolOpen = held ? availableOpenTools.includes(held.tool) || effectiveTool === held.tool : false;
-  useEffect(() => {
-    if (!held) return;
-    if (!active || !heldToolOpen || panelChatSessionId !== held.sessionId) handBackRef.current();
-  }, [active, held, heldToolOpen, panelChatSessionId]);
-  useEffect(() => () => { if (heldRef.current) handBackRef.current(); }, []);
-
-  const barMode: PanelBarMode = openTile?.heldByPerson ? "held" : openTile?.agentNow ? "agent" : "free";
-  const chooseUnavailableReason = !panelChatSessionId
-    ? "A terminal session picks the machine on each command (--machine)."
-    : deviceSources.unsupported
-      ? "This chat's machine can't keep a device choice here."
-      : null;
+  let barMode: PanelBarMode = "free";
+  if (openTile?.heldByPerson) barMode = "held";
+  else if (openTile?.agentNow) barMode = "agent";
+  const { takeOver } = handoff;
+  const takeOverOpenTile = useCallback(() => { if (openTile) takeOver(openTile); }, [openTile, takeOver]);
   const panelBar = openTile ? (
     <WorkToolPanelBar
       tile={openTile}
       mode={barMode}
       machines={toolMachines.machines}
-      canChoose={Boolean(panelChatSessionId) && !deviceSources.unsupported}
-      chooseUnavailableReason={chooseUnavailableReason}
-      sentNote={sentNote}
-      onChooseMachine={chooseDeviceMachine}
-      onAskMachine={askMachine}
-      onTakeOver={panelChatSessionId ? takeOver : null}
-      onHandBack={handBack}
+      canChoose={catalogState.canChoose}
+      viewOnly={catalogState.viewOnly}
+      chooseUnavailableReason={catalogState.chooseUnavailableReason}
+      canTellAgent={handoff.canTellAgent}
+      told={handoff.told}
+      onChooseMachine={catalogState.chooseDeviceMachine}
+      onAskMachine={handoff.askMachine}
+      onTakeOver={panelChatSessionId ? takeOverOpenTile : null}
+      onHandBack={handoff.handBack}
     />
   ) : null;
   const content = ToolPanel && effectiveTool ? (

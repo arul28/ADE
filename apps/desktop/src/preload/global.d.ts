@@ -4253,7 +4253,11 @@ declare global {
       /** Work copies on a machine for chats on other machines (Settings › Machines). */
       remoteWork: {
         list: (pin?: OpenProjectBinding | null) => Promise<RemoteWorkCopyListing[]>;
-        delete: (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
+        /** `keepUnsynced`: a copy holding work nobody pushed stays; `keptReason` says why. */
+        delete: (
+          args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ deleted: boolean; keptReason?: string }>;
       };
       /** A machine's load and capabilities, read by its own brain (Settings › Machines, "Least loaded"). */
       machineStats?: {

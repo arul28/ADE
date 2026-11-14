@@ -68,11 +68,13 @@ function deviceKindOfCommand(typed: string): DeviceKind | null {
 /** How long one machine gets to answer the list. */
 const MACHINE_READ_TIMEOUT_MS = 8_000;
 /**
- * How long one machine gets to name its projects in the roster read. An
- * asleep machine the account still lists online answers nothing; it is
- * listed as "did not answer" after this, and its devices are not read.
+ * How long one machine gets to name its projects in the roster read. A
+ * machine the account still lists online but whose brain answers nothing
+ * (asleep, no route) is listed as "did not answer in time" after this, and
+ * its devices are not read. The machine's own read budget: a busy brain
+ * that answers within it is not called away.
  */
-const MACHINE_PROJECTS_BUDGET_MS = 4_000;
+const MACHINE_PROJECTS_BUDGET_MS = 8_000;
 /** How long a device command waits for the chat's choice before it stops. */
 const CHOICE_READ_TIMEOUT_MS = 4_000;
 
@@ -367,11 +369,12 @@ function deviceRow(
     const laneDeviceOn = Boolean(laneUdid && laneUdid === asString(device?.udid) && asString(device?.state)?.toLowerCase() === "booted");
     const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
     const missing = tools.filter((tool) => tool.available === false && (tool.name === "xcrun" || tool.name === "xcodebuild"));
-    const state = status.supported === false
-      ? "can't run"
-      : session
-        ? remoteHolder ? `in use by a chat on ${asString(remoteHolder.machineName) ?? "another machine"}` : inUseBy(asString(session.chatSessionId), chat)
-        : laneDevice ? laneDeviceOn ? "on" : "off" : "none yet: ade apple start makes this chat's";
+    let state: string;
+    if (status.supported === false) state = "can't run";
+    else if (session && remoteHolder) state = `in use by a chat on ${asString(remoteHolder.machineName) ?? "another machine"}`;
+    else if (session) state = inUseBy(asString(session.chatSessionId), chat);
+    else if (laneDevice) state = laneDeviceOn ? "on" : "off";
+    else state = "none yet: ade apple start makes this chat's";
     const laneName = asString(laneDevice?.name) ?? (session ? asString(session.deviceName) : null);
     return {
       ...base,
@@ -502,10 +505,13 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
       return unavailable(`offline${machine.lastSeenAt ? ` (last seen ${new Date(machine.lastSeenAt).toLocaleString()})` : ""}`);
     }
     // Online on the account, but its brain did not name its projects within
-    // the roster's budget (asleep, or no route): its devices would not answer
-    // either, so it is one row now rather than a wait for each kind.
+    // the roster's budget, or refused: its devices would not answer either,
+    // so it is one row now rather than a wait for each kind. The reason as
+    // the brain gave it (a sign-in or pairing refusal says so), not a guess.
     if (!machine.projects && machine.note) {
-      return unavailable(`did not answer (asleep or unreachable): ${firstSentence(machine.note)}`);
+      return unavailable(/did not answer in time/i.test(machine.note)
+        ? "did not answer in time"
+        : `couldn't be read: ${firstSentence(machine.note)}`);
     }
     // Which project there answers: this repository's checkout, else the one
     // opened most recently (the devices are the machine's; your code is not).
