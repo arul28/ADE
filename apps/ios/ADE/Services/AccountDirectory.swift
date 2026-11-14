@@ -389,13 +389,14 @@ func accountMachinePresentationName(
        $0.machineKey.lowercased() == identity
          || $0.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == identity
      }) {
-    return machine.displayName
+    return machine.presentedName
   }
   guard let fallback = fallback?.trimmingCharacters(in: .whitespacesAndNewlines),
         !fallback.isEmpty else {
     return nil
   }
-  return fallback
+  // A cloud lane computer's host name is its instance id: "Cloud · <lane>" instead.
+  return CloudLaneComputerLabels.present(fallback, machineKey: identity, hostName: fallback)
 }
 
 /// Thin HTTP client for the account-directory Worker. The official Worker URL

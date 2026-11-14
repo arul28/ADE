@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -167,9 +168,19 @@ final class CloudPaneStore: ObservableObject {
 
   /// Fixture screens (`-adePreviewScreen duo-cloud…`) hold their data and read nothing.
   private var isFixture = false
+  private var signInsWatch: AnyCancellable?
+  /// Bumped by each sign-ins read and write: only the newest one's answer lands.
+  private var signInsRequest = 0
 
   init(syncService: SyncService) {
     self.syncService = syncService
+    // A sign-in saved or applied on the machine shows at once (its push), not on the next open.
+    signInsWatch = syncService.$providerLoginsRevision
+      .dropFirst()
+      .removeDuplicates()
+      .sink { [weak self] _ in
+        Task { @MainActor in await self?.reloadSignIns() }
+      }
   }
 
   #if DEBUG
@@ -208,6 +219,7 @@ final class CloudPaneStore: ObservableObject {
       let list = try await syncService.cloudRead("list", args: ["detail": "full"], as: CloudPhoneList.self)
       now = Date()
       machines = Self.ordered(list.machines, now: now)
+      CloudLaneComputerLabels.note(list.machines)
       account = list.account
       if selectedId == nil || machine(selectedId!) == nil { selectedId = machines.first?.instanceId }
       phase = .loaded
@@ -237,10 +249,15 @@ final class CloudPaneStore: ObservableObject {
       signIns = nil
       return
     }
+    signInsRequest += 1
+    let request = signInsRequest
     do {
-      signIns = try await ProviderLoginsPhoneStatus.read(on: syncService)
+      let status = try await ProviderLoginsPhoneStatus.read(on: syncService)
+      guard request == signInsRequest else { return }
+      signIns = status
       signInsUnreadable = false
     } catch {
+      guard request == signInsRequest else { return }
       signInsUnreadable = signIns == nil
     }
   }
@@ -251,8 +268,11 @@ final class CloudPaneStore: ObservableObject {
     signInsSaving = true
     defer { signInsSaving = false }
     actionError = nil
+    signInsRequest += 1
+    let request = signInsRequest
     do {
-      signIns = try await ProviderLoginsPhoneStatus.write("setCloudAll", args: ["on": on], on: syncService)
+      let status = try await ProviderLoginsPhoneStatus.write("setCloudAll", args: ["on": on], on: syncService)
+      if request == signInsRequest { signIns = status }
     } catch {
       actionError = SyncUserFacingError.message(for: error)
       ADEHaptics.error()

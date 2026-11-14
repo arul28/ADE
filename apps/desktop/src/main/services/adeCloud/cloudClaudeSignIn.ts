@@ -116,6 +116,12 @@ export type CloudClaudeSignInDeps = {
   stopPty: (pty: AgentCliLoginPty, options: { sync?: boolean }) => void;
   /** Which account a pass is for. Without it, a start asked to check saves as unchecked. */
   verify?: (token: string, options: { signal: AbortSignal }) => Promise<ClaudePassVerifyResult>;
+  /**
+   * A pass was kept (in the account, or only here so far), after the state
+   * says so. Tells the brain's clients at once (`provider_logins_changed`), so
+   * every window and the phone show it without waiting for a sync pass.
+   */
+  onSaved?: () => void;
   logger?: Logger;
 };
 
@@ -177,9 +183,15 @@ export function createCloudClaudeSignIn(deps: CloudClaudeSignInDeps) {
         // Kept, but not in the account: never shown as signed in.
         if (target.upload && target.upload !== "account") {
           end(target, "saved_here", claudePassUploadMessage(target.upload));
-          return;
+        } else {
+          end(target, "succeeded");
         }
-        end(target, "succeeded");
+        try {
+          deps.onSaved?.();
+        } catch (error) {
+          // The clients read it on their next change event or open.
+          deps.logger?.warn?.("cloud.claude_pass_saved_notify_failed", { reason: error instanceof Error ? error.name : "unknown" });
+        }
       },
       () => {
         if (record !== target || target.status.state !== "saving") return;

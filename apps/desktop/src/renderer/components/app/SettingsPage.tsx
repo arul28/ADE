@@ -75,6 +75,7 @@ import {
   decodeSettingsHash,
   integrationPageForAnchor,
   openIntegrationFromUrl,
+  settingsTabPickerKind,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
 
@@ -673,8 +674,10 @@ export function SettingsPage({
   // Providers also offers ADE Cloud (`?machine=ade-cloud`), even beside one machine.
   const offersAdeCloud = section === "agents" && machinesEnabled && cloudEnabled;
   const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
+  // How the tab reaches a machine (`settingsTabPickerKind`).
+  const titlePickerKind = settingsTabPickerKind(section);
   const titlePicker = (section === "agents" || section === "android" || section === "passwords") && machinesEnabled && !standalone
-    && (reachableMachines(machines).length > 1 || offersAdeCloud);
+    && (reachableMachines(machines, titlePickerKind).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
     machines,
@@ -854,6 +857,7 @@ export function SettingsPage({
                 <span style={{ marginLeft: 8 }} data-ph-mask="">
                   <MachinePicker
                     variant="title"
+                    kind={titlePickerKind}
                     machines={machines}
                     selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
                     thisMachineName={thisMachineDeviceName}

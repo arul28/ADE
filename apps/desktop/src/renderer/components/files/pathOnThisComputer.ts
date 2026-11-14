@@ -1,4 +1,4 @@
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { showToast } from "../app/toast/toastStore";
 
@@ -14,7 +14,7 @@ import { showToast } from "../app/toast/toastStore";
 /** The refusal for a path on another computer, or null when the path is here. */
 export function pathElsewhereMessage(pin: OpenProjectBinding, what = "This file"): string | null {
   if (pin.kind !== "remote") return null;
-  return `${what} is on ${machineNameForBinding(pin)}. Open it from ADE on that computer.`;
+  return `${what} is on ${machineLabelForBinding(pin)}. Open it from ADE on that computer.`;
 }
 
 /**

@@ -14,6 +14,8 @@ struct CloudDashboardScreen: View {
   var onClose: (() -> Void)?
   /// True on a phone: a row pushes the computer. False in the book layout: a row selects it.
   var pushes: Bool
+  /// "You're on Plus", once per account, plan and period (`CloudPlanSeenStore`).
+  @State private var moment: CloudPlanMoment?
 
   var body: some View {
     ScrollView {
@@ -28,11 +30,14 @@ struct CloudDashboardScreen: View {
             Task { await store.reload() }
           }
         default:
-          CloudHero(store: store)
+          CloudHero(store: store, celebrating: moment != nil)
+          if let moment {
+            CloudPlanMomentCard(moment: moment) { self.moment = nil }
+          }
           CloudNotices(store: store)
           CloudLanesCard(store: store, pushes: pushes)
           if let account = store.account, account.catalog != nil {
-            CloudPlansCard(account: account)
+            CloudPlansCard(account: account, newPlanId: moment?.planId)
             CloudSizesCard(account: account, tiers: store.tiers)
           }
           if let referral = store.account?.referral {
@@ -48,6 +53,8 @@ struct CloudDashboardScreen: View {
     }
     .background(ADEColor.pageBackground.ignoresSafeArea())
     .refreshable { await store.reload() }
+    .onAppear { observePlan(store.account) }
+    .onChange(of: store.account) { _, account in observePlan(account) }
     .navigationTitle("ADE Cloud")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -59,30 +66,91 @@ struct CloudDashboardScreen: View {
       }
     }
   }
+
+  private func observePlan(_ account: CloudPhoneAccount?) {
+    guard let account else {
+      moment = nil
+      return
+    }
+    // Another account, plan or period: the banner was about something else.
+    if let shown = moment, shown.accountKey != CloudPlanSeenStore.accountKey(account).key || shown.key != CloudPlanSeenStore.momentKey(account) {
+      moment = nil
+    }
+    if let landed = CloudPlanSeenStore.observe(account) {
+      moment = landed
+      ProductAnalytics.shared.captureFeature(.cloudPlan, outcome: .completed)
+    }
+  }
+}
+
+/// "You're on Plus": the plan, its hours and disk, the renewal date, and the
+/// free hours it replaced. Facts only (App Store 3.1.1): no price.
+struct CloudPlanMomentCard: View {
+  let moment: CloudPlanMoment
+  let onDismiss: () -> Void
+
+  var body: some View {
+    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+    HStack(alignment: .top, spacing: 12) {
+      CloudLogo(size: 18, glow: true)
+        .frame(width: 34, height: 34)
+        .background(CloudBrandColor.violet.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      VStack(alignment: .leading, spacing: 4) {
+        Text(moment.title)
+          .font(.system(size: 14.5, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(moment.detail)
+          .font(.system(size: 12.5))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 0)
+      Button(action: onDismiss) {
+        Image(systemName: "xmark")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(width: 28, height: 28)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Dismiss")
+    }
+    .padding(12)
+    .background(
+      LinearGradient(colors: [CloudBrandColor.violet.opacity(0.12), CloudBrandColor.lamp.opacity(0.08)], startPoint: .leading, endPoint: .trailing),
+      in: shape
+    )
+    .overlay(shape.strokeBorder(CloudBrandColor.lamp.opacity(0.45), lineWidth: 0.75))
+    .accessibilityElement(children: .combine)
+  }
 }
 
 // MARK: Hero
 
-/// The top block: the plan, the hours, disk and computers. The numbers are
-/// said once on the page; nothing below repeats them.
+/// The top block, on ADE Cloud's dusk sky (in both themes): the logo, the
+/// plan in gold, when it renews, the hours, disk and computers. The numbers
+/// are said once on the page; nothing below repeats them.
 struct CloudHero: View {
   @ObservedObject var store: CloudPaneStore
+  /// A plan that just landed ("You're on Plus"): its name glows.
+  var celebrating = false
 
   var body: some View {
     if let account = store.account {
-      VStack(alignment: .leading, spacing: 14) {
-        HStack(spacing: 10) {
-          ADEBrandTile(brand: .cloud, size: 28)
-          VStack(alignment: .leading, spacing: 1) {
-            Text(cloudPlanName(account))
-              .font(.system(size: 16, weight: .semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text("ADE Cloud")
-              .font(.system(size: 12))
-              .foregroundStyle(ADEColor.textMuted)
-          }
+      let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+      VStack(alignment: .leading, spacing: 16) {
+        HStack(spacing: 8) {
+          CloudLogo(size: 18, glow: true)
+          Text("ADE Cloud")
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(CloudBrandColor.skyText)
+          CloudPlanWord(text: cloudPlanLabel(account.currentPlanId))
+            .shadow(color: celebrating ? CloudBrandColor.lamp.opacity(0.8) : .clear, radius: 14)
           Spacer(minLength: 0)
+          if let period = periodChip(account) {
+            CloudSkyChip(text: period.0, tone: period.1)
+          }
         }
+        .accessibilityElement(children: .combine)
         hours(account)
         HStack(alignment: .top, spacing: 10) {
           if let disk = account.disk {
@@ -106,46 +174,83 @@ struct CloudHero: View {
           }
         }
       }
-      .adeKitCard()
+      .padding(16)
+      .padding(.bottom, 6)
+      .background { CloudSky() }
+      .clipShape(shape)
+      .overlay(shape.strokeBorder(CloudBrandColor.violetLight.opacity(0.18), lineWidth: 0.75))
+      .shadow(color: CloudBrandColor.violet.opacity(0.25), radius: 18, y: 10)
+      .environment(\.colorScheme, .dark)
     }
+  }
+
+  /// "Renews Dec 13", "Ends Dec 13", "Plus from Dec 13", "Payment failed", "Resets Dec 13".
+  private func periodChip(_ account: CloudPhoneAccount) -> (String, CloudSkyChip.Tone)? {
+    guard let billing = account.billing else { return nil }
+    let end = cloudDate(billing.periodEnd)
+    if billing.notice == "past_due" { return ("Payment failed", .crit) }
+    if billing.cancelAtPeriodEnd == true { return ("Ends \(end)", .warn) }
+    if let next = billing.nextPlanId, next != account.currentPlanId { return ("\(cloudPlanLabel(next)) from \(end)", .plain) }
+    return (account.plan == "paid" ? "Renews \(end)" : "Resets \(end)", .plain)
   }
 
   private func hours(_ account: CloudPhoneAccount) -> some View {
     let hours = account.hours
     let percentLeft = hours.includedMilli > 0 ? Double(hours.leftMilli) / Double(hours.includedMilli) * 100 : 0
-    let resets: String? = account.billing.map { billing in
-      billing.cancelAtPeriodEnd == true ? "plan ends \(cloudDate(billing.periodEnd))" : "resets \(cloudDate(billing.periodEnd))"
-    }
-    return VStack(alignment: .leading, spacing: 6) {
-      ADEEyebrow("Hours left this month")
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
+    let notes = cloudHoursNotes(account, now: store.now)
+    let level = ADEUsagePressure.color(percentLeft: percentLeft, fallback: CloudBrandColor.violet)
+    let calm = percentLeft > 20
+    return VStack(alignment: .leading, spacing: 8) {
+      Text("Computer hours left this month")
+        .font(.system(size: 12))
+        .foregroundStyle(CloudBrandColor.skyText2)
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
         Text(cloudHours(hours.leftMilli))
-          .font(.system(size: 30, weight: .medium, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(["of \(cloudHours(hours.includedMilli)) h", resets].compactMap { $0 }.joined(separator: ", "))
+          .font(.system(size: 44, weight: .medium))
+          .tracking(-1.2)
+          .foregroundStyle(CloudBrandColor.skyText)
+          .lineLimit(1)
+          .minimumScaleFactor(0.6)
+        Text("of \(cloudHours(hours.includedMilli)) h")
           .font(.system(size: 13))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(2)
+          .foregroundStyle(CloudBrandColor.skyText2)
       }
       .accessibilityElement(children: .combine)
-      ADEKitMeter(
-        fraction: percentLeft / 100,
-        color: ADEUsagePressure.color(percentLeft: percentLeft, fallback: ADEColor.accent),
-        height: 5
-      )
-      VStack(alignment: .leading, spacing: 3) {
-        ForEach(cloudHoursNotes(account, now: store.now), id: \.self) { line in
-          Text(line)
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
+      GeometryReader { geo in
+        ZStack(alignment: .leading) {
+          Capsule().fill(Color.white.opacity(0.12))
+          Capsule()
+            .fill(calm ? AnyShapeStyle(CloudBrandColor.fill) : AnyShapeStyle(level))
+            .frame(width: max(0, min(1, percentLeft / 100)) * geo.size.width)
+            .shadow(color: calm ? CloudBrandColor.roseLight.opacity(0.45) : .clear, radius: 6)
         }
       }
-      .padding(.top, 2)
+      .frame(height: 6)
+      .accessibilityHidden(true)
+      ForEach(notes.filter { $0.tone == .warn }, id: \.self) { note in
+        Text(note.text)
+          .font(.system(size: 12))
+          .foregroundStyle(Color(red: 0.988, green: 0.827, blue: 0.302))
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      let chips = notes.filter { $0.tone != .warn }
+      if !chips.isEmpty {
+        CloudFlowRow(spacing: 6) {
+          ForEach(chips, id: \.self) { note in
+            switch note.tone {
+            case .lamp: CloudSkyChip(text: note.text, tone: .lamp)
+            case .on: CloudSkyChip(text: "\u{25CF} \(note.text)", tone: .lamp)
+            default: CloudSkyChip(text: note.text)
+            }
+          }
+        }
+        .padding(.top, 2)
+      }
     }
   }
 }
 
+/// Disk and computers on the sky: frosted glass, white text.
 struct CloudMiniMeter: View {
   let label: String
   let value: String
@@ -156,31 +261,36 @@ struct CloudMiniMeter: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 5) {
-      ADEEyebrow(label)
+      Text(label)
+        .font(.system(size: 11.5))
+        .foregroundStyle(CloudBrandColor.skyText2)
       HStack(alignment: .firstTextBaseline, spacing: 4) {
         Text(value)
-          .font(.system(size: 17, weight: .medium, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
+          .font(.system(size: 19, weight: .medium))
+          .foregroundStyle(CloudBrandColor.skyText)
         if let of {
-          Text(of).font(.system(size: 12)).foregroundStyle(ADEColor.textMuted)
+          Text(of).font(.system(size: 11.5)).foregroundStyle(CloudBrandColor.skyText2)
         }
       }
       if let fraction {
+        let percentLeft = (1 - min(1, fraction)) * 100
         ADEKitMeter(
           fraction: fraction,
-          color: ADEUsagePressure.color(percentLeft: (1 - min(1, fraction)) * 100, fallback: ADEKit.fill)
+          color: ADEUsagePressure.color(percentLeft: percentLeft, fallback: CloudBrandColor.violetLight)
         )
       } else {
         ADEKitMeter(fraction: 0, color: ADEKit.fill).hidden().accessibilityHidden(true)
       }
       Text(note)
-        .font(.system(size: 11.5))
-        .foregroundStyle(ADEColor.textMuted)
+        .font(.system(size: 11))
+        .foregroundStyle(CloudBrandColor.skyText2)
         .lineLimit(2)
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(ADEKit.track.opacity(0.6), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .background(.ultraThinMaterial.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .background(CloudBrandColor.glass, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(CloudBrandColor.glassEdge, lineWidth: 0.75))
     .accessibilityElement(children: .combine)
   }
 }
@@ -339,11 +449,14 @@ struct CloudMachineRow: View {
 
 // MARK: Plans
 
-/// The plans side by side: what each includes, the current one marked. No
-/// price, no button and no line on where to change a plan (App Store
-/// 3.1.1/3.1.3): the iPhone app states facts only.
+/// The plans side by side: what each includes, the current one on its own
+/// patch of dusk sky with a gold edge. No price, no button and no line on
+/// where to change a plan (App Store 3.1.1/3.1.3): the iPhone app states facts
+/// only. What an hour and disk are is said once, under the plans.
 struct CloudPlansCard: View {
   let account: CloudPhoneAccount
+  /// A plan that just landed ("You're on Plus"): its card is marked New and glows.
+  var newPlanId: String? = nil
 
   private struct Column: Identifiable {
     let id: String
@@ -362,12 +475,12 @@ struct CloudPlansCard: View {
     return out
   }
 
+  /// Only what's different from the hero's "Renews Dec 13".
   private var statusLine: String? {
     guard let billing = account.billing else { return nil }
     if billing.cancelAtPeriodEnd == true { return "Your plan ends \(cloudDate(billing.periodEnd)). You're on Free after that." }
     if let next = billing.nextPlanId, next != account.currentPlanId { return "You move to \(cloudPlanLabel(next)) on \(cloudDate(billing.periodEnd))." }
     if billing.notice == "past_due" { return "Your last payment failed." }
-    if account.plan == "paid" { return "Renews \(cloudDate(billing.periodEnd))." }
     return nil
   }
 
@@ -375,64 +488,148 @@ struct CloudPlansCard: View {
     ADEKitCard(title: "Plans", symbol: "square.stack.3d.up", hint: statusLine) {
       VStack(alignment: .leading, spacing: 12) {
         // Two plans a row on a phone, all four side by side on an iPad.
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8, alignment: .top)], alignment: .leading, spacing: 8) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 8, alignment: .top)], alignment: .leading, spacing: 8) {
           ForEach(columns) { column in
             planColumn(column)
           }
         }
-        Text("An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster. Disk is what all your computers hold at one time. Make as many computers as you like.")
-          .font(.system(size: 12))
-          .foregroundStyle(ADEColor.textMuted)
-          .fixedSize(horizontal: false, vertical: true)
+        howItWorks
       }
     }
   }
 
-  private func planColumn(_ column: Column) -> some View {
-    let current = column.id == account.currentPlanId
-    // The plan that starts at the period end: a move down, or Free after a cancel.
-    let next = !current && (account.billing?.nextPlanId == column.id || (account.billing?.cancelAtPeriodEnd == true && column.id == "free"))
-    let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-    return VStack(alignment: .leading, spacing: 8) {
-      VStack(alignment: .leading, spacing: 4) {
-        Text(column.label)
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        if current {
-          ADEKitTag(text: "Your plan", tone: .accent)
-        } else if next, let end = account.billing?.periodEnd {
-          ADEKitTag(text: "From \(cloudDate(end))", tone: .neutral, keepsCase: true)
-        } else {
-          Color.clear.frame(height: 18)
-        }
+  private var showsSimulatorMinutes: Bool { columns.contains { $0.facts.phoneMinutes != nil } }
+
+  /// The one place for the explanations: what every plan includes.
+  private var howItWorks: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      howRow("clock", "Hours run your cloud computers", "and renew every month: Linux computers your agents work on, one per lane, as many as you like. An hour is one hour of a Small computer; bigger sizes use hours faster.")
+      Divider().overlay(ADEKit.edge)
+      howRow("moon.stars", "Computers sleep on their own", "a few minutes after work stops, so your hours only go to real work.")
+      Divider().overlay(ADEKit.edge)
+      howRow("internaldrive", "Disk", "is what all your computers hold at one time, shared between them.")
+      if showsSimulatorMinutes {
+        Divider().overlay(ADEKit.edge)
+        howRow("iphone", "iOS Simulator minutes (soon):", "time on an iPhone simulator in the cloud, for agents to test your app.")
       }
-      // An account from before the new plans keeps its old hours and disk until its period ends.
-      // "then …" only when this plan carries on; a waiting move or cancel shows its own "From" column.
-      let staysOn = account.billing?.cancelAtPeriodEnd != true && (account.billing?.nextPlanId ?? column.id) == column.id
-      if current, let old = oldTermsHours(column), let end = account.billing?.periodEnd {
-        fact(cloudHours(old), staysOn ? "hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "hours until \(cloudDate(end))")
-      } else {
-        fact(cloudHours(column.facts.includedMilli), "hours a month")
-      }
-      if current, let old = oldTermsDisk(column), let end = account.billing?.periodEnd {
-        fact(cloudGb(old), staysOn ? "disk until \(cloudDate(end)), then \(cloudGb(column.facts.diskGb))" : "disk until \(cloudDate(end))")
-      } else {
-        fact(cloudGb(column.facts.diskGb), "disk in all")
-      }
-      if let minutes = column.facts.phoneMinutes {
-        fact("\(minutes)", "phone minutes, soon")
-      }
-      Text(column.id == "free" ? "Work stops until the next month" : "Extra hours, if you turn them on")
-        .font(.system(size: 11.5))
-        .foregroundStyle(ADEColor.textMuted)
+    }
+    .background(ADEKit.track.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ADEKit.edge, lineWidth: 0.75))
+  }
+
+  private func howRow(_ symbol: String, _ lead: String, _ rest: String) -> some View {
+    HStack(alignment: .top, spacing: 10) {
+      Image(systemName: symbol)
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(CloudBrandColor.mark)
+        .frame(width: 26, height: 26)
+        .background(CloudBrandColor.violet.opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      (Text(lead).fontWeight(.semibold).foregroundColor(ADEColor.textSecondary) + Text(" \(rest)").foregroundColor(ADEColor.textMuted))
+        .font(.system(size: 12))
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(10)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+  }
+
+  private func planColumn(_ column: Column) -> some View {
+    let current = column.id == account.currentPlanId
+    let isNew = column.id == newPlanId
+    // The plan that starts at the period end: a move down, or Free after a cancel.
+    let next = !current && (account.billing?.nextPlanId == column.id || (account.billing?.cancelAtPeriodEnd == true && column.id == "free"))
+    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+    // An account from before the new plans keeps its old hours and disk until its period ends.
+    // "then …" only when this plan carries on; a waiting move or cancel shows its own "From" column.
+    let staysOn = account.billing?.cancelAtPeriodEnd != true && (account.billing?.nextPlanId ?? column.id) == column.id
+    let end = account.billing?.periodEnd
+    return VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 5) {
+        Text(column.label)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(current ? CloudBrandColor.skyText : ADEColor.textPrimary)
+        Spacer(minLength: 0)
+        if isNew {
+          planTag("New", gold: true)
+        } else if current {
+          planTag("Your plan", gold: true)
+        } else if next, let end {
+          planTag("From \(cloudDate(end))", gold: false)
+        }
+      }
+      VStack(alignment: .leading, spacing: 0) {
+        if current, let old = oldTermsHours(column), let end {
+          bigFact(cloudHours(old), staysOn ? "computer hours until \(cloudDate(end)), then \(cloudHours(column.facts.includedMilli))" : "computer hours until \(cloudDate(end))", current: current)
+        } else {
+          bigFact(cloudHours(column.facts.includedMilli), "computer hours a month", current: current)
+        }
+      }
+      VStack(alignment: .leading, spacing: 6) {
+        if current, let old = oldTermsDisk(column), let end {
+          fact("internaldrive", "\(cloudGb(old)) disk until \(cloudDate(end))\(staysOn ? ", then \(cloudGb(column.facts.diskGb))" : "")", current: current)
+        } else {
+          fact("internaldrive", "\(cloudGb(column.facts.diskGb)) disk", current: current)
+        }
+        if let minutes = column.facts.phoneMinutes {
+          fact("iphone", "\(minutes) iOS Simulator minutes, soon", current: current)
+        }
+        fact("bolt", column.id == "free" ? "Stops at the limit" : "Extra hours if on", current: current, quiet: column.id == "free")
+      }
+    }
+    .padding(12)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .background(current ? ADEColor.accent.opacity(0.08) : Color.clear, in: shape)
-    .overlay(shape.strokeBorder(current ? ADEColor.accent.opacity(0.45) : ADEKit.edge, lineWidth: current ? 1 : 0.75))
+    .background {
+      if current {
+        CloudSky(moon: false, bank: false)
+      } else {
+        ADEKit.track.opacity(0.35)
+      }
+    }
+    .clipShape(shape)
+    .overlay(shape.strokeBorder(current || isNew ? CloudBrandColor.lamp.opacity(0.6) : ADEKit.edge, lineWidth: current || isNew ? 1 : 0.75))
+    .shadow(color: isNew ? CloudBrandColor.lamp.opacity(0.45) : (current ? CloudBrandColor.violet.opacity(0.3) : .clear), radius: isNew ? 14 : 10, y: current ? 6 : 0)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(column.label)\(current ? ", your plan" : ""): \(cloudHours(column.facts.includedMilli)) hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) phone minutes, coming soon" } ?? "")")
+    .accessibilityLabel("\(column.label)\(current ? ", your plan" : "")\(isNew ? ", new" : ""): \(cloudHours(column.facts.includedMilli)) computer hours a month, \(cloudGb(column.facts.diskGb)) disk\(column.facts.phoneMinutes.map { ", \($0) iOS Simulator minutes, coming soon" } ?? "")")
+  }
+
+  private func planTag(_ text: String, gold: Bool) -> some View {
+    Text(text)
+      .font(.system(size: 10.5, weight: .medium))
+      .foregroundStyle(gold ? CloudBrandColor.lamp : ADEColor.textSecondary)
+      .lineLimit(1)
+      .padding(.horizontal, 7)
+      .frame(height: 19)
+      .background(gold ? CloudBrandColor.lamp.opacity(0.13) : Color.clear, in: Capsule())
+      .overlay(Capsule().strokeBorder(gold ? CloudBrandColor.lamp.opacity(0.45) : ADEKit.edge, lineWidth: 0.75))
+      .fixedSize()
+  }
+
+  private func bigFact(_ value: String, _ unit: String, current: Bool) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      Text(value)
+        .font(.system(size: 26, weight: .semibold))
+        .tracking(-0.6)
+        .foregroundStyle(current ? CloudBrandColor.skyText : ADEColor.textPrimary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+      Text(unit)
+        .font(.system(size: 11.5))
+        .foregroundStyle(current ? CloudBrandColor.skyText2 : ADEColor.textMuted)
+        .lineLimit(2)
+    }
+  }
+
+  private func fact(_ symbol: String, _ text: String, current: Bool, quiet: Bool = false) -> some View {
+    HStack(spacing: 7) {
+      Image(systemName: symbol)
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(current ? CloudBrandColor.lamp : CloudBrandColor.mark)
+        .frame(width: 14)
+      Text(text)
+        .font(.system(size: 12))
+        .foregroundStyle(current ? CloudBrandColor.skyText2 : (quiet ? ADEColor.textMuted : ADEColor.textSecondary))
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
   }
 
   /// The paid plan's hours this period when they aren't the table's (old terms), else nil.
@@ -448,25 +645,14 @@ struct CloudPlansCard: View {
     return limit != column.facts.diskGb ? limit : nil
   }
 
-  private func fact(_ value: String, _ unit: String) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
-      Text(value)
-        .font(.system(size: 15, weight: .medium, design: .monospaced))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
-      Text(unit)
-        .font(.system(size: 11))
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(2)
-    }
-  }
 }
 
 // MARK: Sizes
 
-/// The four sizes (`cloudTierFacts`): CPU, memory, how far the disk can grow,
-/// what each runs, how fast it uses hours, and how long the hours left last.
+/// The four sizes (`CloudSizeCards.tsx`), one row each, read at a glance: how
+/// fast it uses hours (big), CPU · memory · disk, "Full computer" where it is
+/// one, and the hours left at that size. The desktop screen every size has is
+/// said once in the hint (one line: the kit hint does not wrap); what a size runs and its rate in words are read out.
 struct CloudSizesCard: View {
   let account: CloudPhoneAccount
   let tiers: [CloudPhoneTier]
@@ -475,7 +661,7 @@ struct CloudSizesCard: View {
 
   var body: some View {
     if !tiers.isEmpty {
-      ADEKitCard(title: "Sizes", symbol: "cpu", hint: "Each lane picks its size when it starts.", flush: true) {
+      ADEKitCard(title: "Sizes", symbol: "cpu", hint: "Every size has a screen the agent can use.", flush: true) {
         VStack(spacing: 0) {
           ForEach(Array(tiers.enumerated()), id: \.element.id) { index, tier in
             if index > 0 { ADESettingsHairline() }
@@ -486,40 +672,48 @@ struct CloudSizesCard: View {
     }
   }
 
+  private func facts(_ tier: CloudPhoneTier) -> String {
+    (["\(tier.cpu) CPU", "\(cloudGbText(tier.memoryGb)) GB memory"] + (tier.diskMaxGb.map { ["\(cloudGbText($0)) GB disk"] } ?? []))
+      .joined(separator: " · ")
+  }
+
   private func row(_ tier: CloudPhoneTier) -> some View {
-    HStack(alignment: .top, spacing: 12) {
+    HStack(alignment: .center, spacing: 12) {
       Image(systemName: tier.symbol)
         .font(.system(size: 13, weight: .medium))
-        .foregroundStyle(ADEColor.textSecondary)
+        .foregroundStyle(CloudBrandColor.mark)
         .frame(width: 28, height: 28)
-        .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(CloudBrandColor.violet.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 6) {
           Text(tier.label)
-            .font(.system(size: 15, weight: .medium))
+            .font(.system(size: 15, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
           if tier.full { ADEKitTag(text: "Full computer") }
-          Spacer(minLength: 4)
-          Text("\(tier.rate.formatted(.number.precision(.fractionLength(0...1))))×")
-            .font(.system(size: 14, weight: .medium, design: .monospaced))
-            .foregroundStyle(ADEColor.textPrimary)
         }
-        Text(tier.specs.joined(separator: " · "))
+        Text(facts(tier))
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(tier.runs)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textSecondary)
-        Text("\(tier.rateLine). Your hours last \(tier.hoursLeftLabel(leftMilli)) here.")
+        (Text(tier.hoursLeftLabel(leftMilli)).fontWeight(.semibold).foregroundColor(ADEColor.textPrimary)
+          + Text(" left at this size").foregroundColor(ADEColor.textMuted))
           .font(.system(size: 12))
+      }
+      Spacer(minLength: 8)
+      VStack(alignment: .trailing, spacing: 0) {
+        Text("\(tier.rate.formatted(.number.precision(.fractionLength(0...1))))×")
+          .font(.system(size: 26, weight: .semibold))
+          .monospacedDigit()
+          .foregroundStyle(CloudBrandColor.mark)
+        Text("hours")
+          .font(.system(size: 11))
           .foregroundStyle(ADEColor.textMuted)
-          .fixedSize(horizontal: false, vertical: true)
       }
     }
     .padding(.horizontal, ADEKit.inset)
     .padding(.vertical, 11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
+    .accessibilityHint("\(tier.runs). \(tier.rateLine).")
   }
 }
 

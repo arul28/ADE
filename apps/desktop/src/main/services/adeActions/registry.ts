@@ -4427,6 +4427,8 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
     analytics: runtime.productAnalyticsService ?? null,
+    // An attached desktop approves the new computer in its window; with none, the person gets a link.
+    desktop: () => runtime.getCloudDesktop?.() ?? null,
     // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
     gitPreflight: (originUrl) => cloudGitPreflight({
       vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true

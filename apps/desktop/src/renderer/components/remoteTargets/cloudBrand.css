@@ -1,22 +1,25 @@
 /*
- * ADE Cloud's look ("Night sky"): one own color, deep blue to soft sky blue,
- * on ADE's own surfaces. Every ADE Cloud surface reads these tokens, so a
- * light theme changes them here once.
+ * ADE Cloud's look ("Dusk"): the website's night sky. Violet to rose, with
+ * the lamp gold of the city's lit windows for the one thing that matters most.
+ * Every ADE Cloud surface reads these tokens, so a light theme changes them
+ * here once. The logo itself (`CloudLogo`) keeps its own fixed colours.
  */
 :root {
-  --adec-950: #081128;
-  --adec-900: #0d1b42;
-  --adec-800: #142d66;
-  --adec-700: #1d4594;
-  --adec-600: #2a62c8;
-  --adec-500: #4482ee;
-  --adec-400: #6fa3fa;
-  --adec-300: #9dc4ff;
-  --adec-200: #c8ddff;
-  --adec-100: #e9f2ff;
-  --adec-lamp: #ffe0a8;
-  --adec-lamp-hot: #fff4da;
-  --adec-asleep: #27304d;
+  --adec-950: #0a0820;
+  --adec-900: #17113a;
+  --adec-800: #2a1b66;
+  --adec-700: #4a2c9c;
+  --adec-600: #6d3fd6;
+  --adec-500: #8b5cf6;
+  --adec-400: #a78bfa;
+  --adec-300: #c4b5fd;
+  --adec-200: #ddd6fe;
+  --adec-100: #f3efff;
+  --adec-rose: #f472b6;
+  --adec-rose-deep: #db2777;
+  --adec-lamp: #ffd27a;
+  --adec-lamp-hot: #fff1cf;
+  --adec-asleep: #2a2552;
 
   /* The mark, and ADE Cloud's text on a chip (the lane chip, the size change). */
   --adec-mark: var(--adec-300);
@@ -37,16 +40,16 @@
 }
 
 [data-theme="light"] {
-  --adec-mark: #2a62c8;
-  --adec-pill-fg: #1d4594;
-  --adec-lamp-text: #b26b00;
-  --adec-size-on: #2a62c8;
+  --adec-mark: #6d3fd6;
+  --adec-pill-fg: #4a2c9c;
+  --adec-lamp-text: #a15c00;
+  --adec-size-on: #7c4ddf;
   --adec-size-off: rgba(26, 26, 30, 0.16);
-  --adec-size-line: rgba(42, 98, 200, 0.55);
-  --adec-tile-fg: #1d4594;
-  --adec-tile-border: rgba(42, 98, 200, 0.3);
-  --adec-tile-bg: rgba(68, 130, 238, 0.1);
-  --adec-puff: rgba(68, 130, 238, 0.16);
+  --adec-size-line: rgba(109, 63, 214, 0.55);
+  --adec-tile-fg: #4a2c9c;
+  --adec-tile-border: rgba(109, 63, 214, 0.3);
+  --adec-tile-bg: rgba(139, 92, 246, 0.1);
+  --adec-puff: rgba(139, 92, 246, 0.16);
 }
 
 .adec-mark {
@@ -235,3 +238,28 @@
 }
 html[data-motion="reduced"] .adec-size-fill { transition: none; }
 html[data-motion="reduced"] .adec-puff { animation: none; display: none; }
+
+/* (The toast can show on any page, so it lives here with the logo, not on the dashboard.) */
+/* "You're on Plus" in the toast: the new plan's three facts. */
+.adecd-moment-facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.adecd-moment-facts > span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--adec-500) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--adec-400) 26%, transparent);
+  font-size: 11px;
+  color: var(--kit-text-2);
+}
+.adecd-moment-facts b { font-weight: 600; color: var(--color-fg); }
+
+/* The plan's name beside "ADE Cloud" (the header popover): the hero's serif italic gold, small. */
+.adec-plan-word {
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1;
+  color: var(--adec-lamp-text);
+}

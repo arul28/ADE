@@ -39,7 +39,7 @@ import type { CloudLaneWithoutComputer } from "../../shared/cloudLaneLaunch";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
 import { formatMachineVersions } from "../../shared/machineVersions";
 import type { MachineAddress } from "../../shared/repositoryTab";
-import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 import {
   useAppStore,
   useRootAppStore,
@@ -91,6 +91,12 @@ export type LaneMachine = {
   hostname: string | null;
   /** ADE runtime version the machine reported. Null for This computer. */
   version: string | null;
+  /**
+   * Whether another machine's brain answers its own settings with no project
+   * (`shared/machineScope.ts`): false for an older brain, unset until its
+   * connection reports capabilities, and for This computer.
+   */
+  machineScope?: boolean;
 };
 
 /** One lane, tagged with the machine that owns it. */
@@ -267,6 +273,12 @@ function connectionDeviceId(connection: RemoteRuntimeConnectionStatus | undefine
   return connection?.target.pairedMachine?.hostIdentity?.trim() || null;
 }
 
+/** `LaneMachine.machineScope` from a connection, once it reported capabilities. */
+function connectionMachineScope(connection: RemoteRuntimeConnectionStatus | undefined): Pick<LaneMachine, "machineScope"> {
+  const capabilities = connection?.capabilities;
+  return capabilities ? { machineScope: capabilities.machineScope === true } : {};
+}
+
 /**
  * Pure derivation of {@link AllMachineLanes}; it performs no I/O. The optional
  * `connections` and `thisMachineDeviceId` enrich the machines with identity and
@@ -280,18 +292,27 @@ export function buildAllMachineLanes(input: {
   connections?: readonly RemoteRuntimeConnectionStatus[];
   thisMachineDeviceId?: string | null;
   /**
-   * The account's ADE Cloud lane computers (`useAdeCloudLaneComputers`) and
-   * lanes without a computer (`useCloudLanesWithoutComputer`), with the repo's
-   * normalized origin. When passed, the result carries `adeCloud`; nothing
-   * else changes.
+   * The account's ADE Cloud lane computers (`useAdeCloudLaneComputers`), which
+   * name the cloud machines; a hook passes the ones it renders from, so its
+   * memo follows them. With the lanes without a computer
+   * (`useCloudLanesWithoutComputer`) and the repo's normalized origin too, the
+   * result also carries `adeCloud`.
    */
   adeCloud?: {
     computers: readonly AdeCloudLaneComputer[];
-    withoutComputer: readonly CloudLaneWithoutComputer[];
-    repoOriginIdentity: string | null;
+    withoutComputer?: readonly CloudLaneWithoutComputer[];
+    repoOriginIdentity?: string | null;
   };
 }): AllMachineLanes {
   const activeBinding = input.activeBinding ?? null;
+  // What a person sees: a cloud lane computer reads "Cloud · <lane>" (from the
+  // lane computers passed, else, for a caller outside React, the ones last
+  // read); every other machine keeps its own name.
+  const laneComputers = input.adeCloud?.computers ?? adeCloudLaneComputersNow();
+  const labelFor = (hostname: string | null, machineId: string, name: string): string =>
+    machineLabelForMachine({ hostname, machineKey: machineId, name }, laneComputers);
+  const shownName = (binding: OpenProjectBinding | null, machineId: string, name: string): string =>
+    labelFor(binding?.kind === "remote" ? binding.hostname ?? null : null, machineId, name);
   const active = activeMachineFor(activeBinding);
   const activeSlice = input.machines[active.machineId];
   const connectionById = new Map((input.connections ?? []).map((connection) => [connection.target.id, connection]));
@@ -300,7 +321,7 @@ export function buildAllMachineLanes(input: {
 
   const activeMachine: LaneMachine = {
     machineId: active.machineId,
-    machineName: active.machineName,
+    machineName: shownName(activeBinding, active.machineId, active.machineName),
     // A local binding is reachable by definition. A remote one follows its
     // union slice; before the first read, the connection snapshot; before
     // that, reachable (the tab would not be bound to it otherwise).
@@ -347,7 +368,7 @@ export function buildAllMachineLanes(input: {
     const pin = binding;
     const machine: LaneMachine = {
       machineId: entry.machineId,
-      machineName: entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId,
+      machineName: shownName(binding, entry.machineId, entry.machineName?.trim() || connection?.target.name?.trim() || entry.machineId),
       online: entry.online,
       isThisMachine,
       isActiveBinding: false,
@@ -360,6 +381,7 @@ export function buildAllMachineLanes(input: {
       deviceId: isThisMachine ? thisDeviceId : connectionDeviceId(connection),
       hostname: connection?.target.hostname ?? (binding?.kind === "remote" ? binding.hostname ?? null : null),
       version: connectionVersionLabel(connection),
+      ...connectionMachineScope(connection),
     };
     machines.push(machine);
     prsByMachineId.set(entry.machineId, entry.prs);
@@ -378,7 +400,7 @@ export function buildAllMachineLanes(input: {
   const machinesWithoutRepo: LaneMachine[] = [];
   if (input.connections || input.thisMachineDeviceId !== undefined) {
     const listed = new Set(machines.map((machine) => machine.machineId));
-    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version">): LaneMachine => ({
+    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version" | "machineScope">): LaneMachine => ({
       ...overrides,
       isActiveBinding: false,
       binding: null,
@@ -405,12 +427,13 @@ export function buildAllMachineLanes(input: {
     for (const connection of rest) {
       machinesWithoutRepo.push(noRepo({
         machineId: connection.target.id,
-        machineName: connection.target.name?.trim() || connection.target.hostname || connection.target.id,
+        machineName: labelFor(connection.target.hostname ?? null, connection.target.id, connection.target.name?.trim() || connection.target.hostname || connection.target.id),
         online: connectionOnline(connection),
         isThisMachine: false,
         deviceId: connectionDeviceId(connection),
         hostname: connection.target.hostname ?? null,
         version: connectionVersionLabel(connection),
+        ...connectionMachineScope(connection),
       }));
     }
   }
@@ -424,14 +447,16 @@ export function buildAllMachineLanes(input: {
     lanesByMachineId,
     prsByMachineId,
     sessionsByMachineId,
-    ...(input.adeCloud ? { adeCloud: buildAdeCloudLaneGroup(machines, lanes, input.adeCloud) } : {}),
+    ...(input.adeCloud?.withoutComputer
+      ? { adeCloud: buildAdeCloudLaneGroup(machines, lanes, { ...input.adeCloud, withoutComputer: input.adeCloud.withoutComputer }) }
+      : {}),
   };
 }
 
 function buildAdeCloudLaneGroup(
   machines: readonly LaneMachine[],
   lanes: readonly MachineLane[],
-  input: NonNullable<Parameters<typeof buildAllMachineLanes>[0]["adeCloud"]>,
+  input: NonNullable<Parameters<typeof buildAllMachineLanes>[0]["adeCloud"]> & { withoutComputer: readonly CloudLaneWithoutComputer[] },
 ): AdeCloudLaneGroup {
   const origin = input.repoOriginIdentity?.trim().toLowerCase() || null;
   // A computer with no recorded origin is kept: the union only lists machines
@@ -464,9 +489,10 @@ export function useAllMachineLanes(active = true): AllMachineLanes {
   const activeBinding = useAppStore((state) => state.projectBinding);
   const activeLanes = useAppStore((state) => state.lanes);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  const { computers } = useAdeCloudLaneComputers();
   return useMemo(
-    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {} }),
-    [activeBinding, activeLanes, machines],
+    () => buildAllMachineLanes({ activeBinding: activeBinding ?? null, activeLanes, machines: machines ?? {}, adeCloud: { computers } }),
+    [activeBinding, activeLanes, machines, computers],
   );
 }
 

@@ -381,6 +381,13 @@ export type ChatLaunchQueueMessageArgs = {
   text: string;
   displayText?: string | null;
   attachments?: AgentChatFileRef[];
+  /**
+   * The message's id from whoever queued it first (an ADE Cloud launch hands
+   * its queued messages to the computer with their ids). It becomes the queued
+   * message's id and its `clientSendId`, so a retried hand-off is queued and
+   * sent once. Absent: the host makes one.
+   */
+  clientSendId?: string;
 };
 
 /** CLI launches: the launching client reports the PTY session it started in the lane. */

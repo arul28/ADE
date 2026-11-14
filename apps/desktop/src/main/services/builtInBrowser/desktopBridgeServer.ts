@@ -623,6 +623,18 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
           return await actions.copy(input as Parameters<typeof actions.copy>[0]);
         case "move":
           return await actions.move(input as Parameters<typeof actions.move>[0]);
+        case "approveWindow": {
+          // A machine's sign-in code, never a link: the desktop asks its own
+          // account service for the page to open.
+          const id = typeof input.id === "string" ? input.id.trim().slice(0, 64) : "";
+          const userCode = typeof input.userCode === "string" ? input.userCode.trim() : "";
+          if (!id || !/^[A-Za-z0-9-]{4,32}$/.test(userCode)) throw new Error("The approval window needs an id and the machine's sign-in code.");
+          const title = typeof input.title === "string" && input.title.trim() ? input.title.trim().slice(0, 120) : "Sign in a new computer";
+          return await actions.approveWindow({ id, userCode, title });
+        }
+        case "closeApprovalWindow":
+          actions.closeApprovalWindow({ id: typeof input.id === "string" ? input.id : "" });
+          return { closed: true };
       }
     } catch (error) {
       throw new JsonRpcError(JsonRpcErrorCode.internalError, error instanceof Error ? error.message : String(error));

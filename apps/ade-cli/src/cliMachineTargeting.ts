@@ -1414,6 +1414,9 @@ function cloudLaunchArgsFromChatCreate(draft: CloudLaneLaunchDraft): JsonObject 
     throw new CliUsageError("--machine cloud makes a new lane for the chat: leave out --lane.");
   }
   const prompt = draft.prompt?.trim() ? draft.prompt : null;
+  // Going on with a launch this computer's ADE already holds: it kept the
+  // prompt and every choice, so the id alone is enough.
+  if (!prompt && draft.launchId) return { kind: "chat", mode: "background", launchId: draft.launchId };
   if (!prompt) throw new CliUsageError("A chat on ADE Cloud starts with its first message: pass --prompt or --prompt-file.");
   // The lane is the launch's; a parent on this machine can't follow a chat on another computer.
   const {
@@ -1533,6 +1536,10 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
     // Always, --json too (stderr), before anything waits: the id is what follows or resumes this launch.
     process.stderr.write(`ade: starting a lane on ADE Cloud (${sizeId ?? "your default size"}). Launch id ${launchId}.\n`);
     return await withCloudActions(options, roots.projectRoot, async (call) => {
+      // A chat launch with no message only goes on with one ADE already holds.
+      if (launch.kind === "chat" && !isRecord(launch.chat) && !(await call("lane_launch_status", { launchId }))) {
+        throw new CliUsageError(`This computer's ADE has no ADE Cloud lane launch ${launchId}. To start a new one, pass --prompt.`);
+      }
       let lastLine = "";
       const { outcome, status, answer } = await followCloudLaneLaunch({
         start: () => call("lane_launch", { launch, originUrl }),
@@ -1556,7 +1563,7 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
           throw new CliExecutionError(status?.launch.error?.trim() || "The lane didn't start on ADE Cloud.", {
             launchId,
             phase: "failed",
-            nextAction: `Run the same command with --launch-id ${launchId} to go on from the failed step.`,
+            nextAction: `ade chat create --machine cloud --launch-id ${launchId} (the prompt and choices are kept) goes on from the failed step.`,
           });
         case "cancelled":
           throw new CliExecutionError("The lane launch was cancelled, and its computer deleted.", { launchId, phase: "cancelled" });

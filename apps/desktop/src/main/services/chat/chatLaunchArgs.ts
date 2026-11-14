@@ -18,6 +18,13 @@ import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { normalizeLaneStart } from "../../../shared/laneStart";
 import { parseGuestCommentSelections, type ChatThreadCommentSelection } from "../../../shared/threadComments";
 import { isRecord } from "../shared/utils";
+import { normalizeClientSendId } from "./chatClientSendLedger";
+
+/** `{ clientSendId }` when the value is a usable id (`normalizeClientSendId`), else nothing. */
+function clientSendIdField(value: unknown): { clientSendId?: string } {
+  const clientSendId = normalizeClientSendId(value);
+  return clientSendId ? { clientSendId } : {};
+}
 
 /**
  * The one parser for untrusted chat-launch input. Both entry points — the
@@ -176,6 +183,8 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
     ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
     ...guestCommentsField(includeThreadComments, value.includeGuestComments),
+    // A phone's offline queue or a web retry resends with the same id.
+    ...clientSendIdField(value.clientSendId),
   };
 }
 
@@ -324,6 +333,7 @@ export function parseChatLaunchQueueMessageArgs(value: unknown): ChatLaunchQueue
     text: typeof record.text === "string" ? record.text : "",
     ...(asTrimmedString(record.displayText) ? { displayText: asTrimmedString(record.displayText)! } : {}),
     ...(attachments?.length ? { attachments } : {}),
+    ...clientSendIdField(record.clientSendId),
   };
 }
 

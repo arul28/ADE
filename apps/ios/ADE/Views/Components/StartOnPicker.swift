@@ -104,7 +104,7 @@ func startOnCandidateList(
     var candidate = StartOnCandidate(
       accountMachineKey: machine.machineKey,
       fleetKey: key,
-      name: machine.displayName,
+      name: machine.presentedName,
       symbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
       kind: canStart ? .copy : .offline,
       isMain: entry.copy.isMain,
@@ -131,7 +131,7 @@ func startOnCandidateList(
     candidates.append(StartOnCandidate(
       accountMachineKey: machine.machineKey,
       fleetKey: key,
-      name: machine.displayName,
+      name: machine.presentedName,
       symbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
       kind: .cloneFirst,
       isMain: false,
@@ -373,7 +373,7 @@ extension SyncService {
         id: phoneKey,
         phoneKey: phoneKey,
         accountMachineKey: accountMachine?.machineKey,
-        name: accountMachine?.displayName ?? name,
+        name: accountMachine?.presentedName ?? name,
         symbol: accountMachine.map { machineDeviceSymbol(deviceType: $0.deviceType, platform: $0.platform) } ?? "desktopcomputer",
         isLive: true
       ))
@@ -390,7 +390,7 @@ extension SyncService {
         id: phoneKey ?? machine.machineKey,
         phoneKey: phoneKey,
         accountMachineKey: machine.machineKey,
-        name: machine.displayName,
+        name: machine.presentedName,
         symbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
         isLive: false
       ))
