@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrSummary } from "../../../shared/types";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   getPrMergeAutoSettlementState,
@@ -2003,7 +2003,7 @@ describe("prMergeAutoSettlementService", () => {
 
 describe("PR-origin merge lifecycle", () => {
   const roots: string[] = [];
-  const databases: Awaited<ReturnType<typeof openKvDb>>[] = [];
+  const databases: AdeDb[] = [];
   afterEach(() => {
     for (const db of databases.splice(0)) db.close();
     for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });

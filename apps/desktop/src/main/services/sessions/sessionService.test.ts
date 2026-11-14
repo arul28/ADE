@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 
@@ -22,7 +22,7 @@ function makeProjectRoot(prefix: string): string {
   return root;
 }
 
-function insertProjectGraph(db: Awaited<ReturnType<typeof openKvDb>>) {
+function insertProjectGraph(db: AdeDb) {
   const now = "2026-03-17T00:00:00.000Z";
   db.run(
     `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)

@@ -6,7 +6,7 @@
 # Service Unavailable"), not on anything in ADE. This runs the command up to
 # three times, 20 s and then 60 s apart, but only while its output names such
 # a failure. Any other failure (a refused token, a bad config, a build error)
-# ends at once with the command's own exit code, as before.
+# ends at once with the command's own exit code.
 #
 # Use it only for a command that is safe to repeat: a Worker or Pages deploy
 # uploads the same bundle again. Never wrap a D1 migration: a retry after a

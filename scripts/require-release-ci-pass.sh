@@ -18,30 +18,33 @@ ci_pass_for() {
     --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
 }
 
-# CI runs scripts/validate-docs.mjs in the `packages` job, beside the package
-# checks, so that job is the docs check here.
-validate_docs_failed() {
+# True unless ci.yml's `docs` job (scripts/validate-docs.mjs and the other
+# node-only validators) passed or was cancelled for the commit. A failed,
+# skipped or missing docs job counts as failed: on a notes-only commit it is
+# the one check that matters, so a run without it proves nothing. A failed
+# lookup counts as failed too.
+docs_check_failed() {
   local conclusion
   conclusion="$(gh api "repos/$GH_REPO/commits/$1/check-runs" \
     --method GET \
     -H "Accept: application/vnd.github+json" \
     -f per_page=100 \
     --paginate \
-    --jq '[.check_runs[] | select(.name == "packages")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)" || return 0
-  [ -n "$conclusion" ] && [ "$conclusion" != "success" ] && [ "$conclusion" != "cancelled" ] && [ "$conclusion" != "skipped" ]
+    --jq '[.check_runs[] | select(.name == "docs")] | sort_by(.completed_at // "") | last | .conclusion // empty' | tail -n 1)" || return 0
+  [ "$conclusion" != "success" ] && [ "$conclusion" != "cancelled" ]
 }
 
 # A release commit that only adds release notes cannot change the
 # code that ships: these files reach the app only as data, the
 # version's notes embedded as a string by bundle-release-notes.mjs.
-# The release skill runs validate-docs on them before pushing. Waiting 15-50 minutes
-# for CI on it is what used to hold every tag, so a commit whose CI
+# The release skill runs validate-docs on them before pushing. CI takes
+# 15-50 minutes, and a tag must not wait for it, so a commit whose CI
 # has not finished may borrow the green ci-pass of the nearest
 # ancestor, provided every commit in between touches only these
-# paths. On such a commit only validate-docs can catch anything the
-# parent's CI did not, so a failed ci-pass blocks only when the job that
-# runs it (packages) failed. Any other failure (a cancelled run, which
-# ci-pass reports as failure, or a flaky code test) counts as
+# paths. On such a commit only the `docs` job can catch anything the
+# parent's CI did not, so a failed ci-pass blocks only when that job did
+# not pass (see docs_check_failed). Any other failure (a cancelled run,
+# which ci-pass reports as failure, or a flaky code test) counts as
 # unfinished. A failed ci-pass on any other commit always blocks.
 release_notes_only() {
   local files
@@ -68,7 +71,7 @@ for _ in 1 2 3 4 5 6; do
     exit 0
   fi
   if [ "$status" = "completed" ]; then
-    if ! release_notes_only "$candidate" || validate_docs_failed "$candidate"; then
+    if ! release_notes_only "$candidate" || docs_check_failed "$candidate"; then
       echo "::error::ci-pass for $candidate is $status/$conclusion. Release packaging requires green CI. $url"
       exit 1
     fi

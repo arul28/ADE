@@ -10,7 +10,7 @@ import { browseProjectDirectories } from "./projectBrowserService";
 import { __internal, getProjectDetail, parseDirtyStatus } from "./projectDetailService";
 import { writeGlobalState } from "../state/globalState";
 import { inspectRecentProject, toRecentProjectSummary, toShallowRecentProjectSummary } from "./recentProjectSummary";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createProjectConfigService } from "../config/projectConfigService";
 
@@ -67,7 +67,7 @@ function git(cwd: string, args: string[]): string {
 }
 
 function insertProject(
-  db: Awaited<ReturnType<typeof openKvDb>>,
+  db: AdeDb,
   projectId: string,
   projectRoot: string,
   now: string,
@@ -79,7 +79,7 @@ function insertProject(
 }
 
 function insertLane(
-  db: Awaited<ReturnType<typeof openKvDb>>,
+  db: AdeDb,
   args: {
     laneId: string;
     projectId: string;

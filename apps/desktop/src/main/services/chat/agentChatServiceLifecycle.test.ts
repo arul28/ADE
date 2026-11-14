@@ -326,6 +326,21 @@ describe("createAgentChatService", () => {
       expect(db.all).not.toHaveBeenCalled();
     });
 
+    it("asks the Claude subprocess reaper to terminate remaining SDK children", async () => {
+      const claudeSubprocessReaper = {
+        register: vi.fn(),
+        spawnClaudeCodeProcess: vi.fn(),
+        reapForSession: vi.fn(),
+        reapAll: vi.fn(),
+        liveRecords: vi.fn(() => []),
+      };
+      const { service } = createService({ claudeSubprocessReaper });
+
+      await expect(service.disposeAll()).resolves.toBeUndefined();
+
+      expect(claudeSubprocessReaper.reapAll).toHaveBeenCalledWith("dispose_all");
+    });
+
     it("disposeAll ends sessions as detached and preserves scheduled work", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);

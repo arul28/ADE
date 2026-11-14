@@ -265,7 +265,7 @@ describe("durableFile", () => {
           source: "primary",
         });
 
-        const stamped = fs.statSync(filePath);
+        const stamped = fs.statSync(filePath, { bigint: true });
         fs.writeFileSync(filePath, JSON.stringify({ version: 1, sessionId: "s", value: 2 }));
         vi.spyOn(fs, "statSync").mockReturnValue(stamped);
         vi.setSystemTime(Date.now() - 5_000);

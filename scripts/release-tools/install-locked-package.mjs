@@ -14,14 +14,14 @@
 //
 // It refuses a package that has dependencies, install scripts or a non-https
 // registry URL: a package like that needs a real `npm ci`. It exits non-zero
-// on any failure; the workflows then fall back to that `npm ci`, which makes
-// the same integrity check.
+// on any failure; the workflows then warn and fall back to that `npm ci`,
+// which makes the same integrity check. The download, the integrity check and
+// the unpacking are in ./lockedPackage.mjs.
 
-import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
+
+import { fetchVerified, unpackLockedTarball } from "./lockedPackage.mjs";
 
 const ALLOWED_HOST = "registry.npmjs.org";
 
@@ -49,51 +49,13 @@ const url = new URL(resolved);
 if (url.protocol !== "https:" || url.hostname !== ALLOWED_HOST) {
   fail(`${name}@${version} resolves to ${resolved}, not an https ${ALLOWED_HOST} tarball`);
 }
-const match = /^sha512-([A-Za-z0-9+/]+={0,2})$/.exec(integrity);
-if (!match) fail(`${name}@${version} has no sha512 integrity in ${lockfileArg}`);
-
-async function download() {
-  let lastError;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return Buffer.from(await response.arrayBuffer());
-    } catch (error) {
-      lastError = error;
-      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 5000));
-    }
-  }
-  fail(`downloading ${resolved} failed: ${lastError instanceof Error ? lastError.message : lastError}`);
-}
-
-const tarball = await download();
-const actual = createHash("sha512").update(tarball).digest("base64");
-if (actual !== match[1]) {
-  fail(`${resolved} does not match the lockfile's integrity (expected sha512-${match[1]}, got sha512-${actual})`);
-}
+if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(integrity)) fail(`${name}@${version} has no sha512 integrity in ${lockfileArg}`);
 
 const target = path.join(path.dirname(lockfile), "node_modules", ...name.split("/"));
-const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "install-locked-package-"));
 try {
-  const archive = path.join(scratch, "package.tgz");
-  fs.writeFileSync(archive, tarball);
-  const unpacked = path.join(scratch, "unpacked");
-  fs.mkdirSync(unpacked);
-  // npm tarballs hold one top-level directory, normally "package/".
-  const untar = spawnSync("tar", ["-xzf", archive, "-C", unpacked], { stdio: "inherit" });
-  if (untar.status !== 0) fail(`unpacking ${resolved} failed`);
-  const roots = fs.readdirSync(unpacked);
-  if (roots.length !== 1) fail(`${resolved} does not hold exactly one top-level directory`);
-  const root = path.join(unpacked, roots[0]);
-  const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-  if (manifest.name !== name || manifest.version !== version) {
-    fail(`${resolved} holds ${manifest.name}@${manifest.version}, not ${name}@${version}`);
-  }
-  fs.rmSync(target, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.cpSync(root, target, { recursive: true });
-} finally {
-  fs.rmSync(scratch, { recursive: true, force: true });
+  const tarball = await fetchVerified(resolved, integrity, { attempts: 3 });
+  await unpackLockedTarball(tarball, target, { expect: { name, version } });
+} catch (error) {
+  fail(`${resolved}: ${error instanceof Error ? error.message : error}`);
 }
 console.log(`[install-locked-package] ${name}@${version} from ${path.relative(process.cwd(), lockfile)}, integrity verified, in ${path.relative(process.cwd(), target)}`);

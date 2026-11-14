@@ -20,7 +20,8 @@ function tempDir(prefix) {
 }
 
 // A `gh` on PATH that answers from files: `ci/<sha>` holds the ci-pass check
-// run for a commit, `docs/<sha>` the conclusion of the packages job (it runs validate-docs), `attest/<basename>` the `gh attestation verify --format
+// run for a commit, `docs/<sha>` the conclusion of ci.yml's docs job (absent =
+// no such check run), `attest/<basename>` the `gh attestation verify --format
 // json` output for a file (absent = verification fails).
 function stubGh(dir) {
   const bin = path.join(dir, "bin");
@@ -32,7 +33,7 @@ data="${dir}"
 if [ "$1" = api ]; then
   sha="$(printf '%s' "$2" | sed -E 's#.*/commits/([^/]+)/check-runs#\\1#')"
   case "$*" in
-    *packages*) [ -f "$data/docs/$sha" ] && cat "$data/docs/$sha" ;;
+    *'"docs"'*) [ -f "$data/docs/$sha" ] && cat "$data/docs/$sha" ;;
     *) [ -f "$data/ci/$sha" ] && cat "$data/ci/$sha" ;;
   esac
   exit 0
@@ -71,12 +72,14 @@ const CI = {
 
 test("a tag builds only on green CI, borrowed across release-notes-only commits at most five deep", () => {
   const cases = [
-    // [label, commits above a green code commit as [file, ci-state|null, validate-docs conclusion?], expected pass]
+    // [label, commits above a green code commit as [file, ci-state|null, docs job conclusion?], expected pass]
     ["own green ci-pass", [["src/app.ts", "green"]], true],
     ["notes commit still running, parent green", [["CHANGELOG.md", "running"]], true],
-    ["notes commit whose CI was cancelled walks on", [["changelog/v1.mdx", "cancelled"], ["docs.json", null]], true],
-    ["notes commit whose validate-docs failed", [["CHANGELOG.md", "failed", "failure"]], false],
-    ["cancelled notes commit whose validate-docs failed", [["CHANGELOG.md", "cancelled", "failure"]], false],
+    ["notes commit whose CI was cancelled walks on", [["changelog/v1.mdx", "cancelled", "cancelled"], ["docs.json", null]], true],
+    ["notes commit whose docs job failed", [["CHANGELOG.md", "failed", "failure"]], false],
+    ["cancelled notes commit whose docs job failed", [["CHANGELOG.md", "cancelled", "failure"]], false],
+    ["notes commit whose docs job was skipped", [["CHANGELOG.md", "failed", "skipped"]], false],
+    ["notes commit with no docs check run", [["CHANGELOG.md", "failed"]], false],
     ["notes commit whose CI failed elsewhere walks on", [["CHANGELOG.md", "failed", "success"]], true],
     ["code commit whose CI failed", [["src/app.ts", "failed", "success"]], false],
     ["code commit still running", [["src/app.ts", "running"]], false],

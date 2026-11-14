@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 import { writeCarriesTypedInput } from "./agentShellCleanup";
@@ -33,7 +33,7 @@ afterEach(async () => {
   }
 });
 
-type Db = Awaited<ReturnType<typeof openKvDb>>;
+type Db = AdeDb;
 
 function insertProjectGraph(db: Db): void {
   db.run(

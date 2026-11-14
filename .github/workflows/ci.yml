@@ -40,15 +40,14 @@ jobs:
       # import each other's source, so they share one group. lookup-only
       # checks for the entry without downloading it; a miss installs below
       # and the post step saves the new entry.
+      # The core group's key and paths live in one composite action, which
+      # every job that restores the group uses too. It only looks the entry
+      # up; the step after the install saves it.
       - name: Check core node_modules cache
         id: cache_core
-        uses: actions/cache@v4
+        uses: ./.github/actions/restore-core-node-modules
         with:
-          lookup-only: true
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+          lookup-only: "true"
       - name: Check web node_modules cache
         id: cache_web
         uses: actions/cache@v4
@@ -121,6 +120,13 @@ jobs:
             exit 1
           fi
 
+      - name: Save core node_modules cache
+        if: steps.cache_core.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cache_core.outputs.paths }}
+          key: ${{ steps.cache_core.outputs.key }}
+
   # ── Secret scanning (no deps needed) ───────────────────────────────────
   secret-scan:
     runs-on: ubuntu-latest
@@ -167,12 +173,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - uses: ./.github/actions/restore-core-node-modules
       # A background process outlives its step; the runner stops leftover
       # processes only when the job ends. The status file appears only when
       # tsc has exited, so the wait step below cannot read a partial result.
@@ -191,7 +192,7 @@ jobs:
       - name: "ade-cli: typecheck"
         run: cd apps/ade-cli && npm run typecheck
       # scripts/validate-docs.test.mjs covers the docs validator that the
-      # packages job runs. scripts/check-package-licenses.test.mjs covers
+      # docs job runs. scripts/check-package-licenses.test.mjs covers
       # the package-license checker that the packages job runs.
       # scripts/check-source-nul-bytes.test.mjs covers the NUL-byte gate.
       # scripts/release-pipeline.test.mjs covers the release tag's CI gate, the
@@ -223,12 +224,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - uses: ./.github/actions/restore-core-node-modules
       - run: cd apps/desktop && npm run test:lint-tooling
       - run: cd apps/desktop && npm run lint:ci
       # The iOS scene shell and the web client's scene headers are copies of
@@ -250,12 +246,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - uses: ./.github/actions/restore-core-node-modules
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
@@ -266,12 +257,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - uses: ./.github/actions/restore-core-node-modules
       - run: cd apps/ade-cli && npm test
 
   # The five Cloudflare Workers in one job, with one step per check. Every
@@ -357,12 +343,51 @@ jobs:
         if: ${{ !cancelled() }}
         run: cd apps/password-key-service && npm test
 
-  # The publishable packages, the web app's checks, and the docs and source
-  # validators, in one job with one step per check. Every check runs even
-  # when an earlier step failed. Deliberately NOT folded into the desktop
-  # shards: these have their own dependency trees and fail with their own
-  # step name. scripts/require-release-ci-pass.sh reads this job's result as
-  # the docs check of a release-notes-only commit.
+  # The docs and source validators. They use node: built-ins only, so this
+  # job needs no install and no node_modules, and it still runs when the
+  # install job fails. scripts/require-release-ci-pass.sh reads this job's
+  # result as the check of a release-notes-only commit. Every check runs even
+  # when an earlier step failed.
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # validate-docs.mjs reads the release tags.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate docs
+        run: node scripts/validate-docs.mjs
+      # Asserts that every platform-gated test assertion has a runner in this
+      # workflow that actually executes it, and bans the vacuous
+      # `if (process.platform === ...) return;` form that reports green while
+      # asserting nothing. Pure source + workflow parsing, no dependencies.
+      - name: Platform gates
+        if: ${{ !cancelled() }}
+        run: node scripts/validate-platform-gates.mjs
+      # A literal NUL in a source file makes git, GitHub and agent read tools
+      # treat it as binary. Source must use the `\u0000` escape instead.
+      - name: Source NUL bytes
+        if: ${{ !cancelled() }}
+        run: node scripts/check-source-nul-bytes.mjs
+      # The four Workers' Sentry scrubbers and transient-failure helpers are files kept in four places.
+      - name: Worker Sentry scrubbers
+        if: ${{ !cancelled() }}
+        run: node scripts/check-worker-sentry-scrub.mjs
+      # Every PostHog event a surface sends is in docs/analytics/tracking-plan.json,
+      # every planned event is sent, and the dashboards only use sent events.
+      - name: Analytics tracking plan
+        if: ${{ !cancelled() }}
+        run: node scripts/check-analytics-tracking-plan.mjs
+
+  # The publishable packages and the web app's checks, in one job with one
+  # step per check. Every check runs even when an earlier step failed.
+  # Deliberately NOT folded into the desktop shards: these have their own
+  # dependency trees and fail with their own step name.
   packages:
     needs: install
     runs-on: ubuntu-latest
@@ -370,8 +395,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # validate-docs.mjs reads the release tags.
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -391,32 +414,7 @@ jobs:
           path: |
             apps/web/node_modules
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
-      # The docs and source validators use node: built-ins only.
-      - name: "docs: validate docs"
-        run: node scripts/validate-docs.mjs
-      # Asserts that every platform-gated test assertion has a runner in this
-      # workflow that actually executes it, and bans the vacuous
-      # `if (process.platform === ...) return;` form that reports green while
-      # asserting nothing. Pure source + workflow parsing, no dependencies.
-      - name: "docs: platform gates"
-        if: ${{ !cancelled() }}
-        run: node scripts/validate-platform-gates.mjs
-      # A literal NUL in a source file makes git, GitHub and agent read tools
-      # treat it as binary. Source must use the `\u0000` escape instead.
-      - name: "docs: source NUL bytes"
-        if: ${{ !cancelled() }}
-        run: node scripts/check-source-nul-bytes.mjs
-      # The four Workers' Sentry scrubbers and transient-failure helpers are files kept in four places.
-      - name: "docs: Worker Sentry scrubbers"
-        if: ${{ !cancelled() }}
-        run: node scripts/check-worker-sentry-scrub.mjs
-      # Every PostHog event a surface sends is in docs/analytics/tracking-plan.json,
-      # every planned event is sent, and the dashboards only use sent events.
-      - name: "docs: analytics tracking plan"
-        if: ${{ !cancelled() }}
-        run: node scripts/check-analytics-tracking-plan.mjs
       - name: "sdk: typecheck"
-        if: ${{ !cancelled() }}
         run: cd packages/sdk && npm run typecheck
       - name: "sdk: wire types"
         if: ${{ !cancelled() }}
@@ -468,12 +466,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      - uses: ./.github/actions/restore-core-node-modules
       - uses: actions/cache/restore@v4
         with:
           path: |
@@ -492,8 +485,7 @@ jobs:
   # dispatch (stacked PRs, release proof builds) always build all five. The
   # one exception is a dispatch on a pins/* branch: agent-tool-pins.yml starts
   # those for its update PRs (about ten a night), and they follow the pull
-  # request rule below, with the diff taken from main's merge base
-  # (scripts/ci/pins-changed-files.sh). A pull
+  # request rule below (scripts/ci/changed-files.sh gives the diff). A pull
   # request builds only linux-x64, unless it changes a file whose break can be
   # OS- or arch-specific (the list below), or carries the `runtime-binaries`
   # label. Ordinary TypeScript source builds the same on every target, and
@@ -539,19 +531,15 @@ jobs:
             echo "matrix={\"include\":[$1]}" >> "$GITHUB_OUTPUT"
             echo "$2"
           }
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$REF" == refs/heads/pins/* ]]; then
-            if ! changed="$(scripts/ci/pins-changed-files.sh)" || [[ -z "$changed" ]]; then
-              pick "$all" "Could not read what $REF changes against main: building all five targets."
-              exit 0
-            fi
-          elif [[ "$EVENT_NAME" != "pull_request" ]]; then
-            pick "$all" "Event $EVENT_NAME: building all five targets."
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            pick "$all" "Event push: building all five targets."
             exit 0
-          elif [[ "$HAS_LABEL" == "true" ]]; then
+          elif [[ "$EVENT_NAME" == "pull_request" && "$HAS_LABEL" == "true" ]]; then
             pick "$all" "The pull request has the runtime-binaries label: building all five targets."
             exit 0
-          elif ! changed="$(git diff --name-only HEAD^1 HEAD)" || [[ -z "$changed" ]]; then
-            pick "$all" "Could not read what the pull request changes: building all five targets."
+          elif ! changed="$(scripts/ci/changed-files.sh)" || [[ -z "$changed" ]]; then
+            # Also every dispatch that is not on a pins/* branch.
+            pick "$all" "No diff to gate $EVENT_NAME on $REF: building all five targets."
             exit 0
           fi
           packaging="$(printf '%s\n' "$changed" | grep -E '^(apps/ade-cli/(package\.json|package-lock\.json|pnpm-workspace\.yaml|tsup\.config\.ts)$|apps/ade-cli/scripts/(build-static|package-native-deps|native-deps-entry-filter|probe-runtime-crsqlite|verify-built-cli|build-runtime-npm-packages)\.mjs$|apps/desktop/scripts/packaged-ade-cli-resources\.cjs$|apps/desktop/vendor/crsqlite/|apps/desktop/resources/native/|scripts/build/|\.github/workflows/ci\.yml$)' || true)"
@@ -654,20 +642,24 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      # A push to main always builds it. A pull request and a dispatch on a
+      # pins/* branch build it only when their diff touches it; any other
+      # dispatch, or a diff that cannot be read, builds it.
       - name: Decide whether the helper changed
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]] || ! changed="$(scripts/ci/changed-files.sh)"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          changed=$(git diff --name-only HEAD^1 HEAD || true)
           if printf '%s\n' "$changed" | grep -qE '^(apps/desktop/native/ADEDesktopDriverLinux/|apps/desktop/scripts/build-linux-desktop-driver\.mjs|\.github/workflows/ci\.yml)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No Linux desktop driver changes in this PR; skipping its build."
+            echo "No Linux desktop driver changes in this diff; skipping its build."
           fi
 
       - name: Restore cargo cache
@@ -722,15 +714,15 @@ jobs:
   # an empty commit works).
   #
   # The test steps run in three parallel jobs of one matrix, about 2.5 minutes
-  # of tests each (medians over 90 runs), instead of 7 minutes in a row: the
-  # whole job took ~9 minutes on every push to main, so it held up ci-pass and
-  # the beta behind it. The vitest config caps Windows at 4 threads (EMFILE),
+  # of tests each (medians over 90 runs). In a row they take 7 minutes and the
+  # whole job about 9, which would hold up ci-pass and the beta behind it on
+  # every push to main. The vitest config caps Windows at 4 threads (EMFILE),
   # so groups do not run side by side in one job. The groups follow the
   # measured step times: ade-cli (stdio RPC daemon 71 s, service/layout/IPC
   # 49 s, the rest under 15 s), desktop-sync (CRDT/sync/device registry 100 s,
   # PR-origin/attention 38 s), desktop-platform (runtime connection pool
-  # 66 s, path/spawn/window/update 42 s, the rest under 15 s). Every step and
-  # file that ran before still runs, in exactly one group. ci-pass reads the
+  # 66 s, path/spawn/window/update 42 s, the rest under 15 s). Each test step
+  # runs in exactly one group. ci-pass reads the
   # matrix as one result, `windows-foundation`; the checks are named
   # `windows-foundation (<group>)`.
   windows-foundation:
@@ -742,6 +734,20 @@ jobs:
       matrix:
         group: [ade-cli, desktop-sync, desktop-platform]
     steps:
+      # Each test step below runs for one group only, so a group that no step
+      # names would pass green with no tests. scripts/validate-platform-gates.mjs
+      # checks that every step condition names a listed group and that every
+      # listed group has a step; this step stops a group added to the matrix
+      # list alone.
+      - name: Check the matrix group
+        shell: bash
+        env:
+          GROUP: ${{ matrix.group }}
+        run: |
+          case "$GROUP" in
+            ade-cli | desktop-sync | desktop-platform) echo "Group: $GROUP" ;;
+            *) echo "::error::windows-foundation has no steps for group '$GROUP'."; exit 1 ;;
+          esac
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
@@ -754,12 +760,7 @@ jobs:
       # stores its own ~1.5 GB copy.
       - name: Restore Windows node_modules cache
         id: nm_win
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+        uses: ./.github/actions/restore-core-node-modules
 
       - name: Install ADE CLI dependencies
         if: steps.nm_win.outputs.cache-hit != 'true'
@@ -774,10 +775,8 @@ jobs:
         if: matrix.group == 'ade-cli' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+          path: ${{ steps.nm_win.outputs.paths }}
+          key: ${{ steps.nm_win.outputs.key }}
 
       - name: Test Windows service, layout, and IPC contracts
         if: matrix.group == 'ade-cli'
@@ -970,44 +969,15 @@ jobs:
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
-          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          # A PR: checkout@v4 checks out the PR merge commit, so its first
-          # parent is the base and the diff is exactly what the PR changes.
-          # A push to main: a merge or squash commit, whose first parent is
-          # the main it was pushed onto, so the diff is what that PR changed.
+          # scripts/ci/changed-files.sh gives the diff of a pull request, of a
+          # push of one commit to main, and of a dispatch on a pins/* branch.
           # When two PRs that touch iOS merge one after the other, the second
           # push still runs the suite, so a conflict between them is caught.
-          # A dispatch on a pins/* branch (agent-tool-pins.yml's update PRs)
-          # is gated like its pull request, on its diff from main's merge
-          # base. Anything else (any other dispatch, a push of several
-          # commits, a missing parent, a failed diff) runs the suite.
-          case "${{ github.event_name }}" in
-            pull_request) ;;
-            push)
-              if [[ "$(git rev-parse HEAD^1 2>/dev/null || true)" != "${{ github.event.before }}" ]]; then
-                echo "run=true" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              ;;
-            workflow_dispatch)
-              if [[ "$REF" != refs/heads/pins/* ]]; then
-                echo "run=true" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              ;;
-            *)
-              echo "run=true" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-          esac
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            if ! changed=$(scripts/ci/pins-changed-files.sh) || [[ -z "$changed" ]]; then
-              echo "run=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          elif ! changed=$(git diff --name-only HEAD^1 HEAD); then
+          # Anything else (any other dispatch, a push of several commits, a
+          # missing parent, a failed diff) runs the suite.
+          if ! changed="$(scripts/ci/changed-files.sh)"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -1245,7 +1215,8 @@ jobs:
             -quiet \
             test-without-building
 
-      # Saved after the tests pass, as actions/cache did before; main only.
+      # Saved only after the tests pass, so a failed run stores nothing, and
+      # only on main.
       - name: Save Swift packages
         if: needs.ios-gate.outputs.run == 'true' && runner.environment != 'self-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.spm_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -1288,6 +1259,7 @@ jobs:
       - test-desktop
       - test-ade-cli
       - services
+      - docs
       - packages
       - build
       - runtime-binaries-gate

@@ -18,10 +18,11 @@
 # requests" (Settings > Actions > General > Workflow permissions). Pushes made
 # with GITHUB_TOKEN do not start CI on their own, so the workflow starts
 # ci.yml on the branch with workflow_dispatch. ci.yml gates a dispatch on a
-# pins/* branch like a pull request (runtime targets and iOS by the diff from
-# main), so a tool bump no longer builds all five runtimes and the iOS suite;
-# the run still ends in the ci-pass check on the branch head that the PR needs
-# to merge. At most two of these runs are in flight at a time (see below).
+# pins/* branch like a pull request (the runtime targets, the Linux desktop
+# driver and iOS by the diff from main, scripts/ci/changed-files.sh), so a tool
+# bump builds only what its diff needs; the run still ends in the ci-pass check
+# on the branch head that the PR needs to merge. At most two of these runs are
+# in flight at a time (see below).
 name: Agent tool pins
 
 on:

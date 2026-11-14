@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ACCOUNT_SYNCED_SETTINGS,
   startAccountSettingsSync,
   type AccountSettingsApi,
   type AccountSettingsSyncOptions,

@@ -192,10 +192,6 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
 
 const _byId = new Map(STORAGE_LEDGER.map((entry) => [entry.id, entry]));
 
-export function getLedgerEntry(id: string): StorageLedgerEntry | undefined {
-  return _byId.get(id);
-}
-
 /**
  * Maps every `ADE_LAYOUT_DEFINITIONS` directory entry to a ledger id, or `null`
  * when the directory is intentionally not storage-managed (user-authored config

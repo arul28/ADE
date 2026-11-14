@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   countLaneProvenance,
@@ -28,7 +28,7 @@ type PrOverrides = {
 
 describe("pullRequestRowCleanup detach", () => {
   let dir: string;
-  let db: Awaited<ReturnType<typeof openKvDb>>;
+  let db: AdeDb;
 
   const insertPr = (id: string, overrides: PrOverrides = {}) => {
     db.run(

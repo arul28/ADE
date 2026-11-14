@@ -95,6 +95,25 @@ describe("active-turn dispatch modes", () => {
 });
 
 describe("CTO live-redirect providers", () => {
+  it.each([
+    ["claude", true],
+    ["codex", true],
+    ["cursor", true],
+    ["opencode", true],
+    ["  CURSOR ", true],
+    ["droid", false],
+    ["pi", false],
+    ["muse", false],
+    ["qwen", false],
+    ["kimi", false],
+    ["grok", false],
+    ["copilot", false],
+    ["devin", false],
+    ["antigravity", false],
+    ["", false],
+  ])("providerSupportsLiveRedirect(%j) is %s", (provider, expected) => {
+    expect(providerSupportsLiveRedirect(provider)).toBe(expected);
+  });
 
   it("is its own contract, not a read of the composer's dispatch table", () => {
     // No single dispatch mode keys this list. Codex redirects a live turn but

@@ -293,7 +293,7 @@ Main process:
   account, preset or credential id cannot escape the directory ADE owns.
 - `apps/desktop/src/shared/providerColors.ts` — the one provider colour table
   (usage light/dark pairs, picker badge tokens), so a second hex map cannot
-  drift from the iOS mirror.
+  drift from it.
 - `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
   — live detail for one account-directory machine row. Asks only machines
   already online and already connected in the paired pool, so expanding a row

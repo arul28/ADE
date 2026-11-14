@@ -1121,6 +1121,52 @@ describe("createSyncRemoteCommandService", () => {
       );
     });
 
+    it("chat.create forwards runtime, profile, cursor config, and cwd fields", async () => {
+      await service.execute(makePayload("chat.create", {
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "cursor-agent",
+        sessionProfile: "workflow",
+        reasoningEffort: "medium",
+        permissionMode: "edit",
+        interactionMode: "default",
+        claudePermissionMode: "acceptEdits",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+        requestedCwd: "apps/ios",
+      }));
+
+      expect(agentChatService.createSession).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "cursor-agent",
+        sessionProfile: "workflow",
+        reasoningEffort: "medium",
+        permissionMode: "edit",
+        interactionMode: "default",
+        claudePermissionMode: "acceptEdits",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        cursorModeId: "ask",
+        cursorConfigValues: {
+          mode: "ask",
+          enabled: true,
+          temperature: 0.5,
+        },
+        requestedCwd: "apps/ios",
+      });
+    });
+
     it("chat.launch headlessly creates a chat, preserves kickoff text, and returns a mobile summary", async () => {
       const result = await service.execute(makePayload("chat.launch", {
         laneId: "lane-1",
@@ -1402,16 +1448,36 @@ describe("createSyncRemoteCommandService", () => {
 
     describe("parseAgentChatSteerArgs — new attachments support", () => {
 
-      it("omits attachments when array has no valid entries", async () => {
+      it.each([
+        {
+          name: "keeps valid attachments",
+          attachments: [
+            { path: "img.png", type: "image" },
+            { path: "notes.txt", type: "file" },
+          ] as unknown[],
+          expected: {
+            sessionId: "sess-1",
+            text: "redirect",
+            sentByUser: true,
+            attachments: [
+              { path: "img.png", type: "image" },
+              { path: "notes.txt", type: "file" },
+            ],
+          },
+        },
+        {
+          name: "omits the key when no entry is valid",
+          attachments: [{ path: "", type: "image" }, { type: "file" }] as unknown[],
+          expected: { sessionId: "sess-1", text: "redirect", sentByUser: true },
+        },
+      ])("chat.steer $name", async ({ attachments, expected }) => {
         agentChatService.steerUserMessage.mockClear();
         await service.execute(makePayload("chat.steer", {
           sessionId: "sess-1",
           text: "redirect",
-          attachments: [{ path: "", type: "image" }, { type: "file" }],
+          attachments,
         }));
-        const sent = agentChatService.steerUserMessage.mock.calls[0][0] as Record<string, unknown>;
-        expect(sent, "no valid attachments → key omitted").not.toHaveProperty("attachments");
-        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect", sentByUser: true });
+        expect(agentChatService.steerUserMessage.mock.calls[0][0]).toEqual(expected);
       });
 
       it("still throws when text is missing even if attachments are provided", async () => {
@@ -1499,6 +1565,22 @@ describe("createSyncRemoteCommandService", () => {
         runtimeState: "waiting-input",
         pendingInputItemId: "pending-input-1",
       }]);
+    });
+
+    it.each([
+      {
+        name: "keeps the startup command of a shell",
+        args: { laneId: "lane-1", title: "Claude login", startupCommand: "claude auth login", toolType: "shell" },
+        expected: { laneId: "lane-1", title: "Claude login", startupCommand: "claude auth login", tracked: true, toolType: "shell" },
+      },
+      {
+        name: "allows a shell without a startup command",
+        args: { laneId: "lane-1", title: "shell session", toolType: "shell" },
+        expected: { laneId: "lane-1", title: "shell session", tracked: true, toolType: "shell" },
+      },
+    ])("work.runQuickCommand $name", async ({ args, expected }) => {
+      await service.execute(makePayload("work.runQuickCommand", args));
+      expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining(expected));
     });
 
     it("work.runQuickCommand throws when startupCommand is missing and toolType is not shell", async () => {

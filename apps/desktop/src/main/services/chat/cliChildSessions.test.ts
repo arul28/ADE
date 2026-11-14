@@ -14,6 +14,8 @@ import {
   readCliProviderFinalMessage,
   type CliChildRow,
 } from "./cliChildSessions";
+import { TRACKED_AGENT_CLI_TOOL_TYPES } from "../../../shared/cliChildSession";
+import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 
 function cliRow(overrides: Partial<CliChildRow> = {}): CliChildRow {
   return {
@@ -185,3 +187,8 @@ describe("composeCliChildReport", () => {
   });
 });
 
+describe("TRACKED_AGENT_CLI_TOOL_TYPES", () => {
+  it.each([...TRACKED_AGENT_CLI_TOOL_TYPES])("%s is a tracked agent CLI tool type", (toolType) => {
+    expect(isTrackedAgentCliToolType(toolType)).toBe(true);
+  });
+});

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AppNavigationRequest } from "../../../shared/types";
 import { deeplinkToNavigationTarget, handleDeeplinkUrl, registerAdeProtocolHandler } from "./protocolHandler";
 
 /**

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createArchiveService, type ArchiveServiceDeps } from "./archiveService";
 
@@ -29,7 +29,7 @@ afterEach(async () => {
   }
 });
 
-type Db = Awaited<ReturnType<typeof openKvDb>>;
+type Db = AdeDb;
 
 function insertSession(db: Db, id: string, toolType: string, archivedAt: string | null, chatSessionId: string | null = null): void {
   db.run(

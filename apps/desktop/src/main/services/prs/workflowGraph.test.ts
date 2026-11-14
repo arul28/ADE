@@ -74,7 +74,7 @@ describe("parseWorkflowFile", () => {
 
     expect(parsed.degraded).toBeNull();
     expect(parsed.name).toBe("CI");
-    // ~16 jobs: install, secret-scan, the parallel checks and gates, ci-pass.
+    // ~17 jobs: install, secret-scan, the parallel checks and gates, ci-pass.
     expect(parsed.jobs.length).toBeGreaterThanOrEqual(15);
 
     const install = parsed.jobs.find((entry) => entry.id === "install");

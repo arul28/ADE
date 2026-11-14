@@ -89,7 +89,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `@ade-dev/chat-ui` | React components. React is a peer; `@ade-dev/sdk` is an optional peer used for types only. No lanes, projects, or worktrees in any prop. |
 | `@ade-dev/demo` | Private DataDesk reference. `e2e:preflight` is the CI-safe check; `e2e:live` spends provider tokens and is **not** in root `npm test`. |
 
-Published as `@ade-dev/sdk` and `@ade-dev/chat-ui` on npm (`npm install @ade-dev/sdk`). In this repo, `npm run install:apps` covers `packages/sdk` and `packages/chat-ui`. Each package builds with tsup to `dist/`, which is gitignored — CI's `test-chat-ui` job builds `@ade-dev/sdk` first because chat-ui's `file:../sdk` exports point at that dist.
+Published as `@ade-dev/sdk` and `@ade-dev/chat-ui` on npm (`npm install @ade-dev/sdk`). In this repo, `npm run install:apps` covers `packages/sdk` and `packages/chat-ui`. Each package builds with tsup to `dist/`, which is gitignored — CI's `packages` job builds `@ade-dev/sdk` before its chat-ui steps because chat-ui's `file:../sdk` exports point at that dist.
 
 ## Sidecar architecture
 

@@ -11,12 +11,11 @@
  * only lets those numbers go down. Guide: docs/design/notices.md.
  *
  * Flags: --update (write the baseline), --baseline <path> (read/write a
- * different baseline file), --warnings (also print every warning),
- * --workers <n> (lint in n worker threads; default: one per CPU, up to
- * MAX_WORKERS; 1 lints in this process).
+ * different baseline file), --warnings (also print every warning).
  *
  * The files are the ones `npm run lint` lints (see LINT_DIR). They are split
- * across worker threads by size, and the results are merged and sorted by path
+ * across worker threads by size (one per CPU, up to MAX_WORKERS; one CPU lints
+ * in this process), and the results are merged and sorted by path
  * before the ratchet compares them, so the output does not depend on the
  * number of workers. No rule keeps state across files, so the split cannot
  * change a result.
@@ -113,22 +112,14 @@ export function compareCounts(baseline, current) {
   return { grown, dropped };
 }
 
-function parseWorkers(value) {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) throw new Error(`--workers needs a positive integer, got: ${value}`);
-  return n;
-}
-
 function parseArgs(argv) {
-  const args = { update: false, baseline: DEFAULT_BASELINE, warnings: false, workers: null };
+  const args = { update: false, baseline: DEFAULT_BASELINE, warnings: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--update") args.update = true;
     else if (arg === "--warnings") args.warnings = true;
     else if (arg === "--baseline") args.baseline = path.resolve(argv[++i] ?? "");
     else if (arg.startsWith("--baseline=")) args.baseline = path.resolve(arg.slice("--baseline=".length));
-    else if (arg === "--workers") args.workers = parseWorkers(argv[++i]);
-    else if (arg.startsWith("--workers=")) args.workers = parseWorkers(arg.slice("--workers=".length));
     else throw new Error(`Unknown argument: ${arg}`);
   }
   return args;
@@ -181,9 +172,8 @@ function partitionBySize(files, count) {
   return groups.map((group) => group.files).filter((group) => group.length > 0);
 }
 
-async function lintFileList(files) {
-  const { eslint } = await createESLint();
-  return eslint.lintFiles(files);
+async function lintFileList(files, eslint = null) {
+  return (eslint ?? (await createESLint()).eslint).lintFiles(files);
 }
 
 function lintInWorker(files) {
@@ -201,9 +191,12 @@ function lintInWorker(files) {
   });
 }
 
-/** Lints every file, split across `workers` threads; results sorted by path. */
-async function lintAll(files, workers) {
-  if (workers <= 1) return (await lintFileList(files)).sort((a, b) => comparePaths(a.filePath, b.filePath));
+/**
+ * Lints every file, split across `workers` threads; results sorted by path.
+ * With one worker it lints in this thread, with the caller's `eslint`.
+ */
+async function lintAll(files, workers, eslint) {
+  if (workers <= 1) return (await lintFileList(files, eslint)).sort((a, b) => comparePaths(a.filePath, b.filePath));
   const groups = partitionBySize(files, workers);
   const parts = await Promise.all(groups.map((group) => lintInWorker(group)));
   return parts.flat().sort((a, b) => comparePaths(a.filePath, b.filePath));
@@ -214,8 +207,8 @@ async function main() {
   const started = Date.now();
   const { ESLint, eslint } = await createESLint();
   const files = await listLintFiles(eslint);
-  const workers = Math.max(1, Math.min(args.workers ?? Math.min(os.availableParallelism(), MAX_WORKERS), files.length));
-  const results = await lintAll(files, workers);
+  const workers = Math.max(1, Math.min(os.availableParallelism(), MAX_WORKERS, files.length));
+  const results = await lintAll(files, workers, eslint);
   const seconds = ((Date.now() - started) / 1000).toFixed(1);
 
   const formatter = await eslint.loadFormatter("stylish");

@@ -469,62 +469,6 @@ export function getPermissionOptions(opts: {
   ];
 }
 
-export function safetyBadgeLabel(safety: SafetyLevel): string {
-  switch (safety) {
-    case "safe": return "SAFE";
-    case "semi-auto": return "SEMI-AUTO";
-    case "full-auto": return "FULL-AUTO";
-    case "danger": return "DANGER";
-    case "custom": return "CUSTOM";
-  }
-}
-
-export function safetyColorHex(safety: SafetyLevel): string {
-  switch (safety) {
-    case "safe": return "#22C55E";
-    case "semi-auto": return "#F59E0B";
-    case "full-auto":
-    case "danger": return "#EF4444";
-    case "custom": return "#8B5CF6";
-  }
-}
-
-/** Tailwind-based color classes — used by chat composer hover pane. */
-export function safetyColors(safety: SafetyLevel) {
-  switch (safety) {
-    case "safe":
-      return {
-        border: "border-l-emerald-500/60",
-        badge: "text-emerald-400/70",
-        activeBg: "bg-accent/15 ring-1 ring-accent/25",
-      };
-    case "semi-auto":
-      return {
-        border: "border-l-amber-400/60",
-        badge: "text-amber-400/70",
-        activeBg: "bg-amber-500/10 ring-1 ring-amber-400/20",
-      };
-    case "full-auto":
-      return {
-        border: "border-l-red-400/60",
-        badge: "text-red-400/70",
-        activeBg: "bg-red-500/8 ring-1 ring-red-500/20",
-      };
-    case "danger":
-      return {
-        border: "border-l-red-500/70",
-        badge: "text-red-400/80",
-        activeBg: "bg-red-500/8 ring-1 ring-red-500/20",
-      };
-    case "custom":
-      return {
-        border: "border-l-violet-500/60",
-        badge: "text-violet-400/70",
-        activeBg: "bg-accent/15 ring-1 ring-accent/25",
-      };
-  }
-}
-
 export type PermissionFamilyKey = "claude" | "codex" | "cursor" | "droid" | "muse" | "acp" | "opencode";
 
 /**
@@ -553,17 +497,4 @@ export function familyToPermissionKey(
     if (ACP_PERMISSION_FAMILIES.has(family)) return "acp";
   }
   return "opencode";
-}
-
-/** Human-readable label for a permission family key */
-export function permissionFamilyLabel(key: PermissionFamilyKey): string {
-  switch (key) {
-    case "claude": return "Claude Code workers";
-    case "codex": return "Codex workers";
-    case "cursor": return "Cursor workers";
-    case "droid": return "Droid workers";
-    case "muse": return "Muse workers";
-    case "acp": return "Qwen, Kimi, Grok and Copilot workers";
-    case "opencode": return "OpenCode workers";
-  }
 }

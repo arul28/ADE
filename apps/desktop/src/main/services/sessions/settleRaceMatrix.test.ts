@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
@@ -29,7 +29,7 @@ function makeProjectRoot(): string {
   return root;
 }
 
-function insertProjectGraph(db: Awaited<ReturnType<typeof openKvDb>>) {
+function insertProjectGraph(db: AdeDb) {
   const now = "2026-08-11T00:00:00.000Z";
   db.run(
     `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)

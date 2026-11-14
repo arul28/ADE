@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Logger } from "../main/services/logging/logger";
 import { openKvDb, type AdeDb } from "../main/services/state/kvDb";
 
 type OpenArgs = Parameters<typeof openKvDb>;
 
-const silentLogger = { debug() {}, info() {}, warn() {}, error() {} } as unknown as OpenArgs[1];
+const silentLogger: Logger = { debug() {}, info() {}, warn() {}, error() {} };
 
 let template: Promise<string> | null = null;
 

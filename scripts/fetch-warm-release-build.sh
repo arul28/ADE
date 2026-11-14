@@ -17,12 +17,15 @@
 #
 #   scripts/fetch-warm-release-build.sh <artifact-name> <path>...
 # <path>s are relative to the current directory (the checkout root), exactly as
-# the warm workflow packed them. Always exits 0.
+# the warm workflow packed them. Exits 0, except on a usage error (exit 2).
 set -uo pipefail
 
-name="${1:?usage: fetch-warm-release-build.sh <artifact-name> <path>...}"
+if [ "$#" -lt 2 ] || [ -z "$1" ]; then
+  echo "usage: fetch-warm-release-build.sh <artifact-name> <path>..." >&2
+  exit 2
+fi
+name="$1"
 shift
-[ "$#" -gt 0 ] || { echo "usage: fetch-warm-release-build.sh <artifact-name> <path>..." >&2; exit 0; }
 paths=("$@")
 
 workflow_path=".github/workflows/warm-release-caches.yml"
@@ -72,10 +75,13 @@ for candidate in $candidates; do
   [[ "$candidate" =~ ^[0-9]+$ ]] || continue
   checked=$((checked + 1))
   [ "$checked" -le 5 ] || break
-  # Only a finished, successful run of the warm workflow itself, on main.
+  # Only a finished, successful run of the warm workflow itself, on main of
+  # this repository, and not started by a pull request: a fork's PR from its
+  # own branch named main would match the rest.
   if run="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate" \
-      --jq '"\(.path)|\(.head_branch)|\(.status)|\(.conclusion)"' 2>/dev/null)" \
-      && [ "$run" = "$workflow_path|main|completed|success" ]; then
+      --jq '"\(.path)|\(.head_branch)|\(.status)|\(.conclusion)|\(.head_repository.full_name)|\(.event)"' 2>/dev/null)" \
+      && [ "${run%|*}" = "$workflow_path|main|completed|success|$GITHUB_REPOSITORY" ] \
+      && [ "${run##*|}" != "pull_request" ]; then
     run_id="$candidate"
     break
   fi

@@ -175,10 +175,17 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);
   });
 
-  it("rejects an unknown action on a known domain", () => {
-    expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
-    expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
-    expect(isAllowedAdeAction("automations", "__proto__")).toBe(false);
+  // work_tools never drives the pane (the browser and App Control keep their
+  // own allowlists for that), and search never disposes the index remotely.
+  it.each([
+    ["git", "rmRf"],
+    ["issue", "deleteAllIssues"],
+    ["automations", "__proto__"],
+    ["work_tools", "click"],
+    ["work_tools", "navigate"],
+    ["search", "dispose"],
+  ] as const)("rejects %s.%s", (domain, action) => {
+    expect(isAllowedAdeAction(domain, action)).toBe(false);
   });
 
   it("rejects an unknown domain outright", () => {

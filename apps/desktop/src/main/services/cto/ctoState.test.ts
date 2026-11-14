@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   CTO_LIVE_STATE_MAX_CHARS,
@@ -39,7 +39,7 @@ async function createStateFixture() {
  * transcript path up by session id.
  */
 function insertTranscriptSession(
-  db: Awaited<ReturnType<typeof openKvDb>>,
+  db: AdeDb,
   sessionId: string,
   transcriptPath: string,
 ): void {

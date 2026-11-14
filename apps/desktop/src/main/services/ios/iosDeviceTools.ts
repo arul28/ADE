@@ -49,7 +49,7 @@ const ACCESSIBILITY_DEFAULTS_DOMAIN = "com.apple.Accessibility";
  * UIKit listens for, so the change applies immediately. Always write, then
  * post.
  */
-export const IOS_ACCESSIBILITY_PREFERENCES: Record<
+const IOS_ACCESSIBILITY_PREFERENCES: Record<
   Exclude<IosSimulatorAccessibilityOption, "increase-contrast">,
   { key: string; notification: string }
 > = {

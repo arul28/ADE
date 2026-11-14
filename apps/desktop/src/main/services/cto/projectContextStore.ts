@@ -545,8 +545,15 @@ export function createProjectContextStore(args: ProjectContextStoreArgs) {
       warn("cto_context.store_unreadable", error);
       try {
         fs.renameSync(filePath, `${filePath}.corrupt-${Date.now()}`);
-      } catch {
-        // The rename can fail if the file vanished between read and rename.
+      } catch (renameError) {
+        // The file can vanish between read and rename. Another process can
+        // also hold it (EPERM on Windows); then keep no cache, so the next
+        // read tries the quarantine again before a write replaces the file.
+        if ((renameError as NodeJS.ErrnoException)?.code !== "ENOENT") {
+          warn("cto_context.store_quarantine_failed", renameError);
+        }
+        cache = null;
+        return emptyStore();
       }
       cache = emptyStore();
       return cache;

@@ -7,12 +7,11 @@ name: Deploy Web Surfaces
 # everything (manual full reconcile). Secrets are never exposed to fork PRs
 # because this only runs on push to main and manual dispatch.
 #
-# Cloudflare's API sometimes answers 503 for a moment (two of 100 runs failed
-# that way). Every Worker or Pages deploy that is safe to repeat runs through
-# scripts/ci/retry-cloudflare.sh, which tries again only on such a failure.
-# D1 migrations never do: a retry after a migration that failed part-way could
-# apply it twice. So a Worker whose deploy script also migrates runs the
-# migration once, on its own, and retries only the upload after it.
+# Every Worker or Pages deploy that is safe to repeat runs through
+# scripts/ci/retry-cloudflare.sh (its header says when it retries). A D1
+# migration never does, so a Worker whose deploy script also migrates runs its
+# `prepare` script (checks and migrations) once and retries only its `upload`
+# script.
 
 on:
   push:
@@ -100,16 +99,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # The node_modules ci.yml's install job caches for this lockfile pair
-      # (same key and paths). Restore only; a miss installs, as before.
+      # The node_modules ci.yml's install job caches for this lockfile pair.
+      # Restore only; a miss installs them here.
       - name: Restore core node_modules cache
         id: nm_core
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            apps/desktop/node_modules
-            apps/ade-cli/node_modules
-          key: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+        uses: ./.github/actions/restore-core-node-modules
       - name: Install desktop dependencies
         if: steps.nm_core.outputs.cache-hit != 'true'
         run: cd apps/desktop && npm ci
@@ -160,13 +154,11 @@ jobs:
         with:
           node-version: 24
       - run: cd apps/account-directory && npm ci
-      # `npm run deploy:production` in two parts, so the upload can retry and
-      # the migration cannot (see the top of this file). Keep them in step
-      # with that script in apps/account-directory/package.json.
+      # The two parts of `npm run deploy:production`; see the top of this file.
       - name: Check deploy config and apply D1 migrations
-        run: cd apps/account-directory && npm run verify:deploy-config -- production && npm run d1:migrate:production
+        run: cd apps/account-directory && npm run deploy:production:prepare
       - name: Deploy production Worker
-        run: cd apps/account-directory && ../../scripts/ci/retry-cloudflare.sh npx wrangler deploy --env production --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
+        run: cd apps/account-directory && ../../scripts/ci/retry-cloudflare.sh npm run deploy:production:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -196,12 +188,11 @@ jobs:
         with:
           node-version: 24
       - run: cd apps/webhook-relay && npm ci
-      # `npm run deploy` in two parts, so the upload can retry and the
-      # migration cannot. Keep them in step with apps/webhook-relay/package.json.
+      # The two parts of `npm run deploy`; see the top of this file.
       - name: Apply D1 migrations
-        run: cd apps/webhook-relay && npm run d1:migrate:remote
+        run: cd apps/webhook-relay && npm run deploy:prepare
       - name: Deploy Worker
-        run: cd apps/webhook-relay && ../../scripts/ci/retry-cloudflare.sh npx wrangler deploy --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
+        run: cd apps/webhook-relay && ../../scripts/ci/retry-cloudflare.sh npm run deploy:upload -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.

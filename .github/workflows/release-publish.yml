@@ -91,9 +91,12 @@ jobs:
           # `yaml` package: install that one, at the version and integrity
           # apps/desktop/package-lock.json pins, instead of a 100 s desktop
           # npm ci. If that fails for any reason, the full npm ci (scripts
-          # skipped) runs as before; it checks the same integrity.
-          node scripts/release-tools/install-locked-package.mjs apps/desktop/package-lock.json yaml \
-            || (cd apps/desktop && npm ci --ignore-scripts)
+          # skipped) installs it instead, with the same integrity check, and
+          # the warning shows that the fast path broke.
+          node scripts/release-tools/install-locked-package.mjs apps/desktop/package-lock.json yaml || {
+            echo "::warning::install-locked-package.mjs failed; installing yaml with the full npm ci."
+            (cd apps/desktop && npm ci --ignore-scripts)
+          }
           node apps/desktop/scripts/merge-mac-latest-yml.mjs \
             release-assets/mac/latest-mac-arm64.yml \
             release-assets/mac/latest-mac-x64.yml \
@@ -462,12 +465,15 @@ jobs:
 
   # Links the Sentry release ade@<version> (ade-desktop, ade-brain) to its
   # commits for suspect-commit hints, from this checkout's git history; skips
-  # without SENTRY_AUTH_TOKEN and never fails. The source maps were uploaded by
-  # the build jobs in release-core.yml, which also created the release. It
-  # used to be a step of publish-release, where its ~45 s came before the
-  # beta went public and before the feed. Nothing reads its result, so it runs
-  # beside publish-release instead. A caller's next job waits for every job
-  # here, so it must stay shorter than publish-release (minutes), which it is.
+  # without SENTRY_AUTH_TOKEN. The source maps were uploaded by the build jobs
+  # in release-core.yml, which also created the release. Its ~45 s must not
+  # hold up the beta or the feed, and nothing reads its result, so it runs
+  # beside publish-release. A caller's next job waits for every job here, so
+  # it must stay shorter than publish-release (minutes), which it is.
+  #
+  # A Sentry outage must not fail a good release. GitHub documents that a job
+  # with continue-on-error does not fail the workflow run when the job fails,
+  # so the job alone carries the flag; its step does not need it as well.
   sentry-commits:
     permissions:
       contents: read
@@ -485,7 +491,6 @@ jobs:
           node-version: 24
 
       - name: Associate commits with the Sentry release
-        continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}

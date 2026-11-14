@@ -261,48 +261,24 @@ jobs:
       # every release. warm-release-caches.yml builds them on main; a release
       # restores them here, from the cache or else from that workflow's
       # artifact, and builds from source only when both miss or the
-      # attestation check below rejects what they hold.
+      # attestation check in .github/actions/restore-release-build rejects
+      # what they hold.
       - name: Resolve release cache keys
         id: cache-keys
         uses: ./.github/actions/release-cache-keys
 
       - name: Restore transcribe-cli
-        id: transcribe_cache
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: apps/desktop/resources/whisper/transcribe-cli
           key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+          paths: apps/desktop/resources/whisper/transcribe-cli
 
       - name: Restore native helpers
-        id: helpers_cache
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
           key: ${{ steps.cache-keys.outputs.native-helpers }}
-
-      # The cache drops these small entries within hours (see
-      # warm-release-caches.yml); the artifact of the same name stays.
-      - name: Fetch native builds the cache no longer holds
-        if: ${{ steps.transcribe_cache.outputs.cache-hit != 'true' || steps.helpers_cache.outputs.cache-hit != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TRANSCRIBE_KEY: ${{ steps.cache-keys.outputs.transcribe-darwin }}
-          HELPERS_KEY: ${{ steps.cache-keys.outputs.native-helpers }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          scripts/fetch-warm-release-build.sh "$TRANSCRIBE_KEY" apps/desktop/resources/whisper/transcribe-cli
-          # shellcheck disable=SC2086
-          scripts/fetch-warm-release-build.sh "$HELPERS_KEY" $HELPER_PATHS
-
-      - name: Verify cached native builds
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          scripts/verify-cached-release-builds.sh - apps/desktop/resources/whisper/transcribe-cli
-          # One path per line, none with spaces; split them into arguments.
-          # shellcheck disable=SC2086
-          scripts/verify-cached-release-builds.sh ADE_NATIVE_HELPERS_CACHED $HELPER_PATHS
+          paths: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          flag: ADE_NATIVE_HELPERS_CACHED
 
       # Only this job's own target. Downloading every ade-runtime-* artifact is
       # what let foreign-platform payloads into the bundle in the first place.
@@ -481,7 +457,7 @@ jobs:
 
       # smoke-mac-x64 runs the same validator, which reads the list of bundled
       # CLI files from the CLI build output. These are the files this build
-      # packaged, so the smoke no longer installs and builds the CLI again.
+      # packaged, so the smoke does not install and build the CLI again.
       # Never fails the build: without it, the smoke builds the CLI itself.
       - name: Upload the packaged ADE CLI files for the x64 smoke
         if: ${{ matrix.arch == 'x64' }}
@@ -727,25 +703,10 @@ jobs:
         uses: ./.github/actions/release-cache-keys
 
       - name: Restore transcribe-cli
-        id: transcribe_cache
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: apps/desktop/resources/whisper/transcribe-cli.exe
           key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
-
-      - name: Fetch transcribe-cli if the cache no longer holds it
-        if: ${{ steps.transcribe_cache.outputs.cache-hit != 'true' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TRANSCRIBE_KEY: ${{ steps.cache-keys.outputs.transcribe-win32 }}
-        run: scripts/fetch-warm-release-build.sh "$TRANSCRIBE_KEY" apps/desktop/resources/whisper/transcribe-cli.exe
-
-      - name: Verify cached transcribe-cli
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: scripts/verify-cached-release-builds.sh - apps/desktop/resources/whisper/transcribe-cli.exe
+          paths: apps/desktop/resources/whisper/transcribe-cli.exe
 
       - name: Wait for the win32-x64 runtime binary
         shell: bash
@@ -1160,28 +1121,11 @@ jobs:
         uses: ./.github/actions/release-cache-keys
       - name: Restore native helpers
         if: ${{ startsWith(matrix.target, 'darwin-') }}
-        id: helpers_cache
-        uses: actions/cache/restore@v4
+        uses: ./.github/actions/restore-release-build
         with:
-          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
           key: ${{ steps.cache-keys.outputs.native-helpers }}
-      - name: Fetch native helpers if the cache no longer holds them
-        if: ${{ startsWith(matrix.target, 'darwin-') && steps.helpers_cache.outputs.cache-hit != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELPERS_KEY: ${{ steps.cache-keys.outputs.native-helpers }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          # shellcheck disable=SC2086
-          scripts/fetch-warm-release-build.sh "$HELPERS_KEY" $HELPER_PATHS
-      - name: Verify cached native helpers
-        if: ${{ startsWith(matrix.target, 'darwin-') }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          # shellcheck disable=SC2086
-          scripts/verify-cached-release-builds.sh ADE_NATIVE_HELPERS_CACHED $HELPER_PATHS
+          paths: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          flag: ADE_NATIVE_HELPERS_CACHED
       - name: Build the brain's macOS helpers
         if: ${{ startsWith(matrix.target, 'darwin-') }}
         shell: bash
@@ -1412,7 +1356,7 @@ jobs:
       # The validator reads which CLI files the app must bundle from the CLI
       # build output (packaged-ade-cli-resources.cjs). The x64 build job
       # uploads the exact files it packaged. Without that artifact, build the
-      # CLI from this commit the way the release job does, as before.
+      # CLI from this commit the way the release job does.
       - name: Download the packaged ADE CLI files
         id: cli_dist
         continue-on-error: true

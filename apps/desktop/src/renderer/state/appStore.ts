@@ -104,7 +104,6 @@ export type { InterfaceMonoFont, InterfacePreferences, InterfaceSansFont, ThemeI
 import { captureHomeTabOpened } from "../components/home/homeAnalytics";
 import { applyInterfacePreferences } from "../theme/applyInterface";
 
-export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
   "SFMono-Regular",

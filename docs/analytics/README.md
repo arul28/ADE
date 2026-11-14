@@ -6,7 +6,7 @@ properties it may carry (beyond the common ones listed at the top of the file).
 `docs/logging.md` holds the privacy rules, consent, budgets and architecture;
 this folder is the catalog.
 
-`scripts/check-analytics-tracking-plan.mjs` runs in CI (the `validate-docs`
+`scripts/check-analytics-tracking-plan.mjs` runs in CI (the `docs`
 job) and fails when the code, the plan and the dashboards disagree: an event is
 sent but not in the plan, the plan lists an event nothing sends, a desktop or
 brain event is declared but never captured, or a dashboard in

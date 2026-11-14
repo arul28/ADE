@@ -38,6 +38,8 @@ on:
       - "apps/desktop/scripts/materialize-whisper-resources.mjs"
       - "apps/desktop/scripts/native-helper-cache.mjs"
       - ".github/actions/release-cache-keys/**"
+      - ".github/actions/restore-release-build/**"
+      - ".github/actions/publish-release-build/**"
       - ".github/workflows/warm-release-caches.yml"
   schedule:
     # Sundays 07:23 UTC, a quiet hour for the macOS runners.
@@ -84,12 +86,12 @@ jobs:
       # deleted and the step below compiles it.
       - name: Reuse the last run's transcribe-cli
         if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEY: ${{ steps.cache-keys.outputs.transcribe-darwin }}
-        run: |
-          scripts/fetch-warm-release-build.sh "$KEY" apps/desktop/resources/whisper/transcribe-cli
-          scripts/verify-cached-release-builds.sh TRANSCRIBE_REUSED apps/desktop/resources/whisper/transcribe-cli
+        uses: ./.github/actions/restore-release-build
+        with:
+          key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+          paths: apps/desktop/resources/whisper/transcribe-cli
+          flag: TRANSCRIBE_REUSED
+          restore: "false"
 
       - name: Build transcribe-cli
         if: ${{ steps.transcribe.outputs.cache-hit != 'true' && env.TRANSCRIBE_REUSED != '1' }}
@@ -110,16 +112,12 @@ jobs:
 
       - name: Reuse the last run's native helpers
         if: ${{ steps.helpers.outputs.cache-hit != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEY: ${{ steps.cache-keys.outputs.native-helpers }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          # One path per line, none with spaces; split them into arguments.
-          # shellcheck disable=SC2086
-          scripts/fetch-warm-release-build.sh "$KEY" $HELPER_PATHS
-          # shellcheck disable=SC2086
-          scripts/verify-cached-release-builds.sh HELPERS_REUSED $HELPER_PATHS
+        uses: ./.github/actions/restore-release-build
+        with:
+          key: ${{ steps.cache-keys.outputs.native-helpers }}
+          paths: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          flag: HELPERS_REUSED
+          restore: "false"
 
       - name: Build native helpers
         if: ${{ steps.helpers.outputs.cache-hit != 'true' && env.HELPERS_REUSED != '1' }}
@@ -141,39 +139,18 @@ jobs:
         with:
           subject-path: ${{ steps.cache-keys.outputs.native-helper-paths }}
 
-      # The same files as artifacts named by the cache keys, one tar each, so
-      # file modes and paths survive. ustar and COPYFILE_DISABLE keep macOS
-      # metadata entries out: the fetch script accepts an archive only when it
-      # lists exactly the expected files.
-      - name: Pack the builds for releases
-        env:
-          TRANSCRIBE_KEY: ${{ steps.cache-keys.outputs.transcribe-darwin }}
-          HELPERS_KEY: ${{ steps.cache-keys.outputs.native-helpers }}
-          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
-        run: |
-          set -euo pipefail
-          mkdir -p .warm-release-build
-          COPYFILE_DISABLE=1 tar --format=ustar -cf - apps/desktop/resources/whisper/transcribe-cli > ".warm-release-build/$TRANSCRIBE_KEY.tar"
-          # shellcheck disable=SC2086
-          COPYFILE_DISABLE=1 tar --format=ustar -cf - $HELPER_PATHS > ".warm-release-build/$HELPERS_KEY.tar"
-          tar -tvf - < ".warm-release-build/$TRANSCRIBE_KEY.tar"
-          tar -tvf - < ".warm-release-build/$HELPERS_KEY.tar"
-
+      # The same files as artifacts named by the cache keys, one tar each.
       - name: Upload transcribe-cli for releases
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/publish-release-build
         with:
-          name: ${{ steps.cache-keys.outputs.transcribe-darwin }}
-          path: .warm-release-build/${{ steps.cache-keys.outputs.transcribe-darwin }}.tar
-          retention-days: 90
-          if-no-files-found: error
+          key: ${{ steps.cache-keys.outputs.transcribe-darwin }}
+          paths: apps/desktop/resources/whisper/transcribe-cli
 
       - name: Upload native helpers for releases
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/publish-release-build
         with:
-          name: ${{ steps.cache-keys.outputs.native-helpers }}
-          path: .warm-release-build/${{ steps.cache-keys.outputs.native-helpers }}.tar
-          retention-days: 90
-          if-no-files-found: error
+          key: ${{ steps.cache-keys.outputs.native-helpers }}
+          paths: ${{ steps.cache-keys.outputs.native-helper-paths }}
 
   windows:
     runs-on: windows-latest
@@ -198,13 +175,12 @@ jobs:
       # See the mac job.
       - name: Reuse the last run's transcribe-cli
         if: ${{ steps.transcribe.outputs.cache-hit != 'true' }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          KEY: ${{ steps.cache-keys.outputs.transcribe-win32 }}
-        run: |
-          scripts/fetch-warm-release-build.sh "$KEY" apps/desktop/resources/whisper/transcribe-cli.exe
-          scripts/verify-cached-release-builds.sh TRANSCRIBE_REUSED apps/desktop/resources/whisper/transcribe-cli.exe
+        uses: ./.github/actions/restore-release-build
+        with:
+          key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+          paths: apps/desktop/resources/whisper/transcribe-cli.exe
+          flag: TRANSCRIBE_REUSED
+          restore: "false"
 
       - name: Build transcribe-cli
         if: ${{ steps.transcribe.outputs.cache-hit != 'true' && env.TRANSCRIBE_REUSED != '1' }}
@@ -216,22 +192,9 @@ jobs:
         with:
           subject-path: apps/desktop/resources/whisper/transcribe-cli.exe
 
-      # See the mac job. Through stdin and stdout: GNU tar on Windows reads
-      # "D:" in a file name as a remote host.
-      - name: Pack transcribe-cli for releases
-        shell: bash
-        env:
-          KEY: ${{ steps.cache-keys.outputs.transcribe-win32 }}
-        run: |
-          set -euo pipefail
-          mkdir -p .warm-release-build
-          tar --format=ustar -cf - apps/desktop/resources/whisper/transcribe-cli.exe > ".warm-release-build/$KEY.tar"
-          tar -tvf - < ".warm-release-build/$KEY.tar"
-
+      # See the mac job.
       - name: Upload transcribe-cli for releases
-        uses: actions/upload-artifact@v4
+        uses: ./.github/actions/publish-release-build
         with:
-          name: ${{ steps.cache-keys.outputs.transcribe-win32 }}
-          path: .warm-release-build/${{ steps.cache-keys.outputs.transcribe-win32 }}.tar
-          retention-days: 90
-          if-no-files-found: error
+          key: ${{ steps.cache-keys.outputs.transcribe-win32 }}
+          paths: apps/desktop/resources/whisper/transcribe-cli.exe

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatTurnSettledEvent } from "../chat/agentChatService";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
 import { openFreshKvDb } from "../../../test/freshKvDb";
 import { localDayKey, localDayOffset } from "../usage/localDay";
 import { recordUsageInteraction } from "../usage/usageStatsStore";
@@ -2840,7 +2840,7 @@ describe("product analytics producers", () => {
 describe("usage product analytics exporter", () => {
   async function withUsageDb(
     name: string,
-    run: (db: Awaited<ReturnType<typeof openKvDb>>) => Promise<void>,
+    run: (db: AdeDb) => Promise<void>,
   ): Promise<void> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), name));
     const db = await openFreshKvDb(path.join(root, "ade.db"), analyticsLogger() as never);

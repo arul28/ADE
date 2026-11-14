@@ -523,9 +523,10 @@ npx wrangler d1 export DB --remote --env production \
 branch):
 
 1. **Production** is deployed when this merges to `main`.
-   `.github/workflows/deploy-web.yml` runs `npm run deploy:production`, which
-   applies `migrations/0012_usage_research.sql` to
-   `ade-account-directory-production` and then deploys. To do it by hand:
+   `.github/workflows/deploy-web.yml` runs the two parts of
+   `npm run deploy:production` (`deploy:production:prepare`, then
+   `deploy:production:upload`), which apply `migrations/0012_usage_research.sql` to
+   `ade-account-directory-production` and then deploy. To do it by hand:
    `npx wrangler d1 migrations apply DB --remote --env production`, then
    `npx wrangler deploy --env production`.
 2. The **default (development)** environment is not deployed by CI. Run
