@@ -283,6 +283,15 @@ runs:
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" || echo "::warning::Could not delete $key"
         done < "$RUNNER_TEMP/ios-stale-caches.txt"
 
+    - name: Upload the build log (diagnostic)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ios-build-log
+        path: ${{ runner.temp }}/ios-build.log
+        if-no-files-found: ignore
+        retention-days: 3
+
     - name: Upload test results on failure
       if: failure()
       uses: actions/upload-artifact@v4
