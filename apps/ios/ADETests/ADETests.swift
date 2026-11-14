@@ -19429,7 +19429,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertEqual(
       workCodexRecoveryActionLabel(for: "restart_resume_thread"),
-      "Restart & resume"
+      "Restart Codex"
     )
     XCTAssertEqual(workCodexRecoveryActionLabel(for: "wait"), "Keep waiting")
 

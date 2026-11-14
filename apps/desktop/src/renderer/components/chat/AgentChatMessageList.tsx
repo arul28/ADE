@@ -528,17 +528,19 @@ function CodexTurnRecoveryCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
+  // One card for every provider (`turn_health`); a legacy Codex event names none.
+  const name = providerDisplayLabel(event.provider ?? "codex", "The agent");
   const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
     wait: "Keep waiting",
     steer: "Send nudge",
     interrupt_retry_same_thread: "Retry same server",
-    restart_resume_thread: "Restart Codex",
+    restart_resume_thread: `Restart ${name}`,
   };
   const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
-    waiting: "Waiting for Codex output…",
+    waiting: `Waiting for ${name}…`,
     nudged: "Status nudge sent.",
     retrying: "Retry started in this thread.",
-    resumed: "Codex app-server restarted and the thread resumed.",
+    resumed: `${name} restarted and picked up your last request.`,
   };
   const recoveryOptions = event.recoveryOptions ?? [
     "restart_resume_thread",
@@ -551,12 +553,12 @@ function CodexTurnRecoveryCard({
   const secondaryOptions = (["steer", "interrupt_retry_same_thread"] as const)
     .filter((option) => recoveryOptions.includes(option));
   const title = event.reason === "waiting_on_approval"
-    ? "Codex is waiting for approval"
+    ? `${name} is waiting for approval`
     : event.reason === "waiting_on_input"
-      ? "Codex is waiting for your input"
+      ? `${name} is waiting for your input`
       : event.reason === "no_progress"
-        ? "Codex stopped making progress"
-        : "Codex is slow to answer";
+        ? `${name} has gone quiet`
+        : `${name} is slow to answer`;
   const timing = (() => {
     const detectedAt = event.detectedAt ? Date.parse(event.detectedAt) : Number.NaN;
     const turnStartedAt = event.turnStartedAt ? Date.parse(event.turnStartedAt) : Number.NaN;

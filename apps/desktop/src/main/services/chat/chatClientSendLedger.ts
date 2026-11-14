@@ -58,7 +58,12 @@ export function createClientSendLedger(options: {
   };
 
   return {
-    async run(sessionId, clientSendId, send, whenTakenWithoutResult) {
+    async run<T>(
+      sessionId: string,
+      clientSendId: string | null | undefined,
+      send: () => Promise<T>,
+      whenTakenWithoutResult: () => T,
+    ): Promise<T> {
       const id = clientSendId?.trim();
       if (!id) return send();
       const key = `${sessionId}\u0000${id}`;

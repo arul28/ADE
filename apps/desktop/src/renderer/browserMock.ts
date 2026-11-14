@@ -2939,13 +2939,17 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
 }
 
 /**
- * `?mockCodexStall=1`: the question chat ends on a Codex turn that has not
+ * `?mockCodexStall=1` (or `=claude`, `=cursor`, …): the question chat ends on a turn that has not
  * answered, so the preview shows the restart card and the ADE rows (a message
  * ADE wrote, never the user's bubble) without a slow Codex.
  */
 function browserMockCodexStallEvents(sessionId: string): any[] {
   if (sessionId !== BROWSER_MOCK_QUESTION_SESSION_ID) return [];
-  if (typeof window === "undefined" || !/[?&]mockCodexStall=1\b/.test(window.location.href)) return [];
+  const match = typeof window === "undefined" ? null : /[?&]mockCodexStall=([a-z]+|1)\b/.exec(window.location.href);
+  if (!match) return [];
+  // `=1` is Codex; `=claude`, `=cursor`, … shows the same card for that provider.
+  const provider = match[1] === "1" ? "codex" : match[1]!;
+  const name = provider.charAt(0).toUpperCase() + provider.slice(1);
   const startedAt = Date.now() - 3 * 60_000;
   const at = (offsetMs: number) => new Date(startedAt + offsetMs).toISOString();
   const turnId = "mock-stall-turn";
@@ -2984,11 +2988,11 @@ function browserMockCodexStallEvents(sessionId: string): any[] {
       sequence: 991_003,
       event: {
         type: "turn_health",
-        provider: "codex",
+        provider,
         turnId,
         state: "stalled",
         reason: "no_output",
-        message: "Codex hasn't answered in 2 minutes. Restart Codex, or keep waiting.",
+        message: `${name} hasn't answered in 2 minutes. Restart ${name}, or keep waiting.`,
         turnStartedAt: at(0),
         lastProgressAt: at(0),
         detectedAt: at(120_000),

@@ -2453,6 +2453,11 @@ export type AgentChatEvent =
       turnStartedAt?: string;
       lastProgressAt?: string;
       automaticRecoveryAttempted?: boolean;
+      /**
+       * The chat's provider when this row was built from a `turn_health` card
+       * (the renderer folds both into one card). Absent: Codex.
+       */
+      provider?: string;
     }
   | {
       /**
