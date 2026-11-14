@@ -305,9 +305,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           options.onSuccess?.(result);
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
           console.error(`[TerminalsPage] ${options.actionName} failed`, { sessionId, err });
-          setSessionActionError(`${options.errorLabel} failed: ${message}`);
+          setSessionActionError(formatSessionActionError(err, options.errorLabel));
         });
     },
     [refreshWork, setSessionActionError],
@@ -1011,8 +1010,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return work.refresh({ showLoading: false, force: true });
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Stop failed: ${message}`);
+        setSessionActionError(formatSessionActionError(err, "Stop"));
       });
   }, [selectedSessions, setSessionActionError, work]);
 
@@ -1087,8 +1085,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     invalidateSessionListCache();
     void work.refresh({ showLoading: false, force: true })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setSessionActionError(`Refresh failed: ${message}`);
+        setSessionActionError(formatSessionActionError(error, "Refresh"));
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "orphan-refresh" ? null : current));

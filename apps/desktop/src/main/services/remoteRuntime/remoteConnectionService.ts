@@ -1720,10 +1720,13 @@ export class RemoteConnectionService {
       if (sleeping && await this.wakeForUse(sleeping)) {
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
-      } else if (this.asleepChecks.isResting(targetId)) {
-        // Not woken by this app: another device woke it already. The rest
-        // ends, and the dial below finds out (a failed one asks again).
+      } else if (sleeping && this.asleepChecks.isResting(targetId)) {
+        // Not woken by this app: another device woke it, or the provider
+        // already says "running" while ADE there is still starting. Its link
+        // comes back a few seconds after that, so the call waits for it as for
+        // its own wake, instead of failing on the first dial ("Can't reach").
         this.clearAutomaticReconnectState(targetId);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
