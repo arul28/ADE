@@ -8563,12 +8563,16 @@ function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
 /**
  * Why ADE decided a Cursor agent thread had to be thrown away.
  *
+ * `quiet_restart` is the user's Restart on the "Cursor hasn't answered" card:
+ * a silent thread may be wedged server-side, so it rotates like a transport
+ * failure, but only because the user asked.
+ *
  * `stale_token` is the odd one out: the *worker* is dead (its access token
  * expired and the SDK never re-exchanges it) but the *thread* is perfectly
  * healthy, so that recycle keeps the agent id and resumes it in the fresh
  * worker instead of rotating to a new one.
  */
-type CursorSdkRecycleReason = "transport_error" | "stale_token";
+type CursorSdkRecycleReason = "transport_error" | "stale_token" | "quiet_restart";
 
 /**
  * Steer ids that have already had a resolution notice emitted — delivered or
@@ -45141,7 +45145,9 @@ export function createAgentChatService(args: {
       });
       return;
     }
-    if (!sessionTurnRunning(managed) || lastTurnIdBySession.get(info.sessionId) !== info.turnId) {
+    // The watch is this turn's (a terminal event clears it), so a chat that
+    // is still mid-turn is still in the turn that went quiet.
+    if (!sessionTurnRunning(managed)) {
       quietTurns.clear(info.sessionId, info.turnId);
       return;
     }
@@ -70173,7 +70179,7 @@ export function createAgentChatService(args: {
     const normalizedTurnId = turnId.trim();
     if (!normalizedTurnId) throw new Error("Turn recovery requires a turn id.");
     const name = providerDisplayLabel(managed.session.provider, "The agent");
-    if (!sessionTurnRunning(managed) || lastTurnIdBySession.get(sessionId) !== normalizedTurnId) {
+    if (!sessionTurnRunning(managed) || quietTurns.get(sessionId)?.turnId !== normalizedTurnId) {
       throw new Error(`This ${name} turn is no longer running.`);
     }
     if (action !== "wait" && action !== "restart_resume") {
@@ -70218,6 +70224,14 @@ export function createAgentChatService(args: {
       // Stop and set the queue aside (restorable), so nothing the user queued
       // starts in the gap or ahead of the resumed request.
       await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+      const runtime = managed.runtime;
+      if (runtime?.kind === "cursor") {
+        // A silent Cursor thread can be wedged server-side (every later send
+        // hangs the same way), so its restart rotates onto a fresh agent
+        // seeded with the conversation, as a transport failure's does.
+        const carried = await recycleCursorSdkAgentThread(managed, runtime, "quiet_restart");
+        if (carried.length) cancelCarriedCursorSteers(managed, normalizedTurnId, carried);
+      }
       teardownRuntime(managed, "restart", { backgroundLossCause: "explicit_restart" });
       if (managed.session.status === "active") markSessionIdleWithFreshCache(managed);
       persistChatState(managed);
@@ -70250,7 +70264,7 @@ export function createAgentChatService(args: {
     if (args.turnId) {
       const activeTurnId = managed.runtime?.kind === "codex"
         ? managed.runtime.activeTurnId ?? managed.runtime.startedTurnId
-        : sessionTurnRunning(managed) ? lastTurnIdBySession.get(managed.session.id) ?? null : null;
+        : sessionTurnRunning(managed) ? quietTurns.get(managed.session.id)?.turnId ?? null : null;
       if (activeTurnId !== args.turnId) {
         throw new Error("This recovery turn does not belong to the active chat session.");
       }

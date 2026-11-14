@@ -137,7 +137,7 @@ export function createChatQuietWatchdog(options: {
   /** Re-arming on activity is throttled to this (ms). */
   rearmGranularityMs?: number;
 }) {
-  const now = options.now ?? Date.now;
+  const now = options.now ?? (() => Date.now());
   const thresholdsFor = options.thresholdsFor ?? quietThresholdsFor;
   const granularity = options.rearmGranularityMs ?? 1_000;
   const watches = new Map<string, QuietWatch & { timer: ReturnType<typeof setTimeout> | null; dueAt: number }>();

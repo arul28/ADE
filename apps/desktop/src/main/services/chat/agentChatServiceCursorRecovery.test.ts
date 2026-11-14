@@ -32,35 +32,19 @@ const pumpRealNow = Date.now.bind(Date);
 const PUMP_REAL_BUDGET_MS = 5_000;
 /**
  * Fake-clock advancing stays capped by iteration so 1ms-per-tick pumping can
- * never drift the virtual clock into the 90s silence watchdog by itself.
+ * never drift the virtual clock into the 90s quiet card by itself.
  */
 const PUMP_FAKE_TICK_BUDGET = 800;
-/** Real stall time before `pumpUntil` starts tripping the silence watchdog. */
-const PUMP_WATCHDOG_STALL_MS = 1_000;
 
 /**
  * Real async setup work still needs event-loop turns while the clock is faked,
  * so pump the fake clock instead of assuming a fixed number of ticks.
- *
- * Do not trip the silence watchdog while flushing that setup. On a slow
- * runner, jumping 90s during `first cursor send` recycled the turn before
- * the test queued its steer, and the later recovery wait timed out.
  */
 const pumpUntil = async (label: string, ready: () => boolean): Promise<void> => {
   const startedAt = pumpRealNow();
-  // A silence-watchdog recycle can arm the next attempt's timer after the first
-  // 90s jump, so extra trips stay available — but keyed off real stall time
-  // rather than a tick index. Tripping on a tick index recycles the runtime
-  // whose recovery this is waiting for whenever the loop spins faster than the
-  // pending I/O completes, which is exactly what a loaded runner does.
-  let nextWatchdogTripAt = startedAt + PUMP_WATCHDOG_STALL_MS;
   let fakeTicksLeft = PUMP_FAKE_TICK_BUDGET;
   while (!ready() && pumpRealNow() - startedAt < PUMP_REAL_BUDGET_MS) {
-    if (pumpRealNow() >= nextWatchdogTripAt) {
-      nextWatchdogTripAt = pumpRealNow() + PUMP_WATCHDOG_STALL_MS;
-      await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
-      await flushCursorSdkSilenceRecycle();
-    } else if (fakeTicksLeft > 0) {
+    if (fakeTicksLeft > 0) {
       fakeTicksLeft -= 1;
       await vi.advanceTimersByTimeAsync(1);
     } else {
@@ -97,8 +81,23 @@ function parkCursorSteer(): () => void {
 // ---------------------------------------------------------------------------
 
 
-const tripCursorSdkSilenceWatchAndRecycle = async (): Promise<void> => {
-  await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+/**
+ * Fails the oldest parked Cursor send on the wire (a transport error before
+ * any stream event): the trigger for ADE's one recycle-and-resend. Silence
+ * alone no longer recycles a thread; it posts the quiet card. `next` is what
+ * the re-send meets: "run" answers, "park" stalls it like the first, "fail"
+ * fails it on the wire too.
+ */
+const failParkedCursorSendOnTheWire = async (next: "run" | "park" | "fail" = "run"): Promise<void> => {
+  const release = mockState.cursorSendParks.shift();
+  mockState.cursorSendPromptError = new Error("Cursor SDK send failed: [internal] write ECANCELED");
+  // `release` clears the shared gate; a re-send that must stall gets its own.
+  release?.();
+  if (next === "park") parkCursorSend();
+  // The released send reads the error on its next microtask.
+  await Promise.resolve();
+  await Promise.resolve();
+  if (next !== "fail") mockState.cursorSendPromptError = null;
   await flushCursorSdkSilenceRecycle();
 };
 
@@ -845,18 +844,17 @@ describe("createAgentChatService", () => {
         parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
-          text: "Turn that goes silent.",
+          text: "Turn that dies on the wire.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
-        // The user types again during the silent window: cursor queues it as a
+        // The user types again before the send fails: cursor queues it as a
         // steer, on a runtime the recycle is about to destroy.
         await service.steer({ sessionId: session.id, text: "Also check the migration." });
         await pumpUntil("queued steer", () => events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-        mockState.cursorSendPromptGate = null;
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("run");
         // Re-send, then the carried steer delivered as its own turn.
         await pumpUntil("steer delivered after recovery", () => mockState.cursorSdkSendCalls.length >= 3);
 
@@ -1300,7 +1298,7 @@ describe("createAgentChatService", () => {
       expect(String(mockState.cursorSdkSendCalls[1]?.promptText ?? "")).toContain("Run this one instead.");
     });
 
-    it("settles a re-queued Cursor steer exactly once when the recovery re-send also goes silent", async () => {
+    it("settles a re-queued Cursor steer exactly once when the recovery re-send also fails", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -1315,12 +1313,12 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        // Neither attempt ever answers, so the steer is carried onto attempt 2's
-        // runtime and then abandoned again when that one is recycled too.
+        // Neither attempt gets through, so the steer is carried onto attempt 2's
+        // runtime and then settled when that one fails too.
         parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
-          text: "Both attempts go silent.",
+          text: "Both attempts fail.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
@@ -1328,9 +1326,9 @@ describe("createAgentChatService", () => {
         await pumpUntil("queued steer", () => events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("park");
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("fail");
         await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
 
         // Settled, and settled once: the attempt body and the wrapper cover
@@ -1343,7 +1341,7 @@ describe("createAgentChatService", () => {
           && event.event.message.includes("cancelled"));
         expect(cancelNotices).toHaveLength(1);
         expect(cancelNotices[0]?.event).toMatchObject({
-          message: "Queued message cancelled because ADE recycled the Cursor thread — resend it if still needed.",
+          message: "Queued message cancelled because the current turn failed.",
         });
         // The steer was never delivered as a turn of its own.
         expect(mockState.cursorSdkSendCalls).toHaveLength(2);
@@ -1352,7 +1350,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("settles a queued Cursor steer when the user stops a silent run", async () => {
+    it("settles a queued Cursor steer when the user stops during a thread recycle", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -1370,7 +1368,7 @@ describe("createAgentChatService", () => {
         parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
-          text: "Silent run the user stops.",
+          text: "Run the user stops mid-recycle.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
@@ -1378,13 +1376,13 @@ describe("createAgentChatService", () => {
         await pumpUntil("queued steer", () => events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
-        // Stop lands while the run is still silent; a plain stop does not clear
-        // the queue, so the recycle is what strands the steer.
+        // Stop lands while the recycle cancels the dead run; a plain stop does
+        // not clear the queue, so the recycle is what strands the steer.
         mockState.onCursorCancel = () => {
           mockState.onCursorCancel = null;
           void service.interrupt({ sessionId: session.id });
         };
-        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await failParkedCursorSendOnTheWire("run");
         await pumpUntil("turn settled", () => events.some((event) => event.event.type === "done"));
 
         const cancelNotices = events.filter((event) =>
@@ -1398,7 +1396,7 @@ describe("createAgentChatService", () => {
       }
     });
 
-    it("settles a Cursor steer queued during the recovery re-send when that attempt also goes silent", async () => {
+    it("settles a Cursor steer queued during the recovery re-send when that attempt also fails", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -1416,7 +1414,7 @@ describe("createAgentChatService", () => {
         parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
-          text: "Both attempts go silent.",
+          text: "Both attempts fail.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
@@ -1425,7 +1423,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("carried steer queued", () => events.filter((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 1);
 
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("park");
         await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 2);
 
         // Queued during attempt 2 — lands on the rebuilt runtime, which the
@@ -1434,7 +1432,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("second steer queued", () => events.filter((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued").length >= 2);
 
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("fail");
         await pumpUntil("terminal failure", () => events.some((event) => event.event.type === "error"));
 
         const cancelNotices = events.filter((event) =>
@@ -1469,8 +1467,8 @@ describe("createAgentChatService", () => {
       vi.useFakeTimers();
       try {
         parkCursorSend();
-        // Send 3 is the delivered steer's own turn: it goes silent too, so its
-        // nested recycle detaches managed.runtime while the outer wrapper is
+        // Send 3 is the delivered steer's own turn: it fails on the wire too, so
+        // its nested recycle detaches managed.runtime while the outer wrapper is
         // still holding the carried steer — the false-cancel window.
         mockState.onCursorSendPrompt = () => {
           if (mockState.cursorSdkSendCalls.length !== 3) return;
@@ -1481,7 +1479,7 @@ describe("createAgentChatService", () => {
         };
         void service.sendMessage({
           sessionId: session.id,
-          text: "Turn that goes silent.",
+          text: "Turn that dies on the wire.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
 
@@ -1490,12 +1488,11 @@ describe("createAgentChatService", () => {
           event.event.type === "user_message" && event.event.deliveryState === "queued"));
 
         // Attempt 2 succeeds and delivers the carried steer.
-        mockState.cursorSendPromptGate = null;
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("run");
         await pumpUntil("steer delivered", () => mockState.cursorSdkSendCalls.length >= 3);
-        // The delivered steer's turn is silent in turn; its recovery re-send
+        // The delivered steer's turn fails in turn; its recovery re-send
         // (send 4) succeeds and leaves a different runtime on the session.
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("run");
         await pumpUntil("nested recovery", () => mockState.cursorSdkSendCalls.length >= 4);
         // Let the nested chain unwind fully, so the outer wrapper's finally
         // runs while the session is on a different runtime than it re-queued on.
@@ -1818,7 +1815,7 @@ describe("createAgentChatService", () => {
           mode: "inline",
         });
         await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("park");
         releaseSteer();
         const result = await dispatching;
 
@@ -1837,7 +1834,7 @@ describe("createAgentChatService", () => {
           dispatchMode: "inline",
         });
         await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("park");
         releaseSteer();
         const result = await sending;
         expect(result.queued).toBe(true);
@@ -1904,7 +1901,7 @@ describe("createAgentChatService", () => {
         await pumpUntil("steer in flight", () => mockState.cursorSdkSteerCalls.length >= 1);
         // The recycle carries the row onto the replacement runtime, where the
         // user cancels it while the old runtime's offer is still awaiting.
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("park");
         await service.cancelSteer({ sessionId: session.id, steerId: staged.steerId });
         releaseSteer();
         const result = await dispatching;
@@ -1945,7 +1942,7 @@ describe("createAgentChatService", () => {
         // Fail the *next* acquire, armed immediately before recycle so a
         // leftover acquire from the previous test cannot consume the slot.
         mockState.cursorAcquireErrorOnCall = mockState.cursorSdkAcquireCalls.length + 1;
-        await tripCursorSdkSilenceWatchAndRecycle();
+        await failParkedCursorSendOnTheWire("run");
         await pumpUntil("carried steer cancelled", () => events.some((event) =>
           event.event.type === "system_notice"
           && typeof event.event.steerId === "string"
@@ -1977,18 +1974,18 @@ describe("createAgentChatService", () => {
 
       vi.useFakeTimers();
       try {
-        // Both attempts go silent, so the terminal path recycles the rotated
-        // agent too and arms a rotation for whatever comes next.
+        // The send dies on the wire and the recovery's fresh worker never
+        // starts, so the rotation the recycle armed is left for whatever
+        // comes next.
         parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
-          text: "Both attempts go silent.",
+          text: "A send whose recovery cannot start.",
         }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
-        await tripCursorSdkSilenceWatchAndRecycle();
-        await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await tripCursorSdkSilenceWatchAndRecycle();
-        await pumpUntil("terminal failure", () => mockState.cursorSdkPoisonCalls.length >= 2);
+        mockState.cursorAcquireErrorOnCall = mockState.cursorSdkAcquireCalls.length + 1;
+        await failParkedCursorSendOnTheWire("run");
+        await pumpUntil("terminal failure", () => mockState.cursorSdkPoisonCalls.length >= 1);
       } finally {
         vi.useRealTimers();
       }
@@ -2199,7 +2196,7 @@ describe("createAgentChatService", () => {
       expect(done[0]?.event).toMatchObject({ type: "done", status: "interrupted" });
     });
 
-    it("rotates onto a fresh Cursor agent and resends once when a run goes silent", async () => {
+    it("posts the quiet card for a silent Cursor run, never re-sends it, and rotates only when the user restarts", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -2219,93 +2216,55 @@ describe("createAgentChatService", () => {
         expect(session.status).toBe("idle");
       });
       const acquiresBefore = mockState.cursorSdkAcquireCalls.length;
-      const poisonedPooled = mockState.cursorSdkPooled;
+      const wedgedPooled = mockState.cursorSdkPooled;
 
       vi.useFakeTimers();
       try {
         // The wedged thread: the send never settles and no worker event lands.
-        parkCursorSend();
+        const releaseWedged = parkCursorSend();
         void service.sendMessage({
           sessionId: session.id,
           text: "Second Cursor turn.",
-        }, { awaitDispatch: true });
+        }, { awaitDispatch: true }).catch(() => undefined);
         await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
-        // The retry must run against a healthy worker.
-        mockState.cursorSendPromptGate = null;
 
-        await tripCursorSdkSilenceWatchAndRecycle();
-        await pumpUntil("recovery re-send", () => mockState.cursorSdkSendCalls.length >= 3);
+        await vi.advanceTimersByTimeAsync(CURSOR_SILENCE_WATCHDOG_TRIP_MS);
+        await pumpUntil("quiet card", () => events.some((event) => event.event.type === "turn_health"));
+        const card = events.find((event) => event.event.type === "turn_health")?.event;
+        expect(card).toMatchObject({ provider: "cursor", state: "stalled", supportedActions: ["wait", "restart_resume"] });
+
+        // The card is all ADE did: the run is left alone, nothing is re-sent.
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
+        expect(mockState.cursorSdkPoisonCalls).toHaveLength(0);
+        expect(wedgedPooled.cancel).not.toHaveBeenCalled();
+
+        // The user restarts: the wedged run is stopped, the thread rotated onto
+        // a fresh agent seeded with the conversation, and the last request
+        // picked up in ADE's words.
+        mockState.onCursorCancel = () => {
+          mockState.onCursorCancel = null;
+          releaseWedged();
+        };
+        const turnId = card?.type === "turn_health" ? card.turnId : "";
+        const restarted = service.recoverTurn({ sessionId: session.id, turnId, action: "restart_resume" });
+        await pumpUntil("restart re-send", () => mockState.cursorSdkSendCalls.length >= 3);
+        await expect(restarted).resolves.toMatchObject({ status: "resumed" });
 
         expect(mockState.cursorSdkPoisonCalls).toHaveLength(1);
-        expect(poisonedPooled.cancel).toHaveBeenCalled();
         expect(mockState.cursorSdkAcquireCalls).toHaveLength(acquiresBefore + 1);
-        // A fresh agent, not a resume of the wedged one.
         expect(mockState.cursorSdkAcquireCalls.at(-1)?.agentId).toBeNull();
         const resent = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
         expect(resent).toContain("Cursor SDK continuity recovery");
-        expect(resent).toContain("Second Cursor turn.");
-        // Only the recovery re-send may expire a stuck active run.
-        expect(mockState.cursorSdkSendCalls.at(-1)?.forceExpireActiveRun).toBe(true);
-        expect(mockState.cursorSdkSendCalls[0]?.forceExpireActiveRun).toBeUndefined();
-        expect(mockState.cursorSdkSendCalls[1]?.forceExpireActiveRun).toBeUndefined();
-        // The retry must not duplicate the user bubble.
-        expect(events.filter((event) =>
-          event.sessionId === session.id
-          && event.event.type === "user_message",
-        )).toHaveLength(2);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("fails the turn with a fresh-thread message when the rotated Cursor agent is also silent", async () => {
-      process.env.CURSOR_API_KEY = "cursor-test-key";
-      const events: AgentChatEventEnvelope[] = [];
-      const { service } = createService({
-        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "cursor",
-        model: "composer-2",
-        modelId: "cursor/composer-2",
-      });
-
-      vi.useFakeTimers();
-      try {
-        parkCursorSend();
-        void service.sendMessage({
-          sessionId: session.id,
-          text: "Both attempts go silent.",
-        }, { awaitDispatch: true }).catch(() => undefined);
-        await pumpUntil("first cursor send", () => mockState.cursorSdkSendCalls.length >= 1);
-
-        await tripCursorSdkSilenceWatchAndRecycle();
-        await pumpUntil("second cursor send", () => mockState.cursorSdkSendCalls.length >= 2);
-        await tripCursorSdkSilenceWatchAndRecycle();
-        await pumpUntil("terminal error event", () => events.some((event) => event.event.type === "error"));
-
-        const errorEvent = events.find((event) =>
-          event.sessionId === session.id && event.event.type === "error",
-        );
-        expect(errorEvent?.event).toMatchObject({
-          type: "error",
-          message: "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.",
-          errorInfo: { category: "network" },
-        });
-        // Exactly one automatic re-send: two sends, no third.
-        expect(mockState.cursorSdkSendCalls).toHaveLength(2);
-        // Both wedged threads are recycled — the second without a re-send — so
-        // the next user send starts fresh, as the error copy promises.
-        expect(mockState.cursorSdkPoisonCalls).toHaveLength(2);
-        // Exactly one terminal report for the turn.
-        expect(events.filter((event) =>
-          event.sessionId === session.id && event.event.type === "error",
-        )).toHaveLength(1);
-        expect(events.filter((event) =>
-          event.sessionId === session.id && event.event.type === "done",
-        )).toHaveLength(1);
+        expect(resent).toContain("Resume the interrupted work");
+        // ADE's resume is an ADE row; the user's own messages are the only bubbles.
+        const userMessages = events.filter((event) =>
+          event.sessionId === session.id && event.event.type === "user_message");
+        expect(userMessages.filter((event) =>
+          event.event.type === "user_message" && !event.event.metadata?.hostContinuation)).toHaveLength(2);
+        expect(userMessages.filter((event) =>
+          event.event.type === "user_message"
+          && event.event.metadata?.hostContinuation?.reason === "interrupted_turn_recovery")).toHaveLength(1);
       } finally {
         vi.useRealTimers();
       }
