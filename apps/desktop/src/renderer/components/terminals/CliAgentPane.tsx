@@ -325,7 +325,11 @@ function CliActionsStateProvider({
   const accountProvider = resume?.provider ?? null;
   const accountInstanceId = resume?.launch?.instanceId?.trim() || resume?.instanceId?.trim() || null;
   const accountCredentialId = resume?.launch?.credentialId?.trim() || null;
-  const presetLaunch = Boolean(resume?.launch?.presetId?.trim() || resume?.presetId?.trim());
+  // A preset, or a route folder with its own sign-in: no account of the
+  // registry runs this CLI, so there is no account to show or switch.
+  const presetLaunch = Boolean(
+    resume?.launch?.presetId?.trim() || resume?.presetId?.trim() || resume?.launch?.routeHomeId?.trim(),
+  );
   const accountBusy = session.runtimeState === "running";
   const account = useMemo<CliAccount | null>(
     () => (accountProvider && !presetLaunch

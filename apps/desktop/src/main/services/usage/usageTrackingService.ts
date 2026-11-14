@@ -1408,7 +1408,11 @@ async function pollClaudeInstance(
     }),
   );
   if (!configHome && allowKeychain) {
-    if (login.state === "ok" || login.state === "expired") defaultClaudeKeychainRead = true;
+    // Only a login that came out of the Keychain counts. A file login, or a
+    // file found after the Keychain timed out or the prompt was cancelled,
+    // says nothing about whether a background read would prompt.
+    const source = login.state === "ok" ? login.credentials.source : login.state === "expired" ? login.source : undefined;
+    if (source === "macos-keychain") defaultClaudeKeychainRead = true;
     else if (login.state === "unreadable") defaultClaudeKeychainRead = false;
   }
   // On macOS the login lives in the Keychain. A read that skipped it saw only
@@ -1990,7 +1994,8 @@ const CODEX_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
 const CODEX_RESET_CREDIT_CONSUME_TIMEOUT_MS = 20_000;
 
 type CodexResetCreditCacheEntry = {
-  credits: CodexResetCredits;
+  /** Null until a read succeeds: a failed first read is not a count of zero. */
+  credits: CodexResetCredits | null;
   readAt: number;
 };
 
@@ -2062,7 +2067,7 @@ async function probeCodexResetCredits(args: {
       // spawn a process on every snapshot. The previous reading is kept when
       // there was one; only the clock moves.
       codexResetCreditCache.set(key, {
-        credits: cached?.credits ?? { availableCount: 0 },
+        credits: cached?.credits ?? null,
         readAt: Date.now(),
       });
     } finally {
@@ -2194,7 +2199,8 @@ const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
 const CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
 
 type ClaudeResetCreditCacheEntry = {
-  credits: ClaudeResetCredits;
+  /** Null until a read succeeds: a failed first read is not a count of zero. */
+  credits: ClaudeResetCredits | null;
   readAt: number;
 };
 
@@ -2259,7 +2265,7 @@ async function probeClaudeResetCredits(args: {
       claudeResetCreditCache.set(key, {
         credits: read.status === "ok"
           ? read.credits ?? { availableCount: 0 }
-          : cached?.credits ?? { availableCount: 0 },
+          : cached?.credits ?? null,
         readAt: Date.now(),
       });
     } catch (error) {
@@ -2270,7 +2276,7 @@ async function probeClaudeResetCredits(args: {
       // re-send on every snapshot. The previous reading is kept when there was
       // one; only the clock moves.
       claudeResetCreditCache.set(key, {
-        credits: cached?.credits ?? { availableCount: 0 },
+        credits: cached?.credits ?? null,
         readAt: Date.now(),
       });
     } finally {
