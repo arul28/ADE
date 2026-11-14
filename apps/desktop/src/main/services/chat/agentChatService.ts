@@ -6172,8 +6172,6 @@ const CURSOR_SDK_AGENT_PROTOCOL_VERSION = 2;
 export const CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS = quietThresholdsFor("cursor").firstEventMs;
 /** Upper bound on the best-effort cancel issued while recycling a wedged thread. */
 export const CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS = 3_000;
-const CURSOR_SDK_SILENT_RUN_MESSAGE =
-  "Cursor stopped responding. ADE opened a fresh Cursor thread — try sending again.";
 const CLAUDE_WARMUP_WAIT_TIMEOUT_MS = 20_000;
 const CLAUDE_STOP_TASK_TIMEOUT_MS = 2_000;
 /** How long an inline steer waits for Claude Code to background a Bash call. */
@@ -8563,13 +8561,6 @@ function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
 }
 
 /**
- * Marker error thrown when the first-event watchdog fires and no automatic
- * recovery is left. Carried as a name rather than a message match so the
- * user-facing copy can change without breaking the branch.
- */
-const CURSOR_SDK_SILENT_RUN_ERROR_NAME = "CursorSdkSilentRunError";
-
-/**
  * Why ADE decided a Cursor agent thread had to be thrown away.
  *
  * `stale_token` is the odd one out: the *worker* is dead (its access token
@@ -8577,7 +8568,7 @@ const CURSOR_SDK_SILENT_RUN_ERROR_NAME = "CursorSdkSilentRunError";
  * healthy, so that recycle keeps the agent id and resumes it in the fresh
  * worker instead of rotating to a new one.
  */
-type CursorSdkRecycleReason = "silent_run" | "transport_error" | "stale_token";
+type CursorSdkRecycleReason = "transport_error" | "stale_token";
 
 /**
  * Steer ids that have already had a resolution notice emitted — delivered or
@@ -8677,16 +8668,6 @@ function survivingPersistedSteers(
   const surviving = cancelled?.size ? steers.filter((steer) => !cancelled.has(steer.steerId)) : [...steers];
   const order = persistedSteerOrder.get(managed);
   return order?.length ? applySteerOrder(surviving, (steer) => steer.steerId, order) : surviving;
-}
-
-function cursorSdkSilentRunError(): Error {
-  const error = new Error(CURSOR_SDK_SILENT_RUN_MESSAGE);
-  error.name = CURSOR_SDK_SILENT_RUN_ERROR_NAME;
-  return error;
-}
-
-function isCursorSdkSilentRunError(error: unknown): boolean {
-  return error instanceof Error && error.name === CURSOR_SDK_SILENT_RUN_ERROR_NAME;
 }
 
 /**
@@ -61192,12 +61173,6 @@ export function createAgentChatService(args: {
   ): CursorChatErrorClassification => {
     const modelDisplayName =
       resolveSessionModelDescriptor(managed.session)?.displayName ?? managed.session.model;
-    if (isCursorSdkSilentRunError(error)) {
-      return {
-        message: CURSOR_SDK_SILENT_RUN_MESSAGE,
-        errorInfo: { category: "network", provider: "Cursor", model: modelDisplayName },
-      };
-    }
     return classifyCursorSdkChatError(error, { modelDisplayName });
   };
 
@@ -61445,32 +61420,18 @@ export function createAgentChatService(args: {
         result = await sendPromise;
       } catch (error) {
         clearCursorSdkSilenceWatch(runtime, turnId);
-        const silent = isCursorSdkSilentRunError(error);
-        // The abandoned send rejects once the worker is disposed; swallow it so
-        // it never lands as an unhandled rejection.
-        if (silent) void sendPromise.catch(() => {});
         // Unlike the transport branch, a stale token recovers even after the
         // run streamed output: the token ages out roughly an hour in, so the
         // common shape is a turn cut off mid-work. Checked before `transport`
         // because the two signatures are disjoint by construction (this text
         // classifies as `auth`, never `network`) and this one is the narrower.
-        const staleToken = !silent && isCursorSdkStaleTokenError(error);
-        const transport = !silent && !staleToken && !silenceWatch.seen && isCursorSdkTransportError(error);
-        const recoveryReason: CursorSdkRecycleReason | null = silent
-          ? "silent_run"
-          : staleToken ? "stale_token" : transport ? "transport_error" : null;
+        const staleToken = isCursorSdkStaleTokenError(error);
+        const transport = !staleToken && !silenceWatch.seen && isCursorSdkTransportError(error);
+        const recoveryReason: CursorSdkRecycleReason | null = staleToken
+          ? "stale_token"
+          : transport ? "transport_error" : null;
         if (recoveryReason && canRecoverCursorThread(recoveryReason)) {
           return cursorRecoverySentinel(recoveryReason, silenceWatch.sawVisibleOutput);
-        }
-        if (silent && !compactOnly) {
-          // Terminal silence: the rotated agent stopped answering too. Recycle
-          // it without re-sending, so the user's next send genuinely starts on
-          // a fresh thread — which is what the error copy promises.
-          const recycledSteers = await recycleCursorSdkAgentThread(managed, runtime, "silent_run");
-          // The recycle detached these, so the catch below drains an empty queue
-          // and teardown never sees them. Settling them all is safe: the claim
-          // guard makes any later attempt on the same ids a no-op.
-          if (recycledSteers.length) cancelCarriedCursorSteers(managed, turnId, recycledSteers);
         }
         throw error;
       }
@@ -61668,7 +61629,6 @@ export function createAgentChatService(args: {
       previousAgentId: runtime.sdkAgentId,
       preservedAgentId: staleToken,
       resumedMidTurn,
-      watchdogMs: CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS,
     });
     // Restage each consumed bucket on the rotated agent. Flattening both into
     // pendingReconstructionContext would wrap the verbatim replay in a
@@ -61741,7 +61701,7 @@ export function createAgentChatService(args: {
         providerRetry: true,
         detail: formatProviderRetryActivityDetail({
           provider: "cursor",
-          cause: first.reason === "silent_run" ? "timeout" : "transport",
+          cause: "transport",
           phase: "reconnecting",
         }),
         turnId,
