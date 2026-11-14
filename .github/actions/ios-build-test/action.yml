@@ -108,8 +108,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        start=$SECONDS
         defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
-        python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" \
+        echo "EXPERIMENT defaults write: $((SECONDS - start)) s; python3 is $(command -v python3)"
+        time python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" \
           apps/ios ~/spm-packages/checkouts ~/spm-packages/artifacts
 
     # A concrete simulator destination builds only the arch the tests run on;
@@ -124,8 +126,11 @@ runs:
         mkdir -p "$dd"
         marker="$RUNNER_TEMP/ios-build-start"
         touch "$marker"
-        cd apps/ios
-        xcodebuild \
+        # The full output goes to a file (uploaded when the job fails); the
+        # log shows the errors, a warning count and the timing summary.
+        log="$RUNNER_TEMP/ios-build.log"
+        status=0
+        (cd apps/ios && xcodebuild \
           -project ADE.xcodeproj \
           -scheme ADE \
           -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
@@ -133,9 +138,16 @@ runs:
           -clonedSourcePackagesDirPath ~/spm-packages \
           -skipMacroValidation \
           -skipPackagePluginValidation \
-          -quiet \
+          -showBuildTimingSummary \
           COMPILER_INDEX_STORE_ENABLE=NO \
-          build-for-testing
+          build-for-testing) > "$log" 2>&1 || status=$?
+        echo "Warnings: $(grep -c ': warning: ' "$log" || true)"
+        if (( status != 0 )); then
+          grep -E ': error: |^error: ' "$log" | sort -u | head -200 || true
+          tail -n 60 "$log"
+          exit "$status"
+        fi
+        sed -n '/Build Timing Summary/,$p' "$log"
         objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
         swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
         echo "Compiled in this build: $objects object files, $swift of them from Swift files."
@@ -248,9 +260,10 @@ runs:
             -clonedSourcePackagesDirPath ~/spm-packages \
             -skipMacroValidation \
             -skipPackagePluginValidation \
-            -quiet \
+            -showBuildTimingSummary \
             COMPILER_INDEX_STORE_ENABLE=NO \
-            build-for-testing)
+            build-for-testing) > "$RUNNER_TEMP/ios-probe.log" 2>&1
+          sed -n '/Build Timing Summary/,$p' "$RUNNER_TEMP/ios-probe.log"
           objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" | wc -l | tr -d ' ')
           swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" | wc -l | tr -d ' ')
           echo "ADE-IOS-PROBE file=$file seconds=$((SECONDS - start)) objects=$objects swift=$swift"
@@ -262,6 +275,8 @@ runs:
       uses: actions/upload-artifact@v4
       with:
         name: ios-test-results
-        path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
+        path: |
+          ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
+          ${{ runner.temp }}/ios-build.log
         if-no-files-found: ignore
         retention-days: 7
