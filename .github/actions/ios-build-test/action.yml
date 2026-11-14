@@ -17,12 +17,6 @@ inputs:
     description: a token with actions:write, used to delete the cache entries a save replaces (main only)
     required: false
     default: ""
-  probe-files:
-    description: >-
-      Experiment only. Files to change, one per line; after the tests, each is
-      changed by a comment and the app is built again to count what recompiles.
-    required: false
-    default: ""
 
 runs:
   using: composite
@@ -72,6 +66,22 @@ runs:
         key: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
         restore-keys: ios-dd-v1-${{ steps.xcode.outputs.build }}-
 
+    # Xcode compares each input's modification time, device and inode with
+    # what it recorded in the build folder. A fresh checkout changes all
+    # three. The setting below drops the device and inode check, and
+    # ios-mtimes.py gives every app source whose content did not change the
+    # time it had when the build folder was saved. The Swift packages need
+    # no such step: they come out of the spm-v1 entry with the times it
+    # stored, the same on every restore. A new spm-v1 entry rebuilds the
+    # packages once, which is slow but never wrong. This step runs before the
+    # simulator boots: placed after the boot, it took 46-92 s.
+    - name: Prepare the incremental build
+      shell: bash
+      run: |
+        set -euo pipefail
+        defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+        python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" apps/ios
+
     # The simulator cold boot took 4-8 minutes when it started after the
     # build; booting it now overlaps the build.
     - name: Pick and boot the simulator
@@ -98,22 +108,6 @@ runs:
         echo "Simulator: $dest_name ($dest_id)"
         echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
         xcrun simctl boot "$dest_id" || true
-
-    # Xcode compares each input's modification time, device and inode with
-    # what it recorded in the build folder. A fresh checkout changes all
-    # three. The setting below drops the device and inode check, and
-    # ios-mtimes.py gives every app source whose content did not change the
-    # time it had when the build folder was saved. The Swift packages need
-    # no such step: they come out of the spm-v1 entry with the times it
-    # stored, the same on every restore. (Hashing them read ~17,000 freshly
-    # extracted files and took 3.5 minutes.) A new spm-v1 entry rebuilds the
-    # packages once, which is slow but never wrong.
-    - name: Prepare the incremental build
-      shell: bash
-      run: |
-        set -euo pipefail
-        defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
-        python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" apps/ios
 
     # A concrete simulator destination builds only the arch the tests run on;
     # 'generic/platform=iOS Simulator' also compiled x86_64. The index store
@@ -237,38 +231,6 @@ runs:
           echo "Deleting $key"
           gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" || echo "::warning::Could not delete $key"
         done < "$RUNNER_TEMP/ios-stale-caches.txt"
-
-    - name: Measure incremental builds
-      if: inputs.probe-files != ''
-      shell: bash
-      env:
-        PROBE_FILES: ${{ inputs.probe-files }}
-      run: |
-        set -euo pipefail
-        dd="$RUNNER_TEMP/ios-dd"
-        while IFS= read -r file; do
-          [[ -n "$file" ]] || continue
-          printf '\n// incremental build probe\n' >> "$file"
-          marker="$RUNNER_TEMP/ios-probe-start"
-          touch "$marker"
-          start=$SECONDS
-          (cd apps/ios && xcodebuild \
-            -project ADE.xcodeproj \
-            -scheme ADE \
-            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
-            -derivedDataPath "$dd" \
-            -clonedSourcePackagesDirPath ~/spm-packages \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            -showBuildTimingSummary \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            build-for-testing) > "$RUNNER_TEMP/ios-probe.log" 2>&1
-          sed -n '/Build Timing Summary/,$p' "$RUNNER_TEMP/ios-probe.log"
-          objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" | wc -l | tr -d ' ')
-          swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" | wc -l | tr -d ' ')
-          echo "ADE-IOS-PROBE file=$file seconds=$((SECONDS - start)) objects=$objects swift=$swift"
-          git checkout -- "$file"
-        done <<< "$PROBE_FILES"
 
     - name: Upload test results on failure
       if: failure()

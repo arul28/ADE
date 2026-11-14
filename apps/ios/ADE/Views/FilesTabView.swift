@@ -7,4 +7,3 @@ struct FilesTabView: View {
     FilesRootScreen(isTabActive: isActive)
   }
 }
-// EXPERIMENT (remove before review): a change for the incremental build test.
