@@ -4923,6 +4923,10 @@ final class SyncService: ObservableObject {
   private var activeRemoteDbSiteId: String?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
+  /// Counts the user's own connection changes (a pick, a pairing, a
+  /// disconnect). Background retries do not move it, so a focus switch that
+  /// waits on a waking cloud computer yields only to a newer user choice.
+  private var userConnectionChoiceGeneration: UInt64 = 0
   /// How long a dial waits for an in-flight interface scan before ranking routes.
   private static let dialTailnetScanWaitNanoseconds: UInt64 = 1_200_000_000
   private var lastConnectionAttemptStartedAtMilliseconds: Int64 = 0
@@ -5611,6 +5615,7 @@ final class SyncService: ObservableObject {
   /// same rule at the honest moment — when a hello actually lands from a
   /// different machine than the active project belongs to.
   func prepareForUserConnectionChange() {
+    userConnectionChoiceGeneration &+= 1
     accountConnectSuccessClearTask?.cancel()
     accountConnectSuccessClearTask = nil
     accountConnectSuccessLabel = nil
@@ -28465,12 +28470,14 @@ extension SyncService {
   func switchFocusKeepingPrevious(toMachineKey machineKey: String) async -> Bool {
     // An ADE Cloud computer that is asleep: wake it and wait until it answers
     // next to the others, so the focus switch dials an awake computer. A
-    // disconnect or another connect during that wait wins over this request.
+    // user's disconnect or newer pick during that wait wins over this
+    // request; a background retry of the focused computer does not.
     if cloudMachineFleetKeys.contains(machineKey), !isFocusedAndLive(machineKey), let machineFleet {
-      let attemptBefore = connectAttemptGeneration
+      userConnectionChoiceGeneration &+= 1
+      let choiceBefore = userConnectionChoiceGeneration
       let pausedBefore = autoReconnectPausedByUser
       _ = await machineFleet.connect(machineKey: machineKey)
-      guard attemptBefore == connectAttemptGeneration,
+      guard choiceBefore == userConnectionChoiceGeneration,
             pausedBefore || !autoReconnectPausedByUser
       else { return false }
     }
