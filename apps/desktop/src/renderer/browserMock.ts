@@ -2939,14 +2939,17 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
 }
 
 /**
- * `?mockCodexStall=1` (or `=claude`, `=cursor`, …): the question chat ends on a turn that has not
+ * `?mockCodexStall=1` (or `=claude`, `=cursor`, …): the question chat (or `mockStallSession`) ends on a turn that has not
  * answered, so the preview shows the restart card and the ADE rows (a message
  * ADE wrote, never the user's bubble) without a slow Codex.
  */
 function browserMockCodexStallEvents(sessionId: string): any[] {
-  if (sessionId !== BROWSER_MOCK_QUESTION_SESSION_ID) return [];
-  const match = typeof window === "undefined" ? null : /[?&]mockCodexStall=([a-z]+|1)\b/.exec(window.location.href);
+  const href = typeof window === "undefined" ? "" : window.location.href;
+  const match = /[?&]mockCodexStall=([a-z]+|1)\b/.exec(href);
   if (!match) return [];
+  // `&mockStallSession=<id>` puts it on that chat instead (a snapshot without the question chat).
+  const target = /[?&]mockStallSession=([0-9a-f-]+)/.exec(href)?.[1] ?? BROWSER_MOCK_QUESTION_SESSION_ID;
+  if (sessionId !== target) return [];
   // `=1` is Codex; `=claude`, `=cursor`, … shows the same card for that provider.
   const provider = match[1] === "1" ? "codex" : match[1]!;
   const name = provider.charAt(0).toUpperCase() + provider.slice(1);
