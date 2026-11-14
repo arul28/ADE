@@ -3225,7 +3225,7 @@ describe("AgentChatPane durable recovery actions", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restart Codex" }));
     await waitFor(() => {
       expect(recoverTurn).toHaveBeenCalledWith({
         sessionId: session.sessionId,
@@ -3268,7 +3268,7 @@ describe("AgentChatPane durable recovery actions", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Restart Codex" }));
     await waitFor(() => {
       expect(recoverTurn).toHaveBeenCalledOnce();
       expect(recoverCodexTurn).not.toHaveBeenCalled();
