@@ -54,7 +54,7 @@ import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSh
 import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import { useSettingsReadPin } from "./ProjectCopyScope";
-import { isMachineScopePin } from "../../../shared/machineScope";
+import { PROJECT_AI_CONFIG_ACTION, isMachineScopePin, machineScopeActionAllowed } from "../../../shared/machineScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
 import { acpLoginCommand } from "./providers/acpProviders";
 import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
@@ -370,8 +370,10 @@ function MachineProvidersSection({
   const readPin = useSettingsReadPin();
   const readPinKey = readPin?.key ?? null;
   // Reached through the machine route: no copy of this repository there, so
-  // nothing a project copy saves can be read or written from this page.
-  const projectConfigEditable = !isMachineScopePin(pin);
+  // nothing a project copy saves can be read or written from this page (the
+  // machine scope never answers `PROJECT_AI_CONFIG_ACTION`).
+  const projectConfigEditable = !isMachineScopePin(pin)
+    || machineScopeActionAllowed(PROJECT_AI_CONFIG_ACTION.domain, PROJECT_AI_CONFIG_ACTION.action);
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();

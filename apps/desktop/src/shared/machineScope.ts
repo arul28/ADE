@@ -93,33 +93,38 @@ export function isMachineScopeRootPath(rootPath: string | null | undefined): boo
 }
 
 /**
+ * The action that saves a project copy's AI config (disabled providers, local
+ * model servers, custom slugs, compaction). The machine scope has no project,
+ * so it never answers it, and Settings edits that config only on a copy's pin.
+ */
+export const PROJECT_AI_CONFIG_ACTION = { domain: "ai", action: "updateConfig" } as const;
+
+/** One domain's rule: every action but `except`, or `only` the ones listed. */
+type MachineScopeRule = { all: true; except: readonly string[] } | { only: readonly string[] };
+
+/**
  * What a machine scope answers: a computer's own settings (Providers, the
  * Machines page's Restarts, Update track, Shell and load, Behaviour's Terminal
- * shell). `all` means every action of the domain except those in `except`.
- * Passwords is not here: the machine-owned runtime holds no account stores,
- * and This computer's machine pin reaches its brain's `passwords.call`.
+ * shell). Passwords is not here: the machine-owned runtime holds no account
+ * stores, and This computer's machine pin reaches its brain's `passwords.call`.
  */
-const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, { all: true; except?: readonly string[] } | readonly string[]>> = {
-  // A project copy saves its AI config (disabled providers, local model
-  // servers, custom slugs, compaction); the machine scope has no project.
-  ai: { all: true, except: ["updateConfig"] },
-  provider_logins: { all: true },
-  provider_instances: { all: true },
-  proxy: { all: true },
+const MACHINE_SCOPE_ACTIONS: Readonly<Record<string, MachineScopeRule>> = {
+  ai: { all: true, except: [PROJECT_AI_CONFIG_ACTION.action] },
+  provider_logins: { all: true, except: [] },
+  provider_instances: { all: true, except: [] },
+  proxy: { all: true, except: [] },
   // A provider's sign-in terminal, in the machine scope's own workspace.
-  pty: { all: true },
-  lane: ["list"],
-  usage: ["getAdeUsageStats"],
-  chat: ["listCodexPlugins"],
-  machine_stats: ["get"],
+  pty: { all: true, except: [] },
+  lane: { only: ["list"] },
+  usage: { only: ["getAdeUsageStats"] },
+  chat: { only: ["listCodexPlugins"] },
+  machine_stats: { only: ["get"] },
 };
 
 export function machineScopeActionAllowed(domain: string, action: string): boolean {
-  const rule = MACHINE_SCOPE_ACTIONS[domain];
+  const rule = Object.hasOwn(MACHINE_SCOPE_ACTIONS, domain) ? MACHINE_SCOPE_ACTIONS[domain] : undefined;
   if (!rule) return false;
-  if (Array.isArray(rule)) return rule.includes(action);
-  const all = rule as { all: true; except?: readonly string[] };
-  return !(all.except ?? []).includes(action);
+  return "only" in rule ? rule.only.includes(action) : !rule.except.includes(action);
 }
 
 /** The sentence for a computer whose ADE predates the machine route. */

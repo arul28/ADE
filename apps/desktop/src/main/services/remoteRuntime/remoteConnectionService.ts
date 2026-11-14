@@ -1709,6 +1709,31 @@ export class RemoteConnectionService {
     return new Error(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"));
   }
 
+  /**
+   * `run` for a call that may be a machine-scope call (`machineScopeRefusal`):
+   * refused up front when the machine is known to predate the route, and its
+   * "unknown project" answer turned into that sentence. Any other failure
+   * goes to `onFailure` (a refusal is the machine answering, not a failed
+   * connection) and is thrown as it was.
+   */
+  private async withMachineScopeRefusal<T>(
+    targetId: string,
+    projectId: string,
+    run: () => Promise<T>,
+    onFailure: (error: unknown) => void,
+  ): Promise<T> {
+    const refusedBefore = this.machineScopeRefusal(targetId, projectId);
+    if (refusedBefore) throw refusedBefore;
+    try {
+      return await run();
+    } catch (error) {
+      const refused = this.machineScopeRefusal(targetId, projectId, error);
+      if (refused) throw refused;
+      onFailure(error);
+      throw error;
+    }
+  }
+
   async callAction(
     targetId: string,
     projectId: string,
@@ -1744,9 +1769,7 @@ export class RemoteConnectionService {
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
-    const refusedBefore = this.machineScopeRefusal(targetId, projectId);
-    if (refusedBefore) throw refusedBefore;
-    try {
+    return await this.withMachineScopeRefusal(targetId, projectId, async () => {
       let result: RemoteRuntimeActionResult;
       try {
         result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
@@ -1769,13 +1792,7 @@ export class RemoteConnectionService {
       });
       this.clearAutomaticReconnectState(targetId);
       return result;
-    } catch (error) {
-      // The machine answered (it just lacks the route): not a failed connection.
-      const refused = this.machineScopeRefusal(targetId, projectId, error);
-      if (refused) throw refused;
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    }, (error) => this.markCallFailure(targetId, error));
   }
 
   /**
@@ -1816,9 +1833,7 @@ export class RemoteConnectionService {
     // poll owns the machine's status by then.
     return await this.withEventSetupDeadline(targetId, "read", async (notePhase, gaveUp) => {
       const target = await this.requireTargetForImplicitUse(targetId);
-      const refusedBefore = this.machineScopeRefusal(targetId, projectId);
-      if (refusedBefore) throw refusedBefore;
-      try {
+      return await this.withMachineScopeRefusal(targetId, projectId, async () => {
         const result = await this.pool.streamEventsForTarget(
           target,
           await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
@@ -1833,12 +1848,9 @@ export class RemoteConnectionService {
         });
         this.clearAutomaticReconnectState(targetId);
         return result;
-      } catch (error) {
-        const refused = this.machineScopeRefusal(targetId, projectId, error);
-        if (refused) throw refused;
+      }, (error) => {
         if (!gaveUp()) this.markCallFailure(targetId, error);
-        throw error;
-      }
+      });
     });
   }
 
@@ -1898,9 +1910,7 @@ export class RemoteConnectionService {
       "subscribe",
       async (notePhase, gaveUp) => {
         const target = await this.requireTargetForImplicitUse(targetId);
-        const refusedBefore = this.machineScopeRefusal(targetId, projectId);
-        if (refusedBefore) throw refusedBefore;
-        try {
+        return await this.withMachineScopeRefusal(targetId, projectId, async () => {
           const cleanup = await this.pool.subscribeEventsForTarget(
             target,
             await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
@@ -1924,12 +1934,9 @@ export class RemoteConnectionService {
           });
           this.clearAutomaticReconnectState(targetId);
           return cleanup;
-        } catch (error) {
-          const refused = this.machineScopeRefusal(targetId, projectId, error);
-          if (refused) throw refused;
+        }, (error) => {
           if (!gaveUp()) this.markCallFailure(targetId, error);
-          throw error;
-        }
+        });
       },
       (lateCleanup) => lateCleanup(),
     );
