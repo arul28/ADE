@@ -582,7 +582,7 @@ Attached clients and native surfaces:
 Build and operations:
 
 - `apps/desktop/tsup.config.ts` and `apps/ade-cli/tsup.config.ts` validate and compile only the public capture configuration into release artifacts.
-- `apps/ios/Scripts/validate-posthog-project-token.sh`, `.github/workflows/release-core.yml`, and `.github/scripts/ios-testflight-internal-build-bump-asc.sh` validate iOS configuration and pass it through a temporary mode-0600 xcconfig that is deleted after the archive command.
+- `apps/ios/Scripts/validate-posthog-project-token.sh`, `.github/workflows/release-core.yml`, and `scripts/release-tools/ios-testflight-ci.sh` validate iOS configuration and pass it through a temporary mode-0600 xcconfig that is deleted after the archive command.
 - `apps/web/vite.config.ts` rejects non-`phc_` tokens before a public-site build. Vercel Production supplies the two `VITE_` variables; Preview and Development intentionally do not.
 - `scripts/posthog/dashboard-spec.mjs` and `provision.mjs` are the declarative dashboard/insight control plane. They accept the personal management key only in the provisioner process.
 
@@ -2476,7 +2476,7 @@ Release workflows use a second personal key of their own, limited to the ADE pro
 
 - **Release annotations** (`scripts/posthog/annotate-release.mjs`): `Desktop 1.2.130-beta.3 · beta` when the beta feed serves a beta (`beta.yml`), `Desktop 1.2.130 · stable` when `/release` publishes a stable (`release-annotation.yml`), `iOS Beta 1.4 (212) · TestFlight` after an ADE Beta upload (`ios-testflight.yml`), and `Web deploy abc1234 (webclient, push-relay)` after a web or Worker deploy (`deploy-web.yml`). Previews are not marked. A re-run finds the identical annotation and adds none.
 - **Source maps** (`scripts/posthog/upload-sourcemaps.mjs`), described under [PostHog error tracking](#posthog-error-tracking).
-- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and `ios-testflight-internal-build-bump-self-hosted.yml`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
+- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and the local `scripts/release-tools/ios-testflight.sh`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
 
 ## PostHog dashboards
 

@@ -201,7 +201,7 @@ jobs:
       # Windows chunk paths (the map Sentry symbolicates brain and main with).
       - name: Test release runtime archive, packaging, and docs-validator guards
         if: ${{ !cancelled() }}
-        run: node --test apps/ade-cli/scripts/build-runtime-npm-packages.test.mjs apps/ade-cli/scripts/install-runtime-rollback.test.mjs apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/ade-cli/scripts/notarize-static-runtime.test.mjs apps/ade-cli/scripts/package-native-deps.crsqlite.test.mjs apps/ade-cli/scripts/probe-runtime-crsqlite.test.mjs apps/ade-cli/scripts/verify-runtime-package-contents.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs apps/desktop/scripts/runtime-resource-targets.test.mjs apps/desktop/scripts/windows-release-contract.test.mjs scripts/build/asciiBundleSource.test.mjs scripts/channelVersion.test.mjs scripts/channelSignIdentity.test.mjs scripts/check-package-licenses.test.mjs scripts/check-source-nul-bytes.test.mjs scripts/ci/ios-runner.test.mjs scripts/dev-shared.test.mjs scripts/release-pipeline.test.mjs scripts/ship-poll.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
+        run: node --test apps/ade-cli/scripts/build-runtime-npm-packages.test.mjs apps/ade-cli/scripts/install-runtime-rollback.test.mjs apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/ade-cli/scripts/notarize-static-runtime.test.mjs apps/ade-cli/scripts/package-native-deps.crsqlite.test.mjs apps/ade-cli/scripts/probe-runtime-crsqlite.test.mjs apps/ade-cli/scripts/verify-runtime-package-contents.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs apps/desktop/scripts/runtime-fetched-tool-packages.test.mjs apps/desktop/scripts/runtime-resource-targets.test.mjs apps/desktop/scripts/windows-release-contract.test.mjs scripts/build/asciiBundleSource.test.mjs scripts/channelVersion.test.mjs scripts/channelSignIdentity.test.mjs scripts/check-package-licenses.test.mjs scripts/check-source-nul-bytes.test.mjs scripts/dev-shared.test.mjs scripts/release-pipeline.test.mjs scripts/ship-poll.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
       - name: "desktop: typecheck"
         if: ${{ !cancelled() }}
         run: |
@@ -946,7 +946,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       run: ${{ steps.gate.outputs.run }}
-      runner: ${{ steps.pick.outputs.runner }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -986,41 +985,11 @@ jobs:
             echo "No apps/ios or shared-fixture changes; skipping the iOS build."
           fi
 
-
-      # Where `test-ios` runs. The rule lives in scripts/ci/ios-runner.mjs so it
-      # can be tested; this step only supplies the inputs.
-      #
-      # The default is GitHub's hosted `xcode-27` image (same Xcode major as
-      # this Mac); a Mac Studio can take the job when it advertises spare
-      # capacity. The readiness agent (scripts/ci/mac-studio-readiness.mjs)
-      # stamps the Unix time it last proved the machine had free disk, free
-      # memory and idle cores into `MAC_STUDIO_READY`, and stops stamping when
-      # it does not. Only a stamp younger than ten minutes is trusted, so a Mac
-      # that went to sleep, lost its runner or filled its disk ages out on its
-      # own. An unset variable always takes that fallback.
-      #
-      # The router is defence in depth, not the trust boundary. A `pull_request`
-      # workflow runs code from the pull request, so a fork able to rewrite this
-      # job could rewrite the router too. What actually keeps a fork off the Mac
-      # is the repository's fork-approval policy (Settings → Actions → "Require
-      # approval for all outside collaborators"), which stops a fork workflow
-      # from running at all until a maintainer approves it. Do not loosen that
-      # setting while this runner exists.
-      - name: Pick a runner
-        id: pick
-        env:
-          RUN_IOS: ${{ steps.gate.outputs.run }}
-          READY_AT: ${{ vars.MAC_STUDIO_READY }}
-          EVENT: ${{ github.event_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          BASE_REPO: ${{ github.repository }}
-        run: node scripts/ci/ios-runner.mjs
-
   test-ios:
     needs: ios-gate
     # Skipped iOS work still reports success here (ci-pass treats "skipped" as
     # failure), but on a cheap Ubuntu runner instead of a macOS one.
-    runs-on: ${{ fromJSON(needs.ios-gate.outputs.runner) }}
+    runs-on: ${{ needs.ios-gate.outputs.run == 'true' && 'xcode-27' || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - name: No iOS changes
@@ -1040,26 +1009,18 @@ jobs:
           set -euo pipefail
           latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
           if [[ -n "$latest" ]]; then
-            # -n so a self-hosted Mac with no passwordless sudo warns instead of
-            # hanging the job on a prompt nobody can answer.
-            if ! sudo -n xcode-select -s "$latest/Contents/Developer" 2>/dev/null; then
-              echo "::warning::Could not select $latest without a password; keeping the default toolchain."
-            fi
+            sudo xcode-select -s "$latest/Contents/Developer"
           fi
           echo "Toolchain: $(xcodebuild -version | head -1) ($(xcode-select -p))"
-          # The hosted `xcode-27` image and this Mac both ship Xcode 27, so a
-          # mismatch means the image changed under us. Fail loudly rather than
-          # testing against an SDK nobody chose.
+          # The hosted `xcode-27` image ships Xcode 27, so a mismatch means
+          # the image changed under us. Fail loudly rather than testing
+          # against an SDK nobody chose.
           major=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
           if [[ "$major" != "27" ]]; then
             echo "::error::Expected the Xcode 27 toolchain; found $major. Update this step deliberately."
             exit 1
           fi
 
-      # A self-hosted runner keeps ~/spm-packages between jobs, so the archive
-      # round trip is pure waste there: restoring is instant, saving took 172 s
-      # in the first Mac run.
-      #
       # Both iOS caches are restored on every run but saved only from main,
       # like npm-dl-v1 and nm-core-v2 on Windows. They are the repository's
       # biggest entries (Swift packages ~1.2 GB, compilation cache ~0.4 GB),
@@ -1069,7 +1030,7 @@ jobs:
       # reads main's.
       - name: Restore Swift packages
         id: spm_cache
-        if: needs.ios-gate.outputs.run == 'true' && runner.environment != 'self-hosted'
+        if: needs.ios-gate.outputs.run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: ~/spm-packages
@@ -1085,7 +1046,7 @@ jobs:
       # cache; only main saves one (see Restore Swift packages).
       - name: Restore the compilation cache
         id: cas_cache
-        if: needs.ios-gate.outputs.run == 'true' && runner.environment != 'self-hosted'
+        if: needs.ios-gate.outputs.run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/ios-cas
@@ -1100,10 +1061,9 @@ jobs:
         run: |
           set -euo pipefail
           # A named device, not "the first iPhone". The runner images differ in
-          # which simulators they pre-create (a self-hosted Mac can hold only
-          # lane devices), and a layout test that measures a row height fails on
-          # a device with a different width. Pinning makes the hosted runner and
-          # the Mac build the same screen.
+          # which simulators they pre-create, and a layout test that measures a
+          # row height fails on a device with a different width. Pinning keeps
+          # every run on the same screen.
           json=$(xcrun simctl list devices available --json)
           dest_id=""
           dest_name=""
@@ -1119,28 +1079,11 @@ jobs:
           fi
           echo "Simulator: $dest_name ($dest_id)"
           echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
-          # Only a device this job boots is shut down at the end. A device
-          # someone else is already using is left exactly as it was found.
-          state=$(printf '%s' "$json" | jq -r --arg id "$dest_id" \
-            '[.devices | to_entries[] | .value[] | select(.udid == $id)][0].state // empty')
-          echo "Simulator state on arrival: ${state:-unknown}"
-          if [[ "$state" == "Shutdown" ]]; then
-            echo "IOS_SIM_BOOTED_BY_CI=1" >> "$GITHUB_ENV"
-            xcrun simctl boot "$dest_id" || true
-          fi
+          xcrun simctl boot "$dest_id" || true
 
-      - name: Choose the compilation cache location
+      - name: Set the compilation cache location
         if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          if [[ "${{ runner.environment }}" == "self-hosted" ]]; then
-            # Kept outside RUNNER_TEMP, which the runner empties between jobs.
-            # A self-hosted machine can hold its own store, so the cache steps
-            # above are skipped and this one survives.
-            echo "ADE_IOS_CAS=$HOME/ade-ios-cas" >> "$GITHUB_ENV"
-          else
-            echo "ADE_IOS_CAS=$RUNNER_TEMP/ios-cas" >> "$GITHUB_ENV"
-          fi
+        run: echo "ADE_IOS_CAS=$RUNNER_TEMP/ios-cas" >> "$GITHUB_ENV"
 
       # A concrete simulator destination builds only the arch the tests run on;
       # 'generic/platform=iOS Simulator' also compiled x86_64.
@@ -1165,13 +1108,12 @@ jobs:
             build-for-testing
 
       # The cache only grows: each build adds what changed. Past 6 GB, start it
-      # again rather than fill the disk or the repository's cache space (which
-      # of the two depends on where the store lives). 6 GB, not 2.5 GB, because
-      # `SWIFT_ENABLE_COMPILE_CACHE` is what makes Swift compilations cacheable
-      # at all — without it the store held only the C/Objective-C half and a
-      # warm build still recompiled every Swift file (measured: SwiftCompile
-      # stayed at ~420 CPU-seconds with a 2 GB store restored; with the flag on
-      # and the store populated it fell to 8.5).
+      # again rather than fill the repository's cache space. 6 GB, not 2.5 GB,
+      # because `SWIFT_ENABLE_COMPILE_CACHE` is what makes Swift compilations
+      # cacheable at all — without it the store held only the C/Objective-C
+      # half and a warm build still recompiled every Swift file (measured:
+      # SwiftCompile stayed at ~420 CPU-seconds with a 2 GB store restored;
+      # with the flag on and the store populated it fell to 8.5).
       - name: Cap the compilation cache
         if: always() && needs.ios-gate.outputs.run == 'true' && env.ADE_IOS_CAS != ''
         run: |
@@ -1208,14 +1150,14 @@ jobs:
       # Saved only after the tests pass, so a failed run stores nothing, and
       # only on main.
       - name: Save Swift packages
-        if: needs.ios-gate.outputs.run == 'true' && runner.environment != 'self-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.spm_cache.outputs.cache-hit != 'true'
+        if: needs.ios-gate.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.spm_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/spm-packages
           key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
       - name: Save the compilation cache
-        if: needs.ios-gate.outputs.run == 'true' && runner.environment != 'self-hosted' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cas_cache.outputs.cache-hit != 'true'
+        if: needs.ios-gate.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cas_cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/ios-cas
@@ -1229,14 +1171,6 @@ jobs:
           path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
           if-no-files-found: ignore
           retention-days: 7
-
-      # A hosted runner is discarded with the job; a self-hosted one keeps the
-      # simulator it booted, and its memory, until something shuts it down. Only
-      # a device this job booted is shut down — one an ADE lane was already
-      # using is left alone.
-      - name: Shut down the simulator
-        if: always() && needs.ios-gate.outputs.run == 'true' && env.IOS_SIM_BOOTED_BY_CI == '1'
-        run: xcrun simctl shutdown "$IOS_SIM_ID" 2>/dev/null || true
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:
