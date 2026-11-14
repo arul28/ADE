@@ -3049,6 +3049,28 @@ No timer, poll or subscription is added. A machine route's first call starts
 the computer's personal-chat runtime when nothing has started it yet (the
 first-open row); the brain's start warms it otherwise.
 
+### Providers through This computer's machine route (Cloud 9, 2026-11-14)
+
+Dev app (own socket, sync off) on `ade/cloud-9-machine` against main at
+`31c7cf2fa` (its renderer checked out over the same tree in the same run, so
+both passes share the app and the brain). Mac Studio M4 Max, not the baseline
+machine, other agents running. The ADE window, bound to its copy on This
+computer (on the external `/Volumes/Dev` drive). Each number is navigation
+from General to Settings › Providers until all 13 tiles are drawn and none
+says Checking (CDP, 7 runs after a reload; the first includes Vite's compile).
+
+| Window → computer | Before (main) | After (branch) | Ceiling |
+| --- | --- | --- | --- |
+| ADE → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms |
+
+Main read the status through the bound copy, which a stalled project drive
+holds up. The branch reads it on This computer's machine route (`~/.ade`
+only); the first cut of the branch drew in 33–37 ms because that read skipped
+the preload's 10 s status cache, so the cache now keeps a slot for This
+computer's machine pin. Only the project's AI config still goes to the copy,
+bounded at 8 s. A stalled drive was not reproduced here. No timer, poll or
+subscription is added.
+
 ### Events for many machines (S3, 2026-11-12)
 
 Dev app on `ade/account-projects-08-desktop-s3` (the S3 preload) against the
