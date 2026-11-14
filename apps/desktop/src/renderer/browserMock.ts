@@ -2948,7 +2948,7 @@ function browserMockCodexStallEvents(sessionId: string): any[] {
   const match = /[?&]mockCodexStall=([a-z]+|1)\b/.exec(href);
   if (!match) return [];
   // `&mockStallSession=<id>` puts it on that chat instead (a snapshot without the question chat).
-  const target = /[?&]mockStallSession=([0-9a-f-]+)/.exec(href)?.[1] ?? BROWSER_MOCK_QUESTION_SESSION_ID;
+  const target = /[?&]mockStallSession=([A-Za-z0-9-]+)/.exec(href)?.[1] ?? BROWSER_MOCK_QUESTION_SESSION_ID;
   if (sessionId !== target) return [];
   // `=1` is Codex; `=claude`, `=cursor`, … shows the same card for that provider.
   const provider = match[1] === "1" ? "codex" : match[1]!;
