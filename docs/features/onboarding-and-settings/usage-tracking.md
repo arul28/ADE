@@ -1281,12 +1281,16 @@ for each provider, mainly Claude and Codex. The wire contract is in
 - A machine reads a login's banked resets with that login's token. When it
   cannot (its token expired, or the login is signed in only on another
   machine), the account shows the credits of the freshest peer whose working
-  login reports some, and `UsageAccount.resetCreditsOn` names that peer and
+  login reports a count. A newer count of zero beats an older positive one,
+  and the credits are lent whether or not that peer's windows are shown. Then `UsageAccount.resetCreditsOn` names that peer and
   its id for the account (`poolPeerQuota`). **Use reset** then runs on that
   peer: the host sends `usage.consumeResetCredit` over its agents' paired
   connection, and the peer spends one of its own credits
-  (`consumeOwnResetCredit`), never forwarding again. The host then pulls the
-  peers' quota again. A peer too old for the method answers "Update ADE on
+  (`consumeOwnResetCredit`), never forwarding again. The spend carries the
+  email the row showed, and the peer refuses it when its account now holds
+  another login (a new sign-in in the same folder keeps the id). After the
+  spend the host drops the peer's old count, then pulls the peers' quota
+  again, so a failed pull cannot offer the spent credit a second time. A peer too old for the method answers "Update ADE on
   <machine> to spend its reset from here, or spend it there."
 - Accounts pool by email: the same login reported by two machines is one
   account with two `Via` entries, freshest reading first, and its numbers are
