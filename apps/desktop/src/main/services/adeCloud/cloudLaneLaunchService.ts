@@ -269,22 +269,31 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   /**
    * Writes the lane's branch into its computer's metadata once the brain
    * named it, so a lane that outlives its computer (the 30-day rule) knows
-   * where to start again. Metadata writes replace, so it merges first.
+   * where to start again. Metadata writes replace, so it merges first. One
+   * write at a time per launch, and a write a newer name replaced is skipped,
+   * so a slow placeholder write can never land after the AI-named branch.
    */
+  const branchWrites = new Map<string, Promise<void>>();
   const recordBranch = (record: CloudLaneLaunchRecord): void => {
     const branchRef = record.snapshot.branchRef?.trim() || null;
     const instanceId = record.snapshot.cloud.instanceId;
     if (!branchRef || !instanceId || record.branchRecorded === branchRef || record.snapshot.phase === "cancelled") return;
     record.branchRecorded = branchRef;
-    void (async () => {
+    const launchId = record.snapshot.launchId;
+    const write = (branchWrites.get(launchId) ?? Promise.resolve()).then(async () => {
+      if (record.branchRecorded !== branchRef) return;
       const client = await providerClient();
       const instance = await client.getInstance(instanceId);
       if (instance.metadata[CLOUD_LANE_BRANCH_METADATA] === branchRef) return;
       await client.setInstanceMetadata(instanceId, { ...instance.metadata, [CLOUD_LANE_BRANCH_METADATA]: branchRef });
-    })().catch((error: unknown) => {
+    }).catch((error: unknown) => {
       // Tried again on the next snapshot that names it.
       if (record.branchRecorded === branchRef) record.branchRecorded = null;
-      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId, error: getErrorMessage(error) });
+    });
+    branchWrites.set(launchId, write);
+    void write.finally(() => {
+      if (branchWrites.get(launchId) === write) branchWrites.delete(launchId);
     });
   };
 
@@ -798,7 +807,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const get = async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
     const record = recordFor(args);
     if (!record) return null;
-    if (isHandedOff(record) && !isSettled(record)) await refreshFromBrain(record);
+    // Followed launches only: a finished one still naming its lane is read too, so the final name lands.
+    if (isHandedOff(record) && followed(record)) await refreshFromBrain(record);
     const current = records.get(record.snapshot.launchId);
     return current ? served(current) : null;
   };

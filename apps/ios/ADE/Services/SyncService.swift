@@ -4210,7 +4210,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
-      if connectionState == .connected { helloSentWithProvisionalDeviceId = deviceIdIsProvisional }
+      if connectionState == .connected {
+        helloSentWithProvisionalDeviceId = deviceIdIsProvisional
+        // A `provider_logins_changed` pushed while the phone was away is not
+        // replayed: an open sign-ins view reads again on the way back.
+        providerLoginsRevision += 1
+      }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
       // state — is what stops a stale attempt name from outliving the attempt.
@@ -4414,7 +4419,8 @@ final class SyncService: ObservableObject {
   /// replicated `pull_requests` rows (notably unmapped PR webhooks).
   @Published private(set) var prsRemoteRevision = 0
   /// Host-pushed: the provider sign-ins changed there (a pass or key saved, a
-  /// sign-in applied). An open sign-ins card reads `providerLogins.status` again.
+  /// sign-in applied), or the connection came back. An open sign-ins card
+  /// reads `providerLogins.status` again.
   @Published private(set) var providerLoginsRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 

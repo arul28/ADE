@@ -97,6 +97,8 @@ struct PRsTabShell: View {
   /// Sign-in and sign-out change whether the tab can read GitHub directly.
   @ObservedObject private var account = AccountService.shared
   @ObservedObject private var github = GitHubAccountConnection.shared
+  /// A lane computer's label changed: the direct-PR header names it again.
+  @ObservedObject private var laneLabels = CloudLaneComputerLabelsRevision.shared
   var isActive = true
 
   var body: some View {

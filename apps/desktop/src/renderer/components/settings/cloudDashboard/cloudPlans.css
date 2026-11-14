@@ -4,8 +4,8 @@
  * plan up gets the main button. Every explanation lives once, in the "how it
  * works" panel under the cards, not under each box.
  */
+.adecd-plancard-section { container: adecdplans / inline-size; }
 .adecd-plancards {
-  container: adecdplans / inline-size;
   display: grid;
   grid-template-columns: repeat(var(--adecd-plan-cols, 4), minmax(0, 1fr));
   gap: 10px;
@@ -19,9 +19,6 @@
   min-width: 0;
   padding: 16px 16px 14px;
   overflow: hidden;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: 14px;
-  background: var(--kit-panel-bg);
   transition: border-color 160ms ease, transform 160ms ease;
 }
 .adecd-plancard[data-next] {
@@ -130,12 +127,7 @@
 
 
 /* How hours and disk work: the one place for the explanations, plus the account's own notes. */
-.adecd-howto {
-  margin-top: 12px;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: 12px;
-  background: var(--kit-panel-bg);
-}
+.adecd-howto { margin-top: 12px; }
 /* Two by two: what the hours buy, sleep, disk, and the iOS Simulator minutes. */
 .adecd-howto-items { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .adecd-howto-item { display: flex; align-items: flex-start; gap: 10px; min-width: 0; padding: 12px 14px; }
@@ -180,9 +172,6 @@
   gap: 8px;
   min-width: 0;
   padding: 13px 14px 12px;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: 14px;
-  background: var(--kit-panel-bg);
   transition: border-color 160ms ease, background 160ms ease;
 }
 .adecd-addon[data-on] {

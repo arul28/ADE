@@ -444,7 +444,10 @@ func cloudLimitsSummary(_ limits: CloudPhoneLimits) -> String {
 
 /// A purchase or a move up that just landed (the desktop's `CloudPlanMoment`).
 struct CloudPlanMoment: Equatable {
+  /// `<plan>:<periodStart>`, as `CloudPlanSeenStore.momentKey`.
   let key: String
+  /// The account it is about (`CloudPlanSeenStore.accountKey`).
+  let accountKey: String
   let planId: String
   let includedMilli: Int
   let diskGb: Double?
@@ -481,11 +484,16 @@ enum CloudPlanSeenStore {
     return ("account", false)
   }
 
+  /// `<plan>:<periodStart>`: a moment is said once per account, plan and period.
+  static func momentKey(_ account: CloudPhoneAccount) -> String {
+    "\(account.currentPlanId):\(Int(account.billing?.periodStart ?? 0))"
+  }
+
   /// Records what the account shows now and returns the moment to show, if the plan just went up.
   static func observe(_ account: CloudPhoneAccount, defaults: UserDefaults = .standard) -> CloudPlanMoment? {
     let planId = account.currentPlanId
     let periodStart = account.billing?.periodStart ?? 0
-    let key = "\(planId):\(Int(periodStart))"
+    let key = momentKey(account)
     var all = defaults.dictionary(forKey: defaultsKey) as? [String: [String: Any]] ?? [:]
     let (accountKey, canCelebrate) = accountKey(account)
     let previous = all[accountKey]
@@ -498,6 +506,7 @@ enum CloudPlanSeenStore {
     let wentUp = (rank[planId] ?? 0) > (rank[previousPlan ?? "free"] ?? 0)
     let moment: CloudPlanMoment? = (canCelebrate && previousPlan != nil && landed && celebrated != key && wentUp) ? CloudPlanMoment(
       key: key,
+      accountKey: accountKey,
       planId: planId,
       includedMilli: account.hours.includedMilli,
       diskGb: account.disk?.limitGb,
@@ -525,7 +534,10 @@ enum CloudLaneComputerLabels {
   /// The short name for any ADE Cloud computer.
   static let cloudLabel = "Cloud"
 
-  /// Records the lane computers of a good read of the account's computers.
+  /// Records the lane computers of a good read of the account's computers,
+  /// and tells views that show the labels outside an observed model (the PRs
+  /// header) when they changed (`CloudLaneComputerLabelsRevision`).
+  @MainActor
   static func note(_ machines: [CloudPhoneMachine], defaults: UserDefaults = .standard) {
     var lanes: [String: String] = [:]
     for machine in machines {
@@ -533,7 +545,9 @@ enum CloudLaneComputerLabels {
       lanes[machine.instanceId.lowercased()] = laneName
       if let key = machine.machineKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty { lanes[key.lowercased()] = laneName }
     }
+    if (defaults.dictionary(forKey: defaultsKey) as? [String: String]) == lanes { return }
     defaults.set(lanes, forKey: defaultsKey)
+    CloudLaneComputerLabelsRevision.shared.value += 1
   }
 
   /// "Cloud · fix-login" for a lane computer known by its machine key or host name; nil for any other machine.
@@ -551,6 +565,14 @@ enum CloudLaneComputerLabels {
   static func present(_ name: String, machineKey: String?, hostName: String? = nil) -> String {
     label(machineKey: machineKey, hostName: hostName) ?? name
   }
+}
+
+/// Bumped when the saved lane-computer labels change, for a view that reads
+/// them through a plain value (`PRsTabShell` rebuilds its inputs on it).
+@MainActor
+final class CloudLaneComputerLabelsRevision: ObservableObject {
+  static let shared = CloudLaneComputerLabelsRevision()
+  @Published var value = 0
 }
 
 extension AccountMachine {

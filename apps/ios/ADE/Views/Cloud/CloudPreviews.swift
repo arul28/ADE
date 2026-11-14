@@ -37,11 +37,11 @@ enum CloudPreviews {
     guard let list = try? JSONDecoder().decode(CloudPhoneList.self, from: Data(listJSON.utf8)) else { return nil }
     let limits = CloudPhoneLimits(unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16", preset: "balanced")
     // `duo-cloud-upgraded`: this phone last saw the account on Free, a period ago, with 79.1 hours left.
+    // Only the fixture account's entry changes: every other account's record on this device stays.
     if name == "duo-cloud-upgraded", let code = list.account?.referral?.code {
-      UserDefaults.standard.set(
-        [code: ["planId": "free", "periodStart": 1_790_812_800_000.0, "leftMilli": 79_100]],
-        forKey: CloudPlanSeenStore.defaultsKey
-      )
+      var all = UserDefaults.standard.dictionary(forKey: CloudPlanSeenStore.defaultsKey) ?? [:]
+      all[code] = ["planId": "free", "periodStart": 1_790_812_800_000.0, "leftMilli": 79_100]
+      UserDefaults.standard.set(all, forKey: CloudPlanSeenStore.defaultsKey)
     }
     let store = CloudPaneStore(syncService: sync, fixtureList: list, limits: limits, signIns: signInsFixture(), now: fixtureNow)
     switch name {

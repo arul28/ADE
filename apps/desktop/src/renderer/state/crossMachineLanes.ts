@@ -80,7 +80,7 @@ import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from
 import { useStableBinding } from "./laneMachineRouting";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
-import { machineLabelForMachine } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputersNow, machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
 /** Coalescing window for burst-y event sources (lane lifecycle, session churn). */
 const REFRESH_COALESCE_MS = 400;
@@ -925,6 +925,8 @@ export function isMachineMarkerShown(marker: CrossMachineLaneMarker): boolean {
  */
 export function resolveCrossMachineLaneMarkers(
   rows: readonly CrossMachineLaneRow[],
+  /** The lane index's computers, for "Cloud · <lane>" names (the hook passes its subscribed list). */
+  cloudLaneComputers: readonly AdeCloudLaneComputer[] = adeCloudLaneComputersNow(),
 ): Map<string, CrossMachineLaneMarker> {
   const foreign = rows.filter((row) => !row.isThisMachine);
   if (foreign.length === 0) return EMPTY_MARKERS;
@@ -957,7 +959,7 @@ export function resolveCrossMachineLaneMarkers(
         hostname: row.binding?.kind === "remote" ? row.binding.hostname ?? null : null,
         machineKey: row.machineId,
         name: row.machineName,
-      }),
+      }, cloudLaneComputers),
       // A sleeping cloud computer is not marked offline: a send wakes it.
       online: rowShowsConnected(row),
       // Always the resting form. Offline is expressed by `online: false`, which
@@ -2727,6 +2729,8 @@ export function useCrossMachineLaneUnion(
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  // Marker names follow the lane index: a freed lane computer stops being named at once.
+  const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
   useCrossMachineLaneSync(active);
 
   const rows = useMemo(
@@ -2766,7 +2770,7 @@ export function useCrossMachineLaneUnion(
     }
     return {
       foreignRows,
-      markersByLaneId: resolveCrossMachineLaneMarkers(rows),
+      markersByLaneId: resolveCrossMachineLaneMarkers(rows, cloudLaneComputers),
     };
-  }, [rows, workLaneOrder, workLaneSortMode]);
+  }, [cloudLaneComputers, rows, workLaneOrder, workLaneSortMode]);
 }

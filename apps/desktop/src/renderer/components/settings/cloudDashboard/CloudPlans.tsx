@@ -286,7 +286,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
             return (
               <article
                 key={column.id}
-                className="adecd-plancard"
+                className="kit-panel adecd-plancard"
                 data-current={isCurrent || undefined}
                 data-next={isNext || undefined}
                 data-new={column.id === newPlanId || undefined}
@@ -343,7 +343,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
           })}
         </div>
 
-        <div className="adecd-howto" aria-label="What every plan includes">
+        <div className="kit-panel adecd-howto" aria-label="What every plan includes">
           <div className="adecd-howto-items">
             <div className="adecd-howto-item">
               <span className="adecd-howto-icon"><Clock size={14} /></span>
@@ -379,7 +379,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
 
         {extraHours.available ? (
           <div className="adecd-addons">
-            <div className="adecd-addon" data-on={extraHours.enabled || undefined}>
+            <div className="kit-panel adecd-addon" data-on={extraHours.enabled || undefined}>
               <div className="adecd-addon-top">
                 <span className="adecd-addon-icon"><Lightning size={15} weight="duotone" /></span>
                 <b>Extra hours</b>
@@ -401,7 +401,7 @@ export function CloudPlans({ account, onChanged, newPlanId = null }: {
               </small>
             </div>
             {extraDisk ? (
-              <div className="adecd-addon" data-on={extraDiskOn || undefined}>
+              <div className="kit-panel adecd-addon" data-on={extraDiskOn || undefined}>
                 <div className="adecd-addon-top">
                   <span className="adecd-addon-icon"><HardDrives size={15} weight="duotone" /></span>
                   <b>Extra disk</b>

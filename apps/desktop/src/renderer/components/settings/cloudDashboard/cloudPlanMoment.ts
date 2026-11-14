@@ -134,11 +134,16 @@ export function cloudPlanSeenKey(account: CloudAccountState): { key: string; can
   return code ? { key: code, canCelebrate: true } : { key: "account", canCelebrate: false };
 }
 
-/* The moment shown this session: the toast fires once; the page reads it for its banner and highlight. */
+/*
+ * The moment shown this session: the toast fires once; the page reads it for
+ * its banner and highlight. It belongs to one account, plan and period.
+ */
 let current: CloudPlanMoment | null = null;
+let currentAccountKey: string | null = null;
 const listeners = new Set<() => void>();
-const publish = (next: CloudPlanMoment | null) => {
+const publish = (next: CloudPlanMoment | null, accountKey: string | null = null) => {
   current = next;
+  currentAccountKey = next ? accountKey : null;
   for (const listener of listeners) listener();
 };
 const subscribe = (listener: () => void) => {
@@ -152,7 +157,7 @@ export function useCloudPlanMomentState(): CloudPlanMoment | null {
   return useSyncExternalStore(subscribe, snapshot, () => null);
 }
 
-/** The page's banner was dismissed (or the plan changed again): the highlight goes too. */
+/** The page's banner was dismissed (or the account, plan or period changed): the highlight goes too. */
 export function dismissCloudPlanMoment(): void {
   publish(null);
 }
@@ -172,15 +177,15 @@ export function useCloudPlanMoment(account: CloudAccountState | null, onMoment: 
   const rules = account?.rules ?? null;
   const leftMilli = account?.hours.leftMilli ?? null;
   useEffect(() => {
+    // Signed out, another account, another plan or a new period: the banner was about something else.
+    if (current && (!account || currentAccountKey !== accountKey || current.key !== `${planId}:${periodStart}`)) publish(null);
     if (!account || !accountKey) return;
     const previous = readSeen(accountKey);
     const { seen, moment } = nextCloudPlanSeen(previous, account);
     if (!writeSeen(accountKey, seen)) return;
     if (moment && canCelebrate) {
-      publish(moment);
+      publish(moment, accountKey);
       onMoment(moment);
-    } else if (current && current.planId !== planId) {
-      publish(null);
     }
     // Keyed on what the record holds, not the account object (re-read every few minutes).
     // eslint-disable-next-line react-hooks/exhaustive-deps

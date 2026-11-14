@@ -67,6 +67,8 @@ export function openCloudApprovalWindow(
     let settled = false;
     let shown = false;
     let showTimer: NodeJS.Timeout | null = null;
+    /** The last page's path: on `/device/callback` the approval already landed. */
+    let lastPath: string | null = null;
     const finish = (result: CloudApprovalWindowResult) => {
       if (settled) return;
       settled = true;
@@ -83,7 +85,10 @@ export function openCloudApprovalWindow(
       showTimer = setTimeout(() => {
         if (settled || win.isDestroyed()) return;
         if (args.endWhenPersonNeeded) {
-          finish("needs_person");
+          // Still loading the callback is not a step for the person: the
+          // approval landed and the computer may be collecting its session,
+          // so this ends as a slow sign-in (which keeps the grace period).
+          finish(lastPath === "/device/callback" ? "timed_out" : "needs_person");
           return;
         }
         shown = true;
@@ -102,6 +107,7 @@ export function openCloudApprovalWindow(
     };
     win.webContents.on("did-navigate", (_event, url) => {
       const page = pageAt(url);
+      lastPath = page?.path ?? null;
       // Host and path only: query strings here carry one-time tickets and codes.
       logger.info("cloud.approval_window_page", { host: page?.host ?? null, path: page?.path ?? null });
       armShow();

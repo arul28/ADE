@@ -640,8 +640,14 @@ export async function createPortalUrl(env: CloudEnv, userId: string, origin: str
  * there before the first extra hour is reported; once added it stays, at
  * zero while extra hours are off, which also keeps billing what was used
  * before they went off.
+ *
+ * Stripe keeps a key's first answer for a day, a 500 too, so a create that
+ * failed on Stripe's side would fail every later turn-on the same way. After a
+ * 5xx the subscription is read again: an item that landed is enough, and with
+ * none the create is tried once more under a key of its own (`now`). Stripe
+ * refuses a second item with a price the subscription already has.
  */
-async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow): Promise<void> {
+async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow, now: number): Promise<void> {
   const subscriptionId = account.stripe_subscription_id;
   // The plan in force: a downgrade waiting for the period end still bills the higher plan's hour.
   const price = extraHoursPriceFor(env, paidPlanOf(account));
@@ -653,7 +659,13 @@ async function ensureExtraHoursItem(env: CloudEnv, account: AccountRow): Promise
     const hoursPrices = extraHoursPrices(env);
     const items = await subscriptionItems(env, subscriptionId);
     if (items.some((item) => item.price != null && hoursPrices.has(item.price))) return;
-    await stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price }, `ade-cloud-hours-item-${subscriptionId}-${price}`);
+    const key = `ade-cloud-hours-item-${subscriptionId}-${price}`;
+    const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price }, idempotencyKey);
+    await create(key).catch(async (error: unknown) => {
+      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
+      if (await holdsExtraHoursItem(env, subscriptionId)) return;
+      await create(`${key}-${now}`);
+    });
     logCloud("cloud.extra_hours_item_added", { userId: account.user_id, subscriptionId });
   } catch (error) {
     if (error instanceof StripeRequestError) {
@@ -682,7 +694,7 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
   const account = await loadAccount(env, userId, now);
   if (accountRules(account) !== "paid") throw new CloudBillingError("needs_paid_plan", "Extra hours need a paid plan.", 403);
   // Before the switch goes on: an extra hour with nothing on the subscription to bill it would be free.
-  if (enabled) await ensureExtraHoursItem(env, account);
+  if (enabled) await ensureExtraHoursItem(env, account, now);
   // Turning them off stops new use; what was already used is still reported.
   const owed = !enabled && extraActive(account)
     ? extraOwedMilli(account, liveUsedMilli(account, await listComputers(env, userId), now))

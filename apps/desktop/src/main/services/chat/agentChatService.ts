@@ -252,6 +252,7 @@ import {
   codexServerSupportsUserShell,
   codexServerSupportsForkBeforeTurn,
   codexServerSupportsThreadSample,
+  CODEX_COMPACTION_STALL_MS,
 } from "./codexAppServerFeatures";
 import {
   buildCodexSamplePrompt,
@@ -44033,6 +44034,30 @@ export function createAgentChatService(args: {
     };
   };
 
+  /**
+   * A compaction still open when its turn completed: Codex can send the
+   * compaction's end after the turn's, so it is kept, but the quiet watchdog
+   * went with the turn. Past Codex's compaction budget it is failed, which
+   * lets queued follow-ups start. One timer per chat, for the items open then.
+   */
+  const codexPostTurnCompactionTimers = new Map<string, NodeJS.Timeout>();
+  const watchCodexCompactionsAfterTurn = (managed: ManagedChatSession, runtime: CodexRuntime): void => {
+    const sessionId = managed.session.id;
+    const itemIds = [...runtime.activeCompactions.keys()];
+    const previous = codexPostTurnCompactionTimers.get(sessionId);
+    if (previous) clearTimeout(previous);
+    const timer = setTimeout(() => {
+      if (codexPostTurnCompactionTimers.get(sessionId) === timer) codexPostTurnCompactionTimers.delete(sessionId);
+      if (managed.runtime !== runtime) return;
+      const open = itemIds.filter((itemId) => runtime.activeCompactions.has(itemId));
+      if (open.length === 0) return;
+      for (const itemId of open) failOpenCodexCompaction(managed, runtime, itemId, "timed_out");
+      if (!isCodexCompactionActive(runtime)) void startCodexQueuedFollowUp(managed, runtime);
+    }, CODEX_COMPACTION_STALL_MS);
+    timer.unref?.();
+    codexPostTurnCompactionTimers.set(sessionId, timer);
+  };
+
   const settleCodexTurnSideEffects = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -44046,6 +44071,8 @@ export function createAgentChatService(args: {
     void refreshCodexBackgroundTerminals(managed, runtime);
     if (status !== "completed" || !isCodexCompactionActive(runtime)) {
       void startCodexQueuedFollowUp(managed, runtime);
+    } else {
+      watchCodexCompactionsAfterTurn(managed, runtime);
     }
   };
 

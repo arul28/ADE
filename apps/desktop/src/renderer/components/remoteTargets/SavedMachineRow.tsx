@@ -182,7 +182,7 @@ export function SavedMachineRow({
   const { target, status } = row;
   const { computers: cloudComputers } = useAdeCloudLaneComputers();
   // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
-  const cloudLabel = adeCloudLaneLabelForMachine({ hostname: target.hostname }, cloudComputers);
+  const cloudLabel = adeCloudLaneLabelForMachine({ hostname: target.hostname, machineKey: target.pairedMachine?.machineKey ?? null }, cloudComputers);
   const shownName = cloudLabel ?? target.name;
   // Covers this computer's own connect and main's automatic reconnect.
   const targetConnecting =

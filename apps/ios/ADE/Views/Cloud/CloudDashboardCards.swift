@@ -68,12 +68,17 @@ struct CloudDashboardScreen: View {
   }
 
   private func observePlan(_ account: CloudPhoneAccount?) {
-    guard let account else { return }
+    guard let account else {
+      moment = nil
+      return
+    }
+    // Another account, plan or period: the banner was about something else.
+    if let shown = moment, shown.accountKey != CloudPlanSeenStore.accountKey(account).key || shown.key != CloudPlanSeenStore.momentKey(account) {
+      moment = nil
+    }
     if let landed = CloudPlanSeenStore.observe(account) {
       moment = landed
       ProductAnalytics.shared.captureFeature(.cloudPlan, outcome: .completed)
-    } else if let shown = moment, shown.planId != account.currentPlanId {
-      moment = nil
     }
   }
 }

@@ -100,7 +100,7 @@ function sqliteD1() {
 }
 
 type FakeInstance = { id: string; status: string; type: string; metadata: Record<string, string>; resources?: Record<string, number> };
-type Call = { method: string; url: string; body: Record<string, unknown> | null };
+type Call = { method: string; url: string; body: Record<string, unknown> | null; idempotencyKey: string | null };
 
 /** The compute provider and Stripe at `fetch`. */
 function fakeNetwork() {
@@ -191,7 +191,7 @@ function fakeNetwork() {
     const body = typeof init?.body !== "string" ? null
       : init.body.startsWith("{") ? JSON.parse(init.body) as Row
       : Object.fromEntries(new URLSearchParams(init.body)) as Row;
-    calls.push({ method, url, body });
+    calls.push({ method, url, body, idempotencyKey: new Headers(init?.headers).get("idempotency-key") });
     const planned = once.findIndex((entry) => entry.match.test(`${method} ${url}`));
     let response: Response;
     if (planned !== -1) {
@@ -1031,20 +1031,24 @@ describe("ADE Cloud account", () => {
   });
 
   const ITEM_CREATE = /POST .*\/subscription_items$/;
-  it.each<[string, Row, Row[], { status: number; landed?: boolean } | null, number, string | null]>([
+  it.each<[string, Row, Row[], { status: number; times?: number; landed?: boolean } | null, number, string[]]>([
     // A subscription bought before Cloud 8 already bills extra hours (on the first price until its renewal moves it).
-    ["a subscription that already has an hours item gets no second one", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }, { id: "si_extra", price: { id: "price_extra" } }], null, 200, null],
+    ["a subscription that already has an hours item gets no second one", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }, { id: "si_extra", price: { id: "price_extra" } }], null, 200, []],
     // Pro with a move to Plus waiting still pays Pro's hour until the renewal.
-    ["a downgrade waiting adds the hour of the plan in force", { ...proAccount, paid_plan_next: "plus" }, [{ id: "si_plan", price: { id: "price_plan" } }], null, 200, "price_extra_pro"],
-    ["Stripe refusing the item leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 500 }, 503, "price_extra_plus"],
+    ["a downgrade waiting adds the hour of the plan in force", { ...proAccount, paid_plan_next: "plus" }, [{ id: "si_plan", price: { id: "price_plan" } }], null, 200, ["price_extra_pro"]],
+    // Stripe answers a key's 500 again for a day: one more try under a key of its own.
+    ["a 500 with no item held tries once more under a new key", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 500 }, 200, ["price_extra_plus", "price_extra_plus"]],
+    ["Stripe refusing the item twice leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 500, times: 2 }, 503, ["price_extra_plus", "price_extra_plus"]],
     // A second turn-on raced this one and its item landed: that item is all that's needed.
-    ["a 409 while another turn-on's item landed still turns extra hours on", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 409, landed: true }, 200, "price_extra_plus"],
-    ["a 409 with no item held leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 409 }, 503, "price_extra_plus"],
-  ])("extra hours on: %s", async (_label, account, items, refuse, status, triedPrice) => {
+    ["a 409 while another turn-on's item landed still turns extra hours on", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 409, landed: true }, 200, ["price_extra_plus"]],
+    ["a 409 with no item held leaves extra hours off", plusAccount, [{ id: "si_plan", price: { id: "price_plan" } }], { status: 409 }, 503, ["price_extra_plus"]],
+  ])("extra hours on: %s", async (_label, account, items, refuse, status, triedPrices) => {
     Object.assign(harness.env, MONEY_ENV, EXTRA_PRICES);
     seedAccount(harness, OWNER, account);
     harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: items } });
-    if (refuse) harness.net.once.push({ match: ITEM_CREATE, reply: harness.net.reply({ error: { message: "no" } }, refuse.status) });
+    for (let index = 0; index < (refuse?.times ?? (refuse ? 1 : 0)); index += 1) {
+      harness.net.once.push({ match: ITEM_CREATE, reply: harness.net.reply({ error: { message: "no" } }, refuse!.status) });
+    }
     if (refuse?.landed) {
       harness.net.after.push({ match: ITEM_CREATE, run: () => {
         harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [...items, { id: "si_raced", price: { id: "price_extra_plus" } }] } });
@@ -1054,7 +1058,10 @@ describe("ADE Cloud account", () => {
     const response = await harness.send(OWNER, "POST", "/cloud/billing/extra-hours", { enabled: true });
 
     expect(response.status).toBe(status);
-    expect(providerCalls(harness, ITEM_CREATE).map((call) => call.body?.price)).toEqual(triedPrice ? [triedPrice] : []);
+    const creates = providerCalls(harness, ITEM_CREATE);
+    expect(creates.map((call) => call.body?.price)).toEqual(triedPrices);
+    // Each try has its own key: a repeated key would only get the first answer back.
+    expect(new Set(creates.map((call) => call.idempotencyKey)).size).toBe(creates.length);
     // Never on without an item to bill it: an extra hour would be free.
     expect(harness.row("select extra_enabled from cloud_accounts where user_id = ?", OWNER).extra_enabled).toBe(status === 200 ? 1 : 0);
   });

@@ -243,6 +243,18 @@ export function createCloudLaneLaunchBrainHost(deps: {
     post(buildCloudJoinApprovalCard({ launchId, computerName: service.facts(launchId)?.computerName ?? "The new computer", url, state: joined ? "joined" : "ended" }));
   };
 
+  /** The approval link in the agent's chat: a card with an Approve button where the chat takes cards, a line otherwise. */
+  const tellApprovalLink = (launchId: string, url: string): void => {
+    const name = service.facts(launchId)?.computerName ?? "the new computer";
+    const caller = live.get(launchId);
+    if (caller?.card && isCloudJoinApprovalUrl(url)) {
+      liveApprovalCards.add(launchId);
+      caller.card(buildCloudJoinApprovalCard({ launchId, computerName: name, url, state: "waiting" }));
+      return;
+    }
+    caller?.notice?.(buildCloudJoinApprovalCard({ launchId, computerName: name, url, state: "waiting" }).fallbackText);
+  };
+
   const requireTransport = (): CloudLaneLaunchMachineTransport => {
     if (!transport) throw new Error(NO_TRANSPORT);
     return transport;
@@ -305,15 +317,7 @@ export function createCloudLaneLaunchBrainHost(deps: {
     ...(deps.gitPreflight ? { gitPreflight: deps.gitPreflight } : {}),
     onApprovalLink: (launchId, url) => {
       approvalLinks.set(launchId, url);
-      const name = service.facts(launchId)?.computerName ?? "the new computer";
-      const caller = live.get(launchId);
-      // A card with an Approve button where the chat takes cards; a line with the link otherwise.
-      if (caller?.card && isCloudJoinApprovalUrl(url)) {
-        liveApprovalCards.add(launchId);
-        caller.card(buildCloudJoinApprovalCard({ launchId, computerName: name, url, state: "waiting" }));
-        return;
-      }
-      caller?.notice?.(buildCloudJoinApprovalCard({ launchId, computerName: name, url, state: "waiting" }).fallbackText);
+      tellApprovalLink(launchId, url);
     },
     // The bridge pairs with an account machine on its own and addresses it by key.
     pairMachine: async (machineKey) => ({ targetId: machineKey }),
@@ -411,6 +415,10 @@ export function createCloudLaneLaunchBrainHost(deps: {
         let launch = await service.start({ args: input.args, originUrl: input.originUrl, madeByChat: input.madeByChat, madeByAgent: input.madeByAgent ?? null });
         // The same command again resumes a launch that failed, on the same computer.
         if (known && launch.phase === "failed") launch = (await service.retry({ launchId: launch.launchId })) ?? launch;
+        // After a restart no chat was known to this process: a code fetched
+        // since (the join resumed with a fresh one) reaches this chat now.
+        const pendingLink = !earlier ? statusOf(launch).approvalUrl : null;
+        if (known && pendingLink && !liveApprovalCards.has(launchId)) tellApprovalLink(launchId, pendingLink);
         return { status: statusOf(launch), created: !known };
       } catch (error) {
         if (!known) live.delete(launchId);

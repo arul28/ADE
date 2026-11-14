@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
-import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
+import { machineLabelForMachine, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 /**
  * The names usage shows for the computers that reported a reading.
@@ -84,11 +84,13 @@ const getNames = () => names;
  */
 export function useUsageMachineName(): (machineKey: string | null | undefined, label: string) => string {
   const known = useSyncExternalStore(subscribe, getNames, getNames);
+  // Subscribed, so a lane rename or a freed lane computer renames the row at once.
+  const { computers } = useAdeCloudLaneComputers();
   return useCallback(
     (machineKey, label) => machineLabelForMachine({
       machineKey: machineKey?.trim() ?? null,
       name: (machineKey ? known.get(machineKey.trim()) : undefined) ?? withoutHostSuffix(label),
-    }),
-    [known],
+    }, computers),
+    [computers, known],
   );
 }

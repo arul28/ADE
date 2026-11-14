@@ -412,8 +412,9 @@ struct ProviderSignInCardView: View {
 
 /// The account's sign-ins as one page reads them, on the machine the phone
 /// drives: read on open, after each write (the write's answer is the new
-/// status) and when the machine pushes `provider_logins_changed`. No timer and
-/// no poll.
+/// status), when the machine pushes `provider_logins_changed` and when the
+/// connection comes back (a push sent while it was down is not replayed). No
+/// timer and no poll. The newest read or write's answer wins.
 @MainActor
 final class ProviderLoginsModel: ObservableObject {
   @Published private(set) var status: ProviderLoginsPhoneStatus?
@@ -424,6 +425,8 @@ final class ProviderLoginsModel: ObservableObject {
 
   private let host: SyncService?
   private var changeWatch: AnyCancellable?
+  /// Bumped by each read and write: only the newest one's answer lands.
+  private var request = 0
 
   init(host: SyncService) {
     self.host = host
@@ -450,10 +453,15 @@ final class ProviderLoginsModel: ObservableObject {
 
   func load() async {
     guard let host, supported else { return }
+    request += 1
+    let mine = request
     do {
-      status = try await ProviderLoginsPhoneStatus.read(on: host)
+      let read = try await ProviderLoginsPhoneStatus.read(on: host)
+      guard mine == request else { return }
+      status = read
       failed = false
     } catch {
+      guard mine == request else { return }
       failed = status == nil
     }
   }
@@ -478,8 +486,11 @@ final class ProviderLoginsModel: ObservableObject {
     if let busyKey { busy.insert(busyKey) }
     defer { if let busyKey { busy.remove(busyKey) } }
     error = nil
+    request += 1
+    let mine = request
     do {
-      status = try await ProviderLoginsPhoneStatus.write(method, args: args, on: host)
+      let written = try await ProviderLoginsPhoneStatus.write(method, args: args, on: host)
+      if mine == request { status = written }
     } catch {
       self.error = "ADE couldn't change that. \(SyncUserFacingError.message(for: error))"
       ADEHaptics.error()
