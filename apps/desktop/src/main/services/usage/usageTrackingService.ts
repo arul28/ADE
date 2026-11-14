@@ -6180,10 +6180,11 @@ export function createUsageTrackingService({
     const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
     // A login whose banked resets only another machine can read: that machine
     // holds the working login, so the claim has to run there.
-    const lentFrom = accountId
-      ? quotaForDisplay(lastSnapshot).accounts?.find((account) => account.id === accountId)?.resetCreditsOn
+    const shown = accountId
+      ? quotaForDisplay(lastSnapshot).accounts?.find((account) => account.id === accountId)
       : undefined;
-    if (lentFrom) return await consumePeerResetCredit(accountId, lentFrom);
+    const lentFrom = shown?.resetCreditsOn;
+    if (lentFrom) return await consumePeerResetCredit(accountId, lentFrom, shown?.email?.trim() ?? "");
     return await consumeOwnResetCredit({ accountId });
   }
 
@@ -6194,10 +6195,11 @@ export function createUsageTrackingService({
   async function consumePeerResetCredit(
     accountId: string,
     lentFrom: NonNullable<UsageAccount["resetCreditsOn"]>,
+    email: string,
   ): Promise<UsageResetCreditResult> {
     const provider = resetCreditProviderForAccountId(accountId) ?? undefined;
     const result = spendPeerResetCredit
-      ? await spendPeerResetCredit({ ...lentFrom, timeoutMs: PEER_RESET_CREDIT_TIMEOUT_MS })
+      ? await spendPeerResetCredit({ ...lentFrom, email, timeoutMs: PEER_RESET_CREDIT_TIMEOUT_MS })
       : {
         ok: false,
         status: "failure" as const,
@@ -6207,7 +6209,9 @@ export function createUsageTrackingService({
       logger.warn("usage.peer_reset_credit_failed", { provider, error: result.message ?? null });
     }
     // Wait for the peer's new count, so the row stops offering the credit
-    // that was just spent before a second click can claim another one.
+    // that was just spent before a second click can claim another one. The
+    // old count goes first: a read that fails must not bring it back.
+    if (result.status !== "failure") peerQuota.forgetResetCredits(lentFrom.machineKey, lentFrom.accountId);
     await peerQuota.refreshNow();
     captureResetCreditOutcome(result, provider);
     return result;
@@ -6218,7 +6222,7 @@ export function createUsageTrackingService({
    * here calls this directly, so a claim never travels on to a third machine.
    */
   async function consumeOwnResetCredit(
-    args: { accountId: string },
+    args: { accountId: string; email?: string },
   ): Promise<UsageResetCreditResult> {
     const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
     if (!accountId) {
@@ -6248,6 +6252,20 @@ export function createUsageTrackingService({
         message: "That account is not signed in on this computer.",
       };
       captureResetCreditOutcome(failure, provider ?? undefined);
+      return failure;
+    }
+    // A peer names the login its row showed. The same id can hold another
+    // login now (a new sign-in in the account's folder), and that login's
+    // reset is not the one the user asked to spend.
+    const expectedEmail = typeof args?.email === "string" ? args.email.trim().toLowerCase() : "";
+    const heldEmail = lastSnapshot?.accounts?.find((account) => account.id === accountId)?.email?.trim().toLowerCase() ?? "";
+    if (expectedEmail && heldEmail !== expectedEmail) {
+      const failure: UsageResetCreditResult = {
+        ok: false,
+        status: "failure",
+        message: "That login is no longer signed in on this computer. Nothing was spent.",
+      };
+      captureResetCreditOutcome(failure, provider);
       return failure;
     }
     const configHome = scopedConfigHome(provider, instance);

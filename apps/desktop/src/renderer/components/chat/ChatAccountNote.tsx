@@ -59,6 +59,8 @@ type ChatAccountNoteInput = {
   preset?: HarnessPreset | null;
   /** The stored key's label for `sessionCredentialId`, when it was read. */
   credentialLabel?: string | null;
+  /** What the note describes, for the hover text. */
+  subject?: "chat" | "CLI";
 };
 
 function clean(value: string | null | undefined): string | null {
@@ -100,7 +102,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
   const turnInstanceId = clean(turn?.instanceId);
   if (turn && multi && turnInstanceId && turnInstanceId !== boundInstanceId) turn = null;
 
-  const sourceLine = turn ? "Ran the latest turn." : "Bound to this chat; no turn has reported its account yet.";
+  const sourceLine = turn ? "Ran the latest turn." : `Bound to this ${input.subject ?? "chat"}; no turn has reported its account yet.`;
 
   if (turn?.kind === "api_key" || (!turn && (clean(input.sessionCredentialId) || input.preset?.source.kind === "key"))) {
     const name = keyName(input);
@@ -287,8 +289,9 @@ export function ChatAccountNote({
       instances,
       preset,
       credentialLabel,
+      subject,
     }),
-    [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel],
+    [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel, subject],
   );
   const current = multi && boundInstanceId ? findInstance(instances, multi, boundInstanceId) : null;
   const targets = useMemo(

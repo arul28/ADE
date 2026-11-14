@@ -80,6 +80,26 @@ export function createPeerLiveQuota({
     return changed;
   }
 
+  /**
+   * Drop the reset count one machine reported for one account, after a spend
+   * there. The next pull brings the new count; until then the row offers
+   * nothing, so a second click cannot claim a second credit.
+   */
+  function forgetResetCredits(machineKey: string, accountId: string): void {
+    const held = byMachine.get(machineKey);
+    if (!held?.accounts.some((account) => account.id === accountId && account.resetCredits)) return;
+    byMachine.set(machineKey, {
+      ...held,
+      accounts: held.accounts.map((account) => {
+        if (account.id !== accountId) return account;
+        const { resetCredits: _spent, ...rest } = account;
+        return rest;
+      }),
+    });
+    version += 1;
+    onChanged();
+  }
+
   function get(machineKey: string): PeerLiveQuota | undefined {
     return byMachine.get(machineKey);
   }
@@ -165,6 +185,7 @@ export function createPeerLiveQuota({
     views,
     refresh,
     refreshNow,
+    forgetResetCredits,
     setFetcher: (next: AccountLiveQuotaFetcher | null): void => {
       fetcher = next;
     },

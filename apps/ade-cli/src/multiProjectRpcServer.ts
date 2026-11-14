@@ -3642,7 +3642,8 @@ export function createMultiProjectRpcRequestHandler(
       if (!service) {
         return { ok: false, status: "failure", message: "Usage tracking has not started on this computer yet." };
       }
-      return await service.consumeOwnResetCredit({ accountId });
+      const email = typeof params.email === "string" ? params.email.trim() : "";
+      return await service.consumeOwnResetCredit({ accountId, ...(email ? { email } : {}) });
     }
 
     if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {

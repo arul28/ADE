@@ -293,12 +293,12 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
   };
 }
 
-/** A peer's banked credit count, or null when it has none or sent junk. */
+/** A peer's banked credit count (zero included, so "none left" is news), or null for junk. */
 function boundPeerResetCredits(value: unknown): UsageAccount["resetCredits"] | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
   const count = record.availableCount;
-  if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return null;
+  if (typeof count !== "number" || !Number.isInteger(count) || count < 0) return null;
   const nextExpiresAt = boundedString(record.nextExpiresAt, MAX_PEER_ID_LENGTH);
   return {
     availableCount: Math.min(count, MAX_PEER_RESET_CREDITS),
@@ -584,6 +584,11 @@ export type AccountResetCreditSpender = (args: {
   label: string;
   /** The peer's own id for the account. */
   accountId: string;
+  /**
+   * The login the row showed. The peer refuses the spend when its account now
+   * holds another login (a new sign-in in the same folder keeps the id).
+   */
+  email: string;
   timeoutMs: number;
 }) => Promise<UsageResetCreditResult>;
 
@@ -600,7 +605,7 @@ const AGENT_METHOD_REFUSED = /isn't available to agents on another machine/i;
  * is paired but not connected right now is still dialled.
  */
 export function createAccountResetCreditSpender(transport: AccountPeerTransport): AccountResetCreditSpender {
-  return async ({ machineKey, label, accountId, timeoutMs }) => {
+  return async ({ machineKey, label, accountId, email, timeoutMs }) => {
     const failure = (message: string): UsageResetCreditResult => ({ ok: false, status: "failure", message });
     const targetId = transport.resolveTargetIdForMachineKey(machineKey);
     if (!targetId) return failure(`This reset is banked on ${label}, which is not paired with this computer. Spend it there.`);
@@ -608,7 +613,7 @@ export function createAccountResetCreditSpender(transport: AccountPeerTransport)
       const answer = await transport.callMachineMethod<unknown>(
         targetId,
         PEER_RESET_CREDIT_METHOD,
-        { accountId },
+        { accountId, email },
         { timeoutMs },
       );
       if (!answer || typeof answer !== "object") return failure(`${label} did not answer the reset.`);
