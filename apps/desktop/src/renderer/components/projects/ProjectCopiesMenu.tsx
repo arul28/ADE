@@ -244,8 +244,17 @@ function CopyRow({
     <span className="ml-auto shrink-0 rounded border border-border/40 px-1.5 py-px text-[10px] text-fg/80">{text}</span>
   );
   // A row that only says where a copy is and in what state: nothing to pick.
+  // Not natively disabled, so the arrow keys and screen readers still reach
+  // it; it does nothing when pressed.
   const disabledRow = (glyph: React.ReactNode, body: React.ReactNode, extra?: React.ReactNode, title?: string) => (
-    <button type="button" role="menuitem" disabled aria-disabled className={`${ROW_CLASS} cursor-default`} title={title}>
+    <button
+      type="button"
+      role="menuitem"
+      aria-disabled="true"
+      className={`${ROW_CLASS} cursor-default hover:bg-transparent`}
+      title={title}
+      onClick={(event) => event.stopPropagation()}
+    >
       {glyph}
       {name}
       {body}

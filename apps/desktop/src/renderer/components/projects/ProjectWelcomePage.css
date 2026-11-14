@@ -820,8 +820,9 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
   text-align: left;
   cursor: pointer;
 }
-.ade-welcome-machines-item:not(:disabled):hover { background: var(--kit-hover); }
-.ade-welcome-machines-item:disabled { cursor: default; }
+.ade-welcome-machines-item:not(:disabled):not([aria-disabled="true"]):hover { background: var(--kit-hover); }
+.ade-welcome-machines-item:disabled,
+.ade-welcome-machines-item[aria-disabled="true"] { cursor: default; }
 .ade-welcome-machines-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-welcome-machines-state { font-size: 11px; color: var(--kit-text-3); }
 

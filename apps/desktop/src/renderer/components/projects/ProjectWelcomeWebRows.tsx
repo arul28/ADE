@@ -333,8 +333,11 @@ function ProjectMachineStack({
               type="button"
               role="menuitem"
               className="ade-welcome-machines-item"
-              disabled
-              aria-disabled
+              // A list, not a choice: reachable by keyboard, inert when pressed.
+              // The press stops here: React carries it through the portal to
+              // the row, which would open the project.
+              aria-disabled="true"
+              onClick={(event) => event.stopPropagation()}
             >
               <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
               <span className="ade-welcome-machines-name">{name}</span>

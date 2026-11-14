@@ -203,6 +203,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         ) ownerByChatId.set(row.chatId, { machineKey, connected, updatedAt: row.updatedAt });
       }
     }
+    // Machines whose own saved chats show (the lane fallback below is for the rest).
+    const showsSavedChats = new Set<string>();
     for (const [machineKey, machineRows] of byMachine) {
       const { connection, gone, name } = machineFacts.get(machineKey)!;
       const rows = machineRows.filter((row) => {
@@ -230,6 +232,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         }
         continue;
       }
+      showsSavedChats.add(machineKey);
       const first = rows[0]!;
       // Connected: the live list owns this machine. Nothing saved shows.
       if (connection?.state === "connected") continue;
@@ -282,7 +285,9 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     // connected). Opening it reaches the computer by its key, which wakes it.
     for (const computer of adeCloudLaneComputersNow()) {
       const machineKey = computer.machineKey;
-      if (!machineKey || byMachine.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      // A machine whose every saved chat now shows from another computer
+      // still gets its lane row here.
+      if (!machineKey || showsSavedChats.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
       if (!computer.projectOrigin || computer.projectOrigin !== context.projectKey) continue;
       const connection = connectionFor(context.connections, machineKey, computer.instanceId);
       if (connection?.state === "connected") continue;

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { useRootAppStore } from "../../state/appStore";
@@ -13,7 +13,7 @@ import {
   type MachineChipModel,
   type MachineLane,
 } from "../../state/laneMachineRouting";
-import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { SAVED_CHATS_MACHINE_PREFIX, savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
 import { connectMachine } from "../../lib/machineConnect";
 import { showToast } from "../app/toast/toastStore";
@@ -215,11 +215,23 @@ export function useLanesPageMachines({
   const setForeignSelectedKey = useCallback((key: string | null) => {
     setForeignLaneSelection(projectStateKey, key);
   }, [projectStateKey]);
+  // A resting ADE Cloud lane is listed under its saved-chats id until its
+  // computer connects, then under the connection's id. The lane the person
+  // opened stays selected across that move (lane ids are unique per lane).
+  const movedForeignKey = useMemo(() => {
+    if (!foreignSelectedKey?.startsWith(SAVED_CHATS_MACHINE_PREFIX) || foreignRowByKey.has(foreignSelectedKey)) return null;
+    const laneId = foreignSelectedKey.slice(foreignSelectedKey.lastIndexOf(":") + 1);
+    const matches = [...foreignRowByKey].filter(([, row]) => row.lane.id === laneId);
+    return matches.length === 1 ? matches[0]![0] : null;
+  }, [foreignRowByKey, foreignSelectedKey]);
+  useEffect(() => {
+    if (movedForeignKey) setForeignSelectedKey(movedForeignKey);
+  }, [movedForeignKey, setForeignSelectedKey]);
   // The page's selection: a foreign row when one is picked and still listed,
   // otherwise the store's lane on the tab's machine.
   const selectedLaneId = foreignSelectedKey && foreignRowByKey.has(foreignSelectedKey)
     ? foreignSelectedKey
-    : storeSelectedLaneId;
+    : movedForeignKey ?? storeSelectedLaneId;
   /**
    * Select a row key: foreign rows stay in page state, local ids go to the
    * store. Opening a lane of an ADE Cloud computer that is asleep or not
