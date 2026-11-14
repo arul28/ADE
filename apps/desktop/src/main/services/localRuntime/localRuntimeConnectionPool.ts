@@ -1,6 +1,6 @@
 import {
   isMachineScopeRootPath,
-  isMachineScopeUnknownProjectError,
+  isMachineScopeOlderBrainError,
   MACHINE_SCOPE_PROJECT_ID,
   MACHINE_SCOPE_ROOT_PATH,
   THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE,
@@ -2381,7 +2381,7 @@ export class LocalRuntimeConnectionPool {
     if (project === MACHINE_SCOPE_PROJECT_RECORD) {
       // Never registered, so never re-registered. A brain older than this app
       // looks the scope up as a project: say what to do instead.
-      if (isMachineScopeUnknownProjectError(error)) throw new Error(THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE);
+      if (isMachineScopeOlderBrainError(error)) throw new Error(THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE);
       return false;
     }
     if (unknownProjectIdInError(error) !== project.projectId) return false;

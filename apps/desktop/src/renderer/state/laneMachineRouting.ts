@@ -97,6 +97,12 @@ export type LaneMachine = {
    * connection reports capabilities, and for This computer.
    */
   machineScope?: boolean;
+  /**
+   * The domains that brain answers there (`MACHINE_SCOPE_DOMAINS`). Unset with
+   * `machineScope` true: a brain of the route's first version, which answers
+   * none of `MACHINE_SCOPE_LATER_DOMAINS`.
+   */
+  machineScopeDomains?: readonly string[];
 };
 
 /** One lane, tagged with the machine that owns it. */
@@ -274,9 +280,15 @@ function connectionDeviceId(connection: RemoteRuntimeConnectionStatus | undefine
 }
 
 /** `LaneMachine.machineScope` from a connection, once it reported capabilities. */
-function connectionMachineScope(connection: RemoteRuntimeConnectionStatus | undefined): Pick<LaneMachine, "machineScope"> {
+function connectionMachineScope(connection: RemoteRuntimeConnectionStatus | undefined): Pick<LaneMachine, "machineScope" | "machineScopeDomains"> {
   const capabilities = connection?.capabilities;
-  return capabilities ? { machineScope: capabilities.machineScope === true } : {};
+  if (!capabilities) return {};
+  return {
+    machineScope: capabilities.machineScope === true,
+    ...(capabilities.machineScope === true && capabilities.machineScopeDomains
+      ? { machineScopeDomains: capabilities.machineScopeDomains }
+      : {}),
+  };
 }
 
 /**
@@ -400,7 +412,7 @@ export function buildAllMachineLanes(input: {
   const machinesWithoutRepo: LaneMachine[] = [];
   if (input.connections || input.thisMachineDeviceId !== undefined) {
     const listed = new Set(machines.map((machine) => machine.machineId));
-    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version" | "machineScope">): LaneMachine => ({
+    const noRepo = (overrides: Pick<LaneMachine, "machineId" | "machineName" | "online" | "isThisMachine" | "deviceId" | "hostname" | "version" | "machineScope" | "machineScopeDomains">): LaneMachine => ({
       ...overrides,
       isActiveBinding: false,
       binding: null,

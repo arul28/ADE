@@ -31736,7 +31736,26 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
-      machineScopeAccountSettings: syncEnabled ? () => machineAccountStoresForRecords().settings : null,
+      // The machine route's account stores, as a project runtime of this
+      // brain has them: only with sync on. Passwords keeps in step with the
+      // account while it is lent, as `accountVault.call`'s copy does.
+      machineScopeAccountStores: syncEnabled
+        ? () => {
+            const stores = machineAccountStoresForRecords();
+            stores.passwords.startPeriodicSync();
+            return { settings: stores.settings, passwords: stores.passwords };
+          }
+        : null,
+      // Settings › Android devices with no project: the same machine settings
+      // file every project's emulator service reads.
+      machineScopeAndroid: embedded ? null : async () => {
+        const { createAndroidMachineSettingsService } = await import("../../desktop/src/main/services/android/androidMachineSettingsService");
+        return (onEvent) => createAndroidMachineSettingsService({
+          sdkSettingsFile: path.join(layout.adeDir, "android", "settings.json"),
+          logger: headlessProjectLogger,
+          onEvent,
+        });
+      },
       projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,

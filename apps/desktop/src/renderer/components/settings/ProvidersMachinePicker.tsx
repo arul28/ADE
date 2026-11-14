@@ -11,10 +11,11 @@ import "./machines/machinesPage.css";
 
 /**
  * The machines whose brain a setting can be read and changed through from
- * here. `kind` is how the page's sections reach a machine: `machine` (Providers)
- * reaches every online computer and This computer, with or without this
- * repository; `account` (Passwords) This computer and the others it reaches
- * through a copy of it; `routed` only those it reaches through a copy of it.
+ * here. `kind` is how the page's sections reach a machine: `machine`
+ * (Providers, Android devices) and `account` (Passwords) reach every online
+ * computer and This computer, with or without this repository (an older ADE
+ * there then says to update it); `routed` only those it reaches through a
+ * copy of it.
  */
 export function reachableMachines(
   machines: readonly ProjectMachine[],

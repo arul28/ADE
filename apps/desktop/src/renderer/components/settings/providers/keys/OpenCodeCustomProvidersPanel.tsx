@@ -135,9 +135,12 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
   const entries = useMemo(() => ctx.status?.customProviders ?? [], [ctx.status?.customProviders]);
   const [sheet, setSheet] = useState<{ existing: ApiCredentialSummary | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Config goes to the page's machine; the key store follows the same rule as
-  // every other key read on this page (This computer stays on desktop IPC).
-  const { pin } = useSettingsMachineScope();
+  // Config is the project's: it goes to this repository's copy on the page's
+  // machine (`ctx.projectPin`; the machine route refuses it rather than
+  // misrouting it). The key store follows the same rule as every other key
+  // read on this page (This computer stays on desktop IPC).
+  const { pin: machinePin } = useSettingsMachineScope();
+  const pin = ctx.projectPin ?? machinePin;
   const credentialPin = useApiCredentialsPin();
 
   const save = useCallback(async (draft: ApiKeyDraft) => {
