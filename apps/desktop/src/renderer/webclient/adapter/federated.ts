@@ -798,6 +798,9 @@ export function createFederatedWebAdapter({
       let woke = false;
       let wakeFailure: string | null = null;
       if (asleep) {
+        // The click clears the person's earlier Disconnect now, not at the
+        // first dial: a Disconnect pressed during the wake is then newer.
+        if (saved) manager.acceptUserConnect(saved.envId);
         try {
           await wakeWebCloudMachine({
             snapshot: manager.getSnapshot(),
@@ -811,15 +814,18 @@ export function createFederatedWebAdapter({
       }
       const connectOnce = () => manager.connectAccountMachine(machine, { activate: false, background });
       try {
-        // A Disconnect pressed during the wait ends it: the next dial would be
-        // a foreground connect, which clears that Disconnect.
+        // A Disconnect pressed during the wake or the wait ends it: the next
+        // dial would be a foreground connect, which clears that Disconnect.
         const disconnectedSince = () => {
           const environment = manager.findAccountMachineEnvironment(machine);
           return Boolean(environment && manager.getConnectionSnapshot().connections.some(
             (entry) => entry.target.id === environment.envId && entry.reconnectBlocked === "disconnected",
           ));
         };
-        const session = woke ? await retryWhileWaking(connectOnce, disconnectedSince) : await connectOnce();
+        // A failed wake still tries the saved connection once.
+        const session = asleep
+          ? await dialWhileWaking(connectOnce, disconnectedSince, woke ? WOKEN_CONNECT_WAIT_MS : 0)
+          : await connectOnce();
         return {
           ok: true,
           address: {
@@ -851,18 +857,19 @@ export function createFederatedWebAdapter({
   };
 
   /**
-   * A woken cloud computer answers within a minute or two: dial again until
-   * then, unless the person disconnected it meanwhile (`cancelled`).
+   * A woken cloud computer answers within a minute or two: dial again for
+   * `waitMs`, unless the person disconnected it (`cancelled`), which is
+   * checked before every dial, the first one too.
    */
-  const retryWhileWaking = async <T,>(attempt: () => Promise<T>, cancelled: () => boolean): Promise<T> => {
-    const deadline = Date.now() + WOKEN_CONNECT_WAIT_MS;
+  const dialWhileWaking = async <T,>(attempt: () => Promise<T>, cancelled: () => boolean, waitMs: number): Promise<T> => {
+    const deadline = Date.now() + waitMs;
     for (;;) {
+      if (cancelled()) throw new WebMachineConnectSkipped("user_disconnected");
       try {
         return await attempt();
       } catch (error) {
         if (error instanceof WebMachineConnectSkipped || Date.now() >= deadline) throw error;
         await new Promise((resolve) => setTimeout(resolve, WOKEN_CONNECT_RETRY_MS));
-        if (cancelled()) throw new WebMachineConnectSkipped("user_disconnected");
       }
     }
   };

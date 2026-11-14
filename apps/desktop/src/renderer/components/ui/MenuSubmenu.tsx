@@ -280,6 +280,14 @@ export function MenuSubmenu({
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
               event.preventDefault();
               moveFocus(panelRef.current, event.key === "ArrowDown" ? 1 : -1);
+              return;
+            }
+            // A field inside the submenu keeps Home and End for its caret.
+            const inField = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+            if ((event.key === "Home" || event.key === "End") && !inField) {
+              event.preventDefault();
+              const items = focusableItems(panelRef.current);
+              items[event.key === "Home" ? 0 : items.length - 1]?.focus();
             }
           }}
         >

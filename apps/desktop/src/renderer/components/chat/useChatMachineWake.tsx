@@ -3,7 +3,7 @@ import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
 import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
-import { useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
+import { clearCloudMachineWakeFailure, useCloudMachineWakeFailure, useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
 import { Banner } from "../ui/notice";
 
 export type ChatMachineWake = {
@@ -95,9 +95,21 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   const [failure, setFailure] = useState<{ targetId: string; message: string } | null>(null);
   // Opening the chat from a list wakes its computer (`wakeRestingCloudMachine`);
   // the computer reads "starting" while any wake runs. Either is this chat's
-  // wake too, so the view shows the progress.
-  const listWaking = useCloudMachineWakeInFlight(box?.machineKey ?? null);
-  const error = failure && failure.targetId === targetId ? failure.message : null;
+  // wake too, so the view shows its progress and its failure.
+  const machineKey = box?.machineKey ?? null;
+  const listWaking = useCloudMachineWakeInFlight(machineKey);
+  const listFailure = useCloudMachineWakeFailure(machineKey);
+  const error = (failure && failure.targetId === targetId ? failure.message : null) ?? (resting ? listFailure : null);
+  // A list wake's failure is over once the computer is up. The computer is
+  // not read while the chat is online, so its key is the last one read for
+  // this chat's target.
+  const lastMachineKeyRef = useRef<{ targetId: string | null; machineKey: string } | null>(null);
+  useEffect(() => {
+    if (machineKey) lastMachineKeyRef.current = { targetId, machineKey };
+    else if (scope.online && lastMachineKeyRef.current?.targetId === targetId) {
+      clearCloudMachineWakeFailure(lastMachineKeyRef.current.machineKey);
+    }
+  }, [machineKey, scope.online, targetId]);
   // A failed wake from here wins over the inferred progress: a computer stuck
   // in "starting" must still show the failure and its Try again.
   const waking = (targetId != null && wakingTargetId === targetId)
@@ -139,6 +151,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
     try {
       setWakingTargetId(targetId);
       setFailure(null);
+      if (machineKey) clearCloudMachineWakeFailure(machineKey);
       try {
         await connect(targetId);
       } catch (connectFailure) {
@@ -163,7 +176,7 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
       if (inFlightTargetRef.current === targetId) inFlightTargetRef.current = null;
       setWakingTargetId((current) => (current === targetId ? null : current));
     }
-  }, [machineName, refresh, settle, targetId]);
+  }, [machineKey, machineName, refresh, settle, targetId]);
 
   const wakeThen = useCallback(async (run: () => void): Promise<boolean> => {
     const online = await wake();

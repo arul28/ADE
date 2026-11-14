@@ -427,8 +427,7 @@ export class WebMachineSessionManager {
     if (background && this.userDisconnected.has(targetId)) {
       throw new WebMachineConnectSkipped("user_disconnected");
     }
-    // A connect someone asked for clears their earlier Disconnect.
-    if (!background) this.setUserDisconnected(targetId, false);
+    if (!background) this.acceptUserConnect(targetId);
     const inFlight = this.environmentConnects.get(targetId);
     if (inFlight && !(inFlight.background && !background)) {
       const snapshot = await inFlight.promise;
@@ -663,6 +662,16 @@ export class WebMachineSessionManager {
     this.setUserDisconnected(targetId, true);
     await this.park(targetId);
     this.emit();
+  }
+
+  /**
+   * The person asked to connect this machine: their earlier Disconnect no
+   * longer stands. A connect someone asked for does this itself; a caller
+   * that waits before it dials (a cloud wake) does it at the click, so a
+   * Disconnect pressed meanwhile is newer and wins.
+   */
+  acceptUserConnect(targetId: string): void {
+    this.setUserDisconnected(targetId, false);
   }
 
   private setUserDisconnected(targetId: string, disconnected: boolean): void {
