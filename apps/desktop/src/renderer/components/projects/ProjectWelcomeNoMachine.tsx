@@ -28,6 +28,7 @@ import { sameMachineKey } from "../../../shared/machineAddress";
 import { fetchAccountMachines } from "../../lib/account";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
+import { unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
 import "./ProjectWelcomePage.css";
 
 /** The repository tab of a no-machine tab: the account project when the account knows it. */
@@ -155,11 +156,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // awake: connect it, and the effect above opens its copy. Nobody picks a
   // computer. One try per computer; a computer the person disconnected or set
   // not to reconnect stays off (`background`), and its row offers Connect.
-  const unconnectedKeys = [...new Set(
-    copies
-      .filter((copy) => !copy.isThisMachine && !copy.online && copy.machineKey)
-      .map((copy) => (copy.machineKey as string).toLowerCase()),
-  )].sort().join("\n");
+  const unconnectedKeys = unconnectedCopyMachineKeys(copies);
   // ADE Web holds the account's machines, kept current from the directory.
   // The desktop reads them, and again on focus: a computer started since the
   // page opened is online by then.

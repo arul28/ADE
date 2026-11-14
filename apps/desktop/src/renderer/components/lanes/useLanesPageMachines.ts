@@ -16,6 +16,7 @@ import {
 import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
 import { adeCloudLaneComputerForMachine } from "../../state/adeCloudLaneIndex";
 import { connectMachine } from "../../lib/machineConnect";
+import { showToast } from "../app/toast/toastStore";
 
 /** Wakes in flight, by machine key: a second click on the lane does not ask again. */
 const restingCloudReaches = new Set<string>();
@@ -36,7 +37,12 @@ function reachRestingCloudLane(row: MachineLane): void {
   restingCloudReaches.add(machineKey);
   void connectMachine(machineKey)
     .catch((error: unknown) => {
-      console.warn("[lanes] waking the lane's ADE Cloud computer failed", error instanceof Error ? error.message : String(error));
+      // The lane stays dimmed: say why, or the click looks like it did nothing.
+      showToast({
+        title: `Couldn't wake ${row.machineName}`,
+        message: error instanceof Error ? error.message : String(error),
+        tone: "error",
+      });
     })
     .finally(() => restingCloudReaches.delete(machineKey));
 }

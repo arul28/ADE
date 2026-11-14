@@ -28,6 +28,7 @@ import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import { sameMachineKey } from "../../shared/machineAddress";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { fetchAccountMachines } from "../lib/account";
+import type { RepositoryCopy } from "../../shared/repositoryTab";
 import { useActiveRepositoryTab } from "./repositoryScope";
 import { useRepositoryCopies } from "./useRepositoryCopies";
 
@@ -49,8 +50,8 @@ async function connectInBackground(machineKeys: readonly string[]): Promise<void
   const due = machineKeys.filter((key) => now - (attemptedAtByMachineKey.get(key.toLowerCase()) ?? 0) >= RETRY_AFTER_MS);
   if (due.length === 0) return;
   // Online per the account: a computer that is off or asleep is not dialed.
-  const machines = await fetchAccountMachines().catch(() => null);
-  if (!machines || machines.state !== "ok") return;
+  const machines = await fetchAccountMachines();
+  if (machines.state !== "ok") return;
   for (const key of due) {
     const row = machines.machines.find((machine) => sameMachineKey(machine.machineKey, key));
     if (!row?.online) continue;
@@ -71,6 +72,19 @@ async function connectInBackground(machineKeys: readonly string[]): Promise<void
     failuresByMachineKey.set(key.toLowerCase(), (failuresByMachineKey.get(key.toLowerCase()) ?? 0) + 1);
     forwardSignalToSentry("repository.copy_connect_failed", { reason: result.reason }, `copy_connect_failed:${result.reason}`, "info");
   }
+}
+
+/**
+ * The machine keys of copies on other computers that this window has no live
+ * connection to, unique and sorted, one per line: a stable effect key.
+ */
+export function unconnectedCopyMachineKeys(copies: readonly RepositoryCopy[]): string {
+  const keys = new Map<string, string>();
+  for (const copy of copies) {
+    if (copy.isThisMachine || copy.online || !copy.machineKey) continue;
+    keys.set(copy.machineKey.toLowerCase(), copy.machineKey);
+  }
+  return [...keys.values()].sort().join("\n");
 }
 
 /** Runs one pass at a time; a newer set waits for the pass in flight, older queued sets are dropped. */
@@ -94,11 +108,7 @@ function schedule(machineKeys: readonly string[]): void {
 export function useConnectRepositoryCopies(): void {
   const tab = useActiveRepositoryTab();
   const copies = useRepositoryCopies(tab, tab?.kind === "account");
-  const keys = [...new Set(
-    copies
-      .filter((copy) => !copy.isThisMachine && !copy.online && copy.machineKey)
-      .map((copy) => copy.machineKey as string),
-  )].sort().join("\n");
+  const keys = unconnectedCopyMachineKeys(copies);
   useEffect(() => {
     if (!keys) return;
     const machineKeys = keys.split("\n");

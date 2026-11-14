@@ -211,7 +211,6 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       // A connect the person asked for never takes a background flight's
       // answer (that one may decline): it waits for it, then runs its own.
       const existing = found && found.background && !background ? null : found;
-      const waitFor = found && !existing ? found : null;
       // One flight per machine: a connect that finds a save-only pairing
       // running waits for it, then connects (the pairing is saved by then).
       // A save-only call that finds a connect running takes its pairing, not
@@ -221,7 +220,8 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
       let settlePaired!: (result: MachineConnectResult) => void;
       const paired = new Promise<MachineConnectResult>((resolve) => { settlePaired = resolve; });
       const promise = (async (): Promise<MachineConnectResult> => {
-        if (existing ?? waitFor) await (existing ?? waitFor)?.promise;
+        // Any flight still here is one this call waits for, then follows.
+        if (found) await found.promise;
         try {
           const result = await run(key, wantConnected, background, settlePaired);
           if (!result.ok) deps.logger?.warn?.("machines.connect_refused", { reason: result.reason, wantConnected, background });

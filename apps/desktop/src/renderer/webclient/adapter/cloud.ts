@@ -8,6 +8,7 @@ import type {
 import type { CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/cloudSavedChats";
 import type { AdapterInfra } from "./types";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -109,7 +110,13 @@ export function createWebCloudNamespace(infra: Pick<AdapterInfra, "client" | "co
     if (!(await access())) return null;
     try {
       return await commands.call<T | null>("cloud.read", { action, args }, { fallback: null, retainLastRead: false });
-    } catch {
+    } catch (error) {
+      // An older brain does not serve these reads ("cloud has no … here"):
+      // expected, and the list stays as it is. Anything else is worth counting.
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/^cloud has no "/.test(message)) {
+        forwardSignalToSentry("web.cloud_saved_chats_read_failed", { action }, `cloud_saved_chats_read_failed:${action}`, "info");
+      }
       return null;
     }
   };
