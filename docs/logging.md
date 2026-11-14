@@ -2354,11 +2354,11 @@ handlers make no analytics call for any method.
 The pricing page (`/pricing`, screen `pricing`) reuses the same events. It is
 hidden until ADE Cloud launches (`PRICING_PAGE_LIVE` in
 `apps/web/src/lib/siteFlags.ts`): no link points to it and production builds
-send the route home. A plan is bought inside ADE, so each plan card's button
-opens the install dialog and records the CTA event with `choose_plan_free`,
+send the route home. A paid plan's button links to the web app with
+`?cloudPlan=<plan>` (it signs in, then opens Stripe's checkout); Free's button
+opens the install dialog. Each records the CTA event with `choose_plan_free`,
 `choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
 `pricing_page`; the CTA names the plan, which shows which plan people want.
-The page's "Start free" button records `get_started_free` at `pricing_page`.
 Every link to the page (site header and its phone menu, the home page's ADE
 Cloud section, footer) records the `view_pricing` feature. The plan finder
 records `use_plan_finder` once per page view, on the visitor's first change to

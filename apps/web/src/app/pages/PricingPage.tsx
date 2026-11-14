@@ -71,7 +71,8 @@ const wrap = "mx-auto max-w-[1180px] px-5 sm:px-8";
  * `/pricing`: ADE Cloud's plans under the night sky of the home page. The
  * plans come first, as four towers of a small skyline; then what is coming,
  * a plan finder for the unsure, the details in tabs, and questions. Plans are
- * bought inside ADE, so every plan button starts by getting the app.
+ * bought through ADE's web app: a paid plan's button signs in there and goes
+ * to checkout. Free starts in the app.
  * Every number comes from `lib/cloudPricing.ts`, which reads the plan facts
  * the server bills with.
  */
@@ -215,6 +216,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
       <PlanButton
         cta={PLAN_CTAS[plan.id].cta}
         position={MARKETING_CTA_POSITIONS.PRICING_PAGE}
+        plan={plan.id}
         tone={free ? "lamp" : cheapest ? "violet" : "quiet"}
         className="mt-7 w-full"
       >
@@ -353,6 +355,7 @@ function PlanFinder() {
             <PlanButton
               cta={PLAN_CTAS[best.plan.id].cta}
               position={MARKETING_CTA_POSITIONS.PLAN_FINDER}
+              plan={best.plan.id}
               tone="lamp"
               className="mt-8 w-full"
             >
@@ -590,7 +593,8 @@ function FaqSection() {
         <SectionTitle id="faq-title" title="Questions" />
         <div className="mt-6 divide-y divide-white/[0.08] border-y border-white/[0.08]">
           <FaqItem question="How do I pick a plan?">
-            Get ADE, sign in, and pick a plan in Settings, under ADE Cloud. Free needs no credit card.
+            Press its button: ADE's web app signs you in and takes you to checkout. Or pick one in the ADE app, in
+            Settings under ADE Cloud. Free needs no credit card.
           </FaqItem>
           <FaqItem question="What is an hour?">
             One hour of a {SMALL?.label ?? "Small"} computer while it is awake. Bigger sizes count more:{" "}
