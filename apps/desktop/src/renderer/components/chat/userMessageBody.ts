@@ -5,7 +5,7 @@
  * searches the same text, so the two cannot drift: a branch added here is a
  * branch both of them take. Pure: no React, no components.
  */
-import type { AgentChatEvent } from "../../../shared/types/chat";
+import { hostContinuationReasonLabel, type AgentChatEvent } from "../../../shared/types/chat";
 import { splitChatOutputContextSegments, type ChatOutputContextSegment } from "../../../shared/chatOutputContext";
 import { parseThreadReviewBlock, type ParsedThreadReviewComment } from "../../../shared/threadComments";
 
@@ -39,28 +39,6 @@ type UserMessageBody =
   | { kind: "folded"; fold: FoldedMessage };
 
 export type FoldedMessageSource = "agent" | "automation" | "schedule" | "ade";
-
-type HostContinuationReason = NonNullable<NonNullable<UserMessageEvent["metadata"]>["hostContinuation"]>["reason"];
-
-/**
- * Why ADE wrote a message into the chat (`metadata.hostContinuation`), as the
- * ADE row's one line. iOS keeps the same list (`workAdeMessageReasonLabel`);
- * keep the two the same.
- */
-export const ADE_MESSAGE_REASON_LABEL: Record<HostContinuationReason, string> = {
-  interrupted_turn_recovery: "Resuming your last request after a restart",
-  stall_nudge: "Asked for a status check",
-  continuity_recovery: "Rebuilt this chat's thread from ADE history",
-  plan_followup: "Sent your plan decision",
-  background_work_ended: "A background job it was waiting on finished",
-  background_work_lost: "Background work it was waiting on was lost",
-  chat_wait: "A chat it was waiting on is ready",
-  subagent_question: "A subagent has a question",
-  subagent_awaiting_user: "A subagent is waiting on you",
-  provider_schedule_cleanup: "Cleaning up old provider schedules",
-  cto_intro: "Started the CTO's introduction",
-  cto_handoff_note: "Asked for a hand-off note",
-};
 
 export type FoldedMessage = {
   source: FoldedMessageSource;
@@ -133,7 +111,8 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
   // reader's bubble. The row says why; the words the agent read open below.
   const continuation = metadata.hostContinuation;
   if (continuation && typeof continuation.reason === "string") {
-    const reason = ADE_MESSAGE_REASON_LABEL[continuation.reason as HostContinuationReason];
+    // The host's line when it sent one, else this build's (`HOST_CONTINUATION_REASON_LABEL`).
+    const reason = continuation.label?.trim() || hostContinuationReasonLabel(continuation.reason);
     const fold = make("ade", "ADE", null);
     return reason ? { ...fold, preview: reason } : fold;
   }

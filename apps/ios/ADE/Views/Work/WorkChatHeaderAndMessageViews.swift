@@ -489,7 +489,7 @@ struct WorkChatMessageBubble: View, Equatable {
     if message.role == "assistant" {
       assistantRow
     } else if let adeReason = message.adeReason {
-      WorkAdeMessageRow(reason: adeReason, text: message.markdown)
+      WorkAdeMessageRow(reason: adeReason, hostLabel: message.adeReasonLabel, text: message.markdown)
     } else {
       userRow
     }
@@ -2295,8 +2295,10 @@ extension View {
   }
 }
 
-/// Why ADE wrote a message into the chat (`metadata.hostContinuation.reason`).
-/// The same list as desktop `ADE_MESSAGE_REASON_LABEL`; keep the two the same.
+/// Why ADE wrote a message into the chat (`metadata.hostContinuation.reason`),
+/// for an older host that sends no `label`. A current host stamps the line
+/// itself (desktop `HOST_CONTINUATION_REASON_LABEL`), so a new reason needs no
+/// change here.
 func workAdeMessageReasonLabel(_ reason: String) -> String {
   switch reason {
   case "interrupted_turn_recovery": return "Resuming your last request after a restart"
@@ -2321,11 +2323,13 @@ func workAdeMessageReasonLabel(_ reason: String) -> String {
 /// `ade`).
 struct WorkAdeMessageRow: View {
   let reason: String
+  /// The host's line (`metadata.hostContinuation.label`); nil from an older host.
+  var hostLabel: String? = nil
   let text: String
   @State private var isExpanded = false
 
   var body: some View {
-    let label = workAdeMessageReasonLabel(reason)
+    let label = hostLabel.flatMap { $0.isEmpty ? nil : $0 } ?? workAdeMessageReasonLabel(reason)
     VStack(alignment: .leading, spacing: 6) {
       Button {
         withAnimation(.easeOut(duration: 0.15)) { isExpanded.toggle() }

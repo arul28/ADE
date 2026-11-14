@@ -514,7 +514,7 @@ function SubagentAnswerUnsentNoticeRow({
   );
 }
 
-function CodexTurnRecoveryCard({
+function QuietTurnCard({
   event,
   sessionId,
   onRecover,
@@ -2936,7 +2936,7 @@ function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     /** Re-runs compaction through the pane's guarded compact action. */
@@ -3762,10 +3762,10 @@ function renderEvent(
 
   if (event.type === "codex_turn_stalled") {
     return (
-      <CodexTurnRecoveryCard
+      <QuietTurnCard
         event={event}
         sessionId={options?.sessionId}
-        onRecover={options?.onCodexRecovery}
+        onRecover={options?.onQuietTurnRecovery}
       />
     );
   }
@@ -5404,7 +5404,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   turnEndDurationMs?: number | null;
   turnToolEntries?: ChatWorkLogEntry[];
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -5492,7 +5492,7 @@ const EventRow = React.memo(function EventRow({
   turnEndDurationMs,
   turnToolEntries = [],
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -5623,7 +5623,7 @@ const EventRow = React.memo(function EventRow({
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
-            onCodexRecovery,
+            onQuietTurnRecovery,
             onRecoverContinuity,
             onRetryProviderFailure,
             onRetryCompaction,
@@ -6207,7 +6207,7 @@ function AgentChatMessageListMain({
   transcriptPending = false,
     className,
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -6288,7 +6288,7 @@ function AgentChatMessageListMain({
   transcriptPending?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -9104,7 +9104,7 @@ function AgentChatMessageListMain({
           inlineProof={inlineProof}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
-          onCodexRecovery={onCodexRecovery}
+          onQuietTurnRecovery={onQuietTurnRecovery}
           onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
           onRetryCompaction={onRetryCompaction}
@@ -9182,7 +9182,7 @@ function AgentChatMessageListMain({
         inlineProof={inlineProof}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
-        onCodexRecovery={onCodexRecovery}
+        onQuietTurnRecovery={onQuietTurnRecovery}
         onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
         onRetryCompaction={onRetryCompaction}
@@ -9238,7 +9238,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

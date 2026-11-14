@@ -651,7 +651,37 @@ export type AgentChatHostContinuationMetadata = {
     | "subagent_awaiting_user"
     /** The status check the stall card's Nudge sends, in ADE's words. */
     | "stall_nudge";
+  /**
+   * The ADE row's one line for `reason` (`HOST_CONTINUATION_REASON_LABEL`),
+   * stamped by the host so clients need no table of their own. Older hosts
+   * send none; clients then fall back to their own copy.
+   */
+  label?: string;
 };
+
+export type AgentChatHostContinuationReason = AgentChatHostContinuationMetadata["reason"];
+
+/** Why ADE wrote a message into the chat, as the ADE row's one line. The one source. */
+export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContinuationReason, string>> = {
+  interrupted_turn_recovery: "Resuming your last request after a restart",
+  stall_nudge: "Asked for a status check",
+  continuity_recovery: "Rebuilt this chat's thread from ADE history",
+  plan_followup: "Sent your plan decision",
+  background_work_ended: "A background job it was waiting on finished",
+  background_work_lost: "Background work it was waiting on was lost",
+  chat_wait: "A chat it was waiting on is ready",
+  subagent_question: "A subagent has a question",
+  subagent_awaiting_user: "A subagent is waiting on you",
+  provider_schedule_cleanup: "Cleaning up old provider schedules",
+  cto_intro: "Started the CTO's introduction",
+  cto_handoff_note: "Asked for a hand-off note",
+};
+
+/** The line for a reason, or null for a reason this build does not know. */
+export function hostContinuationReasonLabel(reason: string): string | null {
+  const labels: Readonly<Record<string, string>> = HOST_CONTINUATION_REASON_LABEL;
+  return Object.hasOwn(labels, reason) ? labels[reason] ?? null : null;
+}
 
 export type AgentChatContinuityRecovery = {
   state: "required" | "reconstructed";
@@ -6546,6 +6576,25 @@ export function isAgentChatTurnRecoveryAction(
     && (AGENT_CHAT_TURN_RECOVERY_ACTIONS as readonly string[]).includes(value);
 }
 
+/**
+ * `recoverTurn`'s action for each legacy `recoverCodexTurn` action, and back.
+ * The quiet card (every provider) speaks the legacy vocabulary on the wire so
+ * older hosts still answer it.
+ */
+export const TURN_RECOVERY_ACTION_BY_CODEX_ACTION: Readonly<Record<AgentChatCodexRecoveryAction, AgentChatTurnRecoveryAction>> = {
+  wait: "wait",
+  steer: "nudge",
+  interrupt_retry_same_thread: "retry_same_runtime",
+  restart_resume_thread: "restart_resume",
+};
+
+export const CODEX_RECOVERY_ACTION_BY_TURN_ACTION: Readonly<Record<AgentChatTurnRecoveryAction, AgentChatCodexRecoveryAction>> = {
+  wait: "wait",
+  nudge: "steer",
+  retry_same_runtime: "interrupt_retry_same_thread",
+  restart_resume: "restart_resume_thread",
+};
+
 export function isUnsupportedAgentChatRecoveryActionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -6568,6 +6617,11 @@ export type AgentChatRecoverTurnResult = {
   status: "waiting" | "nudged" | "retrying" | "resumed";
 };
 
+/**
+ * The legacy `recoverCodexTurn` wire contract. Its name and action vocabulary
+ * stay as old clients send them, though the quiet card it answers now serves
+ * every provider (`recoverTurn` is the provider-neutral call).
+ */
 export type AgentChatRecoverCodexTurnArgs = {
   sessionId: string;
   turnId: string;

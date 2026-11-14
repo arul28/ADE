@@ -111,9 +111,11 @@ const AGENT_ACTIVITY: ReadonlySet<string> = new Set([
   "subagent_started",
   "subagent_progress",
   "subagent_result",
+  // The canonical mirrors the chat service emits beside `subagent_started` /
+  // `subagent_progress` (`buildCanonicalAgentChatRuntimeEvent`). There is no
+  // live `subagent.completed`: `subagent_result` is a subagent's one end event.
   "subagent.started",
   "subagent.progress",
-  "subagent.completed",
   "step_boundary",
   "web_search",
   "sources",
@@ -132,6 +134,8 @@ export type ChatQuietWatchdog = ReturnType<typeof createChatQuietWatchdog>;
 export function createChatQuietWatchdog(options: {
   /** The watch went quiet past its budget. The watch is disarmed first; call `keepWaiting` to watch again. */
   onQuiet: (info: QuietInfo) => void;
+  /** The agent did something again after `onQuiet` fired for this turn. */
+  onActivityAfterQuiet?: (sessionId: string, turnId: string) => void;
   thresholdsFor?: (provider: string) => QuietThresholds;
   now?: () => number;
   /** Re-arming on activity is throttled to this (ms). */
@@ -140,7 +144,9 @@ export function createChatQuietWatchdog(options: {
   const now = options.now ?? (() => Date.now());
   const thresholdsFor = options.thresholdsFor ?? quietThresholdsFor;
   const granularity = options.rearmGranularityMs ?? 1_000;
-  const watches = new Map<string, QuietWatch & { timer: ReturnType<typeof setTimeout> | null; dueAt: number }>();
+  /** `quiet`: `onQuiet` fired and nothing from the agent has landed since. */
+  type Watch = QuietWatch & { timer: ReturnType<typeof setTimeout> | null; dueAt: number; quiet: boolean };
+  const watches = new Map<string, Watch>();
 
   const thresholdOf = (watch: QuietWatch): number => {
     const thresholds = thresholdsFor(watch.provider);
@@ -176,8 +182,22 @@ export function createChatQuietWatchdog(options: {
       schedule(sessionId);
       return;
     }
-    const { openCompactions: _open, timer: _timer, dueAt: _due, ...rest } = watch;
-    options.onQuiet({ ...rest, phase: phaseOf(watch), silentMs: at - watch.lastActivityAt, thresholdMs });
+    watch.quiet = true;
+    options.onQuiet(snapshotOf(watch, at));
+  };
+
+  const snapshotOf = (watch: Watch, at: number): QuietInfo => {
+    const { openCompactions: _open, timer: _timer, dueAt: _due, quiet: _quiet, ...rest } = watch;
+    return { ...rest, phase: phaseOf(watch), silentMs: at - watch.lastActivityAt, thresholdMs: thresholdOf(watch) };
+  };
+
+  /** Agent activity on the watch: it counts, and ends a silence `onQuiet` reported. */
+  const touch = (watch: Watch): void => {
+    watch.sawActivity = true;
+    watch.lastActivityAt = now();
+    if (!watch.quiet) return;
+    watch.quiet = false;
+    options.onActivityAfterQuiet?.(watch.sessionId, watch.turnId);
   };
 
   const arm = (args: { sessionId: string; provider: string; turnId: string; startedAt?: number }): void => {
@@ -196,6 +216,7 @@ export function createChatQuietWatchdog(options: {
       openCompactions: new Set(),
       timer: null,
       dueAt: 0,
+      quiet: false,
     });
     schedule(args.sessionId);
   };
@@ -204,8 +225,7 @@ export function createChatQuietWatchdog(options: {
   const activity = (sessionId: string, turnId?: string | null): void => {
     const watch = watches.get(sessionId);
     if (!watch || (turnId && turnId !== watch.turnId)) return;
-    watch.sawActivity = true;
-    watch.lastActivityAt = now();
+    touch(watch);
     schedule(sessionId);
   };
 
@@ -216,8 +236,7 @@ export function createChatQuietWatchdog(options: {
     if (state === "open") watch.openCompactions.add(key);
     else if (itemId?.trim()) watch.openCompactions.delete(key);
     else watch.openCompactions.clear();
-    watch.sawActivity = true;
-    watch.lastActivityAt = now();
+    touch(watch);
     schedule(sessionId);
   };
 
@@ -237,6 +256,7 @@ export function createChatQuietWatchdog(options: {
     const watch = watches.get(sessionId);
     if (!watch || watch.turnId !== turnId) return false;
     watch.lastActivityAt = now();
+    watch.quiet = false;
     if (watch.timer) clearTimeout(watch.timer);
     watch.timer = null;
     schedule(sessionId);
@@ -284,9 +304,7 @@ export function createChatQuietWatchdog(options: {
     observe,
     get: (sessionId: string): QuietInfo | null => {
       const watch = watches.get(sessionId);
-      if (!watch) return null;
-      const { openCompactions: _open, timer: _timer, dueAt: _due, ...rest } = watch;
-      return { ...rest, phase: phaseOf(watch), silentMs: now() - watch.lastActivityAt, thresholdMs: thresholdOf(watch) };
+      return watch ? snapshotOf(watch, now()) : null;
     },
     dispose: (): void => {
       for (const watch of watches.values()) if (watch.timer) clearTimeout(watch.timer);

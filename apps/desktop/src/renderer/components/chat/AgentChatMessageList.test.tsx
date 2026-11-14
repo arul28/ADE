@@ -177,7 +177,7 @@ function renderMessageList(
     onInsertDraft?: (text: string) => void;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
@@ -222,7 +222,7 @@ function renderMessageList(
         onInsertDraft={options?.onInsertDraft}
         onRevealChatTerminal={options?.onRevealChatTerminal}
         onApproval={options?.onApproval as any}
-        onCodexRecovery={options?.onCodexRecovery}
+        onQuietTurnRecovery={options?.onQuietTurnRecovery}
         onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
         onRestoreCancelledQueue={options?.onRestoreCancelledQueue}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
@@ -2216,7 +2216,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("runs Codex stalled-turn recovery actions against the source chat", async () => {
-    const onCodexRecovery = vi.fn().mockResolvedValue({
+    const onQuietTurnRecovery = vi.fn().mockResolvedValue({
       action: "wait",
       turnId: "turn-stalled",
       status: "waiting",
@@ -2235,11 +2235,11 @@ describe("AgentChatMessageList transcript rendering", () => {
           parentSessionId: "parent-session",
         },
       },
-    ], { sessionId: "parent-session", onCodexRecovery });
+    ], { sessionId: "parent-session", onQuietTurnRecovery });
 
     fireEvent.click(screen.getByRole("button", { name: "Keep waiting" }));
     await waitFor(() => {
-      expect(onCodexRecovery).toHaveBeenCalledWith({
+      expect(onQuietTurnRecovery).toHaveBeenCalledWith({
         sessionId: "child-session",
         turnId: "turn-stalled",
         action: "wait",
@@ -2253,7 +2253,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("shows a Codex recovery error without making the card inert", async () => {
-    const onCodexRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
+    const onQuietTurnRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
     renderMessageList([
       {
         sessionId: "session-1",
@@ -2266,7 +2266,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           recoveryOptions: ["restart_resume_thread"],
         },
       },
-    ], { sessionId: "session-1", onCodexRecovery });
+    ], { sessionId: "session-1", onQuietTurnRecovery });
 
     fireEvent.click(screen.getByRole("button", { name: "Restart Codex" }));
     expect((await screen.findByRole("alert")).textContent).toContain("no longer active");

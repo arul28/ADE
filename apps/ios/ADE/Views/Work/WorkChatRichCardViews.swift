@@ -1840,7 +1840,7 @@ struct WorkCodexRecoveryCardView: View {
   private var availableOptions: [String] {
     var seen = Set<String>()
     return card.recoveryOptions
-      .filter { workCodexRecoveryActionLabel(for: $0) != nil && seen.insert($0).inserted }
+      .filter { workQuietTurnActionLabel(for: $0) != nil && seen.insert($0).inserted }
       .prefix(4)
       .map { $0 }
   }
@@ -1935,7 +1935,7 @@ struct WorkCodexRecoveryCardView: View {
       if !moreOptions.isEmpty {
         Menu {
           ForEach(moreOptions, id: \.self) { option in
-            Button(workCodexRecoveryActionLabel(for: option, providerName: recoveryProviderName) ?? option) {
+            Button(workQuietTurnActionLabel(for: option, providerName: recoveryProviderName) ?? option) {
               Task { await recover(option) }
             }
             .disabled(!canRecover || pendingAction != nil)
@@ -1980,7 +1980,7 @@ struct WorkCodexRecoveryCardView: View {
 
   @ViewBuilder
   private func recoveryButton(for option: String) -> some View {
-    let label = workCodexRecoveryActionLabel(for: option, providerName: recoveryProviderName) ?? option
+    let label = workQuietTurnActionLabel(for: option, providerName: recoveryProviderName) ?? option
     let isPrimary = option == "restart_resume_thread"
     Button {
       Task { await recover(option) }
@@ -2031,7 +2031,7 @@ struct WorkCodexRecoveryCardView: View {
 
 /// The quiet card's button labels. One card for every provider: Restart names
 /// the chat's provider (a legacy Codex-only card passes none).
-func workCodexRecoveryActionLabel(for action: String, providerName: String = "Codex") -> String? {
+func workQuietTurnActionLabel(for action: String, providerName: String = "Codex") -> String? {
   switch action {
   case "wait": return "Keep waiting"
   case "steer": return "Send nudge"

@@ -157,9 +157,8 @@ import {
 import { piForkCutBeforePrompt } from "./piForkCut";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { createClientSendLedger } from "./chatClientSendLedger";
+import { createQuietTurnHandler, type TurnRecoveryState } from "./chatQuietTurn";
 import {
-  createChatQuietWatchdog,
-  formatQuietMinutes,
   quietThresholdsFor,
   type QuietInfo,
 } from "./chatQuietWatchdog";
@@ -918,6 +917,7 @@ import {
   CLAUDE_SYNTHETIC_MODEL,
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
+  hostContinuationReasonLabel,
   normalizeInboundFileRef,
   attachmentAgentPath,
   attachmentPathHint,
@@ -3955,8 +3955,9 @@ type CursorRuntime = {
 };
 
 /**
- * Bookkeeping for one turn's first-event watchdog. `seen` flips on the first
- * streamed worker event for the run and disarms the timer.
+ * What one local Cursor turn's stream has shown so far. `seen` flips on the
+ * first streamed worker event for the run. The silence itself is the shared
+ * quiet watchdog's (`chatQuietTurn.ts`); this holds no timer.
  */
 type CursorSdkSilenceWatch = {
   turnId: string;
@@ -3970,7 +3971,6 @@ type CursorSdkSilenceWatch = {
    * turn is asked to *continue* rather than to redo the request.
    */
   sawVisibleOutput: boolean;
-  disarm: (() => void) | null;
 };
 
 type DroidRuntime = {
@@ -8738,8 +8738,8 @@ function isCursorTurnAlreadyReported(error: unknown): boolean {
  * Counting it as stream activity marked the turn "seen" before the send
  * settled, which made the transport-result recovery branch unreachable in
  * production even though it was reachable in a test that emitted no events.
- * Only this terminal shape is excluded; every other event still disarms, so a
- * long tool call is still protected.
+ * Only this terminal shape is excluded; every other event still counts as
+ * the stream being seen.
  */
 function isCursorSdkTerminalErrorEvent(event: unknown): boolean {
   const record = asRecord(event);
@@ -8759,25 +8759,24 @@ function armCursorSdkSilenceWatch(
   runtime: CursorRuntime,
   turnId: string,
 ): CursorSdkSilenceWatch {
-  runtime.sdkSilenceWatch?.disarm?.();
-  const watch: CursorSdkSilenceWatch = { turnId, runId: null, seen: false, sawVisibleOutput: false, disarm: null };
+  const watch: CursorSdkSilenceWatch = { turnId, runId: null, seen: false, sawVisibleOutput: false };
   runtime.sdkSilenceWatch = watch;
   return watch;
 }
 
 /**
  * Called from the worker-event handlers: the first event for the active run
- * disarms the silence watchdog. Any streamed worker event counts — text,
- * reasoning, a tool call, a status change — because the failure being guarded
- * against is total silence, not slow output.
+ * marks the stream `seen`. Any streamed worker event counts — text,
+ * reasoning, a tool call, a status change — because what the transport and
+ * stale-token recoveries ask is whether anything streamed at all.
  *
  * `run_started` deliberately does NOT count: the wedged-thread failure mode is
  * exactly "the run is created and then nothing ever streams". Neither does
  * `run_result`, which is terminal rather than progress.
  *
  * Run-scoped as well as turn-scoped: settlement can clear a turn while its run
- * is still streaming, so late events from an abandoned run must not disarm the
- * next turn's watchdog. Fails open when either side lacks a runId.
+ * is still streaming, so late events from an abandoned run must not mark the
+ * next turn's watch seen. Fails open when either side lacks a runId.
  */
 function noteCursorSdkStreamActivity(
   runtime: CursorRuntime,
@@ -8789,9 +8788,6 @@ function noteCursorSdkStreamActivity(
   if (turnId && watch.turnId !== turnId) return;
   if (watch.runId && runId && watch.runId !== runId) return;
   watch.seen = true;
-  const disarm = watch.disarm;
-  watch.disarm = null;
-  disarm?.();
 }
 
 /**
@@ -8929,7 +8925,6 @@ function clearCursorSdkSilenceWatch(runtime: CursorRuntime, turnId?: string): vo
   const watch = runtime.sdkSilenceWatch;
   if (!watch) return;
   if (turnId && watch.turnId !== turnId) return;
-  watch.disarm?.();
   runtime.sdkSilenceWatch = null;
 }
 
@@ -14509,23 +14504,56 @@ export function createAgentChatService(args: {
     }
   };
   const lastPersistedPointerFingerprints = new Map<string, string>();
-  const codexRecoveryInFlight = new Set<string>();
   /** Retried user sends, recognized by their client id (`chatClientSendLedger.ts`). */
   const clientSends = createClientSendLedger({
     ttlMs: CLIENT_SEND_DEDUPE_MS,
     onDuplicate: ({ sessionId }) => logger.info("agent_chat.client_send_duplicate_dropped", { sessionId }),
   });
   /**
-   * The one "agent has gone quiet" watchdog for every provider
-   * (`chatQuietWatchdog.ts`), fed from `emitChatEvent`. It only ever posts the
-   * Restart / Keep waiting card (`handleQuietTurn`).
+   * The quiet card for every provider (`chatQuietTurn.ts`): its watchdog
+   * (`quietTurns`, fed from `emitChatEvent`), the Restart / Keep waiting card,
+   * and the card's actions. Codex's own reading of a silence is
+   * `handleCodexQuietTurn`; its restart stays `recoverCodexTurn`.
    */
-  const quietTurns = createChatQuietWatchdog({
-    onQuiet: (info) => handleQuietTurn(info),
+  const quietTurnHandler = createQuietTurnHandler<ManagedChatSession>({
+    logger,
+    getManaged: (sessionId) => managedSessions.get(sessionId) ?? null,
+    resolveParent: (parentSessionId) =>
+      managedSessions.get(parentSessionId) ?? (sessionService.get(parentSessionId) ? ensureManagedSession(parentSessionId) : null),
+    emitChatEvent: (managed, event) => emitChatEvent(managed, event),
+    persistChatState: (managed) => persistChatState(managed),
+    turnRunning: (managed) => sessionTurnRunning(managed),
+    pendingInputItemId: (managed) => latestLivePendingInputItemId(managed),
+    handleProviderQuiet: (managed, info) => handleCodexQuietTurn(managed, info),
+    recoverCodexTurn: (args) => recoverCodexTurn(args),
+    restart: {
+      stopTurn: async (managed) => {
+        await interrupt({ sessionId: managed.session.id, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
+      },
+      afterStop: async (managed, turnId) => {
+        const runtime = managed.runtime;
+        if (runtime?.kind !== "cursor") return;
+        // A silent Cursor thread can be wedged server-side (every later send
+        // hangs the same way), so its restart rotates onto a fresh agent
+        // seeded with the conversation, as a transport failure's does.
+        const carried = await recycleCursorSdkAgentThread(managed, runtime, "quiet_restart");
+        if (carried.length) cancelCarriedCursorSteers(managed, turnId, carried);
+      },
+      endProviderProcess: (managed) => {
+        teardownRuntime(managed, "restart", { backgroundLossCause: "explicit_restart" });
+        if (managed.session.status === "active") markSessionIdleWithFreshCache(managed);
+      },
+      resumeLastRequest: async (managed) => {
+        await sendMessage({
+          sessionId: managed.session.id,
+          text: "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress.",
+          // ADE's words on the user's click: an ADE row, not their bubble.
+          metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
+        }, { awaitDispatch: true });
+      },
+    },
   });
-  /** Turns whose quiet card is up, per chat: one card per silence. */
-  const quietCardTurnIds = new Map<string, Set<string>>();
-  const quietRecoveryInFlight = new Set<string>();
+  const quietTurns = quietTurnHandler.watchdog;
   const continuityRecoveryInFlight = new Set<string>();
   const unprocessedMessageResolutionInFlight = new Map<
     string,
@@ -25757,6 +25785,13 @@ export function createAgentChatService(args: {
     event: AgentChatEvent,
     options: CommitChatEventOptions = {},
   ): void => {
+    // A message ADE wrote carries its row's one line, so no client keeps its
+    // own table of reasons (`HOST_CONTINUATION_REASON_LABEL`).
+    const continuation = event.type === "user_message" ? event.metadata?.hostContinuation : undefined;
+    if (event.type === "user_message" && continuation && !continuation.label) {
+      const label = hostContinuationReasonLabel(continuation.reason);
+      if (label) event = { ...event, metadata: { ...event.metadata, hostContinuation: { ...continuation, label } } };
+    }
     if (event.type === "codex_token_usage") {
       const point = compactionSettingsFor(managed).atTokens;
       if (point) event = { ...event, usage: { ...event.usage, compactAtTokens: Math.min(point, event.usage.modelContextWindow || point), compactAtSource: "setting" } };
@@ -28543,7 +28578,7 @@ export function createAgentChatService(args: {
    * Codex on the shared quiet watchdog (`quietTurns`). These adapters keep
    * Codex's call sites: its raw app-server notifications are a sharper
    * progress signal than the chat events it emits, so they feed the watchdog
-   * too. What happens when the turn goes quiet is `handleQuietTurn`.
+   * too. What happens when the turn goes quiet is `chatQuietTurn.ts`.
    */
   const clearCodexNoFirstEventWatchdog = (managed: ManagedChatSession): void => {
     quietTurns.clear(managed.session.id);
@@ -30359,6 +30394,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    quietTurnHandler.forget(managed.session.id);
     clearAcceptedStartWatch(managed.session.id);
     claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
@@ -43762,7 +43798,7 @@ export function createAgentChatService(args: {
 
   /**
    * A compaction is silent work: the shared quiet watchdog gives it Codex's
-   * compaction budget (`chatQuietWatchdog.ts`) and, past it, `handleQuietTurn`
+   * compaction budget (`chatQuietWatchdog.ts`) and, past it, `handleCodexQuietTurn`
    * fails the compaction Codex never finished. A compaction is always in a
    * turn, but one whose start ADE missed still gets a watch.
    */
@@ -45191,201 +45227,46 @@ export function createAgentChatService(args: {
   }
 
   /**
-   * Post the quiet card: "<Provider> hasn't answered in N minutes" with
-   * Restart / Keep waiting, for every provider. This is all the quiet
-   * watchdog does: ADE never restarts, resends, or starts a queue here. Each
-   * action on the card is the user's, and the card's client sends it with the
-   * chat's pin, so it reaches the machine this chat runs on.
+   * Codex's reading of a silence the quiet watchdog reported: its app-server
+   * may show the turn moved on, or a compaction whose end it dropped. Returns
+   * false for every other provider (`chatQuietTurn.ts` decides those).
    */
-  function emitQuietTurnCard(
-    managed: ManagedChatSession,
-    args: {
-      turnId: string;
-      reason: "no_output" | "no_progress" | "runtime_state_unknown";
-      turnStartedAt: number;
-      lastProgressAt: number;
-      silentMs: number;
-    },
-  ): void {
-    const sessionId = managed.session.id;
-    const posted = quietCardTurnIds.get(sessionId) ?? new Set<string>();
-    if (posted.has(args.turnId)) return;
-    rememberBoundedId(posted, args.turnId, 64);
-    quietCardTurnIds.set(sessionId, posted);
-    const provider = managed.session.provider;
-    const name = providerDisplayLabel(provider, "The agent");
-    const message = `${name} hasn't answered in ${formatQuietMinutes(args.silentMs)}. Restart ${name}, or keep waiting.`;
-    const supportedActions: Extract<AgentChatEvent, { type: "turn_health" }>["supportedActions"] = ["wait", "restart_resume"];
-    const detectedAt = nowIso();
-    const turnStartedAt = new Date(args.turnStartedAt).toISOString();
-    const lastProgressAt = new Date(args.lastProgressAt).toISOString();
-    logger.warn("agent_chat.turn_quiet", {
-      sessionId,
-      provider,
-      threadId: managed.session.threadId ?? null,
-      turnId: args.turnId,
-      reason: args.reason,
-      silentMs: args.silentMs,
-    });
-    const health: Extract<AgentChatEvent, { type: "turn_health" }> = {
-      type: "turn_health",
-      provider,
-      turnId: args.turnId,
-      state: "stalled",
-      reason: args.reason,
-      message,
-      turnStartedAt,
-      lastProgressAt,
-      detectedAt,
-      recoveryCount: 0,
-      supportedActions,
-      // Kept on the wire for older clients; ADE never restarts on its own.
-      automaticRecoveryAttempted: false,
-      sourceSessionId: sessionId,
-    };
-    // Older Codex clients draw only the Codex-specific card.
-    const legacyCodexStall = (parentSessionId?: string): Extract<AgentChatEvent, { type: "codex_turn_stalled" }> => ({
-      type: "codex_turn_stalled",
-      turnId: args.turnId,
-      ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
-      reason: args.reason === "runtime_state_unknown" ? "app_server_state_unknown" : args.reason,
-      message,
-      recoveryOptions: ["wait", "restart_resume_thread"],
-      sourceSessionId: sessionId,
-      ...(parentSessionId ? { parentSessionId } : {}),
-      detectedAt,
-      turnStartedAt,
-      lastProgressAt,
-      automaticRecoveryAttempted: false,
-    });
-    emitChatEvent(managed, health);
-    if (provider === "codex") emitChatEvent(managed, legacyCodexStall(managed.session.orchestrationParentSessionId ?? undefined));
-    const parentSessionId = managed.session.orchestrationParentSessionId;
-    if (parentSessionId && parentSessionId !== sessionId) {
-      try {
-        const parent = managedSessions.get(parentSessionId) ?? (sessionService.get(parentSessionId) ? ensureManagedSession(parentSessionId) : null);
-        if (parent) {
-          emitChatEvent(parent, health);
-          if (provider === "codex") emitChatEvent(parent, legacyCodexStall(parentSessionId));
-          persistChatState(parent);
-        }
-      } catch (error) {
-        logger.warn("agent_chat.turn_quiet_parent_notice_failed", {
-          sessionId,
-          parentSessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    persistChatState(managed);
-  }
-
-  /**
-   * The shared quiet watchdog fired (`quietTurns`). A silence the chat can
-   * explain (the user owes an answer, a command is still running, Codex's
-   * app-server shows the turn moved on) is watched again; anything else posts
-   * the quiet card. Nothing here sends, restarts, or starts a queue.
-   */
-  function handleQuietTurn(info: QuietInfo): void {
-    const managed = managedSessions.get(info.sessionId);
-    if (!managed || managed.deleted || managed.closed) {
-      quietTurns.clear(info.sessionId);
-      return;
-    }
+  function handleCodexQuietTurn(managed: ManagedChatSession, info: QuietInfo): boolean {
     const runtime = managed.runtime;
-    if (runtime?.kind === "codex") {
-      if (!isCodexSilentTurnStillCurrent(managed, runtime, info.turnId)) {
-        quietTurns.clear(info.sessionId, info.turnId);
-        return;
-      }
-      if (info.phase === "compaction") {
-        // Codex dropped the compaction's end: fail it, which ends the
-        // compaction phase and watches the turn mid-turn from here.
-        failOpenCodexCompactions(managed, runtime, "timed_out");
-        quietTurns.compaction(info.sessionId, "closed", null, info.turnId);
-        return;
-      }
-      void reconcileCodexSilentTurn(
-        managed,
-        runtime,
-        info.turnId,
-        info.phase === "first_event" ? "no_output" : "no_progress",
-        info.startedAt,
-        info.lastActivityAt,
-      ).catch((error) => {
-        logger.warn("agent_chat.codex_stall_reconcile_failed", {
-          sessionId: managed.session.id,
-          turnId: info.turnId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        emitQuietTurnCard(managed, {
-          turnId: info.turnId,
-          reason: "runtime_state_unknown",
-          turnStartedAt: info.startedAt,
-          lastProgressAt: info.lastActivityAt,
-          silentMs: Date.now() - info.lastActivityAt,
-        });
-      });
-      return;
-    }
-    // The watch is this turn's (a terminal event clears it), so a chat that
-    // is still mid-turn is still in the turn that went quiet.
-    if (!sessionTurnRunning(managed)) {
+    if (runtime?.kind !== "codex") return false;
+    if (!isCodexSilentTurnStillCurrent(managed, runtime, info.turnId)) {
       quietTurns.clear(info.sessionId, info.turnId);
-      return;
+      return true;
     }
-    // The user owes an answer (an approval, a question): not the agent's silence.
-    if (latestLivePendingInputItemId(managed)) {
-      logger.info("agent_chat.quiet_watch_suspended", { sessionId: info.sessionId, turnId: info.turnId, reason: "waiting_on_input" });
-      quietTurns.keepWaiting(info.sessionId, info.turnId);
-      return;
+    if (info.phase === "compaction") {
+      // Codex dropped the compaction's end: fail it, which ends the
+      // compaction phase and watches the turn mid-turn from here.
+      failOpenCodexCompactions(managed, runtime, "timed_out");
+      quietTurns.compaction(info.sessionId, "closed", null, info.turnId);
+      return true;
     }
-    // A running command or tool with buffered output is work, not silence.
-    if (info.phase === "mid_turn" && (managed.turnOpenWork?.size ?? 0) > 0) {
-      logger.info("agent_chat.quiet_watch_suspended", { sessionId: info.sessionId, turnId: info.turnId, reason: "open_work" });
-      quietTurns.keepWaiting(info.sessionId, info.turnId);
-      return;
-    }
-    emitQuietTurnCard(managed, {
-      turnId: info.turnId,
-      reason: info.phase === "first_event" ? "no_output" : "no_progress",
-      turnStartedAt: info.startedAt,
-      lastProgressAt: info.lastActivityAt,
-      silentMs: info.silentMs,
+    void reconcileCodexSilentTurn(
+      managed,
+      runtime,
+      info.turnId,
+      info.phase === "first_event" ? "no_output" : "no_progress",
+      info.startedAt,
+      info.lastActivityAt,
+    ).catch((error) => {
+      logger.warn("agent_chat.codex_stall_reconcile_failed", {
+        sessionId: managed.session.id,
+        turnId: info.turnId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      quietTurnHandler.postCard(managed, {
+        turnId: info.turnId,
+        reason: "runtime_state_unknown",
+        turnStartedAt: info.startedAt,
+        lastProgressAt: info.lastActivityAt,
+        silentMs: Date.now() - info.lastActivityAt,
+      });
     });
-  }
-
-  function emitCodexTurnRecovery(
-    managed: ManagedChatSession,
-    args: {
-      turnId: string;
-      action: "restart_resume_thread";
-      state: "recovering" | "recovered" | "failed";
-      message: string;
-      automatic: boolean;
-    },
-  ): void {
-    const at = nowIso();
-    emitChatEvent(managed, {
-      type: "turn_recovery",
-      provider: managed.session.provider,
-      turnId: args.turnId,
-      action: "restart_resume",
-      state: args.state,
-      message: args.message,
-      automatic: args.automatic,
-      at,
-      recoveryCount: 1,
-    });
-    emitChatEvent(managed, {
-      type: "codex_turn_recovery",
-      turnId: args.turnId,
-      action: args.action,
-      state: args.state,
-      message: args.message,
-      automatic: args.automatic,
-      at,
-    });
+    return true;
   }
 
   function emitCodexErrorOnce(
@@ -45670,7 +45551,7 @@ export function createAgentChatService(args: {
       // here and send its own "Resume the interrupted work" message, which a
       // slow Codex (an ADE Cloud computer starting its MCP servers) read as a
       // second request and which ran Codex's queue with nobody asking.
-      emitQuietTurnCard(managed, {
+      quietTurnHandler.postCard(managed, {
         turnId,
         reason: threadId && !stateProbeFailed ? stallReason : "runtime_state_unknown",
         turnStartedAt,
@@ -60402,8 +60283,8 @@ export function createAgentChatService(args: {
       runtime.sdkControlBuffer = null;
       runtime.sdkAgentId = event.agentId;
       runtime.sdkRunId = event.runId;
-      // Scope the in-flight turn's watchdog to this run so a previously
-      // abandoned run's late events cannot disarm it.
+      // Scope the in-flight turn's watch to this run so a previously
+      // abandoned run's late events cannot mark it seen.
       if (runtime.sdkSilenceWatch && runtime.sdkSilenceWatch.runId === null) {
         runtime.sdkSilenceWatch.runId = event.runId;
       }
@@ -69170,8 +69051,8 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const rt = managed.runtime;
       rt.interrupted = true;
-      // An interrupted turn is not a wedged thread: disarm before cancelling so
-      // the watchdog cannot rotate the agent out from under the user.
+      // An interrupted turn is not a wedged thread: drop its stream watch
+      // before cancelling so no recovery reads it as one.
       clearCursorSdkSilenceWatch(rt);
       const activeCloudRunId = rt.activeCloudRunId;
       if (activeCloudRunId && managed.session.cursorCloudAgentId) {
@@ -69193,10 +69074,18 @@ export function createAgentChatService(args: {
           }
         }
       } else {
-        try {
-          await rt.sdk.cancel();
-        } catch {
-          // ignore
+        // Bounded like `recycleCursorSdkAgentThread`: a wedged thread never
+        // answers the cancel, and an unbounded await would hang Stop, Restart
+        // session and the quiet card's Restart behind it.
+        const cancelled = await Promise.race([
+          rt.sdk.cancel().then(() => true, () => true),
+          sleepMs(CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS).then(() => false),
+        ]);
+        if (!cancelled) {
+          logger.warn("agent_chat.cursor_cancel_timed_out", {
+            sessionId: managed.session.id,
+            timeoutMs: CURSOR_SDK_RECYCLE_CANCEL_TIMEOUT_MS,
+          });
         }
       }
       settleCursorPermissionWaiters(
@@ -70344,26 +70233,11 @@ export function createAgentChatService(args: {
     if (!runtime || activeTurnId !== normalizedTurnId) {
       throw new Error("This stalled Codex turn is no longer active.");
     }
-    const recoveryKey = `${sessionId}:${normalizedTurnId}`;
-    if (codexRecoveryInFlight.has(recoveryKey)) {
-      throw new Error("A recovery action is already running for this Codex turn.");
-    }
-    codexRecoveryInFlight.add(recoveryKey);
-    quietCardTurnIds.get(sessionId)?.delete(normalizedTurnId);
 
-    try {
+    return await quietTurnHandler.runRecovery(sessionId, normalizedTurnId, "A recovery action is already running for this Codex turn.", async () => {
       if (action === "wait") {
-        // Watch again: if Codex is still silent, the card comes back.
-        if (!quietTurns.keepWaiting(sessionId, normalizedTurnId)) {
-          scheduleCodexNoFirstEventWatchdog(managed, runtime, normalizedTurnId);
-        }
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: "Continuing to wait for Codex output.",
-          turnId: normalizedTurnId,
-        });
-        return { action, turnId: normalizedTurnId, status: "waiting" };
+        quietTurnHandler.waitAgain(managed, normalizedTurnId, "Codex output");
+        return { action, turnId: normalizedTurnId, status: "waiting" as const };
       }
 
       if (action === "steer") {
@@ -70374,192 +70248,73 @@ export function createAgentChatService(args: {
           metadata: { hostContinuation: { reason: "stall_nudge" } },
         });
         markCodexTurnProgress(managed, runtime, runtime.activeTurnId ?? normalizedTurnId);
-        return { action, turnId: normalizedTurnId, status: "nudged" };
+        return { action, turnId: normalizedTurnId, status: "nudged" as const };
       }
 
       if (action !== "interrupt_retry_same_thread" && action !== "restart_resume_thread") {
         throw new Error(`Unsupported Codex recovery action: ${String(action)}`);
       }
 
-      codexQueueStartHolds.add(sessionId);
-      await interrupt({ sessionId }, { keepProviderQueue: true });
-      const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
-      if (managed.runtime === runtime && interruptedTurnId) {
-        finishCodexTurnInterruptedLocally(
-          managed,
-          runtime,
-          interruptedTurnId,
-          action === "restart_resume_thread"
-            ? "Interrupted so ADE could restart and resume the Codex thread"
-            : "Interrupted so ADE could retry the Codex turn",
-        );
-      }
-
-      if (action === "restart_resume_thread") {
-        teardownRuntime(managed, "handle_close");
-        await resumeSession({ sessionId });
-      }
-
-      await sendMessage({
-        sessionId,
-        text: action === "restart_resume_thread"
-          ? "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress."
-          : "Retry the interrupted work from the user's last request in this thread. Re-check the current workspace state, continue safely, and report progress.",
-        // Resumes the user's own last request; it assigns no new work, so a
-        // spawned child stays owned by whoever owned it before the interrupt.
-        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
-      }, { awaitDispatch: true });
-      if (action === "restart_resume_thread") {
-        emitCodexTurnRecovery(managed, {
-          turnId: normalizedTurnId,
-          action,
-          state: "recovered",
-          message: "Codex restarted and the thread resumed.",
-          automatic: false,
-        });
+      const restarting = action === "restart_resume_thread";
+      const emitRestart = (state: TurnRecoveryState, message: string): void => {
+        quietTurnHandler.emitTurnRecovery(managed, { turnId: normalizedTurnId, state, message, automatic: false });
         persistChatState(managed);
-      }
-      return {
-        action,
-        turnId: normalizedTurnId,
-        status: action === "restart_resume_thread" ? "resumed" : "retrying",
       };
-    } catch (error) {
-      if (action === "restart_resume_thread") {
-        emitCodexTurnRecovery(managed, {
-          turnId: normalizedTurnId,
+      try {
+        codexQueueStartHolds.add(sessionId);
+        await interrupt({ sessionId }, { keepProviderQueue: true });
+        const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId;
+        if (managed.runtime === runtime && interruptedTurnId) {
+          finishCodexTurnInterruptedLocally(
+            managed,
+            runtime,
+            interruptedTurnId,
+            restarting
+              ? "Interrupted so ADE could restart and resume the Codex thread"
+              : "Interrupted so ADE could retry the Codex turn",
+          );
+        }
+
+        if (restarting) {
+          teardownRuntime(managed, "handle_close");
+          await resumeSession({ sessionId });
+        }
+
+        await sendMessage({
+          sessionId,
+          text: restarting
+            ? "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress."
+            : "Retry the interrupted work from the user's last request in this thread. Re-check the current workspace state, continue safely, and report progress.",
+          // Resumes the user's own last request; it assigns no new work, so a
+          // spawned child stays owned by whoever owned it before the interrupt.
+          metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
+        }, { awaitDispatch: true });
+        if (restarting) emitRestart("recovered", "Codex restarted and the thread resumed.");
+        return {
           action,
-          state: "failed",
-          message: error instanceof Error ? error.message : String(error),
-          automatic: false,
-        });
-        persistChatState(managed);
+          turnId: normalizedTurnId,
+          status: restarting ? "resumed" as const : "retrying" as const,
+        };
+      } catch (error) {
+        if (restarting) emitRestart("failed", error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        codexQueueStartHolds.delete(sessionId);
       }
-      throw error;
-    } finally {
-      codexQueueStartHolds.delete(sessionId);
-      codexRecoveryInFlight.delete(recoveryKey);
-    }
+    });
   };
 
   /**
-   * The quiet card's actions (`emitQuietTurnCard`), for every provider. Codex
+   * The quiet card's actions, for every provider (`chatQuietTurn.ts`). Codex
    * keeps its own restart (`recoverCodexTurn`: interrupt, restart the
    * app-server, resume the thread, Codex's queue held until the resumed turn
-   * ends). Every other provider restarts the way Restart session does
-   * (`restartSession`): stop the turn, end the provider process, keep the
-   * conversation. Queued follow-ups are set aside as a restorable "cancelled"
-   * group, never run by the restart. Then the fresh process picks up the
-   * user's last request from an ADE-written message (an ADE row, not the
-   * user's bubble).
+   * ends); every other provider restarts the way Restart session does.
    */
   const recoverTurn = async (
     args: AgentChatRecoverTurnArgs,
   ): Promise<AgentChatRecoverTurnResult> => {
     assertChatNotMovedAway(args.sessionId, "recover_turn");
-    const managed = ensureManagedSession(args.sessionId);
-    if (managed.session.provider === "codex") {
-      const legacyAction = {
-        wait: "wait",
-        nudge: "steer",
-        retry_same_runtime: "interrupt_retry_same_thread",
-        restart_resume: "restart_resume_thread",
-      }[args.action] as AgentChatRecoverCodexTurnArgs["action"];
-      const result = await recoverCodexTurn({
-        sessionId: args.sessionId,
-        turnId: args.turnId,
-        action: legacyAction,
-      });
-      return {
-        action: args.action,
-        turnId: result.turnId,
-        status: result.status,
-      };
-    }
-    return await recoverQuietTurn(managed, args);
-  };
-
-  const recoverQuietTurn = async (
-    managed: ManagedChatSession,
-    { sessionId, turnId, action }: AgentChatRecoverTurnArgs,
-  ): Promise<AgentChatRecoverTurnResult> => {
-    const normalizedTurnId = turnId.trim();
-    if (!normalizedTurnId) throw new Error("Turn recovery requires a turn id.");
-    const name = providerDisplayLabel(managed.session.provider, "The agent");
-    if (!sessionTurnRunning(managed) || quietTurns.get(sessionId)?.turnId !== normalizedTurnId) {
-      throw new Error(`This ${name} turn is no longer running.`);
-    }
-    if (action !== "wait" && action !== "restart_resume") {
-      throw new Error(`${name} turns offer Restart or Keep waiting.`);
-    }
-    const recoveryKey = `${sessionId}:${normalizedTurnId}`;
-    if (quietRecoveryInFlight.has(recoveryKey)) {
-      throw new Error(`A recovery action is already running for this ${name} turn.`);
-    }
-    quietRecoveryInFlight.add(recoveryKey);
-    quietCardTurnIds.get(sessionId)?.delete(normalizedTurnId);
-    const emitRecovery = (state: "recovering" | "recovered" | "failed", message: string): void => {
-      emitChatEvent(managed, {
-        type: "turn_recovery",
-        provider: managed.session.provider,
-        turnId: normalizedTurnId,
-        action: "restart_resume",
-        state,
-        message,
-        automatic: false,
-        at: nowIso(),
-        recoveryCount: 1,
-      });
-    };
-    try {
-      if (action === "wait") {
-        // Watch again: if it stays silent, the card comes back.
-        if (!quietTurns.keepWaiting(sessionId, normalizedTurnId)) {
-          quietTurns.arm({ sessionId, provider: managed.session.provider, turnId: normalizedTurnId });
-        }
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message: `Continuing to wait for ${name}.`,
-          turnId: normalizedTurnId,
-        });
-        return { action, turnId: normalizedTurnId, status: "waiting" };
-      }
-
-      emitRecovery("recovering", `Restarting ${name}.`);
-      quietTurns.clear(sessionId, normalizedTurnId);
-      // Stop and set the queue aside (restorable), so nothing the user queued
-      // starts in the gap or ahead of the resumed request.
-      await interrupt({ sessionId, mode: DEFAULT_AGENT_CHAT_STOP_MODE });
-      const runtime = managed.runtime;
-      if (runtime?.kind === "cursor") {
-        // A silent Cursor thread can be wedged server-side (every later send
-        // hangs the same way), so its restart rotates onto a fresh agent
-        // seeded with the conversation, as a transport failure's does.
-        const carried = await recycleCursorSdkAgentThread(managed, runtime, "quiet_restart");
-        if (carried.length) cancelCarriedCursorSteers(managed, normalizedTurnId, carried);
-      }
-      teardownRuntime(managed, "restart", { backgroundLossCause: "explicit_restart" });
-      if (managed.session.status === "active") markSessionIdleWithFreshCache(managed);
-      persistChatState(managed);
-      await sendMessage({
-        sessionId,
-        text: "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress.",
-        // ADE's words on the user's click: an ADE row, not their bubble.
-        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
-      }, { awaitDispatch: true });
-      emitRecovery("recovered", `${name} restarted and picked up your last request.`);
-      persistChatState(managed);
-      return { action, turnId: normalizedTurnId, status: "resumed" };
-    } catch (error) {
-      if (action === "restart_resume") {
-        emitRecovery("failed", error instanceof Error ? error.message : String(error));
-        persistChatState(managed);
-      }
-      throw error;
-    } finally {
-      quietRecoveryInFlight.delete(recoveryKey);
-    }
+    return await quietTurnHandler.recoverTurn(ensureManagedSession(args.sessionId), args);
   };
 
   const assertRecoveryTargetOwned = async (args: {
@@ -73240,6 +72995,7 @@ export function createAgentChatService(args: {
     managed.deleted = true;
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    quietTurnHandler.forget(sessionId);
     clearAcceptedStartWatch(sessionId);
     claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
@@ -76072,6 +75828,7 @@ export function createAgentChatService(args: {
     turnStartStampsBySession.delete(trimmedSessionId);
     remoteDeviceTargetsBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
+    quietTurnHandler.forget(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const recoverable = rememberDeletedChat(current, deletedManaged ?? null, persistedMetadataPath, deleteOptions.remember === true);
@@ -76242,7 +75999,7 @@ export function createAgentChatService(args: {
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
-    quietTurns.dispose();
+    quietTurnHandler.dispose();
     warmIdleCompaction.dispose();
     warmIdleRearmStopped = true;
     if (warmIdleRearmTimer) clearTimeout(warmIdleRearmTimer);

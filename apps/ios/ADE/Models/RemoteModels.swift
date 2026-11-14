@@ -3307,6 +3307,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// nil. Such a message draws as an "ADE" row with that reason, never as the
   /// reader's bubble.
   var userMessageAdeReason: String?
+  /// The host's one line for that reason (`metadata.hostContinuation.label`);
+  /// nil from an older host, which falls back to `workAdeMessageReasonLabel`.
+  var userMessageAdeReasonLabel: String?
   /// The name of the other person who wrote a `user_message` on a shared lane
   /// (`metadata.author.kind == "guest"`): the bubble says "From <name>", so a
   /// guest's message never reads as the owner's own. Empty when the guest has
@@ -3402,6 +3405,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
     var metadataHostContinuationReason: String?
+    var metadataHostContinuationLabel: String?
     var metadataMarksRecoveryHandOff = false
     var metadataMarksRestartResume = false
     var metadataGuestAuthorName: String?
@@ -3417,6 +3421,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
 
     private struct HostContinuation: Decodable {
       var reason: String?
+      var label: String?
     }
 
     private struct MetadataKey: CodingKey {
@@ -3477,6 +3482,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         }
         if let continuation = try? metadata.decodeIfPresent(HostContinuation.self, forKey: MetadataKey("hostContinuation")) {
           metadataHostContinuationReason = continuation.reason ?? ""
+          metadataHostContinuationLabel = continuation.label
         }
         if let author = try? metadata.decodeIfPresent(MessageAuthor.self, forKey: MetadataKey("author")),
            author.kind == "guest" {
@@ -3550,6 +3556,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
     userMessageAdeReason = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationReason : nil
+    userMessageAdeReasonLabel = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationLabel : nil
     userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true

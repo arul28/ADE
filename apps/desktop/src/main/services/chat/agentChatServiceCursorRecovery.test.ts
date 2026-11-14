@@ -2196,7 +2196,12 @@ describe("createAgentChatService", () => {
       expect(done[0]?.event).toMatchObject({ type: "done", status: "interrupted" });
     });
 
-    it("posts the quiet card for a silent Cursor run, never re-sends it, and rotates only when the user restarts", async () => {
+    it.each([
+      ["answers the cancel", false],
+      // A wedged thread can leave the cancel unanswered: Restart must still
+      // reach the rotation instead of hanging behind it.
+      ["never answers the cancel", true],
+    ])("posts the quiet card for a silent Cursor run, never re-sends it, and rotates only when the user restarts (thread %s)", async (_label, cancelHangs) => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -2242,12 +2247,21 @@ describe("createAgentChatService", () => {
         // The user restarts: the wedged run is stopped, the thread rotated onto
         // a fresh agent seeded with the conversation, and the last request
         // picked up in ADE's words.
-        mockState.onCursorCancel = () => {
-          mockState.onCursorCancel = null;
-          releaseWedged();
-        };
+        if (cancelHangs) {
+          wedgedPooled.cancel.mockImplementation(() => new Promise<void>(() => {}));
+        } else {
+          mockState.onCursorCancel = () => {
+            mockState.onCursorCancel = null;
+            releaseWedged();
+          };
+        }
         const turnId = card?.type === "turn_health" ? card.turnId : "";
         const restarted = service.recoverTurn({ sessionId: session.id, turnId, action: "restart_resume" });
+        if (cancelHangs) {
+          // Stop's cancel, then the rotation's: each gives up after its bound.
+          await flushCursorSdkSilenceRecycle();
+          await flushCursorSdkSilenceRecycle();
+        }
         await pumpUntil("restart re-send", () => mockState.cursorSdkSendCalls.length >= 3);
         await expect(restarted).resolves.toMatchObject({ status: "resumed" });
 
