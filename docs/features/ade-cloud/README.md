@@ -765,12 +765,20 @@ renames the lane and its branch (`cloudLaneConfig` keeps `autoName` whenever a
 local launch would be auto-named; a name the person chose is kept). The desktop
 follows a finished launch until that name lands, so the card and the
 computer's branch metadata get it. The computer's own name is set from the
-first name and stays internal.
+first name, and follows each rename (below).
 
 **Renames.** A cloud computer's brain writes a lane's new name to its
 computer's `ade_lane_name` metadata when that lane is the one the computer was
-made for (`cloudLaneNameSync.ts`). The write goes through the account server
-and wakes nothing.
+made for (`cloudLaneNameSync.ts`), and renames the computer and its account
+machine to it (cleaned of control characters and cut to 60 characters by
+`normalizeCloudMachineName`), whoever started the launch. Only its own
+computer (`ADE_CLOUD_INSTANCE_ID`) and the machine key on it; the server checks
+both are the account's, and cleans every computer name and custom machine name
+it is sent (`boundedDisplayText`: control and format characters out, except
+the zero-width joiner and non-joiner that emoji and Persian or Indic names need;
+60 and 80 characters). The writes go through the account server and wake
+nothing; a failed one is tried twice more with a doubling wait, never for a
+computer that is gone.
 
 A CLI session can also be the first session in a new ADE Cloud lane, but only
 from the app (pick CLI, then Run on: ADE Cloud). The computer's brain parks the
@@ -1331,6 +1339,33 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   names the cloud computer's disk (not the disk of the computer the person is
   on), then the grow under way, or the refusal's reason and way out (a bigger
   size, extra disk, a plan, Clear caches).
+- A lane launch's setup that fills the disk (every size starts at 4 GB, and a
+  big repository's install, such as ADE's own npm packages, outgrows it): the
+  setup step reads `ENOSPC` anywhere in the command's output (its start and
+  its last 64 KB) and says so in one sentence with the line that said it
+  (`laneSetupDiskFullError`). A file-watcher limit (`ENOSPC: System limit for
+  number of file watchers`) is not a full disk and shows as itself. On a cloud
+  computer (`cloudDiskGrower.setupDisk`) each setup run keeps a 4 MB reserve
+  (written off the event loop)
+  on the disk and reads its free space every 2 seconds while it runs (a local
+  statfs); an `ENOSPC` grows only when the run's lowest reading was really short
+  (under 1 GB or 10% free, or past the guard's warning), since a failed install
+  that deletes what it wrote reads roomy again right after. A launch grows
+  again only when its run's peak use (the disk's size less that low point)
+  passed the last grown run's, so an installer that leaves files behind and
+  frees them in the next run still grows each step (four grows at most). A grow
+  counts toward that only once the launch's mark is saved. The reserve
+  is freed, the launch record is marked `awaitingRoom` (no grow when that write
+  fails: "free some space or Clear caches, then retry"), and the grower asks
+  for one step (the same server rules, only while no other work and at most
+  this one setup runs). The environment stage keeps running with "growing it to
+  N GB", which the boot launch also reports. The grow restarts the computer;
+  the brain opens the projects with waiting launches at start, and the reloaded
+  record is not "interrupted": its setup runs again by itself. Start now during
+  the wait starts the agent right after the restart. A refused grow fails the
+  stage with the refusal's way out (extra disk, a bigger size, a plan) and
+  Retry; a boot launch keeps following a failed launch across restarts, so a
+  Retry that grows goes on with nobody watching.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

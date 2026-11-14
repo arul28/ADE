@@ -30219,24 +30219,47 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
-  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
+  const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? async () => {
+        const sources = { projectRegistry, scopeRegistry };
+        const [facts, nextWakeAt] = await Promise.all([
+          readMachineBusyFacts({ ...sources, personalChatScope }),
+          readMachineNextScheduledWakeAt(sources),
+        ]);
+        const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
+          ...facts,
+          setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+          holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+        }, Date.now());
+        // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+        // one goes to the account server, which wakes the machine for it.
+        return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
+      }
+    : null;
+  // A lane launch's setup filled the disk: grow it now, while nothing else
+  // runs, and the launch's setup runs again after the restart. The launch
+  // itself still reads as `lane_setup` while it waits, so that one setup
+  // doesn't hold the grow back; a second one running does (the restart
+  // would cut it off).
+  const laneSetupDisk = cloudDiskGrower && readCloudBusy
+    ? cloudDiskGrower.setupDisk(async () => {
+        const busy = await readCloudBusy();
+        const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+        if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
+          headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
+            reasons: others,
+            laneSetups: busy.laneSetups,
+            waitingOnPerson: Boolean(busy.waitingOnPerson),
+          });
+          return false;
+        }
+        return true;
+      })
+    : null;
+  const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
-        readBusy: async () => {
-          const sources = { projectRegistry, scopeRegistry };
-          const [facts, nextWakeAt] = await Promise.all([
-            readMachineBusyFacts({ ...sources, personalChatScope }),
-            readMachineNextScheduledWakeAt(sources),
-          ]);
-          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
-            ...facts,
-            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
-            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
-          }, Date.now());
-          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
-          // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt, waitingOnPerson };
-        },
+        readBusy: readCloudBusy,
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
@@ -31044,6 +31067,7 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    ...(laneSetupDisk ? { laneSetupDisk } : {}),
     // Older clones saved the GitHub sign-in header in .git/config: take it out
     // once per project, off the open path (one file read when there is none).
     onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
@@ -31630,6 +31654,27 @@ async function runServe(
       };
     },
   });
+
+  // A lane launch's setup that filled the disk waits through the grow's
+  // restart (`awaitingRoom`): its project opens now, so the launch goes on
+  // (and reads as busy, so the computer stays awake) with nobody watching.
+  if (!embedded && cloudInstanceId) {
+    void (async () => {
+      const [{ hasChatLaunchAwaitingRoom }, { resolveAdeLayout }] = await Promise.all([
+        import("../../desktop/src/main/services/chat/chatLaunchRecords"),
+        import("../../desktop/src/shared/adeLayout"),
+      ]);
+      for (const project of projectRegistry.list()) {
+        if (!hasChatLaunchAwaitingRoom(path.join(resolveAdeLayout(project.rootPath).cacheDir, "chat-launches"))) continue;
+        headlessProjectLogger.info("cloud.lane_setup_resume_open", { projectId: project.projectId });
+        await scopeRegistry.get(project.projectId).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.lane_setup_resume_open_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+    })().catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud.lane_setup_resume_scan_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
 
   // A server launch (C6): ADE's server made this computer for a caller with
   // no computer and named the launch in its env. The computer signs itself

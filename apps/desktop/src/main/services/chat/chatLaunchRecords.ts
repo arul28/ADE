@@ -29,6 +29,12 @@ export type ChatLaunchRecord = {
   startNowRequested: boolean;
   /** A checkout already ran once, so a retry must first clear its leftovers. */
   checkoutAttempted: boolean;
+  /**
+   * The setup filled the disk and the host is making room (an ADE Cloud
+   * computer grows its disk, which restarts it). Revived still running, and
+   * its setup runs again (`makeRoomForEnvironment` in chatLaunchService.ts).
+   */
+  awaitingRoom?: boolean;
 };
 
 /**
@@ -42,14 +48,17 @@ const RELOAD_SEQUENCE_JUMP = 1_000_000;
 /**
  * Bring a persisted record back after a restart, or return null to drop it.
  * Finished launches are dropped unless they still owe the chat a queued
- * message; one that was mid-flight is marked failed ("interrupted").
+ * message; one that was mid-flight is marked failed ("interrupted"), except
+ * one waiting for room on the disk, which goes on.
  */
 function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatLaunchRecord | null {
   const snapshot = record?.snapshot;
   if (!snapshot || typeof snapshot.launchId !== "string") return null;
   const owesMessages = snapshot.phase === "completed" && (snapshot.queuedMessages?.length ?? 0) > 0;
   if (isChatLaunchTerminal(snapshot.phase) && !owesMessages) return null;
-  if (snapshot.phase === "running" || snapshot.phase === "awaiting-client") {
+  const awaitingRoom = record.awaitingRoom === true && snapshot.phase === "running";
+  record.awaitingRoom = awaitingRoom;
+  if (!awaitingRoom && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")) {
     // The process that ran it is gone. Say so instead of spinning forever.
     const running = snapshot.stages.find((stage) => stage.status === "running");
     if (running) {
@@ -73,20 +82,48 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   return record;
 }
 
+/**
+ * Whether a launch in `launchesDir` waits for room on the disk (its setup
+ * filled it, and the host grew it: `awaitingRoom`). A brain opens such a
+ * project at start, so the launch goes on after the restart with nobody
+ * watching. A read of a few small files, once per brain start.
+ */
+export function hasChatLaunchAwaitingRoom(launchesDir: string): boolean {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(launchesDir);
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(launchesDir, entry), "utf8")) as Partial<ChatLaunchRecord>;
+      if (record.awaitingRoom === true && record.snapshot?.phase === "running") return true;
+    } catch {
+      // Unreadable: the service's own load says so.
+    }
+  }
+  return false;
+}
+
 export function createChatLaunchRecordStore(args: { launchesDir: string; logger: Logger }) {
   const { launchesDir, logger } = args;
   const recordPath = (launchId: string) => path.join(launchesDir, `${launchId}.json`);
 
-  const persist = (record: ChatLaunchRecord): void => {
+  /** Writes the record (whole, by rename); false when it couldn't (a full disk), and the old copy stays. */
+  const persist = (record: ChatLaunchRecord): boolean => {
     const target = recordPath(record.snapshot.launchId);
     const tmp = `${target}.${process.pid}.tmp`;
     try {
       fs.mkdirSync(launchesDir, { recursive: true });
       fs.writeFileSync(tmp, JSON.stringify(record));
       fs.renameSync(tmp, target);
+      return true;
     } catch (error) {
       try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
       logger.warn("chat_launch.persist_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      return false;
     }
   };
 

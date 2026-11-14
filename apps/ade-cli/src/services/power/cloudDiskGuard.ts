@@ -30,7 +30,8 @@ export const CLOUD_DISK_GROW_STARTED_COOLDOWN_MS = 10 * 60_000;
  * computer. Gone once the disk has room again.
  */
 export type CloudDiskGrowState =
-  | { v: 1; state: "growing"; toGb: number; at: number; instanceId?: string }
+  /** `fromBytes`: the filesystem's size when the grow was asked for, so a later read can tell whether it grew yet. */
+  | { v: 1; state: "growing"; toGb: number; at: number; instanceId?: string; fromBytes?: number }
   | { v: 1; state: "refused"; reason: string; wayOut: string; at: number; instanceId?: string };
 
 export function cloudDiskGrowStatePath(adeHome: string): string {

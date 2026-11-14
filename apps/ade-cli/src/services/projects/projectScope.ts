@@ -1,4 +1,5 @@
 import type { CrossMachineHandoffTransport } from "../../../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
+import type { ChatLaunchServiceDeps } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/src/shared/types";
 import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../../../desktop/src/shared/chatRemoteWork";
@@ -275,6 +276,8 @@ export class ProjectScopeRegistry {
       releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
+      /** An ADE Cloud computer grows its disk when a lane launch's setup fills it (the brain owns the grower). */
+      laneSetupDisk?: ChatLaunchServiceDeps["environmentDisk"];
       /** The brain's phone input ledger, shared with each project's sync host. */
       terminalInputDedupeLedger?: TerminalInputDedupeLedger;
       onDisposeProject?: (projectId: ProjectId) => void;
@@ -642,6 +645,9 @@ export class ProjectScopeRegistry {
           : {}),
         ...(this.options.keepAwakeService
           ? { keepAwakeService: this.options.keepAwakeService }
+          : {}),
+        ...(this.options.laneSetupDisk
+          ? { laneSetupDisk: this.options.laneSetupDisk }
           : {}),
         openClock,
       });

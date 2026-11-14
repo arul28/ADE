@@ -1249,10 +1249,12 @@ async function handleRename(
   if (!isRecord(raw) || !Object.hasOwn(raw, "customName")) {
     return json({ error: "invalid request body" }, { status: 400 });
   }
-  const customName = optionalString(raw, "customName");
-  if (customName === undefined || (customName?.length ?? 0) > MAX_CUSTOM_NAME_CHARS) {
+  const asked = optionalString(raw, "customName");
+  if (asked === undefined || (asked?.length ?? 0) > MAX_CUSTOM_NAME_CHARS) {
     return json({ error: "invalid request body" }, { status: 400 });
   }
+  // Shown in every machine list: control and format characters out, as the reported name's are.
+  const customName = asked === null ? null : boundedDisplayText(asked, MAX_CUSTOM_NAME_CHARS);
 
   const result = await env.DB.prepare(`
     update machines

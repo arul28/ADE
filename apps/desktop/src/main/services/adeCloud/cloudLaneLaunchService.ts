@@ -270,6 +270,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       queuedMessages: [...clone(brain.queuedMessages), ...pending],
       cloud: { ...local.cloud, handedOff: true },
     };
+    // The computer's brain renames its computer with the lane (cloudLaneNameSync.ts):
+    // this launch's sentences name it the same, never the placeholder it started on.
+    const laneName = next.laneName?.trim();
+    if (laneName) record.computerName = normalizeCloudMachineName(laneName);
   };
 
   /**
