@@ -70,8 +70,8 @@ function Tile({ span = "1x1", className, children }: { span?: Span; className?: 
   return (
     <div
       className={cn(
-        "group relative overflow-hidden rounded-[28px] border border-white/[0.07] bg-[#111116]",
-        "shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] transition-transform duration-500 ease-out hover:-translate-y-0.5",
+        "group relative overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,#17161f,#0f0e15)]",
+        "shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] transition-transform duration-500 ease-out hover:-translate-y-0.5",
         SPAN[span],
         className,
       )}
@@ -111,13 +111,13 @@ function ScreenTile({
 }) {
   return (
     <Tile span={span} className="flex flex-col">
-      <div className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(120% 90% at 100% 100%, ${glow}, transparent 60%)` }} />
+      <div className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(120% 90% at 100% 100%, ${glow}, transparent 62%)` }} />
       <div className="relative z-10 p-6 sm:p-7">
         <div className="flex items-center gap-2">
           <I className={cn("h-5 w-5", tint)} />
           <span className="text-[13px] font-medium text-white/55">{title}</span>
         </div>
-        <div className="mt-2 max-w-[440px] text-[clamp(20px,1.7vw,26px)] font-semibold leading-[1.15] tracking-[-0.015em] text-white">{body}</div>
+        <div className="mt-2 truncate text-[clamp(18px,1.5vw,22px)] font-semibold leading-[1.2] tracking-[-0.015em] text-white">{body}</div>
         {detail && <div className="mt-2 max-w-[520px] text-[14px] leading-snug text-white/55">{detail}</div>}
       </div>
       <div className="relative ml-6 mt-auto min-h-[120px] flex-1 sm:ml-10">
@@ -145,7 +145,7 @@ function Small({ span = "1x1", icon: I, title, body, tint, className }: { span?:
 export function FeatureWall() {
   const [showAll, setShowAll] = useState(false);
   return (
-    <section id="features" className="mx-auto max-w-[1320px] scroll-mt-20 px-5 pb-[clamp(80px,10vw,140px)] pt-10 sm:px-8">
+    <section id="features" className="mx-auto max-w-[1320px] scroll-mt-20 px-5 pb-[clamp(64px,7vw,104px)] pt-3 sm:px-8">
       <div className={GRID}>
         {/* The big four: tall, so each screenshot has room to read */}
         <ScreenTile
@@ -153,7 +153,7 @@ export function FeatureWall() {
           icon={GitPullRequest}
           tint="text-emerald-400"
           title="Pull requests"
-          body="Checks, reviews and merge, without opening GitHub."
+          body="Checks, reviews and merge, no GitHub tab."
           src="/images/home/wall/prs.webp"
           alt="ADE's pull request view: PR #1820 with its description, branch and checks"
           glow="rgba(16,185,129,0.22)"
@@ -163,7 +163,7 @@ export function FeatureWall() {
           icon={GitBranch}
           tint="text-sky-400"
           title="Worktrees"
-          body="Every task in its own worktree, with its chats, commits and changes."
+          body="Every task in its own worktree."
           src="/images/home/wall/lanes.webp"
           alt="A worktree in ADE: its branch, one commit ahead of main, the chat that made it, and its activity"
           glow="rgba(56,189,248,0.2)"
@@ -173,7 +173,7 @@ export function FeatureWall() {
           icon={Webhook}
           tint="text-orange-400"
           title="Automations"
-          body="Run an agent on a schedule, or when a PR, an issue or a webhook fires."
+          body="Agents on a schedule, or on any event."
           src="/images/home/wall/automations.webp"
           alt="ADE's automation builder: a GitHub issue opens a lane and runs an agent, with every trigger it can use"
           glow="rgba(251,146,60,0.2)"
@@ -223,7 +223,7 @@ export function FeatureWall() {
             icon={Import}
             tint="text-violet-300"
             title="Import your chats"
-            body="Bring in past chats from Claude Code, Codex, Cursor and more, and keep going."
+            body="Bring in your Claude Code and Codex chats."
             src="/images/home/wall/import.webp"
             alt="ADE's import window: past Claude, Codex and Cursor chats on this computer, with one open"
             glow="rgba(167,139,250,0.2)"
@@ -245,7 +245,7 @@ export function FeatureWall() {
             icon={Palette}
             tint="text-fuchsia-300"
             title="Themes and backgrounds"
-            body="26 themes, your own colours, fonts and backgrounds."
+            body="26 themes, or your own."
             src="/images/home/wall/themes.webp"
             alt="ADE's appearance settings: 26 themes and a live preview over a painted background"
             glow="rgba(240,171,252,0.16)"
@@ -256,7 +256,7 @@ export function FeatureWall() {
             icon={Clapperboard}
             tint="text-violet-300"
             title="Proof"
-            body="Agents file screenshots and videos of what they did, with the chat."
+            body="Screenshots and videos of the work."
             src="/images/home/wall/proof.webp"
             alt="An agent's answer with the screenshot it filed as proof, and the chat's proof drawer"
             glow="rgba(139,92,246,0.2)"
@@ -279,7 +279,7 @@ export function FeatureWall() {
             icon={MessageSquareQuote}
             tint="text-amber-300"
             title="Comments"
-            body="Comment on any reply, then send it to the chat."
+            body="Comment on any reply."
             src="/images/home/wall/comments.webp"
             alt="A comment on a highlighted line of an agent's reply, set to send with the next message"
             glow="rgba(252,211,77,0.16)"
@@ -289,7 +289,7 @@ export function FeatureWall() {
             icon={Crown}
             tint="text-teal-300"
             title="CTO"
-            body="A project manager for each project that knows its lanes, PRs and history."
+            body="A manager for each project."
             src="/images/home/wall/cto.webp"
             alt="ADE's CTO introducing itself: it runs point on the project and can drive ADE"
             glow="rgba(94,234,212,0.16)"
@@ -304,7 +304,7 @@ export function FeatureWall() {
             icon={Columns3}
             tint="text-lime-300"
             title="Board"
-            body="Every chat on a board: needs you, working, waiting, done."
+            body="Every chat on one board."
             src="/images/home/wall/board.webp"
             alt="ADE's Work board with columns for chats that need you, are working, are waiting, and are done"
             glow="rgba(190,242,100,0.14)"
@@ -314,7 +314,7 @@ export function FeatureWall() {
             icon={Gauge}
             tint="text-orange-300"
             title="Usage"
-            body="Limits, pace and spend for every plan, on every machine."
+            body="Limits and spend, every plan."
             src="/images/home/wall/spend.webp"
             alt="ADE's usage page: cost, sessions and pull requests, and the rate limits left on Claude, Codex, Copilot, Grok and OpenCode"
             glow="rgba(253,186,116,0.16)"
@@ -325,7 +325,7 @@ export function FeatureWall() {
             icon={Moon}
             tint="text-indigo-300"
             title="Keep awake"
-            body="Agents keep working while you are away, even with the lid closed."
+            body="Agents work with the lid closed."
             src="/images/home/wall/awake.webp"
             alt="ADE's setting to keep the Mac awake: never, while I'm away, or even with the lid closed"
             glow="rgba(165,180,252,0.16)"

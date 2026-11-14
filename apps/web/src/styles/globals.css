@@ -300,3 +300,17 @@ body {
 .ade-range:focus-visible { outline: none; }
 .ade-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(255, 210, 122, 0.7); }
 .ade-range:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 4px rgba(255, 210, 122, 0.7); }
+
+/* Home and pricing: a logo slot swapping in, a line fading in, and a cloud computer's log appearing line by line. */
+@keyframes ade-pop-in { from { transform: translateY(6px) scale(0.92); } to { transform: none; } }
+.ade-pop-in { animation: ade-pop-in 0.45s var(--ease-out) both; }
+@keyframes ade-log-line { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.ade-log-line { opacity: 0; }
+[data-shown="true"] .ade-log-line { animation: ade-log-line 0.5s var(--ease-out) forwards; }
+@keyframes ade-pulse-dot { 50% { opacity: 0.35; } }
+.ade-pulse-dot { animation: ade-pulse-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .ade-pop-in, .ade-pulse-dot { animation: none; }
+  .ade-log-line { opacity: 1; }
+  [data-shown="true"] .ade-log-line { animation: none; }
+}

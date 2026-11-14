@@ -1,5 +1,5 @@
-import { useId, useRef, useState, type ReactNode } from "react";
-import { ChevronDown } from "lucide-react";
+import { useId, useRef, useState, type ComponentType, type ReactNode } from "react";
+import { ChevronDown, Cpu, HardDrive, MemoryStick, Server, Timer, Zap } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
@@ -121,19 +121,12 @@ function PricingHero() {
             className={cn(serifHeading, "mt-5")}
             style={{ fontSize: "clamp(44px, 5.6vw, 84px)", lineHeight: 0.98, letterSpacing: "-0.02em" }}
           >
-            {formatCount(FREE_PLAN.hours)} hours free.
-            {CHEAPEST_PAID ? (
-              <>
-                <br />
-                <em className="italic text-[color:var(--color-lamp)]">
-                  {formatCount(CHEAPEST_PAID.hours)} for ${CHEAPEST_PAID.priceUsd}.
-                </em>
-              </>
-            ) : null}
+            {formatCount(FREE_PLAN.hours)} hours free, every month.
+            <br />
+            <em className="italic text-[color:var(--color-lamp)]">More costs pennies.</em>
           </h1>
-          <p className="mx-auto mt-5 max-w-[36rem] text-[clamp(16px,1.3vw,19px)] leading-[1.6] text-white/65">
-            Every task gets its own computer in the cloud. An hour is one hour of a {SMALL?.label ?? "Small"} computer at work; asleep, it
-            uses none.
+          <p className="mx-auto mt-5 max-w-[44rem] text-[clamp(16px,1.3vw,19px)] leading-[1.6] text-white/65">
+            {CHEAPEST_PAID ? `${formatCount(CHEAPEST_PAID.hours)} hours for $${CHEAPEST_PAID.priceUsd}. ` : ""}A computer that is asleep uses none.
           </p>
         </div>
 
@@ -174,7 +167,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         className="absolute bottom-full right-7 opacity-95"
       />
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-[16px] font-semibold text-white">{plan.name}</h2>
+        <h2 className="text-[18px] font-semibold text-white">{plan.name}</h2>
         {free ? (
           <Badge tone="lamp">No credit card</Badge>
         ) : perHour ? (
@@ -190,28 +183,18 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         </span>
         <span className="text-[14px] text-white/45">a month</span>
       </p>
-      <p className="mt-5 text-[24px] font-semibold leading-none tracking-tight text-white">
-        {formatCount(plan.hours)}
-        <span className="ml-1.5 text-[15px] font-normal text-white/60">hours</span>
-      </p>
-      <p className="mt-1.5 text-[13.5px] text-white/50">About {planDayLine(plan)}</p>
-      <ul className="mt-5 flex flex-1 flex-col gap-2.5 border-t border-dashed border-white/[0.12] pt-5 text-[14px] text-white/60">
-        <li>
-          <span className="text-white">{plan.diskGb} GB</span> of disk
-        </li>
-        <li>
-          {plan.extraHourCents == null ? (
-            <>Pauses when the hours run out</>
-          ) : (
-            <>
-              More hours at <span className="text-white">{formatCents(plan.extraHourCents)}</span>, if you turn it on
-            </>
-          )}
-        </li>
-        <li>
-          Unused computers kept <span className="text-white">{days(plan.idleDays)}</span>
-        </li>
-        <li>No limit on computers</li>
+      <div className="mt-5 rounded-2xl border border-white/[0.08] bg-black/25 px-4 py-3.5">
+        <p className="flex items-baseline gap-1.5">
+          <span className="text-[30px] font-semibold leading-none tracking-tight text-white">{formatCount(plan.hours)}</span>
+          <span className="text-[15px] text-white/60">hours</span>
+        </p>
+        <p className="mt-1 text-[13px] text-white/50">About {planDayLine(plan)}</p>
+      </div>
+      <ul className="mt-5 flex flex-1 flex-col gap-3 text-[14px]">
+        <PlanLine icon={HardDrive} label="Disk" value={`${plan.diskGb} GB`} />
+        <PlanLine icon={Zap} label="Past your hours" value={plan.extraHourCents == null ? "Pauses" : `${formatCents(plan.extraHourCents)} / hour`} />
+        <PlanLine icon={Timer} label="Unused kept" value={days(plan.idleDays)} />
+        <PlanLine icon={Server} label="Computers" value="No limit" />
       </ul>
       <PlanButton
         cta={PLAN_CTAS[plan.id].cta}
@@ -223,6 +206,18 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         {PLAN_CTAS[plan.id].label}
       </PlanButton>
     </div>
+  );
+}
+
+function PlanLine({ icon: Icon, label, value }: { icon: ComponentType<{ className?: string }>; label: string; value: string }) {
+  return (
+    <li className="flex items-center gap-3">
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-[10px] bg-white/[0.06] ring-1 ring-white/[0.08]">
+        <Icon className="h-4 w-4 text-white/70" />
+      </span>
+      <span className="flex-1 whitespace-nowrap text-white/55">{label}</span>
+      <span className="whitespace-nowrap font-semibold text-white">{value}</span>
+    </li>
   );
 }
 
@@ -470,27 +465,43 @@ function DetailsSection() {
   );
 }
 
+const MAX_RATE = Math.max(...PRICING_SIZES.map((size) => size.rate));
+
+/** Each size as a card: how fast it uses hours, drawn as a bar, and its machine as three chips. */
 function SizesPanel() {
   return (
     <>
-      <p className="max-w-[40rem] text-[15px] leading-[1.6] text-white/55">
-        {SMALL
-          ? `An hour on ${SMALL.label} is one hour of your plan. Bigger sizes use hours faster. Change a computer's size any time.`
-          : "Bigger sizes use hours faster."}
+      <p className="whitespace-nowrap text-[15px] text-white/55">
+        {SMALL ? `One hour on ${SMALL.label} is one hour of your plan. Bigger sizes count more.` : "Bigger sizes count more."}
       </p>
-      <div className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-[24px] border border-white/[0.08] bg-white/[0.08] lg:grid-cols-4">
-        {PRICING_SIZES.map((size) => (
-          <div key={size.id} className="flex flex-col bg-[color:var(--color-bg)] p-5 sm:p-6">
-            <div className="flex items-baseline justify-between">
-              <h3 className="text-[16px] font-semibold text-white">{size.label}</h3>
-              <span className="font-serif text-[34px] leading-none text-[color:var(--color-lamp)]">{size.rate}×</span>
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        {PRICING_SIZES.map((size, index) => (
+          <div
+            key={size.id}
+            className="relative flex flex-col overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,#1a1538,#100d24)] p-5 sm:p-6"
+          >
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{ background: `radial-gradient(100% 70% at 100% 0%, rgba(255,210,122,${0.06 + index * 0.05}), transparent 60%)` }}
+            />
+            <div className="relative flex items-baseline justify-between">
+              <h3 className="text-[18px] font-semibold text-white">{size.label}</h3>
+              <span className="font-serif text-[44px] leading-none text-[color:var(--color-lamp)]">{size.rate}×</span>
             </div>
-            <p className="mt-3 text-[14px] leading-snug text-white/70">{size.use}</p>
-            <p className="mt-auto pt-5 text-[13px] leading-relaxed text-white/40">
-              {size.cpu} CPUs, {size.memoryGb} GB memory
-              <br />
-              Disk grows to {size.diskMaxGb} GB
-            </p>
+            <p className="relative mt-1 truncate text-[14px] text-white/65">{size.use}</p>
+            <div className="relative mt-5 flex gap-1" aria-label={`Uses ${size.rate} hours of your plan each hour`}>
+              {Array.from({ length: MAX_RATE }, (_, i) => (
+                <span
+                  key={i}
+                  className={cn("h-2 flex-1 rounded-full", i < size.rate ? "bg-[color:var(--color-lamp)] shadow-[0_0_10px_rgba(255,210,122,0.5)]" : "bg-white/[0.08]")}
+                />
+              ))}
+            </div>
+            <div className="relative mt-5 flex gap-1 text-[12.5px] text-white/75">
+              <SpecChip icon={Cpu} title="CPUs">{size.cpu} CPU</SpecChip>
+              <SpecChip icon={MemoryStick} title="Memory">{size.memoryGb} GB</SpecChip>
+              <SpecChip icon={HardDrive} title="Disk, at most">{size.diskMaxGb} GB</SpecChip>
+            </div>
           </div>
         ))}
       </div>
@@ -498,12 +509,19 @@ function SizesPanel() {
   );
 }
 
+function SpecChip({ icon: Icon, title, children }: { icon: ComponentType<{ className?: string }>; title: string; children: ReactNode }) {
+  return (
+    <span title={title} className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-white/10 bg-white/[0.05] px-2 py-1">
+      <Icon className="h-3.5 w-3.5 text-white/55" />
+      {children}
+    </span>
+  );
+}
+
 function ExtrasPanel() {
   return (
     <>
-      <p className="max-w-[40rem] text-[15px] leading-[1.6] text-white/55">
-        Paid plans can go past their hours and disk. Both are off until you turn them on in Settings › ADE Cloud.
-      </p>
+      <p className="whitespace-nowrap text-[15px] text-white/55">Paid plans can go past their hours and disk, if you turn it on.</p>
       <div className="mt-6 grid gap-4 md:grid-cols-2">
         <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.02] p-6 sm:p-8">
           <h3 className="text-[17px] font-semibold text-white">Extra hours</h3>
@@ -551,9 +569,7 @@ function CleanupPanel() {
   ];
   return (
     <>
-      <p className="max-w-[40rem] text-[15px] leading-[1.6] text-white/55">
-        ADE deletes computers nobody uses, to free their disk. This is what happens first.
-      </p>
+      <p className="whitespace-nowrap text-[15px] text-white/55">ADE deletes computers nobody uses. This is what happens first.</p>
       <ol className="mt-6 grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
         {steps.map((step, index) => (
           <li key={step.title} className="border-t border-white/[0.12] pt-5">
@@ -589,7 +605,7 @@ function FreePanel() {
 function FaqSection() {
   return (
     <section aria-labelledby="faq-title" className={cn(wrap, "pb-10 pt-[clamp(64px,7vw,96px)]")}>
-      <div className="mx-auto max-w-[820px]">
+      <div className="max-w-[880px]">
         <SectionTitle id="faq-title" title="Questions" />
         <div className="mt-6 divide-y divide-white/[0.08] border-y border-white/[0.08]">
           <FaqItem question="How do I pick a plan?">
