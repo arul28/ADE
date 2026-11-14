@@ -138,6 +138,9 @@ struct HubScreen: View {
     .task(id: hiddenListScope) { hiddenList.use(scope: hiddenListScope) }
     .onChange(of: hiddenList.keys) { _, _ in rebuildHubProjectPresentations() }
     .hubChatCover(target: $openChatTarget)
+    // Here, not on the project list: the list leaves the tree while a chat is
+    // open, and every change of the open chat must cancel a waiting open.
+    .onChange(of: openChatTarget?.id) { _, _ in pendingHubChatOpen = nil }
     .overlay(alignment: .bottom) {
       if let toast = createdToast {
         HubCreatedToast(toast: toast, onOpen: { openCreated(toast) }, onDismiss: { dismissToast() })
@@ -372,7 +375,6 @@ struct HubScreen: View {
     }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
-    .onChange(of: openChatTarget?.id) { _, _ in pendingHubChatOpen = nil }
     .task(id: accountRebuildKey) {
       guard accountRebuildKey != nil else { return }
       rebuildHubProjectPresentations()
