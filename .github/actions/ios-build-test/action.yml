@@ -165,6 +165,22 @@ runs:
         # shows the errors, a warning count and the timing summary.
         log="$RUNNER_TEMP/ios-build.log"
         status=0
+        # DIAGNOSTIC: what is busy while xcodebuild prints nothing.
+        (
+          for i in $(seq 1 30); do
+            sleep 20
+            echo "--- $(date +%T) busiest processes (log lines: $(wc -l < "$log" 2>/dev/null || echo 0))"
+            ps -Ao pcpu,pmem,etime,comm -r | head -7 | cut -c1-150
+            if [ "$i" = 4 ] || [ "$i" = 12 ]; then
+              pid=$(pgrep -x xcodebuild | head -1 || true)
+              if [ -n "$pid" ]; then
+                sample "$pid" 3 -mayDie 2>/dev/null | sed -n '/Call graph:/,/Total number in stack/p' | head -90 | cut -c1-170 || true
+              fi
+            fi
+          done
+        ) &
+        sampler=$!
+        trap 'kill $sampler 2>/dev/null || true' EXIT
         # shellcheck disable=SC2086 # the package flags are separate words
         (cd apps/ios && xcodebuild \
           -project ADE.xcodeproj \
@@ -195,6 +211,15 @@ runs:
         echo "Waiting for the simulator from $(date +%T)"
         xcrun simctl bootstatus "$IOS_SIM_ID" -b > /dev/null
         echo "Simulator ready at $(date +%T)"
+        (
+          for i in $(seq 1 18); do
+            sleep 20
+            echo "--- $(date +%T) busiest processes"
+            ps -Ao pcpu,pmem,etime,comm -r | head -7 | cut -c1-150
+          done
+        ) &
+        sampler=$!
+        trap 'kill $sampler 2>/dev/null || true' EXIT
         xcodebuild \
           -project ADE.xcodeproj \
           -scheme ADE \
