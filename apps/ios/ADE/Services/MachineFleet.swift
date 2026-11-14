@@ -343,20 +343,39 @@ final class MachineFleet: ObservableObject {
 
   /// Connects `machineKey` (adds it to the connected set and dials it) and
   /// waits up to `timeout` for a live link. False when it needs the user,
-  /// runs out of retries, or is not live in time.
+  /// runs out of retries, or is not live in time. A machine that this call
+  /// pushed out of a full connected set comes back when the link fails.
   func connect(machineKey: String, timeout: Duration = .seconds(10)) async -> Bool {
     if isLive(machineKey) { return true }
+    let pinsBefore = pinnedKeys
     keepLive(machineKey: machineKey)
+    let dropped = pinsBefore.filter { !pinnedKeys.contains($0) }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: timeout)
     while clock.now < deadline, !Task.isCancelled {
-      guard let machine = machine(for: machineKey) else { return false }
+      guard let machine = machine(for: machineKey) else { break }
       if machine.state == .live { return true }
-      if machine.gaveUp { return false }
-      if case .needsAttention = machine.state { return false }
+      if machine.gaveUp { break }
+      if case .needsAttention = machine.state { break }
       try? await Task.sleep(for: .milliseconds(250))
     }
-    return isLive(machineKey)
+    if isLive(machineKey) { return true }
+    givePlaceBack(afterFailedConnectOf: machineKey, dropped: dropped, wasPinned: pinsBefore.contains(machineKey))
+    return false
+  }
+
+  /// Undoes the swap `keepLive` made for a connect that never went live: the
+  /// machines it dropped return (as the oldest), and the failed one leaves
+  /// the set. Nothing changes when the set had room. A machine the user
+  /// disconnected meanwhile stays off.
+  private func givePlaceBack(afterFailedConnectOf machineKey: String, dropped: [String], wasPinned: Bool) {
+    let returning = dropped.filter { !pinnedKeys.contains($0) && !userDisconnectedKeys.contains($0) }
+    guard !returning.isEmpty else { return }
+    if !wasPinned { pinnedKeys.removeAll { $0 == machineKey } }
+    pinnedKeys.append(contentsOf: returning)
+    if requestedKey == machineKey { requestedKey = nil }
+    persistPins()
+    reconcile()
   }
 
   // MARK: - User choices

@@ -637,6 +637,9 @@ struct HubScreen: View {
   // MARK: Other machines, folded in
 
   private func openHubProject(_ project: MobileProjectSummary) {
+    // The user chose a project: a chat open still waiting on its machine
+    // must not move the phone to that machine later.
+    pendingHubChatOpen = nil
     guard let owner = fleetMerge.projectOwners[project.id] else {
       syncService.selectProject(project)
       return
@@ -662,6 +665,7 @@ struct HubScreen: View {
 
   /// Focuses `machineKey` and opens its own `project` there.
   private func openFleetCopy(_ project: MobileProjectSummary, onMachine machineKey: String, cardId: String? = nil) {
+    pendingHubChatOpen = nil
     let switching = cardId ?? project.id
     switchingRemoteProjectId = switching
     Task { @MainActor in
