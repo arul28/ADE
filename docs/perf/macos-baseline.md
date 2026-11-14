@@ -3407,3 +3407,43 @@ What adds work, and when it runs:
   account machine list on mount and on window focus (desktop; 15 s cache).
 - ADE Web asks its brain to host its own project again after a restart, at
   most once every 15 s.
+
+#### Fix round (2026-11-14)
+
+Same branch at `2ed6cfa40` plus the fix round, against `2ed6cfa40` with the
+renderer files of the fix round put back (preload and brains the same in both
+arms). Mac Studio M4 Max (not the baseline machine), load average 9–22 from
+other agents. Rig: this computer's dev desktop in an isolated home with 8
+test brains connected, ADE Web in Chrome with the same 8 connected, the atlas
+tab open, "Plan the release" open on the web. Each arm was reloaded, given 60 s
+to settle, then measured: `route-sweep.mjs /work,/lanes 12`, three passes
+without a perf run and four in one (first pass left out), and the web page's
+WebSocket frames over 180 s (counted in the page through CDP, uncompressed
+JSON; not the relay bytes of the rows above, so compare only with each other).
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| Lanes: IPC on open (perf run), 8 machines | 65 / 59 / 82 calls; 0.71–0.90 s | 60 / 60 / 69 calls; 0.58–0.92 s | 70 calls (Lanes row) |
+| Work: IPC on open (perf run), same | 29 / 41 / 27 calls | 43 / 27 / 58 calls | — |
+| Idle main-thread work, Work / Lanes (no perf run) | 25.3–25.8 / 13.1–19.3 ms/s (60 and 31 style recalcs/s) | 5.0–8.8 / 7.3–8.5 ms/s (2.7 style recalcs/s) | 30 ms/s |
+| ADE Web, idle, 8 machines: WebSocket KB down / up per minute in the page | 285.5 / 41.9 | 270.2 / 41.8 | not set |
+| ADE Web, idle: account directory reads per 3 min | 0 (one account attention read) | 0 (same) | — |
+
+The idle Work drop is the header: on the base two chats still showed a
+spinning "running" glyph from subagents that had stopped with a brain restart,
+and the subagent counts now use each child's own status. The web arms send the
+same commands (40 `work.listSessions` and 40 `android.status` a minute across
+8 machines); the fix round adds none.
+
+What the fix round adds, and when it runs:
+
+- A copy whose computer did not join is tried again on a timer while the page
+  is visible: 15 s after the first failure, doubling to 60 s. A tick that
+  finds nothing due calls nothing. Each try reads the account machine list
+  (15 s cache), so a computer that is off costs at most one directory read a
+  minute, and none while the page is hidden. Measured in the F1 run: the reads
+  came 30–75 s apart for 7 minutes, then stopped when the computer joined.
+- A brain that reads a changed project list (on its 60 s heartbeat, which
+  already ran) sends one event to its windows and its web clients. The
+  desktop reads the list once more one heartbeat later when the first read
+  found nothing new. No new poll.
