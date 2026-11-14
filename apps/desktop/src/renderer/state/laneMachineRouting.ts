@@ -352,6 +352,8 @@ export function buildAllMachineLanes(input: {
       ? activeConnection?.target.hostname ?? activeBinding.hostname ?? null
       : null,
     version: connectionVersionLabel(activeConnection),
+    // The tab's remote reports its machine route like every other machine (none for a local tab).
+    ...connectionMachineScope(activeConnection),
   };
   const machines: LaneMachine[] = [activeMachine];
   const lanes: MachineLane[] = [];

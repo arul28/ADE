@@ -186,13 +186,15 @@ export function createCloudLaneComputerStages(
         : {}),
       laneConfig: lane,
     };
-    if (JSON.stringify(appArgs).length > CLOUD_LAUNCH_MAX_ARGS_BYTES) {
+    // Bytes as the server counts them (UTF-8), not UTF-16 string length.
+    const argsBytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), "utf8");
+    if (argsBytes(appArgs) > CLOUD_LAUNCH_MAX_ARGS_BYTES) {
       // A long display text is the only big part left: without it the computer shows the message itself.
       const { displayPrompt: _displayPrompt, ...lighter } = appArgs;
       const chat = lighter.chat as { message?: Record<string, unknown> } | undefined;
       appArgs = chat?.message ? { ...lighter, chat: { ...chat, message: { ...chat.message, displayText: null } } } : lighter;
     }
-    const sendArgs = JSON.stringify(appArgs).length <= CLOUD_LAUNCH_MAX_ARGS_BYTES;
+    const sendArgs = argsBytes(appArgs) <= CLOUD_LAUNCH_MAX_ARGS_BYTES;
     if (!sendArgs) logger.warn("cloud_lane_launch.app_args_too_big", { launchId: snapshot.launchId });
     return {
       launchId: snapshot.launchId,

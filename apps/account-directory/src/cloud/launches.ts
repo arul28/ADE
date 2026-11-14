@@ -117,6 +117,10 @@ const STAGE_ID = /^[a-z][a-z0-9_-]{0,39}$/;
 const STAGE_STATUSES: ReadonlySet<CloudLaunchStageStatus> = new Set(["pending", "running", "done", "failed", "skipped", "warning"]);
 /** Branch names: what git allows that is safe to carry, at a sane length. */
 const BRANCH = /^[A-Za-z0-9._/@+-]{1,250}$/;
+const utf8 = new TextEncoder();
+/** A value's JSON size in bytes (UTF-8), the unit of `CLOUD_LAUNCH_MAX_ARGS_BYTES`; a string's length counts UTF-16 units. */
+const jsonBytes = (value: unknown): number => utf8.encode(JSON.stringify(value)).byteLength;
+
 const NOT_FOUND = "ADE Cloud has no such launch.";
 const notFound = () => fail("not_found", NOT_FOUND, 404);
 const badRequest = (message: string) => fail("bad_request", message, 400);
@@ -269,7 +273,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
   let launch: Record<string, unknown> | null = null;
   if (body.launch != null) {
     if (typeof body.launch !== "object" || Array.isArray(body.launch)) return "The launch's settings can't be read.";
-    if (JSON.stringify(body.launch).length > CLOUD_LAUNCH_MAX_ARGS_BYTES) return "The launch's settings are too big.";
+    if (jsonBytes(body.launch) > CLOUD_LAUNCH_MAX_ARGS_BYTES) return "The launch's settings are too big.";
     launch = body.launch as Record<string, unknown>;
   }
   return {
@@ -311,12 +315,20 @@ function parseJsonColumn<T>(text: string | null, fallback: T, where: { launchId:
 const joinNeverFinished = (row: LaunchRow, now: number): boolean =>
   (row.state === "joining" || row.state === "needs_approval") && row.join_expires_at != null && row.join_expires_at <= now;
 
+/** A Retry still `retrying` this long stopped mid-delete (its Worker ended): the next Retry takes it over. */
+const RETRY_HOLD_MS = 5 * 60_000;
+const RETRY_STOPPED = "The retry stopped before its new computer was made. Retry again.";
+const retryHoldStopped = (row: LaunchRow, now: number): boolean => now - row.updated_at >= RETRY_HOLD_MS;
+
 export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
   const neverJoined = joinNeverFinished(row, now);
   const retrying = row.state === "retrying";
+  // A hold whose Worker stopped mid-delete reads as failed, so the caller's
+  // Retry (a POST with `retry`) takes it over (`restartFailedLaunch`).
+  const retryStopped = retrying && retryHoldStopped(row, now);
   return {
     launchId: row.launch_id,
-    state: neverJoined ? "failed" : retrying ? "making" : row.state as CloudLaunchState,
+    state: neverJoined || retryStopped ? "failed" : retrying ? "making" : row.state as CloudLaunchState,
     kind: row.kind === "chat" || row.kind === "lane" ? row.kind : null,
     sizeId: (row.size_id as CloudTierId | null) ?? null,
     projectOrigin: row.project_origin,
@@ -329,7 +341,7 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
       : null,
     stages: parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" }),
     sessionId: row.session_id,
-    error: neverJoined ? JOIN_NEVER_FINISHED : row.error,
+    error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
@@ -370,9 +382,6 @@ function agentStartedIn(row: LaunchRow): boolean {
   return stages.some((stage) => stage.id === AGENT_STAGE && stage.status !== "pending");
 }
 
-/** A Retry still `retrying` this long stopped mid-delete (its Worker ended): the next Retry takes it over. */
-const RETRY_HOLD_MS = 5 * 60_000;
-
 /**
  * A Retry of a launch whose computer failed before its agent started (it
  * couldn't join in time, clone or start): the failed computer is deleted,
@@ -394,7 +403,7 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return null;
   const failed = row.state === "failed" || joinNeverFinished(row, deps.now)
-    || (row.state === "retrying" && deps.now - row.updated_at >= RETRY_HOLD_MS);
+    || (row.state === "retrying" && retryHoldStopped(row, deps.now));
   if (!failed || agentStartedIn(row)) return null;
   if (row.instance_id && !deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
   const claimed = await env.DB.prepare(`

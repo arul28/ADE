@@ -2130,6 +2130,10 @@ describe("ADE Cloud server launcher", () => {
     expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(503);
     expect(harness.row("select state, instance_id from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ state: "failed", instance_id: "madenew12345" });
     expect(madeCalls()).toHaveLength(1);
+    // A later Retry whose Worker stopped mid-delete leaves its hold: after 5 minutes a read says failed, so the client retries.
+    harness.exec("update cloud_launches set state = 'retrying', updated_at = ? where launch_id = ?", clock, LAUNCH);
+    clock += 6 * 60_000;
+    expect(await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()).toEqual(expect.objectContaining({ state: "failed", instanceId: null }));
 
     expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, retry: true })).status).toBe(201);
     expect(providerCalls(harness, /DELETE .*\/instances\/madenew12345$/)).toHaveLength(2);
