@@ -155,19 +155,21 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   // awake: connect it, and the effect above opens its copy. Nobody picks a
   // computer. One try per computer; a computer the person disconnected or set
   // not to reconnect stays off (`background`), and its row offers Connect.
-  const [accountMachines, setAccountMachines] = useState<readonly AdeAccountMachine[] | null>(null);
   const unconnectedKeys = [...new Set(
     copies
       .filter((copy) => !copy.isThisMachine && !copy.online && copy.machineKey)
       .map((copy) => (copy.machineKey as string).toLowerCase()),
   )].sort().join("\n");
+  // ADE Web holds the account's machines, kept current from the directory.
+  // The desktop reads them, and again on focus: a computer started since the
+  // page opened is online by then.
+  const [desktopAccountMachines, setDesktopAccountMachines] = useState<readonly AdeAccountMachine[] | null>(null);
   useEffect(() => {
-    if (!unconnectedKeys) return;
+    if (webMode || !unconnectedKeys) return;
     let cancelled = false;
-    // A computer started since the page opened is online by the next focus.
     const read = () => {
       void fetchAccountMachines().then((result) => {
-        if (!cancelled && result.state === "ok") setAccountMachines(result.machines);
+        if (!cancelled && result.state === "ok") setDesktopAccountMachines(result.machines);
       });
     };
     read();
@@ -176,7 +178,8 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       cancelled = true;
       window.removeEventListener("focus", read);
     };
-  }, [unconnectedKeys]);
+  }, [unconnectedKeys, webMode]);
+  const accountMachines = webMode ? workspace?.account.machines ?? null : desktopAccountMachines;
   const accountMachineOf = useCallback((copy: RepositoryCopy): AdeAccountMachine | undefined => (
     copy.machineKey ? accountMachines?.find((machine) => sameMachineKey(machine.machineKey, copy.machineKey)) : undefined
   ), [accountMachines]);
