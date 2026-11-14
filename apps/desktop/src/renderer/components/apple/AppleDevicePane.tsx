@@ -137,22 +137,26 @@ export type AppleDriverChat = {
 };
 
 /**
+ * The holder is the chat this pane serves (`paneChatId`: the driver chat's
+ * id, else the pane's own session id, so every host counts): a banner about
+ * that chat to that chat says nothing.
+ */
+function holderIsPaneChat(holderChatSessionId: string | null, paneChatId: string | null): boolean {
+  const chatId = parseForeignCallerSessionId(holderChatSessionId)?.chatSessionId ?? null;
+  return Boolean(paneChatId && chatId && chatId === paneChatId);
+}
+
+/**
  * Who drives the device, at the start of a sentence: the chat by its title
  * when it is the pane's own chat ("“Fix login” on Studio Mac", the machine
  * only when it is not the one viewing), else "An agent on <machine>".
  */
-/** The holder is the chat this pane serves: showing it a banner about itself says nothing. */
-function holderIsDriverChat(holderChatSessionId: string | null, driverChat: AppleDriverChat | null): boolean {
-  const chatId = parseForeignCallerSessionId(holderChatSessionId)?.chatSessionId ?? null;
-  return Boolean(driverChat && chatId && chatId === driverChat.sessionId);
-}
-
 function remoteDriverLabel(
   holder: { machineName: string | null },
   holderChatSessionId: string | null,
   driverChat: AppleDriverChat | null,
 ): string {
-  if (driverChat && holderIsDriverChat(holderChatSessionId, driverChat)) {
+  if (driverChat && holderIsPaneChat(holderChatSessionId, driverChat.sessionId)) {
     const name = driverChat.title ? `“${driverChat.title}”` : "This chat";
     return driverChat.machineName ? `${name} on ${driverChat.machineName}` : name;
   }
@@ -1277,7 +1281,7 @@ function AppleDevicePaneOnMachine({
   // already shows what that agent does, with Take over. Only another agent's
   // hold earns a strip.
   const otherAgentHolds = Boolean(remoteHolder)
-    && !holderIsDriverChat(status?.activeSession?.chatSessionId ?? null, driverChat);
+    && !holderIsPaneChat(status?.activeSession?.chatSessionId ?? null, driverChat?.sessionId ?? sessionId);
   async function freeDeviceFromRemoteAgent(): Promise<void> {
     const holderSessionId = status?.activeSession?.chatSessionId ?? null;
     if (!holderSessionId) return;
