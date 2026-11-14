@@ -655,7 +655,9 @@ jobs:
             echo "run=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s\n' "$changed" | grep -qE '^(apps/desktop/native/ADEDesktopDriverLinux/|apps/desktop/scripts/build-linux-desktop-driver\.mjs|\.github/workflows/ci\.yml)'; then
+          # A here-string, not a pipe: under pipefail, `printf | grep -q`
+          # fails with SIGPIPE when grep stops early in a long list.
+          if grep -qE '^(apps/desktop/native/ADEDesktopDriverLinux/|apps/desktop/scripts/build-linux-desktop-driver\.mjs|\.github/workflows/ci\.yml)' <<< "$changed"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -939,13 +941,7 @@ jobs:
   # for a dispatch on a pins/* branch, from the diff; it says no when the diff
   # touches neither the app, the shared fixtures the Swift tests read, nor the
   # iOS part of CI. Any other dispatch builds.
-  #
-  # A push to main never builds here. The pull request already passed this
-  # job, and ci-pass gates the betas, so main's green must not wait ~20
-  # minutes for a second iOS build. ios-main.yml builds and tests each push to
-  # main that touches iOS instead: it saves the caches pull requests restore,
-  # and it shows a break that two green iOS pull requests make together. It is
-  # a separate workflow because beta.yml starts when this one completes.
+  # A push to main is built by ios-main.yml (see its header).
   ios-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -976,7 +972,7 @@ jobs:
     # Skipped iOS work still reports success here (ci-pass treats "skipped" as
     # failure), but on a cheap Ubuntu runner instead of a macOS one.
     runs-on: ${{ needs.ios-gate.outputs.run == 'true' && 'xcode-27' || 'ubuntu-latest' }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: iOS not affected
         if: needs.ios-gate.outputs.run != 'true'

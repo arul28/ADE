@@ -7,21 +7,36 @@ name: iOS main
 # ci.yml's test-ios job does not build on main: the pull request already
 # passed it, and ci-pass gates the betas, so main's green does not wait for a
 # second iOS build. This workflow is the second build. It catches a break
-# that two green iOS pull requests make together, and a failure here turns
-# the main commit red without blocking a release. It is not part of ci.yml
+# that two green iOS pull requests make together. It is not part of ci.yml
 # because beta.yml starts when the CI workflow completes, and a job in CI
 # would make every beta wait for it.
 #
-# A dispatch builds without the gate, for example to make a fresh cache.
+# A failure here does not block ci-pass, a desktop beta or a release. It
+# opens (or comments on) the "iOS main failed" issue, and ios-testflight.yml
+# makes no TestFlight build while the newest build of this workflow on main
+# failed (a forced TestFlight dispatch still builds). The next passing build
+# closes the issue.
+#
+# A dispatch always builds. Only a run on main saves caches. The `cold`
+# input skips the restore of the build folder, so everything compiles once
+# and the saved folder starts a fresh chain.
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      cold:
+        description: Build without the saved build folder (a full build), then save a fresh one.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
+# No concurrency group: a group keeps one pending run and cancels the others,
+# which would drop the check of a pending commit.
 jobs:
   gate:
     runs-on: ubuntu-latest
@@ -55,5 +70,45 @@ jobs:
       - name: Build and test
         uses: ./.github/actions/ios-build-test
         with:
-          save-caches: "true"
+          save-caches: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
           github-token: ${{ github.token }}
+          cold: ${{ inputs.cold && 'true' || 'false' }}
+
+  report:
+    needs: [gate, build-and-test]
+    # A run that did not build (gate said no, or it was cancelled) changes
+    # nothing in the issue.
+    if: >-
+      always() && github.ref == 'refs/heads/main'
+      && (needs.build-and-test.result == 'success' || needs.build-and-test.result == 'failure')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or close the "iOS main failed" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.build-and-test.result }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="iOS main failed"
+          gh label create ci --color 0E8A16 --description "CI on main" >/dev/null 2>&1 || true
+          issue="$(gh issue list --state open --label ci --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+          if [ "$RESULT" = success ]; then
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "Fixed: the iOS build and tests pass on main at $SHA. $RUN_URL"
+              gh issue close "$issue"
+            fi
+            exit 0
+          fi
+          body="$(printf 'Run: %s\nCommit: %s\n\nThe iOS build or ADETests failed on main. ci-pass, the desktop beta and releases are not blocked. ios-testflight.yml makes no TestFlight build until a run of this workflow on main passes. The next pull request that touches iOS will fail on the same break.\n' \
+            "$RUN_URL" "$SHA")"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --label ci --body "$body"
+          fi

@@ -4,9 +4,8 @@ description: >-
   (pull requests and dispatches) and ios-main.yml (pushes to main) both run
   it, after actions/checkout on a hosted xcode-27 runner. It restores the
   Swift packages and the build folder from main, builds the ADE scheme for
-  testing and runs ADETests. With save-caches, it also saves both caches and
-  deletes the entries they replace; only main saves, because a pull
-  request's copy is visible to that pull request alone.
+  testing and runs ADETests. With save-caches (ios-main.yml on main only),
+  it also saves both caches and deletes the entries they replace.
 
 inputs:
   save-caches:
@@ -17,6 +16,10 @@ inputs:
     description: a token with actions:write, used to delete the cache entries a save replaces (main only)
     required: false
     default: ""
+  cold:
+    description: '"true" skips the restore of the build folder, so everything compiles once'
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -58,8 +61,12 @@ runs:
     # Xcode's build folder from main's newest iOS build. It is what makes a
     # build incremental: Xcode recompiles only the Swift files that changed and
     # the files that depend on them. See "Prepare the incremental build".
+    # Each main run restores the newest entry and saves the next one, so the
+    # chain starts fresh only when the Xcode build changes. Bump v1 to force
+    # one cold build (or dispatch ios-main.yml with cold).
     - name: Restore the build folder
       id: dd_cache
+      if: inputs.cold != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/ios-dd
@@ -73,13 +80,14 @@ runs:
     # time it had when the build folder was saved. The Swift packages need
     # no such step: they come out of the spm-v1 entry with the times it
     # stored, the same on every restore. A new spm-v1 entry rebuilds the
-    # packages once, which is slow but never wrong. This step runs before the
-    # simulator boots: placed after the boot, it took 46-92 s.
+    # packages once, which is slow but never wrong. It runs before the
+    # simulator boots, because the boot slows this file walk.
     #
-    # xcodebuild also fetches every package's remote before it builds. When
-    # the packages restored on their exact key, Package.resolved is the one
-    # they were saved for, so the fetch is skipped. On a restore-key hit (a
-    # changed Package.resolved), xcodebuild fetches what is new.
+    # The build uses only the versions in Package.resolved. When the packages
+    # restored on their exact key, Package.resolved is the one they were
+    # saved for, so -skipPackageUpdates skips the remote update check. On a
+    # restore-key hit (a changed Package.resolved), xcodebuild fetches what is
+    # new.
     - name: Prepare the incremental build
       shell: bash
       env:
@@ -133,12 +141,9 @@ runs:
         set -euo pipefail
         dd="$RUNNER_TEMP/ios-dd"
         mkdir -p "$dd"
-        marker="$RUNNER_TEMP/ios-build-start"
-        touch "$marker"
         # The full output goes to a file, each line with the time it was
         # printed (the file is uploaded when the job fails). The job log
-        # shows the errors, a warning count, when each build phase started,
-        # and the timing summary.
+        # shows the errors, a warning count and the timing summary.
         log="$RUNNER_TEMP/ios-build.log"
         status=0
         # shellcheck disable=SC2086 # the package flags are separate words
@@ -161,17 +166,7 @@ runs:
           tail -n 60 "$log"
           exit "$status"
         fi
-        echo "Build started $(head -n 1 "$log" | cut -c1-8). First line of each phase:"
-        for phase in 'Resolve Package Graph' 'Resolved source packages' 'Fetching from' \
-          'ComputePackagePrebuildTargetDependencyGraph' 'CreateBuildRequest' 'ComputeTargetDependencyGraph' \
-          'GatherProvisioningInputs' 'CreateBuildDescription' 'Build description path' \
-          'SwiftDriver' 'SwiftEmitModule' 'SwiftCompile' 'Ld ' 'CodeSign' 'TEST BUILD SUCCEEDED'; do
-          grep -m1 -F "$phase" "$log" | cut -c1-140 || true
-        done
         sed -n '/Build Timing Summary/,$p' "$log" | cut -c10-
-        objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
-        swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
-        echo "Compiled in this build: $swift Swift files; $objects object files written."
 
     - name: Run ADETests
       shell: bash
@@ -224,33 +219,36 @@ runs:
 
     # The repository's cache space is 10 GB and these are its biggest
     # entries, so main keeps one of each: the entry it just saved. Older
-    # build folders and Swift package sets are deleted, and so is the
-    # compilation cache (ios-cas-*) that the build folder replaced.
+    # build folders of this Xcode build and older Swift package sets are
+    # deleted; the entries of other Xcode builds expire on their own.
     - name: Delete the cache entries this save replaced
       if: inputs.save-caches == 'true' && github.ref == 'refs/heads/main'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        DD_PREFIX: ios-dd-v1-${{ steps.xcode.outputs.build }}-
         KEEP_DD: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
         KEEP_SPM: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
       run: |
         set -euo pipefail
-        # The entry this run saved is the newest it may delete up to: a run
-        # of an older commit that finishes later must not delete a newer
-        # entry.
+        # An entry saved after this run's own save is never deleted. A slower
+        # run of an older commit can replace a newer commit's entry, which
+        # costs only rebuild time.
         kept_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEEP_DD&ref=refs/heads/main" \
           --jq '[.actions_caches[] | select(.key == env.KEEP_DD)][0].created_at // empty')
         if [[ -z "$kept_at" ]]; then
           echo "The build folder this run saved is not listed; nothing deleted."
           exit 0
         fi
-        if ! KEPT_AT="$kept_at" gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
+        # Old Swift package sets are deleted only when the set this run needs
+        # is listed: a failed save must not leave main without one.
+        spm_listed=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEEP_SPM&ref=refs/heads/main" \
+          --jq '[.actions_caches[] | select(.key == env.KEEP_SPM)] | length > 0' || echo false)
+        if ! KEPT_AT="$kept_at" SPM_LISTED="$spm_listed" gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
           --jq '.actions_caches[]
-            | select(
-                (.ref == "refs/heads/main" and .created_at < env.KEPT_AT and
-                  (((.key | startswith("ios-dd-v1-")) and .key != env.KEEP_DD)
-                   or ((.key | startswith("spm-v1-")) and .key != env.KEEP_SPM)))
-                or (.key | startswith("ios-cas-")))
+            | select(.ref == "refs/heads/main" and .created_at < env.KEPT_AT and
+                (((.key | startswith(env.DD_PREFIX)) and .key != env.KEEP_DD)
+                 or (env.SPM_LISTED == "true" and (.key | startswith("spm-v1-")) and .key != env.KEEP_SPM)))
             | "\(.id) \(.key)"' > "$RUNNER_TEMP/ios-stale-caches.txt"; then
           echo "::warning::Could not list the cache entries; nothing deleted."
           exit 0
