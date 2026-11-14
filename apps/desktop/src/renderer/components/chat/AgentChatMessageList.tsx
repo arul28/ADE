@@ -536,12 +536,12 @@ function QuietTurnCard({
     interrupt_retry_same_thread: "Retry same server",
     restart_resume_thread: `Restart ${name}`,
   };
-  const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
+  const resultLabels = useMemo<Record<AgentChatRecoverCodexTurnResult["status"], string>>(() => ({
     waiting: `Waiting for ${name}…`,
     nudged: "Status nudge sent.",
     retrying: "Retry started in this thread.",
     resumed: `${name} restarted and picked up your last request.`,
-  };
+  }), [name]);
   const recoveryOptions = event.recoveryOptions ?? [
     "restart_resume_thread",
     "wait",

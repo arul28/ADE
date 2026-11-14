@@ -1966,7 +1966,7 @@ export function createMultiProjectRpcRequestHandler(
   const scopeFor = async (
     projectId: ProjectId,
     requestedBy?: string,
-  ): Promise<{ runtime: AdeRuntime; appControl: AdeRuntime["appControlService"] | null; machineScope: boolean }> => {
+  ): Promise<{ runtime: AdeRuntime; appControl: NonNullable<AdeRuntime["appControlService"]> | null; machineScope: boolean }> => {
     if (projectId === MACHINE_SCOPE_PROJECT_ID) {
       return { runtime: await machineScopeRuntime(), appControl: null, machineScope: true };
     }
