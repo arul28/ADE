@@ -2,10 +2,11 @@ import { planCostsFor } from "./cloudPricing";
 
 /**
  * What other agent apps charge for a cloud computer, for the home page's
- * comparison. Only products that publish a compute price are compared; the
- * rest are named as "no published price" or "no cloud". Every number here
- * was read from the vendor's own pricing page on `CHECKED_ON`; re-check them
- * before changing the copy around them.
+ * charts. The roster is every app ademark.dev measures. Only apps that
+ * publish a compute price are charted; the rest are named as bundled,
+ * unclear or without a cloud. Every number was read from the vendor's own
+ * pricing page on `CHECKED_ON`; an `estimate` is our arithmetic from that
+ * page and is drawn with "≈". Re-check before changing copy around them.
  */
 
 export const CHECKED_ON = "November 14, 2026";
@@ -16,11 +17,15 @@ export type Rival = {
   logo?: string;
   /** The machine compared, as the vendor names it. */
   machine: string;
-  /** What `hours` of that machine costs in a month, in dollars, with any plan the vendor requires. */
-  monthlyUsd: (hours: number) => number;
+  /** What `hours` of that machine costs in a month, in dollars, with the plan the vendor requires; null where the page does not say. */
+  monthlyUsd?: (hours: number) => number | null;
+  /** What one hour of that machine costs, in cents. */
+  perHourCents?: number;
   /** Cloud hours a month that cost nothing, or null when the vendor does not say. */
   freeHours: number | null;
-  /** One line under the bar: what the price includes or leaves out. */
+  /** True when the numbers are our arithmetic from the vendor's page, not a price it prints. */
+  estimate?: boolean;
+  /** One line: what the price includes or leaves out. */
   note: string;
   source: string;
 };
@@ -37,19 +42,33 @@ export const RIVALS: Rival[] = [
     machine: "Medium, 2 vCPU · 8 GB",
     // $0.20 an hour from plan credits; Lite ($20 a month, $20 of credits) is the least you can pay.
     monthlyUsd: (hours) => Math.max(20, hours * 0.2),
+    perHourCents: 20,
     freeHours: 0,
-    note: "Credits also pay for model tokens",
+    note: "On a $20 plan; credits also pay for model tokens",
     source: "https://capy.ai/pricing",
   },
   {
     id: "paradev",
     name: "Paradev",
     machine: "Workspace, 4 vCPU · 8 GB",
-    // Team: $60 a seat with 150 workspace hours, then $0.48 an hour ($0.06 per GB-hour).
+    // Team: $60 a seat with 150 workspace hours, then $0.06 per GB-hour ($0.48 an hour at 8 GB).
     monthlyUsd: (hours) => 60 + Math.max(0, hours - 150) * 0.48,
+    perHourCents: 48,
     freeHours: 0,
     note: "Cloud starts on the $60 Team seat",
     source: "https://paradev.com/pricing",
+  },
+  {
+    id: "cloudroom",
+    name: "Cloudroom",
+    machine: "Cloud sandbox, size not published",
+    // Free: 3,000 credits each 30 days; Pro: $50 for 50,000 credits; the page puts a typical agent hour at about 100 credits.
+    monthlyUsd: (hours) => (hours <= 30 ? 0 : hours <= 500 ? 50 : null),
+    perHourCents: 10,
+    freeHours: 30,
+    estimate: true,
+    note: "Hours from its own ~100 credits an hour",
+    source: "https://cloudroom.dev/pricing",
   },
   {
     id: "copilot",
@@ -58,19 +77,47 @@ export const RIVALS: Rival[] = [
     machine: "Cloud sandbox, 4 GiB",
     // $0.000024 per compute second plus $0.000003 per GiB-second, at 4 GiB; a Copilot plan comes on top.
     monthlyUsd: (hours) => hours * 0.1296,
+    perHourCents: 12.96,
     // Plans include sandbox time shared with Actions runners, but GitHub does not say how many hours.
     freeHours: null,
-    note: "Compute only, plus a Copilot plan",
+    estimate: true,
+    note: "Compute only, at 4 GiB, plus a Copilot plan",
     source: "https://docs.github.com/en/billing/concepts/product-billing/cloud-and-local-sandboxes",
+  },
+  {
+    id: "superconductor",
+    name: "Superconductor",
+    machine: "2 vCPU · 4 GB",
+    // 200 credits an hour; Pro overage is $25 per 10,000 credits. Its free 20,000 credits are a one-time start.
+    perHourCents: 50,
+    freeHours: null,
+    estimate: true,
+    note: "Pro overage rate; free credits are one-time",
+    source: "https://www.superconductor.com/pricing",
   },
 ];
 
 /** Cloud agents whose price bundles the computer with model use, so there is no compute price to compare. */
-export const NO_PUBLISHED_PRICE = ["Cursor", "Codex", "Devin", "Jules", "Warp"] as const;
+export const NO_PUBLISHED_PRICE = ["Claude", "Cursor", "Codex", "Devin", "Jules", "Warp"] as const;
 
-/** Agent apps with no cloud computers at all. */
-export const NO_CLOUD: Array<{ name: string; logo?: string }> = [
-  { name: "T3 Code", logo: "/images/competitors/t3-code.webp" },
-  { name: "Orca" },
-  { name: "Emdash" },
+export type CloudStatus = "yes" | "no" | "closing" | "unclear";
+
+/** Every agent app ademark.dev measures, plus Conductor, and whether it hosts cloud computers for you. */
+export const CLOUD_ROSTER: Array<{ name: string; cloud: CloudStatus; detail: string }> = [
+  { name: "Capy", cloud: "yes", detail: "From $0.10 an hour, on a $20 plan" },
+  { name: "Paradev", cloud: "yes", detail: "From the $60 Team seat" },
+  { name: "Cloudroom", cloud: "yes", detail: "30 hours free, by its own estimate" },
+  { name: "Claude", cloud: "yes", detail: "Bundled into Claude plans" },
+  { name: "Traycer", cloud: "yes", detail: "A paid add-on, price not published" },
+  { name: "Emdash", cloud: "unclear", detail: "Mentions a cloud; no price published" },
+  { name: "Zeron", cloud: "unclear", detail: "Lists a cloud option; no details" },
+  { name: "Conductor", cloud: "closing", detail: "Cloud shuts down November 20" },
+  { name: "T3 Code", cloud: "no", detail: "Your own machine or VM" },
+  { name: "super.eng", cloud: "no", detail: "Agents run on your machine" },
+  { name: "Paseo", cloud: "no", detail: "Runs on your own machines" },
+  { name: "Diri", cloud: "no", detail: "Local only" },
+  { name: "MonoCode", cloud: "no", detail: "Local CLI launcher" },
+  { name: "Synara", cloud: "no", detail: "Tunnels to your machine" },
+  { name: "bb", cloud: "no", detail: "Local-first" },
+  { name: "Orca", cloud: "no", detail: "SSH or your own VMs" },
 ];
