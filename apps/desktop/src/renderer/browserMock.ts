@@ -156,6 +156,7 @@ import {
   type KeepAwakeSnapshot,
 } from "../shared/types/keepAwake";
 import { createMockExternalSessionsApi } from "./browserMockExternalSessions";
+import { applyBrowserMockToolsPane } from "./browserMockToolsPane";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { applyHostedWebZoom } from "./lib/webZoom";
@@ -10904,6 +10905,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
   applyBrowserMockUpdateAndFallback((window as any).ade);
   applyBrowserMockProviderLogins((window as any).ade); // `?mockSignIns=`: ADE Cloud sign-ins
   applyBrowserMockCloud((window as any).ade); // `?mockCloud=`: the ADE Cloud dashboard
+  // `?mockToolsPane=`: the Work tools catalogue across machines.
+  applyBrowserMockToolsPane((window as any).ade, { sessions: MOCK_SESSIONS, emitChatEvent: emitBrowserMockChatEvent });
   void attachBrowserRuntimeBridge();
   if (browserMockBrainDownScenario() === "updating") {
     // After the mock project has opened; that open clears transition errors.

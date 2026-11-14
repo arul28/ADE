@@ -22,6 +22,16 @@ Cloudflare front refuses default library user agents (Python's urllib) with
    `machine` lists them; device commands take `--lane <lane there>`.
    `--machine` and `devices use` are refused: pick the machine with `machine`.
 
+**Device work (an iPhone simulator, an emulator) stays inside ADE.** Best:
+`chat_start` a chat whose prompt asks for it; the chat drives its own lane's
+device and files proof. Driving it yourself: `["apple","start","--lane",
+"<lane>"]`, then `apple` verbs with that same `--lane`, in ONE lane. Each lane
+boots its own simulator, so never spread device work over many lanes. Never
+`ios-sim open-device` or `--window`/`--foreground` (they open Simulator.app,
+which gives every booted simulator a window on the person's screen; MCP
+refuses them). `["apple","screenshot","--lane","<lane>"]` shows the screen;
+`["apple","stop","--lane","<lane>"]` when done.
+
 `chat_start` and `lanes_create` refuse to run without them, because the default
 project changes as the person works. Reads default to the last opened project,
 and every result starts with `[machine: …]` and `[project: …]`, so check them.

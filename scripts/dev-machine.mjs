@@ -17,7 +17,7 @@
  *   npm run dev:machine -- project --clone | <path> [--name <n>]
  *   npm run dev:machine -- status [--name <n>]
  *   npm run dev:machine -- stop   [--name <n>]
- *   npm run dev:machine -- remove [--name <n>]     sign out (drops its account row) and stop
+ *   npm run dev:machine -- remove [--name <n>]     sign out, stop, and check its account row is gone
  */
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -55,7 +55,7 @@ function usage() {
     "  project <path>   Register a folder (never one the installed ADE uses).",
     "  status           Socket, sign-in and log.",
     "  stop             Stop its brain. Its home and sign-in stay.",
-    "  remove           Sign it out (its account row goes) and stop it. Starts it first if it is stopped.",
+    "  remove           Sign it out and stop it, then check its account row is gone. Starts it first if it is stopped.",
     "",
     "Options:",
     "  --name <n>       Which test machine (default: dev). Each has its own home.",
@@ -314,6 +314,51 @@ function project(paths, options) {
   if (result.status !== 0) throw new Error(`Could not register ${target}.`);
 }
 
+/** The machines of `ade machines list --json`, or null when it gave none. */
+function parseMachines(stdout) {
+  try {
+    const parsed = JSON.parse(stdout);
+    const machines = Array.isArray(parsed) ? parsed : parsed?.machines;
+    return Array.isArray(machines) ? machines : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The test machine's own account row (key and device id), read while it is still signed in. */
+function readOwnRow(paths) {
+  const machines = parseMachines(ade(paths, ["machines", "list", "--json"]).stdout) ?? [];
+  const deviceId = readHomeDeviceId(paths.home);
+  const self = machines.find((machine) => machine.isThisMachine || (deviceId && machine.deviceId === deviceId));
+  return { machineKey: self?.machineKey ?? null, deviceId: self?.deviceId ?? deviceId };
+}
+
+/**
+ * Whether the test machine's row is still on the account, read through the
+ * installed ADE's live brain (the test machine is signed out by now): "gone",
+ * "present", or "unknown" when no signed-in brain here answered. `--socket`
+ * so this never starts a brain.
+ */
+async function accountRowState(row) {
+  if (!row.machineKey && !row.deviceId) return "unknown";
+  const env = sanitizeParentEnvForDevRuntime(process.env);
+  let state = "unknown";
+  // The account directory can lag the sign-out by a few seconds.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const result = spawnSync(process.execPath, [cliPath(), "--socket", "machines", "list", "--json"], {
+      env, cwd: os.homedir(), encoding: "utf8", windowsHide: true, timeout: 20_000,
+    });
+    const machines = result.status === 0 ? parseMachines(result.stdout ?? "") : null;
+    if (!machines) return state;
+    const present = machines.some((machine) => (row.machineKey && machine.machineKey === row.machineKey)
+      || (row.deviceId && machine.deviceId === row.deviceId));
+    if (!present) return "gone";
+    state = "present";
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return state;
+}
+
 async function stop(paths, { quiet = false } = {}) {
   if (!(await canConnectToSocket(paths.socketPath))) {
     if (!quiet) process.stdout.write("[ade] the test machine is not running.\n");
@@ -324,9 +369,10 @@ async function stop(paths, { quiet = false } = {}) {
 }
 
 /**
- * Signs the test machine out (which drops its account row) and stops it. Sign-out
+ * Signs the test machine out (which should drop its account row) and stops it. Sign-out
  * goes through its brain, so a stopped one is started for it. Success is
- * reported only once `auth status` says signed_out.
+ * reported only once `auth status` says signed_out; "row is gone" only once
+ * the account (read through the installed ADE) no longer lists it.
  */
 async function remove(paths, options) {
   const nameFlag = options.name === "dev" ? "" : ` --name ${options.name}`;
@@ -342,6 +388,8 @@ async function remove(paths, options) {
   const before = authState(paths);
   let after = before;
   let logoutStatus = 0;
+  // Its row, read while it can still read the account; checked again after.
+  const row = before === "active" ? readOwnRow(paths) : { machineKey: null, deviceId: readHomeDeviceId(paths.home) };
   if (before !== "signed_out") {
     logoutStatus = ade(paths, ["logout"], { inherit: true }).status;
     after = authState(paths);
@@ -362,7 +410,14 @@ async function remove(paths, options) {
     process.stdout.write(`[ade] signed out and stopped. Its sign-in had expired, so its row may still be on your account: remove it from Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
     return;
   }
-  process.stdout.write(`[ade] signed out and stopped; its account row is gone. Delete ${paths.home} too if you no longer need its files.\n`);
+  const rowState = await accountRowState(row);
+  if (rowState === "gone") {
+    process.stdout.write(`[ade] signed out and stopped; its account row is gone. Delete ${paths.home} too if you no longer need its files.\n`);
+  } else if (rowState === "present") {
+    process.stdout.write(`[ade] signed out and stopped, but the account still lists it: remove it from Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
+  } else {
+    process.stdout.write(`[ade] signed out and stopped. Couldn't check its account row (no signed-in ADE here answered): look in Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
+  }
 }
 
 async function main() {

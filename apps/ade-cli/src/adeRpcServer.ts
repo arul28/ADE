@@ -34,6 +34,8 @@ import {
   isRemoteWorkSyncMode,
   createRemoteWorkCopyService,
   findRemoteWorkCopyForLane,
+  releaseChatRemoteWork,
+  remoteWorkCopiesInRepo,
   remoteWorkLaneIdFor,
   RemoteWorkError,
   type RemoteWorkPrepareOptions,
@@ -1726,6 +1728,8 @@ const READ_ONLY_TOOLS = new Set([
   "check_conflicts",
   "preview_scene",
   "read_remote_caller_capture",
+  // A chat on another machine asking which checkout here holds its work copy.
+  "find_remote_work_copy",
   "list_ade_actions",
   "get_ade_action_status",
   "stream_events",
@@ -7482,6 +7486,16 @@ async function runTool(args: {
         // The caller's machine learns which lane here is its work copy, so its
         // views can show this simulator.
         transformScopedResult = remote.withWorkCopy;
+      } else if (action === "getStatus" && !asOptionalTrimmedString(appleArgs.laneId)) {
+        // A status read from a chat on another machine (it sends no
+        // `remoteWork`: a read makes no copy) is about that chat's lane here,
+        // its work copy's, when there is one: its own device, not whichever
+        // simulator this Mac has booted. With no copy it stays the machine's.
+        const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+        const copyLaneId = owner && parseForeignCallerSessionId(owner) ? remoteWorkLaneIdFor(owner) : null;
+        if (copyLaneId && findRemoteWorkCopyForLane(runtime.projectRoot, copyLaneId)) {
+          appleArgs = { ...appleArgs, laneId: copyLaneId };
+        }
       }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
@@ -8694,12 +8708,38 @@ async function runTool(args: {
     if (!owner || !parseForeignCallerSessionId(owner)) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
+    // In every checkout of this repository here (`releaseChatRemoteWork`).
+    // `ended`: the chat was archived or deleted on its own machine, which says
+    // so at once (the hourly sweep is the fallback); its shells in each
+    // copy's project stop first. `keepUnsynced`: a copy holding work nobody
+    // pushed stays.
+    const ended = toolArgs.ended === true;
+    const keepUnsynced = toolArgs.keepUnsynced === true;
     try {
-      return { released: await workCopiesFor(runtime).release(owner) };
+      const { removed, kept } = await releaseChatRemoteWork({
+        projectRoot: runtime.projectRoot,
+        owner,
+        ended,
+        keepUnsynced,
+        logger: runtime.logger,
+      });
+      return { released: removed.length > 0, removed, ...(kept.length ? { kept } : {}) };
     } catch (error) {
       if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });
       throw error;
     }
+  }
+
+  if (name === "find_remote_work_copy") {
+    // A chat on another machine asking which checkouts of this repository
+    // here hold its work copy, so its `--machine` calls keep landing in the
+    // one that has it (`agentMachineBridge`). Its own copies only.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const copies = remoteWorkCopiesInRepo(runtime.projectRoot, owner, undefined, runtime.logger);
+    return { projectRoots: copies.map((copy) => copy.projectRoot) };
   }
 
   if (name === "release_remote_work_devices") {

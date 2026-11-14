@@ -1,6 +1,7 @@
 /**
- * `ade apple` text output: the window, install, lease, test and
- * device-delete formatters, and the lease answer shapers the plan builder uses.
+ * `ade apple` text output: the window, install, lease, test, device start,
+ * stop and delete formatters, the lease answer shapers and the element-miss
+ * exit code the plan builder uses.
  *
  * Split from `cli.ts`, which keeps the plan builder and the formatter switch.
  * The import cycle rule of `cliMacDesktopFormat.ts` applies to `./cli`:
@@ -328,4 +329,38 @@ export function formatAppleDeviceDelete(value: unknown): string {
       ["extra", deleted.extra === true],
     ]),
   ].join("\n");
+}
+
+/**
+ * `ade apple start --text`: which device the lane drives and whether ADE made
+ * it (the Mac's sentence, `note`), then the live view. An older Mac sends no
+ * note; its answer names the device only.
+ */
+export function formatAppleDeviceStart(value: unknown): string {
+  const record = unwrapActionEnvelope(value);
+  const status = isRecord(record) ? record : {};
+  const device = asString(status.deviceUdid);
+  const note = asString(status.note) ?? (device ? `This lane's simulator (${device}) is booted.` : "Started.");
+  const lastError = asString(status.lastError);
+  let live: string | null = null;
+  if (status.running === true) live = `Live view: ${asString(status.backend) ?? "on"}.`;
+  else if (lastError) live = `Live view: ${lastError}`;
+  return [note, live].filter(Boolean).join("\n");
+}
+
+/** `ade apple stop --text`: powered off, and what happens to the device (it stays registered there). */
+export function formatAppleDeviceStop(value: unknown): string {
+  const record = unwrapActionEnvelope(value);
+  const result = isRecord(record) ? record : {};
+  const udid = asString(result.udid);
+  if (!udid) return "This lane has no Apple device, so nothing was powered off.";
+  const power = result.poweredOff === true ? "powered off" : "off";
+  const kept = result.stillRegistered === true ? " and stays this lane's device: the next ade apple start boots it again" : "";
+  return asString(result.note) ?? `${udid} is ${power}${kept}.`;
+}
+
+/** An Apple element wait or assert that missed (`ok: false`) exits 1. */
+export function appleElementMissExitCode(result: unknown): number {
+  const value = unwrapActionEnvelope(result);
+  return isRecord(value) && value.ok === false ? 1 : 0;
 }

@@ -582,6 +582,13 @@ that grants access, or cut the connection:
   `android_emulator.start` through `ade actions` with `restartAdb: true`. A
   restart cuts every other device and tool on that server, so only the person
   decides it, in the Android pane or in a terminal on that computer;
+- opening Simulator.app on a Mac: `--window`, `--foreground` and
+  `--open-simulator` on `ade apple`, `ios-sim` and `ios`, and through
+  `ade actions` `ios_simulator.openDevice` with `openWindow: true` or
+  `ios_simulator.launch` with `keepSimulatorInBackground: false` (any
+  spelling: `--arg`, `--input-json`, an escaped JSON key). Once Simulator.app
+  runs, every booted simulator on that Mac gets a window; an app's device
+  work stays inside ADE, in its stream;
 - a first word that is not a plain command word, so `--socket`, `--headless`,
   `--role` and a socket path cannot move a call to another brain or role;
 - `--machine`, `--all-machines` and `--machine-project`: a call reaches

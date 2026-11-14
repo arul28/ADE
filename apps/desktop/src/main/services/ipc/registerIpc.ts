@@ -1092,7 +1092,7 @@ import {
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { createProjectRecoveryService, ProjectRecoveryService, restartBrainForRepair } from "../runtime/projectRecoveryService";
 import type { ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport } from "../../../shared/types/recovery";
-import { forgetLocalProjectDatabaseIdentity } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { forgetLocalProjectDatabaseIdentity, ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RemoteProjectNotFoundError, registerRuntimeBridge } from "./runtimeBridge";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
@@ -4853,6 +4853,8 @@ export function registerIpc({
     },
   );
 
+  /** This machine's project list (cached on the file's identity), read only to authorize a local runtime root. */
+  let localProjectRegistryForAuthorization: ProjectRegistry | null = null;
   const runtimeBridge = registerRuntimeBridge({
     productAnalyticsService,
     appVersion: app.getVersion(),
@@ -4882,6 +4884,14 @@ export function registerIpc({
         activeGitOriginUrl: activeOrigin,
         activeOriginIsPeer: binding?.kind === "remote",
         localRecentProjects: listLocalRecentProjectSummaries(),
+        // A chat on another machine keeps its work copy in this machine's
+        // checkout of the repository, which this window may never have opened
+        // (not a recent project). Still the same repository as the binding.
+        findRegisteredProject: (rootPath) => {
+          const record = (localProjectRegistryForAuthorization ??= new ProjectRegistry()).findAtRootPath(rootPath);
+          return record ? { rootPath: record.rootPath, gitOriginUrl: record.gitOriginUrl } : null;
+        },
+        logger: getCtx().logger,
       });
     },
     bindRemoteProject,

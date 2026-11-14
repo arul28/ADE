@@ -593,6 +593,11 @@ export async function createMachineRemoteConnection(
     // The name only (the path is the other machine's, in its own separator),
     // numbered so two captures with one name cannot overwrite each other.
     const localPath = path.join(tempDir, `${index}-${path.basename(remotePath.replace(/\\/g, "/"))}`);
+    return await fetchRemoteCaptureTo(remotePath, localPath);
+  };
+
+  /** Read a capture this caller made there back into `localPath` here. */
+  const fetchRemoteCaptureTo = async (remotePath: string, localPath: string): Promise<string> => {
     const handle = fs.openSync(localPath, "w");
     try {
       let offset = 0;
@@ -723,6 +728,33 @@ export async function createMachineRemoteConnection(
     input: Parameters<typeof fileCaptureHere>[0],
     toolName: string,
   ): Promise<string | null> => fileCaptureHere(input, { backendName: "ade-ios-simulator", toolName, where });
+
+  /**
+   * `ade apple screenshot --out <path> --machine …`: the shot is a file on
+   * that Mac. Its bytes are read back (as a proof capture's are) into `--out`
+   * here, so the copy the plan makes finds it.
+   */
+  const bringRemoteScreenshotHere = async (answer: unknown, copyTo: string): Promise<unknown> => {
+    if (isRecord(answer) && (answer.isError === true || answer.ok === false)) return answer;
+    const record = appleActionResult(answer);
+    const remotePath = record ? asString(record.filePath) : null;
+    if (!record || !remotePath) return answer;
+    fs.mkdirSync(path.dirname(copyTo), { recursive: true });
+    // Beside the target, renamed when whole: a failed read leaves no half file at --out.
+    const partPath = `${copyTo}.ade-part-${process.pid}`;
+    try {
+      await fetchRemoteCaptureTo(remotePath, partPath);
+      fs.renameSync(partPath, copyTo);
+    } catch (error) {
+      fs.rmSync(partPath, { force: true });
+      throw new CliToolError(
+        `The screenshot was taken on ${machine}, at ${remotePath} there, but could not be copied to ${copyTo} here: `
+          + `${error instanceof Error ? error.message : String(error)}. Leave out --out (the proof drawer here has the shot unless --no-proof).`,
+        { machine },
+      );
+    }
+    return withAppleActionResult(answer, { ...record, filePath: copyTo, savedFrom: `${remotePath} on ${machine}` });
+  };
 
   /**
    * The Apple verbs that file proof (`screenshot`, `captureProofBundle`,
@@ -1025,10 +1057,11 @@ export async function createMachineRemoteConnection(
         }
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
-        const appleParams = withRemoteAppleArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
+        const { params: appleCall, copyTo } = takeScreenshotCopyTarget(params);
+        const appleParams = withRemoteAppleArgs(appleCall, roots.workspaceRoot, options.machineWorkCopy ?? null);
         const proofAction = appleActionFiledAsProof(appleParams);
-        if (proofAction) return await fileRemoteAppleProofHere(appleParams, proofAction);
-        return await callRemote(method, appleParams);
+        const answer = proofAction ? await fileRemoteAppleProofHere(appleParams, proofAction) : await callRemote(method, appleParams);
+        return copyTo ? await bringRemoteScreenshotHere(answer, copyTo) : answer;
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "android_emulator") {
         const androidParams = withRemoteAndroidArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
@@ -1110,6 +1143,20 @@ function androidActionFiledAsProof(params: JsonObject): AndroidProofAction | nul
   if (params.name !== "run_ade_action" || toolArgs?.domain !== "android_emulator" || args?.proof === false) return null;
   const action = asString(toolArgs.action);
   return (ANDROID_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AndroidProofAction : null;
+}
+
+/**
+ * `ade apple screenshot --out` names a path HERE (`copyToCallerPath`), which
+ * means nothing to the Mac that takes the shot: it is taken off the call and
+ * kept for the copy back.
+ */
+function takeScreenshotCopyTarget(params: JsonObject): { params: JsonObject; copyTo: string | null } {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  const args = toolArgs && isRecord(toolArgs.args) ? toolArgs.args : null;
+  if (!toolArgs || !args || !("copyToCallerPath" in args)) return { params, copyTo: null };
+  const { copyToCallerPath, ...rest } = args;
+  const copyTo = toolArgs.action === "screenshot" ? asString(copyToCallerPath) : null;
+  return { params: { ...params, arguments: { ...toolArgs, args: rest } }, copyTo };
 }
 
 /** The action's own record in an `ade/actions/call` answer: `{ structuredContent: { domain, action, result } }` or a bare one. */

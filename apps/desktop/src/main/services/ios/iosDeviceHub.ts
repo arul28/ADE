@@ -584,7 +584,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         assertDeviceOwner(args.chatSessionId, args.force);
         const device = await deps.resolveDevice(args.deviceUdid ?? null);
         const bootedNow = await deps.bootDevice(device);
-        if (args.openWindow !== false) deps.openSimulatorApp();
+        // Opt-in only: once Simulator.app runs, every booted simulator (every
+        // lane's) gets a window. The device is ADE's to show by default.
+        if (args.openWindow === true) deps.openSimulatorApp();
         const previous = deviceSession;
         const isSameDevice = previous?.deviceUdid === device.udid;
         // Re-opening the same device keeps the original answer to "did ADE boot
