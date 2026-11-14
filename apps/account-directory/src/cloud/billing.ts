@@ -14,6 +14,7 @@ import {
   applyCloudPlanChange,
   boughtPlanIdOf,
   countedPlanDiskGb,
+  diskDayStatement,
   groupByUser,
   isPaidDowngrade,
   paidPlanOf,
@@ -707,10 +708,52 @@ export async function setExtraHours(env: CloudEnv, userId: string, enabled: bool
 }
 
 /**
+ * Makes sure the subscription bills extra disk, and says at which price: 1
+ * for an item still on the price from before Cloud 7, else 0. The same
+ * retry as `ensureExtraHoursItem`: after a 5xx the subscription is read
+ * again, and with no item the create is tried once more under a key of its
+ * own, since Stripe keeps a key's first answer (a 500 too) for a day.
+ */
+async function ensureExtraDiskItem(env: CloudEnv, subscriptionId: string, diskPrice: string, now: number): Promise<0 | 1> {
+  const held = await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
+  if (held) return held === "older" ? 1 : 0;
+  const key = `ade-cloud-disk-item-${subscriptionId}`;
+  const create = (idempotencyKey: string) => stripeRequest(env, "POST", "/subscription_items", { subscription: subscriptionId, price: diskPrice }, idempotencyKey);
+  // A reread finds the item another turn-on (or the create whose answer was
+  // lost) added: its price is the one billed, older or current.
+  const reread = async () => await diskItemOf(env, await subscriptionItems(env, subscriptionId), diskPrice);
+  try {
+    try {
+      await create(key);
+    } catch (error) {
+      if (!(error instanceof StripeRequestError) || error.status < 500) throw error;
+      const found = await reread();
+      if (found) return found === "older" ? 1 : 0;
+      await create(`${key}-${now}`);
+    }
+  } catch (error) {
+    // A 409 is usually a second turn-on racing this one: the item it added is all that's needed.
+    if (error instanceof StripeRequestError && error.status === 409) {
+      const found = await reread();
+      if (found) return found === "older" ? 1 : 0;
+    }
+    throw error;
+  }
+  return 0;
+}
+
+/**
  * Extra disk: on with a monthly limit, or off. Turning it on makes sure the
  * subscription has the extra-disk price (subscriptions bought before it
  * existed don't). Turning it off while the computers hold more than the
  * plan's disk is refused: that disk would still be there, unpaid.
+ *
+ * The day it goes on is never billed. Stripe bills a meter event to an item
+ * only from the item's start, and a day's event is stamped at its midday, so
+ * a day billed whole would be dropped unbilled whenever the item came later
+ * that day. Today's disk-day is written as it stands before the switch
+ * (not billable), in the same batch, even when nothing wrote one yet today
+ * (no computers at the daily run).
  */
 export async function setExtraDisk(
   env: CloudEnv,
@@ -730,15 +773,7 @@ export async function setExtraDisk(
     // price from before Cloud 7 pays that price, a new item the current one.
     let oldPrice: 0 | 1;
     try {
-      const items = await subscriptionItems(env, account.stripe_subscription_id);
-      const held = await diskItemOf(env, items, diskPrice);
-      if (!held) {
-        await stripeRequest(env, "POST", "/subscription_items", {
-          subscription: account.stripe_subscription_id,
-          price: diskPrice,
-        }, `ade-cloud-disk-item-${account.stripe_subscription_id}`);
-      }
-      oldPrice = held === "older" ? 1 : 0;
+      oldPrice = await ensureExtraDiskItem(env, account.stripe_subscription_id, diskPrice, now);
     } catch (error) {
       if (error instanceof StripeRequestError) {
         reportCloudFailure("cloud.extra_disk_item_failed", { status: error.status, message: error.stripeMessage });
@@ -746,8 +781,10 @@ export async function setExtraDisk(
       }
       throw error;
     }
-    await env.DB.prepare("update cloud_accounts set extra_disk_state = 'on', extra_disk_limit_cents = ?, extra_disk_old_price = ?, extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
-      .bind(choice.monthlyLimitCents, oldPrice, now, now, userId).run();
+    const turnOn = env.DB.prepare("update cloud_accounts set extra_disk_state = 'on', extra_disk_limit_cents = ?, extra_disk_old_price = ?, extra_disk_asked_at = coalesce(extra_disk_asked_at, ?), updated_at = ? where user_id = ?")
+      .bind(choice.monthlyLimitCents, oldPrice, now, now, userId);
+    // A new limit on extra disk already on changes nothing about today.
+    await env.DB.batch(account.extra_disk_state === "on" ? [turnOn] : [diskDayStatement(env, account, now), turnOn]);
     return;
   }
   // A downgrade waiting for the period end counts already: the next plan's disk is what stays paid.

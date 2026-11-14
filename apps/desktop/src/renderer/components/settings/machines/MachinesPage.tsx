@@ -35,14 +35,24 @@ export function MachinesPage({ machine }: { machine: SettingsMachinePage | null 
   return detail && machine ? <MachineDetail scope={machine} /> : <MachinesList />;
 }
 
-/** This computer by its device name; a cloud lane computer as "Cloud · <lane>"; any other machine by its name. */
-function machineDisplayName(machine: ProjectMachine, thisMachineName: string | null, laneComputers: readonly AdeCloudLaneComputer[]): string {
+/**
+ * This computer by its device name; a cloud lane computer as "Cloud · <lane>";
+ * any other machine by its name; two that share a name told apart (`names`).
+ */
+function machineDisplayName(
+  machine: ProjectMachine,
+  names: ReadonlyMap<string, string>,
+  thisMachineName: string | null,
+  laneComputers: readonly AdeCloudLaneComputer[],
+): string {
+  const shown = names.get(machine.machineId);
+  if (shown) return shown;
   if (machine.isThisMachine) return thisMachineName ?? THIS_MACHINE_NAME;
   return machineLabelForMachine({ hostname: machine.hostname, machineKey: machine.machineId, name: machine.machineName }, laneComputers);
 }
 
 function MachinesList() {
-  const { machines, thisMachineName, openMachine, openTab } = useSettingsMachines();
+  const { machines, machineNames, thisMachineName, openMachine, openTab } = useSettingsMachines();
   const { computers: laneComputers } = useAdeCloudLaneComputers();
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(machines, update.currentVersion || null);
@@ -74,7 +84,7 @@ function MachinesList() {
         <div className="ade-mx-lineup" aria-hidden>
           {machines.slice(0, 5).map((machine, index) => {
             const fact = facts.get(machine.machineId);
-            const name = machineDisplayName(machine, thisMachineName, laneComputers);
+            const name = machineDisplayName(machine, machineNames, thisMachineName, laneComputers);
             return (
               <span key={machine.machineId} className="ade-mx-lineup-tile" style={{ "--i": index } as CSSProperties}>
                 <MachineAvatar
@@ -109,7 +119,7 @@ function MachinesList() {
           <MachineListRow
             key={machine.machineId}
             machine={machine}
-            name={machineDisplayName(machine, thisMachineName, laneComputers)}
+            name={machineDisplayName(machine, machineNames, thisMachineName, laneComputers)}
             fact={facts.get(machine.machineId)}
             local={machine.isThisMachine ? local : null}
             known={known}
@@ -233,14 +243,14 @@ function MachineListRow({
  * machine and no other.
  */
 function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
-  const { machines, thisMachineName } = useSettingsMachines();
+  const { machines, machineNames, thisMachineName } = useSettingsMachines();
   const { computers: laneComputers } = useAdeCloudLaneComputers();
   const update = useAutoUpdateSnapshot();
   const machine = machines.find((candidate) => candidate.machineId === scope.machineId) ?? null;
   const facts = useMachineFacts(machine ? [machine] : [], update.currentVersion || null);
   const local = useThisComputerFacts();
   const fact = machine ? facts.get(machine.machineId) : undefined;
-  const name = machine ? machineDisplayName(machine, thisMachineName, laneComputers) : scope.machineName;
+  const name = machine ? machineDisplayName(machine, machineNames, thisMachineName, laneComputers) : scope.machineName;
   const color = useMachineColor(fact?.colorKey ?? scope.machineId);
   const offline = !scope.online && !scope.isThisMachine;
   const os = scope.isThisMachine ? osLabel(local.info?.platform) : platformWord(fact?.platform);

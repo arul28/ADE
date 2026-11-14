@@ -491,6 +491,8 @@ export type RemoteRuntimeCapabilities = {
   chatLaunchKinds?: string[];
   /** The brain answers its own settings with no project (`shared/machineScope.ts`). Absent on an older brain. */
   machineScope?: boolean;
+  /** The domains it answers there (`MACHINE_SCOPE_DOMAINS`). Absent on a brain of the route's first version. */
+  machineScopeDomains?: string[];
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {

@@ -11,7 +11,9 @@
  * breadcrumb for whatever fails next.
  */
 import { app, BrowserWindow, ipcMain, powerMonitor } from "electron";
-import { addSentryBreadcrumb, captureError } from "../../shared/sentry/capture";
+import { addSentryBreadcrumb, captureError, captureProblem } from "../../shared/sentry/capture";
+import { adeActionAccess, isBackgroundAdeWrite } from "../../shared/adeActionAccess";
+import { expectedErrorKind } from "../../shared/expectedError";
 import { parseCodedErrorMessage } from "../../shared/codedError";
 import { isExpectedFailure, isExpectedOutcome } from "../../shared/sentry/expectedFailure";
 import { runtimeActionFingerprint } from "../../shared/sentry/grouping";
@@ -164,6 +166,107 @@ function isExpectedRepeat(label: string, message: string, now: number): boolean 
 }
 
 /**
+ * An action a person asked for (a declared write the app does not send on its
+ * own, `isBackgroundAdeWrite`) that keeps getting an expected answer. One
+ * "Can't reach …" on a Settle is an answer and stays a Sentry Log; the same
+ * answer {@link PERSON_REPEAT_THRESHOLD} times within an hour is a person
+ * blocked, and the Sentry Logs nobody reads hid exactly that. It becomes one
+ * warning issue per action and kind of failure: warning so it never triggers
+ * the high-priority email, grouped so many people hitting it is one issue
+ * with a user count, and at most once a day per process for each.
+ *
+ * Only brain actions are classified: their access is declared in
+ * `ADE_ACTION_ACCESS`. The reads a screen polls are left out on purpose, and
+ * so are the writes below.
+ */
+const PERSON_REPEAT_WINDOW_MS = 60 * 60_000;
+const PERSON_REPEAT_THRESHOLD = 3;
+const PERSON_REPORT_EVERY_MS = 24 * 60 * 60_000;
+const MAX_PERSON_REPEAT_KEYS = 200;
+const personFailures = new Map<string, { at: number[]; reportedAt: number | null }>();
+
+/**
+ * Writes a screen sends again on its own while it stays open (a viewer
+ * restarting its stream, a status or decoration refresh), so a repeat is the
+ * screen's retry, not a person trying again. Not `BACKGROUND_WRITES`: a person
+ * opening the screen still wakes a sleeping cloud computer with them.
+ */
+const SCREEN_RETRIED_WRITES: ReadonlySet<string> = new Set([
+  "mac_desktop.startStream",
+  "ios_simulator.startStream",
+  "android_emulator.startStream",
+  "file.watchWorkspace",
+  "file.refreshGitDecorations",
+  "github.detectRepo",
+  "proxy.status",
+  "usage.noteQuotaDemand",
+]);
+
+/** A runtime action a person started, from its `domain.action` label. */
+function isPersonInitiatedAction(channel: string, label: string): boolean {
+  if (!RUNTIME_ACTION_CHANNELS.has(channel) || SCREEN_RETRIED_WRITES.has(label)) return false;
+  const dot = label.indexOf(".");
+  if (dot <= 0) return false;
+  const domain = label.slice(0, dot);
+  const action = label.slice(dot + 1);
+  return adeActionAccess(domain, action) === "write" && !isBackgroundAdeWrite(domain, action);
+}
+
+/**
+ * Counts one expected failure of a person's action; true when this one makes
+ * the repeat worth an issue.
+ */
+function personFailureRepeats(key: string, now: number): boolean {
+  let entry = personFailures.get(key);
+  if (!entry) {
+    if (personFailures.size >= MAX_PERSON_REPEAT_KEYS) personFailures.clear();
+    entry = { at: [], reportedAt: null };
+    personFailures.set(key, entry);
+  }
+  // `t <= now`: a clock set back must not keep old failures in the window forever.
+  // Only the last few matter: a terminal typed into on a machine that is gone
+  // fails on every key.
+  entry.at = [...entry.at.filter((t) => t <= now && now - t < PERSON_REPEAT_WINDOW_MS), now].slice(-PERSON_REPEAT_THRESHOLD);
+  if (entry.at.length < PERSON_REPEAT_THRESHOLD) return false;
+  if (entry.reportedAt != null && now >= entry.reportedAt && now - entry.reportedAt < PERSON_REPORT_EVERY_MS) return false;
+  entry.reportedAt = now;
+  return true;
+}
+
+/**
+ * What failed, as fixed words only: the error's own code (ADE's or an errno)
+ * or its type, and the expected kind. Never its message, which can name the
+ * person's machine ("Can't reach Mac Studio …") or files.
+ */
+function personFailureKind(error: unknown): [string, string] {
+  const direct = (error as { code?: unknown } | null)?.code;
+  const code = typeof direct === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(direct.trim()) ? direct.trim() : null;
+  return [code ?? (error instanceof Error ? error.name : "unknown"), expectedErrorKind(error) ?? "unexpected"];
+}
+
+function reportRepeatedPersonFailure(channel: string, label: string, error: unknown): void {
+  const failure = personFailureKind(error);
+  if (!personFailureRepeats([label, ...failure].join("\u0000"), Date.now())) return;
+  const failureClass = failure[0];
+  // No message: it can name the person's machine or files. The Sentry Log
+  // `ipc.expected.<label>` beside it has the scrubbed text.
+  captureProblem(`${label} keeps failing for a person: ${failureClass}`, {
+    level: "warning",
+    tags: {
+      "ipc.channel": channel,
+      "runtime.action": label,
+      "ipc.expected_repeat": "person",
+      "error.code": failureClass,
+    },
+    extra: {
+      expectedKind: expectedErrorKind(error) ?? null,
+      logEvent: `ipc.expected.${label}`,
+    },
+    fingerprint: ["ipc-expected-repeat", label, ...failure],
+  });
+}
+
+/**
  * One stall, one issue. When the main process or the brain stops answering,
  * every call in flight times out within seconds of each other, on different
  * channels (`attention.getSnapshot`, `lanes.list`, `chat.listSessions`, …),
@@ -217,17 +320,22 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
         const timeout = readIpcTimeout(error, startedAt, startedCpu);
-        if (isExpectedOutcome(error) || sleptThroughTimeout(timeout, startedAt, startedMono)) {
+        const expectedOutcome = isExpectedOutcome(error);
+        if (expectedOutcome || sleptThroughTimeout(timeout, startedAt, startedMono)) {
           // An answer ("Lane not found", "Can't reach …"), or a timer that ran
           // out while ADE was not running: a Sentry Log, not an issue.
           const message = error instanceof Error ? error.message : String(error);
+          const personAction = expectedOutcome && isPersonInitiatedAction(channel, label);
           if (!isExpectedRepeat(label, message, Date.now())) {
             forwardLogToSentry("warn", `ipc.expected.${label}`, {
               message,
               durationMs,
+              // Logs search `initiated:person` lists what people were refused.
+              ...(personAction ? { initiated: "person" } : {}),
               ...(timeout ? { lateMs: timeout.lateMs, cpuMs: timeout.cpuMs } : {}),
             });
           }
+          if (personAction) reportRepeatedPersonFailure(channel, label, error);
           throw error;
         }
         addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");

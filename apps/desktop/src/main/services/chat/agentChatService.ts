@@ -8603,8 +8603,11 @@ function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
  *
  * `stale_token` is the odd one out: the *worker* is dead (its access token
  * expired and the SDK never re-exchanges it) but the *thread* is perfectly
- * healthy, so that recycle keeps the agent id and resumes it in the fresh
- * worker instead of rotating to a new one.
+ * healthy. That recycle keeps the agent id only where resuming it cannot put
+ * the prompt in the thread twice: a turn cut off mid-work (it is asked to
+ * continue) and a compaction (nothing is re-sent but the summarize). Before
+ * any output it rotates like a transport failure, because the first send may
+ * already sit in the thread and a verbatim re-send would add it again.
  */
 type CursorSdkRecycleReason = "transport_error" | "stale_token" | "quiet_restart";
 
@@ -61537,18 +61540,13 @@ export function createAgentChatService(args: {
         // never do this — it would discard a turn still genuinely working.
         ...(forceExpireActiveRun ? { forceExpireActiveRun: true } : {}),
         ...(compactOnly ? { summarize: true } : {}),
-        // The recovery re-send is a distinct message to Cursor: on the
-        // stale-token path it lands on the *same* resumed agent, where reusing
-        // the first attempt's key could be deduped away into a silent no-op.
-        //
-        // Accepted trade-off of that distinctness: when the token died BEFORE
-        // any visible output, attempt 2 re-sends the prompt verbatim onto the
-        // resumed thread. `forceExpireActiveRun` expires the wedged run but
-        // does not unregister the message the first run already recorded in the
-        // SDK's local agent store, so the thread can hold the user prompt
-        // twice. Silent, correct recovery is worth one duplicated prompt line;
-        // the alternative (deduping) is the silent no-op that leaves the user
-        // with no answer at all.
+        // The recovery re-send is a distinct message to Cursor: a mid-turn
+        // stale-token "continue" lands on the *same* resumed agent, where
+        // reusing the first attempt's key could be deduped away into a silent
+        // no-op. A verbatim re-send never reaches that thread: before any
+        // output the recovery rotates to a new agent (the wrapper), because
+        // the first run may already have recorded the prompt there and
+        // `forceExpireActiveRun` does not take it back out.
         idempotencyKey: args.cursorRecoveryAttempt === true
           ? `${cursorLocalIdempotencyKey(managed, turnId)}:recovery`
           : cursorLocalIdempotencyKey(managed, turnId),
@@ -61755,18 +61753,24 @@ export function createAgentChatService(args: {
 
     const { runtime, turn } = first;
     const { turnId } = turn;
-    // The expired-token recovery keeps the thread: same agent id, resumed in a
-    // fresh worker. `resumedMidTurn` is the sub-case where the token died after
-    // real output — the prompt was delivered and partly executed, so attempt 2
-    // asks Cursor to continue rather than replaying the whole request.
+    // `resumedMidTurn`: the token died after real output. The prompt was
+    // delivered and partly executed, so attempt 2 asks Cursor to continue on
+    // the same agent (resumed in a fresh worker) rather than replaying it.
+    //
+    // Before any output the prompt is re-sent verbatim, and the first run may
+    // already have recorded it in the thread: resuming that thread would leave
+    // it there twice. So that re-send goes to a new agent, re-seeded the way a
+    // transport recycle is. A compaction re-sends no prompt and keeps its
+    // agent (a new one would have nothing to compact).
     const staleToken = first.reason === "stale_token";
     const resumedMidTurn = staleToken && first.sawVisibleOutput;
+    const preserveAgentId = staleToken && (resumedMidTurn || args.compactOnly === true);
     logger.warn("agent_chat.cursor_sdk_thread_recycling", {
       sessionId: managed.session.id,
       turnId,
       reason: first.reason,
       previousAgentId: runtime.sdkAgentId,
-      preservedAgentId: staleToken,
+      preservedAgentId: preserveAgentId,
       resumedMidTurn,
     });
     // Restage each consumed bucket on the rotated agent. Flattening both into
@@ -61789,7 +61793,7 @@ export function createAgentChatService(args: {
     }
 
     const carriedSteers = await recycleCursorSdkAgentThread(managed, runtime, first.reason, {
-      preserveAgentId: staleToken,
+      preserveAgentId,
     });
 
     // Re-checked after the recycle, not before it: cancelling the wedged run

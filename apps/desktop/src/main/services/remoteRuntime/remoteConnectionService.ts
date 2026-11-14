@@ -119,7 +119,7 @@ import {
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { findMachineProject } from "../../../shared/projectIdentity";
-import { isMachineScopeUnknownProjectError, MACHINE_SCOPE_PROJECT_ID, machineScopeUpdateMessage } from "../../../shared/machineScope";
+import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDomainAnswered, machineScopeUpdateMessage } from "../../../shared/machineScope";
 // How long a woken machine gets to come back online before the call fails as usual.
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
@@ -1715,10 +1715,14 @@ export class RemoteConnectionService {
    * call. Before the machine's capabilities are known, only its answer
    * (`error`, "unknown project") tells.
    */
-  private machineScopeRefusal(targetId: string, projectId: string, error?: unknown): Error | null {
+  private machineScopeRefusal(targetId: string, projectId: string, error?: unknown, domain?: string): Error | null {
     if (projectId !== MACHINE_SCOPE_PROJECT_ID) return null;
     const capabilities = this.statusById.get(targetId)?.capabilities;
-    const older = capabilities ? capabilities.machineScope !== true : isMachineScopeUnknownProjectError(error);
+    // A brain of the route's first version answers it, but not a domain
+    // added since (Keep awake, Android, Passwords).
+    const older = capabilities
+      ? capabilities.machineScope !== true || !machineScopeDomainAnswered(capabilities.machineScopeDomains, domain)
+      : isMachineScopeOlderBrainError(error);
     if (!older) return null;
     const known = this.registry.get(targetId);
     return new Error(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"));
@@ -1736,13 +1740,14 @@ export class RemoteConnectionService {
     projectId: string,
     run: () => Promise<T>,
     onFailure: (error: unknown) => void,
+    domain?: string,
   ): Promise<T> {
-    const refusedBefore = this.machineScopeRefusal(targetId, projectId);
+    const refusedBefore = this.machineScopeRefusal(targetId, projectId, undefined, domain);
     if (refusedBefore) throw refusedBefore;
     try {
       return await run();
     } catch (error) {
-      const refused = this.machineScopeRefusal(targetId, projectId, error);
+      const refused = this.machineScopeRefusal(targetId, projectId, error, domain);
       if (refused) throw refused;
       onFailure(error);
       throw error;
@@ -1807,7 +1812,7 @@ export class RemoteConnectionService {
       });
       this.clearAutomaticReconnectState(targetId);
       return result;
-    }, (error) => this.markCallFailure(targetId, error));
+    }, (error) => this.markCallFailure(targetId, error), request.domain);
   }
 
   /**

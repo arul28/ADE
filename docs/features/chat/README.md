@@ -3419,29 +3419,34 @@ message, in which case the record is kept and delivery resumes after a restart.
 
 A launch whose args carry `cloud: { sizeId }` (a tier id from
 `shared/cloudTiers.ts`) gets one new ADE Cloud computer for its one new lane.
-Nothing is made before Send. The desktop's main process owns the launch first
-(`services/adeCloud/cloudLaneLaunchService.ts`), so it does not depend on a
-window. Three stages come before the brain's own:
+Nothing is made before Send. Every such launch, from the app, the CLI or an
+agent, goes through ADE's server launcher (`/cloud/launches`, see
+`docs/features/ade-cloud/README.md`). The launch owner here (the desktop's
+main process, `services/adeCloud/cloudLaneLaunchService.ts`, or a brain for
+the CLI) does not depend on a window. It sends the server the launch's facts
+and its own args (`launch`: everything but the cloud target and the files
+from this computer, which go as the server's files first), and the server
+makes the computer with a one-time join key. The computer signs itself in to
+the account (no approval from anyone), clones the repository with its own
+Git sign-in and starts the same launch on its own brain (`chat.startLaunch`,
+same `launchId` and `laneId`, lane start forced to `on: "remote"`, its three
+steps as `priorStages`, the server launch's start as `setupStartedAt`). Three
+rows come before the brain's own, drawn from the server's record
+(`cloudLaneComputerStages.ts`):
 
-1. **Make computer**: the create carries the launch id as its request id,
-   the lane's name, and the lane facts in metadata (`shared/cloudLaneLaunch.ts`).
-   The stage finishes when the computer's ADE answers.
-2. **Join your account**: the computer's sign-in, approved in the approval
-   window, then its account row.
-3. **Clone repository**: pair, connect, and clone the project's GitHub origin
-   with the computer's own Git sign-in. A project that is already there is used.
+1. **Make computer**: the server's create (the launch id is its request id).
+2. **Join your account**: the computer's own sign-in, completed without a
+   browser (see the ADE Cloud README's server launcher). If it still can't
+   sign itself in, the row says so
+   with the page (`needs_approval`), the card's **Approve** opens it in
+   ADE's browser (`snapshot.cloud.approvalUrl`), and the CLI prints it.
+3. **Clone repository**: the computer's clone, as it reports it.
 
-The hand-off then calls `chat.startLaunch` on the computer's brain through
-its pin. The call keeps the same `launchId` and `laneId`, forces the lane
-start to `on: "remote"`, and passes the three finished stages as
-`priorStages`. The brain shows them first and never runs them
-(`normalizeChatLaunchPriorStages`). It also passes its own start for the
-attempt as `setupStartedAt`, so the card's total counts those steps; a Retry
-on either side starts the clock again (the desktop resets its start, the brain
-clears `setupStartedAt`). Messages queued before the hand-off go to
-the brain in order, one at a time, and the record is written after each one.
-After the hand-off the brain owns the launch and finishes it with the desktop
-closed.
+The hand-off: once the computer is in the account, the owner names its
+account row after the lane, pairs, finds the project there and reads the
+brain's launch, then follows it. Messages queued meanwhile go to the brain in
+order, one at a time, and the record is written after each one. After the
+hand-off the brain owns the launch and finishes it with the desktop closed.
 
 - **One id.** A second start with the same id returns the same launch. The
   server answers a repeated create request id with the same computer (see
@@ -3452,18 +3457,41 @@ closed.
   id main does not own takes the ordinary runtime route. `list` merges both.
   Snapshots carry `cloud` (size, computer, account machine key, the pin, and
   `handedOff`), and each project's views show only launches for their origin.
-- **Failures.** A failed stage shows one sentence. Retry runs that stage again
-  on the same computer. A computer that failed before it joined is put to
-  sleep while it waits. Cancel deletes only computers whose `ade_request_id`
-  is this launch, then removes the account row. If no computer was found yet,
-  it watches for a late one for 10 minutes. After the hand-off, Cancel goes to
-  the brain first, and the brain refuses once the agent has started.
+- **Failures.** A failed stage shows one sentence (the server's or the
+  computer's own when it has one). Retry asks the server again with
+  `retry: true`: a launch whose computer failed before its agent started
+  begins again on a new computer under the same id. The server claims the
+  retry before it deletes the failed computer (a join or report that landed
+  since keeps that computer) and holds the launch `retrying`, with the old
+  computer still on it, until the delete finishes: the old computer's
+  reports and joins are refused (also one read before the claim), and a
+  second start answers the launch instead of making or adopting a computer.
+  The record's 7-day deadline starts again, and a delete the provider
+  refuses puts the launch back as failed with that computer. A launch whose computer failed after
+  its agent began is bound and handed off as it is, so Retry goes to the
+  computer's own retry. Cancel before the hand-off asks the server first: its
+  `launch_started` refusal (the agent can start before this app has paired)
+  refuses the Cancel and nothing is deleted, and no answer at all refuses it
+  too. Otherwise the server deletes the computer, also one its create is
+  still making, then this app deletes computers whose `ade_request_id` is
+  this launch, the account row and saved connections (also when the server
+  already deleted the computer; the machine key stays, and the cleanup stays
+  open for ADE's next start, until its row is removed). A cleanup finished
+  when ADE opens again asks the server too, and deletes nothing while the
+  server doesn't answer. A read of the brain older than an event already
+  taken is dropped. After the hand-off, Cancel goes to the brain first, and the
+  brain refuses once the agent has started. Each new subscription to the
+  brain's events reads its snapshot once, so a change between the hand-off's
+  read and the stream is never missed.
 - **Restarts.** Records live in `<userData>/cloud-lane-launches/`. When ADE
-  opens again, a launch that was setting up continues from its unfinished
-  stage. A handed-off one is read and followed again, and a cancel finishes
-  its cleanup.
-- **Limits.** Only GitHub origins, no local file attachments before the
-  hand-off, and no uncommitted start.
+  opens again, a launch that was setting up reads the server again (the same
+  id answers the same launch). A handed-off one is read and followed again,
+  and a cancel finishes its cleanup. A record from an ADE before the server
+  launcher (`via` unset) had its computer made here, which never joins by
+  itself: that computer is deleted and the launch starts again on the server.
+- **Limits.** Only GitHub origins and no uncommitted start. Files on the
+  first message go to the server first (at most 10, 25 MB each); a brain
+  host takes none.
 - **Kinds.** Any kind can start a cloud lane. A `chat` starts its agent there.
   A `cli` parks at `awaiting-client` on the computer's brain, and the
   launching window's `useChatLaunchCliDriver` starts the tracked CLI session
@@ -3471,13 +3499,10 @@ closed.
   forwards it to the brain. A `lane` (`ade lanes create --machine cloud`) has
   no `agent` stage and completes when its environment stage ends. It takes no
   queued messages.
-  A brain advertises the kinds it runs as the `chatLaunchKinds` capability of
-  `ade/initialize` (`CHAT_LAUNCH_KINDS`). Before it hands off a `cli` or
-  `lane` launch, the launch owner reads that list from its connection (the
-  connect result in the app, the bridge's open connection in a brain). A
-  brain that does not list the kind would read it as `chat`, so the step
-  fails with "too old, update it, then retry". A list that can't be read is
-  not refused.
+  A `cli` goes to the server as `lane` (the server knows only `chat` and
+  `lane`) with `cli` in the app's own args, which the computer reads back. A
+  computer too old to read the app's args starts from the facts alone, so a
+  `cli` there runs as the lane without its CLI session.
 
 The lane setup card (`LaneSetupCard.tsx`) and the ADE Cloud job card
 (`CloudLaneJobCard.tsx`) draw their step rows from one parts module,

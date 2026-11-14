@@ -20,6 +20,7 @@ import type {
   AiProviderSignInCheck,
   AiSettingsStatus,
   CursorSdkAuthStatus,
+  OpenProjectBinding,
   ProjectConfigSnapshot,
 } from "../../../../shared/types";
 import type {
@@ -98,12 +99,18 @@ export type ProvidersViewContext = {
   status: AiSettingsStatus | null;
   projectConfigSnapshot: ProjectConfigSnapshot | null;
   /**
-   * False when the page reaches its computer through the machine route (no
-   * copy of this repository there). The settings a project copy saves
-   * (turning a provider off, local model servers, custom providers and slugs,
-   * compaction) are then shown as a note instead of controls.
+   * False when there is no copy of this repository on the page's computer, or
+   * its settings have not been read (a drive that is not answering). The
+   * settings a project copy saves (turning a provider off, local model
+   * servers, custom providers and slugs, compaction) are then shown as a note
+   * instead of controls.
    */
   projectConfigEditable: boolean;
+  /**
+   * That copy's pin: where those settings are written. The page's own pin is
+   * the machine route, which never answers them. Null with no copy.
+   */
+  projectPin: OpenProjectBinding | null;
   /** The page's computer, for that note. */
   machineName: string;
   loading: boolean;

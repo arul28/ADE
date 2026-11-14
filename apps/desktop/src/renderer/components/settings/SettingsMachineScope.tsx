@@ -48,6 +48,13 @@ export type SettingsMachineScope = {
   /** The machine the project tab is bound to. */
   isActiveBinding: boolean;
   online: boolean;
+  /**
+   * How the project's own settings on this machine are reached (its copy of
+   * this repository), when `target` is the machine route rather than that
+   * copy. Unset when `target` is itself the copy; null when the machine has
+   * no copy (`useSettingsProjectPin`).
+   */
+  projectTarget?: SettingsMachineTarget | null;
 };
 
 /** A scope whose `pin` always agrees with its `target`. */

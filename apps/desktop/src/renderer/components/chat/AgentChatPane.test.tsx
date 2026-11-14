@@ -4504,6 +4504,10 @@ describe("AgentChatPane submit recovery", () => {
     const sessionA = buildSession("session-a", { status: "idle" });
     const sessionB = buildSession("session-b", { status: "idle" });
     installAdeMocks({ sessions: [sessionA, sessionB] });
+    // The dock keeps a stash for 1.5 s and waits 500 ms for the bubble, both
+    // on the real clock. Under a loaded run the rerender below took longer and
+    // the motion never started; a held clock is the fast machine this means.
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
 
     const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
     const originalRect = HTMLElement.prototype.getBoundingClientRect;
@@ -4664,6 +4668,7 @@ describe("AgentChatPane submit recovery", () => {
         writable: true,
         value: originalRect,
       });
+      vi.useRealTimers();
     }
   });
 

@@ -688,7 +688,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
 import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
@@ -31578,11 +31578,33 @@ async function runServe(
   // bridge. Set off the boot path; a launch a quit left behind goes on once
   // the brain is up.
   if (!embedded) {
-    void import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost").then(({ setCloudLaneLaunchTransport }) => {
+    void Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost"),
+      import("../../desktop/src/main/services/adeCloud/cloudBrainMaker"),
+    ]).then(([{ setCloudLaneLaunchTransport }, { setCloudJoinApprovalPush }]) => {
       setCloudLaneLaunchTransport({
         call: async (input) => await (await getAgentMachineBridge()).call(input),
-        setUpRepository: async (input) => await (await getAgentMachineBridge()).setUpRepository(input),
-        chatLaunchKinds: async (machine) => await (await getAgentMachineBridge()).chatLaunchKinds(machine),
+      });
+      // A machine this brain makes (`ade cloud create`, copy, move with no
+      // desktop) waits for the person's approval: the push reaches their phones.
+      setCloudJoinApprovalPush((notice) => {
+        void import("./services/push/pushPublisherService").then(({ peekSharedPushPublisherService, resolvePushRelayStateFile }) => {
+          // Peek, never create: the publisher is the one the project scopes made.
+          const publisher = peekSharedPushPublisherService(resolvePushRelayStateFile(layout.secretsDir));
+          if (!publisher) {
+            headlessProjectLogger.info("cloud.join_approval_push_skipped", { reason: "no_publisher" });
+            return;
+          }
+          publisher.handleSessionNotice({
+            sessionId: notice.chatSessionId,
+            dedupeKey: notice.dedupeKey,
+            title: notice.title,
+            body: notice.body,
+            deepLink: notice.deepLink,
+          });
+        }).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.join_approval_push_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
       });
       const resumeTimer = setTimeout(() => {
         void (async () => {
@@ -31630,6 +31652,7 @@ async function runServe(
       logger: headlessProjectLogger,
       account: brainAccountAuthService,
       directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
       projectRegistry,
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
@@ -31744,7 +31767,26 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
-      machineScopeAccountSettings: syncEnabled ? () => machineAccountStoresForRecords().settings : null,
+      // The machine route's account stores, as a project runtime of this
+      // brain has them: only with sync on. Passwords keeps in step with the
+      // account while it is lent, as `accountVault.call`'s copy does.
+      machineScopeAccountStores: syncEnabled
+        ? () => {
+            const stores = machineAccountStoresForRecords();
+            stores.passwords.startPeriodicSync();
+            return { settings: stores.settings, passwords: stores.passwords };
+          }
+        : null,
+      // Settings › Android devices with no project: the same machine settings
+      // file every project's emulator service reads.
+      machineScopeAndroid: embedded ? null : async () => {
+        const { createAndroidMachineSettingsService } = await import("../../desktop/src/main/services/android/androidMachineSettingsService");
+        return (onEvent) => createAndroidMachineSettingsService({
+          sdkSettingsFile: path.join(layout.adeDir, "android", "settings.json"),
+          logger: headlessProjectLogger,
+          onEvent,
+        });
+      },
       projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,

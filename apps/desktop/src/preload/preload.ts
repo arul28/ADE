@@ -114,7 +114,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
-import { isMachineScopePin } from "../shared/machineScope";
+import { isMachineScopePin, THIS_MACHINE_SCOPE_KEY } from "../shared/machineScope";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -1499,23 +1499,38 @@ const projectConfigSnapshotCache = createShortIpcCache<ProjectConfigSnapshot>(
   1_000,
 );
 
+/**
+ * `ai.getStatus`, one read per 10 s per slot: the bound copy (no pin, or a
+ * pin that names it) and This computer's machine route, which Settings ›
+ * Providers reads for This computer instead of the bound copy. Every clear
+ * empties both: a write through either changes what both show.
+ */
 const aiStatusCache = (() => {
-  let value: AiSettingsStatus | undefined;
-  let promise: Promise<AiSettingsStatus> | null = null;
-  let expiresAt = 0;
-  let includesOpenCodeInventory = false;
-  let promiseIncludesOpenCodeInventory = false;
+  type Slot = {
+    value: AiSettingsStatus | undefined;
+    promise: Promise<AiSettingsStatus> | null;
+    expiresAt: number;
+    includesOpenCodeInventory: boolean;
+    promiseIncludesOpenCodeInventory: boolean;
+  };
+  const slots = new Map<string, Slot>();
 
   const clear = () => {
-    value = undefined;
-    promise = null;
-    expiresAt = 0;
-    includesOpenCodeInventory = false;
-    promiseIncludesOpenCodeInventory = false;
+    slots.clear();
   };
 
-  /** `pin`: set only for a pin that names the bound copy, which shares this cache. */
+  /**
+   * `pin`: set only for a pin that names the bound copy, which shares the
+   * bound slot, or for This computer's machine pin, which has its own.
+   */
   const get = async (key: string, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
+    const slotKey = pin?.key === THIS_MACHINE_SCOPE_KEY ? THIS_MACHINE_SCOPE_KEY : "bound";
+    let slot = slots.get(slotKey);
+    if (!slot) {
+      slot = { value: undefined, promise: null, expiresAt: 0, includesOpenCodeInventory: false, promiseIncludesOpenCodeInventory: false };
+      slots.set(slotKey, slot);
+    }
+    const current = slot;
     const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(
       key,
       {},
@@ -1523,40 +1538,41 @@ const aiStatusCache = (() => {
     const wantsOpenCodeInventory = args.refreshOpenCodeInventory === true;
     const now = Date.now();
     if (
-      value !== undefined &&
-      expiresAt > now &&
-      (!wantsOpenCodeInventory || includesOpenCodeInventory)
+      current.value !== undefined &&
+      current.expiresAt > now &&
+      (!wantsOpenCodeInventory || current.includesOpenCodeInventory)
     ) {
-      return value;
+      return current.value;
     }
     if (
-      promise &&
-      (!wantsOpenCodeInventory || promiseIncludesOpenCodeInventory)
+      current.promise &&
+      (!wantsOpenCodeInventory || current.promiseIncludesOpenCodeInventory)
     ) {
-      return promise;
+      return current.promise;
     }
 
-    promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
+    current.promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
     const statusArgs = { refreshOpenCodeInventory: wantsOpenCodeInventory };
     const request = (pin
       ? callPinnedRuntimeAction<AiSettingsStatus>(pin, "ai", "getStatus", { args: statusArgs })
       : callProjectRuntimeActionOr<AiSettingsStatus>("ai", "getStatus", { args: statusArgs }, () =>
         ipcRenderer.invoke(IPC.aiGetStatus, statusArgs)))
       .then((status: AiSettingsStatus) => {
-        if (promise === request) {
-          value = status;
-          expiresAt = Date.now() + 10_000;
-          includesOpenCodeInventory = wantsOpenCodeInventory;
+        // A clear since the read started dropped this slot: keep the answer out of the new one.
+        if (current.promise === request && slots.get(slotKey) === current) {
+          current.value = status;
+          current.expiresAt = Date.now() + 10_000;
+          current.includesOpenCodeInventory = wantsOpenCodeInventory;
         }
         return status;
       })
       .finally(() => {
-        if (promise === request) {
-          promise = null;
-          promiseIncludesOpenCodeInventory = false;
+        if (current.promise === request) {
+          current.promise = null;
+          current.promiseIncludesOpenCodeInventory = false;
         }
       });
-    promise = request;
+    current.promise = request;
     return request;
   };
 
@@ -6213,8 +6229,9 @@ const adeBridge = {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
-      // A pin that names the bound copy shares the bound cache (one read per 10 s).
-      if (pin && !isBoundCopyPin(pin)) {
+      // A pin that names the bound copy shares the bound cache (one read per
+      // 10 s); This computer's machine pin has a slot of its own.
+      if (pin && pin.key !== THIS_MACHINE_SCOPE_KEY && !isBoundCopyPin(pin)) {
         return callPinnedRuntimeAction<AiSettingsStatus>(
           pin,
           "ai",

@@ -46,13 +46,12 @@ export function registerCloudLaneLaunchIpc(args: {
    * computer is made. Unset: no check.
    */
   gitPreflight?: (originUrl: string) => Promise<CloudGitPreflight>;
+  /** This app's update track: a launch's computer follows the same one. */
+  updateChannel?: () => "stable" | "beta" | null;
   logger: Logger;
 }): CloudLaneLaunchService {
   const { remote, logger } = args;
   const { pendingCreates: _pendingCreates, ...creator } = args.machineCreatorDeps;
-  // The launch kinds each connect's brain advertised, so the hand-off reads
-  // what its own connect just saw instead of connecting again.
-  const brainLaunchKinds = new Map<string, string[]>();
   const countOutcome = cloudLaneLaunchOutcomes(args.analytics, "desktop");
   const service = createCloudLaneLaunchService({
     recordsDir: path.join(app.getPath("userData"), "cloud-lane-launches"),
@@ -62,19 +61,16 @@ export function registerCloudLaneLaunchIpc(args: {
       countOutcome(event);
     },
     creator,
+    ...(args.updateChannel ? { updateChannel: args.updateChannel } : {}),
     removeAccountMachine: args.removeAccountMachine,
     forgetMachineConnections: args.forgetMachineConnections,
     uploadAttachment: (binding, input) => remote.uploadAttachment(binding, input),
     pairMachine: args.pairMachine,
     connect: async (targetId) => {
-      const connected = await remote.connect(targetId);
-      brainLaunchKinds.set(targetId, connected.chatLaunchKinds);
+      await remote.connect(targetId);
       return true;
     },
-    brainLaunchKinds: async (targetId) => brainLaunchKinds.get(targetId) ?? null,
     listProjects: (targetId) => remote.projects(targetId),
-    defaultParentDir: (targetId) => remote.defaultParentDir(targetId),
-    cloneProject: (targetId, input) => remote.cloneProject(targetId, input),
     ...(args.gitPreflight ? { gitPreflight: args.gitPreflight } : {}),
     resolveBinding: (targetId, projectId, rootPath) => remote.resolveBinding(targetId, projectId, rootPath),
     callChatAction: (binding, action, request) => remote.callAction(binding, { domain: "chat", action, ...request }),

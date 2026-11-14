@@ -29,7 +29,7 @@ import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { freeSpaceLevel } from "../storage/storageView";
 import { SingleMachineUpdateRow } from "../general/MachineUpdateRows";
-import { routedPageFor, machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
+import { machineRouteNeedsUpdate, routedPageFor, machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
 import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
@@ -60,13 +60,21 @@ export function MachineSettings({
   const isThis = scope.isThisMachine;
   // Reachable through its own brain: pinned calls (or unpinned on the tab's own machine).
   const reach = machineSectionAvailable("routed", scope);
-  // The machine's own values (providers, restarts, update track, shell, load)
-  // also reach it through its machine route when this window's project has
-  // no copy there.
+  // The machine's own values (providers, restarts, update track, shell, load,
+  // keep awake) reach it through its machine route, which needs no project,
+  // so a project's stalled drive never holds them up (its copy of this
+  // repository only for an older ADE there).
   const machineScope = useMemo(() => routedPageFor("machine", scope), [scope]);
   const machineReach = machineScope != null && scope.online;
   // The machine-route rows run on the routed scope, else on the page as it is.
   const machineRowScope = machineScope ?? scope;
+  // Keep awake on This computer is plain IPC to this desktop's main process
+  // (which asks this computer's brain); elsewhere it is the machine route's.
+  const keepAwakeScope = useMemo(
+    () => (isThis ? { ...scope, target: { kind: "this" as const }, pin: null } : routedPageFor("machine", scope, "keep_awake")),
+    [isThis, scope],
+  );
+  const keepAwakeNeedsUpdate = !isThis && machineRouteNeedsUpdate("machine", scope, "keep_awake");
   const mac = fact?.platform === "mac";
   const elsewhere = <UnreachableHint isThis={isThis} />;
   const connection = fact?.connection ?? null;
@@ -108,7 +116,12 @@ export function MachineSettings({
           control={isThis ? <RowLink label="Advanced" onClick={() => openTab("advanced", "diagnostics")} /> : null}
         />
         <CliRow isThis={isThis} onOpen={() => openTab("advanced", "ade-cli")} />
-        <KeepAwakeRow scope={scope} reach={reach} onOpen={isThis ? () => openTab("behaviour", "keep-awake") : undefined} />
+        <KeepAwakeRow
+          scope={keepAwakeScope ?? scope}
+          reach={keepAwakeScope != null && scope.online}
+          needsUpdate={keepAwakeNeedsUpdate}
+          onOpen={isThis ? () => openTab("behaviour", "keep-awake") : undefined}
+        />
         {mac ? (
           <MachineRow
             icon={<AppleLogo size={14} />}
@@ -122,7 +135,7 @@ export function MachineSettings({
           icon={<AndroidLogo size={14} />}
           title="Android devices"
           value="SDK and emulator tools"
-          control={reach ? <RowLink onClick={() => openMachine(scope.machineId, "android")} /> : elsewhere}
+          control={machineSectionAvailable("machine", scope) ? <RowLink onClick={() => openMachine(scope.machineId, "android")} /> : elsewhere}
         />
         <MachineRow
           icon={<Cpu size={14} />}
@@ -394,9 +407,12 @@ const KEEP_AWAKE_LABEL: Record<KeepAwakeLevel, string> = {
   "lid-closed": "Even with the lid closed",
 };
 
-function KeepAwakeRow({ scope, reach, onOpen }: { scope: SettingsMachinePage; reach: boolean; onOpen?: () => void }) {
+function KeepAwakeRow({ scope, reach, needsUpdate, onOpen }: { scope: SettingsMachinePage; reach: boolean; needsUpdate: boolean; onOpen?: () => void }) {
   const [snapshot, setSnapshot] = usePinnedRead<KeepAwakeSnapshot>(scope, reach || scope.isThisMachine, (pin) => window.ade.keepAwakeGet(pin));
   const [saving, setSaving] = useState(false);
+  if (needsUpdate) {
+    return <MachineRow icon={<Coffee size={14} />} title="Keep awake" control={<RowHint>{`Update ADE on ${scope.machineName}`}</RowHint>} />;
+  }
   if (snapshot === undefined) {
     return <MachineRow icon={<Coffee size={14} />} title="Keep awake" value="…" />;
   }

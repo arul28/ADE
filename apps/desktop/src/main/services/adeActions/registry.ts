@@ -335,11 +335,11 @@ import {
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
 import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
+import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
-import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -4439,8 +4439,8 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
     analytics: runtime.productAnalyticsService ?? null,
-    // An attached desktop approves the new computer in its window; with none, the person gets a link.
-    desktop: () => runtime.getCloudDesktop?.() ?? null,
+    // The launch's computer follows this machine's update track.
+    updateChannel: () => cloudAccessDeps(runtime).updateChannel?.() ?? null,
     // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
     gitPreflight: (originUrl) => cloudGitPreflight({
       vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
@@ -4481,7 +4481,8 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
   });
   // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
+  const onCloudMachine = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+  const chromium = onCloudMachine ? findHeadlessChromium() : null;
   return {
     client: () => requireCloudProvider(credentials),
     getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
@@ -4494,9 +4495,20 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
     account: () => machines.account(),
     removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
     // No window here: the sign-in of a machine this brain made with an
-    // unattended yes opens in a headless Chromium (the template ships one).
-    ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-      approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
+    // unattended yes is approved without a browser, a headless Chromium (the
+    // template ships one) as the fallback.
+    ...(onCloudMachine ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        // The link must be on this brain's own Clerk hosts and account directory.
+        trust: () => ({
+          clerkIssuer: getSharedAccountAttestationConfig({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }).issuer,
+          directoryBaseUrl: directoryBaseUrl(),
+        }),
+        logger: runtime.logger,
+      }) } : {}),
     logger: runtime.logger,
   };
 }

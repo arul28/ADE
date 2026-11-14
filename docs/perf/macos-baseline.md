@@ -3036,6 +3036,9 @@ first open after a fresh launch includes Vite's compile).
 | `remote-only` → This computer (machine route on this computer) | not reachable, and the page title named the other computer | 53–88 ms | 150 ms |
 | `remote-only` → "dev" (the tab's machine) | 37 ms | 29 ms | 150 ms |
 
+The ceilings (150 ms on This computer, 750 ms on another computer, 1.5 s
+for the first open after a brain start) are approved by owner 2026-11-14.
+
 The minute-long wait in the report was not the page. The installed brain's
 log (`~/.ade/runtime/brain.jsonl`) has `project_root.not_answering` for every
 project on the external `/Volumes/Dev` drive at 20:14–20:17 that day, with
@@ -3048,6 +3051,28 @@ this repository) still waits when that copy's drive stalls; that is open.
 No timer, poll or subscription is added. A machine route's first call starts
 the computer's personal-chat runtime when nothing has started it yet (the
 first-open row); the brain's start warms it otherwise.
+
+### Providers through This computer's machine route (Cloud 9, 2026-11-14)
+
+Dev app (own socket, sync off) on `ade/cloud-9-machine` against main at
+`31c7cf2fa` (its renderer checked out over the same tree in the same run, so
+both passes share the app and the brain). Mac Studio M4 Max, not the baseline
+machine, other agents running. The ADE window, bound to its copy on This
+computer (on the external `/Volumes/Dev` drive). Each number is navigation
+from General to Settings › Providers until all 13 tiles are drawn and none
+says Checking (CDP, 7 runs after a reload; the first includes Vite's compile).
+
+| Window → computer | Before (main) | After (branch) | Ceiling |
+| --- | --- | --- | --- |
+| ADE → This computer | 73 ms first, then 19–23 ms | 60 ms first, then 19–24 ms | 150 ms (approved by owner 2026-11-14) |
+
+Main read the status through the bound copy, which a stalled project drive
+holds up. The branch reads it on This computer's machine route (`~/.ade`
+only); the first cut of the branch drew in 33–37 ms because that read skipped
+the preload's 10 s status cache, so the cache now keeps a slot for This
+computer's machine pin. Only the project's AI config still goes to the copy,
+bounded at 8 s. A stalled drive was not reproduced here. No timer, poll or
+subscription is added.
 
 ### Events for many machines (S3, 2026-11-12)
 

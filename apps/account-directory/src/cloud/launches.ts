@@ -8,6 +8,7 @@ import {
   CLOUD_LAUNCH_DRAFT_TTL_MS,
   CLOUD_LAUNCH_ENV,
   CLOUD_LAUNCH_JOIN_TTL_MS,
+  CLOUD_LAUNCH_MAX_ARGS_BYTES,
   CLOUD_LAUNCH_MAX_FILE_BYTES,
   CLOUD_LAUNCH_MAX_FILES,
   CLOUD_LAUNCH_MAX_PROMPT_CHARS,
@@ -30,10 +31,11 @@ import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, type Cloud
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 
 /**
- * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): a lane
- * on a new computer for a caller with no computer of its own (the web, the
- * phone, an automation on ADE Cloud). A person with a computer still launches
- * from it (`cloudLaneLaunchService.ts`).
+ * The server launcher (docs/plans/cloud-6/c6-c8-launcher-spec.md, C6): every
+ * lane on a new computer of its own. An ADE app or CLI sends it and then
+ * follows the computer's own launch (`cloudLaneLaunchService.ts`); a caller
+ * with no computer (the web, the phone, an automation on ADE Cloud) reads
+ * the record here.
  *
  * The new computer drives its own launch. The server never runs a long step:
  * it makes the computer (the one create path, `createComputer`), keeps the
@@ -53,10 +55,18 @@ import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome }
  * `MAX_REJOINS` times: each join names a fresh device sign-in.
  */
 
+/**
+ * `retrying`: a Retry holds the launch while it deletes the failed computer
+ * (`restartFailedLaunch`). Never shown: the record reads `making` with no
+ * computer. Starts answer it as it is, and the old computer's reports and
+ * joins are refused.
+ */
+type LaunchRowState = CloudLaunchState | "retrying";
+
 type LaunchRow = {
   launch_id: string;
   user_id: string;
-  state: CloudLaunchState;
+  state: LaunchRowState;
   kind: string | null;
   size_id: string | null;
   project_origin: string | null;
@@ -97,11 +107,20 @@ const UUID = UUID_PATTERN;
 const FILE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 /** `AgentChatPermissionMode` (the desktop's chat types): the modes a chat on the computer accepts. */
 const CHAT_PERMISSION_MODES: ReadonlySet<string> = new Set(["default", "auto", "plan", "edit", "full-auto", "config-toml"]);
-const SHORT_ID = /^[A-Za-z0-9_.:/-]{1,200}$/;
+/**
+ * An ADE model registry id, as the desktop sends it: OpenCode and Pi ids carry
+ * the provider's own model name `encodeURIComponent`-escaped
+ * (`opencode/openrouter/anthropic%2Fclaude-…`), so that alphabet too.
+ */
+const MODEL_ID = /^[A-Za-z0-9_.:/%!~*'()-]{1,300}$/;
 const STAGE_ID = /^[a-z][a-z0-9_-]{0,39}$/;
 const STAGE_STATUSES: ReadonlySet<CloudLaunchStageStatus> = new Set(["pending", "running", "done", "failed", "skipped", "warning"]);
 /** Branch names: what git allows that is safe to carry, at a sane length. */
 const BRANCH = /^[A-Za-z0-9._/@+-]{1,250}$/;
+const utf8 = new TextEncoder();
+/** A value's JSON size in bytes (UTF-8), the unit of `CLOUD_LAUNCH_MAX_ARGS_BYTES`; a string's length counts UTF-16 units. */
+const jsonBytes = (value: unknown): number => utf8.encode(JSON.stringify(value)).byteLength;
+
 const NOT_FOUND = "ADE Cloud has no such launch.";
 const notFound = () => fail("not_found", NOT_FOUND, 404);
 const badRequest = (message: string) => fail("bad_request", message, 400);
@@ -223,7 +242,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
   if (kind === "chat") {
     const raw = body.chat && typeof body.chat === "object" ? body.chat as Record<string, unknown> : null;
     const provider = typeof raw?.provider === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.provider) ? raw.provider : null;
-    const modelId = typeof raw?.modelId === "string" && SHORT_ID.test(raw.modelId) ? raw.modelId : null;
+    const modelId = typeof raw?.modelId === "string" && MODEL_ID.test(raw.modelId) ? raw.modelId : null;
     const permissions = typeof raw?.permissions === "string" && CHAT_PERMISSION_MODES.has(raw.permissions) ? raw.permissions : null;
     const effort = raw?.effort == null ? null : typeof raw.effort === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(raw.effort) ? raw.effort : undefined;
     const prompt = typeof raw?.prompt === "string" ? raw.prompt : null;
@@ -243,10 +262,20 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     };
   }
   const madeByRaw = body.madeBy && typeof body.madeBy === "object" ? body.madeBy as Record<string, unknown> : null;
+  const agent = madeByRaw?.agent === "chat" || madeByRaw?.agent === "automation" || madeByRaw?.agent === "mcp" ? madeByRaw.agent : null;
   const madeBy: CloudServerLaunchRequest["madeBy"] = madeByRaw?.kind === "automation"
     ? { kind: "automation", ruleId: shortString(madeByRaw.ruleId, 120) }
-    : { kind: "person" };
+    : madeByRaw?.kind === "agent" && agent
+      ? { kind: "agent", agent, chatSessionId: shortString(madeByRaw.chatSessionId, 200) }
+      : { kind: "person" };
   const channel = body.channel === "beta" ? "beta" : "stable";
+  // An ADE app's own launch args, kept as sent: the computer parses them as every entry's.
+  let launch: Record<string, unknown> | null = null;
+  if (body.launch != null) {
+    if (typeof body.launch !== "object" || Array.isArray(body.launch)) return "The launch's settings can't be read.";
+    if (jsonBytes(body.launch) > CLOUD_LAUNCH_MAX_ARGS_BYTES) return "The launch's settings are too big.";
+    launch = body.launch as Record<string, unknown>;
+  }
   return {
     launchId,
     kind,
@@ -263,6 +292,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     ...(chat ? { chat } : {}),
     madeBy,
     channel,
+    ...(launch ? { launch } : {}),
   };
 }
 
@@ -285,24 +315,33 @@ function parseJsonColumn<T>(text: string | null, fallback: T, where: { launchId:
 const joinNeverFinished = (row: LaunchRow, now: number): boolean =>
   (row.state === "joining" || row.state === "needs_approval") && row.join_expires_at != null && row.join_expires_at <= now;
 
+/** A Retry still `retrying` this long stopped mid-delete (its Worker ended): the next Retry takes it over. */
+const RETRY_HOLD_MS = 5 * 60_000;
+const RETRY_STOPPED = "The retry stopped before its new computer was made. Retry again.";
+const retryHoldStopped = (row: LaunchRow, now: number): boolean => now - row.updated_at >= RETRY_HOLD_MS;
+
 export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
   const neverJoined = joinNeverFinished(row, now);
+  const retrying = row.state === "retrying";
+  // A hold whose Worker stopped mid-delete reads as failed, so the caller's
+  // Retry (a POST with `retry`) takes it over (`restartFailedLaunch`).
+  const retryStopped = retrying && retryHoldStopped(row, now);
   return {
     launchId: row.launch_id,
-    state: neverJoined ? "failed" : row.state,
+    state: neverJoined || retryStopped ? "failed" : retrying ? "making" : row.state as CloudLaunchState,
     kind: row.kind === "chat" || row.kind === "lane" ? row.kind : null,
     sizeId: (row.size_id as CloudTierId | null) ?? null,
     projectOrigin: row.project_origin,
     laneId: row.lane_id,
     laneName: row.lane_name,
-    instanceId: row.instance_id,
+    instanceId: retrying ? null : row.instance_id,
     request: parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId: row.launch_id, column: "request_json" }),
     approval: !neverJoined && row.state === "needs_approval" && row.approval_url && row.join_user_code
       ? { url: row.approval_url, userCode: row.join_user_code }
       : null,
     stages: parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" }),
     sessionId: row.session_id,
-    error: neverJoined ? JOIN_NEVER_FINISHED : row.error,
+    error: neverJoined ? JOIN_NEVER_FINISHED : retryStopped ? RETRY_STOPPED : row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
@@ -330,7 +369,67 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  if (body.retry === true) {
+    const restarted = await restartFailedLaunch(env, userId, parsed.launchId, deps);
+    if (restarted) return restarted;
+  }
   return await startServerLaunch(env, userId, parsed, deps);
+}
+
+/** Whether the computer reported its agent's stage: from then on the lane is the person's, never deleted for them. */
+function agentStartedIn(row: LaunchRow): boolean {
+  const stages = parseJsonColumn<CloudLaunchStage[]>(row.stages_json, [], { launchId: row.launch_id, column: "stages_json" });
+  return stages.some((stage) => stage.id === AGENT_STAGE && stage.status !== "pending");
+}
+
+/**
+ * A Retry of a launch whose computer failed before its agent started (it
+ * couldn't join in time, clone or start): the failed computer is deleted,
+ * and the launch goes back to `making` with no computer, which the start
+ * below then makes again, under the same id. Anything else (still running,
+ * finished, an agent that started) is left as it is, and the start answers
+ * it.
+ *
+ * The retry is claimed first, against the row this read saw: a join or a
+ * report that landed since wins, and its computer is kept. The claim marks
+ * the launch `retrying` and keeps the old computer on it until the delete
+ * finishes, so another start answers the launch instead of making or
+ * adopting a computer, and the old computer's reports and joins are
+ * refused. The record's deadline starts again. A delete the provider
+ * refuses puts the launch back as failed with that computer, so a later
+ * Retry deletes it instead of leaving it on the account.
+ */
+async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: string, deps: LaunchRouteDeps): Promise<Response | null> {
+  const row = await ownLaunch(env, userId, launchId);
+  if (!row) return null;
+  const failed = row.state === "failed" || joinNeverFinished(row, deps.now)
+    || (row.state === "retrying" && retryHoldStopped(row, deps.now));
+  if (!failed || agentStartedIn(row)) return null;
+  if (row.instance_id && !deps.provider) return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+  const claimed = await env.DB.prepare(`
+    update cloud_launches set state = 'retrying', join_expires_at = null, join_used_at = null, join_rejoins = 0,
+      join_user_code = null, approval_url = null, stages_json = null, error = null, session_id = null, updated_at = ?, expires_at = ?
+    where launch_id = ? and user_id = ? and updated_at = ? and state = ?
+  `).bind(deps.now, deps.now + CLOUD_LAUNCH_RECORD_TTL_MS, launchId, userId, row.updated_at, row.state).run();
+  if ((claimed.meta?.changes ?? 0) !== 1) return null;
+  if (row.instance_id) {
+    try {
+      await deleteLaunchComputer(env, deps.provider!, row, deps.now, { who: "launch_retry", reason: "launch_retried" });
+    } catch (error) {
+      // Back as it failed, holding its computer (a cancel meanwhile keeps its own state).
+      await env.DB.prepare(`
+        update cloud_launches set state = 'failed', error = ?, updated_at = ? where launch_id = ? and user_id = ? and state = 'retrying'
+      `).bind(row.error ?? "The launch's computer failed.", deps.now, launchId, userId).run();
+      reportCloudFailure("cloud.launch_retry_delete_failed", { launchId, code: error instanceof Error ? error.name : "unknown" });
+      return fail("unavailable", "ADE Cloud can't delete the failed computer right now. Try again soon.", 503);
+    }
+  }
+  // Released for the start below; a cancel that landed meanwhile keeps the launch cancelled.
+  await env.DB.prepare(`
+    update cloud_launches set state = 'making', instance_id = null, updated_at = ? where launch_id = ? and user_id = ? and state = 'retrying'
+  `).bind(deps.now, launchId, userId).run();
+  logCloud("cloud.launch_retried", { userId, launchId, instanceId: row.instance_id });
+  return null;
 }
 
 /**
@@ -414,6 +513,8 @@ export async function startServerLaunch(env: CloudEnv, userId: string, parsed: C
     [CLOUD_LANE_METADATA.projectOrigin]: parsed.project.origin,
     [CLOUD_LAUNCH_METADATA.launchId]: launchId,
     ...(parsed.madeBy?.kind === "automation" ? { ade_made_by_agent: "automation" } : {}),
+    ...(parsed.madeBy?.kind === "agent" ? { ade_made_by_agent: parsed.madeBy.agent } : {}),
+    ...(parsed.madeBy?.kind === "agent" && parsed.madeBy.chatSessionId ? { ade_made_by_chat: parsed.madeBy.chatSessionId } : {}),
     created_by: "ade",
     // The same id as the launch: a repeated start finds the computer it made.
     ade_request_id: launchId,
@@ -533,7 +634,7 @@ const COMPUTER_STATES: ReadonlySet<string> = new Set(["joined", "running", "done
 async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now: number): Promise<Response> {
   const body = await readJson(request);
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
-  if (row.state === "cancelled" || row.state === "draft" || !row.instance_id) return fail("launch_closed", "This launch isn't running.", 409);
+  if (row.state === "cancelled" || row.state === "draft" || row.state === "retrying" || !row.instance_id) return fail("launch_closed", "This launch isn't running.", 409);
   const state = body.state === undefined ? null : typeof body.state === "string" && COMPUTER_STATES.has(body.state) ? body.state : undefined;
   const stages = parseStages(body.stages);
   if (state === undefined || (body.stages !== undefined && !stages)) return badRequest(UNREADABLE_REQUEST_MESSAGE);
@@ -541,7 +642,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
   if (row.state === "done" && state !== "done") return fail("launch_closed", "This launch already finished.", 409);
   const sessionId = body.sessionId === undefined ? undefined : shortString(body.sessionId, 120);
   const error = body.error === undefined ? undefined : clippedText(body.error, 400);
-  await env.DB.prepare(`
+  const written = await env.DB.prepare(`
     update cloud_launches set
       state = coalesce(?, state),
       stages_json = coalesce(?, stages_json),
@@ -549,13 +650,16 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       error = case when ? then ? else error end,
       approval_url = case when ? is not null then null else approval_url end,
       updated_at = ?
-    where launch_id = ? and state <> 'cancelled' and (state <> 'done' or ? = 'done')
+    where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
     error !== undefined ? 1 : 0, error ?? null,
-    state, now, row.launch_id, state,
+    state, now, row.launch_id, row.instance_id, state,
   ).run();
+  // Only the computer this report was checked against, and never into a Retry
+  // that claimed the launch since this request read it.
+  if ((written.meta?.changes ?? 0) !== 1) return fail("launch_closed", "This launch isn't running.", 409);
   return json(recordOf((await readLaunch(env, row.launch_id))!, now));
 }
 
@@ -730,7 +834,7 @@ export async function handleLaunchJoin(request: Request, env: CloudEnv, path: st
     logCloud("cloud.launch_join_wrong_computer", { launchId });
     return fail("join_refused", JOIN_REFUSED, 403);
   }
-  if (row.state === "cancelled" || row.state === "failed" || row.state === "done") return fail("launch_closed", "This launch isn't running.", 409);
+  if (row.state === "cancelled" || row.state === "failed" || row.state === "done" || row.state === "retrying") return fail("launch_closed", "This launch isn't running.", 409);
 
   if (body.needsApproval === true) {
     // Only after the code was spent by this computer: it names the sign-in a person approves.

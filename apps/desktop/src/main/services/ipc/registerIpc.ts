@@ -13031,7 +13031,7 @@ export function registerIpc({
   });
 
   // the provider: the account-wide key and new machines made on it (no pin; see the module).
-  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn } = registerCloudIpc({
+  const { machineCreatorDeps: cloudMachineCreatorDeps, machines: cloudMachines, copyDeps: cloudCopyDeps, client: cloudClient, wakeForPair: cloudWakeForPairFn, gitPreflight: cloudGitPreflightFn, updateChannel: cloudUpdateChannel } = registerCloudIpc({
     machineConnector: () => machineConnector,
     // Its items in this computer's brain, also with no project here: then the
     // brain opens only those (`accountVault.call`).
@@ -13141,6 +13141,7 @@ export function registerIpc({
     analytics: productAnalyticsService ?? null,
     // C4: the account's GitHub sign-in, checked before a computer is made.
     gitPreflight: cloudGitPreflightFn,
+    updateChannel: cloudUpdateChannel,
     logger: getMachineMainLogger(),
   });
 
