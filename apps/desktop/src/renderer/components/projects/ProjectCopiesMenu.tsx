@@ -15,7 +15,7 @@ import { ContextMenuSurface } from "../ui/ContextMenu";
 import { MENU_ITEM_CLASS, MenuSectionLabel, MenuSeparator } from "../ui/MenuSubmenu";
 import type { CopyComputers } from "../../../shared/repositoryTab";
 import type { RemoteOpenProjectBinding } from "../../../shared/types";
-import { offlineMachinesLabel, splitOfflineMachines, type CopyMachine } from "./projectCopies";
+import { splitUnconnectedMachines, unconnectedMachinesLabel, type CopyMachine } from "./projectCopies";
 import { retryCopyJob, useCopyJobs, watchCopyJobs, type CopyJob } from "./projectCopyJobs";
 
 /** One machine in a project's "Computers with a copy" list. */
@@ -81,8 +81,8 @@ export function ProjectCopiesMenu({
 }) {
   const open = menu != null;
   const jobs = useCopyJobs(repoKey);
-  const [offlineExpanded, setOfflineExpanded] = useState(false);
-  const { ref, position } = useClampedFixedPosition(menu, `${rows.length}:${jobs.length}:${offlineExpanded}`);
+  const [unconnectedExpanded, setUnconnectedExpanded] = useState(false);
+  const { ref, position } = useClampedFixedPosition(menu, `${rows.length}:${jobs.length}:${unconnectedExpanded}`);
   const focusedOnOpenRef = useRef(false);
 
   useEffect(() => (open && repoKey ? watchCopyJobs(repoKey) : undefined), [open, repoKey]);
@@ -90,7 +90,7 @@ export function ProjectCopiesMenu({
   useEffect(() => {
     if (!open) {
       focusedOnOpenRef.current = false;
-      setOfflineExpanded(false);
+      setUnconnectedExpanded(false);
       return;
     }
     const onKeyDown = (event: KeyboardEvent) => {
@@ -124,10 +124,10 @@ export function ProjectCopiesMenu({
 
   if (!menu) return null;
   const jobByMachine = new Map(jobs.map((job) => [job.machine.machineId, job]));
-  // A long list of offline machines collapses into one row. An offline
-  // machine with a copy (or a clone job) stays in view: the person needs to
-  // see where the copies are.
-  const { visible, offline } = splitOfflineMachines(
+  // A long list of machines not connected here collapses into one row. One
+  // with a copy (or a clone job) stays in view: the person needs to see where
+  // the copies are.
+  const { visible, unconnected } = splitUnconnectedMachines(
     rows,
     (row) => row.machine,
     (row) => row.copy != null || jobByMachine.has(row.machine.machineId),
@@ -157,21 +157,21 @@ export function ProjectCopiesMenu({
         Computers with a copy of {projectName}{computers && computers.count > 0 ? ` (${computers.count})` : ""}
       </MenuSectionLabel>
       {visible.map(renderRow)}
-      {offline.length > 0 ? (
+      {unconnected.length > 0 ? (
         <button
           type="button"
           role="menuitem"
-          aria-expanded={offlineExpanded}
+          aria-expanded={unconnectedExpanded}
           className={`${ROW_CLASS} text-muted-fg/70`}
-          onClick={() => setOfflineExpanded((current) => !current)}
+          onClick={() => setUnconnectedExpanded((current) => !current)}
         >
-          {offlineExpanded
+          {unconnectedExpanded
             ? <CaretUp size={12} weight="bold" aria-hidden className="shrink-0 opacity-60" />
             : <CaretDown size={12} weight="bold" aria-hidden className="shrink-0 opacity-60" />}
-          {offlineMachinesLabel(offline.length)}
+          {unconnectedMachinesLabel(unconnected.length)}
         </button>
       ) : null}
-      {offlineExpanded ? offline.map(renderRow) : null}
+      {unconnectedExpanded ? unconnected.map(renderRow) : null}
       {onlyOneMachine ? (
         <>
           <MenuSeparator />

@@ -1606,12 +1606,14 @@ export const SessionListPane = React.memo(function SessionListPane({
   // Counts from the UNFILTERED session list (not `allSessions`, which is already
   // search/lane-filtered) so hiding a running child by filter does not undercount
   // its visible parent's badge. No extra fetch; clears as children go terminal.
+  // "Running" is the child row's own status (its turn is under way), not an
+  // open session: a child whose row reads Done is not still running.
   const liveChildrenByParentId = useMemo(() => {
     const map = new Map<string, number>();
     for (const session of allSessionsUnfiltered) {
       const parentId = session.orchestrationParentSessionId;
       if (!parentId || parentId === session.id) continue;
-      if (session.status !== "running") continue;
+      if (sessionStatusBucket(canonicalInputFromSummary(session)) !== "running") continue;
       map.set(parentId, (map.get(parentId) ?? 0) + 1);
     }
     return map;
