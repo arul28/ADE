@@ -174,6 +174,9 @@ struct WorkRootSyncInputs: Equatable {
   // Always tracked.
   var listVisible = false
   var isLive = false
+  /// The paired machines with a live link. An open chat on another machine
+  /// gates its composer on its own machine, also while the list is hidden.
+  var liveMachineKeys: Set<String> = []
   var isAttached = false
   var hostUnreachable = false
   var activeProjectId: String?
@@ -236,6 +239,7 @@ struct WorkRootSyncInputs: Equatable {
     if WorkRootPreviewFixture.active?.forcesLive == true { isLive = true }
     #endif
     hostUnreachable = sync.connectionState.isHostUnreachable
+    liveMachineKeys = Set(fleet?.liveMachineKeys ?? [])
     activeProjectId = sync.activeProjectId
     activeProjectRootPath = sync.activeProjectRootPath
     activeProjectHostIdentity = sync.activeProjectHostIdentity
@@ -326,6 +330,7 @@ struct WorkRootSyncInputs: Equatable {
 struct WorkRootScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
+
   @EnvironmentObject private var machineFleet: MachineFleet
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
@@ -365,6 +370,16 @@ struct WorkRootListScreen: View, Equatable {
   let isTabActive: Bool
   let inputs: WorkRootSyncInputs
   @Binding var path: NavigationPath
+
+  /// Whether a chat destination's own computer is live. A chat on another
+  /// computer follows that computer's link; the focused computer's chats keep
+  /// the focused gate (connected and its project host ready).
+  func workDestinationIsLive(sessionId: String, remoteChat: WorkChatCrossProjectContext?) -> Bool {
+    guard let key = remoteChat?.machineKey ?? syncService.remoteChatMachineKey(sessionId: sessionId),
+          key != syncService.focusedMachineKey
+    else { return inputs.isLive }
+    return inputs.liveMachineKeys.contains(key)
+  }
 
   init(
     syncService: SyncService,
@@ -1646,7 +1661,7 @@ struct WorkRootListScreen: View, Equatable {
         initialChatSummary: chatSummaries[route.sessionId]
           ?? workRemoteMachineRosterChat(sessionId: route.sessionId, in: inputs.remoteMachineRepos)?.rosterChatSummary,
         transitionNamespace: routeTransitionNamespace,
-        isLive: inputs.isLive,
+        isLive: workDestinationIsLive(sessionId: route.sessionId, remoteChat: route.remoteChat),
         navigationChrome: inColumn ? .column : .pushedDetail,
         // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
         // root, so `workOrderedLanes` stops refreshing there — fall back to the

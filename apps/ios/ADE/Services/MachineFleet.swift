@@ -137,8 +137,8 @@ final class MachineFleet: ObservableObject {
   /// The machine the user asked for last (Connect, open its chat): live
   /// before the project's machines, so it never waits parked. Not saved.
   private var requestedKey: String?
-  /// Counts the user's connect choices. A failed connect undoes its swap
-  /// only while no newer choice came after it.
+  /// Counts the user's Connect and Disconnect choices. A failed connect
+  /// undoes its swap only while no newer choice came after it.
   private var keepLiveChoices = 0
   private var projectMachinesScheduled = false
   private var projectCancellables: Set<AnyCancellable> = []
@@ -386,11 +386,15 @@ final class MachineFleet: ObservableObject {
   func connect(machineKey: String, timeout: Duration = .seconds(10)) async -> Bool {
     if isLive(machineKey) { return true }
     // An asleep ADE Cloud computer is woken first and given the time it
-    // needs to start.
+    // needs to start. A Connect or Disconnect the user chose meanwhile wins:
+    // this older request then changes nothing.
+    let choiceBeforeWake = keepLiveChoices
     let waking = await syncService?.beginCloudWakeIfAsleep(fleetKey: machineKey) ?? false
     defer { if waking { syncService?.endCloudWake(fleetKey: machineKey) } }
     if isLive(machineKey) { return true }
+    guard choiceBeforeWake == keepLiveChoices else { return false }
     let pinsBefore = pinnedKeys
+    let requestedBefore = requestedKey
     keepLive(machineKey: machineKey)
     let choice = keepLiveChoices
     let dropped = pinsBefore.filter { !pinnedKeys.contains($0) }
@@ -407,21 +411,40 @@ final class MachineFleet: ObservableObject {
     // A newer choice (this machine again, or another one) is what the user
     // wants now: this older attempt leaves the set as that choice made it.
     if choice == keepLiveChoices {
-      givePlaceBack(afterFailedConnectOf: machineKey, dropped: dropped, wasPinned: pinsBefore.contains(machineKey))
+      givePlaceBack(
+        afterFailedConnectOf: machineKey,
+        dropped: dropped,
+        wasPinned: pinsBefore.contains(machineKey),
+        requestedBefore: requestedBefore
+      )
     }
     return false
   }
 
-  /// Undoes the swap `keepLive` made for a connect that never went live: the
-  /// machines it dropped return (as the oldest), and the failed one leaves
-  /// the set. Nothing changes when the set had room. A machine the user
-  /// disconnected meanwhile stays off.
-  private func givePlaceBack(afterFailedConnectOf machineKey: String, dropped: [String], wasPinned: Bool) {
+  /// Undoes what `keepLive` did for a connect that never went live. The
+  /// request gives its first place back to the machine asked for before it,
+  /// so a project machine it pushed out of a live slot comes back. When the
+  /// set was full, the pins it dropped return (as the oldest) and the failed
+  /// machine leaves the set; with room, it stays in the set and retries. A
+  /// machine the user disconnected meanwhile stays off.
+  private func givePlaceBack(
+    afterFailedConnectOf machineKey: String,
+    dropped: [String],
+    wasPinned: Bool,
+    requestedBefore: String?
+  ) {
     let returning = dropped.filter { !pinnedKeys.contains($0) && !userDisconnectedKeys.contains($0) }
-    guard !returning.isEmpty else { return }
-    if !wasPinned { pinnedKeys.removeAll { $0 == machineKey } }
+    let focused = syncService?.focusedMachineKey
+    let overLimit = wantedKeys.filter { $0 != focused }.count > liveOtherMachineLimit
+    let wasRequested = requestedKey == machineKey
+    guard wasRequested || !returning.isEmpty || overLimit else { return }
+    if !wasPinned, !returning.isEmpty || overLimit { pinnedKeys.removeAll { $0 == machineKey } }
     pinnedKeys.append(contentsOf: returning)
-    if requestedKey == machineKey { requestedKey = nil }
+    if wasRequested {
+      requestedKey = requestedBefore.flatMap { key in
+        key != machineKey && !userDisconnectedKeys.contains(key) ? key : nil
+      }
+    }
     persistPins()
     reconcile()
   }
@@ -468,6 +491,8 @@ final class MachineFleet: ObservableObject {
   }
 
   func stopKeepingLive(machineKey: String) {
+    // A user choice: an older connect still waiting must not undo it.
+    keepLiveChoices += 1
     pinnedKeys.removeAll { $0 == machineKey }
     if requestedKey == machineKey { requestedKey = nil }
     persistPins()

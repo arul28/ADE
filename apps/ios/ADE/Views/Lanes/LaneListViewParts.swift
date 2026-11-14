@@ -127,9 +127,19 @@ extension LanesTabView {
       searchText: searchText,
       pinnedLaneIds: pinnedLaneIds
     )
+    // Every lane the list can show counts: this machine's, then the other
+    // machines' the machine filter keeps.
+    let remoteCounted = remoteLanes.machines.flatMap { machine -> [LaneListSnapshot] in
+      switch machineFilter {
+      case .focused: return []
+      case .machine(let key) where key != machine.machineKey: return []
+      default: return machine.snapshots
+      }
+    }
+    let counted = (showsFocusedMachineLanes ? visible : []) + remoteCounted
     var counts: [LaneQuickFilter: Int] = [:]
     for filter in LaneQuickFilter.allCases {
-      counts[filter] = visible.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
+      counts[filter] = counted.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
     }
     let next = LaneListPresentation(
       filteredSnapshots: filtered,
@@ -268,6 +278,12 @@ extension LanesTabView {
         machineName: focusedMachineName,
         onRefreshRoot: { await reload(refreshRemote: true) }
       )
+      // The focused computer can be an ADE Cloud computer that is asleep.
+      .wakesCloudComputer(
+        machineKey: syncService.focusedMachineKey,
+        wakingName: syncService.wakingCloudMachineName(fleetKey: syncService.focusedMachineKey),
+        onAwake: { await reload(refreshRemote: true) }
+      )
     } else if let machine = remoteLanes.machines.first(where: { $0.snapshots.contains { $0.lane.id == route.laneId } }),
       let snapshot = machine.snapshots.first(where: { $0.lane.id == route.laneId })
     {
@@ -398,7 +414,7 @@ extension LanesTabView {
     // Built once per pass, not once per row.
     let chips = laneMachineChips
     let remoteSections = visibleRemoteMachineLanes
-    if !syncService.focusedMachineListsWork, remoteSections.isEmpty, machineFilter == .all {
+    if !syncService.focusedMachineListsWork, remoteLanes.machines.isEmpty, machineFilter == .all {
       // Nothing to list until a computer is back: say so, not "No lanes".
       ADEEmptyStateView(
         symbol: "wifi.slash",

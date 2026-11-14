@@ -634,10 +634,12 @@ struct WorkSessionDestinationView: View {
       ?? "Session"
   }
 
-  /// The other machine this chat lives on, for the ADE Cloud wake. Nil for
-  /// the focused machine's chats.
+  /// The machine this chat lives on, for the ADE Cloud wake: another
+  /// machine's key, else the focused machine's.
   var sessionCloudMachineKey: String? {
-    crossProjectContext?.machineKey ?? syncService.remoteChatMachineKey(sessionId: sessionId)
+    crossProjectContext?.machineKey
+      ?? syncService.remoteChatMachineKey(sessionId: sessionId)
+      ?? syncService.focusedMachineKey
   }
 
   /// The machine name under the header title: the host this phone is

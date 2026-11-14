@@ -28464,9 +28464,15 @@ extension SyncService {
   @discardableResult
   func switchFocusKeepingPrevious(toMachineKey machineKey: String) async -> Bool {
     // An ADE Cloud computer that is asleep: wake it and wait until it answers
-    // next to the others, so the focus switch dials an awake computer.
+    // next to the others, so the focus switch dials an awake computer. A
+    // disconnect or another connect during that wait wins over this request.
     if cloudMachineFleetKeys.contains(machineKey), !isFocusedAndLive(machineKey), let machineFleet {
+      let attemptBefore = connectAttemptGeneration
+      let pausedBefore = autoReconnectPausedByUser
       _ = await machineFleet.connect(machineKey: machineKey)
+      guard attemptBefore == connectAttemptGeneration,
+            pausedBefore || !autoReconnectPausedByUser
+      else { return false }
     }
     if let previous = focusedMachineKey, previous != machineKey, connectionState == .connected {
       machineFleet?.markConnected(machineKey: previous)
@@ -29049,6 +29055,27 @@ extension SyncService {
   /// machine's chats.
   func remoteChatMachineKey(sessionId: String) -> String? {
     routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines))?.machineKey
+  }
+
+  /// The focused computer is an ADE Cloud computer that is asleep: wake it
+  /// through another connected computer, then wait for the focused link to
+  /// answer. False when it is not one, the wake could not be sent, the user
+  /// disconnected it, or the focus moved.
+  func wakeFocusedCloudMachineIfAsleep() async -> Bool {
+    guard let key = focusedMachineKey, cloudMachineFleetKeys.contains(key),
+          connectionState != .connected, !autoReconnectPausedByUser,
+          await beginCloudWakeIfAsleep(fleetKey: key)
+    else { return false }
+    defer { endCloudWake(fleetKey: key) }
+    await reconnectIfPossible()
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: Self.cloudWakeConnectTimeout)
+    while clock.now < deadline, !Task.isCancelled {
+      guard focusedMachineKey == key, !autoReconnectPausedByUser else { return false }
+      if connectionState == .connected { return true }
+      try? await Task.sleep(for: .milliseconds(500))
+    }
+    return focusedMachineKey == key && connectionState == .connected
   }
 
   /// One open that waited on a waking ADE Cloud computer is done.

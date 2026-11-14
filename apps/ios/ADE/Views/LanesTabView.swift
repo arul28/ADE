@@ -246,6 +246,15 @@ struct LanesTabView: View, Equatable {
     .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
     .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
     .onChange(of: syncService.focusedMachineListsWork) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: machineFilter) { _, _ in refreshLaneListPresentation() }
+    .onChange(of: remoteLanes.machines) { _, machines in
+      // A machine that left the list cannot stay the filter: it would hide
+      // every row, this machine's too.
+      if case .machine(let key) = machineFilter, !machines.contains(where: { $0.machineKey == key }) {
+        machineFilter = .all
+      }
+      refreshLaneListPresentation()
+    }
     .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
       refreshLaneListPresentation()
       let pendingIds = syncService.pendingLaneDeletionIds

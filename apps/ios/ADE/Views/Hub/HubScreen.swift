@@ -1052,7 +1052,12 @@ struct HubScreen: View {
     let focusedListed = syncService.focusedMachineListsWork
     let focusedRosters = focusedProjects.map { project in
       let roster = rosterEntry(for: project)
-      return (project: project, roster: focusedListed ? roster : roster.map(hubRosterWithoutWork))
+      guard !focusedListed else { return (project: project, roster: roster) }
+      // No roster: the card falls back to the project's saved lane count,
+      // which must not show while its work is not listed.
+      var unlisted = project
+      unlisted.laneCount = 0
+      return (project: unlisted, roster: roster.map(hubRosterWithoutWork))
     }
     // Only machines that are connected (the user's set or the open project's):
     // a disconnected machine's last roster would keep its projects on the hub

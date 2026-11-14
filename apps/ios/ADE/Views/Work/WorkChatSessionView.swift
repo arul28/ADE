@@ -250,9 +250,10 @@ struct CloudComputerWakeBanner: View {
 
 extension View {
   /// Opens work that lives on an ADE Cloud computer: when that computer is
-  /// asleep, the phone wakes it and connects to it next to the others, and
-  /// the screen shows the wake until the computer answers. `onAwake` runs
-  /// once it does. Any other machine, or the focused one, changes nothing.
+  /// asleep, the phone wakes it and connects to it (next to the others, or
+  /// as the focused computer), and the screen shows the wake until the
+  /// computer answers. `onAwake` runs once it does. Any other machine, or one
+  /// that is already live, changes nothing.
   func wakesCloudComputer(
     machineKey: String?,
     wakingName: String?,
@@ -263,11 +264,15 @@ extension View {
     }
     .task(id: machineKey) {
       guard let machineKey, let sync = SyncService.shared,
-            sync.cloudMachineFleetKeys.contains(machineKey),
-            machineKey != sync.focusedMachineKey,
-            let fleet = sync.machineFleet,
-            !fleet.isLive(machineKey)
+            sync.cloudMachineFleetKeys.contains(machineKey)
       else { return }
+      if machineKey == sync.focusedMachineKey {
+        if await sync.wakeFocusedCloudMachineIfAsleep(), !Task.isCancelled {
+          await onAwake?()
+        }
+        return
+      }
+      guard let fleet = sync.machineFleet, !fleet.isLive(machineKey) else { return }
       if await fleet.connect(machineKey: machineKey), !Task.isCancelled {
         await onAwake?()
       }

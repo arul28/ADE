@@ -143,10 +143,10 @@ extension LanesTabView {
       }
     }
     .pickerStyle(.inline)
-    if !remoteLanes.machines.isEmpty {
-      Section("Machines") {
-        duoLaneMachineButtons
-      }
+    // Always shown: "All machines" must stay reachable when no other
+    // machine is listed.
+    Section("Machines") {
+      duoLaneMachineButtons
     }
   }
 
