@@ -13,6 +13,7 @@ import type {
   OpenProjectBinding,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
+import type { ExternalChatScope } from "../chat/externalChats";
 import { getErrorMessage } from "../shared/utils";
 import type { CloudMachineCreatorDeps } from "./cloudMachineCreator";
 import { CloudProviderError } from "./cloudProvider";
@@ -89,6 +90,11 @@ export type CloudLaneLaunchDeps = {
    */
   onApprovalLink?: (launchId: string, url: string) => void;
   /**
+   * The join stage starts a fresh sign-in on the computer: any code sent for
+   * approval before (a link, a card) no longer works. The owner retires it.
+   */
+  onApprovalCodeRetired?: (launchId: string) => void;
+  /**
    * A launch made a new cloud computer. A brain passes it on to the sign-in
    * renewal (`providerLoginCloudComputers.ts`), as its maker does. Unset in
    * the app, where nothing listens.
@@ -110,6 +116,8 @@ export type CloudLaneLaunchStartInput = {
   madeByChat?: string | null;
   /** The kind of agent that started it, also with no chat (an automation, ADE MCP); null for a person. */
   madeByAgent?: CloudAgentMaker | null;
+  /** Where `madeByChat` lives on this machine, when known. */
+  madeByChatScope?: ExternalChatScope | null;
 };
 
 export const MAX_QUEUED_MESSAGES = 10;

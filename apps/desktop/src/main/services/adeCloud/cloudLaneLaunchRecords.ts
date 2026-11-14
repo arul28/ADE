@@ -4,6 +4,7 @@ import type { ChatLaunchArgs, ChatLaunchSnapshot } from "../../../shared/types";
 import type { CloudTier } from "../../../shared/cloudTiers";
 import type { CloudAgentMaker } from "../../../shared/adeCloud";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
+import type { ExternalChatScope } from "../chat/externalChats";
 import { getErrorMessage } from "../shared/utils";
 
 /**
@@ -49,6 +50,18 @@ export type CloudLaneLaunchRecord = {
   cleanupDone: boolean;
   /** The agent's chat that started it, or null for a person's launch. Older records lack it. */
   madeByChat?: string | null;
+  /**
+   * Where `madeByChat` lives on this machine (its project, or the personal
+   * chats), so a brain that restarted can post into it without a caller.
+   * Null when unknown (a chat on another machine, an older record).
+   */
+  madeByChatScope?: ExternalChatScope | null;
+  /**
+   * The link on the approval card still waiting in `madeByChat`, or null.
+   * Kept so a brain that restarted retires a card whose code it replaced,
+   * and settles it when the join ends.
+   */
+  approvalCardUrl?: string | null;
   /** The kind of agent that started it (written on the computer for the daily limit); null for a person's. */
   madeByAgent?: CloudAgentMaker | null;
   /** Files from this computer already sent to the new one: local path to the path there. */

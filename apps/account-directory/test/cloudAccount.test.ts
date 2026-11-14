@@ -729,15 +729,21 @@ describe("ADE Cloud account", () => {
     });
   }
 
-  it.each<[string, Row, number | null]>([
+  it.each<[string, Row, number | null, boolean?]>([
     ["a paid plan with extra disk on pays the GB past the plan", { extra_disk_state: "on", extra_disk_limit_cents: 1000 }, 10],
     ["extra disk turned down pays nothing", { extra_disk_state: "asked", extra_disk_limit_cents: 1000 }, null],
     ["the free plan pays nothing", { plan: "free", stripe_status: null, extra_disk_state: "on", extra_disk_limit_cents: 1000 }, null],
     ["a failed payment pays nothing", { stripe_status: "past_due", extra_disk_state: "on", extra_disk_limit_cents: 1000 }, null],
-  ])("extra disk: a finished day is billed once, from that day's row: %s", async (_label, overrides, billedGb) => {
+    // Its item starts then, after the midday the day's event is stamped at: Stripe would drop it unbilled.
+    ["the day extra disk goes on pays nothing, before any row that day", { extra_disk_state: "asked" }, null, true],
+  ])("extra disk: a finished day is billed once, from that day's row: %s", async (_label, overrides, billedGb, turnedOnToday) => {
     Object.assign(harness.env, MONEY_ENV);
     seedAccount(harness, OWNER, { ...plusAccount, ...overrides });
     seedStopped([24, 16]);
+    if (turnedOnToday) {
+      harness.net.subscriptions.set("sub_1", { status: "active", customer: "cus_1", items: { data: [{ id: "si_plan", price: { id: "price_plan" } }] } });
+      expect((await harness.send(OWNER, "POST", "/cloud/billing/extra-disk", { enabled: true, monthlyLimitUsd: 10 })).status).toBe(200);
+    }
     // Day one writes its row; the next day's owner check bills it; a later check finds nothing left.
     await harness.tick();
     clock += DAY;

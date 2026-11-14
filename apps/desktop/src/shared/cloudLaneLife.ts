@@ -286,8 +286,13 @@ export type CloudJoinApproval = {
   computerName: string;
   /** The account service's own approval page for this computer's code (`…/device?user_code=…`). */
   url: string;
-  /** `waiting` until the computer joined (`joined`) or the launch stopped waiting (`ended`). */
-  state: "waiting" | "joined" | "ended";
+  /**
+   * `waiting` until the computer joined (`joined`) or the launch stopped
+   * waiting (`ended`). `renewing`: the code on the card stopped working (the
+   * brain restarted and started a fresh sign-in), so the card carries no link
+   * until the fresh one replaces it.
+   */
+  state: "waiting" | "renewing" | "joined" | "ended";
 };
 
 /** Only the account service's approval page: https, `/device`, with a code. */
@@ -301,6 +306,18 @@ export function isCloudJoinApprovalUrl(raw: string | null | undefined): boolean 
 }
 
 export function buildCloudJoinApprovalCard(input: CloudJoinApproval): AdeCardPayload {
+  if (input.state === "renewing") {
+    // No link row: a client reads a card without one as text, so nothing on it opens the dead code.
+    return {
+      cardId: `cloud-join-approval:${input.launchId}`,
+      variant: CLOUD_JOIN_APPROVAL_CARD_VARIANT,
+      state: "live",
+      title: `Getting a fresh approval link for ${input.computerName}`,
+      subtitle: null,
+      rows: [{ key: JOIN_ROW.state, icon: "running", text: input.state, detail: input.state }],
+      fallbackText: `The approval link for "${input.computerName}" stopped working. ADE is getting a fresh one, and it shows here.`,
+    };
+  }
   const waiting = input.state === "waiting";
   return {
     cardId: `cloud-join-approval:${input.launchId}`,

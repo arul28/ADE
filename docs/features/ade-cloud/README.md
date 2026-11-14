@@ -206,7 +206,8 @@ sleep on their own a few minutes after work stops (the brain's
   (`ensureExtraHoursItem`), before the switch goes on, so no extra hour is
   ever reported with nothing to bill it (meter events bill by customer). It
   stays at zero once off, which keeps billing hours used before. Extra disk
-  joins the same way (`setExtraDisk`). Subscriptions from before Cloud 8
+  joins the same way (`ensureExtraDiskItem` from `setExtraDisk`, with the
+  same retry after a 5xx). Subscriptions from before Cloud 8
   keep the items they hold. An upgrade moves the subscription's hours item to the new plan's
   price at once; a downgrade or a subscription still on the old graduated
   price (1¢, then 0.85¢) and the old $1 disk price moves at its next renewal
@@ -258,7 +259,11 @@ sleep on their own a few minutes after work stops (the brain's
   person set (`POST /cloud/billing/extra-disk`), and what a period bills never
   passes it. Each day's row records the bought plan's disk and whether the day
   is billable (paid, in good standing, extra disk on) when it is written, and
-  is billed from the row alone, from the 10-minute owner check. A send that
+  is billed from the row alone, from the 10-minute owner check. The day extra
+  disk goes on is never billed: turning it on writes that day's row as not
+  billable first, even when nothing wrote one yet that day, because the day's
+  meter event is stamped at its midday and Stripe drops an event from before
+  the item's start unbilled. A send that
   fails is retried inside Stripe's one-day dedupe window; one never confirmed
   goes to the owner (`cloud.disk_meter_unconfirmed`), never resent. The daily
   run emails a person once when their extra disk, kept a month, passes the
@@ -845,6 +850,28 @@ a terminal in.
   and the server's no-check-in sleep catches one ADE never looked at again.
   `ade cloud status` shows a computer that never signed in as "not joined to
   ADE yet", never "up to date".
+- **The approval after a restart.** The launch record keeps the asking chat
+  and where it lives on this machine (`madeByChat`, `madeByChatScope`, from
+  the brain's cross-scope chat finder at the start), and the link of the card
+  still waiting there (`approvalCardUrl`). A brain that restarts resumes the
+  launch on its machine-level runtime, which has no chat service, so the card
+  goes through `setCloudLaneLaunchBrainServices` (set by `ade serve`): the
+  chat is found in its own scope (booted if it isn't yet) as the wake router
+  finds a parent. The resumed join starts a fresh sign-in, which ends the old
+  code, so the card first turns into "Getting a fresh approval link" with no
+  link (a client shows it as text), then into the fresh Approve card (same
+  card id, so it replaces the old one in place). A deleted chat gets nothing
+  (logged, and the card is no longer tracked). A chat on another machine (a
+  caller over the bridge) is never posted into from here; the phone push and
+  the CLI's status still carry the link. Posts for one launch go out in order.
+- **Phone push.** Each time the join hands its approval to the person (no
+  window approved it), the brain also pushes to its phones: "Approve <computer>
+  joining your ADE account", opening `ade://device?user_code=…`, the phone's
+  own approval sheet. It goes through the push publisher's alert queue
+  (`handleSessionNotice`), so notifications off, quiet hours and the chat's
+  mute apply; one push per code, so a fresh code after a restart pushes
+  again. A brain with no push publisher yet (no project open) logs
+  `cloud_lane_launch.approval_push_skipped`.
 - **Why agent launches don't use the server launcher yet.** The server
   launcher (below) needs no approval on this machine at all, but it runs a
   different stage model (the computer runs its own launch and posts its

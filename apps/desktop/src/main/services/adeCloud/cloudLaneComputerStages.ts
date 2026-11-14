@@ -216,6 +216,8 @@ export function createCloudLaneComputerStages(
       const fresh = record.joinAttempts > 0;
       record.joinAttempts += 1;
       persist(record);
+      // The fresh sign-in ends the code an earlier attempt sent (before a restart, say).
+      if (fresh) deps.onApprovalCodeRetired?.(launchId);
       // A computer that just came up (or woke into a fresh boot) can start its
       // sign-in before its network is ready: started again for a minute then.
       const started = await startCloudBoxSignInWhenReady(client, instanceId, "login", {

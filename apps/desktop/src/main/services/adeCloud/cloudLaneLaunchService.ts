@@ -28,6 +28,7 @@ import type {
   AgentChatFileRef,
 } from "../../../shared/types";
 import { AdeExpectedError } from "../../../shared/expectedError";
+import type { ExternalChatScope } from "../chat/externalChats";
 import { getErrorMessage } from "../shared/utils";
 import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineCreator";
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
@@ -785,6 +786,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       cleanupDone: false,
       madeByChat: input.madeByChat?.trim() || null,
       madeByAgent: input.madeByAgent ?? null,
+      madeByChatScope: input.madeByChat?.trim() ? input.madeByChatScope ?? null : null,
+      approvalCardUrl: null,
     };
     records.set(launchId, record);
     publish(record);
@@ -795,10 +798,26 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
 
   const owns = (launchId: unknown): boolean => typeof launchId === "string" && records.has(launchId.trim().toLowerCase());
 
-  /** What the record knows beyond the snapshot: the computer's name and the agent's chat that started it. */
-  const facts = (launchId: string): { computerName: string; madeByChat: string | null; madeByAgent: CloudAgentMaker | null } | null => {
+  /** What the record knows beyond the snapshot: the computer's name, the agent's chat that started it and its approval card. */
+  const facts = (launchId: string): CloudLaneLaunchFacts | null => {
     const record = records.get(launchId.trim().toLowerCase());
-    return record ? { computerName: record.computerName, madeByChat: record.madeByChat ?? null, madeByAgent: record.madeByAgent ?? null } : null;
+    return record
+      ? {
+        computerName: record.computerName,
+        madeByChat: record.madeByChat ?? null,
+        madeByAgent: record.madeByAgent ?? null,
+        madeByChatScope: record.madeByChatScope ?? null,
+        approvalCardUrl: record.approvalCardUrl ?? null,
+      }
+      : null;
+  };
+
+  /** The approval card now waiting in the agent's chat (its link), or null once it is settled. Saved at once. */
+  const noteApprovalCard = (launchId: string, url: string | null): void => {
+    const record = records.get(launchId.trim().toLowerCase());
+    if (!record || (record.approvalCardUrl ?? null) === url) return;
+    record.approvalCardUrl = url;
+    store.persist(record);
   };
 
   const recordFor = (args: ChatLaunchIdArgs | ChatLaunchQueueMessageArgs): CloudLaneLaunchRecord | null =>
@@ -1025,7 +1044,15 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     }
   };
 
-  return { start, owns, facts, get, list, cancel, retry, startNow, queueMessage, completeClient, dispose };
+  return { start, owns, facts, noteApprovalCard, get, list, cancel, retry, startNow, queueMessage, completeClient, dispose };
 }
 
 export type CloudLaneLaunchService = ReturnType<typeof createCloudLaneLaunchService>;
+
+export type CloudLaneLaunchFacts = {
+  computerName: string;
+  madeByChat: string | null;
+  madeByAgent: CloudAgentMaker | null;
+  madeByChatScope: ExternalChatScope | null;
+  approvalCardUrl: string | null;
+};
