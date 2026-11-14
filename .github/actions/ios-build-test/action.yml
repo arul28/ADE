@@ -125,6 +125,10 @@ runs:
     # folder.
     - name: Build for testing
       shell: bash
+      env:
+        # Without it, xcodebuild buffers its output in the pipe and the times
+        # in the log arrive in blocks.
+        NSUnbufferedIO: "YES"
       run: |
         set -euo pipefail
         dd="$RUNNER_TEMP/ios-dd"
@@ -167,7 +171,7 @@ runs:
         sed -n '/Build Timing Summary/,$p' "$log" | cut -c10-
         objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
         swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
-        echo "Compiled in this build: $objects object files, $swift of them from Swift files."
+        echo "Compiled in this build: $swift Swift files; $objects object files written."
 
     - name: Run ADETests
       shell: bash
