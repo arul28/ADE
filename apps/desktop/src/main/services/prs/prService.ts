@@ -158,7 +158,7 @@ import {
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { setBounded } from "../../../shared/boundedMap";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
-import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected, markExpected } from "../../../shared/expectedError";
 import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
@@ -7933,7 +7933,9 @@ export function createPrService({
         .filter(Boolean),
     );
     if (primaryBranches.has(normalizeBranchName(branchName))) {
-      throw new Error(`Refusing to clean up protected branch "${branchName}".`);
+      // A safety guard the person hits from the merged-PR card: the branch is
+      // a primary lane's. An answer, not a defect.
+      throw new AdeExpectedError(`Refusing to clean up protected branch "${branchName}".`, "user");
     }
 
     const result: CleanupPrBranchResult = {

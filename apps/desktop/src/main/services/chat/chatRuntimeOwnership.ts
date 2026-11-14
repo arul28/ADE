@@ -1,3 +1,4 @@
+import { markExpected } from "../../../shared/expectedError";
 import os from "node:os";
 import path from "node:path";
 import { pathsEqual } from "../shared/pathCompare";
@@ -193,6 +194,10 @@ export class ChatRuntimeOwnedElsewhereError extends Error {
     super("message" in args ? args.message : describeChatRuntimeOwnedElsewhere(args));
     this.name = "ChatRuntimeOwnedElsewhereError";
     this.owner = args.owner;
+    // Another ADE brain on this computer runs the chat (a lane's test brain,
+    // or one still finishing a turn); the message names it. A refusal that
+    // protects the chat, not a defect.
+    markExpected(this, "environment");
   }
 }
 

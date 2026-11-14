@@ -19,6 +19,7 @@ import {
   resolveAdeLayout,
   type AdeLayoutPaths,
 } from "../../../shared/adeLayout";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { resolvePathWithinRoot } from "../shared/utils";
 import { createLogIntegrityService, type LogIntegrityService } from "./logIntegrityService";
@@ -291,7 +292,68 @@ function repairLegacyPaths(paths: AdeLayoutPaths, actions: AdeSyncAction[]): voi
   deleteIfExists(path.join(paths.packsDir, ".DS_Store"), "artifacts/packs/.DS_Store", actions);
 }
 
+/** Error codes of a folder the OS does not let this user write to. */
+const FOLDER_NOT_WRITABLE_CODES = new Set(["EACCES", "EPERM", "EROFS"]);
+
+/**
+ * Whether this user can write to `dirPath`. A folder that is not there counts
+ * as writable: nothing refused it. Windows answers `access` for a folder
+ * without reading its permissions, so there the check makes and removes an
+ * empty folder; only a refusal of that write counts.
+ */
+function canWriteTo(dirPath: string): boolean {
+  try {
+    if (process.platform === "win32") {
+      fs.rmdirSync(fs.mkdtempSync(path.join(dirPath, ".ade-write-check-")));
+    } else {
+      fs.accessSync(dirPath, fs.constants.W_OK);
+    }
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (process.platform === "win32") return typeof code !== "string" || !FOLDER_NOT_WRITABLE_CODES.has(code);
+    return code === "ENOENT";
+  }
+}
+
+/**
+ * Whether the folder itself refuses writes. EACCES and EPERM also come from
+ * one file another program holds open (Windows refuses a rename or a delete
+ * of a file in use with EPERM), so those codes count only when a write check
+ * on the project folder, or on its `.ade` folder, fails too. A read-only
+ * volume (EROFS) always counts.
+ */
+function folderRefusesWrites(code: string, projectRoot: string): boolean {
+  if (code === "EROFS") return true;
+  return !canWriteTo(projectRoot) || !canWriteTo(resolveAdeLayout(projectRoot).adeDir);
+}
+
+/**
+ * ADE keeps its project state in `.ade` inside the folder. A folder that
+ * belongs to another user, or a read-only volume, refuses that: the person
+ * has to change the folder, so say which one and why, and do not report it
+ * as a defect. Any other failure is rethrown unchanged.
+ */
 export function initializeOrRepairAdeProject(projectRoot: string, options: RepairOptions = {}): {
+  paths: AdeLayoutPaths;
+  cleanup: AdeCleanupResult;
+} {
+  try {
+    return repairAdeProject(projectRoot, options);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (typeof code !== "string" || !FOLDER_NOT_WRITABLE_CODES.has(code)) throw error;
+    if (!folderRefusesWrites(code, projectRoot)) throw error;
+    throw new AdeExpectedError(
+      `ADE can't write to this folder: ${projectRoot}. It belongs to another user or is read-only (${code}). `
+        + "Change the owner or the permissions of the folder, then open it again.",
+      "environment",
+      { cause: error },
+    );
+  }
+}
+
+function repairAdeProject(projectRoot: string, options: RepairOptions): {
   paths: AdeLayoutPaths;
   cleanup: AdeCleanupResult;
 } {

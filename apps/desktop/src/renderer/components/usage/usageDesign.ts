@@ -150,7 +150,7 @@ export function usageHeadroomTone(percentLeft: number): UsageHeadroomTone {
 }
 
 /** The app theme's own status tokens (light and dark both declare them). */
-export const USAGE_HEADROOM_COLOR: Record<UsageHeadroomTone, string> = {
+const USAGE_HEADROOM_COLOR: Record<UsageHeadroomTone, string> = {
   ok: "var(--color-success)",
   warn: "var(--color-warning)",
   critical: "var(--color-error)",

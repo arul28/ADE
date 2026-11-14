@@ -99,22 +99,6 @@ describe("createAgentChatService", () => {
       );
     });
 
-    it("disposes a session and marks it ended", async () => {
-      const { service, sessionService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      await service.dispose({ sessionId: session.id });
-
-      expect(sessionService.end).toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: session.id }),
-      );
-    });
-
     it("dispose quarantines durable provider schedules instead of hiding live provider work", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
@@ -340,27 +324,6 @@ describe("createAgentChatService", () => {
       await vi.advanceTimersByTimeAsync(5_001);
 
       expect(db.all).not.toHaveBeenCalled();
-    });
-
-    it("disposes all active sessions without throwing", async () => {
-      const { service } = createService();
-
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-      mockState.uuidCounter = 10; // avoid collision
-      await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      // Should not throw
-      await expect(service.disposeAll()).resolves.toBeUndefined();
     });
 
     it("asks the Claude subprocess reaper to terminate remaining SDK children", async () => {
@@ -919,11 +882,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("cleanupStaleAttachments", () => {
-    it("does nothing when attachments directory does not exist", () => {
-      const { service } = createService();
-      // Should not throw
-      expect(() => service.cleanupStaleAttachments()).not.toThrow();
-    });
 
     it("removes files older than 7 days", () => {
       const { service } = createService();

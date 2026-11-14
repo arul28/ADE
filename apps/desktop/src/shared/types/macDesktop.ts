@@ -30,6 +30,13 @@ import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 import { ADE_CLOUD_APPROVAL_METADATA_KEY } from "../adeCloud";
 import { MACHINE_REMOVAL_REQUEST_METADATA_KEY } from "../machineRemovalRequest";
 
+/**
+ * `mac_desktop` reads about the machine: status, the window list and the
+ * stream status. With `--machine` they send no commit and make no work copy,
+ * and name the chat's screen only when its copy is there already.
+ */
+export const MAC_DESKTOP_LANE_FREE_ACTIONS = ["getStatus", "listWindows", "getStreamStatus"] as const;
+
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
@@ -2115,7 +2122,8 @@ export type MacDesktopServiceApi = {
 
   screenshot(args: MacDesktopScreenshotArgs): Promise<MacDesktopScreenshotResult>;
   startRecording(args: MacDesktopRecordStartArgs): Promise<MacDesktopRecordingStatus>;
-  stopRecording(args: { laneId: string; chatSessionId?: string | null }): Promise<MacDesktopRecordingStatus>;
+  /** `proof: false` files nothing here (a caller on another machine files it in its own drawer). */
+  stopRecording(args: { laneId: string; chatSessionId?: string | null; proof?: boolean | null }): Promise<MacDesktopRecordingStatus>;
 
   /** The only call that hands out the stream token. */
   startStream(args: MacDesktopStartStreamArgs): Promise<MacDesktopStreamStatus>;

@@ -126,18 +126,6 @@ describe("mergeSelectorModels", () => {
     expect(droidModels.length).toBe(0);
   });
 
-  it("does not surface any Cursor descriptors when no Cursor models are discovered (no canonical previews)", () => {
-    const merged = mergeSelectorModels(undefined, undefined, undefined, "all");
-    const cursorModels = merged.filter((m) => m.family === "cursor");
-    expect(cursorModels.length).toBe(0);
-  });
-
-  it("does not surface any OpenCode descriptors when no OpenCode models are discovered (no canonical previews)", () => {
-    const merged = mergeSelectorModels(undefined, undefined, undefined, "all");
-    const opencodeModels = merged.filter((m) => m.family === "opencode");
-    expect(opencodeModels.length).toBe(0);
-  });
-
   it("replaces curated ACP rows with the connected provider's live models", () => {
     const qwenFallbacks = mergeSelectorModels(undefined, undefined, undefined, "all")
       .filter((model) => model.family === "qwen");

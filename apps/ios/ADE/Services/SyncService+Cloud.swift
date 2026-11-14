@@ -150,6 +150,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
   struct Hours: Decodable, Equatable {
     let includedMilli: Int
     let leftMilli: Int
+    /// Used this period; nil from a payload that leaves it out.
+    let usedMilli: Int?
     let state: String
   }
 
@@ -177,6 +179,8 @@ struct CloudPhoneAccount: Decodable, Equatable {
   }
 
   struct Billing: Decodable, Equatable {
+    /// When this period began (ms); the plan confirmation keys on it.
+    let periodStart: Double?
     let periodEnd: Double
     let cancelAtPeriodEnd: Bool?
     let nextPlanId: String?

@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { isMachineScopePin } from "../../../shared/machineScope";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { ProjectMachine } from "../../state/projectMachines";
 import { useActiveRepositoryCopies, useCopyPick, useOnlineCopyPins, useTabCopyPin, type CopyPick } from "../../state/repositoryScope";
@@ -44,6 +45,55 @@ export function useSettingsReadPin(): OpenProjectBinding | null {
   return scope.isThisMachine && tabPin?.kind === "local" ? tabPin : null;
 }
 
+/** How long a Settings read or write of a project copy may take before the page says why. */
+export const PROJECT_SETTINGS_BOUND_MS = 8_000;
+
+/**
+ * A read or write of a project's own settings, bounded: the project's folder
+ * can sit on a drive that stops answering (a network drive, or macOS asking
+ * on that computer's screen), and the page shows why instead of waiting. The
+ * call itself is left to settle on its own.
+ */
+export function withProjectSettingsBound<T>(
+  call: Promise<T>,
+  machineName: string,
+  isThisMachine: boolean,
+  ms = PROJECT_SETTINGS_BOUND_MS,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const where = isThisMachine ? "this computer" : machineName;
+    const timer = setTimeout(() => reject(new Error(
+      `This project's settings on ${where} did not answer in ${Math.round(ms / 1000)} s. Its folder may be on a drive that is not answering; the rest of the page does not need it.`,
+    )), ms);
+    call.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * The pin of this repository's copy on the page's machine, for the parts of a
+ * machine page that are the project's (Providers' project AI config). The
+ * page's own pin when that is the copy; when the page runs on the machine
+ * route, its `projectTarget`. Null when the machine has no copy, and never the
+ * machine route: the machine scope does not answer project settings.
+ */
+export function useSettingsProjectPin(): OpenProjectBinding | null {
+  const scope = useSettingsMachineScope();
+  const tabPin = useTabCopyPin();
+  const target = scope.projectTarget !== undefined ? scope.projectTarget : scope.target;
+  if (!target) return null;
+  if (target.kind === "pinned") return isMachineScopePin(target.binding) ? null : target.binding;
+  return scope.isThisMachine && tabPin?.kind === "local" ? tabPin : null;
+}
+
 /** The `useCopyPick` scope of a Settings page. */
 export function settingsCopyScope(page: string): string {
   return `settings.${page}`;
@@ -78,6 +128,10 @@ function copyPageFor(
       // page then says so instead of calling it.
       online: base?.online ?? true,
     }),
+    // A project page reads the copy, never the machine route.
+    machineRoute: null,
+    machineRouteOutdated: false,
+    machineRouteDomains: null,
     hasRepo: true,
     version: base?.version ?? null,
   };

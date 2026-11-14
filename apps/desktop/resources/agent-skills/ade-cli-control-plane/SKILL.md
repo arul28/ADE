@@ -472,9 +472,9 @@ edits, and is not a subagent: it does not report or wake anyone.
 
 ## Other machines on the account
 
-Chats, lanes and devices on the user's other machines are reachable with
-`--machine <name>` (a machine key or an unambiguous name). You act there as an
-agent, under that machine's own policy.
+Chats, lanes and shells on the user's other machines take `--machine <name>`
+(a machine key or an unambiguous name); for devices, see ade-computer-use
+`references/other-machines.md`. You act there under that machine's own policy.
 
 ```bash
 ade machines list --projects --text              # who is online, what projects each has
@@ -482,13 +482,13 @@ ade chat list --all-machines --text              # every machine in one table
 ade chat create --machine "Mac mini" --lane <lane there> \
   --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there (no --lane: the primary lane there)
 ade chat read <id> --machine "Mac mini" --text
-ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
-ade files push --machine "Windows PC" ./fixture.bin test/   # one file into that work copy (pull copies back)
+ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in your code there
+ade files push --machine "Windows PC" ./fixture.bin test/   # one file into your code there (pull copies back)
 ```
 
 - Put all the steps of a task in one `--machine` call (`-- sh -c "npm ci && npm test"`,
-  or a script you run once). Each call opens a new shell there and syncs the
-  work copy again. Do not run single commands one call at a time. Move files
+  or a script you run once). Each call opens a new shell there and syncs
+  your code there again. Do not run single commands one call at a time. Move files
   with `ade files push|pull --machine`, never as base64 inside shell commands.
 
 - The project there defaults to this repository's checkout; pick another with

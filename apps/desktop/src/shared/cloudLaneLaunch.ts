@@ -1,6 +1,6 @@
 /**
  * Facts an ADE Cloud lane's computer carries in its metadata, so any list
- * (desktop, phone, the server's own) can show "ADE Cloud · <lane name>" and
+ * (desktop, phone, the server's own) can show "Cloud · <lane name>" and
  * find the lane's project without waking the computer. The launch writes
  * them when it makes the computer (`cloudLaneLaunchService.ts`), beside
  * `ade_request_id`, which is the launch id.
@@ -204,7 +204,7 @@ export type CloudLaneLaunchStatus = {
   launch: ChatLaunchSnapshot;
   /** The computer made for the lane, once it exists. */
   machine: { name: string; instanceId: string | null; machineKey: string | null };
-  /** While the join waits for the person: the sign-in link to open. */
+  /** While the new computer's own sign-in stopped on a page a person must confirm (rare): that page. */
   approvalUrl: string | null;
   /** The agent's chat that started it, or null for a person's launch. */
   madeByChat: string | null;

@@ -77,7 +77,13 @@ import {
   resolveRemoteAttachmentUploadRoute,
   type RemoteAttachmentUploadRoute,
 } from "./attachmentUploadRoute";
-import { classifyPairedRuntimeEndpoint, REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS } from "./pairedRuntimeRoutes";
+import {
+  classifyPairedRuntimeEndpoint,
+  REMOTE_RUNTIME_STREAM_EVENTS_TIMEOUT_MS,
+  REMOTE_RUNTIME_SYNC_CALL_TIMEOUT_MS,
+  REMOTE_RUNTIME_SYNC_DEADLINE_MS,
+} from "./pairedRuntimeRoutes";
+import { withDeadline } from "../shared/withTimeout";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
 import { expectedErrorKind, markExpected } from "../../../shared/expectedError";
@@ -212,6 +218,24 @@ function markPeerVersionGap(error: unknown, peerVersion: string | null | undefin
 
 function isRemoteRuntimeStreamFailure(error: unknown): boolean {
   return isRemoteRuntimeConnectionError(error) || isRuntimeTransportTimeoutError(error);
+}
+
+/** A sync call on another machine that ran past REMOTE_RUNTIME_SYNC_DEADLINE_MS, naming the method and the step. */
+class RemoteSyncCallTimeoutError extends Error {
+  readonly code = "REMOTE_SYNC_CALL_TIMEOUT" as const;
+
+  constructor(machineName: string, method: string, step: RemoteEventSetupPhase, timeoutMs: number) {
+    const waited = step === "connect" || step === "reconnect"
+      ? "was still waiting for the connection"
+      : step === "liveness_probe"
+        ? "got no reply, and the connection stopped answering"
+        : "got no reply";
+    super(`${method} on ${machineName} ${waited} after ${Math.round(timeoutMs / 1000)}s.`);
+    this.name = "RemoteSyncCallTimeoutError";
+    // A machine that is asleep, busy or offline, like the event setup's
+    // timeout. The method and step stay in the message.
+    markExpected(this, "network");
+  }
 }
 
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
@@ -1160,14 +1184,37 @@ export class RemoteConnectionPool {
     method: string,
     params: Record<string, unknown> = {},
   ): Promise<unknown> {
-    return await this.withEntryForTarget(
+    let step: RemoteEventSetupPhase = "connect";
+    // Set once the caller has its answer (the deadline included). A dial that
+    // finishes later stays shared with other calls, but this call never sends
+    // its method then: a `sync.connectToBrain` sent after the caller was told
+    // it failed would still change the other machine's connection.
+    let settled = false;
+    const call = this.withEntryForTarget(
       target,
-      (entry) => entry.client.call(method, {
-        ...params,
-        projectId,
-      }),
-      { retryOnConnectionError: RETRYABLE_REMOTE_SYNC_METHODS.has(method) },
+      (entry) => {
+        if (settled) {
+          return Promise.reject(new RemoteSyncCallTimeoutError(target.name, method, step, REMOTE_RUNTIME_SYNC_DEADLINE_MS));
+        }
+        return entry.client.call(method, {
+          ...params,
+          projectId,
+        }, { timeoutMs: REMOTE_RUNTIME_SYNC_CALL_TIMEOUT_MS });
+      },
+      {
+        retryOnConnectionError: RETRYABLE_REMOTE_SYNC_METHODS.has(method),
+        phases: { onPhase: (phase) => { step = phase; }, operation: "read" },
+      },
     );
+    try {
+      return await withDeadline(
+        call,
+        REMOTE_RUNTIME_SYNC_DEADLINE_MS,
+        () => new RemoteSyncCallTimeoutError(target.name, method, step, REMOTE_RUNTIME_SYNC_DEADLINE_MS),
+      );
+    } finally {
+      settled = true;
+    }
   }
 
   async listActionRegistryForTarget(

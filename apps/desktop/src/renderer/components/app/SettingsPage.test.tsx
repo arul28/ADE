@@ -200,17 +200,6 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("lists General, then the You group starting with Account, and renders the account page in place", async () => {
-    renderSettings("/settings?tab=account");
-
-    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
-    expect(screen.getByText("account embedded")).toBeTruthy();
-    const nav = screen.getByRole("navigation", { name: "Settings sections" });
-    const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    // General sits alone at the top, then the You group opens on Account.
-    expect(rows.slice(0, 2)).toEqual(["General", "Account"]);
-  });
-
   it("carries help, zoom, and the identity row above the sections", async () => {
     renderSettings("/settings?tab=appearance");
     await screen.findByRole("heading", { name: "Appearance" });

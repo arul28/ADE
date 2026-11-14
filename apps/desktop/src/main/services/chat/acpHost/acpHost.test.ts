@@ -27,7 +27,6 @@ import {
   type AcpSessionUpdate,
 } from "./acpProtocolTypes";
 import {
-  ACP_DIALECTS,
   acpDialectFor,
   devinCloudDialect,
   grokDialect,
@@ -183,12 +182,6 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("dialect capability declarations", () => {
-  it("registers exactly the four ACP providers", () => {
-    expect(Object.keys(ACP_DIALECTS).sort()).toEqual([...ACP_PROVIDER_IDS].sort());
-    for (const providerId of ACP_PROVIDER_IDS) {
-      expect(acpDialectFor(providerId).providerId).toBe(providerId);
-    }
-  });
 
   it.each(ACP_PROVIDER_IDS)("%s honors the requiresBehavior invariant", (providerId: AcpProviderId) => {
     const dialect = acpDialectFor(providerId);

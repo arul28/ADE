@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -60,6 +60,7 @@ import type { ComputerUseArtifactIngestionRequest, ComputerUseArtifactIngestionR
 import { killWindowsProcessTreeAsync } from "../shared/processExecution";
 import { subscribeCdpPageDiagnostics, type CdpPendingRequest } from "../shared/cdpPageDiagnostics";
 import type { Logger } from "../logging/logger";
+import type { LinuxLaneLaunchEnv } from "../linuxDesktop/linuxDesktopSeatProvider";
 import type { createPtyService } from "../pty/ptyService";
 import { base64ImageDimensions, imageDimensions } from "../shared/imageDimensions";
 import { frameToParentRect, frameTransformFromBox, type CdpBoxModelResponse } from "../shared/cdpFrameTransform";
@@ -133,6 +134,14 @@ export type CreateAppControlServiceArgs = {
    * agent used to start the primary checkout's app instead of its own.
    */
   resolveLaneWorktreePath?: ((laneId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The project's primary lane. A chat on another machine (`remote-work-…`)
+   * runs its app in a terminal of this lane, in its work copy, as
+   * `ade shell start --machine` does; without it such a launch is refused.
+   */
+  resolvePrimaryLaneId?: (() => string | null) | null;
+  /** Archives a terminal: the one a chat on another machine runs its app in is archived from the start. */
+  archiveTerminal?: ((sessionId: string) => void) | null;
   onEvent?: ((payload: AppControlEventPayload) => void) | null;
   /**
    * macOS recording engine. Defaults to a private `ade-desktop-driver` that is
@@ -164,6 +173,18 @@ export type CreateAppControlServiceArgs = {
    * lane's screen. The mirror of Mac Desktop's `appControlLaneForProcess`.
    */
   macDesktopLaneForProcess?: ((pid: number) => Promise<string | null> | string | null) | null;
+  /**
+   * Linux: the environment that puts a process's windows on the lane's own
+   * screen (Linux Desktop), starting that screen when `start` is set. Null off
+   * Linux or with no lane screen service in this process. Mac Desktop's
+   * `laneScreenLaunchEnv`.
+   */
+  laneScreenLaunchEnv?: ((args: { laneId: string; start: boolean }) => Promise<LinuxLaneLaunchEnv | null>) | null;
+  /**
+   * An app on that screen was driven (a click, typing, a screenshot): the
+   * screen counts it as use, so its idle sweep does not take the app away.
+   */
+  noteLaneScreenUse?: ((laneId: string) => void) | null;
 };
 
 /** How a call names its lane: directly, by the session it holds, or by its chat. */
@@ -1249,6 +1270,33 @@ const APP_CONTROL_SCREENCAST_PARAMS = {
 } as const;
 
 /**
+ * Resolves once the shell has no live process. False when it still has one
+ * after `timeoutMs`: a stop that could not end the old app in time.
+ */
+export const waitForShellExit = async (
+  ptyService: AppControlPtyService,
+  terminalSessionId: string,
+  timeoutMs: number,
+): Promise<boolean> => {
+  if (!ptyService.hasLivePty(terminalSessionId)) return true;
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(!ptyService.hasLivePty(terminalSessionId));
+    };
+    const unsubscribe = ptyService.onExit((event) => {
+      if (event.sessionId === terminalSessionId) finish();
+    });
+    const timer = setTimeout(finish, timeoutMs);
+    timer.unref?.();
+  });
+};
+
+/**
  * One lane's App Control session and everything that hangs off it: the CDP
  * pollers, the screencast socket, the diagnostics tallies and the agent
  * trace. The service keeps one of these per lane.
@@ -1928,6 +1976,7 @@ export function createAppControlLaneController(context: AppControlLaneController
    */
   const stop = async (stopArgs: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> => {
     const previousSession = activeSession;
+    if (previousSession) sessionsOnLaneScreen.delete(previousSession.id);
     if (previousSession && recording.isRecording(laneId)) {
       await recording.stopRecording(laneId, cleanClaimId(stopArgs.chatSessionId)).catch((error: unknown) => {
         args.logger.debug("app_control.stop_recording_failed", {
@@ -2054,6 +2103,15 @@ export function createAppControlLaneController(context: AppControlLaneController
    * one row; in turn, the second simply replaces the first.
    */
   let launchQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * Set by `dispose`, never by the `stop` a replacement runs: a launch still
+   * waiting (on the lane screen, the old app's stop, a free port) when the
+   * controller goes away must not open a terminal for it afterwards.
+   */
+  let disposed = false;
+  const throwIfDisposed = (): void => {
+    if (disposed) throw new AdeExpectedError("App Control on this lane was closed before the app started.", "user");
+  };
   const launch = (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
     const run = launchQueue.then(() => launchNow(launchArgs));
     launchQueue = run.catch(() => {});
@@ -2061,6 +2119,7 @@ export function createAppControlLaneController(context: AppControlLaneController
   };
 
   const launchNow = async (launchArgs: AppControlLaunchArgs): Promise<AppControlSession> => {
+    throwIfDisposed();
     requireSupportedDriver(launchArgs.driver);
     const replaceableSession = activeSession && ["exited", "failed", "stopped"].includes(activeSession.status);
     if (activeSession && !replaceableSession && !launchArgs.force) {
@@ -2070,6 +2129,13 @@ export function createAppControlLaneController(context: AppControlLaneController
       throw new Error("App Control terminal launch requires the ADE terminal service.");
     }
     const ptyService = args.ptyService;
+    // Before the previous app stops and before the session exists: a lane
+    // screen that cannot start refuses the launch with its own reason, leaves
+    // the running app as it is, and is never mistaken for a debug port that
+    // never opened. Only a launch's own env can name a display (the resolved
+    // command adds env on Windows only).
+    const screenEnv = await laneScreenEnv(explicitLaunchEnv(launchArgs));
+    throwIfDisposed();
     const previousShellId = activeSession?.terminalSessionId ?? null;
     const reuseCandidate = relaunchShellCandidate(launchArgs);
     // The hold keeps the dead-shell sweep from deleting the shell before the
@@ -2084,7 +2150,8 @@ export function createAppControlLaneController(context: AppControlLaneController
       const reuseShellId = reuseCandidate
         ? await claimShellForRelaunch(ptyService, reuseCandidate, cleanClaimId(launchArgs.chatSessionId))
         : null;
-      return await launchInShell(ptyService, launchArgs, reuseShellId);
+      throwIfDisposed();
+      return await launchInShell(ptyService, launchArgs, reuseShellId, screenEnv);
     } finally {
       releaseShell();
     }
@@ -2120,41 +2187,65 @@ export function createAppControlLaneController(context: AppControlLaneController
     return null;
   };
 
+
   /**
-   * Resolves once the shell has no live process. False when it still has one
-   * after `timeoutMs`: a stop that could not end the old app in time.
+   * Sessions launched onto the lane's Linux screen. Their App Control calls
+   * count as use of that screen (`noteLaneScreenUse`). Ids only, a few per lane.
    */
-  const waitForShellExit = async (
-    ptyService: AppControlPtyService,
-    terminalSessionId: string,
-    timeoutMs: number,
-  ): Promise<boolean> => {
-    if (!ptyService.hasLivePty(terminalSessionId)) return true;
-    return await new Promise<boolean>((resolve) => {
-      let settled = false;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        unsubscribe();
-        resolve(!ptyService.hasLivePty(terminalSessionId));
-      };
-      const unsubscribe = ptyService.onExit((event) => {
-        if (event.sessionId === terminalSessionId) finish();
-      });
-      const timer = setTimeout(finish, timeoutMs);
-      timer.unref?.();
-    });
+  const sessionsOnLaneScreen = new Set<string>();
+
+  /** The env a launch names itself, with unset values as empty. */
+  const explicitLaunchEnv = (launchArgs: AppControlLaunchArgs): Record<string, string> => Object.fromEntries(
+    Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
+  );
+
+  /**
+   * Linux: the screen the app's windows open on, as terminal env.
+   *
+   * ADE with no display of its own (a server, an ADE Cloud computer, a brain
+   * service) has nowhere to put them: Chrome and Electron exit with "Missing X
+   * server or $DISPLAY" before the debug port opens. There the launch runs on
+   * the lane's Linux Desktop screen, started for it, so `ade screen` sees the
+   * same window. The test is this process's own `DISPLAY`/`WAYLAND_DISPLAY`,
+   * because that is exactly what the app would inherit; a person's desktop
+   * keeps getting the app, as before, unless the lane's screen is already
+   * running, which is the lane's screen on any machine. A launch that sets
+   * `DISPLAY` or `WAYLAND_DISPLAY` itself keeps it. Cleared keys are set
+   * empty: the terminal merges this over the host's environment.
+   */
+  const laneScreenEnv = async (explicitEnv: Record<string, string>): Promise<Record<string, string>> => {
+    if (process.platform !== "linux" || !args.laneScreenLaunchEnv) return {};
+    const hasValue = (value: string | undefined): boolean => Boolean(value?.trim());
+    if (hasValue(explicitEnv.DISPLAY) || hasValue(explicitEnv.WAYLAND_DISPLAY)) return {};
+    const hostHasDisplay = hasValue(process.env.DISPLAY) || hasValue(process.env.WAYLAND_DISPLAY);
+    let screen: LinuxLaneLaunchEnv | null;
+    try {
+      screen = await args.laneScreenLaunchEnv({ laneId, start: !hostHasDisplay });
+    } catch (error) {
+      // A screen error's message starts with its code (`CODE: sentence`); the sentence is the reason.
+      const message = error instanceof Error ? error.message : String(error);
+      const code = (error as { code?: unknown } | null)?.code;
+      const reason = typeof code === "string" && message.startsWith(`${code}:`) ? message.slice(code.length + 1).trim() : message;
+      const why = hostHasDisplay
+        ? "App Control runs the app on this lane's Linux Desktop screen, and that screen could not be reached."
+        : "This machine has no display for the app, so App Control runs it on the lane's Linux Desktop screen, and that screen did not start.";
+      throw carryExpected(error, new Error(`${why} ${reason}`, { cause: error }));
+    }
+    if (!screen) return {};
+    return { ...Object.fromEntries(screen.unset.map((key) => [key, ""])), ...screen.set };
   };
 
   const launchInShell = async (
     ptyService: AppControlPtyService,
     launchArgs: AppControlLaunchArgs,
     reuseShellId: string | null,
+    screenEnv: Record<string, string>,
   ): Promise<AppControlSession> => {
     cdpAttachmentEpoch += 1;
     const debugPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort) ?? await findFreePort();
+    throwIfDisposed();
     const resolved = resolveLaunch(launchArgs, debugPort);
+    const launchEnv = explicitLaunchEnv(launchArgs);
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
     const session: AppControlSession = {
       id: randomUUID(),
@@ -2184,11 +2275,9 @@ export function createAppControlLaneController(context: AppControlLaneController
     const inheritedEnv = Object.fromEntries(
       Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
     );
-    const launchEnv = Object.fromEntries(
-      Object.entries(launchArgs.env ?? {}).map(([key, value]) => [key, value == null ? "" : value]),
-    );
     const env: Record<string, string> = {
       ...inheritedEnv,
+      ...screenEnv,
       ...launchEnv,
       ...(resolved.env ?? {}),
       ADE_APP_CONTROL: "1",
@@ -2202,7 +2291,9 @@ export function createAppControlLaneController(context: AppControlLaneController
       cwd: resolved.cwd,
       command: resolved.commandForDisplay,
       debugPort,
+      ...(screenEnv.DISPLAY ? { laneScreenDisplay: screenEnv.DISPLAY } : {}),
     });
+    if (Object.keys(screenEnv).length > 0) sessionsOnLaneScreen.add(session.id);
     emit({ type: "session-started", session });
     try {
       const terminal = await ptyService.create({
@@ -2288,6 +2379,8 @@ export function createAppControlLaneController(context: AppControlLaneController
   const withCdp = async <T>(fn: (client: CdpClient, session: AppControlSession) => Promise<T>): Promise<T> => {
     const session = await ensureConnectedSession();
     if (!session.cdpEndpoint) throw new Error("Active App Control session has no CDP endpoint.");
+    // Driving an app on the lane's Linux screen is use of that screen.
+    if (sessionsOnLaneScreen.has(session.id)) args.noteLaneScreenUse?.(laneId);
     // Reuse the persistent screencast client when it's connected to the same
     // session. This avoids opening a new WebSocket per click/scroll/key — under
     // a wheel gesture that's 30+ short-lived sockets, which CDP starts to
@@ -3206,6 +3299,7 @@ export function createAppControlLaneController(context: AppControlLaneController
     windows,
     switchWindow,
     dispose: (): void => {
+      disposed = true;
       unsubscribePtyExit?.();
       flushDiagnostics();
       stopCdpPoller();

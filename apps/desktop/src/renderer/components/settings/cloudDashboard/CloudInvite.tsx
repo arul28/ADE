@@ -116,7 +116,7 @@ export function CloudInviteCard({ account, onChanged }: { account: CloudAccountS
           </p>
           <div className="adecd-invite-link">
             <span className="kit-num" title={referral.link}>{referral.link}</span>
-            <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => void copy()}>
+            <button type="button" className="kit-btn kit-btn-primary adecd-brandbtn" data-size="sm" onClick={() => void copy()}>
               {copied ? <><Check size={12} weight="bold" />Copied</> : <><Copy size={12} />Copy link</>}
             </button>
           </div>

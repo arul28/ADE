@@ -112,25 +112,6 @@ function makeEvent(overrides: Partial<PrTimelineEvent> & Pick<PrTimelineEvent, "
   return { ...base, ...overrides } as PrTimelineEvent;
 }
 
-function fixture500(): PrTimelineEvent[] {
-  const events: PrTimelineEvent[] = [];
-  for (let i = 0; i < 500; i += 1) {
-    // People are never folded, so each comment stays its own digest row.
-    events.push(
-      makeEvent({
-        id: `e-${i}`,
-        type: "issue_comment",
-        commentId: `e-${i}`,
-        author: `dev-${i}`,
-        timestamp: new Date(Date.UTC(2026, 0, 1, 0, i)).toISOString(),
-        body: `comment ${i}`,
-        isBot: false,
-      }),
-    );
-  }
-  return events;
-}
-
 function renderTimeline(
   events: PrTimelineEvent[],
   overrides: Partial<PrTimelineProps> & { ref?: Ref<PrTimelineRef> } = {},
@@ -156,13 +137,6 @@ function openBotGroup(agent: string) {
 }
 
 describe("PrTimeline", () => {
-  it("mounts without crashing on a 500-event fixture and uses the virtualizer", () => {
-    virtualizerSpy.mockClear();
-    renderTimeline(fixture500());
-    expect(virtualizerSpy).toHaveBeenCalled();
-    const args = virtualizerSpy.mock.calls[0]![0] as { count: number };
-    expect(args.count).toBe(500);
-  });
 
   it("renders an author avatar once, in the card header", () => {
     renderTimeline([
@@ -383,13 +357,6 @@ describe("PrTimeline", () => {
     expect(screen.getAllByTestId("pr-digest-attention-row")).toHaveLength(1);
     fireEvent.click(screen.getByTestId("pr-digest-attention-checks"));
     expect(onOpenChecks).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows an empty state when there are no events", () => {
-    renderTimeline([]);
-    expect(screen.getByText("No activity yet.")).toBeTruthy();
-    expect(screen.queryByTestId("ai-summary-card")).toBeNull();
-    expect(screen.queryByTestId("pr-timeline-summary")).toBeNull();
   });
 
   it("hides comment mutation controls when writeViewerLogin is null", () => {

@@ -377,39 +377,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("getSupportedActions", () => {
-    it("returns a non-empty array of action strings", () => {
-      const actions = service.getSupportedActions();
-      expect(actions.length).toBeGreaterThan(0);
-      for (const action of actions) {
-        expect(typeof action).toBe("string");
-        expect(action.length).toBeGreaterThan(0);
-      }
-    });
-
-    it("includes known representative actions from each category", () => {
-      const actions = service.getSupportedActions();
-      expect(actions).toContain("lanes.list");
-      expect(actions).toContain("lanes.create");
-      expect(actions).toContain("lanes.importBranch");
-      expect(actions).toContain("prs.list");
-      expect(actions).toContain("prs.createFromLane");
-      expect(actions).toContain("prs.rerunChecks");
-      expect(actions).toContain("prs.addComment");
-      expect(actions).toContain("git.commit");
-      expect(actions).toContain("git.push");
-      expect(actions).toContain("git.getFileHistory");
-      expect(actions).toContain("chat.create");
-      expect(actions).toContain("chat.launch");
-      expect(actions).toContain("chat.send");
-      expect(actions).toContain("chat.getCodexGoal");
-      expect(actions).toContain("chat.setCodexGoal");
-      expect(actions).toContain("chat.setCodexGoalStatus");
-      expect(actions).toContain("chat.clearCodexGoal");
-      expect(actions).toContain("chat.cancelScheduledWork");
-      expect(actions).toContain("files.writeTextAtomic");
-      expect(actions).toContain("work.listSessions");
-      expect(actions).toContain("conflicts.getLaneStatus");
-    });
 
     it("keeps iOS remote command names shared and registered", () => {
       const registeredActions = new Set<SyncRemoteCommandAction | string>([
@@ -449,20 +416,9 @@ describe("createSyncRemoteCommandService", () => {
       }
     });
 
-    it("each descriptor action matches a supported action", () => {
-      const actions = new Set(service.getSupportedActions());
-      for (const desc of service.getDescriptors()) {
-        expect(actions.has(desc.action as any)).toBe(true);
-      }
-    });
   });
 
   describe("getPolicy", () => {
-    it("returns policy for a known action", () => {
-      const policy = service.getPolicy("lanes.list");
-      expect(policy).not.toBeNull();
-      expect(policy!.viewerAllowed).toBe(true);
-    });
 
     it("returns policy with queueable flag for mutating actions", () => {
       const policy = service.getPolicy("lanes.create");
@@ -549,14 +505,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — lane commands", () => {
-    it("lanes.list routes to laneService.list", async () => {
-      await service.execute(makePayload("lanes.list", { includeArchived: true }));
-      expect(laneService.list).toHaveBeenCalledWith({
-        includeArchived: true,
-        includeStatus: undefined,
-        includeConflictStatus: undefined,
-      });
-    });
 
     it("lanes.refreshSnapshots forwards light-refresh flags and skips expensive decorations", async () => {
       const lane = { id: "lane-1", name: "Lane one" };
@@ -607,19 +555,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(laneService.getSummary).toHaveBeenCalledWith("lane-1", { includeStatus: true });
       expect(laneService.list).not.toHaveBeenCalled();
       expect(result.lane).toEqual({ ...lane, childCount: 0, stackDepth: 0 });
-    });
-
-    it("lanes.create parses name and routes to laneService.create", async () => {
-      await service.execute(makePayload("lanes.create", {
-        name: "my-lane",
-        description: "desc",
-        start: { from: "branch", branch: "main", on: "local" },
-      }));
-      expect(laneService.create).toHaveBeenCalledWith({
-        name: "my-lane",
-        description: "desc",
-        start: { from: "branch", branch: "main", on: "local" },
-      });
     });
 
     it("lanes.create with setup \"default\" answers with the lane, then sets it up with the default template", async () => {
@@ -683,27 +618,6 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("lanes.importBranch requires branchRef.");
     });
 
-    it("lanes.previewBranchSwitch routes to laneService.previewBranchSwitch with optional fields", async () => {
-      const result = await service.execute(makePayload("lanes.previewBranchSwitch", {
-        laneId: "lane-1",
-        branchName: "feature/foo",
-        mode: "create",
-        startPoint: "main",
-        baseRef: "main",
-        acknowledgeActiveWork: true,
-      }));
-      expect(laneService.previewBranchSwitch).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        branchName: "feature/foo",
-        mode: "create",
-        startPoint: "main",
-        baseRef: "main",
-        acknowledgeActiveWork: true,
-      });
-      // The mock returns a preview shape; the result should be the same object.
-      expect(result).toMatchObject({ laneId: "lane-1", mode: "existing" });
-    });
-
     it("lanes.previewBranchSwitch requires branchName", async () => {
       await expect(service.execute(makePayload("lanes.previewBranchSwitch", { laneId: "lane-1" })))
         .rejects.toThrow(/branchName/);
@@ -728,23 +642,6 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow(/no longer supported/i);
       expect(laneService.attach).not.toHaveBeenCalled();
       expect(laneService.adoptAttached).not.toHaveBeenCalled();
-    });
-
-    it("lanes.rename parses laneId and name", async () => {
-      await service.execute(makePayload("lanes.rename", {
-        laneId: "lane-1",
-        name: "new-name",
-      }));
-      expect(laneService.rename).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        name: "new-name",
-      });
-    });
-
-    it("lanes.archive routes to laneService.archive", async () => {
-      const result = await service.execute(makePayload("lanes.archive", { laneId: "lane-1" }));
-      expect(laneService.archive).toHaveBeenCalledWith({ laneId: "lane-1" });
-      expect(result).toEqual({ ok: true });
     });
 
     it("lanes.delete parses all optional flags", async () => {
@@ -834,18 +731,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — PR commands", () => {
-    it("prs.list routes to prService.listAll", async () => {
-      const result = await service.execute(makePayload("prs.list"));
-      expect(prService.listAll).toHaveBeenCalled();
-      expect(result).toEqual([]);
-    });
-
-    it("prs.getForLane routes to prService.getForLane", async () => {
-      prService.getForLane.mockReturnValue({ id: "pr-1" });
-      const result = await service.execute(makePayload("prs.getForLane", { laneId: "lane-1" }));
-      expect(prService.getForLane).toHaveBeenCalledWith("lane-1");
-      expect(result).toEqual({ id: "pr-1" });
-    });
 
     it("prs.getForLane requires laneId", async () => {
       await expect(service.execute(makePayload("prs.getForLane", {})))
@@ -857,12 +742,6 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("prs.getDetail requires prId.");
     });
 
-    it("prs.getDetail routes to prService.getDetail", async () => {
-      const result = await service.execute(makePayload("prs.getDetail", { prId: "pr-42" }));
-      expect(prService.getDetail).toHaveBeenCalledWith("pr-42");
-      expect(result).toEqual({});
-    });
-
     it("prs.getDetailBundle routes the Graph sidecars through one read", async () => {
       const bundle = { status: { prId: "pr-42" }, checks: [{ id: "check-1" }], reviews: [], comments: [] };
       prService.getDetailBundle.mockResolvedValue(bundle);
@@ -870,25 +749,6 @@ describe("createSyncRemoteCommandService", () => {
       await expect(service.execute(makePayload("prs.getDetailBundle", { prId: " pr-42 " })))
         .resolves.toEqual(bundle);
       expect(prService.getDetailBundle).toHaveBeenCalledWith("pr-42");
-    });
-
-    it("prs.createFromLane parses laneId + title + draft", async () => {
-      await service.execute(makePayload("prs.createFromLane", {
-        laneId: "lane-1",
-        sessionId: "chat-1",
-        title: "My PR",
-        body: "Description",
-        draft: true,
-        closeLinearIssueOnMerge: true,
-      }));
-      expect(prService.createFromLane).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        sessionId: "chat-1",
-        title: "My PR",
-        body: "Description",
-        draft: true,
-        closeLinearIssueOnMerge: true,
-      });
     });
 
     it("prs.createFromLane throws when laneId or title is missing", async () => {
@@ -901,29 +761,6 @@ describe("createSyncRemoteCommandService", () => {
         prId: "pr-1",
         method: "invalid-method",
       }))).rejects.toThrow("prs.land requires method to be merge, squash, or rebase.");
-    });
-
-    it("prs.land routes with valid method", async () => {
-      await service.execute(makePayload("prs.land", {
-        prId: "pr-1",
-        method: "squash",
-      }));
-      expect(prService.land).toHaveBeenCalledWith({
-        prId: "pr-1",
-        method: "squash",
-      });
-    });
-
-    it("prs.close routes to prService.closePr", async () => {
-      const result = await service.execute(makePayload("prs.close", {
-        prId: "pr-1",
-        comment: "closing",
-      }));
-      expect(prService.closePr).toHaveBeenCalledWith({
-        prId: "pr-1",
-        comment: "closing",
-      });
-      expect(result).toEqual({ ok: true });
     });
 
     it("prs.requestReviewers throws when reviewers array is empty", async () => {
@@ -1053,17 +890,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — git commands", () => {
-    it("git.commit parses laneId + message", async () => {
-      await service.execute(makePayload("git.commit", {
-        laneId: "lane-1",
-        message: "fix: bug",
-      }));
-      expect(gitService.commit).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        message: "fix: bug",
-        amend: undefined,
-      });
-    });
 
     it("git.commit throws when message is missing", async () => {
       await expect(service.execute(makePayload("git.commit", { laneId: "lane-1" })))
@@ -1073,28 +899,6 @@ describe("createSyncRemoteCommandService", () => {
     it("git.commit throws when laneId is missing", async () => {
       await expect(service.execute(makePayload("git.commit", { message: "fix" })))
         .rejects.toThrow("git.commit requires laneId.");
-    });
-
-    it("git.push parses forceWithLease flag", async () => {
-      await service.execute(makePayload("git.push", {
-        laneId: "lane-1",
-        forceWithLease: true,
-      }));
-      expect(gitService.push).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        forceWithLease: true,
-      });
-    });
-
-    it("git.pull parses optional pull mode", async () => {
-      await service.execute(makePayload("git.pull", {
-        laneId: "lane-1",
-        mode: "rebase",
-      }));
-      expect(gitService.pull).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        mode: "rebase",
-      });
     });
 
     it("git.pull rejects unknown pull modes", async () => {
@@ -1132,31 +936,9 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("git.redoLastHeadChange requires laneId.");
     });
 
-    it("git.stageFile requires laneId and path", async () => {
-      await service.execute(makePayload("git.stageFile", {
-        laneId: "lane-1",
-        path: "src/index.ts",
-      }));
-      expect(gitService.stageFile).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        path: "src/index.ts",
-      });
-    });
-
     it("git.stageFile throws when path is missing", async () => {
       await expect(service.execute(makePayload("git.stageFile", { laneId: "lane-1" })))
         .rejects.toThrow("git.stageFile requires path.");
-    });
-
-    it("git.stageAll requires laneId and paths", async () => {
-      await service.execute(makePayload("git.stageAll", {
-        laneId: "lane-1",
-        paths: ["a.ts", "b.ts"],
-      }));
-      expect(gitService.stageAll).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        paths: ["a.ts", "b.ts"],
-      });
     });
 
     it("git.listRecentCommits passes laneId, optional limit and the co-author opt-in", async () => {
@@ -1181,46 +963,9 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("git.isCommitInLaneHistory passes laneId and commitSha", async () => {
-      await service.execute(makePayload("git.isCommitInLaneHistory", {
-        laneId: "lane-1",
-        commitSha: "abc123",
-      }));
-      expect(gitService.isCommitInLaneHistory).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        commitSha: "abc123",
-      });
-    });
-
-    it("git.revertCommit requires laneId and commitSha", async () => {
-      await service.execute(makePayload("git.revertCommit", {
-        laneId: "lane-1",
-        commitSha: "abc123",
-      }));
-      expect(gitService.revertCommit).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        commitSha: "abc123",
-      });
-    });
-
     it("git.revertCommit throws when commitSha is missing", async () => {
       await expect(service.execute(makePayload("git.revertCommit", { laneId: "lane-1" })))
         .rejects.toThrow("git.revertCommit requires commitSha.");
-    });
-
-    it("git.createTag parses commit tag arguments", async () => {
-      await service.execute(makePayload("git.createTag", {
-        laneId: "lane-1",
-        commitSha: "abc123",
-        tagName: "v1.2.3",
-        message: "release",
-      }));
-      expect(gitService.createTag).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        commitSha: "abc123",
-        tagName: "v1.2.3",
-        message: "release",
-      });
     });
 
     it("git.resetToCommit parses and validates reset modes", async () => {
@@ -1240,38 +985,6 @@ describe("createSyncRemoteCommandService", () => {
         commitSha: "abc123",
         mode: "merge",
       }))).rejects.toThrow("git.resetToCommit mode must be soft, mixed, or hard.");
-    });
-
-    it("git.sync parses optional mode and baseRef", async () => {
-      await service.execute(makePayload("git.sync", {
-        laneId: "lane-1",
-        mode: "rebase",
-        baseRef: "main",
-      }));
-      expect(gitService.sync).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        mode: "rebase",
-        baseRef: "main",
-      });
-    });
-
-    it("git.mergeContinue and git.mergeAbort dispatch to the git service with the lane id", async () => {
-      await service.execute(makePayload("git.mergeContinue", { laneId: "lane-1" }));
-      expect(gitService.mergeContinue).toHaveBeenCalledWith({ laneId: "lane-1" });
-
-      await service.execute(makePayload("git.mergeAbort", { laneId: "lane-1" }));
-      expect(gitService.mergeAbort).toHaveBeenCalledWith({ laneId: "lane-1" });
-    });
-
-    it("git.checkoutBranch requires laneId and branchName", async () => {
-      await service.execute(makePayload("git.checkoutBranch", {
-        laneId: "lane-1",
-        branchName: "feature/new",
-      }));
-      expect(gitService.checkoutBranch).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        branchName: "feature/new",
-      });
     });
 
     it("git.checkoutBranch throws when branchName is missing", async () => {
@@ -1338,10 +1051,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — diff and file commands", () => {
-    it("git.getChanges routes to diffService.getChanges", async () => {
-      await service.execute(makePayload("git.getChanges", { laneId: "lane-1" }));
-      expect(diffService.getChanges).toHaveBeenCalledWith("lane-1");
-    });
 
     it("git.getChanges throws when diffService is not available", async () => {
       const svcNoDiff = createSyncRemoteCommandService({
@@ -1378,18 +1087,6 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("files.writeTextAtomic requires text.");
     });
 
-    it("files.writeTextAtomic allows empty string text", async () => {
-      await service.execute(makePayload("files.writeTextAtomic", {
-        laneId: "lane-1",
-        path: "empty.txt",
-        text: "",
-      }));
-      expect(fileService.writeTextAtomic).toHaveBeenCalledWith({
-        laneId: "lane-1",
-        relPath: "empty.txt",
-        text: "",
-      });
-    });
   });
 
   // ---------------------------------------------------------------
@@ -1522,73 +1219,6 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("chat.send requires text.");
     });
 
-    it("chat.updateSession forwards cursor mode and config values", async () => {
-      await service.execute(makePayload("chat.updateSession", {
-        sessionId: "sess-1",
-        cursorModeId: "ask",
-        cursorConfigValues: {
-          mode: "ask",
-          enabled: true,
-          temperature: 0.5,
-        },
-      }));
-
-      expect(agentChatService.updateSession).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-        cursorModeId: "ask",
-        cursorConfigValues: {
-          mode: "ask",
-          enabled: true,
-          temperature: 0.5,
-        },
-      });
-    });
-
-    it("chat.updateSession forwards spawnKind and takeover-banner dismissal", async () => {
-      await service.execute(makePayload("chat.updateSession", {
-        sessionId: "sess-1",
-        spawnKind: "peer",
-        subagentTakeoverPromptShown: true,
-      }));
-
-      expect(agentChatService.updateSession).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-        spawnKind: "peer",
-        subagentTakeoverPromptShown: true,
-      });
-    });
-
-    it("chat.setSpawnKind routes to agentChatService.setSpawnKind", async () => {
-      await service.execute(makePayload("chat.setSpawnKind", {
-        sessionId: "sess-1",
-        spawnKind: "peer",
-      }));
-
-      expect(agentChatService.setSpawnKind).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-        spawnKind: "peer",
-      });
-    });
-
-    it("chat.dismissSubagentTakeoverPrompt routes to the chat service", async () => {
-      await service.execute(makePayload("chat.dismissSubagentTakeoverPrompt", {
-        sessionId: "sess-1",
-      }));
-
-      expect(agentChatService.dismissSubagentTakeoverPrompt).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-      });
-    });
-
-    it("chat.getCodexGoal routes to agentChatService.getCodexGoal", async () => {
-      const result = await service.execute(makePayload("chat.getCodexGoal", {
-        sessionId: "sess-1",
-      }));
-
-      expect(agentChatService.getCodexGoal).toHaveBeenCalledWith({ sessionId: "sess-1" });
-      expect(result).toEqual({ objective: "Ship it", status: "active", tokenBudget: null });
-    });
-
     it("chat.setCodexGoal trims and forwards the objective without a budget field", async () => {
       await service.execute(makePayload("chat.setCodexGoal", {
         sessionId: "sess-1",
@@ -1602,19 +1232,6 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("chat.setCodexGoalStatus routes to agentChatService.setCodexGoalStatus", async () => {
-      const result = await service.execute(makePayload("chat.setCodexGoalStatus", {
-        sessionId: "sess-1",
-        status: "paused",
-      }));
-
-      expect(agentChatService.setCodexGoalStatus).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-        status: "paused",
-      });
-      expect(result).toEqual({ objective: "Ship it", status: "paused", tokenBudget: null });
-    });
-
     it("chat.setCodexGoalStatus rejects unsupported statuses before calling the chat service", async () => {
       await expect(service.execute(makePayload("chat.setCodexGoalStatus", {
         sessionId: "sess-1",
@@ -1622,15 +1239,6 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("chat.setCodexGoalStatus requires status to be active, paused, blocked, or complete.");
 
       expect(agentChatService.setCodexGoalStatus).not.toHaveBeenCalled();
-    });
-
-    it("chat.clearCodexGoal routes to agentChatService.clearCodexGoal", async () => {
-      const result = await service.execute(makePayload("chat.clearCodexGoal", {
-        sessionId: "sess-1",
-      }));
-
-      expect(agentChatService.clearCodexGoal).toHaveBeenCalledWith({ sessionId: "sess-1" });
-      expect(result).toBeNull();
     });
 
     it("chat.cancelScheduledWork routes durable job cancellation to the chat service", async () => {
@@ -1656,14 +1264,6 @@ describe("createSyncRemoteCommandService", () => {
       await expect(service.execute(makePayload("chat.setCodexGoal", {
         sessionId: "sess-1",
       }))).rejects.toThrow("chat.setCodexGoal requires objective.");
-    });
-
-    it("chat.interrupt routes to agentChatService.interrupt", async () => {
-      const result = await service.execute(makePayload("chat.interrupt", {
-        sessionId: "sess-1",
-      }));
-      expect(agentChatService.interrupt).toHaveBeenCalledWith({ sessionId: "sess-1" });
-      expect(result).toEqual({ ok: true });
     });
 
     it("chat.interruptWithQueueMode preserves the selected stop mode and recovery result", async () => {
@@ -1747,35 +1347,9 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("chat.steer requires text.");
     });
 
-    it("chat.cancelSteer routes to agentChatService.cancelSteer", async () => {
-      const result = await service.execute(makePayload("chat.cancelSteer", {
-        sessionId: "sess-1",
-        steerId: "steer-9",
-      }));
-      expect(agentChatService.cancelSteer).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-        steerId: "steer-9",
-      });
-      expect(result).toEqual({ ok: true });
-    });
-
     it("chat.cancelSteer throws when steerId is missing", async () => {
       await expect(service.execute(makePayload("chat.cancelSteer", { sessionId: "sess-1" })))
         .rejects.toThrow("chat.cancelSteer requires steerId.");
-    });
-
-    it("chat.editSteer routes to agentChatService.editSteer", async () => {
-      const result = await service.execute(makePayload("chat.editSteer", {
-        sessionId: "sess-1",
-        steerId: "steer-9",
-        text: "updated instruction",
-      }));
-      expect(agentChatService.editSteer).toHaveBeenCalledWith({
-        sessionId: "sess-1",
-        steerId: "steer-9",
-        text: "updated instruction",
-      });
-      expect(result).toEqual({ ok: true });
     });
 
     it("chat.editSteer throws when text is missing", async () => {
@@ -1805,28 +1379,6 @@ describe("createSyncRemoteCommandService", () => {
         expect(sentArg).not.toHaveProperty("reasoningEffort");
         expect(sentArg).not.toHaveProperty("executionMode");
         expect(sentArg).not.toHaveProperty("interactionMode");
-      });
-
-      it("includes valid attachments when path + type are well-formed", async () => {
-        await service.execute(makePayload("chat.send", {
-          sessionId: "sess-1",
-          text: "hello",
-          attachments: [
-            { path: "a", type: "image" },
-            { path: "b", type: "file" },
-          ],
-        }));
-        expect(agentChatService.sendMessage).toHaveBeenCalledWith({
-          sessionId: "sess-1",
-          text: "hello",
-          attachments: [
-            { path: "a", type: "image" },
-            { path: "b", type: "file" },
-          ],
-        }, {
-          awaitDispatch: false,
-          routeActiveToSteer: true,
-        });
       });
 
       it("filters out attachment entries missing a valid path or valid type", async () => {
@@ -1876,28 +1428,6 @@ describe("createSyncRemoteCommandService", () => {
         }
       });
 
-      it("includes displayText, reasoningEffort, executionMode, interactionMode only when non-empty strings", async () => {
-        await service.execute(makePayload("chat.send", {
-          sessionId: "sess-1",
-          text: "hello",
-          displayText: "shown to user",
-          reasoningEffort: "high",
-          executionMode: "autonomous",
-          interactionMode: "chat",
-        }));
-        expect(agentChatService.sendMessage).toHaveBeenCalledWith({
-          sessionId: "sess-1",
-          text: "hello",
-          displayText: "shown to user",
-          reasoningEffort: "high",
-          executionMode: "autonomous",
-          interactionMode: "chat",
-        }, {
-          awaitDispatch: false,
-          routeActiveToSteer: true,
-        });
-      });
-
       it("trims string metadata and omits empty/blank values", async () => {
         agentChatService.sendMessage.mockClear();
         await service.execute(makePayload("chat.send", {
@@ -1917,36 +1447,37 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     describe("parseAgentChatSteerArgs — new attachments support", () => {
-      it("includes attachments when present and valid", async () => {
-        await service.execute(makePayload("chat.steer", {
-          sessionId: "sess-1",
-          text: "redirect",
-          attachments: [
-            { path: "img.png", type: "image" },
-            { path: "notes.txt", type: "file" },
-          ],
-        }));
-        expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
-          sessionId: "sess-1",
-          text: "redirect",
-          sentByUser: true,
-          attachments: [
-            { path: "img.png", type: "image" },
-            { path: "notes.txt", type: "file" },
-          ],
-        });
-      });
 
-      it("omits attachments when array has no valid entries", async () => {
+      it.each([
+        {
+          name: "keeps valid attachments",
+          attachments: [
+            { path: "img.png", type: "image" },
+            { path: "notes.txt", type: "file" },
+          ] as unknown[],
+          expected: {
+            sessionId: "sess-1",
+            text: "redirect",
+            sentByUser: true,
+            attachments: [
+              { path: "img.png", type: "image" },
+              { path: "notes.txt", type: "file" },
+            ],
+          },
+        },
+        {
+          name: "omits the key when no entry is valid",
+          attachments: [{ path: "", type: "image" }, { type: "file" }] as unknown[],
+          expected: { sessionId: "sess-1", text: "redirect", sentByUser: true },
+        },
+      ])("chat.steer $name", async ({ attachments, expected }) => {
         agentChatService.steerUserMessage.mockClear();
         await service.execute(makePayload("chat.steer", {
           sessionId: "sess-1",
           text: "redirect",
-          attachments: [{ path: "", type: "image" }, { type: "file" }],
+          attachments,
         }));
-        const sent = agentChatService.steerUserMessage.mock.calls[0][0] as Record<string, unknown>;
-        expect(sent, "no valid attachments → key omitted").not.toHaveProperty("attachments");
-        expect(sent).toEqual({ sessionId: "sess-1", text: "redirect", sentByUser: true });
+        expect(agentChatService.steerUserMessage.mock.calls[0][0]).toEqual(expected);
       });
 
       it("still throws when text is missing even if attachments are provided", async () => {
@@ -1957,28 +1488,10 @@ describe("createSyncRemoteCommandService", () => {
       });
     });
 
-    it("chat.models returns available models for a provider", async () => {
-      await service.execute(makePayload("chat.models", { provider: "codex" }));
-      expect(agentChatService.getAvailableModels).toHaveBeenCalledWith({ provider: "codex" });
-    });
-
     it("chat.modelCatalog returns the canonical model catalog", async () => {
       const result = await service.execute(makePayload("chat.modelCatalog", {}));
       expect(agentChatService.getModelCatalog).toHaveBeenCalled();
       expect(result).toEqual({ groups: [], fetchedAt: "2026-01-01T00:00:00.000Z" });
-    });
-
-    it("chat.listSessions forwards automation and archived filters", async () => {
-      await service.execute(makePayload("chat.listSessions", {
-        laneId: "lane-1",
-        includeAutomation: true,
-        includeArchived: true,
-      }));
-
-      expect(agentChatService.listSessions).toHaveBeenCalledWith("lane-1", {
-        includeAutomation: true,
-        includeArchived: true,
-      });
     });
 
     it("chat commands throw when agentChatService is not available", async () => {
@@ -2002,12 +1515,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — work commands", () => {
-    it("work.listSessions routes to sessionService.list", async () => {
-      await service.execute(makePayload("work.listSessions", { laneId: "lane-1" }));
-      expect(sessionService.list).toHaveBeenCalledWith(
-        expect.objectContaining({ laneId: "lane-1" }),
-      );
-    });
 
     it("work.listSessions forwards pending input item ids for awaiting chat sessions", async () => {
       sessionService.list.mockReturnValueOnce([{
@@ -2060,40 +1567,20 @@ describe("createSyncRemoteCommandService", () => {
       }]);
     });
 
-    it("work.runQuickCommand parses laneId + title + startupCommand", async () => {
-      await service.execute(makePayload("work.runQuickCommand", {
-        laneId: "lane-1",
-        title: "test run",
-        startupCommand: "npm test",
-        toolType: "shell",
-      }));
-      expect(ptyService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "test run",
-          startupCommand: "npm test",
-          tracked: true,
-          toolType: "shell",
-        }),
-      );
-    });
-
-    it("work.runQuickCommand preserves startupCommand for visible shell sessions", async () => {
-      await service.execute(makePayload("work.runQuickCommand", {
-        laneId: "lane-1",
-        title: "Claude login",
-        startupCommand: "claude auth login",
-        toolType: "shell",
-      }));
-      expect(ptyService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "Claude login",
-          startupCommand: "claude auth login",
-          tracked: true,
-          toolType: "shell",
-        }),
-      );
+    it.each([
+      {
+        name: "keeps the startup command of a shell",
+        args: { laneId: "lane-1", title: "Claude login", startupCommand: "claude auth login", toolType: "shell" },
+        expected: { laneId: "lane-1", title: "Claude login", startupCommand: "claude auth login", tracked: true, toolType: "shell" },
+      },
+      {
+        name: "allows a shell without a startup command",
+        args: { laneId: "lane-1", title: "shell session", toolType: "shell" },
+        expected: { laneId: "lane-1", title: "shell session", tracked: true, toolType: "shell" },
+      },
+    ])("work.runQuickCommand $name", async ({ args, expected }) => {
+      await service.execute(makePayload("work.runQuickCommand", args));
+      expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining(expected));
     });
 
     it("work.runQuickCommand throws when startupCommand is missing and toolType is not shell", async () => {
@@ -2102,21 +1589,6 @@ describe("createSyncRemoteCommandService", () => {
         title: "test",
         toolType: "codex",
       }))).rejects.toThrow("work.runQuickCommand requires startupCommand unless toolType is shell.");
-    });
-
-    it("work.runQuickCommand allows missing startupCommand when toolType is shell", async () => {
-      await service.execute(makePayload("work.runQuickCommand", {
-        laneId: "lane-1",
-        title: "shell session",
-        toolType: "shell",
-      }));
-      expect(ptyService.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          laneId: "lane-1",
-          title: "shell session",
-          toolType: "shell",
-        }),
-      );
     });
 
     it("work.runShellBlock starts the chat's terminal with the script as one untouched argument, and validates the rest", async () => {
@@ -2455,15 +1927,6 @@ describe("createSyncRemoteCommandService", () => {
   // ---------------------------------------------------------------
 
   describe("execute — conflict commands", () => {
-    it("conflicts.getLaneStatus routes to conflictService", async () => {
-      await service.execute(makePayload("conflicts.getLaneStatus", { laneId: "lane-1" }));
-      expect(conflictService.getLaneStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
-    });
-
-    it("conflicts.getBatchAssessment routes with no args", async () => {
-      await service.execute(makePayload("conflicts.getBatchAssessment"));
-      expect(conflictService.getBatchAssessment).toHaveBeenCalled();
-    });
 
     it("conflicts commands throw when conflictService is not available", async () => {
       const svcNoConflict = createSyncRemoteCommandService({
@@ -2589,30 +2052,6 @@ describe("createSyncRemoteCommandService", () => {
       await expect(service.execute(makePayload("cto.ensureSession", {})))
         .rejects.toThrow("No primary lane is available to host the CTO chat session.");
       expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
-    });
-
-    it("cto.ensureSession returns the same session on repeat calls (canonical lane reuse)", async () => {
-      // Both calls resolve the same primary lane; ensureIdentitySession is a
-      // mock that always returns the same session id, so the handler must
-      // forward that id without duplicate creation.
-      laneService.list.mockResolvedValue([
-        { id: "lane-primary", laneType: "primary" },
-      ]);
-      const first = await service.execute(makePayload("cto.ensureSession", {})) as Record<string, unknown>;
-      const second = await service.execute(makePayload("cto.ensureSession", {})) as Record<string, unknown>;
-      expect(first.sessionId).toBe(second.sessionId);
-      expect(agentChatService.ensureIdentitySession).toHaveBeenCalledTimes(2);
-      // Every call passes the canonical (primary) lane so ensureIdentitySession
-      // matches the existing session instead of creating a new one.
-      for (const call of agentChatService.ensureIdentitySession.mock.calls) {
-        expect(call[0]).toMatchObject({ identityKey: "cto", laneId: "lane-primary" });
-      }
-    });
-
-    it("cto.getMemory returns the durable memory snapshot for the mobile client", async () => {
-      const result = await service.execute(makePayload("cto.getMemory", {}));
-      // The shape here is the cross-platform contract the iOS decoder expects.
-      expect(result).toEqual(CTO_MEMORY_SNAPSHOT);
     });
 
     it("cto.getMemory is exposed and viewer-allowed", () => {

@@ -1446,7 +1446,7 @@ export function RemoteTargetList({
     && !addMode;
 
   return (
-    <div style={panelStyle}>
+    <div className="ade-cx-rows" style={panelStyle}>
       <div style={{ display: "grid", gap: 12 }}>
         <div className="ade-cx-list-head">
           <span className="ade-cx-list-title">Your computers</span>

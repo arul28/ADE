@@ -74,20 +74,20 @@ describe("parseWorkflowFile", () => {
 
     expect(parsed.degraded).toBeNull();
     expect(parsed.name).toBe("CI");
-    // ~21 jobs: install, secret-scan, ~18 parallel, ci-pass.
-    expect(parsed.jobs.length).toBeGreaterThanOrEqual(20);
+    // ~17 jobs: install, secret-scan, the parallel checks and gates, ci-pass.
+    expect(parsed.jobs.length).toBeGreaterThanOrEqual(15);
 
     const install = parsed.jobs.find((entry) => entry.id === "install");
     expect(install?.needs).toEqual([]);
 
     // `needs: install` given as a bare string, not a list.
-    const typecheckDesktop = parsed.jobs.find((entry) => entry.id === "typecheck-desktop");
-    expect(typecheckDesktop?.needs).toEqual(["install"]);
+    const typecheck = parsed.jobs.find((entry) => entry.id === "typecheck");
+    expect(typecheck?.needs).toEqual(["install"]);
 
     // The gate depends on everything upstream.
     const gate = parsed.jobs.find((entry) => entry.id === "ci-pass");
     expect(gate?.needs.length).toBeGreaterThan(10);
-    expect(gate?.needs).toContain("typecheck-desktop");
+    expect(gate?.needs).toContain("typecheck");
     expect(gate?.needs).toContain("test-desktop");
 
     // Two matrix jobs.
@@ -267,7 +267,7 @@ describe("createWorkflowGraph.build", () => {
           runAttempt: 2,
           jobs: [
             job({ id: 10, name: "install" }),
-            job({ id: 11, name: "typecheck-desktop" }),
+            job({ id: 11, name: "typecheck" }),
             job({ id: 12, name: "lint-desktop" }),
             job({ id: 13, name: "ci-pass" }),
           ],
@@ -281,13 +281,13 @@ describe("createWorkflowGraph.build", () => {
 
     const byId = new Map(graph.nodes.map((node) => [node.jobId, node]));
     expect(byId.get("install")?.tier).toBe(0);
-    expect(byId.get("typecheck-desktop")?.tier).toBe(1);
+    expect(byId.get("typecheck")?.tier).toBe(1);
     expect(byId.get("lint-desktop")?.tier).toBe(1);
     // The gate sits one tier past its deepest dependency.
     expect(byId.get("ci-pass")!.tier).toBeGreaterThan(1);
 
-    expect(graph.edges).toContainEqual({ from: "install", to: "typecheck-desktop" });
-    expect(graph.edges).toContainEqual({ from: "typecheck-desktop", to: "ci-pass" });
+    expect(graph.edges).toContainEqual({ from: "install", to: "typecheck" });
+    expect(graph.edges).toContainEqual({ from: "typecheck", to: "ci-pass" });
     // `secret-scan` has no needs, so it must have no inbound edge.
     expect(graph.edges.filter((edge) => edge.to === "secret-scan")).toEqual([]);
   });

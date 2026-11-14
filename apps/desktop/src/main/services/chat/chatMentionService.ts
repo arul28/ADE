@@ -769,9 +769,9 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         + `Read its status, projects, lanes and recent chats with \`ade machines show ${snapshot.machineKey} --text\`. `
         + "Change nothing there unless the user asks. When the user asks for work there: "
         + `to run a command (tests, a build, a CLI signed in there), run \`ade shell start --machine ${snapshot.machineKey} --wait -- <command>\` from this chat; `
-        + "it runs in this chat's work copy there, so push your commit first (uncommitted changes go along). "
+        + "it runs in your code there, so push your commit first (uncommitted changes go along). "
         + `For a whole task, start a chat there (\`ade chat create --machine ${snapshot.machineKey}\`); `
-        + `to move this chat, \`ade chat handoff <this chat> --machine ${snapshot.machineKey}\`. `
+        + `to move this chat, \`ade chat handoff <this chat> --to ${snapshot.machineKey}\`. `
         + "Projects, lanes and chats below come from ADE Activity (recent work only, not a full listing).",
       previewLabel: "Snapshot at send time:",
       preview: formatAccountMachineSnapshotText(snapshot, Date.now(), { compact: true }),

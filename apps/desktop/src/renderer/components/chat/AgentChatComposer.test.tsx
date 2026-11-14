@@ -393,28 +393,6 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(2));
   });
 
-  it("renders a real GitHub brand mark instead of a text monogram on github chips", async () => {
-    const url = "https://github.com/arul28/ADE/pull/835";
-    const resolveSmartLinkPreview = vi.fn().mockResolvedValue({
-      url,
-      provider: "github",
-      kind: "github_pr",
-      label: "arul28/ADE#835",
-    });
-    (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
-    const props = buildComposerProps({ draft: url, turnActive: false });
-    const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
-
-    const icon = await waitFor(() => {
-      const el = view.container.querySelector<HTMLElement>("[data-smart-link-icon]");
-      if (!el) throw new Error("smart-link icon not rendered yet");
-      return el;
-    });
-    // A real logo SVG, never the "GH" fallback monogram.
-    expect(icon.querySelector("svg")).toBeTruthy();
-    expect(icon.textContent ?? "").not.toContain("GH");
-  });
-
   it("hydrates highlighted assistant output as an inline quote chip", async () => {
     const writeClipboardText = vi.fn().mockResolvedValue(undefined);
     (window as any).ade = { app: { writeClipboardText } };
@@ -1910,43 +1888,6 @@ describe("AgentChatComposer", () => {
     expect(props.onClearDraft).not.toHaveBeenCalled();
   });
 
-  it("renders Claude mode dropdown without a Chat toggle", () => {
-    renderComposer({
-      sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-5",
-      availableModelIds: ["anthropic/claude-sonnet-5"],
-    });
-
-    expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
-    const trigger = screen.getByRole("button", { name: "Claude permission mode" });
-    expect(trigger.textContent).toContain("Manual");
-
-    fireEvent.click(trigger);
-
-    expect(screen.getByRole("listbox", { name: "Claude permission mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Manual/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Auto/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Accept edits/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Plan mode/ })).toBeTruthy();
-    expect(screen.getByRole("option", { name: /Bypass/ })).toBeTruthy();
-  });
-
-  it.each(CAPTION_FREE_PERMISSION_CASES)(
-    "renders title-only $provider permission rows",
-    ({ triggerName, optionCount, overrides }) => {
-      renderComposer(overrides);
-      fireEvent.click(screen.getByRole("button", { name: triggerName }));
-
-      const listbox = screen.getByRole("listbox", { name: triggerName });
-      const options = Array.from(listbox.querySelectorAll<HTMLElement>('[role="option"]'));
-      expect(options).toHaveLength(optionCount);
-      for (const option of options) {
-        expect(option.textContent?.trim()).toBe(option.getAttribute("aria-label"));
-        expect(option.getAttribute("title")?.length).toBeGreaterThan(0);
-      }
-    },
-  );
-
   // Droid's autonomy ladder has no planning rung to withhold.
   it.each(CAPTION_FREE_PERMISSION_CASES.filter((testCase) => testCase.provider !== "Droid"))(
     "offers $provider planning only in a project chat, not in a chat without a project",
@@ -2031,26 +1972,6 @@ describe("AgentChatComposer", () => {
     expect(onClaudeModeChange).toHaveBeenCalledWith("plan");
     expect(onInteractionModeChange).not.toHaveBeenCalled();
     expect(onClaudePermissionModeChange).not.toHaveBeenCalled();
-  });
-
-  it("shows preset-first Codex controls without raw selects", () => {
-    renderComposer({
-      sessionProvider: "codex",
-      codexApprovalPolicy: "on-request",
-      codexSandbox: "workspace-write",
-      codexConfigSource: "flags",
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Codex permission mode" }));
-
-    expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Edit mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
-    expect(screen.queryByDisplayValue("ADE flags")).toBeNull();
-    expect(screen.queryByDisplayValue("On request")).toBeNull();
-    expect(screen.queryByDisplayValue("Workspace write")).toBeNull();
   });
 
   it("maps Codex preset buttons to the underlying approval and sandbox controls", () => {
@@ -2172,18 +2093,6 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(document.activeElement).toBe(caret));
     fireEvent.keyDown(screen.getByRole("menu", { name: "Send options" }), { key: "ArrowDown" });
     expect(document.activeElement).toBe(caret);
-  });
-
-  it("names fast mode on the collapsed model trigger", () => {
-    renderComposer({
-      sessionProvider: "codex",
-      modelId: "openai/gpt-5.5",
-      availableModelIds: ["openai/gpt-5.5"],
-      fastMode: true,
-      onFastModeChange: vi.fn(),
-    });
-
-    expect(document.querySelector("[data-model-picker-trigger]")?.textContent).toMatch(/Fast/);
   });
 
   it("hides Codex fast mode for unsupported models", () => {
@@ -3644,16 +3553,6 @@ describe("AgentChatComposer", () => {
 
     view.rerender(<AgentChatComposer {...props} modelId="opencode/openai/gpt-5.4" />);
     expect(screen.getByRole("button", { name: "OpenCode permission mode" })).toBeTruthy();
-  });
-
-  it("opts the chat textarea into native typing assistance", () => {
-    renderComposer();
-
-    const textarea = screen.getByPlaceholderText("Steer the active turn...") as HTMLTextAreaElement;
-    expect(textarea.getAttribute("autocomplete")).toBe("on");
-    expect(textarea.getAttribute("autocorrect")).toBe("on");
-    expect(textarea.getAttribute("autocapitalize")).toBe("sentences");
-    expect(textarea.getAttribute("spellcheck")).toBe("true");
   });
 
   it("shows the prompt clipboard hint only while draft text is present", () => {

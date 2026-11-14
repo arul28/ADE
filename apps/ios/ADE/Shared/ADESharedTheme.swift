@@ -5,10 +5,10 @@ import SwiftUI
 /// provider brand map is duplicated here and must be kept in sync with
 /// `ADEDesignSystem.swift:brandClaude..brandGroq` and `providerBrand(for:)`.
 ///
-/// The hexes come from ONE source of truth for the whole product:
-/// `apps/desktop/src/shared/providerColors.ts`, mirrored into this Swift table
-/// for the widget extension. Desktop consumers read the same TypeScript table
-/// directly, so a brand change has one canonical edit site.
+/// This table is the iOS copy of the provider brand colors. The desktop keeps
+/// its own table in `apps/desktop/src/shared/providerColors.ts`; nothing checks
+/// the two against each other, so a brand change edits both. The CTO color
+/// exists only here.
 public enum ADESharedTheme {
     // MARK: - Brand colors (mirror of ADEDesignSystem)
     public static let brandClaude   = Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0) // #D97757

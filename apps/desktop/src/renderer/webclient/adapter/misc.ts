@@ -1467,7 +1467,7 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
  * way they read the desktop's — `supported: false` is the flag they check, not
  * a licence to omit the rest of the record.
  */
-export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
+function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
   supported: false;
   available: false;
   state: "unsupported";

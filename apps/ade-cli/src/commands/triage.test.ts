@@ -86,9 +86,9 @@ function reportResult(overrides: Partial<ReportIssueResult> = {}): ReportIssueRe
   const adeDir = tempDir("ade-triage-home-");
   return {
     report: "# ADE diagnostic report\n\nEverything nominal.\n",
-    issueUrl: "https://github.com/arul28/ADE/issues/new",
     installId: "install-1",
     appVersion: "1.2.68",
+    releaseChannel: "stable",
     secretsDir: path.join(adeDir, "secrets"),
     reportsDir: path.join(adeDir, "diagnostic-reports"),
     redaction: { homeDir: "/Users/ada", username: "ada", hostname: "ada-mbp", projectRoots: [] },

@@ -1,3 +1,4 @@
+import { markExpected } from "../../../shared/expectedError";
 import type { IosSimulatorDevice } from "../../../shared/types/iosSimulator";
 
 /**
@@ -68,6 +69,23 @@ const ALREADY_BOOTED = /Unable to boot device in current state|current state: Bo
  */
 const ALREADY_OFF = /current state: Shutdown|Unable to shutdown device in current state|not booted|Invalid device state|Invalid device: [0-9A-F-]{36}/i;
 
+/**
+ * CoreSimulator accepting the command and then failing the boot on an I/O
+ * error of its own: "An error was encountered processing the command
+ * (domain=NSPOSIXErrorDomain, code=5): … failed to create an audio route
+ * descriptor". The Mac's simulator service is at fault and ADE has nothing to
+ * change. Every other refusal (a deleted device, a missing runtime) can be
+ * ADE's doing and stays reported.
+ */
+const CORE_SIMULATOR_REFUSED = /An error was encountered processing the command \(domain=NSPOSIXErrorDomain, code=5\)/;
+
+/** The lines CoreSimulator printed after its "An error was encountered" header. */
+function coreSimulatorReason(message: string): string {
+  const lines = message.split("\n").map((line) => line.trim()).filter(Boolean);
+  const header = lines.findIndex((line) => CORE_SIMULATOR_REFUSED.test(line));
+  return lines.slice(header + 1).join(" ").slice(0, 300);
+}
+
 export function createSimulatorPower(deps: SimulatorPowerDeps): SimulatorPower {
   const bootDevice = async (device: Pick<IosSimulatorDevice, "udid" | "name" | "state">): Promise<boolean> => {
     let booted = false;
@@ -77,7 +95,17 @@ export function createSimulatorPower(deps: SimulatorPowerDeps): SimulatorPower {
         booted = true;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        if (!ALREADY_BOOTED.test(message)) throw error;
+        if (ALREADY_BOOTED.test(message)) {
+          // Another caller booted it first; wait on it like any booted device.
+        } else if (CORE_SIMULATOR_REFUSED.test(message)) {
+          const reason = coreSimulatorReason(message);
+          throw markExpected(new Error(
+            `The Simulator could not start ${device.name}${reason ? `: ${reason}` : ""}. Quit Simulator, then try again. If it fails again, restart the Mac.`,
+            { cause: error },
+          ), "environment");
+        } else {
+          throw error;
+        }
       }
     }
     await deps.waitForBootStatus(device);

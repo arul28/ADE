@@ -55,6 +55,8 @@ export type SyncRuntimeRpcHandler = JsonRpcHandler & {
 export type SyncRuntimeRpcHandlerContext = {
   /** The device id of the paired record this peer authenticated with. */
   peerDeviceId: string | null;
+  /** The device name the host stored in that paired record (`peerName`). */
+  peerDeviceName?: string | null;
 };
 
 export type SyncRuntimeRpcHandlerFactory = (
@@ -761,9 +763,9 @@ export function createSyncPairedChannelService<TPeer extends object>(
       // must opt in explicitly.
       authorizedForRuntimeHost = false,
       // What the host authenticated about this peer: the paired record's
-      // device id. Runtime handlers use it to attribute calls from another
-      // machine's brain.
-      peerIdentity: { peerDeviceId?: string | null } = {},
+      // device id and stored name. Runtime handlers use them to attribute
+      // calls from another machine.
+      peerIdentity: { peerDeviceId?: string | null; peerDeviceName?: string | null } = {},
     ): Promise<boolean> {
       const value = payload && typeof payload === "object" && !Array.isArray(payload)
         ? payload as Record<string, unknown>
@@ -790,7 +792,10 @@ export function createSyncPairedChannelService<TPeer extends object>(
 
       switch (type) {
         case "rpc_open":
-          openRpc(peer, { channelId: id }, { peerDeviceId: peerIdentity.peerDeviceId?.trim() || null });
+          openRpc(peer, { channelId: id }, {
+            peerDeviceId: peerIdentity.peerDeviceId?.trim() || null,
+            peerDeviceName: peerIdentity.peerDeviceName?.trim() || null,
+          });
           break;
         case "rpc_data": {
           const bytes = decodeStrictBase64(value.data);

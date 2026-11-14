@@ -58,7 +58,7 @@ export async function deleteCloudLane(instanceId: string, options: { skipCheck: 
 
 /**
  * Pushes the lane's work, removes its computer and keeps the lane: the next
- * message makes a fresh computer. A chat on it then reads "ADE Cloud · lane"
+ * message makes a fresh computer. A chat on it then reads "Cloud · lane"
  * with no computer, not the old computer's name.
  */
 export async function freeCloudLane(instanceId: string): Promise<CloudLaneFreeResult> {

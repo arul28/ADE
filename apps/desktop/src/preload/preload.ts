@@ -6,6 +6,7 @@ import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
@@ -113,6 +114,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import { isMachineScopePin, THIS_MACHINE_SCOPE_KEY } from "../shared/machineScope";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -206,11 +208,11 @@ import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
 import type {
@@ -1497,23 +1499,38 @@ const projectConfigSnapshotCache = createShortIpcCache<ProjectConfigSnapshot>(
   1_000,
 );
 
+/**
+ * `ai.getStatus`, one read per 10 s per slot: the bound copy (no pin, or a
+ * pin that names it) and This computer's machine route, which Settings ›
+ * Providers reads for This computer instead of the bound copy. Every clear
+ * empties both: a write through either changes what both show.
+ */
 const aiStatusCache = (() => {
-  let value: AiSettingsStatus | undefined;
-  let promise: Promise<AiSettingsStatus> | null = null;
-  let expiresAt = 0;
-  let includesOpenCodeInventory = false;
-  let promiseIncludesOpenCodeInventory = false;
+  type Slot = {
+    value: AiSettingsStatus | undefined;
+    promise: Promise<AiSettingsStatus> | null;
+    expiresAt: number;
+    includesOpenCodeInventory: boolean;
+    promiseIncludesOpenCodeInventory: boolean;
+  };
+  const slots = new Map<string, Slot>();
 
   const clear = () => {
-    value = undefined;
-    promise = null;
-    expiresAt = 0;
-    includesOpenCodeInventory = false;
-    promiseIncludesOpenCodeInventory = false;
+    slots.clear();
   };
 
-  /** `pin`: set only for a pin that names the bound copy, which shares this cache. */
+  /**
+   * `pin`: set only for a pin that names the bound copy, which shares the
+   * bound slot, or for This computer's machine pin, which has its own.
+   */
   const get = async (key: string, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
+    const slotKey = pin?.key === THIS_MACHINE_SCOPE_KEY ? THIS_MACHINE_SCOPE_KEY : "bound";
+    let slot = slots.get(slotKey);
+    if (!slot) {
+      slot = { value: undefined, promise: null, expiresAt: 0, includesOpenCodeInventory: false, promiseIncludesOpenCodeInventory: false };
+      slots.set(slotKey, slot);
+    }
+    const current = slot;
     const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(
       key,
       {},
@@ -1521,40 +1538,41 @@ const aiStatusCache = (() => {
     const wantsOpenCodeInventory = args.refreshOpenCodeInventory === true;
     const now = Date.now();
     if (
-      value !== undefined &&
-      expiresAt > now &&
-      (!wantsOpenCodeInventory || includesOpenCodeInventory)
+      current.value !== undefined &&
+      current.expiresAt > now &&
+      (!wantsOpenCodeInventory || current.includesOpenCodeInventory)
     ) {
-      return value;
+      return current.value;
     }
     if (
-      promise &&
-      (!wantsOpenCodeInventory || promiseIncludesOpenCodeInventory)
+      current.promise &&
+      (!wantsOpenCodeInventory || current.promiseIncludesOpenCodeInventory)
     ) {
-      return promise;
+      return current.promise;
     }
 
-    promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
+    current.promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
     const statusArgs = { refreshOpenCodeInventory: wantsOpenCodeInventory };
     const request = (pin
       ? callPinnedRuntimeAction<AiSettingsStatus>(pin, "ai", "getStatus", { args: statusArgs })
       : callProjectRuntimeActionOr<AiSettingsStatus>("ai", "getStatus", { args: statusArgs }, () =>
         ipcRenderer.invoke(IPC.aiGetStatus, statusArgs)))
       .then((status: AiSettingsStatus) => {
-        if (promise === request) {
-          value = status;
-          expiresAt = Date.now() + 10_000;
-          includesOpenCodeInventory = wantsOpenCodeInventory;
+        // A clear since the read started dropped this slot: keep the answer out of the new one.
+        if (current.promise === request && slots.get(slotKey) === current) {
+          current.value = status;
+          current.expiresAt = Date.now() + 10_000;
+          current.includesOpenCodeInventory = wantsOpenCodeInventory;
         }
         return status;
       })
       .finally(() => {
-        if (promise === request) {
-          promise = null;
-          promiseIncludesOpenCodeInventory = false;
+        if (current.promise === request) {
+          current.promise = null;
+          current.promiseIncludesOpenCodeInventory = false;
         }
       });
-    promise = request;
+    current.promise = request;
     return request;
   };
 
@@ -2628,6 +2646,9 @@ const PASSWORDS_THIS_COMPUTER_ACTIONS = new Set(["saveLogin", "saveSecret", "imp
 
 async function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   const local = (name: string, input: Record<string, unknown>) => ipcRenderer.invoke(IPC.passwordsCall, { action: name, args: { ...input } }) as Promise<T>;
+  // This computer's machine route (Settings from a window whose project has
+  // no copy here): its brain answers with no project, never the tab's machine.
+  if (pin?.kind === "local" && isMachineScopePin(pin)) return await local(action, args);
   if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
     return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
   }
@@ -5792,17 +5813,17 @@ const adeBridge = {
     },
   },
   diagnostics: {
-    openIssue: (
-      context: DiagnosticReportRequestPayload,
-    ): Promise<DiagnosticReportPayload> =>
-      ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
     autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
-    sendManual: (
-      context?: DiagnosticReportRequestPayload,
+    prepareReport: (context?: DiagnosticReportRequestPayload): Promise<DiagnosticsPrepareResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsPrepareReport, context),
+    sendReport: (
+      id: string,
       options?: DiagnosticsManualSendOptions,
     ): Promise<DiagnosticsManualSendResult> =>
-      ipcRenderer.invoke(IPC.diagnosticsSendManual, context, options),
+      ipcRenderer.invoke(IPC.diagnosticsSendReport, id, options),
+    discardReport: (id: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsDiscardReport, id),
     /** Whether a note sent with a report reaches anyone: main's Sentry client is running. */
     userFeedbackAvailable: process.argv.includes(SENTRY_ENABLED_ARGV),
     getSharing: (): Promise<DiagnosticsSharingStatus> =>
@@ -6197,8 +6218,9 @@ const adeBridge = {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
-      // A pin that names the bound copy shares the bound cache (one read per 10 s).
-      if (pin && !isBoundCopyPin(pin)) {
+      // A pin that names the bound copy shares the bound cache (one read per
+      // 10 s); This computer's machine pin has a slot of its own.
+      if (pin && pin.key !== THIS_MACHINE_SCOPE_KEY && !isBoundCopyPin(pin)) {
         return callPinnedRuntimeAction<AiSettingsStatus>(
           pin,
           "ai",
@@ -8992,6 +9014,25 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "endSideChat", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatEndSideChat, args),
       ),
+    // The chat's device choice per kind (`ade devices use`), kept by the
+    // chat's own brain: every call takes that chat's pin. Runtime-only: a
+    // window with no runtime has no chat that keeps one.
+    getDeviceSources: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "getDeviceSources", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
+    setDeviceSource: async (
+      args: ChatSetDeviceSourceArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "setDeviceSource", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
     prepareCrossMachineHandoff: async (
       args: AgentChatPrepareCrossMachineHandoffArgs,
       pin?: OpenProjectBinding | null,
@@ -11832,8 +11873,11 @@ const adeBridge = {
   remoteWork: {
     list: async (pin?: OpenProjectBinding | null): Promise<RemoteWorkCopyListing[]> =>
       callPinnedOrBoundRuntimeActionOr<RemoteWorkCopyListing[]>(pin, "remote_work", "list", {}, async () => []),
-    delete: async (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
-      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
+    delete: async (
+      args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ deleted: boolean; keptReason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean; keptReason?: string }>(pin, "remote_work", "delete", { args }, async () => {
         throw new Error("This window has no runtime to delete the work copy on.");
       }),
   },

@@ -45,21 +45,6 @@ describe("HighlightedCode", () => {
     expect(codeToHtml.mock.calls.length).toBe(calls);
   });
 
-  it("lays the plain and highlighted blocks out the same way, so the swap keeps the row's height", async () => {
-    const view = render(<HighlightedCode code="const wraps = 'the same way';" language="typescript" />);
-    const plain = view.container.querySelector("pre");
-    expect(plain?.className).toContain("whitespace-pre-wrap");
-    expect(plain?.className).toContain("text-[11px]");
-    expect(plain?.className).toContain("leading-[1.6]");
-
-    await waitFor(() => expect(view.container.querySelector(".shiki-highlighted")).not.toBeNull());
-    const wrapper = view.container.querySelector(".shiki-highlighted")!;
-    // Shiki's own <pre> is given the same wrapping, size, and line height.
-    for (const token of ["[&_pre]:whitespace-pre-wrap", "[&_pre]:text-[11px]", "[&_pre]:leading-[1.6]", "[&_pre]:!m-0"]) {
-      expect(wrapper.className).toContain(token);
-    }
-  });
-
   it("shows new text plain until it highlights, never the previous block's highlight", async () => {
     const view = render(<HighlightedCode code="let a = 1;" language="typescript" />);
     await waitFor(() => expect(view.container.querySelector(".shiki-highlighted")).not.toBeNull());

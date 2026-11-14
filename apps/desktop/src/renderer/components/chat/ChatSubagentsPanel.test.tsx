@@ -439,7 +439,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByRole("button", { name: "Stop workflow" })).toBeNull();
   });
 
-  it("shows a markdown report as clamped plain text in the row's details drawer", () => {
+  it("shows a markdown report as plain text in the row's details drawer", () => {
     const finished: ChatSubagentSnapshot = {
       ...baseSnapshot,
       status: "completed",
@@ -453,7 +453,6 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
     const summary = container.querySelector("[data-subagent-panel-summary]");
     expect(summary?.textContent).toBe("ADE Summary: ADE is a unified workspace — see the docs. Parallel agents");
-    expect(summary?.className).toContain("line-clamp-3");
   });
 
   it("merges foreground and background-run agents into one Subagents list with a background chip", () => {

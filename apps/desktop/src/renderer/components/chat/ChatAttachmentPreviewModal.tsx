@@ -4,7 +4,7 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createMonacoModelRegistry } from "../files/monacoModelRegistry";
 import { resolveLanguageId } from "../files/filePresentation";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
-import { NO_CHAT_MACHINE_MESSAGE } from "./chatMachinePin";
+import { noChatMachineError } from "./chatMachinePin";
 import { editorTabId, type EditorTab } from "../files/v2/editorGroupsStore";
 import { resolveViewerKind } from "../files/v2/viewerRegistry";
 import { ViewerHost } from "../files/v2/ViewerHost";
@@ -79,7 +79,7 @@ export function ChatAttachmentPreviewModal({
     // read, instead of escaping the effect and taking the transcript down.
     Promise.resolve()
       .then(() => {
-        if (!files) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+        if (!files) throw noChatMachineError();
         return files.listWorkspaces({});
       })
       .then((workspaces) => {

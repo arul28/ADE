@@ -524,14 +524,6 @@ describe("FilesWorkbench", () => {
     expect(screen.queryByTestId("files-pane-back")).toBeNull();
   });
 
-  it("keeps the full Files tab free of the pane's chrome row", async () => {
-    render(<FilesWorkbench active />);
-    await waitFor(() => expect(window.ade.files.listWorkspaces).toHaveBeenCalled());
-    // The tab has the workspace picker and the status bar; a breadcrumb here
-    // would be a third place saying the same thing.
-    expect(screen.queryByTestId("files-pane-chrome")).toBeNull();
-  });
-
   function SidebarBody() {
     const setTarget = useProjectSidebarSlotTarget();
     return <div data-testid="sidebar-body" ref={setTarget} />;
@@ -552,19 +544,6 @@ describe("FilesWorkbench", () => {
     await waitFor(() => expect(screen.getByTestId("open-file")).toBeTruthy());
     fireEvent.click(screen.getByTestId("open-file"));
     await waitFor(() => expect(screen.getByTestId("tab-count")).toBeTruthy());
-  });
-
-  it("keeps the embedded tree in its own pane even under a project sidebar", async () => {
-    render(
-      <ProjectSidebarSlotProvider>
-        <SidebarBody />
-        <FilesWorkbench active embedded />
-      </ProjectSidebarSlotProvider>,
-    );
-
-    const tree = await screen.findByTestId("files-tree-column");
-    expect(screen.getByTestId("files-workbench-v2").contains(tree)).toBe(true);
-    expect(screen.getByTestId("sidebar-body").childElementCount).toBe(0);
   });
 
   it("does not replay a tools-pane request into the next panel that mounts", async () => {

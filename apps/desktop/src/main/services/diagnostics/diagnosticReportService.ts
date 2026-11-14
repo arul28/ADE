@@ -2,7 +2,6 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   diagnosticReportFilePath,
   hashAccountUserId,
@@ -28,7 +27,6 @@ import { readLastFailure } from "../runtime/lastFailureStore";
 import { resolvePathWithinRoot } from "../shared/utils";
 
 export {
-  buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   redactDiagnosticText,
   /** Writes the report next to the app's other user data. Best effort. */
@@ -118,7 +116,6 @@ export type DiagnosticReportDeps = {
 export type DiagnosticReportResult = {
   report: string;
   filePath: string;
-  issueUrl: string;
   installId: string;
   /** Sent beside the report as upload metadata, so the stored object names its machine. */
   machineId: string | null;
@@ -309,16 +306,5 @@ export async function collectDiagnosticReport(
   });
 
   const filePath = diagnosticReportFilePath(deps.reportsDir, request.surface, at);
-  const issueUrl = buildDiagnosticIssueUrl({
-    surface: request.surface,
-    headline: request.headline ?? null,
-    code: request.code ?? null,
-    appVersion: deps.appVersion,
-    platform: process.platform,
-    arch: process.arch,
-    installId,
-    redaction,
-  });
-
-  return { report, filePath, issueUrl, installId, machineId: deps.machineId ?? null };
+  return { report, filePath, installId, machineId: deps.machineId ?? null };
 }

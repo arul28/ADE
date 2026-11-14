@@ -200,7 +200,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getCrossMachineBatchMove",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
-      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail",
+      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail", "getDeviceSources",
     ],
     write: [
       "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
@@ -221,7 +221,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "acceptCrossMachineHandoff", "markCrossMachineHandoff", "startCrossMachineHandoff",
       "cancelCrossMachineHandoff", "retryCrossMachineHandoff",
       "resolveCrossMachineHandoffApproval", "acknowledgeCrossMachineHandoff", "respondToInput",
-      "clearAsk",
+      "clearAsk", "setDeviceSource",
       "startCrossMachineBatchMove", "retryCrossMachineBatchMove", "importCrossMachineHandoffLane",
       "resolveCrossMachineBatchMoveApproval",
       "dismissPendingInput", "reloadClaudePlugins", "rewindFiles", "saveTempAttachment",

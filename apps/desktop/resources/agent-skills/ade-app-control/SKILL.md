@@ -210,7 +210,7 @@ the lane is archived or deleted.
 
 ## Optional: keep the app off the user's screen
 
-App Control never needs the user's screen. On a Mac host you may still move the
+App Control never needs the user's screen. On a Mac you may still move the
 app's window onto the lane's private Mac Desktop:
 
 ```bash
@@ -267,6 +267,11 @@ Control terminal is active.
   put the placeholder in the command, and ADE substitutes it:
   `ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}" --text`.
   Read `ade app-control logs --text` to see what the app printed.
+- **A browser (Chrome, Edge) never opens the port.** It needs its own profile
+  folder, as an absolute path: `--user-data-dir=/tmp/ade-profile` (Windows:
+  `--user-data-dir="$env:TEMP\ade-profile"`). Chrome on Windows ignores a
+  relative one and exits silently. On a Linux machine with no display, the app
+  opens on the lane's own screen (`ade screen`), started for it.
 - **The port is taken.** Another app (or an old run) holds it. `stop` the old
   session, or pass `--cdp-port <free port>`.
 - **The app restarted and the session looks stale.** Dev servers that rebuild
@@ -289,6 +294,13 @@ Control, the dev launcher is isolated and safe:
 ```bash
 ade app-control launch --command "NO_DEVTOOLS=1 npm run dev" --text
 ade app-control launch --command "NO_DEVTOOLS=1 npm run dev:desktop -- --socket /tmp/ade-runtime-app.sock {ADE_APP_CONTROL_DEBUG_FLAGS}" --text
+```
+
+On Windows the command runs in PowerShell, which has no `NAME=value cmd`
+form, and the socket is a named pipe:
+
+```powershell
+ade app-control launch --command '$env:NO_DEVTOOLS="1"; npm run dev:desktop -- --socket //./pipe/ade-runtime-app {ADE_APP_CONTROL_DEBUG_FLAGS}' --text
 ```
 
 Put `NO_DEVTOOLS=1` in the launch command (`--command "NO_DEVTOOLS=1 npm run dev:desktop -- …"`):

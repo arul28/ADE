@@ -72,7 +72,7 @@ export function adeAppResourceListing() {
     uri: ADE_APP_RESOURCE_URI,
     name: "ade-app",
     title: "ADE",
-    description: "ADE's view for chats, questions and approvals, pull requests, lanes, diffs, usage and computers.",
+    description: "ADE's view for chats, questions and approvals, pull requests, lanes, diffs, usage and machines.",
     mimeType: MCP_APP_MIME_TYPE,
     _meta: { ui: RESOURCE_UI_META },
   };

@@ -8596,7 +8596,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
         isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
-        { peerDeviceId: isRecordBackedSyncAuthKind(peer.authKind) ? peer.pairedDeviceId : null },
+        isRecordBackedSyncAuthKind(peer.authKind)
+          ? { peerDeviceId: peer.pairedDeviceId, peerDeviceName: peer.pairingRecord?.peerName ?? null }
+          : { peerDeviceId: null },
       );
       return;
     }
@@ -9763,6 +9765,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const peer of peers) {
         if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
         send(peer.ws, "prs_updated", payload);
+      }
+    },
+
+    /**
+     * Tell the person's connected devices that the provider sign-ins changed
+     * (a pass or key saved, a sign-in applied here). Only a tiny signal: an
+     * open sign-ins card reads `providerLogins.status` once. Never to a lane
+     * share guest, whose sign-ins these are not. Sent as required: nothing
+     * re-derives it, so a backlogged peer is closed instead and reads again
+     * when it reconnects.
+     */
+    broadcastProviderLoginsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "provider_logins_changed", payload, null, { action: "provider_logins_changed" });
       }
     },
 

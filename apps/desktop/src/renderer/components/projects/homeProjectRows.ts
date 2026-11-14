@@ -295,7 +295,9 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
     for (const origin of originsOf(project)) if (!projectByOrigin.has(origin)) projectByOrigin.set(origin, project);
   }
   // This computer's folders that the account lists as its copies, by path: a
-  // folder whose origin is not known yet still joins its project's row.
+  // folder whose origin is not known yet still joins its project's row. A
+  // folder with a known origin joins by origin only: it can hold another
+  // repository now than the one the account lists at its path.
   const thisMachineKey = input.sources.thisMachine?.machineKey ?? null;
   const projectByThisPath = new Map<string, AccountProjectView>();
   if (thisMachineKey) {
@@ -312,7 +314,7 @@ export function buildHomeProjectList(input: HomeProjectListInput): HomeProjectLi
     const project = recent.worktreeOf
       ? undefined
       : (origin ? projectByOrigin.get(origin) : undefined)
-        ?? (recent.kind !== "remote" ? projectByThisPath.get(recent.rootPath) : undefined);
+        ?? (!origin && recent.kind !== "remote" ? projectByThisPath.get(recent.rootPath) : undefined);
     if (!project) {
       // On the web only a connected computer's folders show.
       if (webMode) {

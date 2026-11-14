@@ -212,21 +212,21 @@ export function createRemoteMcpService(args: {
   /** This computer's account vault sync, which the account secret and every connection ride on. */
   const vaultHealth = (): RemoteMcpVaultHealth => {
     if (!signedIn()) {
-      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "Sign in to ADE on this computer: the account vault belongs to your ADE account." };
+      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "Sign in to ADE on this machine: the account vault belongs to your ADE account." };
     }
     let reported: AccountCacheHealth;
     try {
       reported = args.vault.health();
     } catch (error) {
       warn("remote_mcp.vault_health_failed", error);
-      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "This computer can't read its ADE account vault's state right now." };
+      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "This machine can't read its ADE account vault's state right now." };
     }
     const waiting = reported.pendingChanges + reported.parked;
     const message = reported.state === "ok"
       ? null
       : reported.state === "unavailable"
-        ? "This computer can't use its ADE account vault right now (it may be signed out)."
-        : `This computer can't sync its ADE account vault.${reported.lastError ? ` ${reported.lastError.trim().replace(/([^.!?])$/, "$1.")}` : ""} `
+        ? "This machine can't use its ADE account vault right now (it may be signed out)."
+        : `This machine can't sync its ADE account vault.${reported.lastError ? ` ${reported.lastError.trim().replace(/([^.!?])$/, "$1.")}` : ""} `
           + `ADE MCP's key, its connections and other synced secrets wait until it can${waiting ? `; ${waiting} change${waiting === 1 ? "" : "s"} wait to upload` : ""}.`;
     return { state: reported.state, lastSyncedAt: reported.lastSyncedAt, pendingChanges: waiting, message };
   };
@@ -388,7 +388,7 @@ export function createRemoteMcpService(args: {
       const status = await syncVault();
       if (status !== "ready") {
         throw new Error(
-          "ADE couldn't reach your ADE account's vault from this computer, so ADE MCP stays off. "
+          "ADE couldn't reach your ADE account's vault from this machine, so ADE MCP stays off. "
           + "Check the internet connection and try again"
           + (vaultHealth().message ? `. ${vaultHealth().message}` : "."),
         );
@@ -721,7 +721,7 @@ export function createRemoteMcpService(args: {
       // A sign-in on this computer's own address was shown as "use ADE on
       // <this computer>": its token reaches only this computer.
       const machineKey = thisMachineOnly ? relayEndpoint()?.machineKey ?? null : null;
-      if (thisMachineOnly && !machineKey) throw new Error("This computer has no relay identity yet. Try again in a moment.");
+      if (thisMachineOnly && !machineKey) throw new Error("This machine has no relay identity yet. Try again in a moment.");
       const created = store.create({ kind: "app", ...input, ...(machineKey ? { machineKey } : {}) });
       captureAdeMcpAnalytics({ analytics, surface: "api", action: "app_connected", outcome: "completed" });
       args.logger?.info?.("remote_mcp.app_connected", {
@@ -740,14 +740,14 @@ export function createRemoteMcpService(args: {
   const handleHttp = async (request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse> => {
     const off = () => {
       announceNotServing();
-      return json(404, { error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." });
+      return json(404, { error: "ade_mcp_off", error_description: "ADE MCP is off on this machine." });
     };
     if (!serving()) return off();
     const accountMount = request.mount?.kind === "account";
     // The account address is answered only for this computer's own account.
     if (request.mount && (!accountMount || request.mount.key !== accountKey())) return off();
     const serverBase = accountMount ? accountBase() : base();
-    if (!serverBase) return json(503, { error: "unavailable", error_description: "This computer has no relay address yet." });
+    if (!serverBase) return json(503, { error: "unavailable", error_description: "This machine has no relay address yet." });
     if ((request.body?.length ?? 0) > MAX_REQUEST_BODY_CHARS) return json(413, { error: "Request too large." });
     let url: URL;
     try {
@@ -808,7 +808,7 @@ export function createRemoteMcpService(args: {
 
   const requireSignedIn = (): void => {
     if (!signedIn()) {
-      throw new Error("Sign in to ADE on this computer first: ADE MCP belongs to your ADE account.");
+      throw new Error("Sign in to ADE on this machine first: ADE MCP belongs to your ADE account.");
     }
   };
 
@@ -883,10 +883,10 @@ export function createRemoteMcpService(args: {
         if (resolved.kind === "error") throw new Error(resolved.message);
         machineKey = resolved.kind === "here" ? resolved.machine.key || null : resolved.machine.machineKey;
       }
-      if (!machineKey) throw new Error("Pass the computer's machineKey (see getStatus).");
+      if (!machineKey) throw new Error("Pass the machine's machineKey (see getStatus).");
       const existing = readRemoteMcpMachineEntry(args.settings, machineKey);
       const listed = (await machines.roster()).find((machine) => machine.machineKey === machineKey) ?? null;
-      if (!existing && !listed) throw new Error("That computer isn't on this ADE account.");
+      if (!existing && !listed) throw new Error("That machine isn't on this ADE account.");
       // A computer that never published gets a stub; it fills in the rest and keeps `included`.
       const ok = writeRemoteMcpMachineEntry(args.settings, {
         machineKey,

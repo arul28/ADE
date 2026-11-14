@@ -257,3 +257,17 @@ export function cloudTierRequestOfCard(card: AdeCardPayload, chatSessionId: stri
     chatSessionId,
   };
 }
+
+// ---------------------------------------------------------------------------
+// A new computer waits for the person to approve it joining the account
+// ---------------------------------------------------------------------------
+
+/** How long a new computer waits for the person's approval: as long as the account keeps a sign-in code (DEVICE_CODE_TTL_SECONDS). */
+export const CLOUD_JOIN_APPROVAL_WAIT_MS = 10 * 60_000;
+
+/** "10 minutes": the wait in the card, its text and the error when nobody approved. */
+export function cloudJoinApprovalWaitText(): string {
+  const minutes = Math.round(CLOUD_JOIN_APPROVAL_WAIT_MS / 60_000);
+  return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+

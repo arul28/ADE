@@ -254,12 +254,13 @@ replacing the lane's one:
 
 ## Another machine
 
-`--machine <name>` runs the command on that machine. Without `--lane`, the
-emulator there works for this chat's work copy (made at your commit, which
-must be on origin). `install`/`launch` with `--gradle` or `--apk` send your
-uncommitted changes first. An APK that git ignores does not travel: use
-`--gradle`. `preview` and `test` send them too. Screenshots, recordings,
-proof bundles and preview images are filed in this chat's proof drawer.
+`ade devices --kind android --text` lists the emulators on the person's
+machines; `ade devices use "android@<machine>"` picks one, then the plain
+`android` commands act on it (`--machine <name>` for one command). It runs
+your code there: `install`/`launch` with `--gradle` or `--apk`, `preview` and
+`test` send your uncommitted changes first. An APK that git ignores does not
+travel: use `--gradle`. Proof lands in this chat's drawer. Flags, long builds,
+turn end and cleanup: ade-computer-use `references/other-machines.md`.
 
 ## The SDK
 

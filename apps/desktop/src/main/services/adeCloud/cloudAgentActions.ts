@@ -27,6 +27,7 @@
  * against the daily limit.
  */
 
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { randomUUID } from "node:crypto";
 import {
   ADE_CLOUD_APPROVAL_METADATA_KEY,
@@ -76,7 +77,7 @@ import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, clou
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { buildCloudTierRequestCard } from "../../../shared/cloudLaneLife";
+import { buildCloudTierRequestCard, cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
 import { captureCloudLaneAnalytics, type CloudLaneAnalyticsCapture } from "./cloudLaneAnalytics";
 import { countAgentMadeToday, type createCloudMachines } from "./cloudMachines";
@@ -274,6 +275,14 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
   const newComputerCheck = async (): Promise<CloudAccountState | null> => {
     const account = await readAccount();
     const block = cloudLaneStartBlock(account, { newLane: true });
+    if (block) throw new Error(block.message);
+    return account;
+  };
+
+  /** A retry's account check: the hours only, as its replacement's disk is checked by the server once the failed computer is gone. */
+  const retryCheck = async (): Promise<CloudAccountState | null> => {
+    const account = await readAccount();
+    const block = cloudLaneStartBlock(account, { newLane: false });
     if (block) throw new Error(block.message);
     return account;
   };
@@ -485,7 +494,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
     }
     const approvals = deps.approvals;
     return await maker.make(input, (url, name) => {
-      approvals.notice(chatSessionId, `Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The command waits up to 10 minutes.`);
+      approvals.notice(chatSessionId, `Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The command waits up to ${cloudJoinApprovalWaitText()}.`);
     });
   };
 
@@ -641,7 +650,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // A move deletes the machine it runs from: the chat asking for it, and
       // this brain, would stop halfway, with the new machine awake and using hours.
       if (box.instanceId === process.env.ADE_CLOUD_INSTANCE_ID?.trim()) {
-        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --machine <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
+        throw new Error(`"${box.name ?? box.instanceId}" is the machine this runs on, so it can't move itself. Make the new machine (ade cloud create --kind ${to}), then hand this chat to it: ade chat handoff "$ADE_CHAT_SESSION_ID" --to <new machine> --fork --include-changes --clone --when-turn-ends --note "<the task>". This machine stays and sleeps when idle; offer to delete it from the new chat.`);
       }
       const shapeId = shapeArg(args);
       await hoursCheck();
@@ -686,8 +695,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
      * lane, the repository there, and the chat started there, if any. With no
      * `cloud.sizeId`, the person's saved size for new lanes. Returns at once with
      * the launch's status; read it again with `lane_launch_status`. The same
-     * launch id again answers that launch (a failed one goes on from its
-     * failed step): never a second computer.
+     * launch id again answers that launch: never a second computer at once.
+     * A failed one goes on from its failed step, after the same checks as a
+     * first start, since the server may give it a new computer.
      */
     async lane_launch(rawArgs?: unknown) {
       const args = record(rawArgs);
@@ -714,37 +724,50 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         originUrl: text(args, "originUrl") ?? deps.projectOriginUrl?.() ?? null,
         madeByChat: madeByChat(approval),
         caller: { chatSessionId, permissionLevel: chatSessionId ? deps.approvals?.permissionLevel(chatSessionId) ?? null : null },
-        notice: chatSessionId && deps.approvals ? ((message: string) => deps.approvals!.notice(chatSessionId, message)) : null,
       };
+      // The same id on a launch that failed before its computer's brain took
+      // it is a retry, and the server may make it a new computer: it passes
+      // the same gates as a first start, now (the person may have changed
+      // what agents may do since). Any other repeat only reads it.
+      const replaces = existing?.launch.phase === "failed" && existing.launch.cloud?.handedOff !== true;
       if (existing) {
-        // Already approved and counted when it started.
         if (approval.by === "agent" && existing.madeByChat !== chatSessionId) {
           throw new CloudDeclined("This ADE Cloud lane was started from another chat, so only that chat or you can follow it here.");
         }
-        return (await host.start({ ...startArgs, selfApprove: false })).status;
+        // Already approved and counted when it started.
+        if (!replaces) return (await host.start(startArgs)).status;
       }
+      // A retry is checked as the launch it starts again: its saved size and
+      // kind, its saved first message. Its failed computer is deleted before
+      // the replacement is made, so the server checks the disk after that;
+      // the hours are checked here.
+      const saved = replaces ? existing!.launch : null;
+      const savedSize = saved?.cloud?.sizeId;
+      const startSize = isCloudTierId(savedSize) ? savedSize : sizeId;
+      const startsLaneOnly = saved ? saved.kind === "lane" : laneOnly;
       // Refused before the question, never after a yes: the launch itself,
       // then the account (hours, computers, disk), with the sentences
       // `cloud.status` and the composer show.
-      const problem = cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
-      if (problem) throw new Error(problem);
-      const account = await newComputerCheck();
-      const tier = cloudTier(cloudCatalogOf(account), sizeId);
+      const problem = saved ? null : cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
+      if (problem) throw new AdeExpectedError(problem, "user");
+      const account = saved ? await retryCheck() : await newComputerCheck();
+      const tier = cloudTier(cloudCatalogOf(account), startSize);
       if (!tier) throw new Error("ADE Cloud doesn't offer that size right now. Pick another one.");
       const kind: CloudMachineKind = tier.type === "vm" ? "vm" : "box";
       const shape = cloudShapeFor({ cpu: tier.cpu, memoryGb: tier.memoryGb });
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${laneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
         personPlace: CLOUD_LANE_PERSON_PLACE,
       });
       try {
-        const started = await host.start({ ...startArgs, madeByAgent: yes.maker, selfApprove: yes.unattended });
-        if (started.created) yes.counted();
+        const started = await host.start({ ...startArgs, madeByAgent: yes.maker });
+        // A retry counts once it is on its way again, as a first start counts once made.
+        if (started.created || (replaces && started.status.launch.phase !== "failed")) yes.counted();
         return started.status;
       } finally {
         yes.release();

@@ -53,7 +53,8 @@ import type { CursorSignInOutcome } from "./providers/ProviderSignInSheet";
 import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSheet";
 import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
-import { useSettingsReadPin } from "./ProjectCopyScope";
+import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
+import { PROJECT_AI_CONFIG_ACTION, isMachineScopePin, machineScopeActionAllowed } from "../../../shared/machineScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
 import { acpLoginCommand } from "./providers/acpProviders";
 import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
@@ -365,9 +366,20 @@ function MachineProvidersSection({
   // carries `pin` (null = the tab's binding); the page is
   // remounted per machine, so a pin never changes under a live closure.
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
-  // The project settings read names this page's machine, This computer included.
-  const readPin = useSettingsReadPin();
-  const readPinKey = readPin?.key ?? null;
+  // The project's AI config on this machine (disabled providers, local model
+  // servers, custom slugs) is the one part of the page that is the project's:
+  // it goes to this repository's copy there, never the machine route (which
+  // does not answer `PROJECT_AI_CONFIG_ACTION`). Everything else is the
+  // computer's, on `pin`. Null with no copy there: nothing to edit.
+  const projectPin = useSettingsProjectPin();
+  const projectPinKey = projectPin?.key ?? null;
+  const projectConfigEditable = projectPin != null
+    && (!isMachineScopePin(projectPin)
+      || machineScopeActionAllowed(PROJECT_AI_CONFIG_ACTION.domain, PROJECT_AI_CONFIG_ACTION.action));
+  // The project's copy is read and written under a bound: its folder can sit
+  // on a drive that stops answering, and the rest of the page must not wait.
+  const projectCall = useCallback(<T,>(call: Promise<T>): Promise<T> =>
+    withProjectSettingsBound(call, machineName, isThisMachine), [isThisMachine, machineName]);
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -467,7 +479,9 @@ function MachineProvidersSection({
     ).finally(() => {
       if (!options?.silent) setLoading(false);
     });
-    const configRead = Promise.resolve().then(() => window.ade.projectConfig.get(requirePin(readPin))).then(
+    const configRead = Promise.resolve().then(() => (
+      projectConfigEditable ? projectCall(window.ade.projectConfig.get(requirePin(projectPin))) : null
+    )).then(
       (next) => {
         setProjectConfigSnapshot(next);
         return next;
@@ -497,7 +511,7 @@ function MachineProvidersSection({
       setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
     return nextStatus;
-  }, [editingLocalProvider, pin, readPin, savingLocalProvider]);
+  }, [editingLocalProvider, pin, projectCall, projectConfigEditable, projectPin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
@@ -522,12 +536,15 @@ function MachineProvidersSection({
 
   useEffect(() => {
     if (slugsSeededRef.current) return;
-    const persisted = status?.customModelSlugs;
+    // The project's own list, which is what a save writes; the machine
+    // route's status carries no project's.
+    const persisted = projectConfigSnapshot?.effective.ai?.customModelSlugs
+      ?? (projectConfigEditable ? undefined : status?.customModelSlugs);
     if (!persisted) return;
     slugsSeededRef.current = true;
     // Never clobber text the user typed while the initial probe was loading.
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
-  }, [status?.customModelSlugs]);
+  }, [projectConfigEditable, projectConfigSnapshot?.effective.ai?.customModelSlugs, status?.customModelSlugs]);
 
   // The Cursor status feed re-subscribes only when the machine changes.
   // Re-subscribing when `refreshStatus` changes identity would re-anchor a
@@ -560,8 +577,8 @@ function MachineProvidersSection({
     // Another machine's chat feed is not subscribed here; its status refreshes
     // on open and on every action instead.
     // This computer's own chats, through its copy of the project.
-    const chatPin = readPin;
-    if (pin || !chatPin) return undefined;
+    const chatPin = isThisMachine && projectPin?.kind === "local" ? projectPin : null;
+    if (!chatPin) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
@@ -577,9 +594,9 @@ function MachineProvidersSection({
         pendingRefreshTimerRef.current = null;
       }
     };
-    // `readPinKey` carries the copy's identity.
+    // `projectPinKey` carries the copy's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin, readPinKey, refreshStatus]);
+  }, [isThisMachine, projectPinKey, refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   // Keep provider tiles neutral while the status payload is unavailable. A
@@ -953,9 +970,9 @@ function MachineProvidersSection({
     setError(null);
     setNotice(null);
     try {
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         customModelSlugs: slugs,
-      }, pin);
+      }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
       setNotice("Custom model slugs saved.");
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
@@ -964,7 +981,7 @@ function MachineProvidersSection({
     } finally {
       setSavingAdvanced(false);
     }
-  }, [pin, customModelSlugs, refreshStatus]);
+  }, [projectCall, projectPin, customModelSlugs, refreshStatus]);
 
   const updateLocalProviderDraft = useCallback((
     provider: LocalProviderFamily,
@@ -997,7 +1014,7 @@ function MachineProvidersSection({
     setError(null);
     setNotice(null);
     try {
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         localProviders: {
           [provider]: {
             enabled: draft.enabled,
@@ -1006,7 +1023,7 @@ function MachineProvidersSection({
             preferredModelId: draft.preferredModelId.trim() || null,
           },
         } as AiConfig["localProviders"],
-      }, pin);
+      }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
       setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
       setEditingLocalProvider(null);
@@ -1016,7 +1033,7 @@ function MachineProvidersSection({
     } finally {
       setSavingLocalProvider(null);
     }
-  }, [pin, localProviderDrafts, refreshStatus]);
+  }, [projectCall, projectPin, localProviderDrafts, refreshStatus]);
 
   const disabledProviders = useMemo(
     () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
@@ -1035,13 +1052,13 @@ function MachineProvidersSection({
       // The whole authoritative list, not a delta: `mergeAiConfig` replaces
       // this field, so a patch carrying only the change could never re-enable
       // anything.
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         disabledProviders: toggleDisabledProvider(
           projectConfigSnapshot?.effective.ai ?? null,
           provider,
           disabled,
         ),
-      } as Partial<AiConfig>, pin);
+      } as Partial<AiConfig>, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
       setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
       await refreshStatus({ force: false, silent: true });
@@ -1050,7 +1067,7 @@ function MachineProvidersSection({
     } finally {
       setSavingDisabledFor(null);
     }
-  }, [pin, projectConfigSnapshot, refreshStatus]);
+  }, [projectCall, projectPin, projectConfigSnapshot, refreshStatus]);
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
@@ -1138,9 +1155,21 @@ function MachineProvidersSection({
     void refreshStatus({ refreshOpenCodeInventory: true, silent: true }).then(() => loadAuthMethods());
   }, [loadAuthMethods, openCodeCatalogCold, openCodePageOpen, refreshStatus]);
 
+  // What the project's copy saves is read from it: the machine route's status
+  // carries the machine scope's own (empty) lists, and a write is a whole
+  // list, so it may only be built from the project's.
+  const projectConfigLoaded = projectConfigEditable && projectConfigSnapshot != null;
+  const viewStatus = useMemo((): AiSettingsStatus | null => {
+    if (!status || !projectConfigLoaded || !isMachineScopePin(pin)) return status;
+    const ai = projectConfigSnapshot?.effective.ai;
+    return { ...status, customProviders: ai?.customProviders ?? [], customModelSlugs: ai?.customModelSlugs ?? [] };
+  }, [pin, projectConfigLoaded, projectConfigSnapshot, status]);
   const ctx = useMemo((): ProvidersViewContext => ({
-    status,
+    status: viewStatus,
     projectConfigSnapshot,
+    projectConfigEditable: projectConfigLoaded,
+    projectPin,
+    machineName,
     loading,
     statusLoadError,
     isInitialCheckInFlight,
@@ -1200,6 +1229,7 @@ function MachineProvidersSection({
       verifySignIn,
     },
   }), [
+    projectConfigLoaded, projectPin, machineName,
     apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
     cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
     cursorLoginUrl, customModelSlugs, deleteApiKey,
@@ -1209,7 +1239,7 @@ function MachineProvidersSection({
     projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog,
     saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
     savingLocalProvider, searchableOpenCodeProviders,
-    status, statusLoadError, storedProviders, updateLocalProviderDraft,
+    viewStatus, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
     acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignIn,

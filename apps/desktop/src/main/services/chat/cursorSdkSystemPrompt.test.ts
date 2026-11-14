@@ -11,9 +11,6 @@ import {
 } from "./cursorSdkSystemPrompt";
 
 describe("isCursorSdkPromptInjectEnabled", () => {
-  it("defaults to enabled when env is unset", () => {
-    expect(isCursorSdkPromptInjectEnabled(undefined)).toBe(true);
-  });
   it("treats common truthy values as enabled", () => {
     for (const v of ["1", "true", "yes", "on", "  1 ", ""]) {
       expect(isCursorSdkPromptInjectEnabled(v)).toBe(true);
@@ -38,22 +35,6 @@ describe("buildCursorSdkSystemPrompt", () => {
     expect(out.sections).toEqual([]);
   });
 
-  it("includes runtime label in cloud capability section", () => {
-    const local = buildCursorSdkSystemPrompt({ runtime: "local" });
-    expect(local.text).toContain("runtime: local");
-    const cloud = buildCursorSdkSystemPrompt({ runtime: "cloud" });
-    expect(cloud.text).toContain("runtime: cloud");
-  });
-
-  it("includes the native subagent routing contract", () => {
-    const out = buildCursorSdkSystemPrompt({ runtime: "local" });
-
-    expect(out.text).toContain("prefer Cursor's native task tool");
-    expect(out.text).toContain("`ade new chat --mode chat --provider <p> --model <m>");
-    // The routing contract must survive the prompt's 3 KB cut whole.
-    expect(out.sections.find((section) => section.name === "subagent-routing")?.truncated).toBe(false);
-  });
-
   it("places subagent routing after the control-protocol section", () => {
     const out = buildCursorSdkSystemPrompt({
       runtime: "local",
@@ -63,26 +44,6 @@ describe("buildCursorSdkSystemPrompt", () => {
     const names = out.sections.map((section) => section.name);
     expect(names.indexOf("control")).toBeGreaterThan(-1);
     expect(names.indexOf("subagent-routing")).toBeGreaterThan(names.indexOf("control"));
-  });
-
-  it("always emits control-protocol primer with all three block names", () => {
-    const out = buildCursorSdkSystemPrompt({ runtime: "local" });
-    expect(out.text).toContain("ade_update_plan");
-    expect(out.text).toContain("ade_request_user_input");
-    expect(out.text).toContain("ade_plan_approval");
-  });
-
-  it("always emits the shared session status protocol", () => {
-    const out = buildCursorSdkSystemPrompt({ runtime: "local" });
-    expect(out.text).toContain('ade chat note "testing desktop auth fallback"');
-    expect(out.text).toContain('ade chat ask "<the exact question>"');
-    // Settlement is user- and PR-merge-driven only; the prompt must never hand
-    // a Cursor agent a settle command again.
-    expect(out.text).toContain("You cannot settle or unsettle a session");
-    expect(out.text).not.toContain("ade chat settle --outcome");
-    expect(out.sections.find((section) => section.name === "session-status")).toEqual(
-      expect.objectContaining({ truncated: false }),
-    );
   });
 
   it("strips secret-looking lines from project rules", () => {

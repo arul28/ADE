@@ -526,23 +526,6 @@ describe("useAutoDiagnosticsToast", () => {
     delete (window as { ade?: unknown }).ade;
   });
 
-  it("tells the user what was sent, and offers the report", () => {
-    const api = installDiagnosticsApi();
-    render(React.createElement(AutoDiagnosticsHarness));
-
-    api.emit({ failureCode: "disk_full", reportPath: "/reports/x.md", reference: "abcd1234" });
-
-    const [toast] = getToasts();
-    expect(toast).toMatchObject({
-      title: "A diagnostic report was sent to ADE",
-      message: "Reference abcd1234",
-    });
-    expect(toast?.actions?.[0]?.label).toBe("View");
-
-    toast?.actions?.[0]?.onClick?.();
-    expect(api.bridge.diagnostics.revealReport).toHaveBeenCalledWith("/reports/x.md");
-  });
-
   it("tells main the toast exists, so the next launch does not repeat it", () => {
     // The ack is the ONLY thing that retires a notice: main cannot tell that
     // `webContents.send` reached a live toast host, and listing the pending

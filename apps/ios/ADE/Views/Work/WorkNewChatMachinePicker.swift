@@ -32,7 +32,60 @@ func workNewChatMachineOptions(syncService: SyncService, fleet: MachineFleet) ->
     )
   }
   options += others.filter(\.isLive) + others.filter { !$0.isLive }
-  return options
+  let names = distinctMachineNames(options.map { option in
+    (id: option.id, tagSource: option.machineKey ?? syncService.focusedMachineKey ?? option.id, name: option.name)
+  })
+  return options.map { option in
+    guard let name = names[option.id], name != option.name else { return option }
+    return WorkNewChatMachineOption(machineKey: option.machineKey, name: name, symbol: option.symbol, isLive: option.isLive)
+  }
+}
+
+/// The name each machine shows in a picker, told apart when two share one.
+/// Two of a person's computers often carry the same name (a Mac set up from
+/// another keeps "Arul's Mac Studio"), and a picker listing it twice gives no
+/// way to choose. Unique names come back as they are; within a group that
+/// shares a name (case and spacing aside), each gets the end of its machine
+/// key in brackets, long enough to tell them apart. Keyed by `id`. Tracks
+/// `distinctMachineNames` on the desktop (`shared/machineIdentity.ts`); every
+/// machine a phone lists is another computer, so none reads "This computer".
+func distinctMachineNames(_ machines: [(id: String, tagSource: String, name: String)]) -> [String: String] {
+  let groups = Dictionary(grouping: machines) { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+  var names: [String: String] = [:]
+  for group in groups.values {
+    guard group.count > 1 else {
+      for machine in group { names[machine.id] = machine.name }
+      continue
+    }
+    let plain = group.map { String($0.tagSource.filter { $0.isASCII && ($0.isLetter || $0.isNumber) }).lowercased() }
+    var length = 4
+    var tags = plain.map { String($0.suffix(length)) }
+    while Set(tags).count < tags.count, length < 32 {
+      length += 2
+      tags = plain.map { String($0.suffix(length)) }
+    }
+    for (index, machine) in group.enumerated() { names[machine.id] = "\(machine.name.trimmingCharacters(in: .whitespacesAndNewlines)) (\(tags[index]))" }
+  }
+  return machineNamesWithoutClashes(machines, names)
+}
+
+/// A label made in one group can match a name in another ("Studio (abcd)"
+/// made for one of two Studios, beside a machine named "Studio (abcd)"). One
+/// label of each clash is kept (one shown as it is named, when there is one)
+/// and the rest take their whole key, which no other machine shares.
+private func machineNamesWithoutClashes(_ machines: [(id: String, tagSource: String, name: String)], _ start: [String: String]) -> [String: String] {
+  var names = start
+  let byId = Dictionary(machines.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+  let clashes = Dictionary(grouping: names.keys.sorted()) { (names[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .values.filter { $0.count > 1 }
+  for ids in clashes {
+    let keep = ids.first { names[$0] == byId[$0]?.name } ?? ids[0]
+    for id in ids where id != keep {
+      let tag = String((byId[id]?.tagSource ?? id).filter { $0.isASCII && ($0.isLetter || $0.isNumber) }).lowercased()
+      names[id] = "\((byId[id]?.name ?? id).trimmingCharacters(in: .whitespacesAndNewlines)) (\(tag))"
+    }
+  }
+  return names
 }
 
 /// Provider families with an account on the machine, from its account

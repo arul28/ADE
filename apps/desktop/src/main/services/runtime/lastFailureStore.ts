@@ -32,12 +32,15 @@ function machineAdeDir(env: NodeJS.ProcessEnv = process.env): string {
   return explicit ? path.resolve(explicit) : path.join(os.homedir(), ".ade");
 }
 
+/** The report's file name inside a runtime folder. */
+export const LAST_FAILURE_FILE_NAME = "last-failure.json";
+
 export function lastFailurePathForMachine(env: NodeJS.ProcessEnv = process.env): string {
-  return path.join(machineAdeDir(env), "runtime", "last-failure.json");
+  return path.join(machineAdeDir(env), "runtime", LAST_FAILURE_FILE_NAME);
 }
 
 export function lastFailurePathForProject(projectRoot: string): string {
-  return path.join(path.resolve(projectRoot), ".ade", "runtime", "last-failure.json");
+  return path.join(path.resolve(projectRoot), ".ade", "runtime", LAST_FAILURE_FILE_NAME);
 }
 
 function pathForTarget(target: LastFailureTarget): string {

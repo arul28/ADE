@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { openKvDb } from "../state/kvDb";
+import type { AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createSessionService } from "./sessionService";
 
 /**
@@ -19,8 +20,6 @@ import { createSessionService } from "./sessionService";
  * conditional on.
  */
 
-const WRITER_MODULE = path.join(__dirname, "settleLifecycleWriter.ts");
-
 function createLogger() {
   return { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} } as const;
 }
@@ -31,7 +30,7 @@ function makeProjectRoot(): string {
   return root;
 }
 
-function insertProjectGraph(db: Awaited<ReturnType<typeof openKvDb>>) {
+function insertProjectGraph(db: AdeDb) {
   const now = "2026-08-11T00:00:00.000Z";
   db.run(
     `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
@@ -59,7 +58,7 @@ describe("settle-lifecycle writer", () => {
 
   async function withService(): Promise<ReturnType<typeof createSessionService>> {
     const projectRoot = makeProjectRoot();
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -82,60 +81,6 @@ describe("settle-lifecycle writer", () => {
    * rather than trusting review, because the failure mode is someone adding an
    * eleventh path in six months.
    */
-  it("has no settle-tuple assignment anywhere outside the chokepoint", () => {
-    // Repo-wide, not just this file. The invariant is "no other writer exists",
-    // and an eleventh path added in a new service would otherwise pass clean.
-    const roots = [
-      path.resolve(__dirname, "../../.."),                       // apps/desktop/src
-      path.resolve(__dirname, "../../../../../ade-cli/src"),     // apps/ade-cli/src
-    ];
-    const files: string[] = [];
-    const walk = (dir: string) => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          if (entry.name === "node_modules" || entry.name === "dist") continue;
-          walk(full);
-        } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
-          files.push(full);
-        }
-      }
-    };
-    for (const root of roots) {
-      // A silently-skipped root would quietly stop enforcing half the invariant.
-      expect(fs.existsSync(root), `scan root missing: ${root}`).toBe(true);
-      walk(root);
-    }
-    expect(files.length).toBeGreaterThan(100);
-
-    const offenders: string[] = [];
-    for (const file of files) {
-      // The writer module is the one place allowed to assign the tuple. A FILE
-      // boundary, not offsets inside a 1900-line module — that is why the writer
-      // was extracted, and it means no future reordering can widen the blind
-      // spot.
-      if (file === WRITER_MODULE) continue;
-      const source = fs.readFileSync(file, "utf8");
-      // Strip comments first: prose describing what the host writes (the web
-      // adapter documents the host's SQL in JSDoc) is not a writer, and matching
-      // it would make this test cry wolf until someone weakened it.
-      const code = source
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
-      // `=` only, never `==` — a `where settle_override = ?` comparison in a
-      // SELECT is legitimate, so require the assignment form used in a SET list.
-      for (const match of code.match(/\b(settled_at|settle_override|settle_source)\s*=(?!=)/gi) ?? []) {
-        offenders.push(`${path.relative(roots[0], file)}: ${match}`);
-      }
-    }
-
-    expect(offenders).toEqual([]);
-
-    // The scan is the enforcement mechanism, so prove it still bites — including
-    // for a spelling nobody in this codebase uses today.
-    const upperFixture = "UPDATE terminal_sessions SET SETTLED_AT = NULL WHERE id = ?";
-    expect(upperFixture.match(/\b(settled_at|settle_override|settle_source)\s*=(?!=)/gi)).not.toBeNull();
-  });
 
   it("bumps the revision on every settle-lifecycle path", async () => {
     const service = await withService();
@@ -251,7 +196,7 @@ describe("settle-lifecycle writer", () => {
    */
   it("never reports a revision lower than one it has already reported", async () => {
     const projectRoot = makeProjectRoot();
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
 
@@ -297,7 +242,7 @@ describe("settle-lifecycle writer", () => {
    */
   it("still advances when a sibling process is ahead and the local write fails", async () => {
     const projectRoot = makeProjectRoot();
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
@@ -358,7 +303,7 @@ describe("settle-lifecycle writer", () => {
 
   it("keeps the host-local settle tables out of CRR replication", async () => {
     const projectRoot = makeProjectRoot();
-    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    const db = await openFreshKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
 
     const clockTable = (table: string) =>

@@ -10,6 +10,7 @@ import type {
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
+import { isWebRuntimePinUnroutableError } from "./runtimePinGuard";
 import type { BrowserAccountClient } from "../account/client";
 import type { AdeSyncClient } from "../sync";
 import type { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
@@ -832,7 +833,17 @@ export function createFederatedWebAdapter({
         // Some adapter functions are themselves proxies so nested missing APIs
         // can keep resolving. Reflect.apply invokes the callable directly
         // without reading its potentially proxied `.apply` property.
-        const result = Reflect.apply(value, parent, args);
+        let result: unknown;
+        try {
+          result = Reflect.apply(value, parent, args);
+        } catch (error) {
+          // A subscription for a machine the browser has no path to. An
+          // effect that subscribes must not throw into the error boundary and
+          // take the page down; there are no live updates from that machine.
+          if (!isSubscriptionMember(path) || !isWebRuntimePinUnroutableError(error)) throw error;
+          console.warn("[ade-web] subscription skipped: its machine is not reachable", path.join("."));
+          return () => {};
+        }
         // A pinned call belongs to its binding for life. An unpinned one that
         // handed back an unsubscribe is a subscription on the *displayed*
         // project, so it has to follow the display across tab switches.

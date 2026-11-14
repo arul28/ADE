@@ -1,5 +1,5 @@
 import { confirmDialog } from "../ui/dialog";
-import { remoteAgentHolderLabel } from "../../../shared/runtimeClientNames";
+import { parseForeignCallerSessionId, remoteAgentHolderLabel } from "../../../shared/runtimeClientNames";
 import React, {
   Suspense,
   useCallback,
@@ -118,10 +118,50 @@ export type AppleDevicePaneProps = {
   runtimePin: OpenProjectBinding | null;
   /** The lane-scoped surface drives a device it does not own on purpose. */
   ignoreChatOwnership?: boolean;
+  /**
+   * The chat this pane is shown for, so that when IT is the agent on another
+   * machine driving the device, the pane names the chat rather than a computer.
+   */
+  driverChat?: AppleDriverChat | null;
   onAddContext?: ((item: IosElementContextItem) => void) | undefined;
   onInsertDraft?: ((text: string) => void) | undefined;
   className?: string;
 };
+
+/** A chat that may be the one driving a device from another machine. */
+export type AppleDriverChat = {
+  sessionId: string;
+  title: string | null;
+  /** The machine the chat runs on, or null when that is this computer. */
+  machineName: string | null;
+};
+
+/**
+ * The holder is the chat this pane serves (`paneChatId`: the driver chat's
+ * id, else the pane's own session id, so every host counts): a banner about
+ * that chat to that chat says nothing.
+ */
+function holderIsPaneChat(holderChatSessionId: string | null, paneChatId: string | null): boolean {
+  const chatId = parseForeignCallerSessionId(holderChatSessionId)?.chatSessionId ?? null;
+  return Boolean(paneChatId && chatId && chatId === paneChatId);
+}
+
+/**
+ * Who drives the device, at the start of a sentence: the chat by its title
+ * when it is the pane's own chat ("“Fix login” on Studio Mac", the machine
+ * only when it is not the one viewing), else "An agent on <machine>".
+ */
+function remoteDriverLabel(
+  holder: { machineName: string | null },
+  holderChatSessionId: string | null,
+  driverChat: AppleDriverChat | null,
+): string {
+  if (driverChat && holderIsPaneChat(holderChatSessionId, driverChat.sessionId)) {
+    const name = driverChat.title ? `“${driverChat.title}”` : "This chat";
+    return driverChat.machineName ? `${name} on ${driverChat.machineName}` : name;
+  }
+  return remoteAgentHolderLabel(holder.machineName, { sentenceStart: true });
+}
 
 
 function familyOf(device: AppleLaneDevice | null): "iphone" | "ipad" {
@@ -196,6 +236,7 @@ function AppleDevicePaneOnMachine({
   projectRoot,
   runtimePin,
   ignoreChatOwnership = false,
+  driverChat = null,
   onAddContext,
   onInsertDraft,
   className,
@@ -338,6 +379,16 @@ function AppleDevicePaneOnMachine({
 
   /* ── stream ────────────────────────────────────────────────────────────── */
 
+  const statusRef = useRef(status);
+  statusRef.current = status;
+  /**
+   * A stream failure, held until a status read after it says the device is
+   * still on. A device turned off on purpose (`ade apple stop`, here or from
+   * another machine) breaks its stream first, and the relay answers that with
+   * a bare 502 before any "off" news arrives: shown at once, it read as a red
+   * error over a phone already marked Off.
+   */
+  const [streamError, setStreamError] = useState<{ error: Error; statusAtError: IosSimulatorStatus | null } | null>(null);
   const onStreamError = useCallback((message: string | null) => {
     if (!message) return;
     // Not an error to show: the device is off, and watching never boots it.
@@ -348,7 +399,9 @@ function AppleDevicePaneOnMachine({
       refreshList();
       return;
     }
-    setError(new Error(message));
+    setStreamError({ error: new Error(message), statusAtError: statusRef.current });
+    // The re-read is what tells "stopped" from "broken".
+    refreshList();
   }, [markOff, refreshList]);
 
   const booted = appleLaneDeviceBooted({
@@ -385,6 +438,13 @@ function AppleDevicePaneOnMachine({
     streamReady: stream.url != null,
     streamState: stream.state,
   });
+
+  // A device that is off, or a stream that is live again, owes no stream error.
+  const streamLive = stream.state === "live";
+  useEffect(() => {
+    if (!booted || streamLive) setStreamError(null);
+  }, [booted, streamLive]);
+  const shownStreamError = streamError && booted && status !== streamError.statusAtError ? streamError.error : null;
 
   useAppleLoadingWatchdog(startTracker, {
     loading: state === "starting",
@@ -1212,17 +1272,23 @@ function AppleDevicePaneOnMachine({
     && (!status.activeSession?.laneId || !laneId || status.activeSession.laneId === laneId)
     ? status.remoteHolder
     : null;
-  // "An agent on Mac mini": the wording the phone's owner ribbon uses too.
+  // The pane's own chat by its title; any other: "An agent on Mac mini", the
+  // wording the phone's owner ribbon uses too.
   const remoteHolderLabel = remoteHolder
-    ? remoteAgentHolderLabel(remoteHolder.machineName, { sentenceStart: true })
+    ? remoteDriverLabel(remoteHolder, status?.activeSession?.chatSessionId ?? null, driverChat)
     : null;
+  // This pane's own chat driving it is what the pane is for: the tools pane
+  // already shows what that agent does, with Take over. Only another agent's
+  // hold earns a strip.
+  const otherAgentHolds = Boolean(remoteHolder)
+    && !holderIsPaneChat(status?.activeSession?.chatSessionId ?? null, driverChat?.sessionId ?? sessionId);
   async function freeDeviceFromRemoteAgent(): Promise<void> {
     const holderSessionId = status?.activeSession?.chatSessionId ?? null;
     if (!holderSessionId) return;
     const confirmed = await confirmDialog({
-      title: "Free this device?",
-      message: `${remoteHolderLabel} is driving this device. Freeing it ends that agent's session here and stops its live view. If the agent is still working, it can take the device again.`,
-      confirmLabel: "Free device",
+      title: "Take the simulator back?",
+      message: `${remoteHolderLabel} is using this simulator. Taking it back ends that agent's hold on it; the simulator keeps running and nothing on it is lost. If that agent is still working, it can take it again.`,
+      confirmLabel: "Take it back",
       destructive: true,
     });
     if (!confirmed) return;
@@ -1251,12 +1317,19 @@ function AppleDevicePaneOnMachine({
     }
   }
 
-  const strip = error != null
+  const stripError = error ?? shownStreamError;
+  const strip = stripError != null
     ? (
       <AppleDeviceStatusStrip
-        error={error}
-        onAction={handleStripAction}
-        onDismiss={() => setError(null)}
+        error={stripError}
+        onAction={(action) => {
+          setStreamError(null);
+          handleStripAction(action);
+        }}
+        onDismiss={() => {
+          setError(null);
+          setStreamError(null);
+        }}
       />
     )
     : state === "video-lost"
@@ -1280,14 +1353,14 @@ function AppleDevicePaneOnMachine({
             onSecondaryAction={chooseAnotherDevice}
           />
         )
-        /* An agent on another machine (`ade apple … --machine`) holds this
-           device. Said here, on the pane the person is looking at, so the
-           simulator moving on its own has a reason; ending it asks first. */
-        : remoteHolder && state !== "no-device"
+        /* ANOTHER agent on another machine (`ade apple … --machine`) holds
+           this device: said here, so the simulator moving on its own has a
+           reason; taking it back asks first. Never for this pane's own chat. */
+        : otherAgentHolds && state !== "no-device"
           ? (
             <AppleDeviceNoticeStrip
-              sentence={`${remoteHolderLabel} is driving this device.`}
-              actionLabel="Free device"
+              sentence={`${remoteHolderLabel} is using this simulator.`}
+              actionLabel="Take it back"
               onAction={() => { void freeDeviceFromRemoteAgent(); }}
               busy={endingRemoteSession}
             />

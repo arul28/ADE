@@ -1446,6 +1446,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// This chat's move to another machine, owned by the source brain. Absent on
   /// older hosts and for a chat that never moved.
   var crossMachineHandoff: AgentChatCrossMachineHandoffRecord? = nil
+  /// Other machines this chat works on (`ade shell|apple|android|screen … --machine`),
+  /// kept live by the chat's own brain. Older brains and a chat that never
+  /// worked elsewhere omit it.
+  var remoteWork: [AgentChatRemoteWorkUse]? = nil
   /// Batch move awaiting the person's decision in this caller chat. Older brains omit it.
   var crossMachineBatchApproval: AgentChatCrossMachineBatchMoveApproval? = nil
 
@@ -1541,7 +1545,74 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.sideChatParentSessionId == rhs.sideChatParentSessionId
       && lhs.sideChatSessionId == rhs.sideChatSessionId
       && lhs.crossMachineHandoff == rhs.crossMachineHandoff
+      && lhs.remoteWork == rhs.remoteWork
       && lhs.crossMachineBatchApproval == rhs.crossMachineBatchApproval
+  }
+}
+
+/// Another machine a chat works on (desktop `AgentChatRemoteWorkUse`): the
+/// project there, and the work copy's lane its simulator, emulator and screen
+/// are keyed by. `machineKey` is the account directory's key for that machine.
+///
+/// Lenient: a malformed entry decodes with empty fields rather than failing
+/// the whole chat summary.
+struct AgentChatRemoteWorkUse: Codable, Equatable, Hashable {
+  var machineKey: String
+  var machineName: String
+  var machinePlatform: String?
+  var projectId: String?
+  var projectRootPath: String?
+  var workCopyLaneId: String?
+  var usesSimulator: Bool
+  var usesAndroidEmulator: Bool
+  var usesDesktop: Bool
+  var usesAppControl: Bool
+  var lastStartedAt: String?
+
+  init(
+    machineKey: String,
+    machineName: String,
+    machinePlatform: String? = nil,
+    projectId: String? = nil,
+    projectRootPath: String? = nil,
+    workCopyLaneId: String? = nil,
+    usesSimulator: Bool = false,
+    usesAndroidEmulator: Bool = false,
+    usesDesktop: Bool = false,
+    usesAppControl: Bool = false,
+    lastStartedAt: String? = nil
+  ) {
+    self.machineKey = machineKey
+    self.machineName = machineName
+    self.machinePlatform = machinePlatform
+    self.projectId = projectId
+    self.projectRootPath = projectRootPath
+    self.workCopyLaneId = workCopyLaneId
+    self.usesSimulator = usesSimulator
+    self.usesAndroidEmulator = usesAndroidEmulator
+    self.usesDesktop = usesDesktop
+    self.usesAppControl = usesAppControl
+    self.lastStartedAt = lastStartedAt
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case machineKey, machineName, machinePlatform, projectId, projectRootPath, workCopyLaneId
+    case usesSimulator, usesAndroidEmulator, usesDesktop, usesAppControl, lastStartedAt
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    machineKey = (try? c.decodeIfPresent(String.self, forKey: .machineKey)) ?? ""
+    machineName = (try? c.decodeIfPresent(String.self, forKey: .machineName)) ?? ""
+    machinePlatform = try? c.decodeIfPresent(String.self, forKey: .machinePlatform)
+    projectId = try? c.decodeIfPresent(String.self, forKey: .projectId)
+    projectRootPath = try? c.decodeIfPresent(String.self, forKey: .projectRootPath)
+    workCopyLaneId = try? c.decodeIfPresent(String.self, forKey: .workCopyLaneId)
+    usesSimulator = (try? c.decodeIfPresent(Bool.self, forKey: .usesSimulator)) == true
+    usesAndroidEmulator = (try? c.decodeIfPresent(Bool.self, forKey: .usesAndroidEmulator)) == true
+    usesDesktop = (try? c.decodeIfPresent(Bool.self, forKey: .usesDesktop)) == true
+    usesAppControl = (try? c.decodeIfPresent(Bool.self, forKey: .usesAppControl)) == true
+    lastStartedAt = try? c.decodeIfPresent(String.self, forKey: .lastStartedAt)
   }
 }
 
@@ -3232,6 +3303,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// True for a `user_message` a side chat sent to this chat because the user
   /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
   var userMessageFromSideChat: Bool = false
+  /// Why ADE wrote this `user_message` (`metadata.hostContinuation.reason`), or
+  /// nil. Such a message draws as an "ADE" row with that reason, never as the
+  /// reader's bubble.
+  var userMessageAdeReason: String?
+  /// The host's one line for that reason (`metadata.hostContinuation.label`);
+  /// nil from an older host, which falls back to `workAdeMessageReasonLabel`.
+  var userMessageAdeReasonLabel: String?
   /// The name of the other person who wrote a `user_message` on a shared lane
   /// (`metadata.author.kind == "guest"`): the bubble says "From <name>", so a
   /// guest's message never reads as the owner's own. Empty when the guest has
@@ -3326,6 +3404,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var summary: String?
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
+    var metadataHostContinuationReason: String?
+    var metadataHostContinuationLabel: String?
     var metadataMarksRecoveryHandOff = false
     var metadataMarksRestartResume = false
     var metadataGuestAuthorName: String?
@@ -3337,6 +3417,11 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
 
     private struct ScheduledWake: Decodable {
       var scheduleId: String?
+    }
+
+    private struct HostContinuation: Decodable {
+      var reason: String?
+      var label: String?
     }
 
     private struct MetadataKey: CodingKey {
@@ -3394,6 +3479,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
           (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
         if let wake = try? metadata.decodeIfPresent(ScheduledWake.self, forKey: MetadataKey("scheduledWake")) {
           metadataMarksRestartResume = workIsRestartResumeScheduleId(wake.scheduleId)
+        }
+        if let continuation = try? metadata.decodeIfPresent(HostContinuation.self, forKey: MetadataKey("hostContinuation")) {
+          metadataHostContinuationReason = continuation.reason ?? ""
+          metadataHostContinuationLabel = continuation.label
         }
         if let author = try? metadata.decodeIfPresent(MessageAuthor.self, forKey: MetadataKey("author")),
            author.kind == "guest" {
@@ -3466,6 +3555,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
+    userMessageAdeReason = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationReason : nil
+    userMessageAdeReasonLabel = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationLabel : nil
     userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true

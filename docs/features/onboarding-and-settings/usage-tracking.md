@@ -596,8 +596,8 @@ machine's own snapshot into two views:
   future.
 - **For display** (the popover, `ade usage limits`, Settings): that, plus logins
   signed in only on another machine, marked `notSignedInHere`. They show as
-  **Not signed in here**, with a `via <machine>` tag, so every login's room is
-  in one place. They can take no chat here, so smart balance never picks them
+  **Not signed in here**, so every login's room is in one place. The machine
+  that read it is in the window's details ("Read on"). They can take no chat here, so smart balance never picks them
   and budget caps ignore their windows.
 
 How fresh a reading is comes from the windows themselves: each window carries
@@ -632,7 +632,11 @@ would clear the login, which is how idle secondary accounts lost their
 sign-in. These rules keep a dead file token from turning into an OAuth storm
 that gets the whole client rate-limited (429) by Anthropic:
 
-- The default account's background polls must not touch the Keychain. A scoped
+- The default account's background polls do not touch the Keychain until a
+  poll in this process has read the default login from it (`ok` or `expired`;
+  an `unreadable` read resets this). After that, background polls may read it
+  again, because the cached token lasts about eight hours and the meters would
+  otherwise freeze until a user refresh. A scoped
   account (`CLAUDE_CONFIG_DIR`) may open that account's namespaced Keychain
   item; the successful read is cached for the process and later polls reuse it.
 - Claude Code namespaces the Keychain item per config directory: the machine's
@@ -651,9 +655,9 @@ that gets the whole client rate-limited (429) by Anthropic:
   (`refreshClaudeLoginInBackground`): smart balance does not send a chat to an
   account it has no reading for, so an idle account's token (about eight
   hours) would otherwise expire and leave the account unread. The base
-  account (no scoped config home) on macOS is left out: its background poll
-  skips the Keychain and could not see the refreshed token, so it keeps
-  waiting for a chat or a user refresh. Off macOS the CLI rewrites the
+  account (no scoped config home) on macOS is left out until a poll has read
+  its Keychain item; before that its background poll skips the Keychain and
+  could not see the refreshed token. Off macOS the CLI rewrites the
   credentials file the next poll reads, so the base account is refreshed too. A token with no refresh token at all is
   `signed_out`, because the CLI cannot renew it either. A failed Keychain read
   is `unreadable`, because a miss after it proves nothing about the login.
@@ -1274,6 +1278,20 @@ for each provider, mainly Claude and Codex. The wire contract is in
   "Could not use the reset credit." A host whose usage service cannot spend
   credits answers "Reset credits are not available on this host yet." rather
   than reporting a reset it did not perform.
+- A machine reads a login's banked resets with that login's token. When it
+  cannot (its token expired, or the login is signed in only on another
+  machine), the account shows the credits of the freshest peer whose working
+  login reports a count. A newer count of zero beats an older positive one,
+  and the credits are lent whether or not that peer's windows are shown. Then `UsageAccount.resetCreditsOn` names that peer and
+  its id for the account (`poolPeerQuota`). **Use reset** then runs on that
+  peer: the host sends `usage.consumeResetCredit` over its agents' paired
+  connection, and the peer spends one of its own credits
+  (`consumeOwnResetCredit`), never forwarding again. The spend carries the
+  email the row showed, and the peer refuses it when its account now holds
+  another login (a new sign-in in the same folder keeps the id). After the
+  spend the host drops the peer's old count, then pulls the peers' quota
+  again, so a failed pull cannot offer the spent credit a second time. A peer too old for the method answers "Update ADE on
+  <machine> to spend its reset from here, or spend it there."
 - Accounts pool by email: the same login reported by two machines is one
   account with two `Via` entries, freshest reading first, and its numbers are
   the freshest reading from either ([Quota belongs to the login](#quota-belongs-to-the-login)).
@@ -1307,9 +1325,10 @@ for each provider, mainly Claude and Codex. The wire contract is in
   `countProviderLogins` and excludes copies.
 - The popover row is the email with the plan as a quiet second word, its pace
   in words, then each window as a name-and-headroom line over a full-width bar.
-  Tags say where the numbers came from: **Last reading** (this machine's token
-  expired, so the bars are its last reading; the account still takes chats),
-  **via <machine>**, and **Not signed in here**. A login with an expired token
+  Tags say what this machine can do with the login: **Last reading** (this
+  machine's token expired, so the bars are its last reading; the account still
+  takes chats) and **Not signed in here**. The row shows no tag for a reading
+  that another machine took; the window's details name it ("Read on"). A login with an expired token
   and no bars reads "Login expired — renews on its next chat", not "No usage
   yet". The header shows only the windows a provider reports, so a Claude
   account without a five-hour window (weekly only) gets no phantom 5h slot; the

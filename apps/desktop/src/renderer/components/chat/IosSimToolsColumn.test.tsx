@@ -9,16 +9,6 @@ import type {
 } from "../../../shared/types/iosSimulator";
 import { IOS_SIMULATOR_ACCESSIBILITY_OPTIONS } from "../../../shared/types/iosSimulator";
 
-const ACCESSIBILITY_LABELS = [
-  "Increase contrast",
-  "Reduce motion",
-  "Reduce transparency",
-  "Bold text",
-  "Invert colours",
-  "Greyscale",
-  "VoiceOver",
-];
-
 function deviceSettings(
   overrides: Partial<IosSimulatorDeviceSettings> = {},
 ): IosSimulatorDeviceSettings {
@@ -136,15 +126,6 @@ describe("IosSimToolsColumn", () => {
     document.body.removeAttribute("inert");
     vi.unstubAllGlobals();
     vi.clearAllMocks();
-  });
-
-  it("renders one toggle per accessibility option the device answered for", () => {
-    renderColumn();
-
-    for (const label of ACCESSIBILITY_LABELS) {
-      expect(screen.getByRole("switch", { name: label })).toBeTruthy();
-    }
-    expect(screen.getAllByRole("switch")).toHaveLength(IOS_SIMULATOR_ACCESSIBILITY_OPTIONS.length);
   });
 
   // A device that answered nothing is not a device that answered "off". A

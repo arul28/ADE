@@ -160,7 +160,7 @@ This is a **hard gate**: if any lock file is dirty, stage it (`git add <path>`) 
 
 ### 3c. Typecheck all apps
 
-Run in parallel to match CI jobs (`typecheck-desktop`, `typecheck-ade-cli`, `typecheck-web`):
+Run in parallel, as CI does (the `typecheck` job runs desktop and ade-cli; the `packages` job runs web):
 
 ```bash
 cd apps/desktop && npm run typecheck

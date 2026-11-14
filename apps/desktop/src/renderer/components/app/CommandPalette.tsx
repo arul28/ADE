@@ -1434,8 +1434,12 @@ export function CommandPalette({
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
     // A picked computer that disconnected keeps its last listing; the read
-    // runs again for the same path once it connects again.
-    if (placeDisconnected) return;
+    // runs again for the same path once it connects again. A read still
+    // waiting for its delay was cancelled, so nothing is scanning.
+    if (placeDisconnected) {
+      setBrowseLoading(false);
+      return;
+    }
     const requestId = ++browseRequestRef.current;
     setBrowseLoading(true);
     setBrowseError(null);

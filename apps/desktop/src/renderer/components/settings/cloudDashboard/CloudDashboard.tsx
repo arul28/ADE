@@ -24,7 +24,7 @@ import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
-import { ADE_CLOUD_NAME, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME, CloudLogo, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
 import { MachineActionsMenu, type MachineAction } from "../../remoteTargets/MachineActionsMenu";
 import { confirmDialog } from "../../ui/dialog";
@@ -34,6 +34,8 @@ import { usageLeftLevel } from "../../usage/usageDesign";
 import { CloudAgentLimitsCard } from "../CloudAgentLimitsCard";
 import { ADE_CLOUD_FREE_SPACE_ANCHOR, ADE_CLOUD_PLAN_ANCHOR, decodeSettingsHash } from "../settingsHash";
 import { CloudCity, type CityItem } from "./CloudCity";
+import { CloudSky, useStillWhenHidden } from "./CloudSky";
+import { cloudPlanMomentWords, dismissCloudPlanMoment, useCloudPlanMomentState } from "./cloudPlanMoment";
 import { CloudFreeUpSpace } from "./CloudFreeUpSpace";
 import { CloudPlans } from "./CloudPlans";
 import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
@@ -44,6 +46,7 @@ import { CloudInviteCard } from "./CloudInvite";
 import {
   STATE_LABEL,
   dashLanes,
+  heroPeriodChip,
   hoursForecast,
   lastRunText,
   planName,
@@ -236,6 +239,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const banner = (account.planCleanup != null && accountBanner?.id === "cloud-over-plan-disk") || accountBanner?.id === CLOUD_FREE_GITHUB_BANNER_ID || accountBanner?.id === CLOUD_FREE_REFUSED_BANNER_ID ? null : accountBanner;
   const diskLimit = account.disk.limitGb ?? 0;
   const diskShare = diskLimit > 0 ? account.disk.usedGb / diskLimit : 0;
+  // "You're on Plus", while this session shows it (cloudPlanMoment.ts).
+  const moment = useCloudPlanMomentState();
   const openBillingPortal = async () => {
     try {
       await window.ade.cloud?.openBillingPortal?.();
@@ -254,7 +259,23 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         onSelect={selectFromCity}
         onOpen={openInside}
         now={now}
+        celebrating={moment != null}
       />
+
+      {moment ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: `cloud-plan-moment-${moment.key}`,
+            tone: "success",
+            icon: <CloudLogo size={14} glow />,
+            ...cloudPlanMomentWords(moment),
+            actions: [{ label: "See your plan", onClick: () => document.getElementById("cloud-plan")?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" }) }],
+            dismiss: { onDismiss: dismissCloudPlanMoment },
+            report: false,
+          }}
+        />
+      ) : null}
 
       {banner ? (
         <Banner
@@ -328,7 +349,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         </div>
       </section>
 
-      <CloudPlans account={account} onChanged={refresh} />
+      <CloudPlans account={account} onChanged={refresh} newPlanId={moment?.planId ?? null} />
       <CloudSizes account={account} />
 
       {/* Sign-ins on the left; the shorter agent limits and the invite card
@@ -350,9 +371,9 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 }
 
 /**
- * The night sky at the top: the plan, the three numbers that matter (hours,
- * disk, computers) and the city of the account's lanes. The numbers are said
- * once on the page; nothing below repeats them.
+ * The dusk sky at the top: the logo and the plan, the three numbers that
+ * matter (hours, disk, computers) and the city of the account's lanes. The
+ * numbers are said once on the page; nothing below repeats them.
  */
 function CloudHero({
   account,
@@ -362,6 +383,7 @@ function CloudHero({
   onSelect,
   onOpen,
   now,
+  celebrating,
 }: {
   account: CloudAccountState;
   lanes: readonly DashLane[];
@@ -370,7 +392,11 @@ function CloudHero({
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
   now: number;
+  /** A plan just landed: the plan's name glows once. */
+  celebrating: boolean;
 }) {
+  const heroRef = useRef<HTMLElement | null>(null);
+  useStillWhenHidden(heroRef);
   const hours = account.hours;
   const earned = cloudEarnedHoursOf(account).leftMilli;
   const hoursPct = hours.includedMilli > 0 ? (hours.leftMilli / hours.includedMilli) * 100 : 0;
@@ -382,54 +408,64 @@ function CloudHero({
   const blockedSentence = freePlan.state === "refused" ? freePlan.sentence ?? null : null;
   // The free plan's GitHub rules hold its hours: one line here, the plan card says what to do.
   const githubLine = account.rules === "free" && freePlan.github ? cloudFreeGithubHeroLine(freePlan.github) : null;
-  const resets = account.billing.cancelAtPeriodEnd
-    ? `plan ends ${formatCloudDate(account.billing.periodEnd)}`
-    : `resets ${formatCloudDate(account.billing.periodEnd)}`;
+  const period = heroPeriodChip(account);
+  const held = hours.includedMilli <= 0 && (githubLine || blockedSentence) && account.plan === "free";
   const toPlans = () => document.getElementById("cloud-plan")?.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
   return (
-    <section className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
-      <div className="adecd-hero-stars" aria-hidden="true" />
+    <section ref={heroRef} className="adecd-citycard adecd-hero" aria-label={`${ADE_CLOUD_NAME}, ${planName(account)}`}>
+      <CloudSky />
       <header className="adecd-hero-head">
-        <CloudMark size={20} brand bold />
-        <h2>{planName(account)}</h2>
+        <CloudLogo size={22} glow />
+        <span className="adecd-hero-brand">{ADE_CLOUD_NAME}</span>
+        <h2 className="adecd-hero-plan" data-celebrate={celebrating || undefined}>{cloudPlanLabelOf(account, cloudCatalogOf(account))}</h2>
+        <span className="adecd-hero-period" data-tone={period.tone ?? undefined}>{period.text}</span>
         <span className="adecd-grow" />
-        <button type="button" className="kit-btn" data-size="sm" onClick={toPlans}>
-          {account.plan === "free" ? "Compare plans" : "Plan and billing"}
-        </button>
+        {account.plan === "free" ? (
+          <button type="button" className="adecd-cta" onClick={toPlans}><span>Compare plans</span></button>
+        ) : (
+          <button type="button" className="adecd-glassbtn" onClick={toPlans}>Plan and billing</button>
+        )}
       </header>
       <div className="adecd-hero-body">
         <div className="adecd-hero-stats">
           <div className="adecd-hours">
-            <span className="adecd-label">Hours left this month</span>
+            <span className="adecd-label" title="Hours on your Linux computers in the cloud">Computer hours left this month</span>
             <div className="adecd-hours-num">
               <b className="kit-num" data-face="ui">{formatCloudHours(hours.leftMilli)}</b>
               {/* Free hours held (GitHub rules, or another account used them here): the plan's hours, on hold, never "of 0 h". */}
-              <span>{hours.includedMilli <= 0 && (githubLine || blockedSentence) && account.plan === "free"
+              <span>{held
                 ? `of ${formatCloudHours(cloudCatalogOf(account).plans.free.includedMilli)} h, on hold`
-                : `of ${formatCloudHours(hours.includedMilli)} h, ${resets}`}</span>
+                : `of ${formatCloudHours(hours.includedMilli)} h`}</span>
             </div>
             <div className="kit-meter adecd-meter" data-level={usageLeftLevel(hoursPct)}>
               <span style={{ width: `${Math.max(0, Math.min(100, hoursPct))}%` }} />
             </div>
-            <ul className="adecd-hours-notes">
-              {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
-              {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
-              {earned > 0 ? <li><b>+{formatCloudHours(earned)} hours</b> earned from invites. They never expire.</li> : null}
+            {blockedSentence || githubLine ? (
+              <ul className="adecd-hours-notes">
+                {blockedSentence ? <li data-tone="warn">{blockedSentence}</li> : null}
+                {githubLine ? <li data-tone="warn">{githubLine} <button type="button" className="adecd-linkish" onClick={toPlans}>See how</button></li> : null}
+              </ul>
+            ) : null}
+            <div className="adecd-hero-chips">
+              {earned > 0 ? <span className="adecd-hero-chip" data-tone="lamp" title="Earned from invites. They never expire.">+{formatCloudHours(earned)} h earned</span> : null}
               {account.extraHours.available ? (
-                <li>{account.extraHours.enabled
-                  ? `Extra hours are on${account.extraHours.usedMilli > 0 ? `: ${formatCloudHours(account.extraHours.usedMilli)} h used this month` : ""}.`
-                  : "Extra hours are off. Work stops when your hours run out."}</li>
+                <span className="adecd-hero-chip" title={account.extraHours.enabled ? "Work keeps going past your plan's hours, billed after use." : "Work stops when your hours run out."}>
+                  <i data-on={account.extraHours.enabled || undefined} />
+                  {account.extraHours.enabled
+                    ? `Extra hours on${account.extraHours.usedMilli > 0 ? `, ${formatCloudHours(account.extraHours.usedMilli)} h used` : ""}`
+                    : "Extra hours off"}
+                </span>
               ) : null}
-              {forecast ? <li>{forecast} <em>(estimate)</em></li> : null}
-            </ul>
+              {forecast ? <span className="adecd-hero-chip" title="An estimate from your last few days of use.">{forecast}</span> : null}
+            </div>
           </div>
           <div className="adecd-minis">
-            <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} note="All your computers together" />
+            <MiniMeter label="Disk" value={formatCloudGb(diskUsed)} of={diskLimit > 0 ? `of ${formatCloudGb(diskLimit)}` : null} pct={percentOf(diskUsed, diskLimit)} title="All your computers together" />
             {/* No plan limits how many computers an account has: a count, with no meter. */}
             <MiniMeter label="Computers" value={String(account.computers.total)} of={null} pct={null} note={`${account.computers.awake} awake now`} />
           </div>
         </div>
-        <div className="adecd-hero-city">
+        <div className="adecd-hero-city" title={lanes.length ? "Height is disk. Lit windows are awake." : undefined}>
           {lanes.length ? (
             <>
               <CloudCity
@@ -437,11 +473,11 @@ function CloudHero({
                 selectedKey={selectedKey}
                 onSelect={onSelect}
                 onOpen={onOpen}
-                label="Your cloud lanes as a city. Arrow keys move, Enter looks inside."
+                label="Your cloud lanes as a city: height is disk, lit windows are awake. Arrow keys move, Enter looks inside."
                 compact
                 maxLabels={3}
+                stars={false}
               />
-              <span className="adecd-city-cap">Height is disk. Lit windows are awake.</span>
             </>
           ) : (
             <div className="adecd-city-empty">
@@ -456,16 +492,14 @@ function CloudHero({
   );
 }
 
-/** `pct` null: a count with nothing to fill toward; the meter's row stays, empty, so the minis line up. */
-function MiniMeter({ label, value, of, pct, note }: { label: string; value: string; of: string | null; pct: number | null; note: string }) {
+/** `pct` null: a count with nothing to fill toward, no meter. The last row sits at the bottom, so the two tiles line up. */
+function MiniMeter({ label, value, of, pct, note, title }: { label: string; value: string; of: string | null; pct: number | null; note?: string; title?: string }) {
   return (
-    <div className="adecd-mini">
+    <div className="adecd-mini" title={title}>
       <span className="adecd-label">{label}</span>
       <div className="adecd-mini-num"><b className="kit-num" data-face="ui">{value}</b>{of ? <span>{of}</span> : null}</div>
-      {pct == null
-        ? <div className="kit-meter adecd-meter" aria-hidden="true" style={{ visibility: "hidden" }} />
-        : <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>}
-      <span className="adecd-mini-note">{note}</span>
+      {pct == null ? null : <div className="kit-meter adecd-meter" data-level={usageLeftLevel(100 - pct)}><span style={{ width: `${pct}%` }} /></div>}
+      {note ? <span className="adecd-mini-note">{note}</span> : null}
     </div>
   );
 }

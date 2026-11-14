@@ -103,6 +103,7 @@ import {
   DEFAULT_ATTACHMENT_ONLY_PROMPT,
   hasPastedTextPromptAttachment,
   isUnsupportedAgentChatRecoveryActionError,
+  TURN_RECOVERY_ACTION_BY_CODEX_ACTION,
   providerForkReplaysTranscript,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -244,6 +245,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { subscribeWhenChatApiReady } from "./chatEventSubscription";
 import {
   markCloudWakeForSend,
   savedChatAwareAgentChatApi,
@@ -10384,7 +10386,10 @@ export function AgentChatPane({
     return () => {
       retainChatSession(selectedSessionId, {
         subscribe: (listener) => (retainedBinding
-          ? agentChatApiRef.current.onEvent(listener, retainedBinding, { forcePinned: true })
+          ? subscribeWhenChatApiReady(
+              () => agentChatApiRef.current ?? savedChatAwareAgentChatApi(window.ade?.agentChat),
+              (api) => api.onEvent(listener, retainedBinding, { forcePinned: true }),
+            )
           : () => undefined),
       });
     };
@@ -10874,8 +10879,16 @@ export function AgentChatPane({
     type ChatEventListener = Parameters<typeof agentChatApiRef.current.onEvent>[0];
     const subscribe: ((listener: ChatEventListener) => () => void) | null = chatScope
       ? (listener) => chatScope.agentChat.onEvent(listener)
+      // ADE Web can render the pane before its bridge has the chat API
+      // (ADE-WEB-7): the feed attaches when the API appears, rather than a
+      // TypeError that takes the pane down. The ref is read again on each
+      // look, with `window.ade` as the fallback for a pane that has not
+      // rendered since.
       : chatRuntimePin
-        ? (listener) => agentChatApiRef.current.onEvent(listener, chatRuntimePin)
+        ? (listener) => subscribeWhenChatApiReady(
+            () => agentChatApiRef.current ?? savedChatAwareAgentChatApi(window.ade?.agentChat),
+            (api) => api.onEvent(listener, chatRuntimePin),
+          )
         : null;
     if (!subscribe) return undefined;
     const unsubscribe = subscribe((envelope) => {
@@ -16287,15 +16300,9 @@ export function AgentChatPane({
     },
     [handleApproval],
   );
-  const handleListCodexRecovery = useCallback(
+  const handleQuietTurnRecovery = useCallback(
     async (args: AgentChatRecoverCodexTurnArgs) => {
-      const action = args.action === "steer"
-        ? "nudge"
-        : args.action === "interrupt_retry_same_thread"
-          ? "retry_same_runtime"
-          : args.action === "restart_resume_thread"
-            ? "restart_resume"
-            : "wait";
+      const action = TURN_RECOVERY_ACTION_BY_CODEX_ACTION[args.action];
       try {
         const result = await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.recoverTurn({
           sessionId: args.sessionId,
@@ -20705,7 +20712,7 @@ export function AgentChatPane({
                         onCancelQueuedMessage={!subagentView && selectedSessionId ? listCancelQueuedMessage : undefined}
                         onRestoreCancelledQueue={!subagentView && selectedSessionId ? listRestoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
-                        onCodexRecovery={chatScope ? undefined : handleListCodexRecovery}
+                        onQuietTurnRecovery={chatScope ? undefined : handleQuietTurnRecovery}
                         onRecoverContinuity={chatScope ? undefined : recoverContinuity}
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
                         onEditUnprocessedMessage={listEditUnprocessedMessage}

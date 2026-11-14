@@ -966,7 +966,19 @@ export const CLOUD_LAUNCH_MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const CLOUD_LAUNCH_MAX_FILES = 10;
 export const CLOUD_LAUNCH_MAX_PROMPT_CHARS = 100_000;
 
+/**
+ * A CLI launch (a tracked CLI session the launching ADE app starts in the
+ * lane once the computer's brain has it) is sent as `lane`, with `cli` in
+ * `launch.kind`: a server or computer that predates it runs the lane alone
+ * instead of refusing the launch.
+ */
 export type CloudLaunchKind = "chat" | "lane";
+/**
+ * The most an ADE app's full launch args (`CloudServerLaunchRequest.launch`)
+ * may weigh, as JSON. The whole start is one request body of at most 256 KB,
+ * so the first message itself travels once, in `chat.prompt`.
+ */
+export const CLOUD_LAUNCH_MAX_ARGS_BYTES = 96 * 1024;
 
 /** A file uploaded first (`PUT .../files/:fileId`), named in the start. */
 export type CloudLaunchAttachment = { fileId: string; name: string; contentType: string; sizeBytes: number };
@@ -978,8 +990,12 @@ export type CloudServerLaunchRequest = {
   sizeId: CloudTierId;
   /** A GitHub origin, `github.com/owner/repo` (any spelling a git remote has). */
   project: { origin: string };
-  /** `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead. */
-  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null };
+  /**
+   * `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead.
+   * `autoName`: `name` is only the name from the prompt; the computer's brain renames the lane and its branch with
+   * the AI name, as a lane on the person's own computer is. Left out: `name` is the person's and is kept.
+   */
+  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null; autoName?: boolean };
   chat?: {
     provider: string;
     modelId: string;
@@ -997,9 +1013,37 @@ export type CloudServerLaunchRequest = {
    * in the desktop's vault, which the server can't read), so an automation
    * checks its own limits before it calls.
    */
-  madeBy?: { kind: "person" } | { kind: "automation"; ruleId?: string | null };
+  madeBy?:
+    | { kind: "person" }
+    | { kind: "automation"; ruleId?: string | null }
+    /**
+     * An agent through an ADE app (`ade chat create --machine cloud`, ADE
+     * MCP): `agent` and `chatSessionId` land on the computer as
+     * `ade_made_by_agent` and `ade_made_by_chat`, so the app's own agent
+     * limits count it.
+     */
+    | { kind: "agent"; agent: "chat" | "automation" | "mcp"; chatSessionId?: string | null };
   /** The app's update track; left out is `stable`. */
   channel?: CloudUpdateChannel;
+  /**
+   * From an ADE app: the launch exactly as the person set it up there
+   * (`ChatLaunchArgs` minus its cloud target, its stages, its files from
+   * that computer and a chat's first message, which `chat.prompt` carries),
+   * kept as sent, at most `CLOUD_LAUNCH_MAX_ARGS_BYTES`. The
+   * computer starts from it, so what the facts above leave out (plan mode, a
+   * provider's own permission modes, a lane template, a branch name, linked
+   * issues) carries too. The facts above win where both say something: ids,
+   * names, kind, lane start and the first message's files. A computer too
+   * old to read it starts from the facts alone.
+   */
+  launch?: Record<string, unknown>;
+  /**
+   * Start only, never kept: a launch whose computer failed before its agent
+   * started (it couldn't join, clone or start) begins again on a new
+   * computer, under the same id. Left out, the same id answers the launch
+   * as it is.
+   */
+  retry?: boolean;
 };
 
 /**

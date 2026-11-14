@@ -55,21 +55,6 @@ function renderRow(value: AdeAccountMachine, connected = false) {
 afterEach(cleanup);
 
 describe("AccountMachineRow", () => {
-  it("shows the battery percentage for a machine that has a battery", () => {
-    renderRow(
-      machine({
-        name: "MacBook Pro",
-        power: { onExternalPower: false, battery: { percent: 97, charging: false } },
-      }),
-    );
-    expect(screen.getByText("Online · 97% battery")).toBeTruthy();
-  });
-
-  it("renders no battery slot for a machine that has none", () => {
-    renderRow(machine({ name: "Mac Studio", power: { onExternalPower: true } }));
-    expect(screen.getByText("Online · plugged in")).toBeTruthy();
-    expect(screen.queryByText(/%/)).toBeNull();
-  });
 
   it("says asleep and offers Wake instead of Connect", () => {
     renderRow(

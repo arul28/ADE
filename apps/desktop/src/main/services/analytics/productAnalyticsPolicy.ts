@@ -14,7 +14,7 @@ function bucketLabels(table: BucketTable, ...extra: string[]): Set<string> {
 }
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
-import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS, PENDING_INSTALL_HANDOFF_STEPS } from "../../../shared/types";
 import {
   RENDERER_GONE_ANALYTICS_REASONS,
   RENDERER_GONE_UNKNOWN_REASON,
@@ -174,7 +174,7 @@ const STRING_PROPERTIES = new Set([
   "screen", "feature", "action", "outcome", "app_version", "runtime_mode", "provider", "model_family",
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
-  "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
+  "escalation_reason", "handoff_step", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
   "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
   "kind", "severity", "emulator_count", "top_table", "ram_gb_bucket",
@@ -253,9 +253,17 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the chat from spending another turn. Three coarse transitions and nothing
   // about the chat itself.
   "auto_resume",
-  // One coarse fact per "Report issue" press: whether the GitHub issue page
-  // opened. Never the surface it was pressed on, and never the report itself.
+  // Feature "issue_report". `issue_report`: whether a report sent from an
+  // error screen reached ADE (success | failed). `report_dialog`: the report
+  // dialog was opened, closed after a send (completed) or closed with nothing
+  // sent (cancelled). `github_issue`: the public GitHub issue page, offered only
+  // after a send, opened (opened | failed). `report_copied`: "Copy report"
+  // where sending is impossible (completed | failed). Never the surface, the
+  // report, the note, the reference or an error.
   "issue_report",
+  "report_dialog",
+  "github_issue",
+  "report_copied",
   // Machine membership. `machine_removed` is the user dropping a computer from
   // their account; `machine_register_refused` is the account directory refusing
   // to take THIS computer back, which is the state a revoked machine sits in
@@ -313,7 +321,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "cloud_lane_freed",
   "cloud_clear_caches",
   "cloud_default_size",
-  // One coarse fact per automatic diagnostic send: whether it went, was refused
+  // One coarse fact per automatic diagnostic send (feature "issue_report"): whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
   // local file and the upload the user was toasted about, not analytics.
@@ -561,7 +569,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_analytics_budget: new Set(["sent_count", "dropped_count", "drop_reason"]),
   ade_update_install_aborted: new Set(["reason"]),
   ade_update_quit_escalated: new Set(["blocked_ms", "escalation_reason", "native_staging_completed"]),
-  ade_update_install_did_not_land: new Set(["attempt"]),
+  ade_update_install_did_not_land: new Set(["attempt", "handoff_step"]),
   ade_update_auto_applied: new Set(),
   ade_update_auto_apply_cancelled: new Set(),
   ade_update_prompted: new Set(["from_version", "to_version", "user_action", "resume_chats"]),
@@ -702,6 +710,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // Passwords: on/off per computer, imports, and agents' sign-ins,
     // sign-ups and `secrets exec`.
     "passwords",
+    // Reports to ADE: the error screens' report dialog and its send, the
+    // public GitHub issue after a send, and ADE's automatic sends.
+    "issue_report",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -870,6 +881,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     RENDERER_GONE_UNKNOWN_REASON,
   ]),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
+  // How far a failed update's quit got (`PendingInstallUpdate.handoffStep`).
+  handoff_step: new Set(["none", ...PENDING_INSTALL_HANDOFF_STEPS]),
   install_source: new Set(["direct_download", "homebrew", "install_script", "development", "unknown"]),
   trigger: new Set(["work_session_completed", "cli_session_started"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),
@@ -914,7 +927,7 @@ const ERROR_KIND_BUCKETS = new Set([
   "timeout", "expired", "cancelled", "permission", "network", "type_error", "range_error", "syntax_error",
   "rate_limit", "budget", "busy", "cli_missing", "other",
   // A failed agent turn's finer kinds (`turnFailureKind`).
-  "server_overloaded", "context_too_long", "model_unavailable", "process_exited",
+  "server_overloaded", "context_too_long", "model_unavailable", "process_exited", "plan",
 ]);
 
 function coarseErrorKind(value: ProductAnalyticsPropertyValue): string | null {

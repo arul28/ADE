@@ -905,7 +905,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     if (pollTimer) clearInterval(pollTimer);
     pollTimerIntervalMs = intervalMs;
     pollTimer = setInterval(() => {
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, intervalMs);
     pollTimer.unref?.();
   };
@@ -931,7 +931,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     const delayMs = Math.max(0, relayPollCooldownUntilMs - Date.now());
     relayPollRetryTimer = setTimeout(() => {
       relayPollRetryTimer = null;
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, delayMs);
     relayPollRetryTimer.unref?.();
   };
@@ -1005,7 +1005,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectTimer = null;
       // A poll re-resolves config, repository, and fresh auth before opening the
       // next socket. Opening the socket then triggers a second catch-up drain.
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, delayMs);
     subscriptionReconnectTimer.unref?.();
   };
@@ -1058,7 +1058,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectAttempt = 0;
       setSubscriptionConnected(true);
       // The durable cursor may have advanced while the socket was unavailable.
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     });
     socket.on("message", (raw: RawData) => {
       if (subscriptionSocket !== socket) return;
@@ -1066,7 +1066,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         const frame = JSON.parse(rawDataToText(raw)) as unknown;
         if (isRecord(frame) && frame.t === "github_delivery") {
           noteRelayActivity();
-          void pollGithubRelayOnce();
+          pollGithubRelayInBackground();
         }
       } catch {
         // Wake-up frames are hints only; malformed/unknown frames are ignored.
@@ -1535,6 +1535,20 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           : error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  /**
+   * A poll nobody awaits (a timer, a wake-up). Its config and status reads
+   * run before the poll's own catch, and a project database that stops
+   * answering throws there; unhandled, that rejection reaches the brain's
+   * crash handler. The next timer tick polls again.
+   */
+  const pollGithubRelayInBackground = (): void => {
+    void pollGithubRelayOnce().catch((error: unknown) => {
+      args.logger.warn("automations.github_relay_background_poll_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const pollGithubRelayOnce = async () => {

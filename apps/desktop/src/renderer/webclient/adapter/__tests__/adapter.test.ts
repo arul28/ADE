@@ -2317,7 +2317,7 @@ describe("createAdeWebAdapter", () => {
       return { feedback, hooks };
     }
 
-    function stubBrowser(open: (url: string) => { opener: unknown } | null) {
+    function stubBrowser() {
       const stored = new Map<string, string>();
       vi.stubGlobal("window", {
         localStorage: {
@@ -2325,7 +2325,6 @@ describe("createAdeWebAdapter", () => {
           setItem: (key: string, value: string) => stored.set(key, value),
         },
         location: { pathname: "/work" },
-        open: vi.fn(open),
       });
       vi.stubGlobal("navigator", {
         userAgent: "Safari",
@@ -2345,7 +2344,7 @@ describe("createAdeWebAdapter", () => {
         args: expect.objectContaining({
           event: "ade_feature_used",
           surface: "web",
-          properties: { feature: "connections", action: "issue_report", outcome },
+          properties: { feature: "issue_report", action: "issue_report", outcome },
         }),
       });
     }
@@ -2363,13 +2362,16 @@ describe("createAdeWebAdapter", () => {
       ["the transport failed (an ad blocker, no network)", {}, false],
       ["Sentry refused the note", { statusCode: 429 }, false],
     ])("gives a reference only once %s", async (_case, answer, delivered) => {
-      stubBrowser(() => null);
+      stubBrowser();
       const sentry = webSentry(answer);
       const adapter = createAdeWebAdapter(fake.asClient());
 
-      const sendManual = diagnosticsOf(adapter).sendManual;
-      if (!sendManual) throw new Error("sendManual is missing while Sentry runs");
-      const result = await sendManual(CRASH);
+      const diagnostics = diagnosticsOf(adapter);
+      const prepared = await diagnostics.prepareReport?.(CRASH);
+      if (!prepared?.ok) throw new Error("prepareReport failed while Sentry runs");
+      const sendReport = diagnostics.sendReport;
+      if (!sendReport) throw new Error("sendReport is missing while Sentry runs");
+      const result = await sendReport(prepared.id);
 
       expect(result.ok).toBe(delivered);
       // The note opens beside the crash the screen showed, not the newest event.
@@ -2383,26 +2385,18 @@ describe("createAdeWebAdapter", () => {
       await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome(delivered ? "success" : "failed")));
     });
 
-    it("opens the GitHub issue with no path or email in its public title, and says when the tab was blocked", async () => {
-      stubBrowser(() => null);
-      const adapter = createAdeWebAdapter(fake.asClient());
+    it("sends nothing while the report is only prepared, and a discarded report cannot be sent", async () => {
+      stubBrowser();
+      const sentry = webSentry({ statusCode: 200 });
+      const diagnostics = diagnosticsOf(createAdeWebAdapter(fake.asClient()));
 
-      const blocked = await diagnosticsOf(adapter).openIssue(CRASH);
-      const title = new URL(blocked.issueUrl).searchParams.get("title") ?? "";
-      expect(title).toMatch(/^Web: /);
-      expect(title).not.toMatch(/\/Users\/arul|arul@example\.com/);
-      expect(blocked.report).not.toMatch(/\/Users\/arul|arul@example\.com/);
-      expect(blocked.copied).toBe(true);
-      expect(blocked.opened).toBe(false);
-      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome("failed")));
+      const prepared = await diagnostics.prepareReport?.(CRASH);
+      if (!prepared?.ok) throw new Error("prepareReport failed while Sentry runs");
+      expect(sentry.feedback).toHaveLength(0);
 
-      const tab = { opener: {} as unknown };
-      stubBrowser(() => tab);
-      const opened = await diagnosticsOf(createAdeWebAdapter(fake.asClient())).openIssue(CRASH);
-      expect(opened.opened).toBe(true);
-      // The issue page cannot reach back into the client.
-      expect(tab.opener).toBeNull();
-      await vi.waitFor(() => expect(fake.commandCalls).toContainEqual(recordedOutcome("opened")));
+      await diagnostics.discardReport?.(prepared.id);
+      await expect(diagnostics.sendReport?.(prepared.id)).resolves.toEqual({ ok: false, reason: "expired" });
+      expect(sentry.feedback).toHaveLength(0);
     });
   });
 

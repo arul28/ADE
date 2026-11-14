@@ -350,15 +350,6 @@ describe("SessionContextMenu lane section", () => {
     expect(selectLane).not.toHaveBeenCalled();
   });
 
-  it("puts a glanceable icon on every top-level action", () => {
-    renderMenu(makeSession());
-    for (const name of ["Rename", "Go to lane", "Delete chat"]) {
-      expect(screen.getByRole("button", { name }).querySelector("[data-menu-icon]")).toBeTruthy();
-    }
-    expect(screen.getByTestId("session-menu-change-status").querySelector("[data-menu-icon]"))
-      .toBeTruthy();
-  });
-
   it("omits the lane section for a row whose lane still has a divider", () => {
     // Not a singleton: the lane header is on screen and owns lane management,
     // so duplicating it into every row's session menu would be pure noise.

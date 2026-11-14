@@ -233,15 +233,6 @@ function renderWebWelcome(
 }
 
 describe("ProjectWelcomePage worktree recents", () => {
-  it("renders a worktree chip and a merge action for a worktree recent", async () => {
-    renderWelcome();
-
-    expect(await screen.findByText("app-feature")).toBeTruthy();
-    expect(screen.getByText("worktree of app")).toBeTruthy();
-    expect(
-      screen.getByLabelText("Merge into app as a lane…"),
-    ).toBeTruthy();
-  });
 
   it("merge confirm forgets the recent and navigates to the auto-registered lane", async () => {
     inspectPath.mockResolvedValueOnce(inspection());

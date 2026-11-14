@@ -161,6 +161,13 @@ export type ChatLaunchCloudState = {
    * shows it until the clone is done. Absent when the check settled it.
    */
   warning?: string;
+  /**
+   * While ADE Cloud waits for a person to let the new computer join: its own
+   * sign-in stopped on a page a person must confirm (the server launcher's
+   * `needs_approval`). The page that approves it, opened where the person is
+   * signed in to ADE; the card shows Approve. Absent otherwise.
+   */
+  approvalUrl?: string;
 };
 
 export type ChatLaunchSnapshot = {
@@ -381,6 +388,13 @@ export type ChatLaunchQueueMessageArgs = {
   text: string;
   displayText?: string | null;
   attachments?: AgentChatFileRef[];
+  /**
+   * The message's id from whoever queued it first (an ADE Cloud launch hands
+   * its queued messages to the computer with their ids). It becomes the queued
+   * message's id and its `clientSendId`, so a retried hand-off is queued and
+   * sent once. Absent: the host makes one.
+   */
+  clientSendId?: string;
 };
 
 /** CLI launches: the launching client reports the PTY session it started in the lane. */

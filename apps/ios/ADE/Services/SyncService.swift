@@ -4214,6 +4214,9 @@ final class SyncService: ObservableObject {
         helloSentWithProvisionalDeviceId = deviceIdIsProvisional
         // The focused computer answered: a failed wake of it is over.
         if let key = focusedMachineKey, cloudWakeFailures[key] != nil { cloudWakeFailures[key] = nil }
+        // A `provider_logins_changed` pushed while the phone was away is not
+        // replayed: an open sign-ins view reads again on the way back.
+        providerLoginsRevision += 1
       }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
@@ -4293,6 +4296,8 @@ final class SyncService: ObservableObject {
   @Published private(set) var activeProjectHostIdentity: String?
   @Published private(set) var projectSwitchInFlightRootPath: String?
   @Published private(set) var discoveredHosts: [DiscoveredSyncHost] = []
+  /// The pending merge of a burst of discovery callbacks (`scheduleDiscoveredHostsPublish`).
+  private var discoveredHostsPublishTask: Task<Void, Never>?
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(
     uniqueKeysWithValues: SyncDomain.allCases.map { ($0, .disconnected) }
   )
@@ -4416,6 +4421,10 @@ final class SyncService: ObservableObject {
   /// Host-pushed invalidation for GitHub projection changes that do not touch
   /// replicated `pull_requests` rows (notably unmapped PR webhooks).
   @Published private(set) var prsRemoteRevision = 0
+  /// Host-pushed: the provider sign-ins changed there (a pass or key saved, a
+  /// sign-in applied), or the connection came back. An open sign-ins card
+  /// reads `providerLogins.status` again.
+  @Published private(set) var providerLoginsRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
@@ -7165,16 +7174,14 @@ final class SyncService: ObservableObject {
     discoveryBrowser.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
         self?.bonjourDiscoveredHosts = hosts
-        self?.publishMergedDiscoveredHosts()
-        self?.considerTransportUpgrade()
+        self?.scheduleDiscoveredHostsPublish()
       }
     }
     discoveryBrowser.start()
     tailnetDiscovery.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
         self?.tailnetDiscoveredHosts = hosts
-        self?.publishMergedDiscoveredHosts()
-        self?.considerTransportUpgrade()
+        self?.scheduleDiscoveredHostsPublish()
       }
     }
     tailnetDiscovery.preferredPortsProvider = { [weak self] in
@@ -7831,6 +7838,23 @@ final class SyncService: ObservableObject {
 
   private func publishMergedDiscoveredHosts() {
     applyDiscoveredHosts(bonjourDiscoveredHosts + tailnetDiscoveredHosts)
+  }
+
+  /// One merge for a burst of discovery callbacks. Bonjour reports each
+  /// service it resolves, and the tailnet scan reports each port, so a wake
+  /// or a network change sent many callbacks in a row. Each one ran a full
+  /// merge, a saved-profile pass and a publish on the main thread, and the
+  /// run of them held the main thread long enough for the watchdog to end the
+  /// app (ADE-IOS-27). The merge reads the latest lists when it runs.
+  private func scheduleDiscoveredHostsPublish() {
+    guard discoveredHostsPublishTask == nil else { return }
+    discoveredHostsPublishTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(150))
+      guard let self else { return }
+      self.discoveredHostsPublishTask = nil
+      self.publishMergedDiscoveredHosts()
+      self.considerTransportUpgrade()
+    }
   }
 
   /// Discovery seeing the machine on the local network is the honest signal
@@ -16125,7 +16149,10 @@ final class SyncService: ObservableObject {
     // unless the caller already named a target explicitly (e.g. the hub
     // composer creating into a chosen project).
     let scope = chatCommandScope(for: sessionId)
-    var args: [String: Any] = ["sessionId": sessionId, "text": text]
+    // One id per send (`AgentChatSendArgs.clientSendId`): if this command is
+    // delivered twice (the offline queue replaying it after a reconnect), the
+    // host writes the message once. Older hosts ignore the key.
+    var args: [String: Any] = ["sessionId": sessionId, "text": text, "clientSendId": UUID().uuidString]
     // The Chats page is one of ADE's own surfaces: a personal chat written
     // before profiles existed becomes an assistant chat when used from here
     // (`PersonalChatAssistantClaim` on the host). Project chats never carry it.
@@ -20980,17 +21007,22 @@ final class SyncService: ObservableObject {
       guard !matching.isEmpty else { continue }
       let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
       guard updated != profile else { continue }
-      let token: String?
-      switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
-      case .value(let stored): token = stored
-      case .absent: token = nil
-      case .failed:
-        // Moving the profile without its secret would lose the secret.
-        pairingSecretReadFailed = true
-        continue
+      let updatedKey = profileStorageKey(updated) ?? key
+      // The secret moves only when the profile is re-keyed. A new address or
+      // port (most discovery updates) keeps the key, and reading the keychain
+      // here ran on the main thread for every such update (ADE-IOS-27).
+      var token: String?
+      if updatedKey != key {
+        switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
+        case .value(let stored): token = stored
+        case .absent: token = nil
+        case .failed:
+          // Moving the profile without its secret would lose the secret.
+          pairingSecretReadFailed = true
+          continue
+        }
       }
       profiles.removeValue(forKey: key)
-      let updatedKey = profileStorageKey(updated) ?? key
       profiles[updatedKey] = updated
       if let token, updatedKey != key {
         // Move the valid token to the new key, overwriting any stale token that
@@ -22974,6 +23006,9 @@ final class SyncService: ObservableObject {
         }
       }
       resolve(requestId: requestId, result: .success(payload))
+    case "provider_logins_changed":
+      providerLoginsRevision += 1
+      resolve(requestId: requestId, result: .success(payload))
     case "prs_updated":
       // Coalesce at the view task boundary. The host sends only a tiny
       // invalidation signal; PRsTabView then performs one cached/projected
@@ -24646,7 +24681,7 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil,
+    targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     // Field diagnostics: one line per host command (name and round trip), so
@@ -24658,17 +24693,19 @@ final class SyncService: ObservableObject {
       }
     }
     let targetProjectId: String?
+    let targetProjectRootPath: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
       args: rawArgs,
       targetProjectId: rawTargetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
+      targetProjectRootPath: rawTargetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId, let focusedArgs):
+    case .focused(let projectId, let rootPath, let focusedArgs):
       targetProjectId = projectId
+      targetProjectRootPath = rootPath
       args = focusedArgs
     }
     let runtimeScoped = commandIsRuntimeScoped(action)
@@ -24687,7 +24724,10 @@ final class SyncService: ObservableObject {
     // sync project. Most callers default to the active project; shell launches
     // opt out when the selected lane does not carry trustworthy project scope.
     let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
-    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath)
+    // The active project's root only stands in for the active project itself:
+    // another target project with no root sends none.
+    let activeRootFallback = (syncNormalizedCommandScopeValue(targetProjectId) == nil || targetProjectId == self.activeProjectId) ? self.activeProjectRootPath : nil
+    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeRootFallback) : targetProjectRootPath)
     // The host already ran this exact request from the hello: wait for that
     // answer (or take it, if it came first) instead of asking again.
     if let pipelinedRequestId = takePipelinedHelloCommand(
@@ -24735,22 +24775,24 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil,
+    targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
     let targetProjectId: String?
+    let targetProjectRootPath: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
       args: rawArgs,
       targetProjectId: rawTargetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
+      targetProjectRootPath: rawTargetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId, let focusedArgs):
+    case .focused(let projectId, let rootPath, let focusedArgs):
       targetProjectId = projectId
+      targetProjectRootPath = rootPath
       args = focusedArgs
     }
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
@@ -25556,7 +25598,7 @@ extension SyncService {
       timeoutNanoseconds: nil
     ) {
     case .routed(let result): return result
-    case .focused(_, let focusedArgs): args = focusedArgs
+    case .focused(_, _, let focusedArgs): args = focusedArgs
     }
     guard supportsRemoteAction(action) else {
       throw NSError(
@@ -25718,10 +25760,17 @@ extension SyncService {
     }
 
     let update = try? decode(eventObject, as: AgentChatSessionMetaModeUpdate.self)
-    // Nothing to fold into the cached summary: no mode change and no title.
-    guard (update?.hasAnyField ?? false) || adoptedTitle != nil,
+    // The chat's whole list of other machines it works on (the brain sends
+    // it all at once after each new use). Absent = no change.
+    let remoteWork: [AgentChatRemoteWorkUse]? = (eventDict?["remoteWork"] as? [Any])
+      .flatMap { try? decode($0, as: [AgentChatRemoteWorkUse].self) }
+    // Nothing to fold into the cached summary: no mode change, no title, no remote work.
+    guard (update?.hasAnyField ?? false) || adoptedTitle != nil || remoteWork != nil,
           var summary = chatSummaryCache[envelope.sessionId]
     else { return }
+    if let remoteWork {
+      summary.remoteWork = remoteWork
+    }
     // `applyModeUpdate` applies an explicit `cursorModeId: null` /
     // `cursorConfigValues: null` clear directly to the cached summary (nulling
     // the field), so the cache is authoritative right here at receipt. The open
@@ -28435,9 +28484,18 @@ extension SyncService {
     // (`workRemoteLaneId`). The host gets the plain lane id, and the command
     // goes to the lane's machine in the project that machine holds.
     let laneTarget = try syncRemoteLaneTarget(args: args)
+    // A chat's work copy on another machine (`registerRemoteWorkCopyLane`) lives in
+    // the project the chat's brain named, which need not be the checkout the
+    // focused repository matches there. Also on the focused machine itself.
+    let workCopyProject = (args["laneId"] as? String).flatMap(SyncRemoteWorkCopyProjects.shared.project(laneId:))
     if let laneTarget {
       args = laneTarget.args
-      if laneTarget.machineKey != focusedMachineKey {
+      if let workCopyProject {
+        targetProjectId = laneTarget.machineKey == focusedMachineKey
+          ? workCopyProject.projectId
+          : syncFleetMarkedProjectId(machineKey: laneTarget.machineKey, projectId: workCopyProject.projectId)
+        targetProjectRootPath = workCopyProject.rootPath
+      } else if laneTarget.machineKey != focusedMachineKey {
         let repo = try requireRemoteLaneRepo(machineKey: laneTarget.machineKey)
         targetProjectId = repo.markedProjectId
         targetProjectRootPath = repo.rootPath
@@ -28469,6 +28527,7 @@ extension SyncService {
     }
     return .focused(
       projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId,
+      rootPath: targetProjectRootPath,
       args: args
     )
   }

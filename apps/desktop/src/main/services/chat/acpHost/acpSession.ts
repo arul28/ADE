@@ -104,6 +104,23 @@ export const ACP_LOCAL_USAGE_DEADLINE_MS = 250;
 
 export type AcpSessionEntryMode = "new" | "resume" | "load";
 
+/**
+ * True when a rejoin failed because the agent no longer knows the session.
+ * The spec's answer is -32002 (resource not found). Kimi answers -32602
+ * (invalid params) with "Unknown sessionId", which is the same verdict: an
+ * invalid-params answer counts only when its words name the session.
+ */
+export function isAcpRejoinSessionMissing(error: unknown): boolean {
+  if (!(error instanceof AcpRpcError)) return false;
+  if (error.code === ACP_RPC_RESOURCE_NOT_FOUND) return true;
+  if (error.code !== -32602) return false;
+  // The agent's own words, without ADE's "ACP session/resume failed (…)"
+  // prefix: the method name says "session" on every such failure.
+  const agentWords = getErrorMessage(error).replace(/^ACP \S+ failed \(-?\d+\):\s*/, "");
+  return /\b(?:unknown|invalid|no such) session(?:[ _]?id)?\b|\bsession(?:[ _]?id)?\b[^\n]{0,60}\b(?:not found|does not exist)\b/i
+    .test(agentWords);
+}
+
 export type AcpSessionEntryPlan = {
   mode: AcpSessionEntryMode;
   /** True when the host must drop the updates the entry call produces. */
@@ -544,7 +561,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
         // The agent has no such session: it never persisted one that did not
         // finish a turn, or its store was cleared. There is nothing left to
         // rejoin, so open a new session rather than leave the chat unopenable.
-        if (!(error instanceof AcpRpcError) || error.code !== ACP_RPC_RESOURCE_NOT_FOUND) throw error;
+        if (!isAcpRejoinSessionMissing(error)) throw error;
         args.logger?.warn("agent_chat.acp_rejoin_session_missing", {
           provider: dialect.providerId,
           mode,

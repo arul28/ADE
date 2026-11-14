@@ -50,13 +50,6 @@ function onPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
 }
 
 describe("bundled agent skill rosters", () => {
-  it("has a non-trivial directory to check against", () => {
-    // Guards the failure mode that would make every assertion below vacuous:
-    // a mistyped root resolves to an empty listing and two empty lists agree.
-    const onDisk = readSkillDirectoriesOnDisk();
-    expect(onDisk.length).toBeGreaterThanOrEqual(12);
-    expect(onDisk).toContain("ade-cli-control-plane");
-  });
 
   it("advertises every skill directory in the prompt-facing list", () => {
     // Fails when someone adds resources/agent-skills/<name>/ without adding

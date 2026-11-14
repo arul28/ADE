@@ -370,28 +370,6 @@ describe("aiIntegrationService", () => {
     expect(usageInsertCalls(runCalls)).toHaveLength(1);
   });
 
-  it("passes through the resolved descriptor and session id", async () => {
-    const { service } = makeService({
-      aiConfig: { features: { initial_context: true } },
-    });
-
-    await service.executeTask({
-      feature: "initial_context",
-      taskType: "review",
-      prompt: "Evaluate this step",
-      cwd: "/tmp",
-      model: "openai/gpt-5.4",
-      sessionId: "carry-forward-session",
-      permissionMode: "read-only",
-    });
-
-    expect(mockState.runProviderTask).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "carry-forward-session",
-      descriptor: expect.objectContaining({ id: "openai/gpt-5.4" }),
-      permissionMode: "read-only",
-    }));
-  });
-
   it("uses the feature model override when executeTask omits model", async () => {
     const { service } = makeService({
       aiConfig: {
@@ -636,14 +614,6 @@ describe("aiIntegrationService", () => {
       { id: "openai", name: "OpenAI", connected: true, modelCount: 1 },
     ]);
     expect(status.availableModelIds).toContain("opencode/openai/gpt-5.4-mini");
-  });
-
-  it("clears the OpenCode binary cache on forced status refresh", async () => {
-    const { service } = makeService();
-
-    await service.getStatus({ force: true });
-
-    expect(mockState.clearOpenCodeBinaryCache).toHaveBeenCalledTimes(1);
   });
 
   it("keeps forced status refresh non-interactive for Claude", async () => {

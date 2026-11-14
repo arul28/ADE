@@ -10,7 +10,15 @@
 import { isRecord } from "./cli";
 
 /** "12.5" from a number of hours, "—" when unknown. */
+/** Hours to the tenth, rounded down, as the desktop writes them: 299.8 left reads "299.8", never "300". */
 function cloudHoursText(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value)
+    ? (Math.floor(Math.max(0, value) * 10 + 1e-9) / 10).toLocaleString("en-US", { maximumFractionDigits: 1 })
+    : "—";
+}
+
+/** A disk figure to the tenth (rounded, as the disk meter does). */
+function cloudGbText(value: unknown): string {
   return typeof value === "number" ? (Math.round(value * 10) / 10).toLocaleString("en-US") : "—";
 }
 
@@ -43,25 +51,34 @@ export function formatCloudStatus(value: unknown): string {
   if (can.ok === true) rows.push(["New lane", "can start now"]);
   else lines.push(`No new lane on ADE Cloud now: ${typeof can.reason === "string" ? can.reason : "ADE couldn't tell why."}`);
   const plan = isRecord(status.plan) ? status.plan : null;
+  const hours = isRecord(status.hours) ? status.hours : null;
   if (plan) {
     const includes = isRecord(plan.includes) ? plan.includes : {};
     // The plan's disk is one total shared by all the account's computers (every server since plans).
     const disk = typeof includes.diskGb === "number" ? `${includes.diskGb} GB disk shared by all computers` : null;
+    // A period keeps the hours it began with: when the plan's hours changed
+    // since (a new plan table), say both, so this line and Hours agree.
+    const periodHours = hours && typeof hours.included === "number" ? hours.included : null;
+    const resetsOn = hours && typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : null;
+    const planHours = typeof includes.hours === "number"
+      ? periodHours != null && periodHours !== includes.hours && resetsOn
+        ? `${cloudHoursText(periodHours)} computer hours this period, ${cloudHoursText(includes.hours)} from ${resetsOn}`
+        : `${cloudHoursText(includes.hours)} computer hours`
+      : null;
     const facts = [
-      typeof includes.hours === "number" ? `${cloudHoursText(includes.hours)} hours` : null,
+      planHours,
       disk,
     ].filter(Boolean).join(", ");
     const pastDue = plan.pastDue === true ? " · last payment failed, free plan rules until paid" : "";
     rows.push(["Plan", `${String(plan.label ?? plan.id ?? "—")}${facts ? ` (${facts})` : ""}${pastDue}`]);
   }
-  const hours = isRecord(status.hours) ? status.hours : null;
   if (hours) {
     const resets = typeof hours.resetsAt === "string" ? hours.resetsAt.slice(0, 10) : "—";
     const extra = isRecord(hours.extraHours) && hours.extraHours.enabled === true ? " · extra hours on" : "";
     rows.push(["Hours", `${cloudHoursText(hours.left)} of ${cloudHoursText(hours.included)} left · resets ${resets}${extra}`]);
   }
   const disk = isRecord(status.disk) ? status.disk : null;
-  if (disk) rows.push(["Disk", `${cloudHoursText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
+  if (disk) rows.push(["Disk", `${cloudGbText(disk.usedGb)}${typeof disk.limitGb === "number" ? ` of ${disk.limitGb}` : ""} GB used`]);
   const computers = isRecord(status.computers) ? status.computers : null;
   // No plan limits how many computers an account has: a count, never "of N" (an older app may still send max).
   if (computers) rows.push(["Computers", `${String(computers.inUse ?? "—")} ${computers.inUse === 1 ? "computer" : "computers"} · ${String(computers.awake ?? 0)} awake`]);
@@ -86,13 +103,16 @@ export function formatCloudStatus(value: unknown): string {
   const laneRows = lanes.map((box) => {
     const lane = isRecord(box.lane) ? box.lane : null;
     const size = isRecord(box.size) ? String(box.size.label ?? "") : String(box.sizeLabel ?? "");
+    // A computer that never signed in to ADE (its join failed or is waiting
+    // for approval) runs no ADE yet: neither "running" nor "up to date" is true.
+    const notJoined = "machineKey" in box && !box.machineKey;
     return [
       lane ? boxName(box) : `(no lane) ${boxName(box)}`,
       size,
       typeof box.hoursRate === "number" ? `${box.hoursRate}× hours` : "—",
-      String(box.state ?? ""),
+      notJoined ? `${String(box.state ?? "")}, not joined to ADE yet` : String(box.state ?? ""),
       lane && typeof lane.projectOrigin === "string" ? lane.projectOrigin : "",
-      cloudUpdateText(box.update),
+      notJoined ? "" : cloudUpdateText(box.update),
       typeof box.deletesAt === "string" ? `computer deleted ${box.deletesAt.slice(0, 10)} unless used or kept` : "",
     ];
   });

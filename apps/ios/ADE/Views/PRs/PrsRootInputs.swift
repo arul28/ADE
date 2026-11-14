@@ -66,7 +66,7 @@ struct PrsRootInputs: Equatable {
       // the phone tried last.
       if let rootPath = project.rootPath,
          let copy = accountProject?.copies.first(where: { $0.rootPath == rootPath }) {
-        directComputerName = AccountService.shared.machines.first { $0.machineKey == copy.machineKey }?.displayName
+        directComputerName = AccountService.shared.machines.first { $0.machineKey == copy.machineKey }?.presentedName
       }
     }
   }
@@ -97,6 +97,8 @@ struct PRsTabShell: View {
   /// Sign-in and sign-out change whether the tab can read GitHub directly.
   @ObservedObject private var account = AccountService.shared
   @ObservedObject private var github = GitHubAccountConnection.shared
+  /// A lane computer's label changed: the direct-PR header names it again.
+  @ObservedObject private var laneLabels = CloudLaneComputerLabelsRevision.shared
   var isActive = true
 
   var body: some View {

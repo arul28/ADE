@@ -48,6 +48,7 @@ import {
 
   subTextStyle,
 } from "./remoteTargetListStyles";
+import { adeCloudLaneLabelForMachine, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
@@ -151,6 +152,11 @@ export function AccountMachineRow({
 }: AccountMachineRowProps) {
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
+  // What the row shows: a cloud lane computer reads "Cloud · <lane>" (its own name stays in the tooltip and rename field).
+  const { computers: cloudComputers } = useAdeCloudLaneComputers();
+  // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
+  const cloudLabel = adeCloudLaneLabelForMachine({ machineKey: machine.machineKey, hostname: machine.name }, cloudComputers);
+  const shownName = cloudLabel ?? displayName;
   const installLabel = accountMachineInstallLabel(machine);
   const installTag = installLabel && installLabel !== "ADE" ? installLabel : null;
   const [renaming, setRenaming] = useState(false);
@@ -199,10 +205,10 @@ export function AccountMachineRow({
       style={{ display: "grid", gap: 8 }}
     >
       <div style={{ ...machineRowStyle, opacity: !awake && section === "unavailable" ? 0.62 : 1 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+        <div className="ade-cx-row-grid">
           <MachineAvatar
             colorKey={machine.machineKey}
-            name={displayName}
+            name={shownName}
             platform={machinePlatform(machine.platform)}
             formFactor={machineFormFactor({ name: displayName, power: machine.power })}
             editable
@@ -262,8 +268,8 @@ export function AccountMachineRow({
                 </form>
               ) : (
                 <>
-                  <span className="ade-cx-machine-name" style={nameStyle} title={machine.adeHome ?? undefined}>
-                    {installTag ? accountMachineRowName(machine) ?? displayName : displayName}
+                  <span style={nameStyle} title={cloudLabel ? displayName : machine.adeHome ?? undefined}>
+                    {cloudLabel ?? (installTag ? accountMachineRowName(machine) ?? displayName : displayName)}
                   </span>
                   {/* The install is named only when it is not the regular
                       app, which is the case where two rows share a name. */}
@@ -294,7 +300,7 @@ export function AccountMachineRow({
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
+          <div className="ade-cx-row-actions" style={{ gap: 6, flexWrap: "wrap", alignItems: "center" }}>
             {connecting ? (
               <button
                 type="button"

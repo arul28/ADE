@@ -1,3 +1,10 @@
+import {
+  isMachineScopeRootPath,
+  isMachineScopeOlderBrainError,
+  MACHINE_SCOPE_PROJECT_ID,
+  MACHINE_SCOPE_ROOT_PATH,
+  THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE,
+} from "../../../shared/machineScope";
 import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import { readWindowsProcessImages } from "../android/androidEmulatorImage";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -90,6 +97,15 @@ import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipc
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
+/** The machine scope as a project record, so the per-root calls reach it unchanged. */
+const MACHINE_SCOPE_PROJECT_RECORD: RemoteRuntimeProjectRecord = {
+  projectId: MACHINE_SCOPE_PROJECT_ID,
+  rootPath: MACHINE_SCOPE_ROOT_PATH,
+  displayName: "This computer",
+  addedAt: 0,
+  lastOpenedAt: 0,
+  gitOriginUrl: null,
+};
 const SLOW_ACTION_THRESHOLD_MS = 500;
 /**
  * A slow action that keeps being slow (a status poll every few seconds) says
@@ -2228,6 +2244,8 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     registration: ProjectRegistrationIntent = SYSTEM_PROJECT_REGISTRATION,
   ): Promise<RemoteRuntimeProjectRecord> {
+    // This computer's own settings: the brain's machine scope, never registered.
+    if (isMachineScopeRootPath(rootPath)) return MACHINE_SCOPE_PROJECT_RECORD;
     const normalizedRoot = path.resolve(rootPath);
     while (true) {
       this.assertNotDisposed();
@@ -2360,6 +2378,12 @@ export class LocalRuntimeConnectionPool {
    * of time, not one per poll.
    */
   private dropStaleProjectRecord(rootPath: string, project: RemoteRuntimeProjectRecord, error: unknown): boolean {
+    if (project === MACHINE_SCOPE_PROJECT_RECORD) {
+      // Never registered, so never re-registered. A brain older than this app
+      // looks the scope up as a project: say what to do instead.
+      if (isMachineScopeOlderBrainError(error)) throw new Error(THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE);
+      return false;
+    }
     if (unknownProjectIdInError(error) !== project.projectId) return false;
     // `ensureProject` caches a moved project under its new folder; follow the
     // same redirect so the record dropped is the one that was handed out.
@@ -3758,8 +3782,15 @@ export class LocalRuntimeConnectionPool {
         // sends the person to a Repair that cannot change the answer.
         recoveryCode = "background_item_blocked";
       } else if (
-        this.serviceInstallStatus.state === "failed"
-        || this.serviceHealthStatus.state === "not_installed"
+        // A service its manager reports as running is installed, even when
+        // the last install attempt failed: the endpoint check below says
+        // whether it answers. "Not installed" there sent the person to a
+        // Repair that had just failed (ADE-DESKTOP-61, Windows).
+        this.serviceHealthStatus.running !== true
+        && (
+          this.serviceInstallStatus.state === "failed"
+          || this.serviceHealthStatus.state === "not_installed"
+        )
       ) {
         recoveryCode = "brain_not_installed";
       } else if (!await probeSocketHasOwner(socketPath)) {
@@ -3776,12 +3807,24 @@ export class LocalRuntimeConnectionPool {
         : "";
       // What the service manager said, so a report shows why no fallback ran.
       const install = this.serviceInstallStatus;
+      // The installer's own reason for a failed install; it used to reach only the log.
+      const installReason = install.state === "failed" && install.message
+        ? ` Installer said: ${install.message.trim().slice(0, 300)}`
+        : "";
       const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
-        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`;
-      throw codedRecoveryError(
+        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`
+        + installReason;
+      const recoveryError = codedRecoveryError(
         `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
+      // "Allow in the Background" is off for ADE: a macOS setting the person
+      // changes, which the recovery screen names. Every other code (a service
+      // that runs but does not answer, a failed install, a stale socket) is
+      // not known to be the machine's, so it stays reported.
+      throw recoveryCode === "background_item_blocked" && !crashLooping
+        ? markExpected(recoveryError, "environment")
+        : recoveryError;
     }
 
     const child = this.spawnRuntime(socketPath);

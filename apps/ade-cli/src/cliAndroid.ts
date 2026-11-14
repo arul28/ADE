@@ -384,7 +384,7 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
 const CLOUD_BOX_ANDROID_HINT =
   "hint: tell the user the message above in plain words. To move: `ade cloud create --kind vm --shape <the size the message names> --name <name>` "
   + "(ADE asks the user or refuses when the agent limits say so), then "
-  + "`ade chat handoff \"$ADE_CHAT_SESSION_ID\" --machine <name> --fork --include-changes --clone --when-turn-ends --note \"<the task, then offer to delete the box>\"`. "
+  + "`ade chat handoff \"$ADE_CHAT_SESSION_ID\" --to <name> --fork --include-changes --clone --when-turn-ends --note \"<the task, then offer to delete the box>\"`. "
   + "The `ade-cloud` skill has the steps.";
 
 const ANDROID_ERROR_HINT_ENTRIES = Object.entries(ANDROID_ERROR_HINTS) as Array<[AndroidErrorCode, string]>;

@@ -965,6 +965,13 @@ export type UsageAccount = {
    */
   resetCredits?: { availableCount: number; nextExpiresAt?: string };
   /**
+   * The other machine that holds `resetCredits`, when this machine cannot read
+   * the login's credits itself (its login expired, or it is signed in only
+   * there). "Use reset" spends the credit on that machine, with that machine's
+   * id for the account. Absent when the credits are this machine's own.
+   */
+  resetCreditsOn?: { machineKey: string; label: string; accountId: string };
+  /**
    * Why this account has no fresh numbers, when the polling host knows.
    *
    * Set only while the provider is throttling the usage check AND the account

@@ -53,6 +53,9 @@ export const AGENT_REMOTE_MACHINE_METHODS: ReadonlySet<string> = new Set([
   "usage.getUsageRollup",
   // Live quota windows and accounts only, for the cross-machine limits view.
   "usage.getLiveQuota",
+  // Spends one of this machine's own banked resets, for a login the calling
+  // machine shows but cannot read itself.
+  "usage.consumeResetCredit",
 ]);
 
 /**
@@ -101,6 +104,19 @@ export function childParentSlot(
         },
       }),
     };
+  }
+  return null;
+}
+
+/**
+ * A forwarded call's own result: `ade/actions/call` answers
+ * `{ structuredContent: { result } }` for an action and `{ structuredContent }`
+ * for a tool, and older shapes put it at the top.
+ */
+export function remoteActionResult(answer: unknown): Record<string, unknown> | null {
+  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
+  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
+    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
   }
   return null;
 }

@@ -5,6 +5,7 @@ import type {
   UsageTrackingProjectScopeInput,
   UsageTrackingService,
 } from "./usageTrackingService";
+import type { AccountResetCreditSpender } from "./accountUsageLiveRefresh";
 
 /**
  * One `T` per key, shared by every attachment: the first attach makes it, and
@@ -63,6 +64,7 @@ export function attachSharedUsageTrackingScope(
   const shared = attachSharedByKey(sharedUsageTrackingServices, key, make, (service) => service.dispose());
   if (sharedAccountRollupFetcher) shared.value.setAccountRollupFetcher(sharedAccountRollupFetcher);
   if (sharedAccountLiveQuotaFetcher) shared.value.setAccountLiveQuotaFetcher(sharedAccountLiveQuotaFetcher);
+  if (sharedAccountResetCreditSpender) shared.value.setAccountResetCreditSpender(sharedAccountResetCreditSpender);
   const attached = shared.value.attachProjectScope(scope);
   let released = false;
   return {
@@ -95,6 +97,14 @@ let sharedAccountLiveQuotaFetcher: AccountLiveQuotaFetcher | null = null;
 export function setSharedAccountLiveQuotaFetcher(fetcher: AccountLiveQuotaFetcher | null): void {
   sharedAccountLiveQuotaFetcher = fetcher;
   for (const entry of sharedUsageTrackingServices.values()) entry.value.setAccountLiveQuotaFetcher(fetcher);
+}
+
+/** How a reset banked on another machine is spent there. Same install rule as the fetchers. */
+let sharedAccountResetCreditSpender: AccountResetCreditSpender | null = null;
+
+export function setSharedAccountResetCreditSpender(spender: AccountResetCreditSpender | null): void {
+  sharedAccountResetCreditSpender = spender;
+  for (const entry of sharedUsageTrackingServices.values()) entry.value.setAccountResetCreditSpender(spender);
 }
 
 export function peekSharedUsageTrackingService(key: string): UsageTrackingService | undefined {

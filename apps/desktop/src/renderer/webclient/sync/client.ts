@@ -176,6 +176,7 @@ type ClientEvents = {
   appControlStreamFrame: SyncAppControlStreamFramePayload;
   appControlStreamEnded: SyncAppControlStreamEndedPayload;
   chatLaunchEvent: ChatLaunchEvent;
+  providerLoginsChanged: null;
   projectCatalog: SyncProjectCatalogPayload;
   activeProjectChanged: AdeSyncActiveProjectChange;
 };
@@ -326,6 +327,7 @@ export class AdeSyncClient {
     appControlStreamFrame: new Set(),
     appControlStreamEnded: new Set(),
     chatLaunchEvent: new Set(),
+    providerLoginsChanged: new Set(),
     projectCatalog: new Set(),
     activeProjectChanged: new Set(),
   };
@@ -1169,6 +1171,11 @@ export class AdeSyncClient {
     return this.on("chatLaunchEvent", listener);
   }
 
+  /** The host's provider sign-ins changed (`provider_logins_changed`): read `providerLogins.status` again. */
+  onProviderLoginsChanged(listener: () => void): () => void {
+    return this.on("providerLoginsChanged", () => listener());
+  }
+
   onProjectCatalog(listener: (payload: SyncProjectCatalogPayload) => void): () => void {
     return this.on("projectCatalog", listener);
   }
@@ -1325,6 +1332,10 @@ export class AdeSyncClient {
         if (event) this.emit("chatLaunchEvent", event);
         break;
       }
+      case "provider_logins_changed":
+        // Only a signal: the payload is never read.
+        this.emit("providerLoginsChanged", null);
+        break;
       default:
         break;
     }

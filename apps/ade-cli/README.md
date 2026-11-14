@@ -541,9 +541,9 @@ ade machines reconnect                             # re-pair THIS machine after 
 ade machines connect <machine-key|device-id|name>
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
-ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
-ade report-issue --open                           # also copy the report to the clipboard and open that issue URL in the browser
-ade report-issue --send                           # also upload the same redacted report to ADE and print its reference id
+ade report-issue --text                           # print a redacted diagnostic report (local files only; no brain needed)
+ade report-issue --send                           # also send the same redacted report to the ADE team privately and print its reference id
+ade report-issue --send --open                    # then open a public GitHub issue that holds only that reference, the version and the OS
 ade triage                                        # build a redacted context.md + repair playbook and hand them to the first agent ADE has downloaded
 ade triage --provider codex                       # pick the agent (claude | codex | cursor-agent | opencode | droid | muse)
 ade triage --agent --json                         # launch nothing: print contextPath, playbookPath, playbookSource, suggestedPrompt, detected agents
@@ -667,8 +667,13 @@ ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR A
                                                             # works for land/close/reopen/cleanup-branch/checks/comments/review; threads and deployments still need an ADE row
 ade shell start --lane lane-id -- npm test
 ade shell start --machine windows --wait -- bash ./scripts/check.sh   # run once in this chat's work copy on another machine; put every step in one call
+ade shell start --machine windows --code as-is -- git status       # use the work copy there as it is now (--code fresh throws away changes made there first)
+ade shell start --machine windows --no-code --wait -- nvidia-smi   # no code needed: an empty folder there, removed after
 ade files push --machine windows ./build/app.apk dist/app.apk      # copy one file into this chat's work copy there (chunked, sha256-checked, 256 MiB max)
 ade files pull --machine windows logs/run.log ./run.log            # copy one file back from that work copy
+ade devices --text                                                 # every device this chat can use (ios, android, screen, app), on every machine, as <kind>@<machine|here>
+ade devices use ios@"Mac mini"                                      # keep this chat's iPhone on that machine; device commands follow it as --machine does (use ios@here to undo)
+ade devices current                                                # this chat's choice per kind
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
@@ -731,7 +736,7 @@ ade chat set-parent <session-id> --parent <chat> [--type subagent|peer]  # relin
 ade chat set-parent <session-id> --no-parent                     # detach a chat from its parent
 ade chat keep-reporting [session-id]                             # dismiss the takeover prompt without changing the report channel
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
-ade chat handoff session-id --machine "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine; --fork, --include-changes, --clone, --when-turn-ends
+ade chat handoff session-id --to "Mac mini" --model <model> --prompt "next step"   # move the chat to another machine (--to names the destination; --machine is its alias); --fork, --include-changes, --clone, --when-turn-ends
 ade chat handoff session-id --options --json                     # where the chat can go, and the blockers with fixes; also --cancel, --retry
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history natively (claude/codex/opencode/droid/copilot/muse/pi/kimi); cursor has no fork surface so ADE replays the transcript into a fresh agent; stays in source lane
 ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # keep only the turns through a finished turn (Codex, Copilot and Pi cut natively; others replay the kept turns)
@@ -1205,17 +1210,19 @@ status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 
 When a row fails and the checks above do not explain it, `ade doctor --text`
 points at `ade report-issue`. That command is the headless counterpart to the
-desktop "Report issue" button: it reads only local files — it never starts or
+desktop's "Report this error to ADE…" dialog: it reads only local files — it never starts or
 contacts the brain — so it still works on the machine where ADE itself will not
 come up, and on Windows where there is no desktop error screen to press. It
-prints a redacted diagnostic report plus a prefilled GitHub issue URL (`--open`
-copies the report to the clipboard and opens that URL, `--json` returns
-`{ installId, issueUrl, copied, report }`).
+prints a redacted diagnostic report. Do not post the report on a public page;
+send it with `--send`. `--json` returns `{ installId, report, reportPath?, sent?,
+issueUrl?, opened? }`: `issueUrl` is the public GitHub issue link, present only
+after a successful `--send`, and holds only the reference, the version and
+channel and the OS family; `opened` says whether `--open` opened it.
 
 `--send` is the one part of this command that leaves the machine, and it is
 opt-in: it uploads the same redacted report to ADE over HTTPS and prints the
-reference id support quotes back. It is the headless counterpart to the desktop
-button's "Send to ADE", and it reads everything it needs — the account session,
+reference id support quotes back. It is the headless counterpart to Send in the
+desktop's report dialog, and it reads everything it needs — the account session,
 the directory origin — from local files, so it still works on a machine whose
 brain will not start. A signed-in machine attaches its account token; a
 signed-out one uploads anonymously against the install id already in the report.
@@ -1226,7 +1233,7 @@ asked for, as `{ ok: true, reference }` or `{ ok: false, reason }`, so a script
 can tell "not requested" from "requested and failed".
 
 `ade triage` is the third step after those two: `doctor` says which check
-failed, `report-issue` produces something to file, and `triage` hands the repair
+failed, `report-issue` produces a report to send, and `triage` hands the repair
 to a coding agent. It runs the same doctor checks and the same
 redacted diagnostic collection, writes them as a single `context.md` into a
 fresh temp directory (`ade-triage-<timestamp>-<random>/`) alongside a repair

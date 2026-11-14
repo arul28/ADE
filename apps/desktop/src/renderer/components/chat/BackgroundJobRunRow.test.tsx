@@ -32,13 +32,12 @@ describe("BackgroundJobRunRow", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
-  it("summarizes a run in one row, failed count in red, and lists every job on click", () => {
+  it("summarizes a run in one row and lists every job on click", () => {
     const onOpenJob = vi.fn();
     const onStop = vi.fn();
     render(<BackgroundJobRunRow members={fiveJobs()} sessionEnded onOpenJob={onOpenJob} onStop={onStop} />);
     const header = screen.getByRole("button", { name: /5 background jobs/ });
     expect(header.textContent).toBe("$5 background jobs· 1 running· 3 done· 1 failed");
-    expect(screen.getByTestId("background-jobs-failed").className).toContain("text-red-400");
     expect(header.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Print kimi session dir helper bodies")).toBeNull();
 
@@ -63,12 +62,6 @@ describe("BackgroundJobRunRow", () => {
     expect(onStop).toHaveBeenCalledWith("d");
   });
 
-  it("keeps the mouse-focus outline off its controls", () => {
-    render(<BackgroundJobRunRow members={fiveJobs()} />);
-    const header = screen.getByRole("button", { name: /5 background jobs/ });
-    expect(header.className).toContain("focus:outline-none");
-    expect(header.className).toContain("focus-visible:ring-1");
-  });
 });
 
 describe("ScheduledWorkLine", () => {

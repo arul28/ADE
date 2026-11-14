@@ -23,8 +23,8 @@ import { useWorkToolsMaximize } from "./workToolsMaximize";
  * only renders where a pane can actually maximize (the Work sidebar provides
  * the context; a floating card or the web client does not).
  */
-export const WORK_TOOL_PREVIEW_TOGGLE_LABEL = "Show preview when minimized";
-export const WORK_TOOL_MAXIMIZE_PANE_LABEL = "Maximize pane";
+const WORK_TOOL_PREVIEW_TOGGLE_LABEL = "Show preview when minimized";
+const WORK_TOOL_MAXIMIZE_PANE_LABEL = "Maximize pane";
 export const WORK_TOOL_RESTORE_PANE_LABEL = "Restore pane";
 
 export function WorkToolPreviewControls({

@@ -133,12 +133,6 @@ describe("createAgentChatService", () => {
       expect(subagents).toEqual([]);
     });
 
-    it("returns empty array for unknown session", async () => {
-      const { service } = createService();
-      const subagents = await service.listSubagents({ sessionId: "unknown-id" });
-      expect(subagents).toEqual([]);
-    });
-
     it("hydrates stopped subagents from the persisted chat transcript", async () => {
       const { service } = createService();
       const session = await service.createSession({

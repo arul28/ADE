@@ -1,3 +1,4 @@
+import { markExpected } from "../../../shared/expectedError";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -285,11 +286,35 @@ export function renderOpenCodeDiagnostic(diagnostic: OpenCodeDiagnostic): string
 /** Launch failure carrying its typed {@link OpenCodeDiagnostic} for callers that can key off it. */
 export class OpenCodeLaunchError extends Error {
   readonly diagnostic: OpenCodeDiagnostic;
-  constructor(diagnostic: OpenCodeDiagnostic) {
+  /**
+   * @param options.binaryMissing the launch proved there is no OpenCode
+   *   binary at all (`not-installed` also covers an ENOENT that is not the
+   *   binary, such as a missing working folder).
+   */
+  constructor(diagnostic: OpenCodeDiagnostic, options?: { binaryMissing?: boolean }) {
     super(renderOpenCodeDiagnostic(diagnostic));
     this.name = "OpenCodeLaunchError";
     this.diagnostic = diagnostic;
+    // Marked only where the person's machine is the cause and the message
+    // names the fix: no OpenCode binary, or macOS Gatekeeper blocking it. A
+    // launch timeout, a busy port, a bad signature on a binary ADE installed,
+    // another ENOENT, and anything unclassified stay Sentry issues: ADE can
+    // cause each of them (its pinned OpenCode, the config it writes, the
+    // ports it picks).
+    if (diagnostic.kind === "quarantined" || (diagnostic.kind === "not-installed" && options?.binaryMissing)) {
+      markExpected(this, "environment");
+    }
   }
+}
+
+/** Whether a launch failure proves there is no OpenCode binary to run. */
+function isOpenCodeBinaryMissing(error: unknown, binaryPath: string | null): boolean {
+  if (!binaryPath) return true;
+  const message = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase();
+  if (message.includes("executable is not available")) return true;
+  // A spawn ENOENT also names a missing working folder; only a binary that
+  // is really absent counts.
+  return errorCode(error) === "ENOENT" && !fs.existsSync(binaryPath);
 }
 
 function toOpenCodeLaunchError(
@@ -297,7 +322,9 @@ function toOpenCodeLaunchError(
   context: { port: number; binaryPath: string | null },
 ): OpenCodeLaunchError {
   if (error instanceof OpenCodeLaunchError) return error;
-  return new OpenCodeLaunchError(classifyOpenCodeLaunchFailure(error, context));
+  return new OpenCodeLaunchError(classifyOpenCodeLaunchFailure(error, context), {
+    binaryMissing: isOpenCodeBinaryMissing(error, context.binaryPath),
+  });
 }
 
 function activeManagedOpenCodePorts(): Set<number> {

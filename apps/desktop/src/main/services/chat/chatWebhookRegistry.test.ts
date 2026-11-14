@@ -88,6 +88,11 @@ describe("chat webhooks", () => {
     const runner = brain(secretsDir, { runs: true });
     runner.summaries.set("chat-2", { status: "active" });
     await armer.registry.arm({ sessionId: "chat-2", url: "https://hooks.example.com/ade" });
+    // Both writes land in one timestamp tick, as they can on a busy machine: the
+    // file's mtime alone does not change between them.
+    const file = path.join(secretsDir, "chat-webhooks.json");
+    const tick = new Date(Math.floor(Date.now() / 1_000) * 1_000);
+    fs.utimesSync(file, tick, tick);
 
     // The brain that runs the chat learns of the webhook through the file.
     runner.registry.signal("chat-2", { type: "status", turnStatus: "started" });
@@ -95,6 +100,7 @@ describe("chat webhooks", () => {
     expect(await runner.registry.list({ sessionId: "chat-2" })).toHaveLength(1);
 
     await armer.registry.cancel({ sessionId: "chat-2" });
+    fs.utimesSync(file, tick, tick);
     runner.summaries.set("chat-2", { status: "idle" });
     await vi.advanceTimersByTimeAsync(1_100);
     runner.registry.signal("chat-2", { type: "done" });

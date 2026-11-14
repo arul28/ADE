@@ -1,5 +1,5 @@
 import { cn } from "../ui/cn";
-import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
+import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import type { MachineChipModel } from "../../state/laneMachineRouting";
 
 /**
@@ -16,8 +16,8 @@ export function LaneMachineFilterChips({
   value: string;
   onChange: (next: string) => void;
 }) {
-  // An ADE Cloud lane's computer reads "ADE Cloud · <lane>".
-  const labelOf = useAdeCloudMachineLabel();
+  // An ADE Cloud lane's computer reads "Cloud · <lane>".
+  const labelOf = useMachineLabelForMachine();
   if (machines.length <= 1) return null;
   const chip = (key: string, label: string, active: boolean, dot: "online" | "offline" | null, title: string) => (
     <button

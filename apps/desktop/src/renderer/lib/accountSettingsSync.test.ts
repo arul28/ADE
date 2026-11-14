@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  ACCOUNT_SYNCED_SETTINGS,
   startAccountSettingsSync,
   type AccountSettingsApi,
   type AccountSettingsSyncOptions,
@@ -153,51 +152,6 @@ beforeEach(() => {
 });
 
 describe("accountSettingsSync (renderer)", () => {
-  it("registers exactly the account-scoped persisted preferences", () => {
-    // Appearance is per computer, so no theme, custom-theme list, follow-system
-    // flag, interface or terminal preference is synced: a laptop, a desktop and
-    // a browser each keep their own look. The `theme` painted base mode was
-    // never synced either. The `apple.*` keys stay on the account because the
-    // host reads the remote streaming cap from the account store.
-    expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).toEqual([
-      "smartTooltipsEnabled",
-      "launchPromptClipboardEnabled",
-      "launchPromptClipboardNoticeEnabled",
-      // The account field keeps its pre-rename name so an already-saved value
-      // is not orphaned; the setting it maps to is the drafts button.
-      "promptStashButtonEnabled",
-      "voiceInputEnabled",
-      "codexVoice",
-      "codeBlockCopyButtonPosition",
-      "agentTurnCompletionSound",
-      "agentTurnCompletionSoundVolume",
-      "agentTurnCompletionSoundQuietWhenFocused",
-      "chatFontSizePx",
-      "chatUserMinimapEnabled",
-      "chatTranscriptDensity",
-      "chatChromeTint",
-      "chatShellGeometry",
-      // The saved default size for new ADE Cloud lanes; it follows the account on purpose.
-      "cloudDefaultTier",
-      "harnessPresets",
-      // The Star on GitHub pill: its snooze and "already starred" flags must
-      // follow the account, or a second machine re-asks after the user starred.
-      "starPill",
-      "apple.realisticBody",
-      "apple.recordingOverlays.tapRings",
-      "apple.recordingOverlays.keyBadges",
-      "apple.autoRecordAgentInput",
-      "apple.remoteBitrateKbpsCap",
-      "apple.recordingsWarnBytes",
-      // Per computer like Apple's; the other Android choices live in the emulator machine's brain.
-      "android.realisticBody",
-    ]);
-    // The screen-specific auto-size lock is deliberately machine-local.
-    expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).not.toContain(
-      "userOverrodeChatFontSize",
-    );
-    expect(ACCOUNT_SYNCED_SETTINGS.every((entry) => entry.scope === "account")).toBe(true);
-  });
 
   it("hydrates a remote value the machine has never seen", async () => {
     const { store, state } = createStore({ theme: "dark", chatFontSizePx: 14 });

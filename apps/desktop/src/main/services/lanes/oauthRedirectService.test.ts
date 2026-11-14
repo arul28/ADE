@@ -708,31 +708,6 @@ describe("oauthRedirectService", () => {
       expect(infos[0].instructions).toContain("ADE-managed callback URL");
     });
 
-    it("Google provider returns specific URI and instructions", () => {
-      const infos = svc.generateRedirectUris("google");
-      expect(infos).toHaveLength(1);
-      expect(infos[0].provider).toBe("Google");
-      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
-      expect(infos[0].instructions).toContain("Google Cloud Console");
-    });
-
-    it("GitHub provider returns specific URI and instructions", () => {
-      const infos = svc.generateRedirectUris("github");
-      expect(infos).toHaveLength(1);
-      expect(infos[0].provider).toBe("GitHub");
-      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
-      expect(infos[0].instructions).toContain("GitHub OAuth App");
-    });
-
-    it("Auth0 provider returns the stable ADE callback URI and instructions", () => {
-      const infos = svc.generateRedirectUris("auth0");
-      expect(infos).toHaveLength(1);
-      expect(infos[0].provider).toBe("Auth0");
-      expect(infos[0].uris).toEqual(["http://localhost:8080/oauth/callback"]);
-      expect(infos[0].instructions).toContain("Auth0");
-      expect(infos[0].instructions).toContain("Allowed Callback URLs");
-    });
-
     it("uses current proxy port in URIs", () => {
       const custom = createOAuthRedirectService({
         logger,

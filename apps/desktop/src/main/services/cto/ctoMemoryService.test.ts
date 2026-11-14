@@ -109,9 +109,16 @@ describe("ctoMemoryService", () => {
     const first = service.appendMemoryFact("The first current gardening fact.");
     const archived = service.appendMemoryFact("The second current gardening fact.");
     const pinned = service.appendMemoryFact("The third current gardening fact.");
+    // The service has read the file. Another store's writes then land in the
+    // same timestamp tick, so the file's mtime alone does not change.
+    const storeFile = path.join(adeDir, "cto", "context-store.json");
+    const tick = new Date(Math.floor(Date.now() / 1_000) * 1_000);
+    fs.utimesSync(storeFile, tick, tick);
+    expect(service.listGardeningFacts()).toHaveLength(3);
     const context = createProjectContextStore({ adeDir });
     context.archive({ id: archived.id });
     context.setPinned(pinned.id!, true);
+    fs.utimesSync(storeFile, tick, tick);
 
     const result = service.applyGardeningPlan({
       add: [],

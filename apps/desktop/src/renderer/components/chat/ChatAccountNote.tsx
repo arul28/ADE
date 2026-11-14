@@ -59,6 +59,8 @@ type ChatAccountNoteInput = {
   preset?: HarnessPreset | null;
   /** The stored key's label for `sessionCredentialId`, when it was read. */
   credentialLabel?: string | null;
+  /** What the note describes, for the hover text. */
+  subject?: "chat" | "CLI";
 };
 
 function clean(value: string | null | undefined): string | null {
@@ -100,7 +102,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
   const turnInstanceId = clean(turn?.instanceId);
   if (turn && multi && turnInstanceId && turnInstanceId !== boundInstanceId) turn = null;
 
-  const sourceLine = turn ? "Ran the latest turn." : "Bound to this chat; no turn has reported its account yet.";
+  const sourceLine = turn ? "Ran the latest turn." : `Bound to this ${input.subject ?? "chat"}; no turn has reported its account yet.`;
 
   if (turn?.kind === "api_key" || (!turn && (clean(input.sessionCredentialId) || input.preset?.source.kind === "key"))) {
     const name = keyName(input);
@@ -241,6 +243,7 @@ export function ChatAccountNote({
   events,
   runtimePin,
   busy = false,
+  subject = "chat",
   onSwitched,
 }: {
   sessionId: string;
@@ -253,6 +256,8 @@ export function ChatAccountNote({
   runtimePin: OpenProjectBinding | null;
   /** A turn is running; switching waits for it to end. */
   busy?: boolean;
+  /** What moves: a chat, or a CLI session (relaunched and resumed there). */
+  subject?: "chat" | "CLI";
   onSwitched?: () => void;
 }) {
   const agentChatApi = useAgentChatApi();
@@ -284,8 +289,9 @@ export function ChatAccountNote({
       instances,
       preset,
       credentialLabel,
+      subject,
     }),
-    [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel],
+    [provider, instanceId, credentialId, turnAccount, instances, preset, credentialLabel, subject],
   );
   const current = multi && boundInstanceId ? findInstance(instances, multi, boundInstanceId) : null;
   const targets = useMemo(
@@ -383,7 +389,7 @@ export function ChatAccountNote({
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content side="top" align="start" sideOffset={4} className={MENU_CONTENT_CLASS}>
-          <div className={MENU_LABEL_CLASS}>Run this chat on</div>
+          <div className={MENU_LABEL_CLASS}>Run this {subject} on</div>
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={(event) => event.preventDefault()}>
             {accountRow(current, true)}
           </DropdownMenu.Item>

@@ -8,6 +8,7 @@ import { PaneTooltip } from "../ui/PaneTooltip";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../ui/paneMenuTokens";
 import {
   WORK_TOOL_DEFINITIONS,
+  laneScreenPlatform,
   workToolAvailability,
   workToolDefinition,
   workToolLabel,
@@ -290,15 +291,15 @@ export function WorkToolHeader({
   /** A tab's tooltip: its status summary, plus the active tool's own one fact. */
   const tabTooltip = (tool: WorkSidebarTab): string => {
     const definition = workToolDefinition(tool);
-    if (!definition) return workToolLabel(tool, context.hostPlatform ?? null);
-    if (tool === activeTool && contextLabel) return `${workToolLabel(tool, context.hostPlatform ?? null)} · ${contextLabel}`;
+    if (!definition) return workToolLabel(tool, laneScreenPlatform(context));
+    if (tool === activeTool && contextLabel) return `${workToolLabel(tool, laneScreenPlatform(context))} · ${contextLabel}`;
     const status = statuses[tool];
     if (definition.tabTooltip && !status?.line) return definition.tabTooltip;
     const { tooltipLabel } = workToolSummary(
       definition,
       statuses[tool],
       workToolAvailability(tool, context),
-      context.hostPlatform ?? null,
+      laneScreenPlatform(context),
     );
     return tooltipLabel;
   };
@@ -346,7 +347,7 @@ export function WorkToolHeader({
             <WorkToolTab
               key={tool}
               tool={tool}
-              hostPlatform={context.hostPlatform ?? null}
+              hostPlatform={laneScreenPlatform(context)}
               active={tool === activeTool}
               // Roving tabindex: one stop for the whole strip, and Tab lands on
               // the tool you are looking at rather than walking six tabs to
@@ -393,7 +394,7 @@ export function WorkToolHeader({
                         onSelect={() => onPick(tool)}
                       >
                         {Glyph ? <Glyph size={12} className="shrink-0 opacity-70" /> : null}
-                        <span className="min-w-0 flex-1 truncate">{workToolLabel(tool, context.hostPlatform ?? null)}</span>
+                        <span className="min-w-0 flex-1 truncate">{workToolLabel(tool, laneScreenPlatform(context))}</span>
                       </DropdownMenu.Item>
                     );
                   })}
@@ -443,7 +444,7 @@ export function WorkToolHeader({
               entry,
               status,
               workToolAvailability(entry.id, context),
-              context.hostPlatform ?? null,
+              laneScreenPlatform(context),
             );
             return (
               <PaneTooltip key={entry.id} label={label} side="bottom">

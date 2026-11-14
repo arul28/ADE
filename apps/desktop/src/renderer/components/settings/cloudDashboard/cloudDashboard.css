@@ -19,80 +19,67 @@
 .adecd-grow { flex: 1; }
 
 /*
- * The city card: a night sky over the ground. The block colors are the
- * owner's pick (blue glass, warm windows); the light theme gets a dusk sky
- * with paler glass.
+ * The city card: a dusk sky over the ground, as on the website (indigo
+ * towers, lamp-gold windows, violet and rose on the horizon). ADE Cloud's
+ * picture is always night: the light theme gets a brighter dusk, not a pale
+ * day, so the card reads as the same place in both themes. White text on it
+ * in either theme (like `.kit-hero`).
  */
 .adecd-citycard {
-  --adecd-roof1: #5e8fe6;
-  --adecd-roof2: #3a68c2;
-  --adecd-fl1: #2f5aae;
-  --adecd-fl2: #1a3778;
-  --adecd-fr1: #1c3a7e;
-  --adecd-fr2: #0f2152;
-  --adecd-rim: #b9d4ff;
-  --adecd-edge: rgba(185, 212, 255, 0.55);
-  --adecd-win-off: #12244f;
+  --adecd-roof1: #8f80f2;
+  --adecd-roof2: #5a45c8;
+  --adecd-fl1: #3d2c93;
+  --adecd-fl2: #20154f;
+  --adecd-fr1: #261b66;
+  --adecd-fr2: #130d36;
+  --adecd-rim: #ddd6fe;
+  --adecd-edge: rgba(221, 214, 254, 0.5);
+  --adecd-win-off: #2a2163;
   --adecd-win-on: var(--adec-lamp);
-  --adecd-win-cool: #d4e6ff;
-  --adecd-shade: #070c1c;
-  --adecd-glow1: rgba(255, 214, 150, 0.3);
-  --adecd-glow2: rgba(111, 163, 250, 0.22);
-  --adecd-ground1: #15244a;
-  --adecd-ground2: #0b1328;
-  --adecd-grid: rgba(157, 196, 255, 0.07);
-  --adecd-pad: rgba(157, 196, 255, 0.07);
-  --adecd-pad-edge: rgba(157, 196, 255, 0.16);
-  --adecd-label: rgba(233, 242, 255, 0.82);
-  --adecd-label-dim: rgba(176, 204, 250, 0.84);
-  --adecd-label-halo: rgba(6, 10, 24, 0.85);
-  --adecd-star: #c8ddff;
-  --adecd-fg: #e9f2ff;
-  --adecd-fg-2: rgba(200, 221, 255, 0.72);
+  --adecd-win-cool: #ffd9ec;
+  --adecd-shade: #07051a;
+  --adecd-glow1: rgba(255, 210, 122, 0.34);
+  --adecd-glow2: rgba(167, 139, 250, 0.22);
+  --adecd-ground1: #241a52;
+  --adecd-ground2: #0f0b29;
+  --adecd-grid: rgba(196, 181, 253, 0.07);
+  --adecd-pad: rgba(196, 181, 253, 0.07);
+  --adecd-pad-edge: rgba(196, 181, 253, 0.18);
+  --adecd-label: rgba(243, 239, 255, 0.86);
+  --adecd-label-dim: rgba(214, 204, 255, 0.86);
+  --adecd-label-halo: rgba(10, 8, 30, 0.85);
+  --adecd-star: #fff;
+  --adecd-fg: #f6f3ff;
+  --adecd-fg-2: rgba(226, 218, 255, 0.74);
+  --adecd-glass: rgba(255, 255, 255, 0.06);
+  --adecd-glass-edge: rgba(255, 255, 255, 0.11);
   position: relative;
+  isolation: isolate;
   min-width: 0;
   overflow: hidden;
-  border-radius: 14px;
-  border: 1px solid color-mix(in srgb, var(--adec-400) 16%, transparent);
+  border-radius: 16px;
+  border: 1px solid rgba(196, 181, 253, 0.16);
   color: var(--adecd-fg);
   background:
-    radial-gradient(70% 60% at 50% 18%, color-mix(in srgb, var(--adec-800) 55%, transparent), transparent 70%),
-    radial-gradient(120% 80% at 50% 110%, color-mix(in srgb, var(--adec-900) 80%, transparent), transparent 70%),
-    linear-gradient(180deg, #0a1022, #0b0b12 80%);
+    radial-gradient(70% 45% at 50% 100%, rgba(139, 92, 246, 0.38) 0%, rgba(139, 92, 246, 0.1) 45%, transparent 75%),
+    radial-gradient(30% 26% at 24% 92%, rgba(219, 39, 119, 0.2) 0%, transparent 70%),
+    radial-gradient(28% 22% at 80% 88%, rgba(255, 210, 122, 0.1) 0%, transparent 70%),
+    linear-gradient(180deg, #07061a 0%, #0f0c2a 38%, #1a1240 78%, #22164d 100%);
+  box-shadow: 0 24px 60px -36px rgba(109, 63, 214, 0.65);
 }
 [data-theme="light"] .adecd-citycard {
-  --adecd-roof1: #b9d3ff;
-  --adecd-roof2: #8db4f7;
-  --adecd-fl1: #6e9bea;
-  --adecd-fl2: #4c7cd6;
-  --adecd-fr1: #3e69c2;
-  --adecd-fr2: #2d55a8;
-  --adecd-rim: #ffffff;
-  --adecd-edge: rgba(255, 255, 255, 0.8);
-  --adecd-win-off: #2d55a8;
-  --adecd-win-on: #fff6e0;
-  --adecd-win-cool: #ffffff;
-  --adecd-shade: #c9cdd8;
-  --adecd-glow1: rgba(255, 196, 110, 0.28);
-  --adecd-glow2: rgba(68, 130, 238, 0.18);
-  --adecd-ground1: #e9e6e1;
-  --adecd-ground2: #dedad3;
-  --adecd-grid: rgba(26, 26, 30, 0.06);
-  --adecd-pad: rgba(42, 98, 200, 0.06);
-  --adecd-pad-edge: rgba(42, 98, 200, 0.22);
-  --adecd-label: rgba(26, 26, 30, 0.82);
-  --adecd-label-dim: rgba(68, 70, 82, 0.94);
-  --adecd-label-halo: rgba(245, 243, 240, 0.92);
-  --adecd-star: transparent;
-  --adecd-fg: var(--color-fg);
-  --adecd-fg-2: var(--kit-text-2);
-  border-color: rgba(42, 98, 200, 0.18);
+  --adecd-ground1: #2c2061;
+  --adecd-ground2: #171038;
+  border-color: rgba(109, 63, 214, 0.28);
   background:
-    radial-gradient(80% 70% at 50% 0%, rgba(157, 196, 255, 0.35), transparent 70%),
-    linear-gradient(180deg, #eef3fb, #f5f3f0 80%);
+    radial-gradient(75% 50% at 50% 100%, rgba(244, 114, 182, 0.42) 0%, rgba(167, 139, 250, 0.2) 45%, transparent 78%),
+    radial-gradient(30% 28% at 20% 95%, rgba(255, 190, 120, 0.32) 0%, transparent 70%),
+    linear-gradient(180deg, #1b1446 0%, #2d1f66 40%, #4a2d86 78%, #6a3a8e 100%);
+  box-shadow: 0 24px 50px -30px rgba(74, 44, 156, 0.55);
 }
 
 .adecd-citycard .kit-btn { color: var(--adecd-fg); }
+.adecd-citycard .adecd-hint { color: var(--adecd-fg-2); }
 .adecd-hint { font-size: 11px; color: var(--adecd-fg-2); white-space: nowrap; }
 
 .adecd-empty {
@@ -112,14 +99,14 @@
   border-radius: 10px;
   outline: none;
 }
-.adecd-city:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-400); }
+.adecd-city:focus-visible { box-shadow: inset 0 0 0 2px var(--adec-lamp); }
 .adecd-city-svg { display: block; width: 100%; height: auto; max-height: 440px; }
 .adecd-stars circle { fill: var(--adecd-star); }
 .adecd-grid line { stroke: var(--adecd-grid); }
 .adecd-pad { fill: var(--adecd-pad); stroke: var(--adecd-pad-edge); stroke-width: 1; }
 .adecd-selring {
-  fill: rgba(157, 196, 255, 0.07);
-  stroke: var(--adec-300);
+  fill: rgba(255, 210, 122, 0.06);
+  stroke: var(--adec-lamp);
   stroke-dasharray: 4 3;
   stroke-width: 1.2;
   opacity: 0;
@@ -153,7 +140,7 @@
 .adecd-blk[data-awake="1"] .adecd-glow { opacity: 1; }
 .adecd-flag line { stroke: #fcd34d; stroke-opacity: 0.75; }
 .adecd-flag path { fill: #fbbf24; fill-opacity: 0.85; }
-.adecd-plot-empty polygon { fill: rgba(157, 196, 255, 0.05); stroke: var(--adec-300); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
+.adecd-plot-empty polygon { fill: rgba(196, 181, 253, 0.05); stroke: var(--adec-300); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
 .adecd-plot-empty line { stroke: var(--adec-300); stroke-opacity: 0.28; stroke-dasharray: 2 3; }
 .adecd-lbl { pointer-events: none; }
 /*
@@ -196,18 +183,12 @@
   transform: translate(-50%, -100%);
   padding: 7px 10px 8px;
   border-radius: 9px;
-  border: 1px solid color-mix(in srgb, var(--adec-300) 22%, transparent);
-  background: rgba(13, 18, 36, 0.94);
+  border: 1px solid color-mix(in srgb, var(--adec-300) 24%, transparent);
+  background: rgba(20, 15, 48, 0.95);
   box-shadow: 0 12px 30px -12px rgba(0, 0, 0, 0.8);
-  color: #e9f2ff;
+  color: #f6f3ff;
   font-size: 11.5px;
   white-space: nowrap;
-}
-[data-theme="light"] .adecd-readout {
-  background: rgba(255, 255, 255, 0.96);
-  border-color: rgba(42, 98, 200, 0.22);
-  box-shadow: 0 12px 30px -16px rgba(20, 30, 60, 0.4);
-  color: var(--color-fg);
 }
 .adecd-readout b { display: block; font-size: 12px; font-weight: 600; }
 .adecd-readout span { display: block; font-size: 11px; opacity: 0.75; }
@@ -382,66 +363,155 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   white-space: nowrap;
 }
 .adecd-card .kit-card-head-action { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
-.adecd-label { font-size: 11.5px; color: var(--adecd-fg-2); }
 .adecd-lead { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-2); }
 
-/* The hero: the night sky with the numbers on the left and the city on the right. */
+/* Still while out of view, hidden, or under reduced motion. */
+[data-still="true"] .adecd-cta::before { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  .adecd-cta::before, .adecd-hero-plan[data-celebrate] { animation: none !important; }
+}
+html[data-motion="reduced"] .adecd-cta::before,
+html[data-motion="reduced"] .adecd-hero-plan[data-celebrate] { animation: none !important; }
+
+/*
+ * The main button (Compare plans, Get Plus, Move to Pro): violet to rose, with
+ * a slow gold and pink light running around its border, as on the website.
+ * The light is a conic gradient turned with `transform` under the fill, so it
+ * runs on the compositor; it stops off screen and under reduced motion.
+ */
+.adecd-cta {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  padding: 0 15px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(167, 139, 250, 0.35);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 8px 24px -10px rgba(139, 92, 246, 0.8);
+  transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+}
+.adecd-cta::before {
+  content: "";
+  position: absolute;
+  z-index: -2;
+  left: 50%;
+  top: 50%;
+  width: max(220%, 140px);
+  aspect-ratio: 1;
+  background: conic-gradient(from 0deg, rgba(167, 139, 250, 0.2) 0deg, #ffd27a 50deg, #f472b6 95deg, rgba(167, 139, 250, 0.2) 150deg, rgba(167, 139, 250, 0.2) 360deg);
+  transform: translate(-50%, -50%) rotate(0deg);
+  animation: adecd-cta-light 6s linear infinite;
+}
+.adecd-cta::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 1.5px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #7c4ddf 0%, #9b4fd6 55%, #d1407f 100%);
+}
+.adecd-cta > span { position: relative; }
+.adecd-cta:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 12px 28px -10px rgba(219, 39, 119, 0.65); }
+.adecd-cta:focus-visible { outline: 2px solid var(--adec-lamp); outline-offset: 2px; }
+.adecd-cta:disabled { cursor: default; opacity: 0.6; }
+@keyframes adecd-cta-light { to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+/* A quiet button on the sky: frosted glass, white text. */
+.adecd-glassbtn {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 13px;
+  border: 1px solid var(--adecd-glass-edge);
+  border-radius: 999px;
+  background: var(--adecd-glass);
+  color: var(--adecd-fg);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.adecd-glassbtn:hover { background: rgba(255, 255, 255, 0.11); }
+.adecd-glassbtn:focus-visible { outline: 2px solid var(--adec-lamp); outline-offset: 2px; }
+
+/* The hero: the dusk sky, the plan, the numbers on the left and the city on the right. */
 .adecd-hero {
   container: adecdhero / inline-size;
-  padding: 16px 18px 14px;
-}
-.adecd-hero-stars {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    radial-gradient(1px 1px at 12% 22%, var(--adecd-star), transparent 60%),
-    radial-gradient(1px 1px at 28% 64%, var(--adecd-star), transparent 60%),
-    radial-gradient(1.2px 1.2px at 46% 12%, var(--adecd-star), transparent 60%),
-    radial-gradient(1px 1px at 63% 38%, var(--adecd-star), transparent 60%),
-    radial-gradient(1px 1px at 79% 18%, var(--adecd-star), transparent 60%),
-    radial-gradient(1.2px 1.2px at 91% 52%, var(--adecd-star), transparent 60%),
-    radial-gradient(1px 1px at 7% 84%, var(--adecd-star), transparent 60%);
-  opacity: 0.55;
+  padding: 18px 22px 20px;
 }
 .adecd-hero-head {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   min-width: 0;
 }
-.adecd-hero-head h2 {
+.adecd-hero-brand { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--adecd-fg); }
+.adecd-hero-plan {
   margin: 0;
-  font-size: 17px;
-  line-height: 22px;
-  font-weight: 600;
+  font-family: ui-serif, "New York", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  font-size: 21px;
+  line-height: 24px;
+  font-style: italic;
+  font-weight: 500;
   letter-spacing: -0.01em;
-  color: var(--adecd-fg);
+  color: var(--adec-lamp);
+  text-shadow: 0 0 22px rgba(255, 210, 122, 0.25);
 }
+/* A plan that just landed: its name glows a few times, then rests. */
+.adecd-hero-plan[data-celebrate] { animation: adecd-plan-glow 1.6s ease-in-out 3; }
+@keyframes adecd-plan-glow { 50% { text-shadow: 0 0 28px rgba(255, 210, 122, 0.85), 0 0 4px rgba(255, 241, 207, 0.9); } }
+.adecd-hero-period {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  margin-left: 4px;
+  padding: 0 9px;
+  border: 1px solid var(--adecd-glass-edge);
+  border-radius: 999px;
+  background: var(--adecd-glass);
+  font-size: 11px;
+  color: var(--adecd-fg-2);
+  white-space: nowrap;
+}
+.adecd-hero-period[data-tone="warn"] { color: #fcd34d; border-color: rgba(252, 211, 77, 0.35); }
+.adecd-hero-period[data-tone="crit"] { color: #fca5a5; border-color: rgba(252, 165, 165, 0.4); background: rgba(248, 113, 113, 0.12); }
 
 .adecd-hero-body {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(250px, 0.9fr) minmax(0, 1.25fr);
+  grid-template-columns: minmax(270px, 1fr) minmax(0, 1fr);
   align-items: stretch;
-  gap: 8px 22px;
-  margin-top: 14px;
+  gap: 8px 8px;
+  margin-top: 16px;
 }
-.adecd-hero-stats { display: flex; flex-direction: column; gap: 18px; min-width: 0; padding-bottom: 4px; }
-.adecd-hours-num { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 4px 0 8px; }
+.adecd-hero-stats { display: flex; flex-direction: column; gap: 18px; min-width: 0; padding-bottom: 6px; }
+.adecd-label { font-size: 11.5px; color: var(--adecd-fg-2); }
+.adecd-hours-num { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin: 2px 0 10px; }
 .adecd-hours-num b {
-  font-size: 40px;
-  line-height: 44px;
+  font-size: 54px;
+  line-height: 58px;
   font-weight: 500;
-  letter-spacing: -0.03em;
+  letter-spacing: -0.035em;
   color: var(--adecd-fg);
 }
-.adecd-hours-num span { font-size: 12px; color: var(--adecd-fg-2); }
-.adecd-meter { height: 5px; background: color-mix(in srgb, var(--adec-200) 14%, transparent); }
+.adecd-hours-num span { font-size: 13px; color: var(--adecd-fg-2); }
+.adecd-meter { height: 6px; background: rgba(255, 255, 255, 0.1); }
 .adecd-hero .adecd-meter:not([data-level]) > span,
-.adecd-hero .adecd-meter[data-level="ok"] > span { background: linear-gradient(90deg, var(--adec-500), var(--adec-300)); }
-[data-theme="light"] .adecd-meter { background: rgba(42, 98, 200, 0.14); }
+.adecd-hero .adecd-meter[data-level="ok"] > span {
+  background: linear-gradient(90deg, #8b5cf6 0%, #e15fa3 70%, var(--adec-lamp) 100%);
+  box-shadow: 0 0 12px rgba(244, 114, 182, 0.45);
+}
 .adecd-hours-notes {
   display: flex;
   flex-direction: column;
@@ -453,9 +523,25 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   line-height: 1.45;
   color: var(--adecd-fg-2);
 }
-.adecd-hours-notes b { font-weight: 500; color: var(--adec-lamp-text); }
-.adecd-hours-notes em { font-style: normal; opacity: 0.7; }
-.adecd-hours-notes li[data-tone="warn"] { color: var(--kit-warn); }
+.adecd-hours-notes li[data-tone="warn"] { color: #fcd34d; }
+.adecd-hero-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.adecd-hero-chips:empty { display: none; }
+.adecd-hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--adecd-glass-edge);
+  border-radius: 999px;
+  background: var(--adecd-glass);
+  font-size: 11px;
+  color: var(--adecd-fg-2);
+  white-space: nowrap;
+}
+.adecd-hero-chip[data-tone="lamp"] { color: var(--adec-lamp); border-color: rgba(255, 210, 122, 0.3); background: rgba(255, 210, 122, 0.08); }
+.adecd-hero-chip i { width: 6px; height: 6px; border-radius: 50%; background: rgba(255, 255, 255, 0.3); }
+.adecd-hero-chip i[data-on] { background: var(--adec-lamp); box-shadow: 0 0 6px rgba(255, 210, 122, 0.8); }
 .adecd-linkish {
   padding: 0;
   border: 0;
@@ -466,16 +552,29 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   text-underline-offset: 2px;
   cursor: pointer;
 }
-.adecd-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.adecd-mini { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.adecd-minis { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.adecd-mini {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--adecd-glass-edge);
+  border-radius: 12px;
+  background: var(--adecd-glass);
+  backdrop-filter: blur(10px);
+}
 .adecd-mini-num { display: flex; align-items: baseline; gap: 6px; }
-.adecd-mini-num b { font-size: 20px; line-height: 24px; font-weight: 500; color: var(--adecd-fg); }
+.adecd-mini-num b { font-size: 21px; line-height: 25px; font-weight: 500; color: var(--adecd-fg); }
 .adecd-mini-num span { font-size: 11.5px; color: var(--adecd-fg-2); }
+.adecd-mini .adecd-meter { height: 4px; margin-top: auto; }
+.adecd-mini .adecd-mini-note { margin-top: auto; }
+.adecd-mini .adecd-meter:not([data-level]) > span,
+.adecd-mini .adecd-meter[data-level="ok"] > span { background: linear-gradient(90deg, #a78bfa, #c4b5fd); box-shadow: none; }
 .adecd-mini-note { font-size: 11px; color: var(--adecd-fg-2); opacity: 0.85; }
 
 .adecd-hero-city { position: relative; min-width: 0; display: flex; flex-direction: column; justify-content: flex-end; }
-.adecd-hero-city .adecd-city-svg { max-height: 300px; }
-.adecd-city-cap { align-self: flex-end; margin-top: -4px; font-size: 10.5px; color: var(--adecd-fg-2); opacity: 0.8; }
+.adecd-hero-city .adecd-city-svg { max-height: 330px; }
 .adecd-city-empty {
   display: flex;
   flex-direction: column;
@@ -483,20 +582,22 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   justify-content: center;
   gap: 6px;
   height: 100%;
-  min-height: 200px;
+  min-height: 220px;
   padding: 10px 24px;
   text-align: center;
 }
-.adecd-city-empty b { font-size: 13px; font-weight: 500; color: var(--adecd-fg); }
-.adecd-city-empty span { max-width: 300px; font-size: 11.5px; line-height: 1.5; color: var(--adecd-fg-2); }
-.adecd-plot { width: 160px; height: 70px; margin-bottom: 6px; }
-.adecd-plot-ground { fill: var(--adecd-ground1); stroke: var(--adecd-pad-edge); }
-.adecd-plot-lot { fill: rgba(157, 196, 255, 0.05); stroke: var(--adec-300); stroke-opacity: 0.55; stroke-dasharray: 3 3; }
+.adecd-city-empty b { font-size: 13.5px; font-weight: 600; color: var(--adecd-fg); }
+.adecd-city-empty span { max-width: 320px; font-size: 11.5px; line-height: 1.5; color: var(--adecd-fg-2); }
+.adecd-plot { width: 170px; height: 74px; margin-bottom: 6px; }
+.adecd-plot-ground { fill: rgba(42, 30, 92, 0.75); stroke: var(--adecd-pad-edge); }
+.adecd-plot-lot { fill: rgba(255, 210, 122, 0.06); stroke: var(--adec-lamp); stroke-opacity: 0.6; stroke-dasharray: 3 3; }
 
 @container adecdhero (max-width: 640px) {
   .adecd-hero-body { grid-template-columns: 1fr; }
   .adecd-hero-city .adecd-city-svg { max-height: 220px; }
+  .adecd-hours-num b { font-size: 44px; line-height: 48px; }
 }
+
 
 /* Lanes and computers: one row each; the selected row opens its actions under it. */
 .adecd-table { outline: none; }
@@ -558,57 +659,15 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
   .adecd-inside-body { grid-template-columns: 1fr; }
 }
 
-/* Plans side by side. */
-.adecd-plans {
-  display: grid;
-  grid-template-columns: minmax(110px, 0.8fr) repeat(var(--adecd-plan-cols, 3), minmax(0, 1fr));
-  gap: 0 8px;
-}
-.adecd-plan-col {
-  display: grid;
-  grid-template-rows: 44px repeat(var(--adecd-plan-facts, 4), 34px) minmax(34px, auto) var(--adecd-plan-foot, 48px);
-  align-items: center;
-  min-width: 0;
-  padding: 0 14px;
-  border: 1px solid transparent;
-  border-radius: 12px;
-}
-.adecd-plan-col > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; }
-.adecd-plan-col > span + span { border-top: 1px solid var(--kit-rule); }
-.adecd-plan-col > span.adecd-plan-foot { border-top: 0; }
-.adecd-plan-col small { font-size: 11.5px; color: var(--kit-text-3); }
-.adecd-plan-col b.kit-num { font-weight: 500; }
-.adecd-plan-keys { padding-left: 0; }
-.adecd-plan-keys > span { font-size: 12px; color: var(--kit-text-3); }
-.adecd-plan-top { display: flex; align-items: center; gap: 8px; }
-.adecd-plan-top b { font-size: 14px; font-weight: 600; }
-.adecd-plan-col[data-current] {
-  border-color: color-mix(in srgb, var(--adec-400) 40%, transparent);
-  background: color-mix(in srgb, var(--adec-600) 8%, transparent);
-}
-/* Stretched, so its top rule sits on the row's top in every column, whatever its height. */
-.adecd-plan-col > span.adecd-plan-wrap { align-self: stretch; display: flex; align-items: center; padding: 8px 0; white-space: normal; line-height: 1.35; }
-.adecd-plan-foot { display: flex; align-items: center; }
-.adecd-plan-fine { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--kit-text-3); }
-.adecd-plan-fine[data-tone="warn"] { color: var(--kit-warn); }
-@container adecd (max-width: 600px) {
-  .adecd-plans { grid-template-columns: repeat(var(--adecd-plan-cols, 3), minmax(0, 1fr)); }
-  .adecd-plan-keys { display: none; }
-  .adecd-plan-col { padding: 0 8px; }
-}
+.adecd-head-note[data-tone="crit"] { color: var(--kit-crit); }
+.adecd-head-note[data-tone="warn"] { color: var(--kit-warn); }
 
-.adecd-billing { display: flex; flex-direction: column; margin-top: 14px; }
-.adecd-billing-row { display: flex; align-items: center; gap: 16px; padding: 12px 14px; }
-.adecd-billing-row + .adecd-billing-row { border-top: 1px solid var(--kit-rule); }
-.adecd-billing-row > div:first-child { flex: 1; min-width: 0; }
-.adecd-billing-row b { display: block; font-size: 12.5px; font-weight: 500; }
-.adecd-billing-row small { display: block; margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); }
-.adecd-billing-controls { display: flex; align-items: center; gap: 10px; }
+/* Quiet fine print (the plan-limits dialog). */
+.adecd-plan-fine { margin: 10px 0 0; font-size: 11px; line-height: 1.5; color: var(--kit-text-3); }
 
 /* Two cards side by side: sign-ins and what agents may do. */
 .adecd-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @container adecd (max-width: 760px) { .adecd-pair { grid-template-columns: 1fr; } }
-.adecd-sizes-note { margin: 10px 2px 0; font-size: 11.5px; color: var(--kit-text-3); }
 .adecd-stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
 /* Sign-ins. */
@@ -717,3 +776,12 @@ html[data-motion="reduced"] .adecd-puffs { display: none; }
 /* In the right column (B14-2) the invite card is half width: text on top, the three numbers in one row under it. */
 .adecd-stack .adecd-invite-body { grid-template-columns: 1fr; }
 .adecd-stack .adecd-invite-stats dd { font-size: 15px; white-space: nowrap; }
+
+/* A filled button on the ADE Cloud page (Copy link): the brand's violet to rose, never the theme's cream ink. */
+.kit-btn.kit-btn-primary.adecd-brandbtn {
+  border-color: transparent;
+  background: linear-gradient(135deg, #7c4ddf 0%, #9b4fd6 55%, #d1407f 100%);
+  color: #fff;
+  box-shadow: 0 6px 18px -10px rgba(139, 92, 246, 0.8);
+}
+.kit-btn.kit-btn-primary.adecd-brandbtn:hover:not(:disabled) { filter: brightness(1.08); }

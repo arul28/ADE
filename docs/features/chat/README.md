@@ -32,10 +32,21 @@ message is definitely absent and no turn started. After a 60-second settling
 window, a delivered message, started turn, or unreadable transcript keeps the
 fire closed to avoid duplicate delivery.
 
+A plan refusal or a model refusal shows a plain card and does not mark the
+provider broken. `classifyProviderAccountRefusal`
+(`apps/desktop/src/shared/providerAccountRefusal.ts`) reads the provider's own
+words and returns `plan`, `auth`, `model` or none. A usage limit is never a
+plan refusal: it keeps its own card, its reset time and its auto-resume. The
+provider health check sends a `plan` or `model` verdict to Sentry as a warning
+and leaves the provider state alone. Only an `auth` verdict marks the sign-in
+failed.
+
 ## Source file map
 
 | Path | Role |
 |---|---|
+| `apps/desktop/src/shared/providerAccountRefusal.ts` | The one verdict for a provider's own failure words: `plan`, `auth`, `model`, or none. A usage limit is never `plan`. Provider health, the chat and CLI cards, and agent-turn analytics read it. |
+| `apps/desktop/src/renderer/components/chat/chatEventSubscription.ts` | `subscribeWhenChatApiReady` attaches the chat event feed as soon as the chat API has `onEvent`. ADE Web can render a pane before its bridge is ready, so it retries on a bounded schedule (about 30 s in all) and stops on unsubscribe. |
 | `apps/desktop/src/shared/codePointText.ts` | Code-point-safe text cuts for provider limits and titles. |
 | `apps/desktop/src/main/services/runtime/brainUnplannedRestart.ts` | The brain's run record: decides whether this start follows an unplanned restart, and counts the chats and CLIs it continued for the banner. |
 | `apps/desktop/src/main/services/runtime/liveTurnProjects.ts` | The projects with a running turn, on disk, so the next brain opens exactly those after a crash; claim by rename, pending file, and the skipped project that was being opened. |
@@ -51,7 +62,7 @@ fire closed to avoid duplicate delivery.
 | `apps/desktop/src/shared/crossMachineHandoff.ts` and `apps/desktop/src/shared/types/chat.ts` | Renderer-safe Git-origin normalization, portable remote sanitization, untrusted remote-response decoders, and the versioned capsule/preflight/accept DTOs shared across renderer, preload, Electron main, and the ADE runtime. `chat.ts` also owns the fork-handoff contract: `HANDOFF_FORK_PROVIDERS` (`claude`, `codex`, `opencode`, `droid`, `copilot`, `cursor`, `muse`, `pi`, `kimi`) + `providerSupportsHandoffFork()`, the companion `providerForkReplaysTranscript()` (true only for Cursor, whose fork is an ADE-side full-transcript replay onto a brand-new agent rather than a native provider fork, so UI copy must not promise a copied provider thread — it promises the conversation, bounded by the target model's context window), `AgentChatHandoffArgs.targetLaneId` (brief may retarget any lane in the project; fork must stay in the source lane), the cross-machine capsule's optional `mode: "brief" \| "fork"` with `forkTransport` (provider-native session files) and `transcriptEnvelopes` (gzipped ADE JSONL), and the preflight's optional `forkHandoffSupport` (absent = older destination the source must treat as fork-unsupported, so a fork never silently downgrades to a brief). Cross-machine fork has its own narrower list: `CROSS_MACHINE_HANDOFF_FORK_PROVIDERS` + `providerSupportsCrossMachineHandoffFork()`, derived from `HANDOFF_FORK_PROVIDERS` by filtering out Droid (its session index is machine-local) and every replay-forked provider (Cursor produces no transportable artifact at all), so the two lists cannot drift. `validateForkTransport` gates inbound capsules on the cross-machine helper rather than the local one, so a provider whose fork has nothing to package is refused by the provider check instead of by the transport-kind allowlist. The preflight also carries an optional `laneFastForward` (`laneId`, `laneName`, `behindBy`) — the destination's own assertion that its existing lane is clean and a strict ancestor of the source commit. `decodeCrossMachineDestinationPreflightResult` decodes `forkHandoffSupport` and `laneFastForward` only when present, and rejects a `behindBy` that is not a positive integer because the destination refuses a zero-distance fast-forward. `chat.ts` also owns `ACTIVE_TURN_DISPATCH_MODES` — THE per-provider active-turn delivery matrix, in menu order with the first entry as the provider's default; read the table itself for the per-provider lists rather than a second copy here — read through `activeTurnDispatchModes()`, `defaultActiveTurnDispatchMode()` and `supportsActiveTurnDispatchMode()`, with the companion facts `activeTurnInterruptContinues()` (true for Cursor, Muse and Kimi, whose interrupt cancels and resends on the same thread instead of folding into the live query, so the affordance says "continue"; Kimi's is ADE's own, `session/cancel` then the message as the next turn, because ACP has no mid-turn message) and `unsupportedActiveTurnDispatchModeMessage()` (the one rejection string, templated off the table). The table's one session-shaped exception is `cursorSessionRunsInCloud(session)`: Cursor's `inline` mode is `Run.steer()`, a local-run API that a promoted Cursor Cloud run refuses on every call, and a provider-keyed record cannot express a per-session rule — so the service and the chat pane both read that helper to withhold inline for a cloud session (it consults `cursorRuntime` **and** `cursorCloudAgentId`, because a session promoted before `cursorRuntime` existed carries only the agent id). Every surface reads it rather than restating the rules — the composer's split send button, the chat pane's dispatch wiring, `agentChatService`'s steer/dispatch guards; iOS mirrors it by hand in `WorkActiveSendCapability` because it cannot import TS. Beside that table but deliberately *not* derived from it sits `CTO_LIVE_REDIRECT_PROVIDERS` (`claude`, `codex`, `cursor`) + `providerSupportsLiveRedirect()` — the CTO's own eligibility contract, covering the providers that can redirect a turn already in flight (Cursor qualifies through interrupt-and-resend). Reading one off the other would let a change to the composer's promotion menu silently decide who may be the CTO. `chat.ts` also owns the Work-board column vocabulary declared once for four layers (this file, the action registry that writes moves, the renderer that buckets cards, and `ade session move`): `WorkBoardMoveTarget` (`needs_you` \| `working` \| `done`), `WorkBoardColumn` (those plus the derived `waiting`), `WORK_BOARD_MOVE_TARGETS`, `isWorkBoardMoveTarget()`, `WORK_BOARD_COLUMN_LABEL` (the only place a column's screen label is written), and `AgentChatBoardMoveMetadata` (`from`, `to`, `at`, `moveId`) on `AgentChatEventMetadata.boardMove`, which marks the host-authored nudge that accompanies a drag. Values are snake_case everywhere including renderer bucket keys and `data-testid`s. `chat.ts` is also the canonical cross-client contract for context-usage state/sample metadata, Claude result provenance/error/correlation fields, queue-aware interrupt results, the bounded `queue_recovery` lifecycle, and the desktop draft DTOs (`DraftEntry` / `DraftCreateArgs` / `DraftScheduleInput` / `DraftUpdateArgs`) plus `MAX_DRAFTS`, `MAX_SCHEDULED_DRAFTS`, `MAX_DRAFT_ATTACHMENTS`, `MAX_DRAFT_SCHEDULE_LEAD_MS`, and `MAX_DRAFT_GRACE_SECONDS`. |
 | `apps/desktop/src/shared/sideChat.ts`, `apps/desktop/src/main/services/chat/sideChatService.ts`, `sideChatClaudeCut.ts`, `piForkCut.ts`, `sessionEntryChain.ts`, `apps/desktop/src/renderer/components/chat/SideChatToolPanel.tsx`, `sideChatState.ts`, `SideChatBadge.tsx`, `apps/ios/ADE/Views/Work/WorkSideChat.swift` | Side chats (`/side`): the provider list (`HANDOFF_FORK_PROVIDERS` minus Cursor), the one availability rule (`sideChatUnavailableReason`), the composer command parser, the side chat's first-message role, the `<send_to_main>` parser (trailing blocks outside code only) and its markdown rendering (shared); the side chat service: start, end, forwarding, read-only settings, built by `createSideChatService` from `agentChatService` (main); where a busy Claude or Pi chat is cut, on the leaf-to-root chain `sessionEntryChain` walks (main); the Work tools pane's Side chat tool, its per-window state and close confirmation, and the header and session-card mark (renderer); the iOS mirror. See [Side chats](#side-chats-side). |
 | `apps/desktop/src/main/services/chat/crossMachineForkTransport.ts` | Node-only fork-transport plumbing shared by the source packaging and destination materialization paths. Owns the uncompressed limits (18 MiB provider main session file, 4 MiB total Claude sidecars, 3 MiB ADE transcript envelopes), the independent base64 bounds that reject oversized input before decoding, and `CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES` (20 MiB) — a whole-capsule encoded budget kept under the 25 MiB sync-envelope/WebSocket payload caps. `gzipToBase64` / `gunzipFromBase64` (the latter enforces a max output length) do the compression; `enforceCrossMachineForkEncodedBudget` drops the sidecar group first and only throws a "too large, send a brief" error when the main file plus transcript alone blow the budget; `crossMachineForkOversizeError` returns the typed `CROSS_MACHINE_FORK_OVERSIZE` failure; `runCliCapture` buffers `opencode export` / `import` stdout/stderr with a timeout; and `validateForkTransport` re-validates a received capsule's transport (cross-machine fork provider support, provider match, kind allowlist, base64 shape, path-traversal-safe side-file paths, per-file and total size caps) before any decode. It gates on `providerSupportsCrossMachineHandoffFork`, not the local-fork predicate, so a provider whose fork produces no transportable artifact (Droid's machine-local index, Cursor's context-only reseed) is refused by the provider check rather than incidentally by the kind allowlist. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, external chat import orchestration (`importExternalChatSession` for sessions of all 11 providers discovered by the external-session service: Claude/Codex native continue or fork, Droid/OpenCode/Pi/Copilot native continue by pointer seeding, replay copy for everything else), turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, prompt-derived lane-name suggestions for auto-created / parallel lanes, event-history snapshots, durable chat transcript replay/storage compaction, slash-command discovery/merge (delegates to per-provider discovery modules and `slashCommandPromptExpansion` for unified prompt expansion), and active-workload detection used by project/window close guards. Codex non-retrying app-server failures are deduplicated by turn plus semantic error identity across the early `error` notification and terminal `turn/completed`; retrying notifications (`willRetry: true`) remain provider-health notices while the turn stays active. OpenCode stream rendering gates every rendered content type on the assistant message role: `message.part.updated` events carry no role and user-message parts (including synthetic/ignored prompt context) ride the same event stream as assistant output, so text/reasoning deltas emit only for parts whose message id `message.updated` announced as `assistant` (`openCodeMessageRoleById` — unknown ids stay unrendered because OpenCode announces every message before its parts), synthetic/ignored parts are skipped outright, and image `file` parts are split by origin — an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`), except for attachments from a recognized image-generation tool, which keep the generation card. Lane naming and chat auto-titling both run through the session-intelligence prompt path on the one model `sessionNaming.ts` picks (the cheap helper for Claude, Codex and Cursor; the chat's own model for every other provider). An empty candidate list still uses a deterministic prompt-derived title/slug — it does not throw or skip naming. Branch uniqueness is handled by the lane id suffix added by lane creation. Tracks Fast Mode with the legacy `codexFastMode: boolean` session field for every provider whose descriptor advertises `serviceTiers: ["fast"]`; Codex forwards it as `serviceTier: "fast" \| null` on every `thread/start` and `turn/start` JSON-RPC call, while Cursor SDK sessions resolve it through discovered model parameters (see [Agent Routing](agent-routing.md#provider-service-tiers-fast-mode)). Codex chat goals are managed through the app-server `thread/goal/get` / `set` / `clear` RPCs, persisted in session summaries, validated to the provider's 4,000-character objective limit, and normalized to ADE's unlimited-budget policy by sending `tokenBudget: null` and clearing provider-reported budgets. On Codex 0.162+ each mutation also carries `origin`, because the server reads a missing provenance as "supplies no user authorization": the `/goal` command, the goal controls, and `ade chat goal` send `"user"`; the seed into a fresh thread, the budget clear, and the fork/handoff cleanups send `"automatic"`. The field is omitted on servers that predate it, which leaves them exactly as they behaved before. `applyCodexEffectiveThreadState` accepts a `requestedCodexPolicy` option and uses `shouldPreserveRequestedCodexPolicy` to keep ADE-controlled picker selections authoritative when the lifecycle response echoes an older thread policy (prevents a manual Plan→Edit switch from snapping back); it also syncs the abstract `permissionMode` via `syncLegacyPermissionMode` after every policy application. Whenever an `updateSession` touches any permission/interaction/mode field, the service also emits a transient `session_meta_updated` chat event carrying the recomputed mode fields (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, and the `cursorModeSnapshot`) so any other client viewing the same session — a desktop refreshing a session an iOS device just re-moded, or vice versa — updates its composer controls live. It is a direct state patch, emitted after the Cursor policy sync so `cursorModeSnapshot` reflects the recomputed mode, and is kept off the session-list refresh path. Builds ADE guidance from the active lane worktree so Agent Skill roots are lane-scoped in persistent system/developer prompts and provider fallback injection. `buildAgentRuntimeEnv(managed)` stamps every SDK-backed provider process with `ADE_CHAT_SESSION_ID`, `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for a lead), `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (Codex, whose app-server is shared by many chats, gets the chat-identity part per thread as `shell_environment_policy.set` instead; see `codexAppServerPool.ts`); the persistent guidance also names the concrete `--session <id>` argument for status commands so shared SDK servers do not depend on process-global env inheritance. `dismissPendingInputForSettlement` is the provider-neutral quieting boundary used by **Dismiss & settle**: it interrupts live Claude/Codex/OpenCode/Cursor/Droid turns best-effort, cancels local/provider waiters, removes Codex plan follow-ups, emits pending-input resolution, and persists an idle session before settle is written. It is single-flight per session (a second concurrent caller — a double-click, or a desktop and a phone dismissing at once — awaits the pass already running instead of starting a second one) and records which cards its own drains resolved so it never emits a second receipt for the same card. `settleCodexPendingInputs` is the single settle for a Codex turn: it answers each open app-server approval request, clears `runtime.approvals`, drains staged `pendingPlanFollowups`, cancels the local `codex` **and** `ade` cards, and emits exactly one `pending_input_resolved` per card; every path that ends a Codex turn calls it (`interrupt`, the local interrupt finish, the `turn/aborted` handler, runtime teardown, `thread/deleted`, the app-server `error`/`exit` handlers, and settlement). `settleClaudePendingApprovals` is the Claude counterpart for `canUseTool` waiters, which can only be answered on the query that raised them. `settleUnclaimedPendingInput` is the shared exit for the other direction — a user answering a card whose asker is already gone: every provider's "waiter not found" branch in `respondToInput` (ADE-local, Claude, OpenCode, Cursor, Droid, plus the no-live-runtime fallback) calls it to emit `pending_input_resolved` plus a "That request is no longer active." notice instead of returning silently, because a silent return leaves an unanswerable card to be redrawn on the next re-derivation. When the session has Linear issues attached (`session_linear_issues`), `buildAgentRuntimeEnv` also materializes them into a per-session context file via `writeSessionLinearIssueContextFile` (`<contextDir>/<sessionId>/linear-issues.json`, written atomically; stale files cleared when nothing is attached) and sets `ADE_LINEAR_ISSUE_IDS` (comma-joined identifiers) + `ADE_LINEAR_CONTEXT_FILE` so the agent reads its issue context without Linear credentials. Attaching a `linear_issue` context attachment at run time calls `laneService.attachLinearIssueToSession({ chatSessionId, issues, role: "worked", source: "chat_attach", includeInPr: true })` so the link is persisted even for standalone (laneless) chats; when the session has a lane it additionally runs `laneService.linkLinearIssues` for the lane/PR-card semantics. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). Claude SDK sessions also resolve the executable through `claudeCodeExecutable.ts` and pass `pathToClaudeCodeExecutable`, which is always ADE's own pinned copy (a fall-forward override, the tools cache, a checkout's `node_modules` copy, or the previous pin; never a PATH `claude`), awaiting its download first; interrupted Claude turns stop active subagents before emitting stopped `subagent_result`s, and every `subagent_result` is gated on a previously emitted `subagent_started` (tracked in `emittedSubagentStartIds`) so an interrupt can never emit a phantom stopped card for a subagent that never announced — terminal events clear both the taskId and agentId aliases. A plain Claude Code task run (`task_type` `other`, no agent metadata — e.g. "Re-run affected test files") is tracked for cleanup but never surfaces subagent rows. Claude resume paths run `claudeThinkingTranscriptRepair` before loading a transcript, and the runtime self-heals the same corruption after the Anthropic thinking-block 400 error. Plan-mode transitions run through `claudePlanMode.ts` and emit a plan-mode notice carrying the resulting access mode, so the renderer composer chip updates from an authoritative value even when the session refresh races with compaction. Cursor SDK setup records interrupts that arrive while the worker is still being acquired, releases the acquired generation if setup loses the race, and suppresses false provider-health failures for user-initiated setup interrupts. Every local Cursor turn is guarded by a 90 s first-event watchdog and at most one automatic recycle-and-resend (see [Cursor thread recycling and the first-event watchdog](#cursor-thread-recycling-and-the-first-event-watchdog)); an expired Cursor access token recycles the worker while resuming the *same* agent id, so the recovery is silent and the thread survives. Queued-steer settlement is claim-based: `settledSteerIds` is a per-session `WeakMap` of steer ids that have already had a delivered-or-cancelled notice emitted, claimed by every emitter that resolves a steer and re-opened whenever a steer goes back on the queue, so a runtime swap that detaches a queue the delivery attempt also drains cannot render two contradictory notices for one message. Cursor provider slash commands use a dedicated discovery path (`cursorSlashCommandDiscovery`) instead of falling through to the generic filesystem-backed list. Claude query startup is single-flight: concurrent `ensureClaudeQuery` callers latch onto one in-flight `queryStartPromise`, and a per-runtime `queryGeneration` token aborts and reaps a start that a reset or interrupt superseded, so a resumed session never spawns twin subprocesses; both reset and interrupt reap the SDK subprocess through `claudeSubprocessReaper` because a closed `query()` still leaves a live `claude --resume` child. `run_in_background` shell tasks (SDK `task_type` `local_bash`/`background`) survive turn boundaries — the query stays alive across turns and delivers their real completion — so interrupt, reset/dispose, a native subagent exit, or a host-restart rebind settle them as stopped; a reset that orphans still-open background tasks emits one `system_notice` that they were stopped without reporting completion, and background-task titles are sticky (the first spawn description is reused through the terminal row). A durable per-`(SDK message id, content index)` emitted-text record keeps a re-delivered assistant snapshot (after a stream-dedup reset from steer, message interleave, or idle handoff) from doubling the transcript. Thinking snapshots use the same guard plus an accumulated-stream-text match, because a stripped redacted/empty thinking block can shift the stream's content index relative to the snapshot's block index; the foreground turn and the idle reader both apply it. Claude `TaskCreate`/`TaskUpdate` tracking keys creates by tool-use id and remaps the harness's ordinal task id onto the Nth created task; an update for an id it cannot resolve or describe changes nothing rather than fabricating a todo row. `steer()` returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`); reasoning effort is normalized and applied at steer delivery, and an active Claude `interrupt-replace` uses SDK priority `now` without tearing down the query or its background work. When a spawned child chat ends, `reportChildSpawnEnded` reports its outcome to the spawner according to the child's `spawnKind`; an active Claude parent receives SDK `priority: "next"` delivery, an active Codex parent receives `turn/steer`, and idle or provider-fallback parents receive the normal message path, while scheduled work remains boundary-delivered (see [Spawn types and completion reporting](#spawn-types-and-completion-reporting)). Spawned agents also inherit `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and a subagent self-report guidance line. Fork/import history seeding (`appendImportedChatEvents`) is chunked with event-loop yields, defers transcript flushes to chunk boundaries, and never publishes seeded historical envelopes to live event subscribers — readers load them via history APIs; live-publishing an entire source chat froze the app during fork handoff (ADE-122). The `chat.handoffSession` / `chat.prepareCrossMachineHandoff` runtime actions carry extended timeouts (120s daemon action, 150s IPC) because a brief handoff spans AI-brief generation plus first-message dispatch — the old 30s default fired a false timeout while the daemon-side handoff completed anyway. For orchestrator-lead sessions it builds the read-only capability services (`buildOrchestrationLeadReadServices` → `searchWorkspace` / `readLinearIssue` / `readPr` / `listProofArtifacts` / `mintDeeplink`), wiring each only when the backing service exists so a null service degrades to an omitted tool rather than a crash. Large service file. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Main service: session lifecycle, external chat import orchestration (`importExternalChatSession` for sessions of all 11 providers discovered by the external-session service: Claude/Codex native continue or fork, Droid/OpenCode/Pi/Copilot native continue by pointer seeding, replay copy for everything else), turn dispatch, event emission, provider adapters, steer queue, handoff, auto-title, prompt-derived lane-name suggestions for auto-created / parallel lanes, event-history snapshots, durable chat transcript replay/storage compaction, slash-command discovery/merge (delegates to per-provider discovery modules and `slashCommandPromptExpansion` for unified prompt expansion), and active-workload detection used by project/window close guards. Codex non-retrying app-server failures are deduplicated by turn plus semantic error identity across the early `error` notification and terminal `turn/completed`; retrying notifications (`willRetry: true`) remain provider-health notices while the turn stays active. OpenCode stream rendering gates every rendered content type on the assistant message role: `message.part.updated` events carry no role and user-message parts (including synthetic/ignored prompt context) ride the same event stream as assistant output, so text/reasoning deltas emit only for parts whose message id `message.updated` announced as `assistant` (`openCodeMessageRoleById` — unknown ids stay unrendered because OpenCode announces every message before its parts), synthetic/ignored parts are skipped outright, and image `file` parts are split by origin — an assistant-owned part is model output (`codex_image_generation`), while a tool attachment is what the tool returned (`codex_image_view`), except for attachments from a recognized image-generation tool, which keep the generation card. Lane naming and chat auto-titling both run through the session-intelligence prompt path on the one model `sessionNaming.ts` picks (the cheap helper for Claude, Codex and Cursor; the chat's own model for every other provider). An empty candidate list still uses a deterministic prompt-derived title/slug — it does not throw or skip naming. Branch uniqueness is handled by the lane id suffix added by lane creation. Tracks Fast Mode with the legacy `codexFastMode: boolean` session field for every provider whose descriptor advertises `serviceTiers: ["fast"]`; Codex forwards it as `serviceTier: "fast" \| null` on every `thread/start` and `turn/start` JSON-RPC call, while Cursor SDK sessions resolve it through discovered model parameters (see [Agent Routing](agent-routing.md#provider-service-tiers-fast-mode)). Codex chat goals are managed through the app-server `thread/goal/get` / `set` / `clear` RPCs, persisted in session summaries, validated to the provider's 4,000-character objective limit, and normalized to ADE's unlimited-budget policy by sending `tokenBudget: null` and clearing provider-reported budgets. On Codex 0.162+ each mutation also carries `origin`, because the server reads a missing provenance as "supplies no user authorization": the `/goal` command, the goal controls, and `ade chat goal` send `"user"`; the seed into a fresh thread, the budget clear, and the fork/handoff cleanups send `"automatic"`. The field is omitted on servers that predate it, which leaves them exactly as they behaved before. `applyCodexEffectiveThreadState` accepts a `requestedCodexPolicy` option and uses `shouldPreserveRequestedCodexPolicy` to keep ADE-controlled picker selections authoritative when the lifecycle response echoes an older thread policy (prevents a manual Plan→Edit switch from snapping back); it also syncs the abstract `permissionMode` via `syncLegacyPermissionMode` after every policy application. Whenever an `updateSession` touches any permission/interaction/mode field, the service also emits a transient `session_meta_updated` chat event carrying the recomputed mode fields (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, and the `cursorModeSnapshot`) so any other client viewing the same session — a desktop refreshing a session an iOS device just re-moded, or vice versa — updates its composer controls live. It is a direct state patch, emitted after the Cursor policy sync so `cursorModeSnapshot` reflects the recomputed mode, and is kept off the session-list refresh path. Builds ADE guidance from the active lane worktree so Agent Skill roots are lane-scoped in persistent system/developer prompts and provider fallback injection. `buildAgentRuntimeEnv(managed)` stamps every SDK-backed provider process with `ADE_CHAT_SESSION_ID`, `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for a lead), `ADE_LANE_ID`, `ADE_PROJECT_ROOT`, and `ADE_WORKSPACE_ROOT` (Codex, whose app-server is shared by many chats, gets the chat-identity part per thread as `shell_environment_policy.set` instead; see `codexAppServerPool.ts`); the persistent guidance also names the concrete `--session <id>` argument for status commands so shared SDK servers do not depend on process-global env inheritance. `dismissPendingInputForSettlement` is the provider-neutral quieting boundary used by **Dismiss & settle**: it interrupts live Claude/Codex/OpenCode/Cursor/Droid turns best-effort, cancels local/provider waiters, removes Codex plan follow-ups, emits pending-input resolution, and persists an idle session before settle is written. It is single-flight per session (a second concurrent caller — a double-click, or a desktop and a phone dismissing at once — awaits the pass already running instead of starting a second one) and records which cards its own drains resolved so it never emits a second receipt for the same card. `settleCodexPendingInputs` is the single settle for a Codex turn: it answers each open app-server approval request, clears `runtime.approvals`, drains staged `pendingPlanFollowups`, cancels the local `codex` **and** `ade` cards, and emits exactly one `pending_input_resolved` per card; every path that ends a Codex turn calls it (`interrupt`, the local interrupt finish, the `turn/aborted` handler, runtime teardown, `thread/deleted`, the app-server `error`/`exit` handlers, and settlement). `settleClaudePendingApprovals` is the Claude counterpart for `canUseTool` waiters, which can only be answered on the query that raised them. `settleUnclaimedPendingInput` is the shared exit for the other direction — a user answering a card whose asker is already gone: every provider's "waiter not found" branch in `respondToInput` (ADE-local, Claude, OpenCode, Cursor, Droid, plus the no-live-runtime fallback) calls it to emit `pending_input_resolved` plus a "That request is no longer active." notice instead of returning silently, because a silent return leaves an unanswerable card to be redrawn on the next re-derivation. When the session has Linear issues attached (`session_linear_issues`), `buildAgentRuntimeEnv` also materializes them into a per-session context file via `writeSessionLinearIssueContextFile` (`<contextDir>/<sessionId>/linear-issues.json`, written atomically; stale files cleared when nothing is attached) and sets `ADE_LINEAR_ISSUE_IDS` (comma-joined identifiers) + `ADE_LINEAR_CONTEXT_FILE` so the agent reads its issue context without Linear credentials. Attaching a `linear_issue` context attachment at run time calls `laneService.attachLinearIssueToSession({ chatSessionId, issues, role: "worked", source: "chat_attach", includeInPr: true })` so the link is persisted even for standalone (laneless) chats; when the session has a lane it additionally runs `laneService.linkLinearIssues` for the lane/PR-card semantics. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). Claude SDK sessions also resolve the executable through `claudeCodeExecutable.ts` and pass `pathToClaudeCodeExecutable`, which is always ADE's own pinned copy (a fall-forward override, the tools cache, a checkout's `node_modules` copy, or the previous pin; never a PATH `claude`), awaiting its download first; interrupted Claude turns stop active subagents before emitting stopped `subagent_result`s, and every `subagent_result` is gated on a previously emitted `subagent_started` (tracked in `emittedSubagentStartIds`) so an interrupt can never emit a phantom stopped card for a subagent that never announced — terminal events clear both the taskId and agentId aliases. A plain Claude Code task run (`task_type` `other`, no agent metadata — e.g. "Re-run affected test files") is tracked for cleanup but never surfaces subagent rows. Claude resume paths run `claudeThinkingTranscriptRepair` before loading a transcript, and the runtime self-heals the same corruption after the Anthropic thinking-block 400 error. Plan-mode transitions run through `claudePlanMode.ts` and emit a plan-mode notice carrying the resulting access mode, so the renderer composer chip updates from an authoritative value even when the session refresh races with compaction. Cursor SDK setup records interrupts that arrive while the worker is still being acquired, releases the acquired generation if setup loses the race, and suppresses false provider-health failures for user-initiated setup interrupts. A local Cursor turn silent for 90 s raises the shared quiet card, and a transport error before any event gets at most one automatic recycle-and-resend (see [Cursor thread recycling and the first-event watchdog](#cursor-thread-recycling-and-the-first-event-watchdog)); an expired Cursor access token recycles the worker while resuming the *same* agent id, so the recovery is silent and the thread survives. Queued-steer settlement is claim-based: `settledSteerIds` is a per-session `WeakMap` of steer ids that have already had a delivered-or-cancelled notice emitted, claimed by every emitter that resolves a steer and re-opened whenever a steer goes back on the queue, so a runtime swap that detaches a queue the delivery attempt also drains cannot render two contradictory notices for one message. Cursor provider slash commands use a dedicated discovery path (`cursorSlashCommandDiscovery`) instead of falling through to the generic filesystem-backed list. Claude query startup is single-flight: concurrent `ensureClaudeQuery` callers latch onto one in-flight `queryStartPromise`, and a per-runtime `queryGeneration` token aborts and reaps a start that a reset or interrupt superseded, so a resumed session never spawns twin subprocesses; both reset and interrupt reap the SDK subprocess through `claudeSubprocessReaper` because a closed `query()` still leaves a live `claude --resume` child. `run_in_background` shell tasks (SDK `task_type` `local_bash`/`background`) survive turn boundaries — the query stays alive across turns and delivers their real completion — so interrupt, reset/dispose, a native subagent exit, or a host-restart rebind settle them as stopped; a reset that orphans still-open background tasks emits one `system_notice` that they were stopped without reporting completion, and background-task titles are sticky (the first spawn description is reused through the terminal row). A durable per-`(SDK message id, content index)` emitted-text record keeps a re-delivered assistant snapshot (after a stream-dedup reset from steer, message interleave, or idle handoff) from doubling the transcript. Thinking snapshots use the same guard plus an accumulated-stream-text match, because a stripped redacted/empty thinking block can shift the stream's content index relative to the snapshot's block index; the foreground turn and the idle reader both apply it. Claude `TaskCreate`/`TaskUpdate` tracking keys creates by tool-use id and remaps the harness's ordinal task id onto the Nth created task; an update for an id it cannot resolve or describe changes nothing rather than fabricating a todo row. `steer()` returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`); reasoning effort is normalized and applied at steer delivery, and an active Claude `interrupt-replace` uses SDK priority `now` without tearing down the query or its background work. When a spawned child chat ends, `reportChildSpawnEnded` reports its outcome to the spawner according to the child's `spawnKind`; an active Claude parent receives SDK `priority: "next"` delivery, an active Codex parent receives `turn/steer`, and idle or provider-fallback parents receive the normal message path, while scheduled work remains boundary-delivered (see [Spawn types and completion reporting](#spawn-types-and-completion-reporting)). Spawned agents also inherit `ADE_PARENT_CHAT_SESSION_ID` / `ADE_SPAWN_KIND` and a subagent self-report guidance line. Fork/import history seeding (`appendImportedChatEvents`) is chunked with event-loop yields, defers transcript flushes to chunk boundaries, and never publishes seeded historical envelopes to live event subscribers — readers load them via history APIs; live-publishing an entire source chat froze the app during fork handoff (ADE-122). The `chat.handoffSession` / `chat.prepareCrossMachineHandoff` runtime actions carry extended timeouts (120s daemon action, 150s IPC) because a brief handoff spans AI-brief generation plus first-message dispatch — the old 30s default fired a false timeout while the daemon-side handoff completed anyway. For orchestrator-lead sessions it builds the read-only capability services (`buildOrchestrationLeadReadServices` → `searchWorkspace` / `readLinearIssue` / `readPr` / `listProofArtifacts` / `mintDeeplink`), wiring each only when the backing service exists so a null service degrades to an omitted tool rather than a crash. Large service file. |
 | `apps/desktop/src/main/services/chat/deletedChats.ts`, `apps/desktop/src/shared/types/deletedChats.ts`, `apps/desktop/src/renderer/components/settings/RecentlyDeletedSection.tsx`, `useDeletedChatTranscript.ts`, `recentlyDeleted.css` | Settings › Storage & cleanup › Recently deleted: the `deleted_chats` rows a delete (or a lane delete) writes, listing them only while the chat's own row is gone and the agent still holds the conversation, reading one back for the conversation dialog, and reopening it through the external-session import. Rows are machine-local (excluded from CRR) and never deleted, so a reopened or removed chat cannot come back through the Claude backfill. `chat.removeDeletedChats` is user-only. See [Recently deleted chats](#recently-deleted-chats). |
 | `apps/desktop/src/main/services/chat/cliSessionLifecycle.ts` | Delete, archive, Recently deleted reopen and handoff context for tracked agent CLI terminals, so they behave like chats; `agentCliDisplayName` / `agentCliRowTitle` give the CLI's name the archive shows. See [Agent CLI sessions](#agent-cli-sessions). |
 | `apps/desktop/src/main/services/chat/cliCrossMachineMove.ts` | Moving a tracked agent CLI to another machine: which agents carry their conversation (Claude Code, Codex), packing it on the source, placing it on the destination under that lane's path (`placeCliConversation`, `rewriteCodexRolloutCwd`), the launch settings that travel, and why a CLI starts fresh. See [Agent CLI sessions](#agent-cli-sessions). |
@@ -1722,6 +1733,15 @@ accepted update alike, and the update dialog shows its answer per chat:
   the same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`, so it re-runs
   what it still needs instead of waiting for a report that cannot come.
 - Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h).
+- **An accepted update continues each chat at work.** After an update restart,
+  the brain arms one continue message for each chat at work (`armUpdateResume`,
+  `UPDATE_RESUME_PROMPT`). ADE reopens and arms a chat row that an earlier
+  process left `failed`. ADE does not reopen a `disposed` chat or a chat that
+  ended in this launch; it reports those as `settled` with `not_schedulable`,
+  and the desktop does not ask again for them. A chat that is not armed stays
+  owed. The desktop retries it at 15 s, 60 s, 3 min and 10 min
+  (`UPDATE_RESUME_RETRY_DELAYS_MS`, `apps/desktop/src/main/main.ts`). After the
+  last retry the chat stays owed until the next launch.
 - Tracked agent CLIs (Claude Code, Codex, … in a terminal) follow the same
   setting (`reopenCliSessionsAfterRestart`, store in
   `apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`). Two
@@ -1732,7 +1752,11 @@ accepted update alike, and the update dialog shows its answer per chat:
     `.ade/cache/reopen-cli-after-restart.<pid>.json`, and marks one that is
     still printing and not at its prompt as mid-turn. Two runtimes of one
     project that stop together never overwrite each other's list. The next
-    runtime claims each file with a rename before it reads it.
+    runtime claims each file with a rename before it reads it. A brain told
+    to stop writes this list first, with its chats at work, and opens those
+    projects at its next start; a stop for good continues nothing, and a
+    Devin CLI never reopens (see
+    [work in flight across a brain stop](../storage-and-recovery/README.md#work-in-flight-across-a-brain-stop)).
   - **A crash, force quit, kill or power loss** writes nothing at exit. The
     next runtime reads the session rows instead
     (`findCliSessionsCutOffByCrash`): tracked agent CLI rows, `running` or
@@ -1755,14 +1779,22 @@ accepted update alike, and the update dialog shows its answer per chat:
   restart loop (`brainStartIsInRestartLoop`, from `brain-starts.json`)
   reopens nothing. With the setting off or in a loop, the crash candidates
   are claimed and stay closed, so a later start does not reopen them.
-  A CLI reopens at its prompt (`ptyService.resumeSession`). A mid-turn one,
-  unless it waits on the user's answer, then gets the durable "continue" row
-  (`RESTART_RESUME_PROMPT`), which fires once the CLI is at its prompt; it
-  counts toward the same restart streak as a chat's. Every reopened CLI shows
-  one line in its own terminal (`ptyService.showSessionNotice`,
-  `cliReopenedNotice`): "ADE restarted (unexpectedly) and reopened this
-  session", with "during a turn … tells the agent to continue" when it is
-  continued. Every viewer of the session sees it. Removing a project deletes
+  A CLI reopens at its prompt (`ptyService.resumeSession`). Then every
+  reopened CLI gets the durable restart row, which fires once the CLI is at
+  its prompt and names why ADE restarted (`restartResumePrompt`, the cause
+  from `brainRestartCause.ts`). A mid-turn one is told to continue. Any other
+  one is told that work or background agents it had were stopped, and that
+  an idle agent answers in one short line and stops: ADE's "was it working"
+  signal misses a CLI that waits on background agents. No row goes to a CLI
+  that waits on the user's answer, or whose runtime was stopped for good
+  (`stoppedForGood` on its list entry). Both wordings count toward the same
+  restart streak as a chat's, so a restart loop stops after
+  `MAX_CONSECUTIVE_RESTART_RESUMES`. The cost is one short turn per reopened
+  idle CLI per restart. Every reopened CLI shows one line in its own terminal
+  (`ptyService.showSessionNotice`, `cliReopenedNotice`): the cause and "reopened
+  this session", with "during a turn … tells the agent to continue" when it
+  is continued, or "tells the agent what happened" for the idle wording. The
+  log line counts the first as `continued` and the second as `informed`. Every viewer of the session sees it. Removing a project deletes
   its lists and crash state. Archived CLIs, ones already open, ones another
   runtime owns, and stops older than 6 h are skipped. The log lines are
   `agent_chat.cli_reopened_after_restart` and `agent_chat.cli_reopen_skipped`,
@@ -3271,7 +3303,7 @@ terminal, the same route a chat's actions take (`--machine`, or a pinned call).
 | `interrupt` / `stop` | `ptyService.interruptAgentCli` presses the provider's cancel key and leaves the process running: Esc; Esc twice for OpenCode (the first only arms "esc again to interrupt"); Ctrl-C for Cursor ("ctrl+c to stop"). Nothing is pressed while the CLI sits at a free prompt, because Ctrl-C there can exit Cursor. A clearing stop mode also cancels the sends queued for it. |
 | `restart` | `ptyService.restartAgentCli`: stops the process, waits up to 5 s for it to exit (two writers on one provider session corrupt it), then `resumeSession` in the same row (`claude --resume`, `codex resume`, `opencode --session`, …). Mid-turn is refused without `--stop`; `--after-turn` (and a CLI restarting itself) waits for the next free prompt, in memory only. Refused before anything stops when the CLI has nothing to resume. |
 | `update` | `--title` (kept as the user's name) and `--pin` / `--unpin` (`session.updateMeta`, for chats too) are row settings. `--model`, `--effort`, `--fast` and `--permission-mode` are saved on the row's resume launch and the CLI relaunches with resume. This is refused mid-turn, and refused when the provider's resume command cannot carry the setting: the command is built with and without it and compared (Cursor, Qwen and Kimi take no effort flag). An agent cannot change a CLI's permissions. Chat-only settings (tag, preset, MCP servers, …) are refused by name. |
-| `switch-account` | Claude and Codex: the account is saved on the resume launch (`launch.instanceId`) and the CLI relaunches under it, resumed. The new account reads only its own config home, so `restartAgentCli` stops the process, copies the conversation there (`moveProviderThread`, through its `beforeResume` step), then relaunches; a failed copy restores the old settings and relaunches on the old account. Refused mid-turn (`busy`), for a signed-out account (`signed_out`), and for a CLI on a saved key or preset. |
+| `switch-account` | Claude and Codex: the account is saved on the resume launch (`launch.instanceId`) and the CLI relaunches under it, resumed. The new account reads only its own config home, so `restartAgentCli` stops the process, copies the conversation there (`moveProviderThread`, through its `beforeResume` step), then relaunches; a failed copy restores the old settings and relaunches on the old account. Refused mid-turn (`busy`), for a signed-out account (`signed_out`), and for a CLI on a saved key or preset. In the app, the CLI's actions pane ends with the same account row a chat has (`ChatAccountNote`, "Run this CLI on"), so the user never has to run `/login` inside the CLI: that signs a different login into the account's own folder. |
 | `generate-names` | The title only: `ptyService.regenerateAgentCliTitle` names it from the first prompt (`goal`) and the output so far, with the same cheap model as the automatic CLI title. A CLI row has no status line or lane name of its own, so those are reported as skipped. |
 | `pending` / `respond` | While ADE sees the CLI waiting at its own prompt (`runtimeState: "waiting-input"`, or a `cli_prompt` / `provider_structured` attention), `listPendingInputs` reports one item, `cli-prompt`: an `approval`, or a `question` when the CLI asks for an answer in words (`getCliPromptKind`: Claude's `AskUserQuestion` and elicitations from its hooks; without hooks, anything but Claude's "Do you want to … / Yes" menu on screen). A question is never answered with a key; it points to the terminal. `respond --approve / --approve-session / --deny` presses that provider's own key: Claude Code `1` / `2` / Esc, Codex `y` / `a` / Esc, Cursor `y` / — / `n`. A `--deny` with `--text` also queues the text as the CLI's next message. Other CLIs are refused with a pointer to the terminal, rather than ADE typing a guess. |
 
@@ -3387,29 +3419,34 @@ message, in which case the record is kept and delivery resumes after a restart.
 
 A launch whose args carry `cloud: { sizeId }` (a tier id from
 `shared/cloudTiers.ts`) gets one new ADE Cloud computer for its one new lane.
-Nothing is made before Send. The desktop's main process owns the launch first
-(`services/adeCloud/cloudLaneLaunchService.ts`), so it does not depend on a
-window. Three stages come before the brain's own:
+Nothing is made before Send. Every such launch, from the app, the CLI or an
+agent, goes through ADE's server launcher (`/cloud/launches`, see
+`docs/features/ade-cloud/README.md`). The launch owner here (the desktop's
+main process, `services/adeCloud/cloudLaneLaunchService.ts`, or a brain for
+the CLI) does not depend on a window. It sends the server the launch's facts
+and its own args (`launch`: everything but the cloud target and the files
+from this computer, which go as the server's files first), and the server
+makes the computer with a one-time join key. The computer signs itself in to
+the account (no approval from anyone), clones the repository with its own
+Git sign-in and starts the same launch on its own brain (`chat.startLaunch`,
+same `launchId` and `laneId`, lane start forced to `on: "remote"`, its three
+steps as `priorStages`, the server launch's start as `setupStartedAt`). Three
+rows come before the brain's own, drawn from the server's record
+(`cloudLaneComputerStages.ts`):
 
-1. **Make computer**: the create carries the launch id as its request id,
-   the lane's name, and the lane facts in metadata (`shared/cloudLaneLaunch.ts`).
-   The stage finishes when the computer's ADE answers.
-2. **Join your account**: the computer's sign-in, approved in the approval
-   window, then its account row.
-3. **Clone repository**: pair, connect, and clone the project's GitHub origin
-   with the computer's own Git sign-in. A project that is already there is used.
+1. **Make computer**: the server's create (the launch id is its request id).
+2. **Join your account**: the computer's own sign-in, completed without a
+   browser (see the ADE Cloud README's server launcher). If it still can't
+   sign itself in, the row says so
+   with the page (`needs_approval`), the card's **Approve** opens it in
+   ADE's browser (`snapshot.cloud.approvalUrl`), and the CLI prints it.
+3. **Clone repository**: the computer's clone, as it reports it.
 
-The hand-off then calls `chat.startLaunch` on the computer's brain through
-its pin. The call keeps the same `launchId` and `laneId`, forces the lane
-start to `on: "remote"`, and passes the three finished stages as
-`priorStages`. The brain shows them first and never runs them
-(`normalizeChatLaunchPriorStages`). It also passes its own start for the
-attempt as `setupStartedAt`, so the card's total counts those steps; a Retry
-on either side starts the clock again (the desktop resets its start, the brain
-clears `setupStartedAt`). Messages queued before the hand-off go to
-the brain in order, one at a time, and the record is written after each one.
-After the hand-off the brain owns the launch and finishes it with the desktop
-closed.
+The hand-off: once the computer is in the account, the owner names its
+account row after the lane, pairs, finds the project there and reads the
+brain's launch, then follows it. Messages queued meanwhile go to the brain in
+order, one at a time, and the record is written after each one. After the
+hand-off the brain owns the launch and finishes it with the desktop closed.
 
 - **One id.** A second start with the same id returns the same launch. The
   server answers a repeated create request id with the same computer (see
@@ -3420,18 +3457,41 @@ closed.
   id main does not own takes the ordinary runtime route. `list` merges both.
   Snapshots carry `cloud` (size, computer, account machine key, the pin, and
   `handedOff`), and each project's views show only launches for their origin.
-- **Failures.** A failed stage shows one sentence. Retry runs that stage again
-  on the same computer. A computer that failed before it joined is put to
-  sleep while it waits. Cancel deletes only computers whose `ade_request_id`
-  is this launch, then removes the account row. If no computer was found yet,
-  it watches for a late one for 10 minutes. After the hand-off, Cancel goes to
-  the brain first, and the brain refuses once the agent has started.
+- **Failures.** A failed stage shows one sentence (the server's or the
+  computer's own when it has one). Retry asks the server again with
+  `retry: true`: a launch whose computer failed before its agent started
+  begins again on a new computer under the same id. The server claims the
+  retry before it deletes the failed computer (a join or report that landed
+  since keeps that computer) and holds the launch `retrying`, with the old
+  computer still on it, until the delete finishes: the old computer's
+  reports and joins are refused (also one read before the claim), and a
+  second start answers the launch instead of making or adopting a computer.
+  The record's 7-day deadline starts again, and a delete the provider
+  refuses puts the launch back as failed with that computer. A launch whose computer failed after
+  its agent began is bound and handed off as it is, so Retry goes to the
+  computer's own retry. Cancel before the hand-off asks the server first: its
+  `launch_started` refusal (the agent can start before this app has paired)
+  refuses the Cancel and nothing is deleted, and no answer at all refuses it
+  too. Otherwise the server deletes the computer, also one its create is
+  still making, then this app deletes computers whose `ade_request_id` is
+  this launch, the account row and saved connections (also when the server
+  already deleted the computer; the machine key stays, and the cleanup stays
+  open for ADE's next start, until its row is removed). A cleanup finished
+  when ADE opens again asks the server too, and deletes nothing while the
+  server doesn't answer. A read of the brain older than an event already
+  taken is dropped. After the hand-off, Cancel goes to the brain first, and the
+  brain refuses once the agent has started. Each new subscription to the
+  brain's events reads its snapshot once, so a change between the hand-off's
+  read and the stream is never missed.
 - **Restarts.** Records live in `<userData>/cloud-lane-launches/`. When ADE
-  opens again, a launch that was setting up continues from its unfinished
-  stage. A handed-off one is read and followed again, and a cancel finishes
-  its cleanup.
-- **Limits.** Only GitHub origins, no local file attachments before the
-  hand-off, and no uncommitted start.
+  opens again, a launch that was setting up reads the server again (the same
+  id answers the same launch). A handed-off one is read and followed again,
+  and a cancel finishes its cleanup. A record from an ADE before the server
+  launcher (`via` unset) had its computer made here, which never joins by
+  itself: that computer is deleted and the launch starts again on the server.
+- **Limits.** Only GitHub origins and no uncommitted start. Files on the
+  first message go to the server first (at most 10, 25 MB each); a brain
+  host takes none.
 - **Kinds.** Any kind can start a cloud lane. A `chat` starts its agent there.
   A `cli` parks at `awaiting-client` on the computer's brain, and the
   launching window's `useChatLaunchCliDriver` starts the tracked CLI session
@@ -3439,13 +3499,10 @@ closed.
   forwards it to the brain. A `lane` (`ade lanes create --machine cloud`) has
   no `agent` stage and completes when its environment stage ends. It takes no
   queued messages.
-  A brain advertises the kinds it runs as the `chatLaunchKinds` capability of
-  `ade/initialize` (`CHAT_LAUNCH_KINDS`). Before it hands off a `cli` or
-  `lane` launch, the launch owner reads that list from its connection (the
-  connect result in the app, the bridge's open connection in a brain). A
-  brain that does not list the kind would read it as `chat`, so the step
-  fails with "too old, update it, then retry". A list that can't be read is
-  not refused.
+  A `cli` goes to the server as `lane` (the server knows only `chat` and
+  `lane`) with `cli` in the app's own args, which the computer reads back. A
+  computer too old to read the app's args starts from the facts alone, so a
+  `cli` there runs as the lane without its CLI session.
 
 The lane setup card (`LaneSetupCard.tsx`) and the ADE Cloud job card
 (`CloudLaneJobCard.tsx`) draw their step rows from one parts module,
@@ -3821,25 +3878,25 @@ ECANCELED`/`EPIPE`, a socket torn down mid-write — does not just fail the run
 it hits. It poisons the server-side Cursor agent thread, and the worker process
 stays perfectly alive on this side. Every later send on that thread then hangs
 at `Preparing response` forever: no events, no result, no error. The only
-observable signal is silence, so ADE guards each local Cursor turn with a
-first-event watchdog and one automatic recovery attempt.
+observable signal is silence. The shared quiet watchdog posts the "Cursor
+hasn't answered" card after 90 s with no event (see turn health below), and
+**Restart Cursor** on it is the way out: ADE no longer abandons a silent run and
+re-sends the prompt on its own. The bullets below describe the error-driven
+recoveries (a transport error before any event, an expired token), which still
+recycle and re-send once.
 
-- **The watchdog.** `CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS` is 90 s from the send.
-  Any streamed worker event — text, reasoning, a tool call, a status change —
-  disarms it. `run_started` deliberately does not count (the wedged-thread
-  failure is exactly "the run is created and then nothing streams"), and neither
-  does the terminal `run_result` or the synthetic terminal `status: ERROR` the
-  worker posts just before it — both are the run *ending*, not progress.
-  Counting that terminal error as activity is what previously made the
-  transport-recovery branch unreachable in production. The budget is generous on
-  purpose: unlike Codex's advisory 120 s stall watchdog, tripping this one is
-  destructive, so it has to cover a full send round trip plus first token
-  including attachment upload on a slow link. It is armed once per turn and
-  never re-armed on progress, so a legitimately long tool call can never trip
-  it. The watch is run-scoped as well as turn-scoped, so late events from an
-  abandoned run cannot disarm the next turn's watchdog.
-- **Recycling.** When the watchdog fires, or a send rejects with a transport
-  error before any event arrived, `recycleCursorSdkAgentThread` best-effort
+- **The quiet card.** `CURSOR_SDK_FIRST_EVENT_WATCHDOG_MS` (90 s, the Cursor
+  entry in `PROVIDER_QUIET_THRESHOLDS`) is how long a local turn may go without
+  a first event before the shared quiet watchdog posts "Cursor hasn't answered"
+  with Restart / Keep waiting. It is advisory: the run is left alone, nothing is
+  cancelled or re-sent. The per-run `sdkSilenceWatch` still records whether any
+  worker event (`seen`) or visible output arrived, which the transport and
+  stale-token recoveries key on. `run_started`, the terminal `run_result`, and
+  the synthetic terminal `status: ERROR` do not count as events, and late
+  events from an abandoned run cannot mark the next turn's watch.
+- **Recycling.** When a send rejects with a transport error before any event
+  arrived (or the user presses Restart on the quiet card, reason
+  `quiet_restart`), `recycleCursorSdkAgentThread` best-effort
   cancels whatever is nominally running (bounded at 3 s), force-evicts the
   pooled worker via `poisonCursorSdkConnection`, drops the live runtime, and
   arms a forced rotation. The next `ensureCursorSdkRuntime` then acquires with
@@ -3855,10 +3912,8 @@ first-event watchdog and one automatic recovery attempt.
   `local.force` through `forceExpireActiveRun`, because the previous run may
   still be registered as active on the thread that stopped answering. A second
   failure surfaces to the user rather than looping. The re-send announces itself
-  in the transcript ("Cursor stopped responding. ADE opened a fresh Cursor
-  thread and is resending your message." / "Cursor's connection dropped. …"),
-  and when no recovery is left the turn fails with "Cursor stopped responding.
-  ADE opened a fresh Cursor thread — try sending again." under
+  in the transcript ("Cursor's connection dropped. …"), and when no recovery is
+  left the turn fails with the classified transport error under
   `errorInfo.category: "network"`.
 - **Expired access tokens keep the thread.** The Cursor SDK exchanges the user
   API key for a short-lived access token once per worker and only re-exchanges
@@ -4003,14 +4058,32 @@ surface's recovery action targeted at the child. Recovery progress is recorded
 as `turn_recovery`, so a successful recovery replaces the stale warning instead
 of leaving contradictory cards.
 
-Codex is the first provider with an active watchdog behind that shared
-contract. A turn that produces no useful model/tool event for 120 seconds is
-reconciled against app-server thread state. ADE backfills any missed items or
-terminal state it finds; otherwise it attempts one app-server restart + thread
-resume per session before exposing manual recovery. After useful progress,
-10 minutes without further model/tool activity produces a non-destructive
-stall warning. Pending approvals and user input suspend reconciliation, and
-answering them re-arms the 10-minute progress window.
+Every provider runs on one shared quiet watchdog behind that contract
+(`chatQuietWatchdog.ts`, fed from `emitChatEvent`): `status: started` arms
+it, the agent's own output counts as activity (an allowlist: text, reasoning,
+tools, commands, plans, subagents, provider retries; never ADE's `activity`
+placeholder, diagnostics, metadata, notices or cards), `done` ends it, and an open compaction counts as activity
+with its own budget. Budgets are 2 minutes to the first event and 10 minutes of
+mid-turn silence, with per-provider exceptions only where needed (Cursor's
+first event is 90 s; Codex fails a compaction silent for 3 minutes). A silence
+the chat can explain is watched again instead: a pending approval or question,
+an open command or tool, and for Codex a reconcile against app-server thread
+state that backfills missed items or a terminal turn. Anything else posts the
+same card for every provider: "<Provider> hasn't answered in N minutes",
+**Restart <Provider>** / **Keep waiting** (`supportedActions: ["wait",
+"restart_resume"]`). The watchdog never restarts, resends, or starts a queue
+on its own; ADE used to restart Codex once and send its own "Resume the
+interrupted work" message, which a slow ADE Cloud computer read as a second
+request. Restart is the user's: Codex interrupts, restarts the app-server and
+resumes the thread with its own queue held until the resumed turn ends; every
+other provider stops the turn (queued follow-ups set aside as a restorable
+group), ends the provider process like Restart session, and picks up the last
+request. Cursor's Restart also rotates onto a fresh agent seeded with the
+conversation (`recycleCursorSdkAgentThread`, reason `quiet_restart`), because a
+silent Cursor thread may be wedged server-side. The resume message is ADE's (`metadata.hostContinuation`), so every
+client draws it as an "ADE" row with the reason, never as the user's bubble.
+The card's clients send the action with the chat's pin, so it reaches the
+machine the chat runs on.
 
 The composer also raises a provider-neutral notice for the case the watchdog
 cannot see: a provider that accepts a request and then goes silent. When a live

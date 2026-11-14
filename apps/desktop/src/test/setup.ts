@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeEach } from "vitest";
+import { afterAll, afterEach, beforeEach, vi } from "vitest";
 
 type TestTempTrackerState = {
   installed: boolean;
@@ -73,6 +73,16 @@ installTrackedTempCleanup();
 afterAll(() => {
   cleanupTrackedTempDirs();
 });
+
+// Run as CI does, with no ADE environment of the shell that started the run.
+// An ADE agent's shell carries its identity (`ADE_CHAT_SESSION_ID`,
+// `ADE_ACTIVITY_SESSION_ID`, the brain's socket, …), and code under test reads
+// it: a brain a test spawns from that shell took the agent role, so the pool
+// refused it as incompatible and every such test failed inside an agent. A
+// test that needs one of these sets it itself; the ones this file sets follow.
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("ADE_")) delete process.env[key];
+}
 
 const claudeConfigDir = path.join(os.tmpdir(), "ade-vitest-claude-config");
 
@@ -164,7 +174,59 @@ function ensureWritableWindowAde(): void {
   });
 }
 
+// jsdom runs every requestAnimationFrame callback from one setInterval, and
+// starts that interval only when its count of waiting frames goes from 0 to 1.
+// A test that fakes timers while a frame waits, then restores real timers,
+// drops the interval with the frame still counted: no later frame in that file
+// ever runs, and motion's frame loop (which keeps jsdom's rAF from import time
+// and waits on its one scheduled frame) stops with it. Every later animation in
+// the file then never starts or finishes. So each test starts by handing any
+// frame still waiting back to jsdom, on the clock that test runs with.
+// The handle a caller holds stays the same across that hand-back, so a later
+// cancelAnimationFrame of it still cancels the frame.
+const waitingFrames = new Map<number, { callback: FrameRequestCallback; scheduled: number }>();
+let restartFrame: ((handle: number) => void) | null = null;
+if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  const cancelFrame = window.cancelAnimationFrame.bind(window);
+  let nextHandle = 0;
+  const schedule = (handle: number, callback: FrameRequestCallback): void => {
+    const scheduled = requestFrame((now) => {
+      waitingFrames.delete(handle);
+      callback(now);
+    });
+    waitingFrames.set(handle, { callback, scheduled });
+  };
+  const request = (callback: FrameRequestCallback): number => {
+    nextHandle += 1;
+    schedule(nextHandle, callback);
+    return nextHandle;
+  };
+  const cancel = (handle: number): void => {
+    const waiting = waitingFrames.get(handle);
+    if (!waiting) return;
+    waitingFrames.delete(handle);
+    cancelFrame(waiting.scheduled);
+  };
+  restartFrame = (handle) => {
+    const waiting = waitingFrames.get(handle);
+    if (!waiting) return;
+    cancelFrame(waiting.scheduled);
+    schedule(handle, waiting.callback);
+  };
+  window.requestAnimationFrame = request;
+  window.cancelAnimationFrame = cancel;
+  globalThis.requestAnimationFrame = request;
+  globalThis.cancelAnimationFrame = cancel;
+}
+
+function restartWaitingFrames(): void {
+  if (waitingFrames.size === 0 || vi.isFakeTimers() || !restartFrame) return;
+  for (const handle of [...waitingFrames.keys()]) restartFrame(handle);
+}
+
 beforeEach(() => {
+  restartWaitingFrames();
   ensureUsableLocalStorage();
   if (typeof window !== "undefined") {
     try {

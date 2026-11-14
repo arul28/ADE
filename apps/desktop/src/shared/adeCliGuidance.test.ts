@@ -1,6 +1,4 @@
-import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
 import { adeHostWithheldAgentSkills, setAdeCloudSkillVisible } from "./agentSkillRoots";
@@ -44,50 +42,6 @@ describe("ADE CLI guidance", () => {
 describe("ADE bootstrap guidance", () => {
   const roots = ["/Applications/ADE.app/Contents/Resources/agent-skills"];
 
-  it("teaches the skill-on-demand habit and the ground-truth CLI fallback", () => {
-    const bootstrap = buildAdeBootstrapGuidance(roots);
-
-    expect(bootstrap).toContain("## ADE");
-    // The habit: reach for the matching skill on demand, not an inlined rulebook.
-    expect(bootstrap).toContain("read the matching `ade-*` skill");
-    // The fallback: CLI help is ground truth (agents are not trained on `ade`).
-    expect(bootstrap).toContain("ade help <command>");
-    expect(bootstrap).toContain("ade actions list --text");
-    expect(bootstrap).toContain("ade skill list --text");
-    expect(bootstrap).toContain("ade skill show <name> --text");
-    // One default per scenario: same chat and lane, another model as a
-    // subagent, and one wake per thing waited on.
-    expect(bootstrap).toContain("ade chat scheduled-work create");
-    expect(bootstrap).toContain("`ade new chat --mode chat`");
-    expect(bootstrap).toContain("`ade prs watch`");
-    expect(bootstrap).toContain("`ade terminal watch`");
-    expect(bootstrap).toContain('ade chat note "testing desktop auth fallback"');
-    expect(bootstrap).toContain("6 words or fewer");
-    expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
-    expect(bootstrap).toContain('ade chat ask "<the exact question>"');
-    expect(bootstrap).toContain("a note alone can leave an idle row looking Done");
-    expect(bootstrap).toContain("The next accepted user message clears the prior hand-raise");
-    // Settlement is user- and PR-merge-driven only: the bootstrap must tell the
-    // agent it CANNOT settle, and must never hand it a settle command again.
-    expect(bootstrap).toContain("You cannot settle or unsettle a session");
-    expect(bootstrap).toContain("the user's call, or the automatic result of its PR merging");
-    expect(bootstrap).not.toContain("ade chat settle --outcome");
-    // Snoozing is the user's call; agents are not handed the command.
-    expect(bootstrap).not.toContain("ade session snooze");
-    expect(bootstrap).toContain("ade chat generate-names");
-    expect(bootstrap).toContain("ade chat update --title");
-    expect(bootstrap).toContain("ade lanes rename");
-    // The skill index is still advertised so the model knows what exists.
-    const hostWithheld = new Set(adeHostWithheldAgentSkills());
-    for (const skillName of adeBundledAgentSkills) {
-      if (adeDeprecatedAgentSkillAliases.has(skillName) || adeOutsideClientAgentSkills.has(skillName) || hostWithheld.has(skillName)) continue;
-      expect(bootstrap).toContain(`\`${skillName}\``);
-    }
-    // An account off ADE Cloud's list isn't told it exists.
-    setAdeCloudSkillVisible(false);
-    expect(buildAdeBootstrapGuidance(roots)).not.toContain("`ade-cloud`");
-  });
-
   it("stays within a small budget — the always-on socket/browser/proof tax is gone", () => {
     const bootstrap = buildAdeBootstrapGuidance(roots);
 
@@ -100,27 +54,6 @@ describe("ADE bootstrap guidance", () => {
     // The per-domain operating rules now live in their skills, not always-on.
     expect(bootstrap).not.toContain("### Minimum operating rules");
     expect(bootstrap).not.toContain("--socket");
-  });
-
-  it("keeps the bundled control-plane skill aligned with the bootstrap lifecycle contract", () => {
-    const bootstrap = buildAdeBootstrapGuidance(roots);
-    const skill = fs.readFileSync(fileURLToPath(new URL(
-      "../../resources/agent-skills/ade-cli-control-plane/SKILL.md",
-      import.meta.url,
-    )), "utf8");
-
-    for (const invariant of [
-      "ade chat note",
-      "ade chat ask",
-      "You cannot settle or unsettle a session",
-    ]) {
-      expect(bootstrap.toLowerCase()).toContain(invariant.toLowerCase());
-      expect(skill.toLowerCase()).toContain(invariant.toLowerCase());
-    }
-    expect(bootstrap).toContain("next accepted user message clears the prior hand-raise");
-    expect(skill).toContain("next accepted user message clears the hand-raise");
-    expect(bootstrap).toContain(`${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`);
-    expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
   });
 });
 

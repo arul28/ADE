@@ -36,6 +36,8 @@ import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtoco
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import type { ProviderStatusReport } from "../../desktop/src/main/services/ai/providerStatusProbe";
 import { JsonRpcErrorCode } from "./jsonrpc";
+import { MACHINE_SCOPE_PROJECT_ID } from "../../desktop/src/shared/machineScope";
+import { AGENT_REMOTE_CLIENT_NAME } from "../../desktop/src/shared/runtimeClientNames";
 import { buildMachineAccountDomainServices } from "../../desktop/src/main/services/adeActions/registry";
 
 const originalAdeHome = process.env.ADE_HOME;
@@ -47,6 +49,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (originalAdeHome === undefined) delete process.env.ADE_HOME;
   else process.env.ADE_HOME = originalAdeHome;
   fs.rmSync(isolatedAdeHome, { recursive: true, force: true });
@@ -266,15 +269,16 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("keeps healthy sync status on the active-host resolver", async () => {
+  it("answers sync status from the ready active host without activating a host", async () => {
     const { registry, projectRoot } = createRegistry();
     const record = registry.add(projectRoot);
     const runtime = makeRuntime("healthy-active");
+    const readyScope = { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
     const scopeRegistry = {
-      getActiveSyncHostProjectId: vi.fn(() => null),
+      getActiveSyncHostProjectId: vi.fn(() => record.projectId),
       getMostRecentFailingSyncHostProjectId: vi.fn(() => null),
-      getIfReady: vi.fn(() => null),
-      resolveActiveSyncHost: vi.fn(async () => ({ registryProjectId: record.projectId, record, runtime, dispose: vi.fn() })),
+      getIfReady: vi.fn((id: string) => id === record.projectId ? readyScope : null),
+      resolveActiveSyncHost: vi.fn(async () => readyScope),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -282,7 +286,7 @@ describe("multi-project RPC server", () => {
     await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
     await expect(handler({ jsonrpc: "2.0", id: 2, method: "sync.getStatus", params: {} }))
       .resolves.toEqual({ role: "brain", label: "healthy-active" });
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledOnce();
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     handler.dispose();
   });
 
@@ -1731,6 +1735,102 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("answers a computer's own settings on the machine scope, and nothing a project owns", async () => {
+    // The desktop's brain allows the CTO role, as it does for keep awake on a
+    // project; a run from inside a chat must not clamp it to that chat's.
+    vi.stubEnv("ADE_DEFAULT_ROLE", "cto");
+    vi.stubEnv("ADE_CHAT_SESSION_ID", "");
+    const { registry } = createRegistry();
+    const machineRuntime = makeRuntime("machine");
+    const scopeRegistry = {
+      get: vi.fn(async () => { throw new Error("a machine-scope call must not open a project"); }),
+      getIfBooted: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const personalChatScope = {
+      capabilities: vi.fn(() => ({ version: 1 as const, actions: [] })),
+      call: vi.fn(async () => { throw new Error("not a personal chat call"); }),
+      streamEvents: vi.fn(async () => ({ events: [], nextCursor: 0, hasMore: false, eventEpoch: "e", gap: false, oldestCursor: null })),
+      dispose: vi.fn(async () => undefined),
+      runtimeForDelivery: vi.fn(async () => machineRuntime as never),
+    };
+    // The brain's own services the machine scope is lent: keep awake, the
+    // account's Passwords, and the computer's Android settings.
+    const keepAwakeService = {
+      getSnapshot: vi.fn(async () => ({ level: "off" })),
+      setLevel: vi.fn(async () => ({ level: "off" })),
+      migrateLegacyPreference: vi.fn(async () => ({ level: "off" })),
+      fixSystemSleep: vi.fn(async () => ({ level: "off" })),
+    };
+    const passwords = { listSummaries: vi.fn(async () => [{ id: "login-1" }]) };
+    const android = {
+      getStatus: vi.fn(async () => ({ platformSupported: true, lane: null })),
+      dispose: vi.fn(),
+    };
+    const makeHandler = async (clientName: string) => {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        scopeRegistry,
+        personalChatScope,
+        keepAwakeService: keepAwakeService as never,
+        machineScopeAccountStores: () => ({ settings: {} as never, passwords: passwords as never }),
+        machineScopeAndroid: async () => () => android as never,
+      });
+      const init = await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { clientInfo: { name: clientName }, identity: { role: "cto" } } });
+      return { handler, init };
+    };
+    const action = (domain: string, name: string) => ({
+      jsonrpc: "2.0" as const,
+      id: 2,
+      method: "ade/actions/call",
+      params: { projectId: MACHINE_SCOPE_PROJECT_ID, name: "run_ade_action", arguments: { domain, action: name, args: {} } },
+    });
+
+    const { handler, init } = await makeHandler("ade-desktop");
+    // An app reads which later domains this brain answers before it calls one.
+    expect(init).toMatchObject({ capabilities: { machineScope: true } });
+    expect((init as { capabilities: { machineScopeDomains: string[] } }).capabilities.machineScopeDomains)
+      .toEqual(expect.arrayContaining(["keep_awake", "android_emulator", "passwords"]));
+    await expect(handler(action("lane", "list"))).resolves.toMatchObject({ result: [{ id: "machine-lane" }] });
+    expect(machineRuntime.laneService.list).toHaveBeenCalledTimes(1);
+    await expect(handler(action("keep_awake", "getSnapshot"))).resolves.toMatchObject({ result: { level: "off" } });
+    await expect(handler(action("passwords", "list"))).resolves.toMatchObject({ result: [{ id: "login-1" }] });
+    await expect(handler(action("android_emulator", "getStatus"))).resolves.toMatchObject({ result: { lane: null } });
+    expect(keepAwakeService.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(passwords.listSummaries).toHaveBeenCalledTimes(1);
+    expect(android.getStatus).toHaveBeenCalledTimes(1);
+
+    // A lane's devices are a project's, and no secret leaves through the settings route.
+    for (const [domain, name] of [
+      ["lane", "create"], ["ai", "updateConfig"], ["chat", "send"], ["git", "status"],
+      ["android_emulator", "listDevices"], ["passwords", "revealValue"], ["passwords", "resolveForFill"],
+    ] as const) {
+      await expect(handler(action(domain, name))).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+    }
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "ade/actions/call",
+      params: { projectId: MACHINE_SCOPE_PROJECT_ID, name: "list_lanes", arguments: {} },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.methodNotFound });
+
+    // Another machine's agents act through a project they were given, never
+    // through this computer's settings.
+    const agent = await makeHandler(AGENT_REMOTE_CLIENT_NAME);
+    for (const [domain, name] of [["lane", "list"], ["keep_awake", "setLevel"], ["passwords", "list"], ["android_emulator", "getStatus"]] as const) {
+      await expect(agent.handler(action(domain, name))).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidRequest });
+    }
+
+    expect(machineRuntime.laneService.list).toHaveBeenCalledTimes(1);
+    expect(keepAwakeService.setLevel).not.toHaveBeenCalled();
+    expect(passwords.listSummaries).toHaveBeenCalledTimes(1);
+    expect(scopeRegistry.get).not.toHaveBeenCalled();
+    handler.dispose();
+    agent.handler.dispose();
+  });
+
   it("exposes machine personal chats without a project id", async () => {
     const { registry } = createRegistry();
     const personalChatScope = {
@@ -2473,7 +2573,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: added.projectId },
     }) as { actions: Array<{ name: string }> };
     expect(actions.actions.length).toBeGreaterThan(0);
-    expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId);
+    expect(scopeRegistry.get).toHaveBeenCalledWith(added.projectId, expect.anything());
 
     handler.dispose();
   });
@@ -2731,7 +2831,7 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
-  it("exposes runtime sync PIN methods through the active sync host scope", async () => {
+  it("serves sync PIN, device and lane presence calls from the active sync host", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);
     const syncService = {
@@ -2746,16 +2846,14 @@ describe("multi-project RPC server", () => {
       forgetDevice: vi.fn(async (deviceId: string) => ({ role: "brain", forgotten: deviceId })),
       setActiveLanePresence: vi.fn(async (_laneIds: string[]) => {}),
     };
+    const hostScope = { registryProjectId: added.projectId, record: added, runtime: { syncService }, dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(),
       ensureSyncHost: vi.fn(),
       switchSyncHost: vi.fn(),
-      resolveActiveSyncHost: vi.fn(async () => ({
-        registryProjectId: added.projectId,
-        record: added,
-        runtime: { syncService },
-        dispose: vi.fn(),
-      })),
+      getActiveSyncHostProjectId: vi.fn(() => added.projectId),
+      getIfReady: vi.fn((id: string) => id === added.projectId ? hostScope : null),
+      resolveActiveSyncHost: vi.fn(async () => hostScope),
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
@@ -2896,9 +2994,15 @@ describe("multi-project RPC server", () => {
     const activeRuntime = makeRuntime("active");
     const requestedRuntime = makeRuntime("requested-project");
     const requestedScope = { registryProjectId: other.projectId, record: other, runtime: requestedRuntime, dispose: vi.fn() };
+    const activeScope = { registryProjectId: active.projectId, record: active, runtime: activeRuntime, dispose: vi.fn() };
     const scopeRegistry = {
       get: vi.fn(),
-      getIfReady: vi.fn((id: string) => id === other.projectId ? requestedScope : null),
+      getActiveSyncHostProjectId: vi.fn(() => active.projectId),
+      getIfReady: vi.fn((id: string) => {
+        if (id === other.projectId) return requestedScope;
+        if (id === active.projectId) return activeScope;
+        return null;
+      }),
       ensureSyncHost: vi.fn(),
       switchSyncHost: vi.fn(),
       resolveActiveSyncHost: vi.fn(async () => ({
@@ -2937,7 +3041,7 @@ describe("multi-project RPC server", () => {
       params: { projectId: other.projectId },
     })).toEqual([{ deviceId: "active-device" }]);
 
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
 
@@ -3062,7 +3166,7 @@ describe("multi-project RPC server", () => {
       },
     });
     expect(status.localDevice.name).not.toBe("");
-    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
+    expect(scopeRegistry.resolveActiveSyncHost).not.toHaveBeenCalled();
     handler.dispose();
   });
 

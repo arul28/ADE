@@ -30,6 +30,7 @@
 
 import type { ProviderLoginProvider, ProviderLoginStatus } from "../../../shared/types/providerLogins";
 import { onProviderLoginChanged } from "../ai/providerLoginChanged";
+import { withTimeout } from "../shared/withTimeout";
 import { createAccess } from "./providerLoginAccess";
 import { createAllow } from "./providerLoginAllow";
 import { createApplyPass } from "./providerLoginApplyPass";
@@ -50,6 +51,9 @@ export type {
   ProviderLoginSyncDeps,
   ProviderLoginVault,
 } from "./providerLoginSyncShared";
+
+/** How long "look now" waits for the account before its pass runs on what is here (a reader waits 8 s in all). */
+const PULL_NOW_LIMIT_MS = 5_000;
 
 export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   const s = createSyncShared(deps);
@@ -84,6 +88,18 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
   Object.assign(s.jobs, jobs);
   const { pass } = capture;
   const { refreshAccess } = access;
+
+  /** Pull the vault and the settings once, waiting at most PULL_NOW_LIMIT_MS; never throws. */
+  async function pullAccountNow(): Promise<void> {
+    const pulls = Promise.all((["vault", "settings"] as const).map((store) =>
+      deps[store]()?.sync?.()?.catch((error: unknown) => {
+        deps.logger.warn("provider_login.pull_now_failed", { store, name: error instanceof Error ? error.name : "unknown" });
+      })));
+    // A slow account service: the pass goes ahead on what is here.
+    if ((await withTimeout(pulls.then(() => true), PULL_NOW_LIMIT_MS)) === null) {
+      deps.logger.warn("provider_login.pull_now_slow", { limitMs: PULL_NOW_LIMIT_MS });
+    }
+  }
 
   return {
     /**
@@ -126,8 +142,14 @@ export function createProviderLoginSync(deps: ProviderLoginSyncDeps) {
     allowGitHubCli: allow.allowGitHubCli,
     pass,
     status,
-    /** The person's "look now": one pass (still behind every gate), then the status. */
+    /**
+     * The person's "look now": the account's vault and settings pulled now
+     * (not the copy of the last tick, up to a minute old on a cloud computer),
+     * one pass (still behind every gate), then the status. A sign-in saved on
+     * another computer a moment ago is applied here at once.
+     */
     async captureNow(provider?: ProviderLoginProvider | null): Promise<ProviderLoginStatus> {
+      if (ticks.length) await pullAccountNow();
       await pass(provider ? [provider] : null);
       return await status(provider);
     },

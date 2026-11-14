@@ -419,6 +419,24 @@ export const AUTO_UPDATE_INSTALL_ABORT_REASONS = [
 export type AutoUpdateInstallAbortReason =
   (typeof AUTO_UPDATE_INSTALL_ABORT_REASONS)[number];
 
+/**
+ * How far the quit that installs an update got: the updater was asked to
+ * quit, macOS Squirrel staged the new bundle, or ADE force-quit a quit that
+ * would not finish. One closed list for the pending record and analytics.
+ */
+export const PENDING_INSTALL_HANDOFF_STEPS = [
+  "quit_started",
+  "native_staged",
+  "quit_escalated_hard_deadline",
+  "quit_escalated_post_staging",
+] as const;
+
+export type PendingInstallHandoffStep = (typeof PENDING_INSTALL_HANDOFF_STEPS)[number];
+
+export function isPendingInstallHandoffStep(value: unknown): value is PendingInstallHandoffStep {
+  return typeof value === "string" && (PENDING_INSTALL_HANDOFF_STEPS as readonly string[]).includes(value);
+}
+
 export type AutoUpdatePreferences = {
   /** Automatically restart ADE to install a downloaded update. */
   automaticInstall: boolean;

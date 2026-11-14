@@ -43,59 +43,6 @@ const clean = (raw: string): string => cleanTranscript(raw, glossary);
 
 describe("desktop voice transcription", () => {
   describe("cleanTranscript", () => {
-    it("corrects 'work tree' -> 'worktree'", () => {
-      expect(clean("rebase the work tree")).toBe("Rebase the worktree");
-    });
-
-    it("corrects 'work trees' -> 'worktrees'", () => {
-      expect(clean("list the work trees")).toBe("List the worktrees");
-    });
-
-    it("removes fillers and applies corrections + capitalization", () => {
-      expect(clean("um so like rebase the codecs branch")).toBe(
-        "So like rebase the Codex branch",
-      );
-    });
-
-    it("capitalizes the first letter of each sentence after . ! ?", () => {
-      expect(clean("rebase main. then run vitest. did it pass?")).toBe(
-        "Rebase main. Then run vitest. Did it pass?",
-      );
-    });
-
-    it("does not clobber correctly-cased canonical terms like OpenAI", () => {
-      // "open ai" -> "OpenAI" via correction; an already-correct OpenAI stays put.
-      expect(clean("ask open ai about OpenAI models")).toBe(
-        "Ask OpenAI about OpenAI models",
-      );
-    });
-
-    it("preserves internal casing of canonical replacements (SwiftUI)", () => {
-      expect(clean("update the swift ui view")).toBe("Update the SwiftUI view");
-    });
-
-    it("matches corrections on word boundaries only (no mid-word clobber)", () => {
-      // "codex" is a correction key, but "codexish" must not be touched.
-      expect(clean("the codexish thing")).toBe("The codexish thing");
-    });
-
-    it("removes a standalone filler but not a substring of a word", () => {
-      // "er" is a filler token; it must not strip the "er" inside "merger".
-      expect(clean("the merger um happened")).toBe("The merger happened");
-    });
-
-    it("removes the space before trailing punctuation", () => {
-      expect(clean("run vitest , then commit .")).toBe("Run vitest, then commit.");
-    });
-
-    it("corrects 'cr sequel light' -> 'cr-sqlite' across the hyphen boundary", () => {
-      expect(clean("debug cr sequel light sync")).toBe("Debug cr-sqlite sync");
-    });
-
-    it("applies the longest correction first (multi-word over single-word)", () => {
-      // "codex spark" must win over "codex" alone.
-      expect(clean("launch codex spark now")).toBe("Launch Codex Spark now");
-    });
 
     it("sorts equal-length corrections deterministically", () => {
       const prepared = prepareGlossary({
@@ -111,12 +58,23 @@ describe("desktop voice transcription", () => {
       expect(prepared.corrections.map((entry) => entry.from)).toEqual(["alfa", "beta"]);
     });
 
-    it("collapses double spaces introduced by filler removal", () => {
-      expect(clean("um   uh   rebase")).toBe("Rebase");
-    });
-
-    it("trims and returns empty for whitespace-only input", () => {
-      expect(clean("   \n  ")).toBe("");
+    it.each([
+      ["work tree is one word", "rebase the work tree", "Rebase the worktree"],
+      ["plural work trees", "list the work trees", "List the worktrees"],
+      ["fillers, correction and capitalization together", "um so like rebase the codecs branch", "So like rebase the Codex branch"],
+      ["sentence-start capitals after . ! ?", "rebase main. then run vitest. did it pass?", "Rebase main. Then run vitest. Did it pass?"],
+      ["an already-correct canonical term stays put", "ask open ai about OpenAI models", "Ask OpenAI about OpenAI models"],
+      ["internal casing of a replacement (SwiftUI)", "update the swift ui view", "Update the SwiftUI view"],
+      ["no mid-word correction", "the codexish thing", "The codexish thing"],
+      ["no filler removal inside a word", "the merger um happened", "The merger happened"],
+      ["no space before trailing punctuation", "run vitest , then commit .", "Run vitest, then commit."],
+      ["a correction across a hyphen boundary", "debug cr sequel light sync", "Debug cr-sqlite sync"],
+      ["the longest correction wins", "launch codex spark now", "Launch Codex Spark now"],
+      ["double spaces left by filler removal", "um   uh   rebase", "Rebase"],
+      ["whitespace-only input", "   \n  ", ""],
+      ["a full jargon-heavy prompt", "um rebase the work tree onto main and squash then run vitest", "Rebase the worktree onto main and squash then run vitest"],
+    ])("cleans %s", (_label, raw, expected) => {
+      expect(clean(raw)).toBe(expected);
     });
 
     // Parakeet punctuates fillers itself; removing one must not strand its comma.
@@ -132,12 +90,6 @@ describe("desktop voice transcription", () => {
       ["... so we ship.", "... So we ship."],
     ])("removes a punctuated filler cleanly: %s", (raw, expected) => {
       expect(clean(raw)).toBe(expected);
-    });
-
-    it("handles a full jargon-heavy prompt end to end", () => {
-      expect(
-        clean("um rebase the work tree onto main and squash then run vitest"),
-      ).toBe("Rebase the worktree onto main and squash then run vitest");
     });
 
     it("does not cache the empty fallback after a failed glossary read", () => {

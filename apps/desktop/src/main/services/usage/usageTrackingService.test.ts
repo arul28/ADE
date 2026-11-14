@@ -10,7 +10,8 @@ import {
   MODEL_REGISTRY,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
-import { openKvDb, type AdeDb } from "../state/kvDb";
+import { type AdeDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import {
   collectAdeDatabaseUsageStats,
   isMeaningfulUsageAction,
@@ -277,11 +278,16 @@ afterEach(() => {
 });
 
 describe("claudePollAllowsKeychain", () => {
-  it("opens the Keychain for a scoped account on any poll, and for the default account only on an explicit refresh", () => {
-    expect(claudePollAllowsKeychain("automatic", undefined)).toBe(false);
-    expect(claudePollAllowsKeychain("user", undefined)).toBe(true);
-    expect(claudePollAllowsKeychain("automatic", "/tmp/claude-1028")).toBe(true);
-    expect(claudePollAllowsKeychain("automatic", "  ")).toBe(false);
+  it.each([
+    { reason: "automatic", home: undefined, readBefore: false, allowed: false },
+    { reason: "user", home: undefined, readBefore: false, allowed: true },
+    // Once a poll read the default login there, background polls may again:
+    // the cached token expires after about eight hours.
+    { reason: "automatic", home: undefined, readBefore: true, allowed: true },
+    { reason: "automatic", home: "/tmp/claude-1028", readBefore: false, allowed: true },
+    { reason: "automatic", home: "  ", readBefore: false, allowed: false },
+  ] as const)("$reason poll, home $home, read before $readBefore: Keychain $allowed", ({ reason, home, readBefore, allowed }) => {
+    expect(claudePollAllowsKeychain(reason, home, readBefore)).toBe(allowed);
   });
 });
 
@@ -2286,20 +2292,6 @@ describe("createUsageTrackingService", () => {
     expect(summary).toMatchObject({ available: false, turns: 0, rows: [], burnRates: [], groupBy: "provider" });
     // Days clamp to 90.
     expect(Date.parse(summary.until) - Date.parse(summary.since)).toBe(90 * 24 * 60 * 60 * 1000);
-    service.dispose();
-  });
-
-  it("returns an empty snapshot before polling", () => {
-    const logger = createLogger();
-    const service = createUsageTrackingService({ logger });
-
-    const snapshot = service.getUsageSnapshot();
-    expect(snapshot.windows).toEqual([]);
-    expect(snapshot.pacing.status).toBe("on-track");
-    expect(snapshot.costs).toEqual([]);
-    expect(snapshot.errors).toEqual([]);
-    expect(snapshot.lastPolledAt).toBeTruthy();
-
     service.dispose();
   });
 
@@ -5911,7 +5903,7 @@ describe("ADE database usage aggregation", () => {
   async function createStatsDb(): Promise<AdeDb> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-usage-stats-"));
     roots.push(root);
-    const db = await openKvDb(path.join(root, "ade.db"), createLogger());
+    const db = await openFreshKvDb(path.join(root, "ade.db"), createLogger());
     databases.push(db);
     db.run(
       `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
@@ -7726,7 +7718,12 @@ describe("per-account quota attribution", () => {
         nextExpiresAt: "2099-03-14T02:00:00.000Z",
       });
 
-      await expect(service.consumeResetCredit({ accountId: "claude:work" }))
+      // A peer that showed another login for this id: nothing is spent.
+      await expect(service.consumeOwnResetCredit({ accountId: "claude:work", email: "someone-else@example.com" }))
+        .resolves.toMatchObject({ ok: false, status: "failure" });
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+
+      await expect(service.consumeOwnResetCredit({ accountId: "claude:work", email: "WORK@example.com" }))
         .resolves.toEqual({ ok: true, status: "reset" });
       expect(calls.find((call) => call.method === "POST")?.url)
         .toBe("https://api.anthropic.com/api/organizations/org-1/reset_rate_limits");

@@ -130,6 +130,8 @@ export function registerCloudIpc(args: {
    * The lane launch checks it before a computer is made.
    */
   gitPreflight: (originUrl: string | null) => Promise<CloudGitPreflight>;
+  /** This app's update track: a computer it makes follows the same one. */
+  updateChannel: () => "stable" | "beta" | null;
 } {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
@@ -751,7 +753,15 @@ export function registerCloudIpc(args: {
     if (result.state === "woken") sendToAllWindows(IPC.cloudStatusChanged);
     return result.state === "refused" ? { state: "refused", message: result.message } : { state: result.state };
   };
-  return { machineCreatorDeps, machines, copyDeps, client: () => requireCloudProvider(credentials), wakeForPair, gitPreflight };
+  return {
+    machineCreatorDeps,
+    machines,
+    copyDeps,
+    client: () => requireCloudProvider(credentials),
+    wakeForPair,
+    gitPreflight,
+    updateChannel: () => credentials.updateChannel?.() ?? null,
+  };
 }
 
 /** A pick from the renderer (`CloudPlanCleanupPick`), or null when it isn't one. The server checks it again. */
