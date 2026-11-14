@@ -50,7 +50,10 @@ release_notes_only() {
   local files
   files="$(git diff-tree --no-commit-id --name-only -r --root "$1")"
   [ -n "$files" ] || return 1
-  ! printf '%s\n' "$files" | grep -qvE '^(CHANGELOG\.md|docs\.json|changelog/[^/]+\.mdx)$'
+  # A here-string, not a pipe: under pipefail, `printf | grep -q` fails with
+  # SIGPIPE when grep stops early in a long list, and `!` would turn that
+  # into "release notes only".
+  ! grep -qvE '^(CHANGELOG\.md|docs\.json|changelog/[^/]+\.mdx)$' <<< "$files"
 }
 
 target_sha="$(git rev-parse "$TARGET_REF^{commit}")"
