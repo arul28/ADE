@@ -1085,6 +1085,48 @@ export function createPasswordService(args: {
       return summarize(id, secret);
     },
 
+    /**
+     * One secret from the old per-project store, moved in. A copy already here
+     * that is as new or newer stays. An account secret with no copy here gets
+     * an id derived from its project and name under the vault key (the relay
+     * cannot read names from it): two computers that move the same old secret
+     * write the same item, and the relay keeps the first. A secret the account
+     * has since deleted stays deleted.
+     */
+    async adoptLegacySecret(input: { name: string; value: string; projectScope: string; deviceOnly: boolean; updatedAt: string }): Promise<"saved" | "kept" | "deleted"> {
+      if (input.deviceOnly) {
+        const existing = (await readDevice()).find((item) => item.name === input.name && item.projectScope === input.projectScope);
+        if (existing && existing.updatedAt >= input.updatedAt) return "kept";
+        await this.saveSecret({ ...input, deviceOnly: true });
+        return "saved";
+      }
+      const accountId = await ensureOpened();
+      const existing = [...opened.entries()].find(([, item]) => item.kind === "secret" && item.name === input.name && item.projectScope === input.projectScope);
+      if (existing) {
+        if (existing[1].kind === "secret" && existing[1].updatedAt >= input.updatedAt) return "kept";
+        await this.saveSecret({ id: existing[0], name: input.name, value: input.value, projectScope: input.projectScope, updatedAt: input.updatedAt });
+        return "saved";
+      }
+      const { key } = await vaultKey(accountId);
+      const id = `pw_${crypto.createHmac("sha256", key).update(`legacy-secret\0${input.projectScope}\0${input.name}`).digest("base64url").slice(0, 32)}`;
+      const deleted = await withCache(async () => {
+        const cache = await readCache(accountId);
+        return cache.items.some((item) => item.id === id && item.deleted) || cache.pending.some((write) => write.id === id && write.deleted);
+      });
+      if (deleted) return "deleted";
+      await writeItem(id, {
+        kind: "secret",
+        name: input.name,
+        value: input.value,
+        projectScope: input.projectScope,
+        notes: "",
+        createdAt: input.updatedAt,
+        updatedAt: input.updatedAt,
+      });
+      logger.info("passwords.item_saved", { itemId: id, kind: "secret", legacy: true });
+      return "saved";
+    },
+
     async remove(id: string): Promise<boolean> {
       if (isDeviceId(id)) {
         return await withCache(async () => {

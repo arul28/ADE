@@ -31,7 +31,7 @@ function makeProjectRoot(origin: string | null = "git@github.com:acme/project.gi
   return root;
 }
 
-/** One account's relay: opaque rows, revisions, one key. */
+/** One account's relay: opaque rows, revisions, one key; `ifRevision` as the real relay checks it. */
 function fakeRelay(): PasswordsRelay {
   const rows = new Map<string, PasswordRelayItem>();
   let clock = 0;
@@ -42,6 +42,9 @@ function fakeRelay(): PasswordsRelay {
     },
     async putPasswordItems(items: PasswordRelayWrite[]) {
       return items.map((item) => {
+        const stored = rows.get(item.id);
+        const allowed = item.ifRevision === "absent" ? !stored : !item.ifRevision || stored?.revision === item.ifRevision;
+        if (!allowed) return { id: item.id, status: "stale" as const, revision: stored?.revision ?? null };
         const revision = `r${(clock += 1)}`;
         rows.set(item.id, { id: item.id, ciphertext: item.deleted ? null : item.ciphertext ?? null, revision, deleted: Boolean(item.deleted) });
         return { id: item.id, status: "ok" as const, revision };
@@ -155,6 +158,8 @@ describe("a project's secrets in Passwords & Secrets", () => {
 
     await secrets.migrateLegacy();
     expect(fs.existsSync(file)).toBe(true);
+    // Waiting, a process still gets the old file's secret.
+    expect(secrets.valuesForProcess()).toEqual({ LOCAL_TOKEN: "old-local", STRIPE_KEY: "old-stripe" });
 
     signedIn = true;
     await secrets.migrateLegacy();
@@ -163,6 +168,39 @@ describe("a project's secrets in Passwords & Secrets", () => {
       ["STRIPE_KEY", "account"],
     ]);
     expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it("moves on two computers at once without a duplicate, and never brings back a secret deleted after the first move", async () => {
+    const legacy = [{ name: "STRIPE_KEY", value: "old-stripe", storage: "account" as const, updatedAt: "2026-11-01T00:00:00.000Z" }];
+    const mac = computer();
+    const laptop = computer({ relay: mac.relay });
+    const macRoot = makeProjectRoot();
+    const laptopRoot = makeProjectRoot();
+    writeLegacyStore(macRoot, legacy);
+    writeLegacyStore(laptopRoot, legacy);
+    const onMac = createProjectSecretService(macRoot, { getPasswordService: () => mac.passwords });
+    const onLaptop = createProjectSecretService(laptopRoot, { getPasswordService: () => laptop.passwords });
+
+    await Promise.all([onMac.migrateLegacy(), onLaptop.migrateLegacy()]);
+    await mac.passwords.sync();
+    await laptop.passwords.sync();
+
+    const stripeItems = async (passwords: typeof mac.passwords) =>
+      (await passwords.allSecretEntries()).filter((entry) => entry.name === "STRIPE_KEY");
+    expect(await stripeItems(mac.passwords)).toHaveLength(1);
+    expect(await stripeItems(laptop.passwords)).toHaveLength(1);
+
+    // Deleted on the Mac; a third computer still holding the old file moves later.
+    const [moved] = await stripeItems(mac.passwords);
+    await mac.passwords.remove(moved!.id);
+    await mac.passwords.sync();
+    const studio = computer({ relay: mac.relay });
+    const studioRoot = makeProjectRoot();
+    writeLegacyStore(studioRoot, legacy);
+    const onStudio = createProjectSecretService(studioRoot, { getPasswordService: () => studio.passwords });
+    await onStudio.migrateLegacy();
+    await studio.passwords.sync();
+    expect(await stripeItems(studio.passwords)).toEqual([]);
   });
 
   it("moves the account's old rows, under the repository and its SSH-alias key, and clears them; a deleted row stays deleted", async () => {

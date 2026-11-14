@@ -142,11 +142,16 @@ export function createProjectSecretService(projectRoot: string, options: Project
     };
   };
 
-  /** Everything the old store holds on this computer, or null when there is no old store. */
-  const readLegacyFile = (): LegacyEntry[] | null => {
+  const openLegacyStore = (): EncryptedFileCredentialStore | null => {
     const { credentialsPath, machineKeyPath } = legacyPaths();
     if (!fs.existsSync(credentialsPath)) return null;
-    const store = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath, lockPath: `${credentialsPath}.lock` });
+    return new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath, lockPath: `${credentialsPath}.lock` });
+  };
+
+  /** Everything the old store holds on this computer, or null when there is no old store. */
+  const readLegacyFile = (): LegacyEntry[] | null => {
+    const store = openLegacyStore();
+    if (!store) return null;
     const indexRaw = store.getSync(LEGACY_INDEX_KEY);
     // The store answers an unreadable file as empty; that is a failed read, not "no secrets".
     if (store.getLastReadState() === "unreadable") throw new Error("ADE couldn't read this project's old secrets file.");
@@ -163,6 +168,21 @@ export function createProjectSecretService(projectRoot: string, options: Project
       });
     }
     return out;
+  };
+
+  /** One name out of the old store: a secret still waiting there, deleted before it moved. */
+  const removeLegacyName = (name: string): boolean => {
+    let removed = false;
+    openLegacyStore()?.updateSync((values) => {
+      const index = JSON.parse(values[LEGACY_INDEX_KEY] ?? "null") as { entries?: Record<string, unknown> } | null;
+      if (!index?.entries?.[name]) return false;
+      delete index.entries[name];
+      values[LEGACY_INDEX_KEY] = JSON.stringify(index);
+      delete values[`${LEGACY_VALUE_PREFIX}${name}`];
+      removed = true;
+      return true;
+    });
+    return removed;
   };
 
   const removeLegacyFile = (): void => {
@@ -201,10 +221,11 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
   /**
    * Move the old store's secrets into Passwords & Secrets. Safe to run every
-   * start: a name already there with a newer value is left alone, and each old
-   * copy is removed only once its value is saved in the new place. Account
-   * secrets wait until the account vault is usable; this-computer-only ones
-   * move at once.
+   * start and on several computers at once (`adoptLegacySecret`): a name
+   * already there with a newer value is left alone, one the account deleted
+   * stays deleted, and each old copy is removed only once its value is saved
+   * in the new place. Account secrets wait until the account vault is usable
+   * (read from the old file until then); this-computer-only ones move at once.
    */
   const migrateLegacy = (): Promise<void> => {
     if (legacyGone) return Promise.resolve();
@@ -234,10 +255,11 @@ export function createProjectSecretService(projectRoot: string, options: Project
       }
 
       const scope = accountScope();
-      const placed = new Map<string, ProjectSecretEntry>();
-      for (const entry of await service.allSecretEntries()) {
-        if (entry.projectScope === scope) placed.set(`${entry.deviceOnly}:${entry.name}`, entry);
-      }
+      // What other computers moved or deleted first, so this one neither
+      // duplicates nor brings back a secret.
+      if (accountReady) await service.sync().catch((error: unknown) => {
+        logger?.warn?.("project_secret.legacy_pull_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
 
       let moved = 0;
       let waiting = 0;
@@ -248,18 +270,14 @@ export function createProjectSecretService(projectRoot: string, options: Project
           waiting += 1;
           continue;
         }
-        const key = `${entry.deviceOnly}:${entry.name}`;
-        const existing = placed.get(key);
-        if (existing && existing.updatedAt >= entry.updatedAt) continue;
-        const saved = await service.saveSecret({
+        const outcome = await service.adoptLegacySecret({
           name: entry.name,
           value: entry.value,
           projectScope: scope,
           deviceOnly: entry.deviceOnly,
           updatedAt: entry.updatedAt,
         });
-        placed.set(key, { id: saved.id, name: entry.name, value: entry.value, projectScope: scope, deviceOnly: entry.deviceOnly, createdAt: entry.updatedAt, updatedAt: entry.updatedAt });
-        moved += 1;
+        if (outcome === "saved") moved += 1;
       }
       if (moved) await service.sync().catch((error: unknown) => {
         logger?.warn?.("project_secret.legacy_sync_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -276,6 +294,37 @@ export function createProjectSecretService(projectRoot: string, options: Project
       migrating = null;
     });
     return migrating;
+  };
+
+  let warnedUnreadable = false;
+  /**
+   * `current`, plus every name only the old store still holds: until it has
+   * moved in (account secrets wait for sign-in), a process still gets them. A
+   * file that cannot be read adds nothing, and is said once.
+   */
+  const withLegacy = (current: Map<string, ProjectSecretEntry>): Map<string, ProjectSecretEntry> => {
+    let legacy: LegacyEntry[] | null = null;
+    try {
+      legacy = readLegacyFile();
+    } catch (error) {
+      if (!warnedUnreadable) logger?.warn?.("project_secret.legacy_unreadable", { error: error instanceof Error ? error.message : String(error) });
+      warnedUnreadable = true;
+    }
+    if (!legacy?.length) return current;
+    const out = new Map(current);
+    for (const entry of legacy) {
+      if (out.has(entry.name)) continue;
+      out.set(entry.name, {
+        id: `legacy:${entry.name}`,
+        name: entry.name,
+        value: entry.value,
+        projectScope: accountScope(),
+        deviceOnly: entry.deviceOnly,
+        createdAt: entry.updatedAt,
+        updatedAt: entry.updatedAt,
+      });
+    }
+    return out;
   };
 
   /** A name from what this computer holds, else from the old store while it still exists. */
@@ -300,7 +349,7 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
     /** What this computer already holds, without waiting (process env, webhook checks). */
     list(): ProjectSecretsListResult {
-      return listResult(snapshot());
+      return listResult(withLegacy(snapshot()));
     },
 
     /**
@@ -324,12 +373,12 @@ export function createProjectSecretService(projectRoot: string, options: Project
 
     /** The same after opening the account's current copy. */
     async listFresh(): Promise<ProjectSecretsListResult> {
-      return listResult(await fresh());
+      return listResult(withLegacy(await fresh()));
     },
 
     async getFresh(args: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> {
       const name = normalizeSecretName(args?.name);
-      return valueResult(await fresh(), name);
+      return valueOrLegacy(await fresh(), name);
     },
 
     /** Save for this project: in the account by default, or on this computer only. */
@@ -348,12 +397,20 @@ export function createProjectSecretService(projectRoot: string, options: Project
     async delete(args: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> {
       const name = normalizeSecretName(args?.name);
       const entry = (await fresh()).get(name);
-      if (!entry || entry.projectScope !== accountScope()) return { deleted: false, name };
-      return { deleted: await passwords().remove(entry.id), name };
+      if (!entry) return { deleted: removeLegacyName(name), name };
+      if (entry.projectScope !== accountScope()) return { deleted: false, name };
+      // The old store's copy goes too, or the name would come back from it.
+      const deleted = await passwords().remove(entry.id);
+      try {
+        removeLegacyName(name);
+      } catch (error) {
+        logger?.warn?.("project_secret.legacy_remove_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+      return { deleted, name };
     },
 
     valuesForProcess(): Record<string, string> {
-      return Object.fromEntries([...snapshot().values()].map((entry) => [entry.name, entry.value]));
+      return Object.fromEntries([...withLegacy(snapshot()).values()].map((entry) => [entry.name, entry.value]));
     },
 
     migrateLegacy,
