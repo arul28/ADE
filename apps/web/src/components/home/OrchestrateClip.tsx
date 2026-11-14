@@ -108,16 +108,16 @@ function ScrubbedClip() {
           style={{ aspectRatio: `${APP_W} / ${APP_H}`, maxHeight: "calc(100vh - 230px)" }}
         >
           <div ref={frameRef} className="absolute inset-0 origin-top-left will-change-transform" style={{ transform: cameraAt(0) }}>
-            <img src="/film/compose.jpg" alt="" aria-hidden className="absolute inset-0 h-full w-full" />
             <video
               ref={videoRef}
               src="/film/compose.mp4"
+              poster="/film/compose.jpg"
               muted
               playsInline
               preload="auto"
               disablePictureInPicture
               aria-label="ADE: a prompt that names three models starts two of them as subagents of the first"
-              className="absolute inset-0 h-full w-full"
+              className="absolute inset-0 h-full w-full bg-[#0b0b10] object-cover"
             />
           </div>
         </div>
