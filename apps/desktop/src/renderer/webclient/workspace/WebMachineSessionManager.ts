@@ -118,6 +118,11 @@ export type WebMachineConnectOptions = { activate?: boolean; background?: boolea
 /** A connect in flight, and whether nobody asked for it (it may be skipped). */
 type ConnectFlight = { promise: Promise<WebMachineSessionSnapshot>; background: boolean };
 
+/** Runs `next` now, or after `flight` ends (whatever its answer was). */
+function afterFlight<T>(flight: ConnectFlight | undefined, next: () => Promise<T>): Promise<T> {
+  return flight ? flight.promise.then(next, next) : next();
+}
+
 /** A background connect that did not run, and why. Not a failure of the machine. */
 export class WebMachineConnectSkipped extends Error {
   constructor(readonly reason: "user_disconnected" | "no_room") {
@@ -432,9 +437,10 @@ export class WebMachineSessionManager {
       return snapshot;
     }
     // A connect someone asked for never takes a background flight's answer
-    // (that one may be skipped for room): it waits for it, then runs its own.
-    if (inFlight) await inFlight.promise.catch(() => undefined);
-    const connecting = this.connectEnvironmentInternal(targetId, activate, background);
+    // (that one may be skipped for room): it runs its own once that one ends.
+    // It is registered before the wait, so a second request joins it instead
+    // of dialing the same client again (a second dial cancels the first).
+    const connecting = afterFlight(inFlight, () => this.connectEnvironmentInternal(targetId, activate, background));
     this.environmentConnects.set(targetId, { promise: connecting, background });
     try {
       return await connecting;
@@ -522,9 +528,9 @@ export class WebMachineSessionManager {
       if (options.activate !== false && !background) this.activateSession(snapshot.targetId);
       return snapshot;
     }
-    // As in `connectEnvironment`: a person's connect runs its own after a background flight.
-    if (inFlight) await inFlight.promise.catch(() => undefined);
-    const connecting = this.connectAccountMachineInternal(machine, options);
+    // As in `connectEnvironment`: a person's connect runs its own after a
+    // background flight, registered before the wait so later requests join it.
+    const connecting = afterFlight(inFlight, () => this.connectAccountMachineInternal(machine, options));
     this.accountMachineConnects.set(machine.machineKey, { promise: connecting, background });
     try {
       return await connecting;

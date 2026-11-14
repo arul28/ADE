@@ -335,6 +335,51 @@ describe("WebMachineSessionManager", () => {
     }
   });
 
+  it("gives two requests that arrive during a background connect one shared dial of their own", async () => {
+    const clients = Array.from({ length: 3 }, () => new FakeSyncClient());
+    let nextClient = 1;
+    const manager = new WebMachineSessionManager(
+      clients[0].asClient(),
+      accountClient,
+      () => clients[nextClient++].asClient(),
+    );
+    manager.replaceEnvironments([environment(1)]);
+    // Every dial takes a while to finish, so a second dial would overlap the first.
+    let openDials!: () => void;
+    const dialsOpen = new Promise<void>((resolve) => { openDials = resolve; });
+    for (const client of clients) {
+      const dial = client.connect.getMockImplementation()!;
+      client.connect.mockImplementation(async (envId: string) => {
+        await dialsOpen;
+        await dial(envId);
+      });
+    }
+    let failBackgroundDial!: (error: Error) => void;
+    clients[0].connect.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => {
+      failBackgroundDial = reject;
+    }));
+    const dials = () => clients.reduce((count, client) => count + client.connect.mock.calls.length, 0);
+
+    const background = manager.connectEnvironment("machine-1", { background: true });
+    await vi.waitFor(() => expect(dials()).toBe(1));
+    const first = manager.connectEnvironment("machine-1");
+    const second = manager.connectEnvironment("machine-1");
+    failBackgroundDial(new Error("The background dial failed."));
+    await expect(background).rejects.toThrow("The background dial failed.");
+    // Both requests have passed admission before any dial finishes.
+    for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    openDials();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ targetId: "machine-1", state: "live" }),
+      expect.objectContaining({ targetId: "machine-1", state: "live" }),
+    ]);
+    // One dial for the background connect, one for both requests: a second
+    // dial of the same client would cancel the first.
+    expect(dials()).toBe(2);
+    expect(manager.getSession("machine-1")?.state).toBe("live");
+  });
+
   it("reconnects a protected target after it was explicitly parked", async () => {
     const clients = Array.from(
       { length: WEB_MACHINE_SESSION_LIMIT },
