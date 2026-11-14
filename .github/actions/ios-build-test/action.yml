@@ -1,0 +1,267 @@
+name: Build and test the iOS app
+description: >-
+  The one definition of the iOS build and test steps. ci.yml's test-ios job
+  (pull requests and dispatches) and ios-main.yml (pushes to main) both run
+  it, after actions/checkout on a hosted xcode-27 runner. It restores the
+  Swift packages and the build folder from main, builds the ADE scheme for
+  testing and runs ADETests. With save-caches, it also saves both caches and
+  deletes the entries they replace; only main saves, because a pull
+  request's copy is visible to that pull request alone.
+
+inputs:
+  save-caches:
+    description: '"true" saves the Swift packages and the build folder after the tests pass'
+    required: false
+    default: "false"
+  github-token:
+    description: a token with actions:write, used to delete the cache entries a save replaces (main only)
+    required: false
+    default: ""
+  probe-files:
+    description: >-
+      Experiment only. Files to change, one per line; after the tests, each is
+      changed by a comment and the app is built again to count what recompiles.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Select Xcode 27
+      id: xcode
+      shell: bash
+      run: |
+        set -euo pipefail
+        latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
+        if [[ -n "$latest" ]]; then
+          sudo xcode-select -s "$latest/Contents/Developer"
+        fi
+        echo "Toolchain: $(xcodebuild -version | head -1) ($(xcode-select -p))"
+        # The hosted `xcode-27` image ships Xcode 27, so a mismatch means the
+        # image changed under us. Fail loudly rather than testing against an
+        # SDK nobody chose.
+        major=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
+        if [[ "$major" != "27" ]]; then
+          echo "::error::Expected the Xcode 27 toolchain; found $major. Update this step deliberately."
+          exit 1
+        fi
+        # A build folder is valid only for the Xcode build that wrote it, so
+        # the build number is part of its cache key.
+        build=$(xcodebuild -version | awk '/Build version/ {print $3}')
+        [[ -n "$build" ]] || { echo "::error::Could not read the Xcode build number."; exit 1; }
+        echo "build=$build" >> "$GITHUB_OUTPUT"
+
+    # The Swift packages (~1.2 GB) are restored on every run, saved only on
+    # main, and only when Package.resolved changed.
+    - name: Restore Swift packages
+      id: spm_cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/spm-packages
+        key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+        restore-keys: spm-v1-
+
+    # Xcode's build folder from main's newest iOS build. It is what makes a
+    # build incremental: Xcode recompiles only the Swift files that changed and
+    # the files that depend on them. See "Prepare the incremental build".
+    - name: Restore the build folder
+      id: dd_cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/ios-dd
+        key: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
+        restore-keys: ios-dd-v1-${{ steps.xcode.outputs.build }}-
+
+    # The simulator cold boot took 4-8 minutes when it started after the
+    # build; booting it now overlaps the build.
+    - name: Pick and boot the simulator
+      shell: bash
+      run: |
+        set -euo pipefail
+        # A named device, not "the first iPhone". The runner images differ in
+        # which simulators they pre-create, and a layout test that measures a
+        # row height fails on a device with a different width. Pinning keeps
+        # every run on the same screen.
+        json=$(xcrun simctl list devices available --json)
+        dest_id=""
+        dest_name=""
+        for name in "iPhone 17" "iPhone 17 Pro" "iPhone 16" "iPhone 16 Pro"; do
+          dest_id=$(printf '%s' "$json" | jq -r --arg name "$name" \
+            '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and .name == $name)][0].udid // empty')
+          if [[ -n "$dest_id" ]]; then dest_name="$name"; break; fi
+        done
+        if [[ -z "$dest_id" ]]; then
+          echo "::error::No standard iPhone simulator on this runner. Create one with: xcrun simctl create 'iPhone 17' com.apple.CoreSimulator.SimDeviceType.iPhone-17 com.apple.CoreSimulator.SimRuntime.iOS-27-0"
+          xcrun simctl list devices available
+          exit 1
+        fi
+        echo "Simulator: $dest_name ($dest_id)"
+        echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
+        xcrun simctl boot "$dest_id" || true
+
+    # Xcode compares each input's modification time, device and inode with
+    # what it recorded in the build folder. A fresh checkout changes all
+    # three. The setting below drops the device and inode check, and
+    # ios-mtimes.py gives every input whose content did not change the time
+    # it had when the build folder was saved.
+    - name: Prepare the incremental build
+      shell: bash
+      run: |
+        set -euo pipefail
+        defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+        python3 scripts/ci/ios-mtimes.py restore "$RUNNER_TEMP/ios-dd/ade-mtimes.tsv" \
+          apps/ios ~/spm-packages/checkouts ~/spm-packages/artifacts
+
+    # A concrete simulator destination builds only the arch the tests run on;
+    # 'generic/platform=iOS Simulator' also compiled x86_64. The index store
+    # is off: tests do not read it, and it adds work and size to the build
+    # folder.
+    - name: Build for testing
+      shell: bash
+      run: |
+        set -euo pipefail
+        dd="$RUNNER_TEMP/ios-dd"
+        mkdir -p "$dd"
+        marker="$RUNNER_TEMP/ios-build-start"
+        touch "$marker"
+        cd apps/ios
+        xcodebuild \
+          -project ADE.xcodeproj \
+          -scheme ADE \
+          -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
+          -derivedDataPath "$dd" \
+          -clonedSourcePackagesDirPath ~/spm-packages \
+          -skipMacroValidation \
+          -skipPackagePluginValidation \
+          -quiet \
+          COMPILER_INDEX_STORE_ENABLE=NO \
+          build-for-testing
+        objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
+        swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" 2>/dev/null | wc -l | tr -d ' ')
+        echo "Compiled in this build: $objects object files, $swift of them from Swift files."
+
+    - name: Run ADETests
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd apps/ios
+        xcrun simctl bootstatus "$IOS_SIM_ID" -b
+        xcodebuild \
+          -project ADE.xcodeproj \
+          -scheme ADE \
+          -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
+          -derivedDataPath "$RUNNER_TEMP/ios-dd" \
+          -clonedSourcePackagesDirPath ~/spm-packages \
+          -skipMacroValidation \
+          -skipPackagePluginValidation \
+          -parallel-testing-enabled NO \
+          -quiet \
+          test-without-building
+
+    # Saved only after the tests pass, so a failed run stores nothing.
+    - name: Save Swift packages
+      if: inputs.save-caches == 'true' && steps.spm_cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/spm-packages
+        key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+    - name: Prepare the build folder for saving
+      id: dd_prepare
+      if: inputs.save-caches == 'true' && steps.dd_cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        dd="$RUNNER_TEMP/ios-dd"
+        # Logs hold the test results of this run; the next build needs none
+        # of them.
+        rm -rf "$dd/Logs" "$dd/Index.noindex"
+        python3 scripts/ci/ios-mtimes.py save "$dd/ade-mtimes.tsv" \
+          apps/ios ~/spm-packages/checkouts ~/spm-packages/artifacts
+        echo "Build folder: $(du -sh "$dd" | cut -f1)"
+
+    - name: Save the build folder
+      if: steps.dd_prepare.outcome == 'success'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/ios-dd
+        key: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
+
+    # The repository's cache space is 10 GB and these are its biggest
+    # entries, so main keeps one of each: the entry it just saved. Older
+    # build folders and Swift package sets are deleted, and so is the
+    # compilation cache (ios-cas-*) that the build folder replaced.
+    - name: Delete the cache entries this save replaced
+      if: inputs.save-caches == 'true' && github.ref == 'refs/heads/main'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        KEEP_DD: ios-dd-v1-${{ steps.xcode.outputs.build }}-${{ github.sha }}
+        KEEP_SPM: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+      run: |
+        set -euo pipefail
+        # The entry this run saved is the newest it may delete up to: a run
+        # of an older commit that finishes later must not delete a newer
+        # entry.
+        kept_at=$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$KEEP_DD&ref=refs/heads/main" \
+          --jq '[.actions_caches[] | select(.key == env.KEEP_DD)][0].created_at // empty')
+        if [[ -z "$kept_at" ]]; then
+          echo "The build folder this run saved is not listed; nothing deleted."
+          exit 0
+        fi
+        if ! KEPT_AT="$kept_at" gh api --paginate "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100" \
+          --jq '.actions_caches[]
+            | select(
+                (.ref == "refs/heads/main" and .created_at < env.KEPT_AT and
+                  (((.key | startswith("ios-dd-v1-")) and .key != env.KEEP_DD)
+                   or ((.key | startswith("spm-v1-")) and .key != env.KEEP_SPM)))
+                or (.key | startswith("ios-cas-")))
+            | "\(.id) \(.key)"' > "$RUNNER_TEMP/ios-stale-caches.txt"; then
+          echo "::warning::Could not list the cache entries; nothing deleted."
+          exit 0
+        fi
+        while read -r id key; do
+          [[ -n "$id" ]] || continue
+          echo "Deleting $key"
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" || echo "::warning::Could not delete $key"
+        done < "$RUNNER_TEMP/ios-stale-caches.txt"
+
+    - name: Measure incremental builds
+      if: inputs.probe-files != ''
+      shell: bash
+      env:
+        PROBE_FILES: ${{ inputs.probe-files }}
+      run: |
+        set -euo pipefail
+        dd="$RUNNER_TEMP/ios-dd"
+        while IFS= read -r file; do
+          [[ -n "$file" ]] || continue
+          printf '\n// incremental build probe\n' >> "$file"
+          marker="$RUNNER_TEMP/ios-probe-start"
+          touch "$marker"
+          start=$SECONDS
+          (cd apps/ios && xcodebuild \
+            -project ADE.xcodeproj \
+            -scheme ADE \
+            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
+            -derivedDataPath "$dd" \
+            -clonedSourcePackagesDirPath ~/spm-packages \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            -quiet \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            build-for-testing)
+          objects=$(find "$dd/Build/Intermediates.noindex" -name '*.o' -newer "$marker" | wc -l | tr -d ' ')
+          swift=$(find "$dd/Build/Intermediates.noindex" -name '*.swiftdeps' -newer "$marker" | wc -l | tr -d ' ')
+          echo "ADE-IOS-PROBE file=$file seconds=$((SECONDS - start)) objects=$objects swift=$swift"
+          git checkout -- "$file"
+        done <<< "$PROBE_FILES"
+
+    - name: Upload test results on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ios-test-results
+        path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
+        if-no-files-found: ignore
+        retention-days: 7

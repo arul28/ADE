@@ -1,0 +1,59 @@
+name: iOS main
+
+# Builds and tests the iOS app for each push to main that touches iOS, and
+# saves the caches that pull requests restore (only main's are visible to
+# every pull request).
+#
+# ci.yml's test-ios job does not build on main: the pull request already
+# passed it, and ci-pass gates the betas, so main's green does not wait for a
+# second iOS build. This workflow is the second build. It catches a break
+# that two green iOS pull requests make together, and a failure here turns
+# the main commit red without blocking a release. It is not part of ci.yml
+# because beta.yml starts when the CI workflow completes, and a job in CI
+# would make every beta wait for it.
+#
+# A dispatch builds without the gate, for example to make a fresh cache.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The push's commit and its parent, for the diff.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether iOS is affected
+        id: gate
+        run: scripts/ci/ios-gate.sh >> "$GITHUB_OUTPUT"
+
+  build-and-test:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Deletes the cache entries that this run's save replaces.
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build and test
+        uses: ./.github/actions/ios-build-test
+        with:
+          save-caches: "true"
+          github-token: ${{ github.token }}

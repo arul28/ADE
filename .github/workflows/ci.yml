@@ -930,18 +930,22 @@ jobs:
   # The iOS app is otherwise the only ADE surface with zero CI coverage, and
   # three consecutive merges (#1117, #1120, #1121) each landed a Swift compile
   # break that stayed invisible until someone built locally. This job keeps the
-  # ADE scheme compiling and ADETests green on every change that can affect
-  # them.
+  # ADE scheme compiling and ADETests green on every pull request that can
+  # affect them.
   #
-  # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but on
-  # pull requests and single-commit pushes to main that do not touch
-  # apps/ios/**, the shared fixtures the iOS suite reads, or this workflow it
-  # exits success immediately, so non-iOS changes pay only runner spin-up.
-  # workflow_dispatch and multi-commit pushes always execute the full build + test,
-  # except a dispatch on a pins/* branch, which is gated like its pull request.
-  # The path gate runs on Ubuntu: a gated skip on the macOS job still waited
-  # minutes for a macOS runner just to exit, and it held one of the few
-  # concurrent macOS slots the other jobs need.
+  # It always RUNS (ci-pass treats "skipped" as failure, deliberately), but when
+  # ios-gate says no, it exits success at once on Ubuntu, so the run pays only
+  # an Ubuntu spin-up. scripts/ci/ios-gate.sh decides for a pull request and
+  # for a dispatch on a pins/* branch, from the diff; it says no when the diff
+  # touches neither the app, the shared fixtures the Swift tests read, nor the
+  # iOS part of CI. Any other dispatch builds.
+  #
+  # A push to main never builds here. The pull request already passed this
+  # job, and ci-pass gates the betas, so main's green must not wait ~20
+  # minutes for a second iOS build. ios-main.yml builds and tests each push to
+  # main that touches iOS instead: it saves the caches pull requests restore,
+  # and it shows a break that two green iOS pull requests make together. It is
+  # a separate workflow because beta.yml starts when this one completes.
   ios-gate:
     runs-on: ubuntu-latest
     outputs:
@@ -950,7 +954,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Depth 2 keeps the PR merge commit's parents available, so the
-          # gating step below can diff the merge against its base parent.
+          # gate can diff the merge against its base parent.
           fetch-depth: 2
           persist-credentials: false
 
@@ -960,30 +964,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # scripts/ci/changed-files.sh gives the diff of a pull request, of a
-          # push of one commit to main, and of a dispatch on a pins/* branch.
-          # When two PRs that touch iOS merge one after the other, the second
-          # push still runs the suite, so a conflict between them is caught.
-          # Anything else (any other dispatch, a push of several commits, a
-          # missing parent, a failed diff) runs the suite.
-          if ! changed="$(scripts/ci/changed-files.sh)"; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping iOS: a push to main is built by ios-main.yml."
             exit 0
           fi
-          # The shared chip fixture lives under apps/desktop but the iOS suite
-          # asserts against it (WorkComposerTriggerDetectorTests.
-          # testMatchesSharedChipFixture). Without it in this gate, a
-          # desktop-only PR that adds a row skips the Swift suite and merges
-          # green, then breaks main — which is exactly the silent divergence
-          # the fixture exists to prevent. The same holds for the activity
-          # case tables under shared/attention (ActivityRowPresentationTests
-          # reads activityStateGroup/activityBoardColumn.cases.json from disk).
-          if printf '%s\n' "$changed" | grep -qE '^(apps/ios/|apps/desktop/src/shared/__fixtures__/|apps/desktop/src/shared/attention/[^/]+\.cases\.json$|\.github/workflows/ci\.yml)'; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "No apps/ios or shared-fixture changes; skipping the iOS build."
-          fi
+          scripts/ci/ios-gate.sh >> "$GITHUB_OUTPUT"
 
   test-ios:
     needs: ios-gate
@@ -992,9 +978,9 @@ jobs:
     runs-on: ${{ needs.ios-gate.outputs.run == 'true' && 'xcode-27' || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
-      - name: No iOS changes
+      - name: iOS not affected
         if: needs.ios-gate.outputs.run != 'true'
-        run: echo "No apps/ios or shared-fixture changes; skipping the iOS build."
+        run: echo "ios-gate decided this run does not build iOS; its log says why."
 
       - uses: actions/checkout@v4
         if: needs.ios-gate.outputs.run == 'true'
@@ -1003,174 +989,10 @@ jobs:
           # authenticated git, so don't leave the token in .git/config.
           persist-credentials: false
 
-      - name: Select Xcode 27
+      # A pull request restores main's caches and saves none.
+      - name: Build and test
         if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          latest=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1 || true)
-          if [[ -n "$latest" ]]; then
-            sudo xcode-select -s "$latest/Contents/Developer"
-          fi
-          echo "Toolchain: $(xcodebuild -version | head -1) ($(xcode-select -p))"
-          # The hosted `xcode-27` image ships Xcode 27, so a mismatch means
-          # the image changed under us. Fail loudly rather than testing
-          # against an SDK nobody chose.
-          major=$(xcodebuild -version | head -1 | awk '{print $2}' | cut -d. -f1)
-          if [[ "$major" != "27" ]]; then
-            echo "::error::Expected the Xcode 27 toolchain; found $major. Update this step deliberately."
-            exit 1
-          fi
-
-      # Both iOS caches are restored on every run but saved only from main,
-      # like npm-dl-v1 and nm-core-v2 on Windows. They are the repository's
-      # biggest entries (Swift packages ~1.2 GB, compilation cache ~0.4 GB),
-      # and a pull request's copy is visible to that pull request alone: two
-      # open iOS PRs added ~3 GB and pushed the repository past its 10 GB cache
-      # limit, which evicted the release's native-build entries. A pull request
-      # reads main's.
-      - name: Restore Swift packages
-        id: spm_cache
-        if: needs.ios-gate.outputs.run == 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/spm-packages
-          key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-v1-
-
-      # Xcode's content-addressed compilation cache, kept between runs. It
-      # does not depend on file times, so a fresh checkout still hits it.
-      # Measured on #2100 with the C/Objective-C half only: "Build for testing"
-      # 15.4 min cold, 9.4 min warm. The Swift half was never cached until the
-      # build step below started passing SWIFT_ENABLE_COMPILE_CACHE, which is
-      # why warm builds stayed near cold ones. Every run reads main's newest
-      # cache; only main saves one (see Restore Swift packages).
-      - name: Restore the compilation cache
-        id: cas_cache
-        if: needs.ios-gate.outputs.run == 'true'
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/ios-cas
-          key: ios-cas-v2-${{ github.ref_name }}-${{ github.sha }}
-          restore-keys: |
-            ios-cas-v2-main-
-
-      # The simulator cold boot took 4-8 minutes when it started after the
-      # build; booting it now overlaps the build.
-      - name: Pick and boot the simulator
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          # A named device, not "the first iPhone". The runner images differ in
-          # which simulators they pre-create, and a layout test that measures a
-          # row height fails on a device with a different width. Pinning keeps
-          # every run on the same screen.
-          json=$(xcrun simctl list devices available --json)
-          dest_id=""
-          dest_name=""
-          for name in "iPhone 17" "iPhone 17 Pro" "iPhone 16" "iPhone 16 Pro"; do
-            dest_id=$(printf '%s' "$json" | jq -r --arg name "$name" \
-              '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.isAvailable and .name == $name)][0].udid // empty')
-            if [[ -n "$dest_id" ]]; then dest_name="$name"; break; fi
-          done
-          if [[ -z "$dest_id" ]]; then
-            echo "::error::No standard iPhone simulator on this runner. Create one with: xcrun simctl create 'iPhone 17' com.apple.CoreSimulator.SimDeviceType.iPhone-17 com.apple.CoreSimulator.SimRuntime.iOS-27-0"
-            xcrun simctl list devices available
-            exit 1
-          fi
-          echo "Simulator: $dest_name ($dest_id)"
-          echo "IOS_SIM_ID=$dest_id" >> "$GITHUB_ENV"
-          xcrun simctl boot "$dest_id" || true
-
-      - name: Set the compilation cache location
-        if: needs.ios-gate.outputs.run == 'true'
-        run: echo "ADE_IOS_CAS=$RUNNER_TEMP/ios-cas" >> "$GITHUB_ENV"
-
-      # A concrete simulator destination builds only the arch the tests run on;
-      # 'generic/platform=iOS Simulator' also compiled x86_64.
-      - name: Build for testing
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          cd apps/ios
-          xcodebuild \
-            -project ADE.xcodeproj \
-            -scheme ADE \
-            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
-            -clonedSourcePackagesDirPath ~/spm-packages \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            -quiet \
-            COMPILATION_CACHE_ENABLE_CACHING=YES \
-            SWIFT_ENABLE_COMPILE_CACHE=YES \
-            CLANG_ENABLE_COMPILE_CACHE=YES \
-            COMPILATION_CACHE_CAS_PATH="$ADE_IOS_CAS" \
-            build-for-testing
-
-      # The cache only grows: each build adds what changed. Past 6 GB, start it
-      # again rather than fill the repository's cache space. 6 GB, not 2.5 GB,
-      # because `SWIFT_ENABLE_COMPILE_CACHE` is what makes Swift compilations
-      # cacheable at all — without it the store held only the C/Objective-C
-      # half and a warm build still recompiled every Swift file (measured:
-      # SwiftCompile stayed at ~420 CPU-seconds with a 2 GB store restored;
-      # with the flag on and the store populated it fell to 8.5).
-      - name: Cap the compilation cache
-        if: always() && needs.ios-gate.outputs.run == 'true' && env.ADE_IOS_CAS != ''
-        run: |
-          set -euo pipefail
-          size_kb=$(du -sk "$ADE_IOS_CAS" 2>/dev/null | cut -f1 || echo 0)
-          echo "Compilation cache: $((size_kb / 1024)) MB"
-          if (( size_kb > 6291456 )); then
-            # An empty folder is saved in its place, so the next run builds
-            # cold once and saves a fresh cache, instead of restoring the
-            # big one again.
-            rm -rf "$ADE_IOS_CAS"
-            mkdir -p "$ADE_IOS_CAS"
-            echo "Over 6 GB; the next run starts a new cache."
-          fi
-
-      - name: Run ADETests
-        if: needs.ios-gate.outputs.run == 'true'
-        run: |
-          set -euo pipefail
-          cd apps/ios
-          xcrun simctl bootstatus "$IOS_SIM_ID" -b
-          xcodebuild \
-            -project ADE.xcodeproj \
-            -scheme ADE \
-            -destination "platform=iOS Simulator,id=$IOS_SIM_ID" \
-            -derivedDataPath "$RUNNER_TEMP/ios-dd" \
-            -clonedSourcePackagesDirPath ~/spm-packages \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            -parallel-testing-enabled NO \
-            -quiet \
-            test-without-building
-
-      # Saved only after the tests pass, so a failed run stores nothing, and
-      # only on main.
-      - name: Save Swift packages
-        if: needs.ios-gate.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.spm_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/spm-packages
-          key: spm-v1-${{ hashFiles('apps/ios/ADE.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-
-      - name: Save the compilation cache
-        if: needs.ios-gate.outputs.run == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cas_cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/ios-cas
-          key: ios-cas-v2-${{ github.ref_name }}-${{ github.sha }}
-
-      - name: Upload test results on failure
-        if: failure() && needs.ios-gate.outputs.run == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-test-results
-          path: ${{ runner.temp }}/ios-dd/Logs/Test/*.xcresult
-          if-no-files-found: ignore
-          retention-days: 7
+        uses: ./.github/actions/ios-build-test
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:
