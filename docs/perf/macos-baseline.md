@@ -3359,8 +3359,8 @@ ADE Web connects to every account machine that has a copy of the open project
 (the product rule: every machine's work shows in one tab). Each connected
 machine costs about 1–2 KB a minute down while idle, and 8 machines cost 9.4
 KB a minute in all. The 2- and 8-machine row is an earlier run of the same
-branch on the 16-brain rig (`9.0` with the web tab on one project's two
-copies). The base row is not a like-for-like pair: on the base the web tab
+branch on the 16-brain rig; its conditions differ from the 4-machine row,
+so compare each row with itself. The base row is not a like-for-like pair: on the base the web tab
 read one machine and showed the other project's lane under this project's
 tab, the bug that this branch fixes.
 
