@@ -6,6 +6,7 @@ import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
@@ -113,6 +114,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import { isMachineScopePin } from "../shared/machineScope";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -2628,6 +2630,9 @@ const PASSWORDS_THIS_COMPUTER_ACTIONS = new Set(["saveLogin", "saveSecret", "imp
 
 async function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   const local = (name: string, input: Record<string, unknown>) => ipcRenderer.invoke(IPC.passwordsCall, { action: name, args: { ...input } }) as Promise<T>;
+  // This computer's machine route (Settings from a window whose project has
+  // no copy here): its brain answers with no project, never the tab's machine.
+  if (pin?.kind === "local" && isMachineScopePin(pin)) return await local(action, args);
   if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
     return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
   }
@@ -8992,6 +8997,25 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "endSideChat", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatEndSideChat, args),
       ),
+    // The chat's device choice per kind (`ade devices use`), kept by the
+    // chat's own brain: every call takes that chat's pin. Runtime-only: a
+    // window with no runtime has no chat that keeps one.
+    getDeviceSources: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "getDeviceSources", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
+    setDeviceSource: async (
+      args: ChatSetDeviceSourceArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "setDeviceSource", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
     prepareCrossMachineHandoff: async (
       args: AgentChatPrepareCrossMachineHandoffArgs,
       pin?: OpenProjectBinding | null,
@@ -11832,8 +11856,11 @@ const adeBridge = {
   remoteWork: {
     list: async (pin?: OpenProjectBinding | null): Promise<RemoteWorkCopyListing[]> =>
       callPinnedOrBoundRuntimeActionOr<RemoteWorkCopyListing[]>(pin, "remote_work", "list", {}, async () => []),
-    delete: async (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
-      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
+    delete: async (
+      args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ deleted: boolean; keptReason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean; keptReason?: string }>(pin, "remote_work", "delete", { args }, async () => {
         throw new Error("This window has no runtime to delete the work copy on.");
       }),
   },

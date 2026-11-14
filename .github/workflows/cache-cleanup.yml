@@ -1,0 +1,58 @@
+name: Cache cleanup
+
+# Deletes the Actions cache entries of a pull request when it closes. A pull
+# request's entries (refs/pull/<number>/merge) are visible to that pull
+# request alone, so after it closes they only take space from the
+# repository's 10 GB, and GitHub then evicts entries that main still needs.
+# A same-repository branch other than main loses its entries too
+# (refs/heads/<branch>); entries of a fork's branch are not in this
+# repository.
+#
+# pull_request_target runs with this repository's token, so the job checks
+# out nothing and runs no code from the pull request. The branch name reaches
+# the shell only through env. A failed delete is a warning, never a failure.
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  actions: write
+
+jobs:
+  delete-caches:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the cache entries of this pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -uo pipefail
+          refs=("refs/pull/$PR_NUMBER/merge")
+          if [[ "$HEAD_REPO" == "$REPO" && "$HEAD_BRANCH" != "main" ]]; then
+            refs+=("refs/heads/$HEAD_BRANCH")
+          fi
+          for ref in "${refs[@]}"; do
+            if ! entries="$(gh api --method GET --paginate "repos/$REPO/actions/caches" \
+                -f ref="$ref" -f per_page=100 \
+                --jq '.actions_caches[] | "\(.id) \(.size_in_bytes) \(.key)"')"; then
+              echo "::warning::Could not list the cache entries of $ref."
+              continue
+            fi
+            if [[ -z "$entries" ]]; then
+              echo "No cache entries for $ref."
+              continue
+            fi
+            while read -r id size key; do
+              [[ -n "$id" ]] || continue
+              if gh api --method DELETE "repos/$REPO/actions/caches/$id" > /dev/null; then
+                echo "Deleted $key ($((size / 1048576)) MB) of $ref"
+              else
+                echo "::warning::Could not delete $key of $ref."
+              fi
+            done <<< "$entries"
+          done

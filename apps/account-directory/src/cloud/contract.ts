@@ -978,8 +978,12 @@ export type CloudServerLaunchRequest = {
   sizeId: CloudTierId;
   /** A GitHub origin, `github.com/owner/repo` (any spelling a git remote has). */
   project: { origin: string };
-  /** `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead. */
-  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null };
+  /**
+   * `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead.
+   * `autoName`: `name` is only the name from the prompt; the computer's brain renames the lane and its branch with
+   * the AI name, as a lane on the person's own computer is. Left out: `name` is the person's and is kept.
+   */
+  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null; autoName?: boolean };
   chat?: {
     provider: string;
     modelId: string;

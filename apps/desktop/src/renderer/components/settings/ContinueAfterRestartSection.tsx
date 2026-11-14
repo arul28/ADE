@@ -4,7 +4,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { settingsMachinePageFor } from "./SettingsMachinesNav";
+import { routedPageFor, settingsMachinePageFor } from "./SettingsMachinesNav";
 import { useSettingsMachines } from "./machines/settingsMachinesContext";
 import { MachinePicker, reachableMachines } from "./ProvidersMachinePicker";
 
@@ -20,14 +20,19 @@ export const CONTINUE_AFTER_RESTART_ANCHOR = "continue-after-restart";
 export function ContinueAfterRestartSection() {
   const scope = useSettingsMachineScope();
   const { machines, thisMachineName } = useSettingsMachines();
-  // One value per machine: the section can act on any machine whose brain is
-  // reachable from here, through that machine's pin. This computer by default.
+  // One value per machine: the section can act on any online machine,
+  // through its copy of this repository or else its machine route (the value
+  // is the machine's, not the project's). This computer by default.
   const [pickedId, setPickedId] = useState<string>(scope.machineId);
   const picked = machines.find((machine) => machine.machineId === pickedId) ?? null;
-  const pickedScope = picked && !picked.isThisMachine ? settingsMachinePageFor(picked) : null;
-  const pin = pickedScope ? pickedScope.pin : scope.pin;
-  const isThisMachine = pickedScope ? false : scope.isThisMachine;
-  const machineName = pickedScope ? pickedScope.machineName : scope.machineName;
+  const pickedPage = picked && !picked.isThisMachine ? settingsMachinePageFor(picked) : null;
+  const pickedScope = pickedPage ? routedPageFor("machine", pickedPage) : null;
+  // A picked machine nothing reaches is read from nowhere, never from the
+  // machine the unpinned call would land on.
+  const unreachable = pickedPage != null && pickedScope == null;
+  const pin = pickedPage ? pickedScope?.pin ?? null : scope.pin;
+  const isThisMachine = pickedPage ? false : scope.isThisMachine;
+  const machineName = pickedPage ? pickedPage.machineName : scope.machineName;
   const pinKey = pin?.key ?? null;
   const available = isAdeAvailable(window.ade.ai?.getContinueAfterRestart);
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -38,7 +43,8 @@ export function ContinueAfterRestartSection() {
     if (!available) return;
     let cancelled = false;
     setEnabled(null);
-    setFailed(false);
+    setFailed(unreachable);
+    if (unreachable) return;
     window.ade.ai.getContinueAfterRestart(pin)
       .then((answer) => {
         if (!cancelled) setEnabled(answer.enabled !== false);
@@ -51,7 +57,7 @@ export function ContinueAfterRestartSection() {
     };
     // Keyed on the machine, not the pin object: a rebuilt pin is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [available, pinKey]);
+  }, [available, pinKey, unreachable]);
 
   if (!available) return null;
 
@@ -79,10 +85,11 @@ export function ContinueAfterRestartSection() {
       group="Restarts"
       anchor="chat-restarts"
       title="Restarts"
-      hint={reachableMachines(machines).length > 1 ? (
+      hint={reachableMachines(machines, "machine").length > 1 ? (
         <span className="ade-restarts-on">
           On
           <MachinePicker
+            kind="machine"
             machines={machines}
             selectedId={pickedId}
             thisMachineName={thisMachineName}

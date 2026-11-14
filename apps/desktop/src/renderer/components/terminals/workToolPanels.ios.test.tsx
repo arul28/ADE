@@ -65,7 +65,9 @@ function props(): WorkToolPanelProps {
     runtimePin: null,
     panelSessionId: "chat-1",
     terminalOwnerSessionId: null,
-    toolContext: {} as WorkToolPanelProps["toolContext"],
+    // A Mac host: on any other the tool asks for a Mac before it opens a device.
+    toolContext: { supportsIosSimulator: true, isWebClient: false },
+    deviceMachines: {},
     pinnedMachineOffline: false,
     pinnedMachineName: null,
     canInsertContext: false,

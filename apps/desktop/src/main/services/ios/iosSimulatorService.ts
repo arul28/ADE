@@ -16,6 +16,8 @@ import type {
   AppleRuntimePruneArgs,
   AppleDeviceAttachArgs,
   AppleDeviceStartArgs,
+  AppleDeviceStartDeviceAction,
+  AppleDeviceStartResult,
   AppleDeviceStatePhase,
   AppleDeviceStopArgs,
   AppleDeviceStopResult,
@@ -147,12 +149,12 @@ import {
   APPLE_KEY_MODIFIER_USAGES,
   APPLE_NAMED_KEY_USAGES,
   appleKeyUsage,
+  isAdeOwnedLaneDevice,
   APPLE_LONG_PRESS_DEFAULT_MS,
   APPLE_LONG_PRESS_MAX_MS,
   APPLE_LONG_PRESS_MIN_MS,
   type IosSimulatorLongPressArgs,
   type IosSimulatorPressKeyArgs,
-  isAdeOwnedLaneDevice,
 } from "../../../shared/types/iosSimulator";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { APPLE_AUTO_RECORD_SETTING_KEY } from "../../../shared/appleDeviceSettings";
@@ -802,8 +804,15 @@ export function __testSetIosSimulatorProcessHooks(hooks: {
   };
 }
 
+/**
+ * Simulator.app opens for a launch only when the caller asks for it by name
+ * (`keepSimulatorInBackground: false`: `ade apple launch --foreground`).
+ * Once it runs, every booted simulator gets a window, so a caller that said
+ * nothing (an MCP bot's raw action call, the pane's Launch) stays inside ADE:
+ * a headless boot and ADE's own stream.
+ */
 export function shouldOpenSimulatorAppForLaunch(keepSimulatorInBackground?: boolean | null): boolean {
-  return keepSimulatorInBackground !== true;
+  return keepSimulatorInBackground === false;
 }
 
 /**
@@ -2397,6 +2406,17 @@ function assertTargetIdWithinRoot(targetIdValue: string, projectRoot: string): v
 }
 
 export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
+
+/** `deviceStart`'s sentence: which device the lane drives, and whether ADE made it. */
+function deviceStartNote(device: AppleLaneDevice, action: AppleDeviceStartDeviceAction): string {
+  if (action === "created") {
+    return `Made a new simulator for this lane: ${device.name} (${device.udid}), booted. It is deleted with the lane.`;
+  }
+  if (action === "attached") {
+    return `Attached an installed simulator to this lane: ${device.name} (${device.udid}); ADE did not make it, and never deletes it. Booted.`;
+  }
+  return `This lane's simulator ${device.name} (${device.udid}) is booted.`;
+}
 
 /** What an agent hears when its lane has no device and the action needs one. */
 const AGENT_NO_LANE_DEVICE_MESSAGE =
@@ -5281,7 +5301,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         spawnProcess("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" }).unref();
         emitLaunchProgress(launchId, "open-simulator", "complete", "Simulator.app is visible.", null, { deviceUdid: device.udid });
       } else {
-        emitLaunchProgress(launchId, "open-simulator", "skipped", "Simulator.app was left in the background by request.", null, { deviceUdid: device.udid });
+        emitLaunchProgress(launchId, "open-simulator", "skipped", "Simulator.app was not opened: the device runs inside ADE.", null, { deviceUdid: device.udid });
       }
 
       currentStep = "resolve-target";
@@ -5350,7 +5370,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         laneId: launchArgs.laneId ?? null,
         chatSessionId: launchArgs.chatSessionId ?? null,
         mode: normalizeLaunchMode(launchArgs.mode),
-        keepSimulatorInBackground: launchArgs.keepSimulatorInBackground ?? false,
+        keepSimulatorInBackground: !openSimulatorInForeground,
         bridgeUrl: null,
         startedAt,
         claimedAt: launchArgs.laneId || launchArgs.chatSessionId ? startedAt : null,
@@ -7485,7 +7505,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return next;
   };
 
-  const deviceStart = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
+  const deviceStart = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<AppleDeviceStartResult> => {
     // Both guards ahead of the queue, in the order they were in before it:
     // "this is not a Mac" and "this call names no lane" are answers this
     // service can give without waiting behind another lane's boot.
@@ -7494,7 +7514,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return serializeDeviceLifecycle(runtime, () => deviceStartStep(deviceArgs));
   };
 
-  const deviceStartStep = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<IosSimulatorStreamStatus> => {
+  const deviceStartStep = async (deviceArgs: AppleDeviceStartArgs = {}): Promise<AppleDeviceStartResult> => {
     const runtime = requireLaneScope(deviceArgs);
     const laneId = runtime.key;
     const requestedUdid = deviceArgs.udid?.trim() || null;
@@ -7503,6 +7523,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const wantsCreate = Boolean(sourceUdid || create?.runtime?.trim() || create?.deviceType?.trim());
     const agentCaller = deviceArgs.agentCaller === true;
     let laneDevice = laneDevices.get(laneId);
+    // Said in the answer: an agent once reported that ADE "created" a
+    // simulator it had attached (a remote chat borrows an installed one).
+    let laneDeviceAction: AppleDeviceStartDeviceAction = "reused";
     if (!laneDevice) {
       if (wantsCreate) {
         laneDevice = await laneDevices.deviceCreate({
@@ -7531,6 +7554,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           "user",
         );
       }
+      laneDeviceAction = isAdeOwnedLaneDevice(laneDevice.origin) ? "created" : "attached";
       // A new device is a simulator the cached device list has never seen.
       invalidateDeviceList();
       invalidateStatus(runtime);
@@ -7553,7 +7577,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // from before the boot must not read as "off" here.
       const status = await startStream({ laneId, chatSessionId: deviceArgs.chatSessionId ?? null, deviceUdid: udid, boot: true });
       phase("streaming");
-      return status;
+      return { ...status, laneDevice, laneDeviceAction, note: deviceStartNote(laneDevice, laneDeviceAction) };
     } catch (error) {
       phase("failed", error instanceof Error ? error.message : String(error));
       throw error;
@@ -7608,7 +7632,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const laneDevice = laneDevices.get(runtime.key);
     const udid = stopArgs.udid?.trim() || claimedDeviceUdid(runtime);
     if (!udid) {
-      return { udid: null, poweredOff: false, previousState: null, released: false, stillRegistered: false };
+      return { udid: null, poweredOff: false, previousState: null, released: false, stillRegistered: false, note: null };
     }
     // The lane's session ends only when it is on the device being powered off:
     // a stop that names another udid (the idle pass checked one device, then
@@ -7658,6 +7682,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       previousState,
       released: released.released,
       stillRegistered: Boolean(laneDevice),
+      note: laneDevice && laneDevice.udid === udid
+        ? `${laneDevice.name} is ${poweredOff ? "powered off" : "off"} and stays registered on the Mac as this lane's device: the next ade apple start boots it again. `
+          + (isAdeOwnedLaneDevice(laneDevice.origin)
+            ? "It is deleted with the lane (or now: ade apple device-delete)."
+            : "It is an installed simulator ADE did not make, so the lane releases it when it ends; it is never deleted.")
+        : null,
     };
   };
 
@@ -8100,15 +8130,33 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return recordings.totalBytes(laneId ? { laneId } : undefined);
   };
 
-  const recordDelete = async (recordArgs: AppleRecordDeleteArgs): Promise<void> => {
+  /**
+   * Deletes the recording. The proof `record-stop` filed from it is not
+   * touched (proof is the drawer's); the answer names it and how to remove it.
+   */
+  const recordDelete = async (recordArgs: AppleRecordDeleteArgs): Promise<{ deleted: string; proofArtifactId: string | null; note: string }> => {
     const runtime = requireLaneScope(recordArgs);
-    return recordings.remove({
+    // Read only to name the proof it filed; the delete goes ahead without it.
+    const record = (await recordings.list({ laneId: runtime.key }).catch((error: unknown) => {
+      args.logger.warn("apple.record_delete_list_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [] as SimRecording[];
+    }))
+      .find((entry) => entry.id === recordArgs.id) ?? null;
+    await recordings.remove({
       laneId: runtime.key,
       id: recordArgs.id,
       chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
       force: recordArgs.force ?? undefined,
       allowProof: recordArgs.allowProof ?? undefined,
     });
+    const proofArtifactId = record?.proofArtifactId ?? null;
+    return {
+      deleted: recordArgs.id,
+      proofArtifactId,
+      note: proofArtifactId
+        ? `Deleted recording ${recordArgs.id}. The proof record-stop filed from it stays: ade proof rm ${proofArtifactId} removes it.`
+        : `Deleted recording ${recordArgs.id}. Any proof record-stop filed from it stays in the proof drawer: ade proof list names it, ade proof rm <id> removes it.`,
+    };
   };
 
   /* ───────────────────────── maintenance ───────────────────────── */

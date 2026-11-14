@@ -1,8 +1,10 @@
 import { ArrowSquareOut, Gift } from "@phosphor-icons/react";
 import {
   CLOUD_DISK_WARN_SHARE,
+  cloudCatalogOf,
   cloudEarnedHoursOf,
   cloudHoursLeftMilli,
+  cloudPlanLabelOf,
   cloudReferralOf,
   formatCloudDate,
   formatCloudGb,
@@ -26,6 +28,8 @@ import { USAGE_NUMERIC_CLASS, USAGE_TEXT, usageLeftLevel, usageLeftLevelColor } 
 const RING_SIZE = 22;
 const RING_STROKE = 1.5;
 const BRAND = "var(--adec-400)";
+/** The meter's fill while there's plenty left: the dashboard's dusk gradient. */
+const BRAND_FILL = "linear-gradient(90deg, var(--adec-500), var(--adec-rose))";
 
 /**
  * Hours left now and the period's total, both counting earned hours: the
@@ -53,7 +57,7 @@ export function headerCloudTitle(state: CloudAccountState): string {
   return `ADE Cloud ${formatCloudHours(leftMilli)} h of ${formatCloudHours(totalMilli)} h left`;
 }
 
-/** The ring: hours left in ADE Cloud's blue, amber at 20% left, red at 5%; the pale arc is what's used. */
+/** The ring: hours left in ADE Cloud's violet, amber at 20% left, red at 5%; the pale arc is what's used. */
 export function HeaderCloudRing({ state }: { state: CloudAccountState }) {
   const left = Math.max(0, Math.min(100, Math.round(hoursLeftPct(state))));
   const color = usageLeftLevelColor(usageLeftLevel(left), BRAND);
@@ -110,13 +114,14 @@ export function HeaderCloudPanel({ state, onNavigate }: { state: CloudAccountSta
       <div className="flex items-center gap-2">
         <CloudMark size={14} brand bold />
         <span className={cn("font-semibold text-fg", USAGE_TEXT.body)}>ADE Cloud</span>
+        <span className="adec-plan-word">{cloudPlanLabelOf(state, cloudCatalogOf(state))}</span>
         <span className={cn("ml-auto text-muted-fg", USAGE_TEXT.micro)}>{state.billing.cancelAtPeriodEnd ? "Plan ends" : "Resets"} {formatCloudDate(state.billing.periodEnd)}</span>
       </div>
       <div className="flex items-baseline gap-1.5">
         <span className={cn("text-[20px] font-medium leading-6 text-fg", USAGE_NUMERIC_CLASS)}>{formatCloudHours(hours.leftMilli)} h</span>
         <span className={cn("text-muted-fg", USAGE_TEXT.micro)}>left of {formatCloudHours(hours.totalMilli)} h this month</span>
       </div>
-      <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND : undefined }} /></div>
+      <div className="kit-meter" data-level={usageLeftLevel(pct)}><span style={{ width: `${Math.max(0, Math.min(100, pct))}%`, background: usageLeftLevel(pct) == null ? BRAND_FILL : undefined }} /></div>
       <div className={cn("flex flex-wrap gap-x-3 gap-y-1 text-muted-fg", USAGE_TEXT.micro)}>
         <span>Disk {formatCloudGb(state.disk.usedGb)}{diskLimit > 0 ? ` of ${formatCloudGb(diskLimit)}` : ""}</span>
         <span>{state.computers.total} {state.computers.total === 1 ? "computer" : "computers"}, {state.computers.awake} awake</span>

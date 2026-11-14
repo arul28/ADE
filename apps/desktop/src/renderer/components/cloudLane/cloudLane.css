@@ -134,6 +134,11 @@
 .adecl-nocomp-text { display: flex; flex: 1 1 220px; flex-direction: column; gap: 2px; min-width: 0; color: var(--color-fg); line-height: 1.4; }
 .adecl-nocomp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
+/* A lane launch's new computer waits for the person's approval (a chat card). */
+.adecl-join { border-style: solid; border-color: color-mix(in srgb, var(--adec-400) 45%, transparent); }
+.adecl-join-title { font-weight: 600; }
+.adecl-join-done { display: inline-block; margin-right: 6px; vertical-align: -1px; color: var(--color-success); }
+
 .adecl-nocomp-list { display: flex; flex-direction: column; gap: 6px; margin: 0 6px 8px; }
 .adecl-nocomp-list-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--kit-text-3); }
 

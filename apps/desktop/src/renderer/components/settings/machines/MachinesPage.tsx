@@ -10,7 +10,7 @@ import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes } from "../../../lib/format";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { freeSpaceLevel } from "../storage/storageView";
-import { machineSectionAvailable, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
+import { routedPageFor, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
 import type { MachineStats } from "../../../../shared/types/machineStats";
 import { useMachineStatsMap, type MachineStatsRequest } from "../../../state/machineStats";
 import { useMachinePlacementPreferences } from "../../../state/machinePlacement";
@@ -22,6 +22,7 @@ import { osLabel, platformWord, useMachineFacts, type MachineFacts } from "./mac
 import { useSettingsMachines } from "./settingsMachinesContext";
 import { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineSettings } from "./MachineSettings";
+import { machineLabelForMachine, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../../state/adeCloudLaneIndex";
 import "./machinesPage.css";
 
 /**
@@ -34,21 +35,25 @@ export function MachinesPage({ machine }: { machine: SettingsMachinePage | null 
   return detail && machine ? <MachineDetail scope={machine} /> : <MachinesList />;
 }
 
-function machineDisplayName(machine: ProjectMachine, thisMachineName: string | null): string {
-  return machine.isThisMachine ? (thisMachineName ?? THIS_MACHINE_NAME) : machine.machineName;
+/** This computer by its device name; a cloud lane computer as "Cloud · <lane>"; any other machine by its name. */
+function machineDisplayName(machine: ProjectMachine, thisMachineName: string | null, laneComputers: readonly AdeCloudLaneComputer[]): string {
+  if (machine.isThisMachine) return thisMachineName ?? THIS_MACHINE_NAME;
+  return machineLabelForMachine({ hostname: machine.hostname, machineKey: machine.machineId, name: machine.machineName }, laneComputers);
 }
 
 function MachinesList() {
   const { machines, thisMachineName, openMachine, openTab } = useSettingsMachines();
+  const { computers: laneComputers } = useAdeCloudLaneComputers();
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(machines, update.currentVersion || null);
   const local = useThisComputerFacts();
   const known = useKnownAdeVersions();
-  // Each machine's load, read through its own pin once when the list opens.
+  // Each machine's load, read through its own pin once when the list opens:
+  // its copy of this repository, else its machine route.
   const statsRequests = useMemo<MachineStatsRequest[]>(() => machines.flatMap((machine) => {
     if (!machine.online && !machine.isThisMachine) return [];
-    const page = settingsMachinePageFor(machine);
-    return machineSectionAvailable("routed", page) ? [{ id: machine.machineId, pin: page.pin }] : [];
+    const page = routedPageFor("machine", settingsMachinePageFor(machine));
+    return page && page.online ? [{ id: machine.machineId, pin: page.pin }] : [];
   }), [machines]);
   const { stats } = useMachineStatsMap(statsRequests, true);
   const { preferenceOf } = useMachinePlacementPreferences();
@@ -69,7 +74,7 @@ function MachinesList() {
         <div className="ade-mx-lineup" aria-hidden>
           {machines.slice(0, 5).map((machine, index) => {
             const fact = facts.get(machine.machineId);
-            const name = machineDisplayName(machine, thisMachineName);
+            const name = machineDisplayName(machine, thisMachineName, laneComputers);
             return (
               <span key={machine.machineId} className="ade-mx-lineup-tile" style={{ "--i": index } as CSSProperties}>
                 <MachineAvatar
@@ -104,7 +109,7 @@ function MachinesList() {
           <MachineListRow
             key={machine.machineId}
             machine={machine}
-            name={machineDisplayName(machine, thisMachineName)}
+            name={machineDisplayName(machine, thisMachineName, laneComputers)}
             fact={facts.get(machine.machineId)}
             local={machine.isThisMachine ? local : null}
             known={known}
@@ -229,12 +234,13 @@ function MachineListRow({
  */
 function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
   const { machines, thisMachineName } = useSettingsMachines();
+  const { computers: laneComputers } = useAdeCloudLaneComputers();
   const update = useAutoUpdateSnapshot();
   const machine = machines.find((candidate) => candidate.machineId === scope.machineId) ?? null;
   const facts = useMachineFacts(machine ? [machine] : [], update.currentVersion || null);
   const local = useThisComputerFacts();
   const fact = machine ? facts.get(machine.machineId) : undefined;
-  const name = machine ? machineDisplayName(machine, thisMachineName) : scope.machineName;
+  const name = machine ? machineDisplayName(machine, thisMachineName, laneComputers) : scope.machineName;
   const color = useMachineColor(fact?.colorKey ?? scope.machineId);
   const offline = !scope.online && !scope.isThisMachine;
   const os = scope.isThisMachine ? osLabel(local.info?.platform) : platformWord(fact?.platform);

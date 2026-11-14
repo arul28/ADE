@@ -13480,12 +13480,14 @@ describe("ADE CLI", () => {
     };
   };
 
-  it("ios-sim open-device --no-window sends openWindow false", () => {
-    const withWindow = iosSimActionArgs(["ios-sim", "open-device"]);
-    expect(withWindow.domain).toBe("ios_simulator");
-    expect(withWindow.action).toBe("openDevice");
-    // Absent means "let the service decide", so the key must not appear at all.
-    expect(withWindow.args).not.toHaveProperty("openWindow");
+  it("ios-sim open-device is headless unless --window", () => {
+    const plain = iosSimActionArgs(["ios-sim", "open-device"]);
+    expect(plain.domain).toBe("ios_simulator");
+    expect(plain.action).toBe("openDevice");
+    // Sent as false, so an older brain that opened Simulator.app unless told
+    // not to stays headless too.
+    expect(plain.args).toMatchObject({ openWindow: false });
+    expect(iosSimActionArgs(["ios-sim", "open-device", "--window"]).args).toMatchObject({ openWindow: true });
 
     const headless = iosSimActionArgs([
       "ios-sim",

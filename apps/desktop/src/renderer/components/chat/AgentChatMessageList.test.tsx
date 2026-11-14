@@ -177,7 +177,7 @@ function renderMessageList(
     onInsertDraft?: (text: string) => void;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
@@ -222,7 +222,7 @@ function renderMessageList(
         onInsertDraft={options?.onInsertDraft}
         onRevealChatTerminal={options?.onRevealChatTerminal}
         onApproval={options?.onApproval as any}
-        onCodexRecovery={options?.onCodexRecovery}
+        onQuietTurnRecovery={options?.onQuietTurnRecovery}
         onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
         onRestoreCancelledQueue={options?.onRestoreCancelledQueue}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
@@ -2199,7 +2199,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("runs Codex stalled-turn recovery actions against the source chat", async () => {
-    const onCodexRecovery = vi.fn().mockResolvedValue({
+    const onQuietTurnRecovery = vi.fn().mockResolvedValue({
       action: "wait",
       turnId: "turn-stalled",
       status: "waiting",
@@ -2218,25 +2218,25 @@ describe("AgentChatMessageList transcript rendering", () => {
           parentSessionId: "parent-session",
         },
       },
-    ], { sessionId: "parent-session", onCodexRecovery });
+    ], { sessionId: "parent-session", onQuietTurnRecovery });
 
     fireEvent.click(screen.getByRole("button", { name: "Keep waiting" }));
     await waitFor(() => {
-      expect(onCodexRecovery).toHaveBeenCalledWith({
+      expect(onQuietTurnRecovery).toHaveBeenCalledWith({
         sessionId: "child-session",
         turnId: "turn-stalled",
         action: "wait",
       });
     });
-    expect(await screen.findByText("Waiting for Codex output…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Restart & resume" })).toBeTruthy();
+    expect(await screen.findByText("Waiting for Codex…")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart Codex" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     expect(screen.getByRole("button", { name: "Send nudge" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry same server" })).toBeTruthy();
   });
 
   it("shows a Codex recovery error without making the card inert", async () => {
-    const onCodexRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
+    const onQuietTurnRecovery = vi.fn().mockRejectedValue(new Error("This stalled Codex turn is no longer active."));
     renderMessageList([
       {
         sessionId: "session-1",
@@ -2249,11 +2249,11 @@ describe("AgentChatMessageList transcript rendering", () => {
           recoveryOptions: ["restart_resume_thread"],
         },
       },
-    ], { sessionId: "session-1", onCodexRecovery });
+    ], { sessionId: "session-1", onQuietTurnRecovery });
 
-    fireEvent.click(screen.getByRole("button", { name: "Restart & resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart Codex" }));
     expect((await screen.findByRole("alert")).textContent).toContain("no longer active");
-    expect((screen.getByRole("button", { name: "Restart & resume" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Restart Codex" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hides raw moderation rows and keeps cumulative diagnostics behind turn details", () => {
@@ -2370,7 +2370,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.queryByRole("button", { name: "Restart & resume" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restart Codex" })).toBeNull();
     expect(screen.getByText("Recovered")).toBeTruthy();
     expect(screen.getByText(/restarted the Codex app-server/)).toBeTruthy();
   });

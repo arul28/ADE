@@ -4210,7 +4210,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
-      if connectionState == .connected { helloSentWithProvisionalDeviceId = deviceIdIsProvisional }
+      if connectionState == .connected {
+        helloSentWithProvisionalDeviceId = deviceIdIsProvisional
+        // A `provider_logins_changed` pushed while the phone was away is not
+        // replayed: an open sign-ins view reads again on the way back.
+        providerLoginsRevision += 1
+      }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
       // state — is what stops a stale attempt name from outliving the attempt.
@@ -4413,6 +4418,10 @@ final class SyncService: ObservableObject {
   /// Host-pushed invalidation for GitHub projection changes that do not touch
   /// replicated `pull_requests` rows (notably unmapped PR webhooks).
   @Published private(set) var prsRemoteRevision = 0
+  /// Host-pushed: the provider sign-ins changed there (a pass or key saved, a
+  /// sign-in applied), or the connection came back. An open sign-ins card
+  /// reads `providerLogins.status` again.
+  @Published private(set) var providerLoginsRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
@@ -16050,7 +16059,10 @@ final class SyncService: ObservableObject {
     // unless the caller already named a target explicitly (e.g. the hub
     // composer creating into a chosen project).
     let scope = chatCommandScope(for: sessionId)
-    var args: [String: Any] = ["sessionId": sessionId, "text": text]
+    // One id per send (`AgentChatSendArgs.clientSendId`): if this command is
+    // delivered twice (the offline queue replaying it after a reconnect), the
+    // host writes the message once. Older hosts ignore the key.
+    var args: [String: Any] = ["sessionId": sessionId, "text": text, "clientSendId": UUID().uuidString]
     // The Chats page is one of ADE's own surfaces: a personal chat written
     // before profiles existed becomes an assistant chat when used from here
     // (`PersonalChatAssistantClaim` on the host). Project chats never carry it.
@@ -22902,6 +22914,9 @@ final class SyncService: ObservableObject {
           updateProfile { $0.savedRelayCandidates = nil }
         }
       }
+      resolve(requestId: requestId, result: .success(payload))
+    case "provider_logins_changed":
+      providerLoginsRevision += 1
       resolve(requestId: requestId, result: .success(payload))
     case "prs_updated":
       // Coalesce at the view task boundary. The host sends only a tiny

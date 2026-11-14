@@ -252,7 +252,14 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     kind,
     sizeId: body.sizeId as CloudTierId,
     project: { origin },
-    lane: { id: laneId, name: laneName, ...(from ? { from } : {}), ...(existingBranch ? { existingBranch } : {}) },
+    lane: {
+      id: laneId,
+      name: laneName,
+      ...(from ? { from } : {}),
+      ...(existingBranch ? { existingBranch } : {}),
+      // A lane on a branch keeps the branch's name.
+      ...(lane?.autoName === true && !existingBranch ? { autoName: true } : {}),
+    },
     ...(chat ? { chat } : {}),
     madeBy,
     channel,

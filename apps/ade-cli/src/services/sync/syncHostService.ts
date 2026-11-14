@@ -9768,6 +9768,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     },
 
+    /**
+     * Tell the person's connected devices that the provider sign-ins changed
+     * (a pass or key saved, a sign-in applied here). Only a tiny signal: an
+     * open sign-ins card reads `providerLogins.status` once. Never to a lane
+     * share guest, whose sign-ins these are not. Sent as required: nothing
+     * re-derives it, so a backlogged peer is closed instead and reads again
+     * when it reconnects.
+     */
+    broadcastProviderLoginsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "provider_logins_changed", payload, null, { action: "provider_logins_changed" });
+      }
+    },
+
     async broadcastProjectCatalog(): Promise<void> {
       const payload = await buildProjectCatalogPayload();
       if (bonjourPort != null) {

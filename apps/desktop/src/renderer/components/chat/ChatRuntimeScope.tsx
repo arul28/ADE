@@ -2,7 +2,8 @@ import React, { createContext, useContext, useMemo } from "react";
 
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import type { LaneSummary } from "../../../shared/types/lanes";
-import { THIS_MACHINE_NAME, machineNameForBinding } from "../../../shared/machineIdentity";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import { machineLabelForBinding, useAdeCloudLaneComputers, useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import {
   useForeignSessionLaneId,
   useLanesForPin,
@@ -139,6 +140,8 @@ export function useChatRuntimeScopeForPin(
   const lanes = useChatMachineLanes(pin);
   const boundProjectRoot = useAppStore(selectActiveProjectRoot);
   const boundBinding = useAppStore((state) => state.projectBinding);
+  // A cloud lane computer reads "Cloud · <lane>", never its generated name.
+  const { computers: cloudComputers } = useAdeCloudLaneComputers();
 
   return useMemo<ChatMachineScope>(() => {
     const binding = bindingOverride !== undefined ? bindingOverride : (pin ?? boundBinding ?? null);
@@ -153,7 +156,7 @@ export function useChatRuntimeScopeForPin(
       laneWorktreePath: lane?.worktreePath ?? null,
       rootPath: pin && !isActiveBinding ? pin.rootPath : boundProjectRoot,
       isRemote: binding?.kind === "remote",
-      machineName: machineNameForBinding(binding),
+      machineName: machineLabelForBinding(binding, cloudComputers),
       // Only another machine can be known-offline. The bound machine's own
       // liveness is the window's problem, not this chat's.
       online: isActiveBinding || pinnedMachine?.online !== false,
@@ -162,6 +165,7 @@ export function useChatRuntimeScopeForPin(
     bindingOverride,
     boundBinding,
     boundProjectRoot,
+    cloudComputers,
     laneId,
     lanes,
     pin,
@@ -289,13 +293,14 @@ export function useChatScopeDerivation({
     return source.find((lane) => lane.id === chatScopeLaneId)?.worktreePath ?? null;
   }, [chatScopeLaneId, lanes, pinnedLanes]);
 
+  const chatMachineName = useMachineLabelForBinding(chatEffectiveBinding);
   return {
     chatScopeLaneId,
     chatRuntimePin,
     chatForeignPin,
     chatEffectiveBinding,
     isRemoteChat: chatEffectiveBinding?.kind === "remote",
-    chatMachineName: machineNameForBinding(chatEffectiveBinding),
+    chatMachineName,
     handoffLaneSourceLanes,
     chatLaneWorktreePath,
   };

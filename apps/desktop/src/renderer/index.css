@@ -2629,14 +2629,6 @@ button, [role="button"] {
   opacity: 1;
 }
 
-/* The glyph, tinted at rest. `--color-accent` at full strength would make the
-   icon compete with the label, and `text-muted-fg` on a coloured gradient reads
-   as a disabled control — 62% of the accent mixed into the muted foreground
-   sits between the two, and hover takes it the rest of the way. */
-.ade-tool-card-icon {
-  color: color-mix(in srgb, var(--color-accent) 62%, var(--color-muted-fg));
-}
-
 /* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
   transform: translateY(-1px) scale(0.99);
@@ -2765,6 +2757,219 @@ button, [role="button"] {
     transparent
   );
   animation: ade-tool-skeleton-sweep 1.4s linear infinite;
+}
+
+/* Work tools tiles. Every tool is one equal tile in a grid whose rows share
+   the pane's height, and each tile is a SIZE container: the mark and the
+   name grow with the tile's height (`cqh`), so a tall tile is full rather
+   than airy, and a short one tightens and drops its quieter line instead of
+   the page scrolling. */
+.ade-tool-tile {
+  container: tool-tile / size;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ade-tool-tile-body {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: clamp(2px, 3cqh, 6px);
+  padding: clamp(8px, 9cqh, 14px) 14px;
+}
+
+.ade-tool-tile-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: clamp(8px, 7cqh, 12px);
+  margin-bottom: clamp(0px, 3cqh, 6px);
+}
+
+.ade-tool-tile-mark {
+  display: block;
+  flex: 0 0 auto;
+  width: clamp(20px, 24cqh, 34px);
+  height: clamp(20px, 24cqh, 34px);
+}
+
+.ade-tool-tile-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-sans, inherit);
+  font-size: clamp(14px, 12cqh, 17px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+  outline: none;
+  cursor: pointer;
+}
+
+/* The one control covers the whole tile. */
+.ade-tool-tile-name::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.ade-tool-tile-name:focus-visible::after {
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 1.5px var(--color-accent);
+}
+
+.ade-tool-tile-name:disabled {
+  cursor: default;
+}
+
+.ade-tool-tile-machine {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 45%;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--color-muted-fg);
+}
+
+.ade-tool-tile-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.ade-tool-tile-line,
+.ade-tool-tile-detail {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-tool-tile-line {
+  font-size: clamp(12px, 9cqh, 13px);
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--color-fg) 78%, var(--color-muted-fg));
+}
+
+.ade-tool-tile-detail {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--color-muted-fg);
+}
+
+.ade-tool-tile-line-agent {
+  font-weight: 500;
+  color: color-mix(in srgb, var(--tool-color) 55%, var(--color-fg));
+}
+
+/* Short: the quieter line steps out. */
+@container tool-tile (max-height: 84px) {
+  .ade-tool-tile-detail {
+    display: none;
+  }
+}
+
+/* Very short: the name alone, with its mark. */
+@container tool-tile (max-height: 56px) {
+  .ade-tool-tile-line,
+  .ade-tool-tile-machine {
+    display: none;
+  }
+  .ade-tool-tile-head {
+    margin-bottom: 0;
+  }
+}
+
+/* Narrow: the machine keeps its mark, its name goes. */
+@container tool-tile (max-width: 215px) {
+  .ade-tool-tile-machine > span {
+    display: none;
+  }
+}
+
+/* A tool this chat's machine cannot open steps back; it does not lift. */
+.ade-tool-tile-off .ade-tool-tile-mark,
+.ade-tool-tile-off .ade-tool-tile-name {
+  opacity: 0.55;
+}
+
+.ade-tool-card.ade-tool-tile-off:hover {
+  transform: none;
+}
+
+/* The agent is at work: the same glow, stronger. */
+.ade-tool-card.ade-tool-tile[data-live="true"][data-agent="true"] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--tool-color) 18%, transparent),
+    0 12px 32px -12px color-mix(in srgb, var(--tool-color) 85%, transparent);
+}
+
+/* Live for this chat: a still ring and a soft glow in the tool's colour. */
+.ade-tool-card.ade-tool-tile[data-live="true"] {
+  border-color: color-mix(in srgb, var(--tool-color) 45%, var(--color-border));
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--tool-color) 22%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--tool-color) 12%, transparent),
+    0 10px 26px -14px color-mix(in srgb, var(--tool-color) 75%, transparent);
+}
+
+/* The agent is driving it: the ring travels. One rotated layer (a
+   compositor transform), stepped at 30 steps a turn, so an agent at work
+   costs a few composites a second rather than one per display refresh. */
+.ade-tool-tile-ring {
+  position: absolute;
+  inset: -1px;
+  z-index: 1;
+  overflow: hidden;
+  padding: 2px;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+.ade-tool-tile-ring > span {
+  position: absolute;
+  inset: -150%;
+  background: conic-gradient(
+    from 0turn,
+    transparent 0turn,
+    color-mix(in srgb, var(--tool-color) 18%, transparent) 0.4turn,
+    color-mix(in srgb, var(--tool-color) 55%, transparent) 0.7turn,
+    var(--tool-color) 0.95turn,
+    transparent 1turn
+  );
+  animation: ade-tool-tile-spin 2.6s steps(30) infinite;
+}
+
+@keyframes ade-tool-tile-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-tile-ring > span {
+    animation: none;
+    background: var(--tool-color);
+  }
 }
 
 @keyframes ade-timeline-arc {
@@ -6844,4 +7049,30 @@ button, [role="button"] {
 .pr-md-root li:has(> p > .pr-md-task-checkbox) {
   list-style: none;
   margin-inline-start: -1.1em;
+}
+
+/* The agent is using the open tool: its dot breathes, in two steps a second
+   rather than a smooth fade, so it costs almost nothing while it runs. */
+@keyframes ade-tool-agent-dot {
+  0% {
+    opacity: 1;
+    animation-timing-function: steps(1);
+  }
+  50% {
+    opacity: 0.35;
+    animation-timing-function: steps(1);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.ade-tool-agent-dot {
+  animation: ade-tool-agent-dot 1.2s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-agent-dot {
+    animation: none;
+  }
 }

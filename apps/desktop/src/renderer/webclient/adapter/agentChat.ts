@@ -409,7 +409,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);
-      await call("chat.send", args, undefined, false);
+      // One id per send (`AgentChatSendArgs.clientSendId`): a retry of a message
+      // the host already wrote is not sent twice.
+      const record = asRecord(args);
+      const stamped = record && typeof record.clientSendId !== "string"
+        ? { ...record, clientSendId: crypto.randomUUID() }
+        : args;
+      await call("chat.send", stamped, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
     // The Work input box on the web: same contract as the desktop's runtime

@@ -230,17 +230,34 @@ row with a setting behind it needs an entry in `settingsManifest.ts`.
 - **Light themes.** Everything above must read on light themes. Tint with
   `--color-fg`, not white, and follow the light-mode rules in `theming.md`.
 
-### Exception: the ADE Cloud hero
+### Exception: ADE Cloud's dusk sky
 
-Settings › ADE Cloud opens on a night sky (`.adecd-hero` in
-`settings/cloudDashboard/cloudDashboard.css`): an opaque, self-coloured card
-with its own radius and border, and a city of the account's lanes drawn in
-ADE Cloud's blue with warm lit windows. It breaks principle 1 (cards are
-translucent planes) and principle 3 (colour is for meaning) on purpose: the
-owner picked it as ADE Cloud's look. The exception covers that one card and
-the "look inside" city, nothing else. Everything below it on the page is kit
-(`.kit-card`, `.kit-panel`, `.kit-tag`, `.kit-btn`, `<Banner>`), and warnings
-on the sky still use `--kit-warn`. Do not copy the sky to another surface.
+Settings › ADE Cloud opens on a dusk sky, the website's art direction
+(`.adecd-hero` and `CloudSky.tsx` in `settings/cloudDashboard/`): an opaque,
+self-coloured card with its own radius and border, stars, a gold moon, slow
+clouds drawn with the ADE Cloud logo's outline, a violet and rose glow on the
+horizon, and a city of the account's lanes in indigo with lamp-gold lit
+windows. The plan's name is a serif italic in gold. It stays a night sky in
+the light theme too (a brighter dusk with white text), so the card reads as
+the same place in both.
+
+The palette is the `--adec-*` tokens in `remoteTargets/cloudBrand.css`
+(violet `--adec-500`, rose `--adec-rose`, gold `--adec-lamp`), and the logo is
+`CloudLogo` (a violet-to-rose cloud with one lit gold window; `CloudMark
+brand` draws it). ADE Cloud's main button is `.adecd-cta`: violet to rose,
+white text, a slow gold and pink light running round its border; never the
+theme's cream ink.
+
+It breaks principle 1 (cards are translucent planes) and principle 3 (colour
+is for meaning) on purpose: the owner picked it as ADE Cloud's look. The
+exception covers the hero, the current plan's card (its own small patch of
+the same sky with a gold edge), the "You're on Plus" glow on a plan that just
+landed, and the "look inside" city, nothing else. Everything else on the page
+is kit (`.kit-card`, `.kit-panel`, `.kit-tag`, `<Banner>`) tinted with the
+tokens, and warnings on the sky still use `--kit-warn`. The sky's motion is
+`transform`/`opacity` only and stops off screen, while the window is hidden
+and under reduced motion (`useStillWhenHidden`). Do not copy the sky to
+another surface.
 
 ## Appearance page
 

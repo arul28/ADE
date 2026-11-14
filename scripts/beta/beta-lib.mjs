@@ -152,16 +152,18 @@ export const BETA_PENDING_WAIT_MS = 60 * 60 * 1000;
  * BETA_PENDING_WAIT_MS (or with no known time) it no longer holds anything.
  * With `force`, nothing holds and the older green commit comes back as `sha`:
  * the run after that CI finishes would not carry the force, so waiting would
- * drop the person's request.
+ * drop the person's request. `waitingFor` still names the newer commit then,
+ * so a forced run that builds nothing can say why (`decide`).
  */
 export async function pickCandidate({ commits, stopAt, ciPassOf, now = Date.now(), force = false }) {
   const checked = [];
   let waitingFor = null;
   for (const { sha, time } of commits) {
-    if (stopAt && sha === stopAt) break;
+    // The last beta's commit: nothing older can be new, but a newer commit may still wait for CI.
+    if (stopAt && sha === stopAt) return { sha: null, waitingFor, checked };
     const conclusion = await ciPassOf(sha);
     checked.push({ sha, conclusion: conclusion ?? "pending" });
-    if (conclusion === "success") return waitingFor && !force ? { sha: null, waitingFor, checked } : { sha, waitingFor: null, checked };
+    if (conclusion === "success") return waitingFor && !force ? { sha: null, waitingFor, checked } : { sha, waitingFor, checked };
     if (!conclusion && !waitingFor && Number.isFinite(time) && now - time < BETA_PENDING_WAIT_MS) waitingFor = sha;
   }
   return { sha: null, waitingFor: null, checked };
@@ -173,7 +175,10 @@ export async function pickCandidate({ commits, stopAt, ciPassOf, now = Date.now(
  */
 export function decide({ now, lastBeta, candidate, productChanged, force, waitingFor = null }) {
   if (!candidate && waitingFor) {
-    return { skip: true, reason: `waiting for CI on ${waitingFor.slice(0, 9)}, the newest main commit; the beta starts again when it finishes` };
+    // A forced run says plainly that it built nothing, or it reads as a beta that shipped.
+    return { skip: true, reason: force
+      ? `No beta was built: nothing newer than ${lastBeta?.tag ?? "the last beta"} has a green ci-pass, and the newer commit ${waitingFor.slice(0, 9)} is still waiting for CI. The beta builds it when that CI finishes, or dispatch again then.`
+      : `waiting for CI on ${waitingFor.slice(0, 9)}, the newest main commit; the beta starts again when it finishes` };
   }
   if (!candidate) {
     return { skip: true, reason: lastBeta
@@ -181,7 +186,10 @@ export function decide({ now, lastBeta, candidate, productChanged, force, waitin
       : "no main commit has a green ci-pass" };
   }
   if (lastBeta && candidate === lastBeta.commit) {
-    return { skip: true, reason: `${lastBeta.tag} already builds ${candidate.slice(0, 9)}` };
+    // A forced run while the newest commit's CI still runs lands here: say so, or it reads as a beta that shipped.
+    return { skip: true, reason: waitingFor
+      ? `nothing new to build: ${lastBeta.tag} already builds ${candidate.slice(0, 9)}, the newest green commit, and CI on ${waitingFor.slice(0, 9)} (the newest main commit) is still running. The beta builds it when that CI finishes, or dispatch again then.`
+      : `${lastBeta.tag} already builds ${candidate.slice(0, 9)}` };
   }
   if (!force && lastBeta?.publishedAt) {
     const age = now - Date.parse(lastBeta.publishedAt);

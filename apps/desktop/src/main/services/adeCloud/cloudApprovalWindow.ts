@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
-import type { CloudApprovalMode, CloudApprovalWindowResult } from "./cloudMachineCreator";
+import { requestCloudApprovalTicket, type CloudApprovalMode, type CloudApprovalWindowResult } from "./cloudMachineCreator";
+import type { CloudApprovalWindowAnswer } from "./cloudDesktopActions";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 
 type Logger = {
@@ -22,9 +23,26 @@ const APPROVAL_TIMEOUT_MS = 5 * 60_000;
  * confirmation they give. ADE never clicks anything on it.
  */
 export function openCloudApprovalWindow(
-  args: { url: string; mode: CloudApprovalMode; title: string; signal: AbortSignal; onNeedsPerson: () => void },
+  args: {
+    url: string;
+    mode: CloudApprovalMode;
+    title: string;
+    signal: AbortSignal;
+    onNeedsPerson: () => void;
+    /**
+     * A window a brain borrowed (its lane launch): at a step only a person
+     * can take, end with `needs_person` instead of showing and waiting, since
+     * this screen may not be where the person is. The brain sends the link.
+     */
+    endWhenPersonNeeded?: boolean;
+  },
   logger: Logger,
 ): Promise<CloudApprovalWindowResult> {
+  // The approval page always needs the person: nothing to open.
+  if (args.endWhenPersonNeeded && args.mode === "browser") {
+    logger.info("cloud.approval_window_finished", { result: "needs_person", shown: false });
+    return Promise.resolve("needs_person");
+  }
   const win = new BrowserWindow({
     show: false,
     width: 540,
@@ -49,6 +67,8 @@ export function openCloudApprovalWindow(
     let settled = false;
     let shown = false;
     let showTimer: NodeJS.Timeout | null = null;
+    /** The last page's path: on `/device/callback` the approval already landed. */
+    let lastPath: string | null = null;
     const finish = (result: CloudApprovalWindowResult) => {
       if (settled) return;
       settled = true;
@@ -64,6 +84,13 @@ export function openCloudApprovalWindow(
       if (showTimer) clearTimeout(showTimer);
       showTimer = setTimeout(() => {
         if (settled || win.isDestroyed()) return;
+        if (args.endWhenPersonNeeded) {
+          // Still loading the callback is not a step for the person: the
+          // approval landed and the computer may be collecting its session,
+          // so this ends as a slow sign-in (which keeps the grace period).
+          finish(lastPath === "/device/callback" ? "timed_out" : "needs_person");
+          return;
+        }
         shown = true;
         win.show();
         win.focus();
@@ -80,6 +107,7 @@ export function openCloudApprovalWindow(
     };
     win.webContents.on("did-navigate", (_event, url) => {
       const page = pageAt(url);
+      lastPath = page?.path ?? null;
       // Host and path only: query strings here carry one-time tickets and codes.
       logger.info("cloud.approval_window_page", { host: page?.host ?? null, path: page?.path ?? null });
       armShow();
@@ -94,7 +122,9 @@ export function openCloudApprovalWindow(
             finish("signed_in");
           } else {
             // The callback answered with a failure page; let the person read it.
-            if (!shown && !win.isDestroyed()) {
+            if (args.endWhenPersonNeeded) {
+              finish("needs_person");
+            } else if (!shown && !win.isDestroyed()) {
               shown = true;
               win.show();
               args.onNeedsPerson();
@@ -128,4 +158,34 @@ export function openCloudApprovalWindow(
       armShow();
     }
   });
+}
+
+/**
+ * A lane launch an agent or the CLI started in a brain: its new computer signs
+ * in through this app's window, as the app's own do. This app's own account
+ * service mints the ticket, so the window opens only what it gave. Where no
+ * ticket can be minted, the approval page always needs the person, who may
+ * not be at this screen: the brain sends the link (`needs_person`, the code
+ * still pending).
+ */
+export async function approveBrainWindow(
+  args: {
+    userCode: string;
+    title: string;
+    signal: AbortSignal;
+    directoryBaseUrl: () => string | null;
+    getAccountToken: () => Promise<string | null>;
+  },
+  logger: Logger,
+): Promise<CloudApprovalWindowAnswer> {
+  const directory = args.directoryBaseUrl();
+  const token = await args.getAccountToken();
+  if (!directory || !token) throw new Error("Sign in to ADE in this app first. The machine joins your account.");
+  const ticket = await requestCloudApprovalTicket({ directory, token, userCode: args.userCode, signal: args.signal });
+  if (ticket.mode === "browser") return { result: "needs_person", codeStillPending: true };
+  const result = await openCloudApprovalWindow(
+    { url: ticket.url, mode: "ticket", title: args.title, signal: args.signal, onNeedsPerson: () => undefined, endWhenPersonNeeded: true },
+    logger,
+  );
+  return { result, codeStillPending: false };
 }

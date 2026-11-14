@@ -648,8 +648,40 @@ export type AgentChatHostContinuationMetadata = {
     /** A subagent is blocked on a question; ADE relays it to the parent agent. */
     | "subagent_question"
     /** A subagent waits on a card only the user can answer; ADE tells the parent agent. */
-    | "subagent_awaiting_user";
+    | "subagent_awaiting_user"
+    /** The status check the stall card's Nudge sends, in ADE's words. */
+    | "stall_nudge";
+  /**
+   * The ADE row's one line for `reason` (`HOST_CONTINUATION_REASON_LABEL`),
+   * stamped by the host so clients need no table of their own. Older hosts
+   * send none; clients then fall back to their own copy.
+   */
+  label?: string;
 };
+
+export type AgentChatHostContinuationReason = AgentChatHostContinuationMetadata["reason"];
+
+/** Why ADE wrote a message into the chat, as the ADE row's one line. The one source. */
+export const HOST_CONTINUATION_REASON_LABEL: Readonly<Record<AgentChatHostContinuationReason, string>> = {
+  interrupted_turn_recovery: "Resuming your last request after a restart",
+  stall_nudge: "Asked for a status check",
+  continuity_recovery: "Rebuilt this chat's thread from ADE history",
+  plan_followup: "Sent your plan decision",
+  background_work_ended: "A background job it was waiting on finished",
+  background_work_lost: "Background work it was waiting on was lost",
+  chat_wait: "A chat it was waiting on is ready",
+  subagent_question: "A subagent has a question",
+  subagent_awaiting_user: "A subagent is waiting on you",
+  provider_schedule_cleanup: "Cleaning up old provider schedules",
+  cto_intro: "Started the CTO's introduction",
+  cto_handoff_note: "Asked for a hand-off note",
+};
+
+/** The line for a reason, or null for a reason this build does not know. */
+export function hostContinuationReasonLabel(reason: string): string | null {
+  const labels: Readonly<Record<string, string>> = HOST_CONTINUATION_REASON_LABEL;
+  return Object.hasOwn(labels, reason) ? labels[reason] ?? null : null;
+}
 
 export type AgentChatContinuityRecovery = {
   state: "required" | "reconstructed";
@@ -2451,6 +2483,11 @@ export type AgentChatEvent =
       turnStartedAt?: string;
       lastProgressAt?: string;
       automaticRecoveryAttempted?: boolean;
+      /**
+       * The chat's provider when this row was built from a `turn_health` card
+       * (the renderer folds both into one card). Absent: Codex.
+       */
+      provider?: string;
     }
   | {
       /**
@@ -5780,10 +5817,12 @@ export type AgentChatSendArgs = {
    */
   includeGuestComments?: ChatThreadCommentSelection[];
   /**
-   * Set once per send attempt by a client talking to another machine. A brain
-   * that froze or restarted mid-send may have already taken this message, so
-   * the client's retry after it wakes carries the same id and is dropped here
-   * rather than run twice.
+   * One id per user send, made by the client (desktop composer, phone, web,
+   * CLI) or by the host for a launch's queued message. Every retry of that
+   * send carries the same id. Once the first copy wrote the message into the
+   * transcript, a retry is a no-op that answers with the first copy's result,
+   * so a timeout after the provider took the message never sends it twice.
+   * Absent (older clients): every call sends.
    */
   clientSendId?: string;
 };
@@ -6080,6 +6119,8 @@ export type AgentChatMessageSessionArgs = {
   attachments?: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   metadata?: AgentChatEventMetadata | null | undefined;
+  /** Same contract as `AgentChatSendArgs.clientSendId`: a retry of a message already written is a no-op. */
+  clientSendId?: string;
 };
 
 export type AgentChatMessageSessionResult = {
@@ -6535,6 +6576,25 @@ export function isAgentChatTurnRecoveryAction(
     && (AGENT_CHAT_TURN_RECOVERY_ACTIONS as readonly string[]).includes(value);
 }
 
+/**
+ * `recoverTurn`'s action for each legacy `recoverCodexTurn` action, and back.
+ * The quiet card (every provider) speaks the legacy vocabulary on the wire so
+ * older hosts still answer it.
+ */
+export const TURN_RECOVERY_ACTION_BY_CODEX_ACTION: Readonly<Record<AgentChatCodexRecoveryAction, AgentChatTurnRecoveryAction>> = {
+  wait: "wait",
+  steer: "nudge",
+  interrupt_retry_same_thread: "retry_same_runtime",
+  restart_resume_thread: "restart_resume",
+};
+
+export const CODEX_RECOVERY_ACTION_BY_TURN_ACTION: Readonly<Record<AgentChatTurnRecoveryAction, AgentChatCodexRecoveryAction>> = {
+  wait: "wait",
+  nudge: "steer",
+  retry_same_runtime: "interrupt_retry_same_thread",
+  restart_resume: "restart_resume_thread",
+};
+
 export function isUnsupportedAgentChatRecoveryActionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return (
@@ -6557,6 +6617,11 @@ export type AgentChatRecoverTurnResult = {
   status: "waiting" | "nudged" | "retrying" | "resumed";
 };
 
+/**
+ * The legacy `recoverCodexTurn` wire contract. Its name and action vocabulary
+ * stay as old clients send them, though the quiet card it answers now serves
+ * every provider (`recoverTurn` is the provider-neutral call).
+ */
 export type AgentChatRecoverCodexTurnArgs = {
   sessionId: string;
   turnId: string;

@@ -1,3 +1,10 @@
+import {
+  isMachineScopeRootPath,
+  isMachineScopeUnknownProjectError,
+  MACHINE_SCOPE_PROJECT_ID,
+  MACHINE_SCOPE_ROOT_PATH,
+  THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE,
+} from "../../../shared/machineScope";
 import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import { readWindowsProcessImages } from "../android/androidEmulatorImage";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -90,6 +97,15 @@ import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipc
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
+/** The machine scope as a project record, so the per-root calls reach it unchanged. */
+const MACHINE_SCOPE_PROJECT_RECORD: RemoteRuntimeProjectRecord = {
+  projectId: MACHINE_SCOPE_PROJECT_ID,
+  rootPath: MACHINE_SCOPE_ROOT_PATH,
+  displayName: "This computer",
+  addedAt: 0,
+  lastOpenedAt: 0,
+  gitOriginUrl: null,
+};
 const SLOW_ACTION_THRESHOLD_MS = 500;
 /**
  * A slow action that keeps being slow (a status poll every few seconds) says
@@ -2228,6 +2244,8 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     registration: ProjectRegistrationIntent = SYSTEM_PROJECT_REGISTRATION,
   ): Promise<RemoteRuntimeProjectRecord> {
+    // This computer's own settings: the brain's machine scope, never registered.
+    if (isMachineScopeRootPath(rootPath)) return MACHINE_SCOPE_PROJECT_RECORD;
     const normalizedRoot = path.resolve(rootPath);
     while (true) {
       this.assertNotDisposed();
@@ -2360,6 +2378,12 @@ export class LocalRuntimeConnectionPool {
    * of time, not one per poll.
    */
   private dropStaleProjectRecord(rootPath: string, project: RemoteRuntimeProjectRecord, error: unknown): boolean {
+    if (project === MACHINE_SCOPE_PROJECT_RECORD) {
+      // Never registered, so never re-registered. A brain older than this app
+      // looks the scope up as a project: say what to do instead.
+      if (isMachineScopeUnknownProjectError(error)) throw new Error(THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE);
+      return false;
+    }
     if (unknownProjectIdInError(error) !== project.projectId) return false;
     // `ensureProject` caches a moved project under its new folder; follow the
     // same redirect so the record dropped is the one that was handed out.

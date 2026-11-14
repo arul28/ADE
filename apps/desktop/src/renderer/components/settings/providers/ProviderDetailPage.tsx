@@ -35,6 +35,7 @@ import "./providerPage.css";
 import { providerStatusFor } from "./descriptors";
 import { ProviderAccountsPanel } from "./accounts/ProviderAccountsPanel";
 import { CompactionSettings } from "./CompactionSettings";
+import { ProjectConfigNote } from "./ProjectConfigNote";
 import { ProviderApiKeysPanel } from "./keys/ProviderApiKeysPanel";
 import { extraKeyProviders } from "./keys/providerKeySpecs";
 import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";
@@ -309,21 +310,26 @@ export function ProviderDetailPage({
                   <ArrowsClockwise size={12} weight="bold" />
                   {checkingSignIn ? "Checking…" : "Re-check"}
                 </button>
-                <button
-                  type="button"
-                  aria-pressed={disabled}
-                  style={{ ...outlineButton({ height: 26 }), display: "inline-flex", alignItems: "center", gap: 5 }}
-                  disabled={ctx.savingDisabledFor === descriptor.id}
-                  onClick={() => void ctx.actions.setProviderDisabled(descriptor.id, !disabled)}
-                >
-                  <Power size={12} weight="bold" />
-                  {ctx.savingDisabledFor === descriptor.id
-                    ? "Saving…"
-                    : disabled
-                      ? `Enable ${descriptor.label}`
-                      : `Disable ${descriptor.label}`}
-                </button>
+                {ctx.projectConfigEditable ? (
+                  <button
+                    type="button"
+                    aria-pressed={disabled}
+                    style={{ ...outlineButton({ height: 26 }), display: "inline-flex", alignItems: "center", gap: 5 }}
+                    disabled={ctx.savingDisabledFor === descriptor.id}
+                    onClick={() => void ctx.actions.setProviderDisabled(descriptor.id, !disabled)}
+                  >
+                    <Power size={12} weight="bold" />
+                    {ctx.savingDisabledFor === descriptor.id
+                      ? "Saving…"
+                      : disabled
+                        ? `Enable ${descriptor.label}`
+                        : `Disable ${descriptor.label}`}
+                  </button>
+                ) : null}
               </div>
+              {ctx.projectConfigEditable ? null : (
+                <ProjectConfigNote machineName={ctx.machineName} sentence={`Turning ${descriptor.label} off is saved per project.`} />
+              )}
               {signInCheck && !checkingSignIn ? (
                 <div role="status" style={{ display: "flex", alignItems: "flex-start", gap: 6, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: 1.45 }}>
                   <i
@@ -368,17 +374,22 @@ export function ProviderDetailPage({
               <Body ctx={ctx} />
             </section>
           ) : null}
-          <CompactionSettings provider={descriptor.id} value={ctx.projectConfigSnapshot?.effective.ai?.compaction?.[descriptor.id]}
-            onChange={async (value) => {
-              await window.ade.ai.updateConfig({ compaction: { [descriptor.id]: value ?? {} } }, pin);
-              await ctx.actions.refreshStatus();
-            }} />
+          {/* Compaction is saved per project copy; the machine route has none. */}
+          {ctx.projectConfigEditable ? (
+            <CompactionSettings provider={descriptor.id} value={ctx.projectConfigSnapshot?.effective.ai?.compaction?.[descriptor.id]}
+              onChange={async (value) => {
+                await window.ade.ai.updateConfig({ compaction: { [descriptor.id]: value ?? {} } }, pin);
+                await ctx.actions.refreshStatus();
+              }} />
+          ) : null}
           <ProviderApiKeysPanel
             provider={descriptor.id}
             providerLabel={descriptor.label}
             additionalProviders={extraKeyProviders(descriptor.id, ctx.status?.customProviders)}
             onAfterSave={
-              descriptor.id === "opencode"
+              // The provider block is project config; with no copy of the
+              // repository there, the key is stored and the block is not.
+              descriptor.id === "opencode" && ctx.projectConfigEditable
                 ? async (draft) => {
                     // OpenCode needs a provider block as well as a key: the key
                     // alone gives its config nothing to attach the endpoint and

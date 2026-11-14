@@ -52,6 +52,7 @@ import {
   nameStyle,
   subTextStyle,
 } from "./remoteTargetListStyles";
+import { adeCloudLaneLabelForMachine, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 const CONNECTING_STALE_MS = 20_000;
 
@@ -179,6 +180,10 @@ export function SavedMachineRow({
   parked = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
+  const { computers: cloudComputers } = useAdeCloudLaneComputers();
+  // A cloud computer reads "Cloud · <lane>"; its own name moves to the tooltip.
+  const cloudLabel = adeCloudLaneLabelForMachine({ hostname: target.hostname, machineKey: target.pairedMachine?.machineKey ?? null }, cloudComputers);
+  const shownName = cloudLabel ?? target.name;
   // Covers this computer's own connect and main's automatic reconnect.
   const targetConnecting =
     connecting || (status?.state === "connecting" && !row.connected);
@@ -278,7 +283,7 @@ export function SavedMachineRow({
         <div className="ade-cx-row-grid">
           <MachineAvatar
             colorKey={machineColorKey(target)}
-            name={target.name}
+            name={shownName}
             platform={machinePlatform(status?.arch, target.lastSeenArch)}
             formFactor={machineFormFactor({ name: target.name, power })}
             editable
@@ -286,7 +291,8 @@ export function SavedMachineRow({
           />
           <div style={{ minWidth: 0, display: "grid", gap: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <span style={nameStyle}>{target.name}</span>
+              {/* A cloud lane computer reads "Cloud · <lane>"; its own name stays in the tooltip for support. */}
+              <span style={nameStyle} title={cloudLabel ? target.name : undefined}>{shownName}</span>
               <PresenceDot state={presence} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>

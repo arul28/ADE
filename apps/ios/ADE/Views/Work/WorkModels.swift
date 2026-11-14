@@ -187,6 +187,11 @@ struct WorkChatMessage: Identifiable, Equatable {
   var writtenByAde = false
   /// True for a message the chat's side chat sent here; the bubble says so.
   var fromSideChat = false
+  /// Set when ADE wrote this message (`metadata.hostContinuation.reason`): it
+  /// draws as an "ADE" row with the reason, not as the reader's bubble.
+  var adeReason: String? = nil
+  /// The host's line for `adeReason`; nil from an older host.
+  var adeReasonLabel: String? = nil
   /// Set for a message another person wrote on a shared lane: "From <name>".
   var guestAuthorName: String? = nil
   var attachments: [AgentChatFileRef]? = nil
@@ -2347,6 +2352,11 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   var userMessageWrittenByAde = false
   /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
   var userMessageFromSideChat = false
+  /// Why ADE wrote this user message (`metadata.hostContinuation.reason`); nil
+  /// for anything else. Draws as an ADE row, never a bubble.
+  var userMessageAdeReason: String? = nil
+  /// The host's line for that reason (`metadata.hostContinuation.label`).
+  var userMessageAdeReasonLabel: String? = nil
   /// The other person on a shared lane who wrote this user message (`metadata.author`).
   var userMessageGuestAuthorName: String? = nil
   var userMessageIsRecoveryHandOff = false

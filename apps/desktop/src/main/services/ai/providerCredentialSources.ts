@@ -334,7 +334,8 @@ export function cacheClaudeCredentials(
  */
 export type ClaudeLoginRead =
   | { state: "ok"; credentials: ClaudeLocalAuthCredentials }
-  | { state: "expired" }
+  /** `source` says where the expired login was found (the Keychain, or the file). */
+  | { state: "expired"; source?: ClaudeLocalAuthCredentials["source"] }
   | { state: "signed_out" }
   | { state: "unreadable" };
 
@@ -374,7 +375,9 @@ export async function readClaudeLogin(
   }
   claudeCacheEntry(cacheKey).credentials = null;
   // Without a refresh token the CLI cannot renew it either.
-  return creds.refreshToken ? { state: "expired" } : { state: "signed_out" };
+  return creds.refreshToken
+    ? { state: "expired", ...(creds.source ? { source: creds.source } : {}) }
+    : { state: "signed_out" };
 }
 
 /**

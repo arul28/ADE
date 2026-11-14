@@ -38,6 +38,7 @@ import {
 import type { OpenCodeProviderDetail } from "../../OpenCodeProviderDetailModal";
 import { OpenCodeCustomProvidersPanel } from "../keys/OpenCodeCustomProvidersPanel";
 import type { ProvidersViewContext } from "../types";
+import { ProjectConfigNote } from "../ProjectConfigNote";
 
 function formatLocalModelLabel(modelId: string): string {
   const descriptor = getModelById(modelId);
@@ -257,7 +258,9 @@ function LocalModelServers({ ctx }: { ctx: ProvidersViewContext }) {
                   </>
                 ) : (
                   <>
-                    <button type="button" style={outlineButton({ height: 28 })} onClick={() => ctx.actions.beginEditingLocalRuntime(entry.provider)}>Edit</button>
+                    {ctx.projectConfigEditable ? (
+                      <button type="button" style={outlineButton({ height: 28 })} onClick={() => ctx.actions.beginEditingLocalRuntime(entry.provider)}>Edit</button>
+                    ) : null}
                     <button type="button" style={outlineButton({ height: 28 })} disabled={ctx.loading} onClick={() => void ctx.actions.refreshStatus({ force: true })}>Test</button>
                   </>
                 )}
@@ -271,6 +274,14 @@ function LocalModelServers({ ctx }: { ctx: ProvidersViewContext }) {
 }
 
 function AdvancedOpenCode({ ctx }: { ctx: ProvidersViewContext }) {
+  if (!ctx.projectConfigEditable) {
+    return (
+      <ProjectConfigNote
+        machineName={ctx.machineName}
+        sentence="Local model servers, custom providers and model slugs are saved per project."
+      />
+    );
+  }
   return (
     <details style={{ border: `1px solid ${COLORS.border}`, background: COLORS.cardBg }}>
       <summary style={{ cursor: "pointer", padding: "10px 12px", fontSize: 11, fontFamily: SANS_FONT, fontWeight: 600, color: COLORS.textSecondary, listStyle: "none" }}>

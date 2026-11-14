@@ -48,7 +48,7 @@ import {
 } from "./cloudAccess";
 import { cloudGitPreflight } from "./cloudGitCredential";
 import { createCloudMachine, type CloudMachineCreatorDeps } from "./cloudMachineCreator";
-import { openCloudApprovalWindow } from "./cloudApprovalWindow";
+import { approveBrainWindow, openCloudApprovalWindow } from "./cloudApprovalWindow";
 import { createCloudMachines } from "./cloudMachines";
 import type { CloudProvider } from "./cloudProvider";
 import { setCloudAsleepCheck, setCloudRestChanged, setCloudUpdateBlocker, setCloudWakeForUse } from "./cloudWakeHook";
@@ -610,6 +610,7 @@ export function registerCloudIpc(args: {
   };
   // The CLI and agents make, copy and move machines through this app (the
   // new machine signs in through its approval window), over the desktop bridge.
+  const approvalWindows = new Map<string, AbortController>();
   setCloudDesktopActions({
     create: async (machine) => {
       const { madeByChat, madeByAgent, ...shape } = machine;
@@ -630,6 +631,27 @@ export function registerCloudIpc(args: {
       const result = await moveCloudMachine(copyDeps, input, () => undefined);
       sendToAllWindows(IPC.cloudStatusChanged);
       return result;
+    },
+    // A lane launch an agent or the CLI started in the brain: its new
+    // computer signs in through this app's window, as the app's own do.
+    approveWindow: async ({ id, userCode, title }) => {
+      approvalWindows.get(id)?.abort();
+      const controller = new AbortController();
+      approvalWindows.set(id, controller);
+      try {
+        return await approveBrainWindow({
+          userCode,
+          title,
+          signal: controller.signal,
+          directoryBaseUrl: machineCreatorDeps.directoryBaseUrl,
+          getAccountToken: machineCreatorDeps.getAccountToken,
+        }, logger);
+      } finally {
+        if (approvalWindows.get(id) === controller) approvalWindows.delete(id);
+      }
+    },
+    closeApprovalWindow: ({ id }) => {
+      approvalWindows.get(id)?.abort();
     },
   });
 

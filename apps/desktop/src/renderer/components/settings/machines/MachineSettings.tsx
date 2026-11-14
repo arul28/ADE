@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   AndroidLogo,
   AppleLogo,
@@ -29,7 +29,7 @@ import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatStorageBytes } from "../../../../shared/formatting";
 import { freeSpaceLevel } from "../storage/storageView";
 import { SingleMachineUpdateRow } from "../general/MachineUpdateRows";
-import { machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
+import { routedPageFor, machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
 import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
@@ -60,6 +60,13 @@ export function MachineSettings({
   const isThis = scope.isThisMachine;
   // Reachable through its own brain: pinned calls (or unpinned on the tab's own machine).
   const reach = machineSectionAvailable("routed", scope);
+  // The machine's own values (providers, restarts, update track, shell, load)
+  // also reach it through its machine route when this window's project has
+  // no copy there.
+  const machineScope = useMemo(() => routedPageFor("machine", scope), [scope]);
+  const machineReach = machineScope != null && scope.online;
+  // The machine-route rows run on the routed scope, else on the page as it is.
+  const machineRowScope = machineScope ?? scope;
   const mac = fact?.platform === "mac";
   const elsewhere = <UnreachableHint isThis={isThis} />;
   const connection = fact?.connection ?? null;
@@ -76,7 +83,7 @@ export function MachineSettings({
       <MachineGroup title="Updates">
         <MachineRow icon={<ArrowsClockwise size={14} />} title="Version"
           control={machine ? <SingleMachineUpdateRow machine={machine} name={name} /> : <RowValue>Unknown</RowValue>} />
-        <TrackRow scope={scope} fact={fact} reach={reach} onOpen={() => openTab("general", "update-track")} />
+        <TrackRow scope={machineRowScope} fact={fact} reach={machineReach} onOpen={() => openTab("general", "update-track")} />
         <AutoInstallRow isThis={isThis} onOpen={() => openTab("general", "auto-updates")} />
       </MachineGroup>
 
@@ -85,10 +92,10 @@ export function MachineSettings({
           icon={<Brain size={14} />}
           title="Providers"
           value="Sign-ins and models"
-          control={reach ? <RowLink onClick={() => openMachine(scope.machineId, "agents")} /> : elsewhere}
+          control={machineSectionAvailable("machine", scope) ? <RowLink onClick={() => openMachine(scope.machineId, "agents")} /> : elsewhere}
         />
-        <ContinueRow scope={scope} reach={reach} />
-        <ShellRow scope={scope} reach={reach} />
+        <ContinueRow scope={machineRowScope} reach={machineReach} />
+        <ShellRow scope={machineRowScope} reach={machineReach} />
       </MachineGroup>
 
       <MachineGroup title={isThis ? "This machine" : "Machine"}>
@@ -159,7 +166,7 @@ export function MachineSettings({
 
       {/* How busy the machine is and what it can run, from its own brain,
           and the copies of other machines' work it holds. */}
-      <MachineCapabilitiesArea pin={scope.pin} reach={reach && (scope.online || isThis)} isThisMachine={isThis} />
+      <MachineCapabilitiesArea pin={machineRowScope.pin} reach={machineReach || (reach && isThis)} isThisMachine={isThis} />
       <MachineWorkCopies pin={scope.pin} reach={reach} isThisMachine={isThis} />
     </div>
   );

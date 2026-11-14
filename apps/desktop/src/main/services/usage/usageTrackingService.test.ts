@@ -278,11 +278,16 @@ afterEach(() => {
 });
 
 describe("claudePollAllowsKeychain", () => {
-  it("opens the Keychain for a scoped account on any poll, and for the default account only on an explicit refresh", () => {
-    expect(claudePollAllowsKeychain("automatic", undefined)).toBe(false);
-    expect(claudePollAllowsKeychain("user", undefined)).toBe(true);
-    expect(claudePollAllowsKeychain("automatic", "/tmp/claude-1028")).toBe(true);
-    expect(claudePollAllowsKeychain("automatic", "  ")).toBe(false);
+  it.each([
+    { reason: "automatic", home: undefined, readBefore: false, allowed: false },
+    { reason: "user", home: undefined, readBefore: false, allowed: true },
+    // Once a poll read the default login there, background polls may again:
+    // the cached token expires after about eight hours.
+    { reason: "automatic", home: undefined, readBefore: true, allowed: true },
+    { reason: "automatic", home: "/tmp/claude-1028", readBefore: false, allowed: true },
+    { reason: "automatic", home: "  ", readBefore: false, allowed: false },
+  ] as const)("$reason poll, home $home, read before $readBefore: Keychain $allowed", ({ reason, home, readBefore, allowed }) => {
+    expect(claudePollAllowsKeychain(reason, home, readBefore)).toBe(allowed);
   });
 });
 
@@ -7713,7 +7718,12 @@ describe("per-account quota attribution", () => {
         nextExpiresAt: "2099-03-14T02:00:00.000Z",
       });
 
-      await expect(service.consumeResetCredit({ accountId: "claude:work" }))
+      // A peer that showed another login for this id: nothing is spent.
+      await expect(service.consumeOwnResetCredit({ accountId: "claude:work", email: "someone-else@example.com" }))
+        .resolves.toMatchObject({ ok: false, status: "failure" });
+      expect(calls.some((call) => call.method === "POST")).toBe(false);
+
+      await expect(service.consumeOwnResetCredit({ accountId: "claude:work", email: "WORK@example.com" }))
         .resolves.toEqual({ ok: true, status: "reset" });
       expect(calls.find((call) => call.method === "POST")?.url)
         .toBe("https://api.anthropic.com/api/organizations/org-1/reset_rate_limits");

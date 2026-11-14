@@ -17,8 +17,10 @@ ade devices use ios@here             # back to this machine
 A device id is `<kind>@<source>`. Kinds: `ios`, `android`, `screen`, `app`.
 The source is `here`, or a machine's name or key. Each row says what the
 device needs first ("SDK missing there", "repository missing there: use
---clone"). A machine that did not answer is listed as such. Listing starts
-and copies nothing.
+--clone"). A machine that did not answer (asleep) is listed as such. Listing starts
+and copies nothing. An `ios` row is never the Mac's already-booted simulator:
+`ade apple start` there gives this chat's lane its own (or attaches one,
+`--udid <udid>`), and `ade apple status` describes that one.
 
 After `use`, the plain commands (`ade apple launch`, `ade apple tap …`,
 `ade apple screenshot`) act on that device. The choice survives a restart.
@@ -57,7 +59,8 @@ the screen's input). The simulator or emulator stays on for your next turn.
 Turn it off with `ade apple stop` or `ade android stop` (add `--machine
 <name>` if you did not pick it with `use`).
 `ade shell clean --machine <name>` deletes your code there and everything it
-held: its simulator session, emulator, screen and app.
+held: its simulator session, emulator, screen and app. It names each folder it
+deleted (in every checkout of the repository there), or says nothing was there.
 
 ## Who sees what
 

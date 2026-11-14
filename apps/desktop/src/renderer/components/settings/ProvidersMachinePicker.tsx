@@ -3,15 +3,24 @@ import { CaretDown, Check } from "@phosphor-icons/react";
 import type { ProjectMachine } from "../../state/projectMachines";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { MachineAvatar, machineFormFactor } from "../remoteTargets/MachineIdentity";
-import { machineSectionAvailable, settingsMachinePageFor } from "./SettingsMachinesNav";
+import { machineSectionAvailable, settingsMachinePageFor, type PickableSectionKind } from "./SettingsMachinesNav";
 import { useMachineFacts, type MachineFacts } from "./machines/machineFacts";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import "./machines/machinesPage.css";
 
-/** The machines whose brain a setting can be read and changed through from here. */
-export function reachableMachines(machines: readonly ProjectMachine[]): ProjectMachine[] {
-  return machines.filter((machine) => machineSectionAvailable("routed", settingsMachinePageFor(machine)));
+/**
+ * The machines whose brain a setting can be read and changed through from
+ * here. `kind` is how the page's sections reach a machine: `machine` (Providers)
+ * reaches every online computer and This computer, with or without this
+ * repository; `account` (Passwords) This computer and the others it reaches
+ * through a copy of it; `routed` only those it reaches through a copy of it.
+ */
+export function reachableMachines(
+  machines: readonly ProjectMachine[],
+  kind: PickableSectionKind = "routed",
+): ProjectMachine[] {
+  return machines.filter((machine) => machineSectionAvailable(kind, settingsMachinePageFor(machine)));
 }
 
 /**
@@ -29,6 +38,7 @@ export function MachinePicker({
   onPick,
   variant = "inline",
   adeCloud = null,
+  kind = "routed",
 }: {
   machines: readonly ProjectMachine[];
   selectedId: string;
@@ -37,14 +47,19 @@ export function MachinePicker({
   /** `title`: sits in a page title ("Providers on [machine ▾]"), at its size. */
   variant?: "inline" | "title";
   adeCloud?: { selected: boolean; onPick: () => void } | null;
+  /** How the page reaches a machine (`reachableMachines`). */
+  kind?: PickableSectionKind;
 }) {
-  const reachable = useMemo(() => reachableMachines(machines), [machines]);
+  const reachable = useMemo(() => reachableMachines(machines, kind), [kind, machines]);
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(reachable, update.currentVersion || null);
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   if (reachable.length < (adeCloud ? 1 : 2)) return null;
-  const selected = reachable.find((machine) => machine.machineId === selectedId) ?? reachable[0]!;
+  // The trigger names the machine the page is about, reachable or not (the
+  // page then says why it can't show it). Naming another one here would put
+  // one computer in the title and act on a different one.
+  const selected = machines.find((machine) => machine.machineId === selectedId) ?? reachable[0]!;
   const nameOf = (machine: ProjectMachine) => (machine.isThisMachine ? (thisMachineName ?? machine.machineName) : machine.machineName);
   const cloudSelected = adeCloud?.selected === true;
   const triggerName = cloudSelected ? ADE_CLOUD_NAME : nameOf(selected);
@@ -76,7 +91,7 @@ export function MachinePicker({
         aria-label="Machine"
         className="ade-mpick-menu"
       >
-        {reachable.map((machine) => {
+        {(reachable.includes(selected) || cloudSelected ? reachable : [selected, ...reachable]).map((machine) => {
           const isSelected = !cloudSelected && machine.machineId === selected.machineId;
           return (
             <button

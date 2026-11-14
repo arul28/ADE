@@ -479,6 +479,8 @@ export type RemoteRuntimeCapabilities = {
   clientSendDedupe?: boolean;
   /** The chat launch kinds the brain runs (`CHAT_LAUNCH_KINDS`). Absent on an older brain. */
   chatLaunchKinds?: string[];
+  /** The brain answers its own settings with no project (`shared/machineScope.ts`). Absent on an older brain. */
+  machineScope?: boolean;
 };
 
 export type RemoteRuntimeHandoffStoragePreflightArgs = {

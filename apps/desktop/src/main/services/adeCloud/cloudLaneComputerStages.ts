@@ -250,7 +250,10 @@ export function createCloudLaneComputerStages(
           // Only the steps that ask something of the person reach the row.
           const row = stageOf(record, "join");
           if (!row || row.status !== "running") return;
-          row.detail = stage === "confirm_in_window" || stage === "approve_elsewhere" ? clip(message, 160) : null;
+          const detail = stage === "confirm_in_window" || stage === "approve_elsewhere" ? clip(message, 160) : null;
+          // The sign-in reports on every poll: only a change goes out.
+          if (row.detail === detail) return;
+          row.detail = detail;
           publish(record, { persist: false });
         },
       });

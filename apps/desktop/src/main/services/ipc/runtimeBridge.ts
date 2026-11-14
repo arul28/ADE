@@ -6,6 +6,7 @@ import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { thisMachineDisplayName } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
 import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
+import { isMachineScopeRootPath, MACHINE_SCOPE_ROOT_PATH } from "../../../shared/machineScope";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -432,6 +433,9 @@ function resolveAuthorizedLocalRuntimeRootPath(
   requestedRootPath: string | null | undefined,
   authorizeLocalRuntimeRoot?: RuntimeBridgeArgs["authorizeLocalRuntimeRoot"],
 ): string | null {
+  // This computer's own settings (`shared/machineScope.ts`): no project, so
+  // any window of this desktop may reach them.
+  if (isMachineScopeRootPath(requestedRootPath)) return MACHINE_SCOPE_ROOT_PATH;
   const roots = collectAuthorizedLocalRuntimeRoots(session);
   const requested = normalizeLocalRuntimeRootPath(requestedRootPath);
   if (requested) {
