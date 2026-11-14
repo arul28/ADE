@@ -74,12 +74,12 @@ import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import {
   canBulkDeleteSession,
   canBulkStopSession,
-  formatSessionActionError,
   formatToolTypeLabel,
   isChatToolType,
   isPtyContextInsertableToolType,
   primarySessionLabel,
 } from "../../lib/sessions";
+import { formatMachineActionError } from "../../lib/machineErrorText";
 import {
   addSessionBesideTarget,
   findGridSetForSession,
@@ -307,9 +307,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           options.onSuccess?.(result);
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
           console.error(`[TerminalsPage] ${options.actionName} failed`, { sessionId, err });
-          setSessionActionError(`${options.errorLabel} failed: ${message}`);
+          setSessionActionError(formatMachineActionError(err, options.errorLabel));
         });
     },
     [refreshWork, setSessionActionError],
@@ -766,7 +765,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               id: toastId,
               tone: "error",
               title: `Couldn't reopen that ${noun === "Chat" ? "chat" : "CLI session"}`,
-              message: formatSessionActionError(error, "Reopen"),
+              message: formatMachineActionError(error, "Reopen"),
               actions: [{ label: "Recently deleted", onClick: openRecentlyDeleted }],
             });
           });
@@ -844,7 +843,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         })
         .catch((err: unknown) => {
           console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Delete"));
+          setSessionActionError(formatMachineActionError(err, "Delete"));
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
@@ -891,7 +890,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         })
         .catch((err: unknown) => {
           console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Delete"));
+          setSessionActionError(formatMachineActionError(err, "Delete"));
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
@@ -939,7 +938,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           });
         } catch (err: unknown) {
           console.error("[TerminalsPage] stop-and-delete session failed", { sessionId: session.id, err });
-          setSessionActionError(formatSessionActionError(err, "Stop and delete"));
+          setSessionActionError(formatMachineActionError(err, "Stop and delete"));
         } finally {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         }
@@ -1019,8 +1018,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         return work.refresh({ showLoading: false, force: true });
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Stop failed: ${message}`);
+        setSessionActionError(formatMachineActionError(err, "Stop"));
       });
   }, [selectedSessions, setSessionActionError, work]);
 
@@ -1073,7 +1071,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("[TerminalsPage] bulk delete had failures", { failed, firstFailure });
           setSessionActionError(
             `${deletable.length - failed} of ${deletable.length} deleted. ${
-              formatSessionActionError(
+              formatMachineActionError(
                 firstFailure?.status === "rejected" ? firstFailure.reason : null,
                 "Delete",
               )
@@ -1082,7 +1080,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }
       })
       .catch((err: unknown) => {
-        setSessionActionError(formatSessionActionError(err, "Delete"));
+        setSessionActionError(formatMachineActionError(err, "Delete"));
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
@@ -1095,8 +1093,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     invalidateSessionListCache();
     void work.refresh({ showLoading: false, force: true })
       .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        setSessionActionError(`Refresh failed: ${message}`);
+        setSessionActionError(formatMachineActionError(error, "Refresh"));
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "orphan-refresh" ? null : current));
@@ -1148,7 +1145,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("[TerminalsPage] bulk stop-and-delete had failures", { failed, firstFailure });
           setSessionActionError(
             `${targets.length - failed} of ${targets.length} deleted. ${
-              formatSessionActionError(
+              formatMachineActionError(
                 firstFailure?.status === "rejected" ? firstFailure.reason : null,
                 "Stop and delete",
               )
@@ -1156,7 +1153,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           );
         }
       } catch (err: unknown) {
-        setSessionActionError(formatSessionActionError(err, "Stop and delete"));
+        setSessionActionError(formatMachineActionError(err, "Stop and delete"));
       } finally {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
@@ -1206,7 +1203,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const result = await request(pin);
         await finalizeCliResumeResult(session, pin, result);
       } catch (err) {
-        setSessionActionError(formatSessionActionError(err, errorLabel));
+        setSessionActionError(formatMachineActionError(err, errorLabel));
         throw err;
       }
     },

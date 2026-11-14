@@ -94,19 +94,11 @@ export function machinesForKind(
   kind: DeviceKind,
   machines: readonly ToolMachine[],
   chosen: ToolMachine | null,
-): { able: ToolMachine[]; unable: ToolMachine[] } {
-  const able: ToolMachine[] = [];
-  const unable: ToolMachine[] = [];
-  for (const machine of machines) {
-    const isChosen = Boolean(chosen && sameMachineKey(chosen.key, machine.key));
-    if (!deviceKindRunsOnPlatform(kind, machine.platform)) {
-      if (machine.isChat || machine.isViewer) unable.push(machine);
-      continue;
-    }
-    if (machine.online || isChosen) able.push(machine);
-  }
+): ToolMachine[] {
+  const able = machines.filter((machine) => deviceKindRunsOnPlatform(kind, machine.platform)
+    && (machine.online || Boolean(chosen && sameMachineKey(chosen.key, machine.key))));
   if (chosen && !chosen.isChat && !able.some((machine) => sameMachineKey(machine.key, chosen.key))) able.unshift(chosen);
-  return { able, unable };
+  return able;
 }
 
 /** The machine this chat's device of `kind` is on: its choice, else the chat's own machine. */

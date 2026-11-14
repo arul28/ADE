@@ -173,14 +173,17 @@ type RemoteDeviceProps = {
   use: RemoteWorkCopyUse;
   remotePin: OpenProjectBinding;
   renderDevice: () => ReactNode;
+  /** What to show while the copy has no device: the start screen, else a plain line. */
+  renderNone?: () => ReactNode;
 };
 
 /**
  * The other machine's device for this chat's work copy, once that copy has
- * one. Nothing is started or picked from here: with no device yet, it says so.
+ * one. Nothing is started from here: with no device yet it shows `renderNone`
+ * (the start screen, which asks the agent) or says so.
  * `renderDevice` draws the device through `remotePin` on the copy's lane.
  */
-function RemoteWorkDevice({ use, remotePin, renderDevice, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
+function RemoteWorkDevice({ use, remotePin, renderDevice, renderNone, kind }: RemoteDeviceProps & { kind: RemoteDeviceKind }) {
   const laneId = use.workCopyLaneId;
   const [state, setState] = useState<RemoteDeviceState>("loading");
   // Read again when the chat uses the copy anew: set by the subscription below.
@@ -219,7 +222,9 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, kind }: RemoteDevicePr
     if (stateRef.current !== "device") readAgainRef.current?.();
   }, [use.lastStartedAt]);
   if (state === "loading") return <WorkToolEmptyLine title={`Reading ${use.machineName}…`} />;
-  if (state === "none") return <WorkToolEmptyLine title={`No ${kind.noun} on ${use.machineName} for this chat right now`} />;
+  if (state === "none") {
+    return renderNone ? <>{renderNone()}</> : <WorkToolEmptyLine title={`No ${kind.noun} on ${use.machineName} for this chat right now`} />;
+  }
   if (typeof state === "object") {
     return (
       <div className="p-3">

@@ -28,6 +28,8 @@ export type ToolMachine = {
 
 export type ToolMachines = {
   machines: ToolMachine[];
+  /** The account's machine list: not read yet, read, or unreadable (signed out, offline). */
+  read: "pending" | "ok" | "failed";
 };
 
 let localKeyCache: string | null = null;
@@ -72,6 +74,7 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
   const { snapshot } = useRemoteConnectionSnapshot(active);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const [directory, setDirectory] = useState<AdeAccountMachine[] | null>(null);
+  const [read, setRead] = useState<ToolMachines["read"]>("pending");
   const [localKey, setLocalKey] = useState<string | null>(localKeyCache);
 
   useEffect(() => {
@@ -87,6 +90,7 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     ]).then(([result, key]) => {
       if (cancelled) return;
       setDirectory(result?.state === "ok" ? result.machines : null);
+      setRead(result?.state === "ok" ? "ok" : "failed");
       if (key) setLocalKey(key);
     });
     return () => { cancelled = true; };
@@ -153,8 +157,8 @@ export function useToolMachines(runtimePin: OpenProjectBinding | null, active: b
     out.sort((a, b) => rank(a) - rank(b));
     const chatMachine = out.find((machine) => machine.isChat) ?? null;
     if (chatMachine && !chatMachine.platform && hostPlatform) chatMachine.platform = hostPlatform;
-    return { machines: out };
+    return { machines: out, read };
     // `bindingKey` stands for the binding's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bindingKey, bindingName, directory, hostPlatform, localKey, snapshot, targetId]);
+  }, [bindingKey, bindingName, directory, hostPlatform, localKey, read, snapshot, targetId]);
 }
