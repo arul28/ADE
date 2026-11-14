@@ -300,6 +300,13 @@ export class AdeSyncClient {
   private ownProjectReassertedAtMs = 0;
   /** A request that came inside the 15 s gap, run when the gap ends with the catalog of that time. */
   private ownProjectReassertTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * This connection's catalog showed this browser's project open after a
+   * reassert. A move away on the same live connection is then another client
+   * that wants the brain on its project, not a restart (a restart closes the
+   * connection first and clears this).
+   */
+  private ownProjectHeldAfterReassert = false;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
   private readiness: AdeSyncClientStatus["readiness"] = "disconnected";
@@ -406,6 +413,7 @@ export class AdeSyncClient {
       void this.removeEnvironment(envId);
     });
     this.connection.on("close", ({ code, reason }) => {
+      this.ownProjectHeldAfterReassert = false;
       this.invalidateGeneration(new AdeSyncError(
         "Connection lost — outcome unknown. Check the current state before retrying.",
         "connection_lost_outcome_unknown",
@@ -430,9 +438,29 @@ export class AdeSyncClient {
       this.resolveProjectCatalog(payload, this.clientGeneration);
       this.emit("projectCatalog", payload);
       const openProject = payload.projects.find((project) => project.isOpen) ?? null;
-      // Another client moved this brain to another project. This browser
-      // keeps the project it shows and asks the brain for it again.
-      if (openProject && this.activeProjectId != null && openProject.id !== this.activeProjectId) {
+      if (openProject && openProject.id === this.activeProjectId && this.ownProjectReassertedAtMs > 0) {
+        this.ownProjectHeldAfterReassert = true;
+      }
+      // Moved away again after this browser asked for its project back, on the
+      // same connection: another client wants this brain on its project. This
+      // browser follows the brain, so the two do not keep moving it.
+      const contested = openProject != null
+        && this.activeProjectId != null
+        && openProject.id !== this.activeProjectId
+        && this.ownProjectHeldAfterReassert;
+      if (contested) {
+        this.ownProjectHeldAfterReassert = false;
+        this.ownProjectReassertedAtMs = 0;
+        if (this.ownProjectReassertTimer != null) {
+          clearTimeout(this.ownProjectReassertTimer);
+          this.ownProjectReassertTimer = null;
+        }
+        forwardSignalToSentry("web.sync_own_project_yielded", {}, "own_project_yielded", "info");
+      }
+      // Another client moved this brain to another project, or the brain
+      // restarted on its default one. This browser keeps the project it shows
+      // and asks the brain for it again.
+      if (openProject && this.activeProjectId != null && openProject.id !== this.activeProjectId && !contested) {
         this.ensureHostOnOwnProject(payload);
       } else if (openProject && openProject.id !== this.activeProjectId) {
         const previousProjectId = this.activeProjectId;
@@ -1887,8 +1915,10 @@ export class AdeSyncClient {
    * The brain hosts one project for every client, and this browser's project
    * is not it (a restart, or another client's switch): ask the brain to host
    * this browser's project again. The project in front never changes here.
-   * At most once per `OWN_PROJECT_REASSERT_MIN_MS`, so two clients that show
-   * different projects of one brain do not keep moving it.
+   * At most once per `OWN_PROJECT_REASSERT_MIN_MS`. Two clients that show
+   * different projects of one brain do not keep moving it: once the brain
+   * moves away again after a reassert, this browser follows it (see the
+   * `projectCatalog` handler).
    */
   private ensureHostOnOwnProject(catalog: SyncProjectCatalogPayload): void {
     const own = this.activeProjectId;

@@ -366,8 +366,10 @@ describe("WebMachineSessionManager", () => {
     const second = manager.connectEnvironment("machine-1");
     failBackgroundDial(new Error("The background dial failed."));
     await expect(background).rejects.toThrow("The background dial failed.");
-    // Both requests have passed admission before any dial finishes.
-    for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    // The receipt that both requests passed admission: the follow-up dial has
+    // started, and only one (a dial per request would make three), before any
+    // dial finishes.
+    await vi.waitFor(() => expect(dials()).toBe(2));
     openDials();
 
     await expect(Promise.all([first, second])).resolves.toEqual([

@@ -2754,7 +2754,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           // from its lane by the chat pane itself, while a CLI/shell session's
           // has to be handed to the PTY surface, so it goes through the page's
           // foreign-runtime handler (which also owns the not-open-binding
-          // fallback). The machine chip on the card is untouched either way.
+          // fallback).
           // A shift-range spans what is on screen. `renderedSessionIds` holds
           // only the tab's own machine and a foreign lane knows only its own
           // rows, so a range across lanes from another machine used to collapse
@@ -2765,7 +2765,9 @@ export const SessionListPane = React.memo(function SessionListPane({
           if (!foreignRow) {
             return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
           }
-          if (cloudResting) {
+          // Shift, Cmd and Ctrl only change the selection; only an open wakes.
+          const selectsOnly = event?.shiftKey === true || event?.metaKey === true || event?.ctrlKey === true;
+          if (cloudResting && !selectsOnly) {
             wakeRestingCloudMachine({
               machineId: foreignRow.machineId,
               machineName: foreignRow.machineName,

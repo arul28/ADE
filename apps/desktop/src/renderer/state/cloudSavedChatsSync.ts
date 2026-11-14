@@ -281,8 +281,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       }
     }
     // A lane computer of this project that is asleep or not connected here,
-    // with no saved chat: its lane still belongs in the list (dimmed, not
-    // connected). Opening it reaches the computer by its key, which wakes it.
+    // with no saved chat: its lane still belongs in the list, as a normal row.
+    // Opening it reaches the computer by its key, which wakes it.
     for (const computer of adeCloudLaneComputersNow()) {
       const machineKey = computer.machineKey;
       // A machine whose every saved chat now shows from another computer
@@ -316,7 +316,10 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         binding,
         online: false,
         lanes: [laneComputerLane(computer, previous?.lanes.find((lane) => lane.id === computer.laneId))],
-        sessions: previous?.sessions ?? [],
+        // This computer shows no saved chat of its own (they moved to another
+        // computer, or there were none): saved copies an earlier read left on
+        // its slice are stale and would show as duplicates.
+        sessions: (previous?.sessions ?? []).filter((session) => !session.cloudSavedCopy),
         error: null,
       });
     }

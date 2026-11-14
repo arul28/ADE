@@ -941,7 +941,7 @@ function SessionContextMenuPanel({
             type="button"
             className={MENU_ITEM_CLASS}
             data-testid="session-menu-open-parent"
-            onClick={() => { navigateToSpawnedChat(session.orchestrationParentSessionId, null); onClose(); }}
+            onClick={() => { navigateToSpawnedChat(session.orchestrationParentSessionId, null, binding); onClose(); }}
           >
             <MenuRowIcon icon={ArrowSquareOut} />
             <span className="min-w-0 truncate">Open {parentName}</span>

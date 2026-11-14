@@ -51,6 +51,7 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
+  REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE,
   REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
   REMOTE_TARGET_NOT_FOUND_MESSAGE,
   RemoteRuntimeConnectError,
@@ -184,8 +185,7 @@ const CLOUD_ASLEEP_RECHECK_MS = 5 * 60_000;
 /** After a link dropped and the computer still read as awake: when to ask again. */
 const CLOUD_ASLEEP_FOLLOW_UP_MS = [45_000, 90_000];
 
-const EXPLICIT_CONNECT_ONLY_MESSAGE =
-  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
+const EXPLICIT_CONNECT_ONLY_MESSAGE = REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE;
 
 export type AccountMachineReconciliationResult = {
   removedTargetIds: string[];
@@ -1063,7 +1063,12 @@ export class RemoteConnectionService {
     const explicit = options.explicit === true;
     const unattended = explicit && options.background === true;
     if (unattended) {
-      // Nobody asked: the person's Disconnect stands.
+      // Nobody asked: the person's Disconnect stands, and a build that dials
+      // only what the person connected here (`explicitConnectOnly`) does not
+      // take a machine on its own.
+      if (this.options.explicitConnectOnly && !this.explicitlyConnectedTargetIds.has(target.id)) {
+        throw new Error(EXPLICIT_CONNECT_ONLY_MESSAGE);
+      }
       if (this.isManuallyDisconnected(target)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
     } else if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
@@ -1132,7 +1137,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectState(connectedResult.target.id);
       this.hostReturnWatches.stop(connectedResult.target.id);
       this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
-      if (explicit) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
+      if (explicit && !unattended) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
       return connectedResult;
     } catch (error) {
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {

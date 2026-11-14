@@ -1,6 +1,6 @@
 import type { TerminalSessionSummary } from "../../shared/types";
 import type { CrossMachineMachineLanes } from "./appStore";
-import { adeCloudLaneComputerForMachine } from "./adeCloudLaneIndex";
+import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 
 /**
@@ -47,15 +47,19 @@ export function claimSessionsLiveFirst<E extends { sessions: readonly TerminalSe
  * rows, and opening one wakes the computer. Three signs, any one is enough:
  * a `cloud-saved:` slice, a saved chat copy, or a machine the ADE Cloud lane
  * index knows. A deleted computer (`computerGone`) is never resting.
+ *
+ * A React caller passes the index it subscribes to (`useAdeCloudLaneComputers`)
+ * so its memo runs again when the index fills after the entries.
  */
 export function machineIsCloudResting(
   entry: Pick<CrossMachineMachineLanes, "machineId" | "online" | "sessions" | "computerGone" | "binding">,
+  cloudLaneComputers?: readonly AdeCloudLaneComputer[],
 ): boolean {
   if (entry.online || entry.computerGone === true) return false;
   if (isSavedChatsMachineId(entry.machineId)) return true;
   if (entry.sessions.some((session) => session.cloudSavedCopy === true)) return true;
   const hostname = entry.binding?.kind === "remote" ? entry.binding.hostname ?? null : null;
-  return adeCloudLaneComputerForMachine({ hostname }) != null;
+  return adeCloudLaneComputerForMachine({ hostname }, cloudLaneComputers) != null;
 }
 
 /**
@@ -65,8 +69,9 @@ export function machineIsCloudResting(
  */
 export function machineShowsConnected(
   entry: Pick<CrossMachineMachineLanes, "machineId" | "online" | "sessions" | "computerGone" | "binding">,
+  cloudLaneComputers?: readonly AdeCloudLaneComputer[],
 ): boolean {
-  return entry.online || machineIsCloudResting(entry);
+  return entry.online || machineIsCloudResting(entry, cloudLaneComputers);
 }
 
 /**

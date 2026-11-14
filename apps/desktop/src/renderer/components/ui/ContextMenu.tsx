@@ -249,7 +249,7 @@ function moveMenuFocus(event: React.KeyboardEvent<HTMLDivElement>): void {
   const ownMenu = panel.getAttribute("role") === "menu" ? panel : null;
   if (event.target instanceof Element && event.target.closest("[role='menu']") !== ownMenu) return;
   const rows = Array.from(
-    panel.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([aria-disabled='true'])"),
+    panel.querySelectorAll<HTMLElement>("button:not([disabled]), [role='menuitem']:not([disabled]):not([aria-disabled='true'])"),
   ).filter((row) => row.offsetParent !== null && row.closest("[role='menu']") === ownMenu);
   if (rows.length === 0) return;
   event.preventDefault();

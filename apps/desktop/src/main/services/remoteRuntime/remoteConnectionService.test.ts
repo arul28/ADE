@@ -1362,6 +1362,36 @@ describe("RemoteConnectionService", () => {
     expect(pool.callActionForTarget).toHaveBeenCalledTimes(1);
   });
 
+  it("lets a development build dial in the background only a machine the person connected in it", async () => {
+    const saved = target("saved-elsewhere", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [saved]),
+      get: vi.fn((id: string) => (id === saved.id ? saved : null)),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...saved, ...patch })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(),
+      onHostStorageWait: vi.fn(() => () => {}),
+      onEntryConnected: vi.fn(() => () => {}),
+      onDialFailed: vi.fn(() => () => {}),
+      onEntryEvicted: vi.fn(() => () => {}),
+      ...poolConnectStateStubs(),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool, { explicitConnectOnly: true });
+
+    // A project tab joining every computer with a copy: the installed ADE on
+    // this computer keeps its connection.
+    await expect(service.connect(saved.id, { explicit: true, background: true }))
+      .rejects.toThrow(/only when you press Connect/i);
+    expect(pool.connect).not.toHaveBeenCalled();
+
+    await service.connect(saved.id, { explicit: true });
+    await service.connect(saved.id, { explicit: true, background: true });
+    expect(pool.connect).toHaveBeenLastCalledWith(saved, { bypassFailureBackoff: true, initiatedBy: "background" });
+  });
+
   it("does not publish connected after a manual disconnect during pending connect", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {

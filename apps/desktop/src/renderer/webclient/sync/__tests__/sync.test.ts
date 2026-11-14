@@ -3583,6 +3583,23 @@ describe("browser sync connection and client", () => {
       activeProjectId: "project-1",
     });
 
+    // The other client takes the brain back on the same link: two clients
+    // that want different projects must not keep moving it. This browser
+    // follows the brain instead of asking again.
+    script.sockets[1]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [{ ...projectOne, isOpen: true }, { ...projectTwo, isOpen: false }] },
+    });
+    await flush();
+    script.sockets[1]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [projectOne, projectTwo] },
+    });
+    await flush();
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(changes).toEqual([{ previousProjectId: "project-1", projectId: "project-2" }]);
+    expect(switchRequests).toHaveLength(1);
+
     client.dispose();
   });
 

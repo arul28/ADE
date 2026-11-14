@@ -17,6 +17,7 @@ import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAdeCloudMachineLabel } from "../cloudLane/useAdeCloudMachineLabel";
 import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
+import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 
 /**
  * A lane on another machine is selected here, never in the store's
@@ -105,9 +106,12 @@ export function useLanesPageMachines({
   // ADE Cloud computers that are only asleep: their lanes are listed as normal
   // rows, and opening one wakes the computer. Any other machine that is
   // offline after its short reconnect window is not listed at all.
+  const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
   const restingMachineKey = useMemo(
-    () => Object.values(crossMachineEntries ?? {}).filter(machineIsCloudResting).map((entry) => entry.machineId).sort().join("\u0000"),
-    [crossMachineEntries],
+    () => Object.values(crossMachineEntries ?? {})
+      .filter((entry) => machineIsCloudResting(entry, cloudLaneComputers))
+      .map((entry) => entry.machineId).sort().join("\u0000"),
+    [cloudLaneComputers, crossMachineEntries],
   );
   const restingMachineIds = useMemo(() => new Set(restingMachineKey ? restingMachineKey.split("\u0000") : []), [restingMachineKey]);
 

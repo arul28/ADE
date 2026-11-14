@@ -791,6 +791,12 @@ export function createFederatedWebAdapter({
         sleepStateAt: machine.sleepStateAt,
         lastSeenAt: machine.lastSeenAt,
       }) === "asleep";
+      // "Asleep" is also how an ordinary computer with a recent heartbeat
+      // reads, and this browser cannot tell the two apart here: a wake that
+      // fails still tries the saved connection once, and says why only when
+      // that fails too.
+      let woke = false;
+      let wakeFailure: string | null = null;
       if (asleep) {
         try {
           await wakeWebCloudMachine({
@@ -798,14 +804,22 @@ export function createFederatedWebAdapter({
             getClient: (targetId) => manager.getClient(targetId),
             machineKey: key,
           });
+          woke = true;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${message}` };
+          wakeFailure = error instanceof Error ? error.message : String(error);
         }
       }
       const connectOnce = () => manager.connectAccountMachine(machine, { activate: false, background });
       try {
-        const session = asleep ? await retryWhileWaking(connectOnce) : await connectOnce();
+        // A Disconnect pressed during the wait ends it: the next dial would be
+        // a foreground connect, which clears that Disconnect.
+        const disconnectedSince = () => {
+          const environment = manager.findAccountMachineEnvironment(machine);
+          return Boolean(environment && manager.getConnectionSnapshot().connections.some(
+            (entry) => entry.target.id === environment.envId && entry.reconnectBlocked === "disconnected",
+          ));
+        };
+        const session = woke ? await retryWhileWaking(connectOnce, disconnectedSince) : await connectOnce();
         return {
           ok: true,
           address: {
@@ -820,6 +834,9 @@ export function createFederatedWebAdapter({
         // Skipped on purpose (the person's Disconnect, or no room left in
         // this browser): nothing is wrong with the machine.
         if (error instanceof WebMachineConnectSkipped) return { ok: false, reason: "declined", machineKey: key, message };
+        if (wakeFailure) {
+          return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${wakeFailure}` };
+        }
         return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't reach ${machineDisplayName(machine)}: ${message}` };
       }
     },
@@ -833,8 +850,11 @@ export function createFederatedWebAdapter({
     },
   };
 
-  /** A woken cloud computer answers within a minute or two: dial again until then. */
-  const retryWhileWaking = async <T,>(attempt: () => Promise<T>): Promise<T> => {
+  /**
+   * A woken cloud computer answers within a minute or two: dial again until
+   * then, unless the person disconnected it meanwhile (`cancelled`).
+   */
+  const retryWhileWaking = async <T,>(attempt: () => Promise<T>, cancelled: () => boolean): Promise<T> => {
     const deadline = Date.now() + WOKEN_CONNECT_WAIT_MS;
     for (;;) {
       try {
@@ -842,6 +862,7 @@ export function createFederatedWebAdapter({
       } catch (error) {
         if (error instanceof WebMachineConnectSkipped || Date.now() >= deadline) throw error;
         await new Promise((resolve) => setTimeout(resolve, WOKEN_CONNECT_RETRY_MS));
+        if (cancelled()) throw new WebMachineConnectSkipped("user_disconnected");
       }
     }
   };

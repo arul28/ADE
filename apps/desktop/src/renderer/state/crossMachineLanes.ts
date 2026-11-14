@@ -77,6 +77,7 @@ import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStor
 import { isAdeAvailable } from "../lib/adeAvailability";
 import { subscribeAdeCloudAccess } from "./cloudAccess";
 import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from "./cloudRestingRows";
+import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 import { useStableBinding } from "./laneMachineRouting";
 import { isSavedChatsMachineId } from "./cloudSavedChats";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
@@ -786,6 +787,8 @@ export function buildCrossMachineLaneRows(input: {
    * would render one row and open another. Omit it to get the raw shape.
    */
   localSessionIds?: ReadonlySet<string>;
+  /** The ADE Cloud lane index the caller follows; decides which offline machines are only asleep. */
+  cloudLaneComputers?: readonly AdeCloudLaneComputer[];
 }): CrossMachineLaneRow[] {
   const rows: CrossMachineLaneRow[] = [];
   const activeBinding = input.activeBinding ?? null;
@@ -852,7 +855,7 @@ export function buildCrossMachineLaneRows(input: {
     else sessionsByLaneId.set(laneId, [session]);
   }
   for (const entry of entries) {
-    const cloudResting = machineIsCloudResting(entry);
+    const cloudResting = machineIsCloudResting(entry, input.cloudLaneComputers);
     const sessionsByLaneId = sessionsByMachineId.get(entry.machineId);
     for (const lane of entry.lanes) {
       rows.push({
@@ -2751,6 +2754,7 @@ export function useCrossMachineLaneUnion(
   const projectBinding = useAppStore((state) => state.projectBinding);
   const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   useCrossMachineLaneSync(active);
+  const { computers: cloudLaneComputers } = useAdeCloudLaneComputers();
 
   const rows = useMemo(
     () => buildCrossMachineLaneRows({
@@ -2758,8 +2762,9 @@ export function useCrossMachineLaneUnion(
       machines,
       activeBinding: projectBinding,
       localSessionIds,
+      cloudLaneComputers,
     }),
-    [localLanes, localSessionIds, machines, projectBinding],
+    [cloudLaneComputers, localLanes, localSessionIds, machines, projectBinding],
   );
   return useMemo(() => {
     // Two different questions, and conflating them is what hid every badge when

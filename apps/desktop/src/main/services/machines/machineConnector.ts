@@ -21,6 +21,7 @@
 import { getErrorMessage } from "../shared/utils";
 import { isCloudInstanceId } from "../../../shared/adeCloud";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE } from "../../../shared/types/remoteRuntime";
 import {
   sameMachineKey,
   type MachineAddress,
@@ -194,6 +195,11 @@ export function createMachineConnector(deps: MachineConnectorDeps): MachineConne
     try {
       await deps.connect(address.targetId, { background });
     } catch (error) {
+      // A development ADE dials only machines the person connected in it: a
+      // background connect it refuses left the machine alone on purpose.
+      if (background && getErrorMessage(error).includes(REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE)) {
+        return failure(key, "declined", `${address.name} stays disconnected until you connect it.`);
+      }
       deps.logger?.warn?.("machines.connect_failed", { targetId: address.targetId, error: getErrorMessage(error) });
       return failure(key, "unreachable", `ADE couldn't reach ${address.name}: ${reasonText(error)}.`);
     }

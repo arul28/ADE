@@ -97,9 +97,11 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // the computer reads "starting" while any wake runs. Either is this chat's
   // wake too, so the view shows the progress.
   const listWaking = useCloudMachineWakeInFlight(box?.machineKey ?? null);
-  const waking = (targetId != null && wakingTargetId === targetId)
-    || (resting && (listWaking || box?.state === "starting"));
   const error = failure && failure.targetId === targetId ? failure.message : null;
+  // A failed wake from here wins over the inferred progress: a computer stuck
+  // in "starting" must still show the failure and its Try again.
+  const waking = (targetId != null && wakingTargetId === targetId)
+    || (resting && error == null && (listWaking || box?.state === "starting"));
   const machineName = scope.machineName;
   // `scope.online` follows the connection snapshot: main pushes
   // `onConnectionSnapshotChanged` once the connect succeeds, and

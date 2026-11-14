@@ -327,6 +327,9 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             fallback={<LaneIcon size={12} />}
           />
           <span className="min-w-0 truncate">{lane.name}</span>
+          {/* Read out with the row's name, so a screen reader tells lanes of
+              the same name apart; on screen the hover card names it. */}
+          {machine ? <span className="sr-only">, on {machine.machineName}</span> : null}
         </span>
         {share && !deleting ? <LaneShareMark laneId={share.laneId} laneName={lane.name} pin={share.pin} /> : null}
         {deleting || creating ? (
