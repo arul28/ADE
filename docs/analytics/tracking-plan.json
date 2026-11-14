@@ -294,7 +294,8 @@
       "source": "desktop_policy",
       "purpose": "An installed update did not take effect after restart.",
       "properties": [
-        "attempt"
+        "attempt",
+        "handoff_step"
       ]
     },
     {

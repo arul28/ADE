@@ -29,6 +29,7 @@ import type { ChildProcess } from "node:child_process";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage, sleep } from "../shared/utils";
 import { runAdb, runAdbText, spawnAdb } from "./adb";
+import { markExpected } from "../../../shared/expectedError";
 import { createScrcpyControlWriter, type ScrcpyControlWriter } from "./scrcpyControl";
 import {
   createScrcpyVideoDemuxer,
@@ -394,7 +395,13 @@ export async function startScrcpySession(
       attempt = await connectForFirstBytes(localPort);
       if (attempt) break;
       if (Date.now() > deadline) {
-        throw new ScrcpySessionError(`The scrcpy server did not accept a connection within ${connectTimeoutMs} ms.`, [...logTail]);
+        // The device side never opened the socket (a slow or busy device, an
+        // adb forward the device dropped): the device's state, and the panel
+        // offers a retry. A server that exits early stays reported above.
+        throw markExpected(
+          new ScrcpySessionError(`The scrcpy server did not accept a connection within ${connectTimeoutMs} ms.`, [...logTail]),
+          "environment",
+        );
       }
       await sleep(CONNECT_RETRY_MS);
     }

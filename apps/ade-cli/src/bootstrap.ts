@@ -3389,6 +3389,7 @@ export async function createAdeRuntime(args: {
         agentChatService,
         jevService,
         isEnabled: () => jevEnabled(projectConfigService.get().effective.ai?.chat, "settle_nudge"),
+        logger,
       });
       settleNudgeSweep.start();
       teardown.push(() => settleNudgeSweep.dispose());

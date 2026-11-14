@@ -402,6 +402,32 @@ function describeIdleLimit(ms: number): string {
   return `${Math.round(ms / 1000)} seconds`;
 }
 
+/** The git subcommand, with its verb for the two-word ones (`worktree add`), for a message. */
+function gitSubcommandLabel(args: string[]): string {
+  const words: string[] = [];
+  for (let index = 0; index < args.length && words.length < 2; index += 1) {
+    const arg = args[index] ?? "";
+    // `-c key=value` and `-C <path>` come before the subcommand.
+    if (arg === "-c" || arg === "-C") index += 1;
+    else if (!arg.startsWith("-")) words.push(arg);
+  }
+  const [first, second] = words;
+  if (!first) return "";
+  return ["worktree", "submodule", "lfs", "stash", "remote"].includes(first) && second ? `${first} ${second}` : first;
+}
+
+/**
+ * Which git stalled and where it stopped: the subcommand, and its last progress
+ * line ("Updating files: 45% (100/220)", "Filtering content: …"), which tells a
+ * slow disk from a filter waiting on the network.
+ */
+function describeStall(args: string[], stderr: string, idleTimeoutMs: number): string {
+  const label = gitSubcommandLabel(args);
+  const lastLine = stderr.split(/[\r\n]/).map((line) => line.trim()).filter(Boolean).pop()?.slice(0, 160) ?? "";
+  return `Git${label ? ` ${label}` : ""} made no progress for ${describeIdleLimit(idleTimeoutMs)}, so ADE stopped it.`
+    + (lastLine ? ` Its last output was: ${lastLine}` : "");
+}
+
 async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxOutputBytes = Number.isFinite(opts.maxOutputBytes)
@@ -479,7 +505,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
       else if (reason === "stall") reasonFields = { timedOut: true, stalled: true };
       let fallbackStderr = "git was cancelled";
       if (reason === "timeout") fallbackStderr = "git timed out";
-      else if (reason === "stall") fallbackStderr = `Git made no progress for ${describeIdleLimit(opts.idleTimeoutMs ?? 0)}, so ADE stopped it.`;
+      else if (reason === "stall") fallbackStderr = describeStall(args, stderr, opts.idleTimeoutMs ?? 0);
       finish({
         exitCode: reason === "abort" ? 130 : 124,
         stdout,

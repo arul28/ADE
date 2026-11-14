@@ -41,6 +41,7 @@ import {
   applyBrowserMockUpdateAndFallback,
   browserMockBrainDownScenario,
   browserMockRecoveryScenario,
+  browserMockReportScenario,
   createBrowserMockRecoveryBridges,
   showBrowserMockBrainDownPending,
   showBrowserMockRecoveryScreen,
@@ -10767,6 +10768,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           (error) => useAppStore.setState({ projectTransitionError: error }),
           MOCK_PROJECT.rootPath,
         );
+      });
+    }, 2_500);
+  }
+  if (browserMockReportScenario()) {
+    // `?adeReport=`: an error toast whose "Report…" opens the report dialog.
+    window.setTimeout(() => {
+      void import("./components/app/toast/toastStore").then(({ showToast }) => {
+        showToast({
+          tone: "error",
+          title: "Couldn't push the lane",
+          message: "Check your connection, then try again.",
+          error: "fatal: unable to access 'https://github.com/acme/web.git/': Could not resolve host: github.com",
+          durationMs: 0,
+        });
       });
     }, 2_500);
   }

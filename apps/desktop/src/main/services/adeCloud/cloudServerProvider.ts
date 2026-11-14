@@ -29,6 +29,7 @@ import {
   type CloudUpdateCheck,
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
+import { markExpected } from "../../../shared/expectedError";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -129,7 +130,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
-      : new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+      : markExpected(new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0), "network");
     // The caller's signal (a cancelled create) stops the request too.
     const onCallerAbort = () => controller.abort();
     if (init.signal?.aborted) controller.abort();
@@ -155,7 +156,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         });
       } catch (error) {
         if (controller.signal.aborted) throw timedOut();
-        throw new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0);
+        // Offline, DNS, a dropped connection: the person's network, not a defect.
+        throw markExpected(
+          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          "network",
+        );
       }
       body = response.status === 204
         ? null

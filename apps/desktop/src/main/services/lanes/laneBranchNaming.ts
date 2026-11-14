@@ -631,7 +631,9 @@ export function createLaneBranchNaming(deps: {
     async setNewLaneDefaults(args: { defaults: Partial<NewLaneDefaults> }): Promise<NewLaneDefaultsSnapshot> {
       const newLaneSettings = deps.getNewLaneSettings();
       if (!newLaneSettings) throw new Error("New-lane settings aren't available on this computer.");
-      const patch = args.defaults ?? {};
+      // Caller input over RPC: a call with no arguments at all changes nothing
+      // instead of throwing a TypeError (ADE-BRAIN-6X).
+      const patch = args?.defaults ?? {};
       const next: NewLaneDefaults = { ...getNewLaneDefaultsForCreate() };
       if (patch.start !== undefined) {
         const start = normalizeLaneStart(patch.start);

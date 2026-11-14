@@ -3175,12 +3175,21 @@ function changedOnDiskError(): Error {
   );
 }
 
-function invalidConfigError(validation: ProjectConfigValidationResult): Error {
+/**
+ * A config that breaks a rule. `onDisk` is the read path: the file itself is
+ * invalid (a hand edit, an agent's write, or a file an older ADE accepted),
+ * and the message names the field, so the person can fix it. That is an
+ * answer about their config, not a defect, so it is marked `user`. A save
+ * stays unmarked: a candidate the Settings form built and the rules refuse
+ * is a defect in the form. With no issue to name, the validator itself
+ * failed, and that stays reported too.
+ */
+function invalidConfigError(validation: ProjectConfigValidationResult, options: { onDisk?: boolean } = {}): Error {
   const first = validation.issues[0];
   const msg = first ? `${first.path}: ${first.message}` : "Unknown config validation failure";
   const err = new Error(`ADE_CONFIG_INVALID: ${msg}`);
   (err as Error & { code?: string }).code = "ADE_CONFIG_INVALID";
-  return err;
+  return first && options.onDisk ? markExpected(err, "user") : err;
 }
 
 export function createProjectConfigService({
@@ -3904,7 +3913,7 @@ export function createProjectConfigService({
       lastSeenSharedHash = snapshot.trust.sharedHash;
       lastSeenLocalHash = snapshot.trust.localHash;
       if (!snapshot.validation.ok) {
-        throw invalidConfigError(snapshot.validation);
+        throw invalidConfigError(snapshot.validation, { onDisk: true });
       }
       return snapshot.effective;
     },

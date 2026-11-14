@@ -244,6 +244,7 @@ import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
 import { AgentChatApiProvider, useChatPaneScope, type AgentChatApi, type ChatPaneScope } from "./agentChatApi";
+import { subscribeWhenChatApiReady } from "./chatEventSubscription";
 import {
   markCloudWakeForSend,
   savedChatAwareAgentChatApi,
@@ -10384,7 +10385,10 @@ export function AgentChatPane({
     return () => {
       retainChatSession(selectedSessionId, {
         subscribe: (listener) => (retainedBinding
-          ? agentChatApiRef.current.onEvent(listener, retainedBinding, { forcePinned: true })
+          ? subscribeWhenChatApiReady(
+              () => agentChatApiRef.current ?? savedChatAwareAgentChatApi(window.ade?.agentChat),
+              (api) => api.onEvent(listener, retainedBinding, { forcePinned: true }),
+            )
           : () => undefined),
       });
     };
@@ -10874,8 +10878,16 @@ export function AgentChatPane({
     type ChatEventListener = Parameters<typeof agentChatApiRef.current.onEvent>[0];
     const subscribe: ((listener: ChatEventListener) => () => void) | null = chatScope
       ? (listener) => chatScope.agentChat.onEvent(listener)
+      // ADE Web can render the pane before its bridge has the chat API
+      // (ADE-WEB-7): the feed attaches when the API appears, rather than a
+      // TypeError that takes the pane down. The ref is read again on each
+      // look, with `window.ade` as the fallback for a pane that has not
+      // rendered since.
       : chatRuntimePin
-        ? (listener) => agentChatApiRef.current.onEvent(listener, chatRuntimePin)
+        ? (listener) => subscribeWhenChatApiReady(
+            () => agentChatApiRef.current ?? savedChatAwareAgentChatApi(window.ade?.agentChat),
+            (api) => api.onEvent(listener, chatRuntimePin),
+          )
         : null;
     if (!subscribe) return undefined;
     const unsubscribe = subscribe((envelope) => {

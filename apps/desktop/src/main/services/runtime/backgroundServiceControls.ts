@@ -36,6 +36,12 @@ export type BackgroundServiceControlsDeps = {
   isRepairing: () => boolean;
   isShuttingDown: () => boolean;
   shutdown: (reason: string) => void;
+  /**
+   * Says (true) that the coming service stop is for good, so the brain does
+   * not keep its work for a later start; false takes that back when the stop
+   * failed (`noteBrainStopIntent`).
+   */
+  noteStopForGood?: (stopping: boolean) => void;
 };
 
 function parseStopRequest(raw: unknown): StopBackgroundServiceRequest | null {
@@ -125,8 +131,12 @@ export function registerBackgroundServiceControls(deps: BackgroundServiceControl
     try {
       // An install already running could put the service back after the stop.
       await deps.pool.waitForServiceInstall();
+      // The person confirmed these agents stop: the next start must not
+      // continue them on its own.
+      deps.noteStopForGood?.(true);
       await deps.pool.uninstallServiceBestEffort();
     } catch (error) {
+      deps.noteStopForGood?.(false);
       deps.pool.endUpdateWindow(`${STOP_REASON}_failed`);
       recordStop("failed");
       return { ok: false, failed: true, message: error instanceof Error ? error.message : String(error) };

@@ -226,6 +226,7 @@ export class ProjectScopeRegistry {
    */
   private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
+  private readonly syncScopeReadyListeners = new Set<() => void>();
   private readonly reportUnknownProjectIdOnce = createReportOnce();
   private readonly logUnknownPeerProjectIdOnce = createReportOnce();
   private syncHostProjectId: ProjectId | null = null;
@@ -439,7 +440,7 @@ export class ProjectScopeRegistry {
    * adds nothing. A project the user removed is not a failure: a window or
    * phone that still holds its id is told so and moves on.
    */
-  private reportUnknownProjectId(projectId: ProjectId): void {
+  private reportUnknownProjectId(projectId: ProjectId, requestedBy: string | undefined): void {
     if (!this.reportUnknownProjectIdOnce(projectId)) return;
     try {
       if (wasRemovedFromRegistry(this.projectRegistry.path, projectId)) return;
@@ -449,6 +450,8 @@ export class ProjectScopeRegistry {
         tags: { [DIAGNOSTIC_ATTACH_TAG]: PROJECT_REGISTRY_ATTACH },
         extra: {
           projectId,
+          // The RPC method that carried the id, when the caller named it.
+          requestedBy: requestedBy ?? null,
           // This machine opened the project's database before, so the
           // project was registered here once and has since gone from the list.
           openedHereBefore: this.projectRegistry.readDatabaseIdentity(projectId) !== null,
@@ -469,6 +472,30 @@ export class ProjectScopeRegistry {
     return () => {
       this.disposeListeners.delete(listener);
     };
+  }
+
+  /**
+   * A scope that can answer sync calls appeared: a project finished opening,
+   * or a project became the sync host. Called synchronously; a listener that
+   * throws is logged and never fails the open or the switch.
+   */
+  onSyncScopeReady(listener: () => void): () => void {
+    this.syncScopeReadyListeners.add(listener);
+    return () => {
+      this.syncScopeReadyListeners.delete(listener);
+    };
+  }
+
+  private notifySyncScopeReady(): void {
+    for (const listener of this.syncScopeReadyListeners) {
+      try {
+        listener();
+      } catch (error) {
+        this.options.logger?.warn("project_scope.sync_scope_ready_listener_failed", {
+          error: error instanceof Error ? error.name : "unknown",
+        });
+      }
+    }
   }
 
   /**
@@ -500,7 +527,7 @@ export class ProjectScopeRegistry {
 
   async get(
     projectId: ProjectId,
-    options: { touch?: boolean } = {},
+    options: { touch?: boolean; requestedBy?: string } = {},
   ): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;
@@ -525,7 +552,7 @@ export class ProjectScopeRegistry {
       // project it now names instead of being told the project is unknown.
       const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
       if (movedTo && movedTo !== projectId) return await this.get(movedTo, options);
-      this.reportUnknownProjectId(projectId);
+      this.reportUnknownProjectId(projectId, options.requestedBy);
       throw new Error(`Unknown projectId: ${projectId}`);
     }
 
@@ -648,6 +675,7 @@ export class ProjectScopeRegistry {
         this.failedScopes.delete(projectId);
         // It opened, so whatever froze it before is not freezing it now.
         this.options.openStrikes?.clear(projectId, "opened");
+        this.notifySyncScopeReady();
         try {
           this.options.onProjectOpened?.(record.rootPath);
         } catch (hookError) {
@@ -920,8 +948,15 @@ export class ProjectScopeRegistry {
     return record ? this.switchSyncHost(record.projectId, { purpose: "serve" }) : null;
   }
 
-  /** Return a cached sync scope without booting it or running host activation. */
-  async resolveBootedSyncScope(): Promise<ProjectScope | null> {
+  /**
+   * A sync scope that has already finished opening, for a sync read. It never
+   * boots a scope, never runs host activation and never waits on a scope that
+   * is still opening (a read that waited answered late, or with nothing when
+   * that open failed while another scope was ready). The known sync host's
+   * ready scope wins; then the most recently opened ready scope; then any
+   * other ready scope. Null when none is ready.
+   */
+  resolveReadySyncScope(): ProjectScope | null {
     if (!this.options.syncRuntime?.enabled) return null;
     const preferredIds = [
       this.syncHostProjectId,
@@ -932,11 +967,12 @@ export class ProjectScopeRegistry {
           return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
         })
         .map((record) => record.projectId),
+      ...this.readyScopes.keys(),
     ];
     for (const projectId of new Set(preferredIds)) {
       if (!projectId) continue;
-      const cached = this.getIfBooted(projectId);
-      if (cached) return await cached;
+      const ready = this.getIfReady(projectId);
+      if (ready) return ready;
     }
     return null;
   }
@@ -1145,6 +1181,7 @@ export class ProjectScopeRegistry {
       // Publish authority only after the target has fully activated. Until
       // this assignment every failure/timeout still resolves to the old host.
       this.syncHostProjectId = projectId;
+      this.notifySyncScopeReady();
       return scope;
     } catch (error) {
       await rollback();
@@ -1163,6 +1200,11 @@ export class ProjectScopeRegistry {
   ): void {
     if (!pending || this.scopes.get(projectId) !== pending) return;
     this.scopes.delete(projectId);
+    // A scope that finished its boot is in `readyScopes` too (only the attempt
+    // that owns the cache entry is ever put there, so this entry is this
+    // scope's). Left there, `resolveReadySyncScope` would hand out a runtime
+    // that is being torn down.
+    this.readyScopes.delete(projectId);
     // The scope this project failed to boot is gone, so the phases recorded
     // against it describe a host that no longer exists. Same reason `dispose`
     // clears them.

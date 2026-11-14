@@ -33,7 +33,7 @@ private let syncLaneIdListKeys: Set<String> = ["laneIds"]
 /// machines: no host can serve that.
 func syncRemoteLaneTarget(args: [String: Any]) throws -> SyncRemoteLaneTarget? {
   var machineKey: String?
-  var stripped = args
+  var replacements: [String: Any] = [:]
   func take(_ value: String) throws -> String {
     guard let parsed = workParseRemoteLaneId(value) else { return value }
     if let machineKey, machineKey != parsed.machineKey {
@@ -42,14 +42,25 @@ func syncRemoteLaneTarget(args: [String: Any]) throws -> SyncRemoteLaneTarget? {
     machineKey = parsed.machineKey
     return parsed.laneId
   }
-  for (key, value) in args {
-    if syncLaneIdKeys.contains(key), let text = value as? String {
-      stripped[key] = try take(text)
-    } else if syncLaneIdListKeys.contains(key), let list = value as? [String] {
-      stripped[key] = try list.map(take)
+  // Looks up the few lane-id keys, never walks the args: every command passes
+  // through here on the main thread, and a command can carry a whole file or
+  // a long list. Walking and copying those held the main thread for seconds
+  // (ADE-IOS-2C). The args are copied only when a lane id loses its tag.
+  for key in syncLaneIdKeys {
+    if let text = args[key] as? String {
+      let plain = try take(text)
+      if plain != text { replacements[key] = plain }
+    }
+  }
+  for key in syncLaneIdListKeys {
+    if let list = args[key] as? [String] {
+      let plain = try list.map(take)
+      if plain != list { replacements[key] = plain }
     }
   }
   guard let machineKey else { return nil }
+  var stripped = args
+  for (key, value) in replacements { stripped[key] = value }
   return SyncRemoteLaneTarget(machineKey: machineKey, args: stripped)
 }
 

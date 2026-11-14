@@ -494,6 +494,15 @@ the roster all read that phase.
   Codex turn, and the Jev screen check only runs after a Claude turn ends on
   the quiet fallback. Before the first report (CLI startup, or a Claude whose
   hooks never arrive) the heuristics stay in charge.
+- **Planned stop.** `disposeAll({ reopenAfterRestart: true })` (an update, a
+  reboot, a quit) records a tracked CLI as mid-turn when the CLI is owed a
+  continue. The CLI's exact turn signal decides first: Claude hooks or Codex
+  OSC 7501 that report a working turn. A Claude CLI with live background agents
+  is owed one too, because the stop kills them. An agent counts for 2 h after
+  its start (`CLI_SUBAGENT_LIVE_MAX_AGE_MS`), and an older agent no longer
+  counts. Only Claude reports background agents. A CLI with no exact signal
+  uses the screen guess: still printing and not at its prompt. A pending
+  permission prompt is never mid-turn.
 - **Needs you.** Entering `needs-input` raises the row's hand with the CLI's
   own words (`cli_prompt` source, "Claude wants permission to use Bash"). It
   goes through `onSessionAttentionRequested`, which is the same path, push
@@ -650,7 +659,12 @@ writing when:
    session whose PTY is missing.
 
 In that case the service calls `reattachChatCli({ chatSessionId })`
-and writes to the freshly attached PTY. Any other "no live PTY"
+and writes to the freshly attached PTY. A write to an SDK chat id is
+refused. A chat that ADE drives through an SDK or protocol has the marker
+`chat:<provider>[:<id>]` as its resume command and no CLI metadata.
+`reattachChatCli` refuses it with an expected user error and logs
+`pty.reattach_chat_cli_refused` with `reason: "sdk_chat"`. It never runs the
+marker as a shell command, so the chat row keeps its status. Any other "no live PTY"
 case still throws — the auto-reattach is intentionally scoped to
 chat CLIs so an active App Control terminal, a shell, or a non-chat
 agent CLI doesn't silently resurrect after the user stopped it.

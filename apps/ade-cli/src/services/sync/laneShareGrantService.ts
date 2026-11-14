@@ -6,6 +6,7 @@ import {
 } from "../../../../desktop/src/shared/accountDirectory";
 import { laneShareDisplayName } from "../../../../desktop/src/shared/laneShareRights";
 import type { LaneShareGuestGrant } from "./laneShareGuestPolicy";
+import { carryExpected, markExpected } from "../../../../desktop/src/shared/expectedError";
 
 /**
  * The lane-share grants of THIS machine, read from the account directory
@@ -301,7 +302,7 @@ export async function sendLaneShareDirectoryRequest(
       }
     } catch (error) {
       if (error instanceof LaneShareGrantError) throw error;
-      throw new LaneShareGrantError("unavailable", "The account directory could not be reached.");
+      throw markExpected(new LaneShareGrantError("unavailable", "The account directory could not be reached."), "network");
     }
     let body: unknown;
     try {
@@ -383,7 +384,9 @@ export function createLaneShareGrantService(options: {
   };
 
   const asGrantError = (error: unknown, fallback: string): LaneShareGrantError => {
-    const failure = error instanceof LaneShareGrantError ? error : new LaneShareGrantError("unavailable", fallback);
+    const failure = error instanceof LaneShareGrantError
+      ? error
+      : carryExpected(error, new LaneShareGrantError("unavailable", fallback));
     // A machine the directory no longer lists for this account has no grants: never reuse the old list.
     if (failure.code === "unknown_machine") last = null;
     return failure;

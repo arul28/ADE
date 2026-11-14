@@ -27,6 +27,7 @@
  * against the daily limit.
  */
 
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { randomUUID } from "node:crypto";
 import {
   ADE_CLOUD_APPROVAL_METADATA_KEY,
@@ -727,7 +728,7 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       // then the account (hours, computers, disk), with the sentences
       // `cloud.status` and the composer show.
       const problem = cloudLaneLaunchStartRefusal({ args: launch, originUrl: startArgs.originUrl })?.message ?? null;
-      if (problem) throw new Error(problem);
+      if (problem) throw new AdeExpectedError(problem, "user");
       const account = await newComputerCheck();
       const tier = cloudTier(cloudCatalogOf(account), sizeId);
       if (!tier) throw new Error("ADE Cloud doesn't offer that size right now. Pick another one.");

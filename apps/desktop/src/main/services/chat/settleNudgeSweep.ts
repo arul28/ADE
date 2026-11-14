@@ -6,6 +6,7 @@ import { isChatToolType } from "../../../shared/sessionSpawnNesting";
 import type { createSessionService } from "../sessions/sessionService";
 import type { AgentChatService } from "./agentChatService";
 import { clipHead, clipTail } from "../shared/utils";
+import type { Logger } from "../logging/logger";
 
 export const SETTLE_NUDGE_IDLE_THRESHOLD_MS = 3 * 60 * 60 * 1000;
 const SETTLE_NUDGE_SWEEP_INTERVAL_MS = 30 * 60 * 1000;
@@ -22,6 +23,7 @@ export type SettleNudgeSweepDeps = {
   jevService: Pick<JevService, "decide" | "status">;
   /** Settings › Smart decisions: the master switch and "Settle finished chats". Read per sweep. */
   isEnabled: () => boolean;
+  logger?: Pick<Logger, "warn">;
 };
 
 type CompletedTurn = {
@@ -122,6 +124,7 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
   let interval: ReturnType<typeof setInterval> | null = null;
   let settingWatch: ReturnType<typeof setInterval> | null = null;
   let lastEnabled: boolean | null = null;
+  let settingReadFailing = false;
   let running = false;
   let disposed = false;
 
@@ -258,7 +261,23 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
       }, SETTLE_NUDGE_START_DELAY_MS);
       interval = setInterval(() => void sweep(), SETTLE_NUDGE_SWEEP_INTERVAL_MS);
       settingWatch = setInterval(() => {
-        const enabled = deps.isEnabled();
+        let enabled: boolean;
+        try {
+          // A synchronous config read: a project folder that stops answering
+          // throws a storage wait here, and a throw from a timer is uncaught.
+          enabled = deps.isEnabled();
+          settingReadFailing = false;
+        } catch (error) {
+          // Skip this check; the next minute reads the setting again. Logged
+          // once per run of failures, so a stuck folder leaves one line.
+          if (!settingReadFailing) {
+            settingReadFailing = true;
+            deps.logger?.warn("settle_nudge.setting_read_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          return;
+        }
         if (lastEnabled != null && enabled !== lastEnabled) {
           // A sweep already running would skip this one: try again next minute.
           if (running) return;

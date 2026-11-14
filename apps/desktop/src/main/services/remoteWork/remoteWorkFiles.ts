@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, notADirectoryPath, resolvePathWithinRoot, secureMkdirWithinRoot } from "../shared/utils";
+import { markExpected } from "../../../shared/expectedError";
 import {
   REMOTE_WORK_FILE_CHUNK_BYTES,
   REMOTE_WORK_FILE_MAX_BYTES,
@@ -97,8 +98,13 @@ function realRootOf(copyRoot: string): string {
   }
 }
 
+// The path came from the person or the agent driving the chat, so the
+// refusal is their answer, not a fault.
 const leadsOutside = (shown: string): RemoteWorkFileError =>
-  new RemoteWorkFileError("invalid_path", `${shown} leads outside your code there (a link); it was refused.`);
+  markExpected(
+    new RemoteWorkFileError("invalid_path", `${shown} leads outside your code there (a link); it was refused.`),
+    "user",
+  );
 
 /**
  * The file `requested` names in the copy, for reading: it must exist, be a
