@@ -472,6 +472,8 @@ export class WebMachineSessionManager {
         this.emit();
         return existing;
       }
+      // The person may have pressed Disconnect while this waited for its turn.
+      if (background && this.userDisconnected.has(targetId)) throw new WebMachineConnectSkipped("user_disconnected");
       if (background && !existing?.client && !this.hasRoom()) throw new WebMachineConnectSkipped("no_room");
       await this.makeRoom(targetId);
       const admitted = existing ?? this.createSession(environment);
@@ -651,8 +653,9 @@ export class WebMachineSessionManager {
    * repository tab that opens later does not connect it again on its own.
    */
   async disconnectByUser(targetId: string): Promise<void> {
-    await this.park(targetId);
+    // Recorded first: a background connect waiting for admission sees it.
     this.setUserDisconnected(targetId, true);
+    await this.park(targetId);
     this.emit();
   }
 
