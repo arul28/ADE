@@ -187,7 +187,7 @@ afterEach(() => {
 
 describe("iosSimulatorService Simulator.app live view defaults", () => {
   it("documents launch and stream backend defaults with pure helpers", () => {
-    expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(true);
+    expect(shouldOpenSimulatorAppForLaunch(undefined)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(true)).toBe(false);
     expect(shouldOpenSimulatorAppForLaunch(false)).toBe(true);
     // One engine now: the vendored Swift helper. The name survives so a status
@@ -814,7 +814,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
-  it("opens Simulator.app by default during launch", async () => {
+  it("opens Simulator.app during launch only when asked (keepSimulatorInBackground: false)", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
       if (command === "ps") return { stdout: "", stderr: "" };
@@ -847,6 +847,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
         appBundlePath: "/tmp/Example.app",
         bundleId: "com.example.app",
         build: false,
+        keepSimulatorInBackground: false,
       });
       expect(session.keepSimulatorInBackground).toBe(false);
       expect(spawnMock).toHaveBeenCalledWith("open", ["-a", "Simulator"], { detached: true, stdio: "ignore" });
@@ -859,7 +860,7 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
-  it("leaves Simulator.app in the background when explicitly requested", async () => {
+  it("leaves Simulator.app closed when the caller says nothing (a raw action call)", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
       if (command === "ps") return { stdout: "", stderr: "" };
@@ -892,7 +893,6 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
         appBundlePath: "/tmp/Example.app",
         bundleId: "com.example.app",
         build: false,
-        keepSimulatorInBackground: true,
       });
       expect(session.keepSimulatorInBackground).toBe(true);
       expect(spawnMock.mock.calls.some(([command]) => command === "open")).toBe(false);

@@ -35,6 +35,8 @@ import { isPathInside, pathComparisonKey, pathsEqual } from "../shared/pathCompa
 import { writeTextAtomic } from "../shared/utils";
 import { isRemoteWorkLaneId, REMOTE_WORK_LANE_PREFIX, REMOTE_WORK_MAX_PATCH_BYTES } from "../../../shared/types/remoteWork";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
+import { readGitOriginUrlFromConfigOrGit } from "../projects/recentProjectSummary";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 
 /** What the calling chat sends with each command. */
 export type RemoteWorkSource = {
@@ -396,6 +398,28 @@ export function listMachineRemoteWorkCopies(
     }
   }
   return rows;
+}
+
+/**
+ * `owner`'s work copies on this machine in every checkout of `projectRoot`'s
+ * repository (matched by git origin), `projectRoot`'s own first. A machine
+ * can hold two checkouts of one repository (`~/ADE` and a sandbox clone);
+ * which one a `--machine` call lands in has changed between days, so a chat
+ * can have a copy in each.
+ */
+export function remoteWorkCopiesInRepo(
+  projectRoot: string,
+  owner: string,
+  adeHome: string = defaultAdeHome(),
+  logger?: RemoteWorkLogger,
+): Array<RemoteWorkCopy & { projectRoot: string }> {
+  const origin = normalizeGitRemoteIdentity(readGitOriginUrlFromConfigOrGit(projectRoot));
+  const mine = listMachineRemoteWorkCopies(adeHome, logger).filter((copy) => copy.owner === owner);
+  const here = readRegistryAt(projectRoot).copies.filter((copy) => copy.owner === owner).map((copy) => ({ ...copy, projectRoot }));
+  const elsewhere = mine.filter((copy) => !pathsEqual(copy.projectRoot, projectRoot)
+    && origin != null
+    && normalizeGitRemoteIdentity(readGitOriginUrlFromConfigOrGit(copy.projectRoot)) === origin);
+  return [...here, ...elsewhere];
 }
 
 export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOptions) {

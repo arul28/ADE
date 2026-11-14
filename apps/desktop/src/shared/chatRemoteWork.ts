@@ -31,6 +31,19 @@ export type RemoteWorkTurnRelease = {
   uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
 };
 
+/**
+ * A chat that used other machines was archived or deleted (on its own, or with
+ * its lane): each machine is asked to remove what the chat added there (its
+ * work copy and, with it, the simulator, emulator, screen and App Control app
+ * it drove). `keepUnsynced`: an archived chat can come back, so a copy holding
+ * work nobody pushed stays, as the hourly sweep keeps it.
+ */
+export type RemoteWorkChatEnded = {
+  sessionId: string;
+  keepUnsynced: boolean;
+  uses: Array<{ machineKey: string; machineName: string; projectId: string | null }>;
+};
+
 /** The `remoteWork` flags that say an entry drives a device on its machine. */
 export type RemoteWorkDeviceFlag = "usesSimulator" | "usesAndroidEmulator" | "usesDesktop" | "usesAppControl";
 

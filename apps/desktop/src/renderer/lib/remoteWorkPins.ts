@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OpenProjectBinding, RemoteRuntimeConnectionSnapshot } from "../../shared/types";
 import type { AgentChatRemoteWorkUse } from "../../shared/types/chat";
 import type { ChatTerminalSession } from "../../shared/types/sessions";
@@ -7,6 +7,9 @@ import { sameMachineKey } from "../../shared/machineAddress";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import { useRemoteConnectionSnapshot } from "../state/projectMachines";
 import { isAdeAvailable } from "./adeAvailability";
+import { normalizePathForComparison } from "./pathUtils";
+import { useAppStore } from "../state/appStore";
+import { useActiveRepositoryCopies } from "../state/repositoryScope";
 
 /** A pin to the machine a chat works on, or "unreachable" when this window has no connection to it. */
 export type RemoteWorkPin = OpenProjectBinding | "unreachable";
@@ -29,9 +32,35 @@ function remoteWorkPinOn(
   };
 }
 
-/** The pin for a use's project on this computer, or "unreachable" when the use names no checkout. */
-function localRemoteWorkPin(use: AgentChatRemoteWorkUse): RemoteWorkPin {
+/**
+ * Checkouts on this computer that this window already addresses: the tab's
+ * own binding when it is local, and the open repository's copies here. Main
+ * runs a local call only for a project root the window knows (its tabs and
+ * recents of the same origin), so a pin to one of these is one it accepts.
+ */
+export type LocalWorkPins = readonly OpenProjectBinding[];
+
+function sameRoot(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  return normalizePathForComparison(a).replace(/\/+$/, "") === normalizePathForComparison(b).replace(/\/+$/, "");
+}
+
+/**
+ * The pin for a use's project on this computer, or "unreachable" when the use
+ * names no checkout.
+ *
+ * A chat on another machine that worked here names this computer's checkout
+ * by the path its brain saw. A window bound to that other machine has not
+ * necessarily opened that folder, and main refuses a local call for a root
+ * the window does not know ("Local runtime project is not available for this
+ * window"). So a pin this window already holds for that same folder wins;
+ * the bare path is the last resort, and its refusal is said in plain words
+ * by the panel (`remoteWorkReadErrorText`).
+ */
+function localRemoteWorkPin(use: AgentChatRemoteWorkUse, localPins: LocalWorkPins = []): RemoteWorkPin {
   if (!use.projectRootPath) return "unreachable";
+  const known = localPins.find((pin) => pin.kind === "local" && sameRoot(pin.rootPath, use.projectRootPath));
+  if (known) return known;
   return { kind: "local", key: use.projectRootPath, rootPath: use.projectRootPath, displayName: use.machineName };
 }
 
@@ -39,10 +68,11 @@ function resolveRemoteWorkPin(
   use: AgentChatRemoteWorkUse,
   snapshot: RemoteRuntimeConnectionSnapshot | null,
   localMachineKey: string | null,
+  localPins: LocalWorkPins = [],
 ): RemoteWorkPin {
   if (!use.projectId || !use.projectRootPath) return "unreachable";
   if (localMachineKey && sameMachineKey(use.machineKey, localMachineKey)) {
-    return localRemoteWorkPin(use);
+    return localRemoteWorkPin(use, localPins);
   }
   const connection = snapshot?.connections.find((entry) =>
     entry.state === "connected" && sameMachineKey(entry.target.pairedMachine?.machineKey, use.machineKey));
@@ -64,6 +94,24 @@ function useLocalMachineKey(active: boolean): string | null {
   return localMachineKey;
 }
 
+/** This window's own pins on this computer (see `LocalWorkPins`), held by their keys. */
+function useLocalWorkPins(active: boolean): LocalWorkPins {
+  const binding = useAppStore((state) => state.projectBinding);
+  const copies = useActiveRepositoryCopies(active);
+  const bindingKey = binding?.kind === "local" ? binding.key : null;
+  const copiesKey = copies.map((copy) => (copy.isThisMachine && copy.address?.kind === "local" ? copy.address.key : "")).join("|");
+  return useMemo(() => {
+    const pins: OpenProjectBinding[] = binding?.kind === "local" ? [binding] : [];
+    for (const copy of copies) {
+      if (!copy.isThisMachine || copy.address?.kind !== "local") continue;
+      if (!pins.some((pin) => pin.key === copy.address!.key)) pins.push(copy.address);
+    }
+    return pins;
+    // Keyed on the pins' keys: a rebuilt list of the same pins is the same list.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindingKey, copiesKey]);
+}
+
 /**
  * Finds the pin that reaches a use's project on its machine: the desktop's
  * paired connection to it, or this computer's own checkout. "unreachable"
@@ -72,9 +120,10 @@ function useLocalMachineKey(active: boolean): string | null {
 export function useRemoteWorkPinResolver(active: boolean): (use: AgentChatRemoteWorkUse) => RemoteWorkPin {
   const { snapshot } = useRemoteConnectionSnapshot(active);
   const localMachineKey = useLocalMachineKey(active);
+  const localPins = useLocalWorkPins(active);
   return useCallback(
-    (use: AgentChatRemoteWorkUse): RemoteWorkPin => resolveRemoteWorkPin(use, snapshot, localMachineKey),
-    [snapshot, localMachineKey],
+    (use: AgentChatRemoteWorkUse): RemoteWorkPin => resolveRemoteWorkPin(use, snapshot, localMachineKey, localPins),
+    [snapshot, localMachineKey, localPins],
   );
 }
 
@@ -145,6 +194,7 @@ type ConnectAttempt =
 export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean): RemoteWorkReach {
   const { snapshot, loaded } = useRemoteConnectionSnapshot(active);
   const localMachineKey = useLocalMachineKey(active);
+  const localPins = useLocalWorkPins(active);
   const [attempt, setAttempt] = useState<ConnectAttempt | null>(null);
   // One per click. `takeBackTargetId` is the saved machine a "Use it here"
   // click takes the link back on; only the connect that click starts uses it.
@@ -157,7 +207,7 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     setRequest((current) => ({ nonce: current.nonce + 1, takeBackTargetId: null }));
   }, []);
 
-  const resolved = resolveRemoteWorkPin(use, snapshot, localMachineKey);
+  const resolved = resolveRemoteWorkPin(use, snapshot, localMachineKey, localPins);
   const connection = snapshot?.connections.find((entry) =>
     sameMachineKey(entry.target.pairedMachine?.machineKey, use.machineKey)) ?? null;
   const heldTargetId = connection?.state === "error" && connection.recovery === "held_elsewhere"
@@ -225,7 +275,7 @@ export function useRemoteWorkReach(use: AgentChatRemoteWorkUse, active: boolean)
     // address, keyed like the snapshot's pin so nothing remounts when it lands.
     // A later drop shows in the snapshot, whose own state then wins.
     if (current.address.kind === "this") {
-      const local = localRemoteWorkPin(use);
+      const local = localRemoteWorkPin(use, localPins);
       return local === "unreachable" ? { kind: "unknown", retry } : { kind: "pin", pin: local };
     }
     const sameTarget = connection?.target.id === current.address.targetId ? connection : null;
@@ -249,4 +299,20 @@ export async function listRemoteWorkShells(
   return rows
     .filter((row) => wanted.has(row.terminalId))
     .sort((a, b) => Number(a.status !== "running") - Number(b.status !== "running"));
+}
+
+/**
+ * A failed read of a chat's device on a machine, in words a person can act
+ * on. Never Electron's "Error invoking remote method …" wrapper; the one
+ * refusal a same-computer read can hit (a folder this window has not opened)
+ * says what to do instead.
+ */
+export function remoteWorkReadErrorText(error: unknown, machineName: string): string {
+  const raw = (error instanceof Error ? error.message : String(error ?? ""))
+    .replace(/^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/, "")
+    .trim();
+  if (/Local runtime project is not available for this window|Local ADE runtime connection is not available/i.test(raw)) {
+    return `This window hasn't opened this chat's project folder on ${machineName}. Open that project here once, then try again.`;
+  }
+  return raw || `${machineName} did not answer.`;
 }

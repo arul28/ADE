@@ -347,6 +347,51 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     }
   };
 
+  /**
+   * Which checkout a chat's calls land in, when a machine holds several of one
+   * repository (`~/ADE` and a sandbox clone): the one that holds the chat's
+   * work copy there, asked of that machine once (`find_remote_work_copy`)
+   * and then kept, so the pick no longer moves with "last opened" and orphans
+   * a copy. Keyed on machine, repository and chat; this process only.
+   */
+  const checkoutPicks = new Map<string, string>();
+  const preferCheckoutWithCopy = async (
+    machine: AdeAccountMachine,
+    entry: Awaited<ReturnType<typeof pool.acquire>>,
+    records: RemoteProjectRecord[],
+    picked: RemoteProjectRecord,
+    origin: string | null,
+    caller: RemoteCallerClaim,
+  ): Promise<RemoteProjectRecord> => {
+    const chat = caller.chatSessionId;
+    if (!origin || !chat) return picked;
+    const candidates = records.filter((record) => record.exists !== false && peerGitRemoteIdentity(record.gitOriginUrl) === origin);
+    if (candidates.length < 2) return picked;
+    const key = `${machine.machineKey}\u0000${origin}\u0000${chat}`;
+    const kept = candidates.find((record) => record.projectId === checkoutPicks.get(key));
+    if (kept) return kept;
+    let choice = picked;
+    try {
+      const answer = await pool.request(machine, entry, "find_remote_work_copy", "ade/actions/call", {
+        name: "find_remote_work_copy",
+        arguments: {},
+        projectId: picked.projectId,
+        [REMOTE_CALLER_PARAM]: caller,
+      }, 8_000);
+      const value = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : answer;
+      const roots = isRecord(value) && Array.isArray(value.projectRoots)
+        ? value.projectRoots.filter((root): root is string => typeof root === "string")
+        : [];
+      const platform = targetPathPlatform(machine.platform ?? null);
+      choice = candidates.find((record) => roots.some((root) => samePathOnPlatform(record.rootPath, root, platform))) ?? picked;
+    } catch (error) {
+      // An older ADE there has no such tool: the usual pick, kept from now on.
+      options.logger?.info("agent_cross_machine.checkout_pick_unknown", { machineKey: machine.machineKey, error: errorMessage(error) });
+    }
+    checkoutPicks.set(key, choice.projectId);
+    return choice;
+  };
+
   const call = async (input: MachineCallRequest): Promise<MachineCallResult> => {
     const method = input.method.trim();
     const params = isRecord(input.params) ? { ...input.params } : {};
@@ -370,11 +415,12 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       entry = await acquireWokenMachine(machine);
     }
     let project: RemoteProjectRecord | null = null;
+    let records: RemoteProjectRecord[] = [];
     if (PROJECT_SCOPED_METHODS.has(method)) {
       if (input.scope.kind === "personal" || input.scope.kind === "machine") {
         throw new Error(`${method} runs in a project; pass --project, or use --personal commands.`);
       }
-      let records = await pool.listProjects(entry);
+      records = await pool.listProjects(entry);
       const setUpThere = () => pool.request(
         machine,
         entry,
@@ -407,18 +453,23 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
           project = resolveProject(machine, records, input.scope);
         }
       }
-      params.projectId = project.projectId;
-    } else {
-      delete params.projectId;
     }
     const local = pool.thisMachine();
     const localListed = pool.peekDirectory()?.machines.find(pool.isThisMachine) ?? null;
-    params[REMOTE_CALLER_PARAM] = {
+    const callerClaim = {
       chatSessionId: input.caller.chatSessionId?.trim() || null,
       machineKey: local?.machineKey ?? localListed?.machineKey ?? null,
       machineName: localListed ? machineName(localListed) : os.hostname(),
       permissionLevel: input.caller.permissionLevel ?? null,
       ...(input.caller.turnId ? { turnId: input.caller.turnId } : {}),
+    } satisfies RemoteCallerClaim;
+    if (project && input.scope.kind === "repo") {
+      project = await preferCheckoutWithCopy(machine, entry, records, project, peerGitRemoteIdentity(input.scope.originUrl), callerClaim);
+    }
+    if (project) params.projectId = project.projectId;
+    else delete params.projectId;
+    params[REMOTE_CALLER_PARAM] = {
+      ...callerClaim,
       // Only on a request that starts the caller's own child: the target keeps
       // it with that child and hands it back with every report.
       ...(input.caller.wakeToken ? { wakeToken: input.caller.wakeToken } : {}),
@@ -452,7 +503,15 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     };
   };
 
-  const listMachines = async (listOptions: { includeProjects?: boolean } = {}): Promise<AgentMachineRoster> => {
+  /**
+   * `projectsBudgetMs` shortens how long one machine gets to list its
+   * projects (never past the default): `ade devices` lists an asleep machine
+   * the account still shows online as "did not answer" instead of waiting.
+   */
+  const listMachines = async (listOptions: { includeProjects?: boolean; projectsBudgetMs?: number } = {}): Promise<AgentMachineRoster> => {
+    const projectsBudgetMs = typeof listOptions.projectsBudgetMs === "number" && listOptions.projectsBudgetMs > 0
+      ? Math.min(listOptions.projectsBudgetMs, LIST_PER_MACHINE_BUDGET_MS)
+      : LIST_PER_MACHINE_BUDGET_MS;
     let machines: AdeAccountMachine[];
     try {
       machines = await pool.listAccountMachines(true);
@@ -479,7 +538,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       try {
         const records = await withTimeout(
           pool.acquire(machine).then((entry) => pool.listProjects(entry)),
-          LIST_PER_MACHINE_BUDGET_MS,
+          projectsBudgetMs,
           `${machineName(machine)} did not answer in time.`,
         );
         return {

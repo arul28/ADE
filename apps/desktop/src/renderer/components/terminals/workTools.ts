@@ -15,8 +15,7 @@ import {
 import { AppleLogo } from "../ui/appleIcons";
 import type { WorkSidebarTab } from "../../state/appStore";
 import { desktopProductName } from "../../../shared/types/macDesktop";
-import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { remoteWorkUsesOf, type RemoteWorkCopyUse, type RemoteWorkDeviceFlag } from "../../../shared/chatRemoteWork";
+import type { RemoteWorkDeviceFlag } from "../../../shared/chatRemoteWork";
 import { remoteMachineHostPlatform } from "../../../shared/machineIdentity";
 
 /**
@@ -306,30 +305,24 @@ export type WorkToolContext = {
    */
   hasSideChat?: boolean;
   /**
-   * The chat drives a simulator on another machine through its work copy
-   * (`ade apple … --machine`). The iOS tool then shows that simulator, so it
-   * stays even on a host that cannot run one.
+   * The chat chose another machine for its iPhone (`ade devices use
+   * ios@<machine>`, or a chip on the tools pane's rail). The iOS tool then
+   * shows that machine's simulator, so it stays even on a host that cannot
+   * run one. Its CURRENT choice, never a machine it merely used before.
    */
   hasRemoteSimulator?: boolean;
-  /**
-   * The chat drives an Android emulator on another machine through its work
-   * copy (`ade android … --machine`). The Android tool then shows it, so it
-   * stays even on a host that cannot run one.
-   */
+  /** The same for its Android emulator (`ade devices use android@<machine>`). */
   hasRemoteAndroidEmulator?: boolean;
   /**
-   * The chat drives a Mac or Linux screen on another machine through its work
-   * copy (`ade screen … --machine`): that machine's platform. The lane-screen
-   * tool then shows that screen, so it stays even on a host that cannot run
-   * one (a Windows PC showing a Mac's desktop), and is named for it.
+   * The chat chose a Mac or Linux machine's screen (`ade devices use
+   * screen@<machine>`): that machine's platform. The lane-screen tool then
+   * shows that screen, so it stays even on a host that cannot run one (a
+   * Windows PC showing a Mac's desktop), and is named for it.
    */
   remoteMacDesktopPlatform?: "darwin" | "linux" | null;
   /** The same for a Windows machine's screen: the Windows Desktop tool shows it. */
   hasRemoteWindowsDesktop?: boolean;
-  /**
-   * The chat drives an App Control session on another machine through its
-   * work copy (`ade app-control … --machine`). The App Control tool shows it.
-   */
+  /** The chat chose another machine for App Control (`ade devices use app@<machine>`). */
   hasRemoteAppControl?: boolean;
   /**
    * The lane's RUNTIME HOST can run the Android emulator at all
@@ -519,8 +512,8 @@ export function laneHostRunsDesktopTool(tool: DesktopWorkTool, toolContext: Work
 }
 
 /**
- * What the other machines' screens a chat drives (`usesDesktop` entries) add
- * to the tool context, by the tool that shows each. An unknown platform shows
+ * What the other machine's screen a chat chose (`ade devices use screen@…`)
+ * adds to the tool context, by the tool that shows it. An unknown platform shows
  * in the Mac Desktop pane, which reads the host's own.
  */
 export function remoteDesktopToolContext(
@@ -548,21 +541,6 @@ export const REMOTE_WORK_TOOLS = {
 } as const satisfies Partial<Record<WorkSidebarTab, { flag: RemoteWorkDeviceFlag; noun: string }>>;
 
 export type RemoteWorkTool = keyof typeof REMOTE_WORK_TOOLS;
-
-/**
- * The other machines whose device `tool` shows for this chat, newest first.
- * A screen shows only on the tool named for its machine: a Windows PC's in
- * Windows Desktop, any other in Mac Desktop.
- */
-export function remoteWorkUsesForTool(
-  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-  tool: RemoteWorkTool,
-): RemoteWorkCopyUse[] {
-  const uses = remoteWorkUsesOf(session, REMOTE_WORK_TOOLS[tool].flag);
-  return isDesktopWorkTool(tool)
-    ? uses.filter((use) => desktopToolForMachinePlatform(use.machinePlatform) === tool)
-    : uses;
-}
 
 /** The lane-screen tools: one per host platform, never both. */
 export type DesktopWorkTool = "mac-desktop" | "windows-desktop";

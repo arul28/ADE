@@ -3,13 +3,13 @@ import type { ReactNode } from "react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { remoteWorkUseKey, type RemoteWorkCopyUse } from "../../../shared/chatRemoteWork";
 import { machineNameForBinding } from "../../../shared/machineIdentity";
-import { useRemoteWorkReach } from "../../lib/remoteWorkPins";
+import { remoteWorkReadErrorText, useRemoteWorkReach } from "../../lib/remoteWorkPins";
 import { useAppStore } from "../../state/appStore";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { Banner } from "../ui/notice/Banner";
 import { macDesktopStatusKey, useMacDesktopStatusEntry } from "../chat/macDesktopStatusStore";
 import { HELD_ELSEWHERE_ACTION_LABEL, HELD_ELSEWHERE_STATE_LABEL } from "../remoteTargets/remoteMachineModel";
-import { RemoteTargetSwitcher, useRemoteTargetChoice } from "./RemoteTargetSwitcher";
+import { useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 
 /** Says whether a use's machine has a device for it (`useRemoteTargetChoice`'s `reportDevice`). */
@@ -45,7 +45,7 @@ function RemoteWorkReachGate({
             id: `remote-work-connect-${remoteWorkUseKey(use)}`,
             tone: "warning",
             title: `Couldn't connect to ${use.machineName}`,
-            detail: reach.message,
+            detail: remoteWorkReadErrorText(reach.message, use.machineName),
             actions: [{ label: "Retry", onClick: reach.retry }],
             // A machine that is off or out of reach is not an ADE fault.
             report: false,
@@ -115,25 +115,17 @@ export function RemoteOrLaneTool({
    */
   renderRemote: (use: RemoteWorkCopyUse, pin: OpenProjectBinding, reportDevice: ReportRemoteDevice) => ReactNode;
 }) {
-  const { options, chosen, choose, reportDevice } = useRemoteTargetChoice(uses, laneAvailable, stickyKey);
+  // The machine is picked in the row above the tool (`WorkToolPanelBar`),
+  // which sets the chat's device choice; the caller passes that machine's
+  // use alone, so there is nothing to switch between here.
+  const { chosen, reportDevice } = useRemoteTargetChoice(uses, laneAvailable, stickyKey);
   const use = chosen?.use ?? null;
-  if (!use && options.length <= 1) return <>{renderLane()}</>;
+  if (!use) return <>{renderLane()}</>;
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <RemoteTargetSwitcher
-        options={options}
-        chosenKey={chosen?.key ?? null}
-        onChoose={choose}
-        remoteLabel={remoteLabel}
-        testId={testId}
-      />
-      <div className="min-h-0 flex-1">
-        {use ? (
-          <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
-            {(pin) => renderRemote(use, pin, reportDevice)}
-          </RemoteWorkReachGate>
-        ) : renderLane()}
-      </div>
+    <div className="h-full min-h-0" data-testid={testId} data-remote-label={remoteLabel}>
+      <RemoteWorkReachGate key={remoteWorkUseKey(use)} use={use}>
+        {(pin) => renderRemote(use, pin, reportDevice)}
+      </RemoteWorkReachGate>
     </div>
   );
 }
@@ -162,8 +154,8 @@ export function useDriverChat(props: {
 type RemoteDeviceState = "loading" | "device" | "none" | { error: string };
 
 /** A failed refresh keeps a device already shown: unmounting it would drop its stream. */
-function failedRead(error: unknown): (current: RemoteDeviceState) => RemoteDeviceState {
-  return (current) => (current === "device" ? current : { error: error instanceof Error ? error.message : String(error) });
+function failedRead(error: unknown, machineName: string): (current: RemoteDeviceState) => RemoteDeviceState {
+  return (current) => (current === "device" ? current : { error: remoteWorkReadErrorText(error, machineName) });
 }
 
 /** How one kind of device on another machine is read and followed. */
@@ -224,7 +216,7 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
       const isLatest = () => !cancelled && thisRead === latestRead;
       void kind.read(laneId, remotePin)
         ?.then((has) => { if (isLatest()) setState(has ? "device" : "none"); })
-        .catch((error: unknown) => { if (isLatest()) setState(failedRead(error)); });
+        .catch((error: unknown) => { if (isLatest()) setState(failedRead(error, use.machineName)); });
     };
     read();
     readAgainRef.current = read;
@@ -259,7 +251,14 @@ function RemoteWorkDevice({ use, remotePin, renderDevice, onDeviceState, kind }:
       <div className="p-3">
         <Banner
           layout="inline"
-          model={{ id: `${kind.idPrefix}-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the ${kind.noun} on ${use.machineName}`, error: state.error }}
+          model={{
+            id: `${kind.idPrefix}-${remoteWorkUseKey(use)}`,
+            tone: "warning",
+            title: `Couldn't read the ${kind.noun} on ${use.machineName}`,
+            detail: state.error,
+            // A folder this window has not opened, a machine that is away: not an ADE fault.
+            report: false,
+          }}
         />
       </div>
     );

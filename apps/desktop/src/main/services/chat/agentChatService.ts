@@ -3,7 +3,7 @@ import { StringDecoder } from "node:string_decoder";
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
-import { remoteWorkUseKey, remoteWorkUsesDevice, type RemoteWorkTurnRelease } from "../../../shared/chatRemoteWork";
+import { remoteWorkUseKey, remoteWorkUsesDevice, type RemoteWorkChatEnded, type RemoteWorkTurnRelease } from "../../../shared/chatRemoteWork";
 import { adeHostWithheldAgentSkills } from "../../../shared/agentSkillRoots";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
@@ -12446,6 +12446,12 @@ export function createAgentChatService(args: {
    */
   onRemoteWorkTurnSettled?: (event: RemoteWorkTurnRelease) => void;
   /**
+   * A chat that used other machines (`noteRemoteWork`) was archived or
+   * deleted, on its own or with its lane: the brain asks each such machine,
+   * at once and without waiting, to remove what the chat added there.
+   */
+  onRemoteWorkChatEnded?: (event: RemoteWorkChatEnded) => void;
+  /**
    * Content-free hook fired after a session-metadata generation: on request,
    * or `automatic` when ADE refreshed the status line after a turn.
    */
@@ -12573,6 +12579,7 @@ export function createAgentChatService(args: {
     onCrossMachineMoveOutcome,
     onRemoteWorkStarted,
     onRemoteWorkTurnSettled,
+    onRemoteWorkChatEnded,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
@@ -75948,7 +75955,9 @@ export function createAgentChatService(args: {
     if (isTrackedAgentCliRow(existing)) {
       // An agent CLI terminal deletes like a chat: stopped, kept in Recently deleted.
       await cancelScheduledWorkFor(trimmedSessionId);
-      return await cliLifecycle.deleteCli(existing, { remember: deleteOptions.remember === true });
+      const deletedCli = await cliLifecycle.deleteCli(existing, { remember: deleteOptions.remember === true });
+      releaseRemoteWorkOfEndedChat(trimmedSessionId, "deleted");
+      return deletedCli;
     }
     if (!isChatToolType(existing.toolType)) {
       throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
@@ -76078,6 +76087,8 @@ export function createAgentChatService(args: {
     turnStartStampsBySession.delete(trimmedSessionId);
     remoteDeviceTargetsBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
+    releaseRemoteWorkOfEndedChat(trimmedSessionId, "deleted");
+    remoteWorkBySession.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
     const recoverable = rememberDeletedChat(current, deletedManaged ?? null, persistedMetadataPath, deleteOptions.remember === true);
@@ -76154,6 +76165,7 @@ export function createAgentChatService(args: {
         await cliCardInputs.respond({ sessionId: trimmedSessionId, itemId: card.itemId ?? card.requestId, decision: "cancel" }).catch(() => false);
       }
       cliLifecycle.archiveCli(existing);
+      releaseRemoteWorkOfEndedChat(trimmedSessionId, "archived");
       return;
     }
     if (!isChatToolType(existing.toolType)) throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);
@@ -76209,6 +76221,7 @@ export function createAgentChatService(args: {
     }
     sessionService.archiveSession(trimmedSessionId);
     notifyChatSessionEnded(trimmedSessionId);
+    releaseRemoteWorkOfEndedChat(trimmedSessionId, "archived");
   };
 
   const unarchiveSession = async ({ sessionId }: AgentChatArchiveArgs): Promise<void> => {
@@ -82079,6 +82092,72 @@ export function createAgentChatService(args: {
     onRemoteWorkStarted?.({ sessionId, machineKey: args.machineKey });
   };
 
+  /**
+   * `ade shell clean --machine` (or the tools pane's clean) deleted this
+   * chat's code on that machine, in every checkout there. What it removed
+   * goes from the chat's record: the copy's lane id and the shells that ran
+   * in it, and the device targets its turn end would release (nothing is held
+   * there now). The machine entry itself stays, so the chat's views still
+   * know it used that machine.
+   */
+  const noteRemoteWorkCleaned = (args: { sessionId: string; machineKey: string }): void => {
+    const sessionId = args.sessionId.trim();
+    const machineKey = args.machineKey.trim();
+    if (!sessionId || !machineKey) return;
+    const targets = remoteDeviceTargetsBySession.get(sessionId);
+    if (targets) {
+      for (const [key, target] of targets) if (target.machineKey === machineKey) targets.delete(key);
+      if (!targets.size) remoteDeviceTargetsBySession.delete(sessionId);
+    }
+    const uses = remoteWorkBySession.get(sessionId) ?? [];
+    let changed = false;
+    const list = uses.map((use) => {
+      if (use.machineKey !== machineKey || (!use.terminalIds.length && !use.workCopyLaneId)) return use;
+      changed = true;
+      return { ...use, terminalIds: [], workCopyLaneId: null };
+    });
+    if (!changed) return;
+    remoteWorkBySession.set(sessionId, list);
+    emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
+  };
+
+  /**
+   * This chat was archived or deleted: ask each machine it worked on, now, to
+   * remove what it added there (`onRemoteWorkChatEnded`, never awaited). One
+   * request per machine: the release there covers every checkout. A machine
+   * that is offline is cleaned by its own hourly sweep, which asks this one.
+   * The record is live only, so work from before this brain started is left
+   * to that sweep too.
+   */
+  const releaseRemoteWorkOfEndedChat = (sessionId: string, ended: "archived" | "deleted"): void => {
+    const uses = remoteWorkBySession.get(sessionId) ?? [];
+    if (!onRemoteWorkChatEnded || !uses.length) return;
+    const machines = new Map<string, RemoteWorkChatEnded["uses"][number]>();
+    for (const use of uses) {
+      if (!machines.has(use.machineKey)) {
+        machines.set(use.machineKey, { machineKey: use.machineKey, machineName: use.machineName, projectId: use.projectId });
+      }
+    }
+    try {
+      onRemoteWorkChatEnded({ sessionId, keepUnsynced: ended === "archived", uses: [...machines.values()] });
+    } catch (error) {
+      logger.warn("agent_chat.remote_work_chat_end_release_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
+  /**
+   * A lane being archived or deleted: its chats' work on other machines goes
+   * the same way (lane archive archives its chats; delete deletes them).
+   * Called before the lane's session rows go, so their lane is still readable.
+   */
+  const releaseRemoteWorkForLane = (laneId: string, ended: "archived" | "deleted"): void => {
+    const trimmed = laneId.trim();
+    if (!trimmed) return;
+    for (const sessionId of [...remoteWorkBySession.keys()]) {
+      if (sessionService.get(sessionId)?.laneId === trimmed) releaseRemoteWorkOfEndedChat(sessionId, ended);
+    }
+  };
+
   return {
     createSession,
     previewNewChatAdeContext,
@@ -82532,6 +82611,8 @@ export function createAgentChatService(args: {
     archiveSession,
     unarchiveSession,
     noteRemoteWork,
+    noteRemoteWorkCleaned,
+    releaseRemoteWorkForLane,
     disposeAll,
     forceDisposeAll,
     updateSession: updateSessionAndRememberDefaults,

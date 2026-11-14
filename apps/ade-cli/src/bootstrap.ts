@@ -10,7 +10,7 @@ import {
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
-import type { RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
+import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
@@ -1080,6 +1080,8 @@ export async function createAdeRuntime(args: {
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
   /** The brain's way to let go of what a chat holds on other machines when its turn ends. */
   releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
+  /** The brain's way to remove what an archived or deleted chat added on other machines. */
+  releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /**
@@ -3329,6 +3331,9 @@ export async function createAdeRuntime(args: {
         ...(typeof args !== "string" && args.releaseRemoteWorkDevices
           ? { onRemoteWorkTurnSettled: args.releaseRemoteWorkDevices }
           : {}),
+        ...(typeof args !== "string" && args.releaseRemoteWorkOfEndedChat
+          ? { onRemoteWorkChatEnded: args.releaseRemoteWorkOfEndedChat }
+          : {}),
         onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3450,6 +3455,7 @@ export async function createAdeRuntime(args: {
       laneTeardownDeps.agentChatService = {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+        releaseRemoteWorkForLane: (laneId, ended) => agentChatService.releaseRemoteWorkForLane(laneId, ended),
       };
       lateSettle.bind(createSettleWiring({
         agentChatService,

@@ -787,7 +787,7 @@ describe("WorkSidebar context targets", () => {
     expect(cardFor("Git").disabled).toBe(false);
     expect(cardFor("Files").disabled).toBe(false);
     expect(cardFor("Terminal").disabled).toBe(false);
-    expect(cardFor("Apple Development").disabled).toBe(false);
+    expect(cardFor("Apple Simulators").disabled).toBe(false);
     expect(cardFor("App Control").disabled).toBe(false);
     expect(cardFor("Browser").disabled).toBe(false);
     expect(screen.queryByText("Runs on this computer only")).toBeNull();

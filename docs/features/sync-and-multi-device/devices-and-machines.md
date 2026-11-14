@@ -38,7 +38,12 @@ ade devices --kind ios --text      # only iPhones
 One row per device: its **id**, what it is, its source, its state (off,
 on, in use by a chat), and what it needs first ("SDK missing there",
 "repository missing there: use --clone"). Machines that did not answer are
-listed as such, never left out. It reads only; it starts and copies nothing.
+listed as such, never left out: each gets a few seconds to name its projects,
+so an asleep machine the account still shows online is one "did not answer"
+row, not a wait for the whole list. It reads only; it starts and copies
+nothing. An `ios` row describes the chat's lane's own simulator there, never
+a simulator the Mac already has booted: `ade apple start` makes one for the
+lane (or attaches an installed one with `--udid`).
 
 A device id is `<kind>@<source>`: `ios@here`, `ios@MacBook Pro`,
 `android@Windows PC`, `screen@build-box`, later `ios@cloud`. A source may be a
@@ -83,7 +88,12 @@ A device on another machine runs your code from a copy ADE keeps there.
 | `--no-code` | A command that needs no code (`nvidia-smi`, a system check): an empty folder there, removed after (was `--scratch`). Shells only. |
 
 `ade shell clean --machine <name>` deletes your code there and everything it
-held: its simulator session, emulator, screen and app.
+held: its simulator session, emulator, screen and app. A machine can hold
+two checkouts of one repository; the calls of a chat keep landing in the one
+that holds its copy (asked of that machine once, then kept), and `clean`
+deletes the chat's copy in every checkout there, naming each folder. It says
+"Deleted" only when it deleted something. The chat's record of that machine
+(its work copy lane, its shells) is cleared with it.
 
 The old flags keep working as aliases and are no longer shown in help.
 

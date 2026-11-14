@@ -1,113 +1,71 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Broom } from "@phosphor-icons/react";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
-import { PaneTooltip } from "../ui/PaneTooltip";
-import {
-  visibleWorkToolDefinitions,
-  workToolAvailability,
-  type WorkToolContext,
-} from "./workTools";
-import {
-  workToolHasError,
-  workToolSummary,
-  type WorkToolStatusMap,
-} from "./useWorkToolStatuses";
+import { joinNames, railMachineName, type LeftoverMachine } from "./workToolCatalog";
+import type { CatalogCardView } from "./useWorkToolCatalog";
+import { WorkToolTileMark } from "./workToolTileMarks";
+
+/** Two equal columns, always: ten or eleven tiles read as one block. */
+const TILE_COLUMNS = 2;
+const TILE_GAP_PX = 8;
+
+export type WorkToolCatalogProps = {
+  tiles: CatalogCardView[];
+  leftovers: readonly LeftoverMachine[];
+  cleaningUp: boolean;
+  onCleanUp: (() => void) | null;
+};
 
 /**
- * Two columns, or one. Never three.
+ * The tools pane's front page: one equal tile per tool this chat can open.
  *
- * Expressed as a track minimum rather than a media/container query so it can
- * never disagree with the real width: with 24px of padding either side and an
- * 8px gutter, two 188px tracks need 432px of pane and three need 628px — more
- * than the column is ever allowed to be. That arithmetic is the cap. A wide
- * pane used to reach three tracks and spend the extra width making every card
- * SMALLER (149px at 527px of pane); the cards now grow with the pane instead,
- * from 188px at the two-column threshold to 252px at the column's full width.
+ * The page never scrolls. Tiles sit in a two-column grid whose rows share
+ * the pane's height (`repeat(n, minmax(0, 1fr))`), and each tile is a size
+ * container that drops its secondary text and tightens as it gets shorter
+ * (`.ade-tool-tile` in index.css), so the whole catalogue always fits.
  *
- * 188 rather than 196 because the pane's DEFAULT width is 447px, which cleared
- * the old 448px threshold by exactly one pixel the wrong way: the picker
- * everybody sees on first open rendered a single column of six cards down a
- * pane wide enough for two. A 188px card still holds the 16px glyph, the label
- * and the one status line at their current sizes with the 16px padding intact
- * — the longest fixed line ("3 ahead · dirty") measures well inside it.
- */
-const CARD_MIN_TRACK_PX = 188;
-
-/** The column the whole page is built around. */
-const COLUMN_MAX_PX = 512;
-
-/**
- * The tools pane's front page: every tool ADE can open beside this session, what
- * each one is doing right now, and one click to take it over the pane.
- *
- * One centred 512px column — a two-column grid of cards, vertically centred
- * against the whole pane rather than against the space left under the header.
- * There is no title and no subline: the tab strip above already says "Tools",
- * and a page with six labelled cards on it does not need to be introduced.
- *
- * Behind the grid, a slow multi-stop mesh in the theme's own accent ramp
- * (`WorkToolPickerBackdrop`) — the one decorated surface in the pane, because it
- * is the one surface with nothing on it. The cards float on it: translucent, an accent-lit inner edge, one hairline
- * each, lifting 3px under the cursor. Each is still deliberately thin — a monochrome 16px
- * glyph, the name, and exactly one line underneath. No tinted squares, no key
- * caps, no per-card activity dot; the only mark a card can carry is a red dot
- * when that tool is actually broken, because that is the one fact worth
- * interrupting a calm page for.
+ * A tile is a logo, a name and one status line, plus the machine a device
+ * runs on as plain text. Choices (which machine, which device) live in the
+ * tool the tile opens. A tool the agent is driving says so with a moving
+ * ring in its own colour and "Agent: …" as its line; a live one has a still
+ * ring. Nothing changes size.
  */
 export function WorkToolPicker({
   activeTool,
-  context,
-  statuses,
   loading,
   onPick,
   cardActions,
   playing = true,
+  catalog,
 }: {
   activeTool: WorkSidebarTab | null;
-  context: WorkToolContext;
-  statuses: WorkToolStatusMap;
   loading: boolean;
   onPick: (tool: WorkSidebarTab) => void;
-  /**
-   * Optional per-tool action rendered as a small control in the card's corner,
-   * revealed on hover or keyboard focus.
-   *
-   * The card itself stays one button — the action is a SIBLING inside the grid
-   * cell, never nested (a button in a button is neither valid HTML nor
-   * focusable). Only the Apple card uses this today: the claim is invisible
-   * without it, so booting or releasing a device needs a target on the card
-   * rather than only inside the pane.
-   */
+  /** Per-tool corner action (the Apple and Android device menus), revealed on hover or focus. */
   cardActions?: Partial<Record<WorkSidebarTab, ReactNode>>;
   /** False pauses the mesh loop without dropping the last frame. */
   playing?: boolean;
+  catalog: WorkToolCatalogProps;
 }) {
   const theme = useAppStore((s) => s.theme);
-  const reasonIdPrefix = useId();
-  const definitions = useMemo(() => visibleWorkToolDefinitions(context), [context]);
-  const cardCount = definitions.length;
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const gridRef = useRef<HTMLDivElement | null>(null);
-  // Starts at nothing highlighted: this is a page
-  // you look at, not a palette you are already typing into, and opening with a
-  // card pre-selected reads as a choice already made for you.
   const [highlight, setHighlight] = useState(-1);
+  const tiles = catalog.tiles;
+  const rows = Math.max(1, Math.ceil(tiles.length / TILE_COLUMNS));
 
-  const focusCard = useCallback((index: number) => {
-    const cards = gridRef.current?.querySelectorAll<HTMLButtonElement>("button[data-tool-id]");
-    cards?.[index]?.focus();
-  }, []);
+  const focusableTiles = useCallback(
+    () => rootRef.current?.querySelectorAll<HTMLButtonElement>("button[data-tool-id]:not(:disabled)") ?? null,
+    [],
+  );
 
-  // Arrows move the highlight and take focus with them, so Enter is the
-  // browser's own activation rather than a second key handler that could
-  // disagree with the click path about which card is disabled.
+  // Arrows walk the tiles and take focus with them, so Enter is the
+  // browser's own activation.
   useEffect(() => {
     if (!playing) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      // A card action's own Radix menu (the Apple `⋯`) consumes the arrow that
-      // opened it; without this the picker ALSO moved the highlight and pulled
-      // focus off the open menu.
       if (event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const step = event.key === "ArrowRight" || event.key === "ArrowDown"
@@ -120,163 +78,182 @@ export function WorkToolPicker({
       const node = target instanceof Node ? target : null;
       const mine = target === document.body || (node != null && rootRef.current?.contains(node) === true);
       if (!mine) return;
+      const buttons = focusableTiles();
+      const count = buttons?.length ?? 0;
+      if (!count) return;
       event.preventDefault();
       setHighlight((current) => {
-        const next = current < 0
-          ? (step > 0 ? 0 : cardCount - 1)
-          : (current + step + cardCount) % cardCount;
-        focusCard(next);
+        const next = current < 0 ? (step > 0 ? 0 : count - 1) : (current + step + count) % count;
+        buttons?.[next]?.focus();
         return next;
       });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cardCount, focusCard, playing]);
+  }, [focusableTiles, playing]);
 
+  let openableIndex = -1;
   return (
-    // Two boxes, because the backdrop must not scroll. `inset: 0` inside the
-    // scroller resolves against the scroll ORIGIN, so on a pane too short for
-    // the column the mesh ended at the fold and the rest of the page scrolled
-    // onto bare chrome. Pinned to this non-scrolling wrapper it always covers
-    // exactly what you can see.
     <div ref={rootRef} className="ade-pane-chrome relative h-full min-h-0">
-      {/* Behind everything and untouchable: the canvas must never eat a click
-          meant for the card on top of it, and it is never in the tab order. */}
       <WorkToolPickerBackdrop theme={theme} playing={playing} />
       <div
         data-tool-picker-scroll=""
-        className="relative flex h-full min-h-0 flex-col overflow-auto"
+        className="relative flex h-full min-h-0 flex-col gap-2 overflow-hidden p-3"
+        onPointerMove={() => setHighlight((current) => (current === -1 ? current : -1))}
       >
-        {/* `m-auto` rather than `justify-center`: a centred flex child in an
-            overflow container has its overflowing top clipped and unreachable,
-            and this column is taller than a short pane. The extra bottom pad is
-            the 36px header — spending it here centres the block against the
-            WHOLE pane, not against the leftover space beneath the header. */}
         <div
-          className="relative m-auto w-full px-6 pb-[60px] pt-6"
-          style={{ maxWidth: COLUMN_MAX_PX }}
+          role="group"
+          aria-label="Work tools"
+          className="grid min-h-0 flex-1"
+          style={{
+            gap: TILE_GAP_PX,
+            gridTemplateColumns: `repeat(${TILE_COLUMNS}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+          }}
         >
-          <div
-            ref={gridRef}
-            role="group"
-            aria-label="Work tools"
-            // The pointer takes the highlight back the moment it moves: hover is
-            // already drawn by `:hover`, so a stale keyboard highlight left on a
-            // card the mouse has since left is a second card that looks hovered.
-            onPointerMove={() => setHighlight((current) => (current === -1 ? current : -1))}
-            className="grid gap-2"
-            // `min()` rather than the bare minimum: below one card's width the
-            // track must shrink with the pane, or the grid overflows the column
-            // it is centred in and the cards clip on the right.
-            style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+          {tiles.map((tile) => {
+            if (tile.available) openableIndex += 1;
+            return (
+              <ToolTile
+                key={tile.id}
+                tile={tile}
+                isActive={activeTool === tile.tool}
+                highlighted={tile.available && highlight === openableIndex}
+                skeleton={loading && tile.available && tile.line == null}
+                onOpen={() => onPick(tile.tool)}
+                action={cardActions?.[tile.tool] ?? null}
+              />
+            );
+          })}
+        </div>
+        {catalog.leftovers.length ? (
+          <CleanupLine leftovers={catalog.leftovers} busy={catalog.cleaningUp} onCleanUp={catalog.onCleanUp} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ToolTile({
+  tile,
+  isActive,
+  highlighted,
+  skeleton,
+  onOpen,
+  action,
+}: {
+  tile: CatalogCardView;
+  isActive: boolean;
+  highlighted: boolean;
+  skeleton: boolean;
+  onOpen: () => void;
+  action: ReactNode;
+}) {
+  const style = { ["--tool-color" as string]: tile.color } as CSSProperties;
+  const machine = tile.kind && tile.machine ? tile.machine : null;
+  return (
+    <div
+      className={cn("ade-tool-card ade-tool-tile group/card", !tile.available && "ade-tool-tile-off")}
+      style={style}
+      data-tool-card={tile.id}
+      data-live={tile.live ? "true" : undefined}
+      data-agent={tile.agentNow ? "true" : undefined}
+      data-highlighted={highlighted ? "true" : undefined}
+    >
+      {tile.agentNow ? <span aria-hidden="true" className="ade-tool-tile-ring"><span /></span> : null}
+      <div className="ade-tool-tile-body">
+        <div className="ade-tool-tile-top">
+          <span className="ade-tool-tile-mark" style={{ color: tile.markColor }} aria-hidden="true">
+            <WorkToolTileMark card={tile.id} machine={tile.machine} size="100%" />
+          </span>
+          {machine ? (
+            <span className="ade-tool-tile-machine" title={`Runs on ${machine.name}`}>
+              <MachinePlatformLogo platform={machine.platform} size={11} weight="fill" fallback />
+              <span className="truncate">{railMachineName(machine)}</span>
+            </span>
+          ) : null}
+          <TileStateMark tile={tile} />
+        </div>
+        <div className="ade-tool-tile-text">
+          {/* The tile's one open control; its `::after` covers the tile. */}
+          <button
+            type="button"
+            data-tool-id={tile.tool}
+            disabled={!tile.available}
+            aria-current={isActive ? "true" : undefined}
+            aria-describedby={`tool-tile-line-${tile.id}`}
+            onClick={onOpen}
+            className="ade-tool-tile-name"
           >
-            {definitions.map((definition, index) => {
-              const availability = workToolAvailability(definition.id, context);
-              const status = statuses[definition.id];
-              const reasonId = `${reasonIdPrefix}-${definition.id}`;
-              // Status, reason, or the catalogue's hint — `workToolSummary` owns
-              // that priority, and the tooltip below reads the same resolution.
-              const { line: detail, tooltipLabel } = workToolSummary(definition, status, availability);
-              const showSkeleton = loading && availability.available && status?.line == null;
-              const Icon = definition.icon;
-              const isActive = activeTool === definition.id;
-              const hasError = availability.available && workToolHasError(status);
-              // An odd card count leaves the last one alone on its row. Letting it
-              // span the full width finishes the block instead of orphaning it;
-              // with one column every card already spans, so this is a no-op there.
-              const spansRow = cardCount % 2 === 1 && index === cardCount - 1;
-              const cardAction = cardActions?.[definition.id] ?? null;
-              return (
-                <div
-                  key={definition.id}
-                  // The grid item is this wrapper, not the tooltip span, so the
-                  // action can sit BESIDE the card button instead of inside it.
-                  // `group/card` is named so it never collides with the card
-                  // button's own `group` (which drives the glyph tint and the
-                  // highlighted state).
-                  className="group/card relative flex min-w-0"
-                  style={spansRow ? { gridColumn: "1 / -1" } : undefined}
-                >
-                  <PaneTooltip
-                    // Only when the card actually cut something off. A tooltip that
-                    // repeats a line you can already read is a panel over the NEXT
-                    // card for no reason; a tooltip over a truncated one is the rest
-                    // of the sentence.
-                    label={tooltipLabel}
-                    side="bottom"
-                    onlyWhenClipped
-                    disabled={showSkeleton}
-                    className="min-w-0 w-full"
-                  >
-                    <button
-                      type="button"
-                      disabled={!availability.available}
-                      aria-current={isActive ? "true" : undefined}
-                      aria-describedby={availability.available ? undefined : reasonId}
-                      onClick={() => onPick(definition.id)}
-                      data-tool-id={definition.id}
-                      data-highlighted={highlight === index ? "true" : undefined}
-                      className={cn(
-                        "ade-tool-card group flex w-full flex-col items-start p-4 text-left",
-                        !availability.available && "cursor-not-allowed opacity-40",
-                      )}
-                    >
-                      <span className="flex w-full min-w-0 items-center gap-2">
-                        <Icon
-                          size={16}
-                          weight="regular"
-                          aria-hidden="true"
-                          // Tinted at rest, not only on hover: the glyph is the
-                          // one mark on the card, and a muted-grey one on a
-                          // violet/green gradient reads as switched off.
-                          className="ade-tool-card-icon shrink-0 transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
-                        />
-                        <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
-                          {definition.label}
-                        </span>
-                        {hasError ? (
-                          <span
-                            role="img"
-                            aria-label={`${definition.label} · errors`}
-                            data-tool-error-dot={definition.id}
-                            className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-error)]"
-                          />
-                        ) : null}
-                      </span>
-                      {showSkeleton ? (
-                        <span
-                          aria-hidden="true"
-                          className="ade-tool-skeleton mt-1.5 h-[10px] w-3/5 rounded-full"
-                        />
-                      ) : detail ? (
-                        <span
-                          id={availability.available ? undefined : reasonId}
-                          className={cn(
-                            "mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg transition-opacity duration-150",
-                            status?.stale && detail === status.line && "opacity-50",
-                          )}
-                          data-stale={(status?.stale && detail === status.line) || undefined}
-                        >
-                          {detail}
-                        </span>
-                      ) : null}
-                    </button>
-                  </PaneTooltip>
-                  {cardAction ? (
-                    // Hidden until the card is hovered or something in it is
-                    // focused (which includes the trigger itself, so Tab reaches
-                    // it and it stays put). `pointer-events-none` while hidden
-                    // keeps the invisible control from eating the card's click.
-                    <div className="pointer-events-none absolute right-1.5 top-1.5 opacity-0 transition-opacity duration-[120ms] ease-out group-hover/card:pointer-events-auto group-hover/card:opacity-100 group-focus-within/card:pointer-events-auto group-focus-within/card:opacity-100">
-                      {cardAction}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
-          </div>
+            {tile.label}
+          </button>
+          {skeleton ? (
+            <span aria-hidden="true" className="ade-tool-skeleton ade-tool-tile-line mt-1 h-[10px] w-3/5 rounded-full" />
+          ) : tile.line ? (
+            <span
+              id={`tool-tile-line-${tile.id}`}
+              className={cn("ade-tool-tile-line", tile.agentNow && "ade-tool-tile-line-agent", tile.stale && "opacity-50")}
+              title={tile.line}
+              data-tool-activity={tile.agentNow ? tile.id : undefined}
+            >
+              {tile.line}
+            </span>
+          ) : null}
         </div>
       </div>
+      {action ? (
+        <div className="pointer-events-none absolute bottom-1.5 right-1.5 z-[2] opacity-0 transition-opacity duration-[120ms] ease-out group-hover/card:pointer-events-auto group-hover/card:opacity-100 group-focus-within/card:pointer-events-auto group-focus-within/card:opacity-100">
+          {action}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** Broken is red, waiting-on-you is amber, live is a still dot in the tool's colour. The agent's ring says the rest. */
+function TileStateMark({ tile }: { tile: CatalogCardView }) {
+  if (tile.error) {
+    return <span role="img" aria-label={`${tile.label} · errors`} data-tool-error-dot={tile.id} className="ade-tool-tile-dot bg-[var(--color-error)]" />;
+  }
+  if (tile.attention) {
+    return <span role="img" aria-label={`${tile.label} · needs you`} className="ade-tool-tile-dot bg-[#fbbf24]" />;
+  }
+  if (tile.live) {
+    return <span role="img" aria-label={tile.agentNow ? `${tile.label} · agent using it` : `${tile.label} · live`} className="ade-tool-tile-dot" style={{ background: "var(--tool-color)" }} />;
+  }
+  return null;
+}
+
+function CleanupLine({
+  leftovers,
+  busy,
+  onCleanUp,
+}: {
+  leftovers: readonly LeftoverMachine[];
+  busy: boolean;
+  onCleanUp: (() => void) | null;
+}) {
+  const names = leftovers.map((entry) => entry.use.machineName);
+  const things = [...new Set(leftovers.flatMap((entry) => entry.things))];
+  const sentence = `Left on ${joinNames(names)}: ${joinNames(things)}`;
+  return (
+    <div
+      className="flex h-8 shrink-0 items-center gap-2 rounded-[9px] px-2.5 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-[color-mix(in_srgb,var(--color-card)_70%,transparent)]"
+      data-testid="work-tools-cleanup"
+    >
+      <Broom size={14} aria-hidden="true" className="shrink-0 text-muted-fg" />
+      <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-fg/75" title={sentence}>{sentence}</span>
+      {onCleanUp ? (
+        <button
+          type="button"
+          onClick={onCleanUp}
+          disabled={busy}
+          title="Deletes this chat's code there and the devices and app it started. The machine stays."
+          className="shrink-0 rounded-[7px] px-2 py-0.5 font-sans text-[12px] font-medium text-fg/85 hover:bg-fg/[0.06] hover:text-fg disabled:opacity-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent"
+        >
+          {busy ? "Cleaning up…" : "Clean up"}
+        </button>
+      ) : null}
     </div>
   );
 }

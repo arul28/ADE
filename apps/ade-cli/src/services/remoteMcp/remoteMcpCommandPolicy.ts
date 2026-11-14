@@ -256,6 +256,17 @@ export function checkRemoteAdeCommand(
       return { ok: false, reason: `\`ade android start --restart-adb\` is not available remotely. ${ANDROID_RESTART_ADB_REASON}` };
     }
   }
+  // Simulator.app on the person's Mac: once it runs, every lane's booted
+  // simulator gets a window (a bot once filled a screen with them). A
+  // connected app's device work stays inside ADE, headless, in ADE's stream.
+  if ((command === "apple" || command === "ios-sim" || command === "ios")
+    && args.some((word) => /^--(?:window|foreground|open-simulator)(?:=|$)/.test(word))) {
+    return {
+      ok: false,
+      reason: "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE. "
+        + "Drop --window/--foreground; `ade apple screenshot --lane <lane>` shows the screen.",
+    };
+  }
   if (command === "actions") {
     const actionVerdict = checkActionsCommand(words, scope, args);
     if (actionVerdict) return actionVerdict;

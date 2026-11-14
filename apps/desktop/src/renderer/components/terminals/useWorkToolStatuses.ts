@@ -38,14 +38,9 @@ import { useAndroidLaneDeviceCard, type AndroidLaneDeviceCard } from "../android
 import { issueTabsScopeKey, useIssueTabs } from "../issues/issueTabsStore";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
-import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { sameMachineKey } from "../../../shared/machineAddress";
 import {
   hostDesktopTool,
-  REMOTE_WORK_TOOLS,
-  remoteWorkUsesForTool,
   workToolCardLabel,
-  type RemoteWorkTool,
   type WorkToolAvailability,
   type WorkToolDefinition,
 } from "./workTools";
@@ -108,37 +103,6 @@ function prToolStatusLine(count: number | null): WorkToolStatus {
   if (count <= 0) return statusLine("No pull request open", false);
   if (count === 1) return statusLine("Pull request open", false);
   return statusLine(`${count} pull requests open`, false);
-}
-
-/**
- * The cards of tools that show a device this chat drives on another machine
- * (`remoteWork`): "Simulator on MacBook Pro", "Screen on build-box", "On 2
- * machines". Only where the lane's own tool has nothing live, which is the
- * line the lane would give otherwise ("No device", "Mac Desktop is off"), and
- * shows no error or attention mark.
- * From the chat summary alone: it reads nothing over the network.
- */
-export function withRemoteWorkToolLines(
-  statuses: WorkToolStatusMap,
-  remoteWork: AgentChatRemoteWorkUse[] | null | undefined,
-): WorkToolStatusMap {
-  if (!remoteWork?.length) return statuses;
-  let next: WorkToolStatusMap | null = null;
-  for (const tool of Object.keys(REMOTE_WORK_TOOLS) as RemoteWorkTool[]) {
-    // A measured local error or attention mark (a crashed emulator, a start
-    // in progress) stays: only a quiet local line gives way.
-    const local = statuses[tool];
-    if (local?.live || local?.attention === true || workToolHasError(local)) continue;
-    const uses = remoteWorkUsesForTool({ remoteWork }, tool);
-    const machines: string[] = [];
-    for (const use of uses) {
-      if (!machines.some((key) => sameMachineKey(key, use.machineKey))) machines.push(use.machineKey);
-    }
-    if (machines.length === 0) continue;
-    const line = machines.length === 1 ? `${REMOTE_WORK_TOOLS[tool].noun} on ${uses[0]!.machineName}` : `On ${machines.length} machines`;
-    next = { ...(next ?? statuses), [tool]: statusLine(line, false) };
-  }
-  return next ?? statuses;
 }
 
 function isOpenPullRequest(state: PrSummary["state"]): boolean {

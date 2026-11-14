@@ -13,7 +13,7 @@ import type { CrossMachineHandoffTransport } from "../../desktop/src/main/servic
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
 import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
-import type { RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
+import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -3073,7 +3073,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
-    $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat wait <session> --for idle --timeout 10m   (or --timeout-ms 600000)
     $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
     $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
     $ ade chat notify <session> --list | --cancel
@@ -3529,6 +3529,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple shutdown                End this chat's simulator session (the device stays on)
     $ ade apple shutdown --force        Force-release a session owned by another chat
     $ ade apple launch --force          Take the simulator over in one step
+    $ ade apple launch --foreground     Also open Simulator.app (stays closed by default; the device shows in ADE)
     $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -3548,8 +3549,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade apple open-device --text      Boot a simulator with no app
-    $ ade apple open-device --no-window Keep the device headless
+    $ ade apple open-device --text      Boot a simulator with no app (headless; shown in ADE)
+    $ ade apple open-device --window    Also open Simulator.app (every booted simulator gets a window)
     $ ade apple device-session --text   Report the tracked device session
     $ ade apple settings --text         Read appearance, text size, a11y
     $ ade apple close-device --text     Release the device session
@@ -6374,10 +6375,32 @@ export function readIntOption(
 ): number | undefined {
   const value = readValue(args, names);
   if (value == null) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    throw new CliUsageError(`${names[0]} must be an integer.`);
+  // Whole digits only: `parseInt` read `--timeout 25m` as 25.
+  if (!/^-?\d+$/.test(value.trim())) {
+    throw new CliUsageError(`${names[0]} must be an integer (got "${value}").`);
   }
+  return Number.parseInt(value, 10);
+}
+
+const TIMEOUT_UNIT_MS: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+
+/**
+ * A wait's timeout in milliseconds: `--timeout-ms <ms>` (an integer), or
+ * `--timeout <duration>` (`25m`, `90s`, `1h`, `600000ms`; a bare number is
+ * milliseconds, as for `--timeout-ms`). Anything else is refused, never
+ * misread: `--timeout 25m` was once read as 25 ms.
+ */
+export function readTimeoutMsOption(args: string[], fallback: number): number {
+  const ms = readIntOption(args, ["--timeout-ms"]);
+  const value = readValue(args, ["--timeout"]);
+  if (ms != null) return ms;
+  if (value == null) return fallback;
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i.exec(value.trim());
+  if (!match) {
+    throw new CliUsageError(`--timeout takes a duration such as 25m, 90s, 1h or 600000ms (got "${value}"); --timeout-ms takes milliseconds.`);
+  }
+  const parsed = Math.round(Number(match[1]) * TIMEOUT_UNIT_MS[(match[2] ?? "ms").toLowerCase()]!);
+  if (!Number.isSafeInteger(parsed)) throw new CliUsageError(`--timeout "${value}" is too long.`);
   return parsed;
 }
 
@@ -10805,9 +10828,14 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       steps: [actionCallStep("result", "release_remote_work_copy", {})],
       formatText: (result: unknown) => {
         const value = unwrapActionEnvelope(result);
-        return isRecord(value) && value.released === true
-          ? "Deleted your code on that machine, and everything it held."
-          : "This chat had no code on that machine.";
+        if (!isRecord(value) || value.released !== true) return "This chat had no code on that machine, so nothing was deleted.";
+        // A machine with two checkouts of the repository may have held a copy in each.
+        const removed = Array.isArray(value.removed)
+          ? value.removed.filter(isRecord).map((entry) => asString(entry.path)).filter((entry): entry is string => entry != null)
+          : [];
+        return removed.length
+          ? `Deleted your code on that machine, and everything it held:\n${removed.map((entry) => `  ${entry}`).join("\n")}`
+          : "Deleted your code on that machine, and everything it held.";
       },
     };
   }
@@ -11645,7 +11673,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
-  const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+  const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
@@ -13151,7 +13179,10 @@ function buildChatPlan(args: string[]): CliPlan {
       const any = readFlag(args, ["--any"]);
       readFlag(args, ["--all"]);
       const waitForValue = readValue(args, ["--for", "--state", "--until"]);
-      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      // `--timeout 2h` (or --timeout-ms) works here too, rounded up to minutes.
+      const timeoutDurationMs = readTimeoutMsOption(args, 0);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"])
+        ?? (timeoutDurationMs > 0 ? Math.ceil(timeoutDurationMs / 60_000) : 24 * 60);
       if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
         throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
       }
@@ -13172,7 +13203,7 @@ function buildChatPlan(args: string[]): CliPlan {
         })],
       };
     }
-    const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+    const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
     if (pollIntervalMs <= 0) throw new CliUsageError("chat wait --poll-interval-ms must be greater than zero.");
@@ -16198,6 +16229,36 @@ async function chatNotFoundHintNamingMachine(
  * capture, and clear the launch lock to do a job `--ignore-ownership` does
  * with none of that.
  */
+/**
+ * `ade apple start --text`: which device the lane drives and whether ADE made
+ * it (the Mac's sentence, `note`), then the live view. An older Mac sends no
+ * note; its answer names the device only.
+ */
+function formatAppleDeviceStart(value: unknown): string {
+  const record = unwrapActionEnvelope(value);
+  const status = isRecord(record) ? record : {};
+  const device = asString(status.deviceUdid);
+  const note = asString(status.note) ?? (device ? `This lane's simulator (${device}) is booted.` : "Started.");
+  const live = status.running === true ? `Live view: ${asString(status.backend) ?? "on"}.` : asString(status.lastError) ? `Live view: ${asString(status.lastError)}` : null;
+  return [note, live].filter(Boolean).join("\n");
+}
+
+/** `ade apple stop --text`: powered off, and what happens to the device (it stays registered there). */
+function formatAppleDeviceStop(value: unknown): string {
+  const record = unwrapActionEnvelope(value);
+  const result = isRecord(record) ? record : {};
+  const udid = asString(result.udid);
+  if (!udid) return "This lane has no Apple device, so nothing was powered off.";
+  return asString(result.note)
+    ?? `${udid} is ${result.poweredOff === true ? "powered off" : "off"}${result.stillRegistered === true ? " and stays this lane's device: the next ade apple start boots it again" : ""}.`;
+}
+
+/** An Apple element wait or assert that missed (`ok: false`) exits 1. */
+function appleElementMissExitCode(result: unknown): number {
+  const value = unwrapActionEnvelope(result);
+  return isRecord(value) && value.ok === false ? 1 : 0;
+}
+
 function iosSimulatorErrorHint(
   message: string,
   subcommand: string | null = null,
@@ -16511,8 +16572,9 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "launch" || sub === "open") {
-    // Agent launches must not steal the user's screen, so the CLI parks
-    // Simulator.app in the background unless asked otherwise.
+    // Simulator.app stays closed (the device runs inside ADE) unless
+    // --foreground asks for it; sent either way, for an older brain that
+    // opened it unless told to keep it in the background.
     const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
     const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
     const follow = readFlag(args, ["--follow"]);
@@ -16613,6 +16675,9 @@ function buildIosSimulatorPlan(
         deviceUdid: readIosSimulatorDevice(args),
         ...rootArgs(),
         ...(noProof ? { proof: false } : {}),
+        // Read by a `--machine` call (cliMachineTargeting), which brings the
+        // shot back here into --out; taken off before the call leaves here.
+        ...(outPath ? { copyToCallerPath: outPath } : {}),
       }),
       ...(outPath ? { shapeResult: (values: JsonObject) => copyAppleScreenshotTo(outPath, values.result) } : {}),
     };
@@ -16966,13 +17031,16 @@ function buildIosSimulatorPlan(
     // Read once: the reader splices `--udid`/`--device` out of `args`, so a
     // second call in the value position returned null and dropped the target.
     const stopUdid = readIosSimulatorDevice(args);
-    return iosAction("Apple device stop", "deviceStop", {
-      chatSessionId: claimArgs.chatSessionId,
-      ...(stopUdid ? { udid: stopUdid } : {}),
-      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-      ...rootArgs(),
-    });
+    return {
+      ...iosAction("Apple device stop", "deviceStop", {
+        chatSessionId: claimArgs.chatSessionId,
+        ...(stopUdid ? { udid: stopUdid } : {}),
+        ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+        ...rootArgs(),
+      }),
+      formatText: formatAppleDeviceStop,
+    };
   }
   if (
     sub === "shutdown" ||
@@ -17015,7 +17083,12 @@ function buildIosSimulatorPlan(
     const device = readIosSimulatorDevice(args);
     // A device session is not an app session: it boots a simulator and makes
     // it streamable, with no build and no install.
+    // Headless by default (the device shows in ADE); Simulator.app opens only
+    // with --window. `--no-window` is the old spelling of the default; sent,
+    // so an older brain that opened the window unless told not to stays headless.
+    const window = readFlag(args, ["--window", "--open-simulator"]);
     const noWindow = readFlag(args, ["--no-window", "--headless"]);
+    if (window && noWindow) throw new CliUsageError("open-device takes --window or --no-window, not both.");
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator open device", "openDevice", {
       deviceUdid: device,
@@ -17023,7 +17096,7 @@ function buildIosSimulatorPlan(
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
         : {}),
-      ...(noWindow ? { openWindow: false } : {}),
+      openWindow: window,
       ...(force ? { force: true } : {}),
     });
   }
@@ -17350,14 +17423,22 @@ function buildIosSimulatorPlan(
     const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
     const gone = readFlag(args, ["--gone", "--hidden"]);
     const target = elementTargetArgs();
-    return iosAction("iOS simulator wait for element", "waitForElement", {
-      ...target,
-      ...(timeoutMs == null ? {} : { timeoutMs }),
-      ...(gone ? { state: "gone" } : {}),
-    });
+    // A miss (`ok: false`: it never appeared, or never went) exits 1, so
+    // `wait-for-element … && tap-element …` stops there.
+    return {
+      ...iosAction("iOS simulator wait for element", "waitForElement", {
+        ...target,
+        ...(timeoutMs == null ? {} : { timeoutMs }),
+        ...(gone ? { state: "gone" } : {}),
+      }),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "assert-visible" || sub === "assert") {
-    return iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs());
+    return {
+      ...iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs()),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "proof-bundle") {
     const device = readIosSimulatorDevice(args);
@@ -17464,19 +17545,22 @@ function buildIosSimulatorPlan(
     if (udid && creating) {
       throw new CliUsageError("apple start takes --udid (attach) or --runtime/--device-type/--create (a new device), not both.");
     }
-    return iosAction("Apple device start", "deviceStart", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(creating
-        ? {
-          create: {
-            ...(sourceUdid ? { sourceUdid } : {}),
-            ...(runtime ? { runtime } : {}),
-            ...(deviceType ? { deviceType } : {}),
-          },
-        }
-        : {}),
-    });
+    return {
+      ...iosAction("Apple device start", "deviceStart", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(creating
+          ? {
+            create: {
+              ...(sourceUdid ? { sourceUdid } : {}),
+              ...(runtime ? { runtime } : {}),
+              ...(deviceType ? { deviceType } : {}),
+            },
+          }
+          : {}),
+      }),
+      formatText: formatAppleDeviceStart,
+    };
   }
   if (sub === "device-list") {
     const installed = readFlag(args, ["--installed"]);
@@ -17628,15 +17712,25 @@ function buildIosSimulatorPlan(
       "--id",
     );
     const force = readFlag(args, ["--force", "-f"]);
-    return iosAction("Apple device record delete", "recordDelete", {
-      id,
-      ...rootArgs(),
-      ...(laneId ? { laneId } : {}),
-      ...(claimArgs.chatSessionId
-        ? { chatSessionId: claimArgs.chatSessionId }
-        : {}),
-      ...(force ? { force: true } : {}),
-    });
+    // The proof `record-stop` filed from this recording stays: the brain's
+    // answer says so (`note`); an older brain answers nothing, and the text
+    // still says it.
+    return {
+      ...iosAction("Apple device record delete", "recordDelete", {
+        id,
+        ...rootArgs(),
+        ...(laneId ? { laneId } : {}),
+        ...(claimArgs.chatSessionId
+          ? { chatSessionId: claimArgs.chatSessionId }
+          : {}),
+        ...(force ? { force: true } : {}),
+      }),
+      formatText: (value: unknown) => {
+        const record = unwrapActionEnvelope(value);
+        return (isRecord(record) ? asString(record.note) : null)
+          ?? `Deleted recording ${id}. Any proof record-stop filed from it stays in the proof drawer: ade proof list names it, ade proof rm <id> removes it.`;
+      },
+    };
   }
   if (sub === "frame") {
     return iosAction("Apple device frame", "frame", {
@@ -30926,6 +31020,8 @@ async function runServe(
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
   /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
   let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
+  /** Bound with the bridge (below): removes what an archived or deleted chat added on other machines. */
+  let releaseRemoteWorkOfEndedChat: ((event: RemoteWorkChatEnded) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     openStrikes: projectOpenStrikes,
@@ -30946,6 +31042,7 @@ async function runServe(
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
     ...(embedded ? {} : { releaseRemoteWorkDevices: (event: RemoteWorkTurnRelease) => releaseRemoteWorkDevices?.(event) }),
+    ...(embedded ? {} : { releaseRemoteWorkOfEndedChat: (event: RemoteWorkChatEnded) => releaseRemoteWorkOfEndedChat?.(event) }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -31223,6 +31320,37 @@ async function runServe(
         });
       })))).catch((error: unknown) => {
         headlessProjectLogger.warn("remote_work.turn_release_bridge_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+  }
+
+  // A chat archived or deleted (on its own or with its lane) has what it
+  // added on each machine it used removed there at once: its work copy in
+  // every checkout, and with it the devices and App Control app it drove.
+  // Archived keeps a copy holding unpushed work (it can come back). Each
+  // machine is reached by its own key, never woken, never awaited by the
+  // archive; one that is offline is cleaned by its hourly sweep instead.
+  if (!embedded) {
+    releaseRemoteWorkOfEndedChat = ({ sessionId, keepUnsynced, uses }) => {
+      void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+        machine: use.machineKey,
+        scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+        method: "ade/actions/call",
+        params: { name: "release_remote_work_copy", arguments: { keepUnsynced, ended: true } },
+        caller: { chatSessionId: sessionId, permissionLevel: null },
+        timeoutMs: 120_000,
+        wake: false,
+      }).then(() => {
+        headlessProjectLogger.info("remote_work.chat_end_released", { machineKey: use.machineKey, keepUnsynced });
+      }).catch((error: unknown) => {
+        headlessProjectLogger.info("remote_work.chat_end_release_skipped", {
+          machineKey: use.machineKey,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })))).catch((error: unknown) => {
+        headlessProjectLogger.warn("remote_work.chat_end_release_bridge_failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -36560,6 +36688,17 @@ function formatIosSimStatus(value: unknown): string {
   const activeSession = isRecord(status.activeSession)
     ? status.activeSession
     : {};
+  // The device a lane drives is its own (`laneDevice`). With no session and
+  // no lane device, `activeDevice` is only a simulator booted on that Mac,
+  // which this lane does not drive: it is named as that, not as "active".
+  const laneDevice = isRecord(status.laneDevice) ? status.laneDevice : null;
+  const claimed = isRecord(status.activeSession) || isRecord(status.deviceSession);
+  const activeIsLanes = Boolean(laneDevice && asString(laneDevice.udid) && asString(laneDevice.udid) === asString(activeDevice.udid));
+  const laneDeviceText = laneDevice
+    ? `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : ""}`
+    : status.supported === false
+      ? null
+      : "none yet (ade apple start gives this lane its own)";
   // The device half and the live view, because `status` is the one command an
   // agent is told to poll. Leaving them to `--json` only meant a reader saw no
   // stream block and concluded the live view was off while it was running.
@@ -36573,9 +36712,10 @@ function formatIosSimStatus(value: unknown): string {
     renderKeyValues("ADE iOS simulator", [
       ["supported", status.supported],
       ["platform", status.platform],
+      ["lane device", laneDeviceText],
       [
-        "active device",
-        activeDevice.name
+        claimed || activeIsLanes ? "active device" : "booted, not this lane's",
+        activeDevice.name && !(activeIsLanes && !claimed)
           ? `${activeDevice.name} (${activeDevice.state})`
           : null,
       ],

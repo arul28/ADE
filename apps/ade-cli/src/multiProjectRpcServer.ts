@@ -3842,7 +3842,10 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       if (method === "machines.list") {
-        return await bridge.listMachines({ includeProjects: params.includeProjects === true });
+        return await bridge.listMachines({
+          includeProjects: params.includeProjects === true,
+          ...(typeof params.projectsBudgetMs === "number" ? { projectsBudgetMs: params.projectsBudgetMs } : {}),
+        });
       }
       const machine = typeof params.machine === "string" ? params.machine.trim() : "";
       const requestParams = isRecord(params.request) ? params.request : {};
@@ -3913,6 +3916,17 @@ export function createMultiProjectRpcRequestHandler(
             });
           } catch (error) {
             console.warn("[remote-work] could not record the chat's work on another machine", error);
+          }
+        }
+        // `ade shell clean --machine`: the copy (and its lane, shells and
+        // devices) is gone there, so the chat's record drops them; the
+        // machine entry stays.
+        if (callerChat && forwardMethod === "ade/actions/call" && forwardParams.name === "release_remote_work_copy"
+          && remoteActionResult(answer.result)?.released === true) {
+          try {
+            located?.runtime.agentChatService?.noteRemoteWorkCleaned({ sessionId: callerChat, machineKey: answer.machine.machineKey });
+          } catch (error) {
+            console.warn("[remote-work] could not forget the chat's work on another machine", error);
           }
         }
         // A child this chat started there: remember it, so that machine's

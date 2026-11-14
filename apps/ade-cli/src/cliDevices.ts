@@ -67,6 +67,12 @@ function deviceKindOfCommand(typed: string): DeviceKind | null {
 
 /** How long one machine gets to answer the list. */
 const MACHINE_READ_TIMEOUT_MS = 8_000;
+/**
+ * How long one machine gets to name its projects in the roster read. An
+ * asleep machine the account still lists online answers nothing; it is
+ * listed as "did not answer" after this, and its devices are not read.
+ */
+const MACHINE_PROJECTS_BUDGET_MS = 4_000;
 /** How long a device command waits for the chat's choice before it stops. */
 const CHOICE_READ_TIMEOUT_MS = 4_000;
 
@@ -244,7 +250,7 @@ async function readRoster(options: GlobalOptions, includeProjects: boolean): Pro
     throw new CliUsageError(`ADE's brain is not running on this machine, so no device can be read (${errorText(error)}). Open ADE, or run \`ade brain start\`.`);
   }
   try {
-    const roster = await client.request("machines.list", { includeProjects }).catch((error: unknown) => ({ state: "unavailable", message: errorText(error) }));
+    const roster = await client.request("machines.list", includeProjects ? { includeProjects, projectsBudgetMs: MACHINE_PROJECTS_BUDGET_MS } : { includeProjects }).catch((error: unknown) => ({ state: "unavailable", message: errorText(error) }));
     if (!isRecord(roster) || roster.state !== "ok") {
       const state = isRecord(roster) ? asString(roster.state) : null;
       return {
@@ -354,17 +360,22 @@ function deviceRow(
     const device = isRecord(status.activeDevice) ? status.activeDevice : null;
     const session = isRecord(status.activeSession) ? status.activeSession : null;
     const remoteHolder = isRecord(status.remoteHolder) ? status.remoteHolder : null;
-    const name = asString(device?.name) ?? asString(session?.deviceName);
+    // A chat drives its lane's own simulator, never one the Mac has booted
+    // for something else: `ade apple start` makes (or reuses) the lane's.
+    const laneDevice = isRecord(status.laneDevice) ? status.laneDevice : null;
+    const laneUdid = asString(laneDevice?.udid);
+    const laneDeviceOn = Boolean(laneUdid && laneUdid === asString(device?.udid) && asString(device?.state)?.toLowerCase() === "booted");
     const tools = Array.isArray(status.tools) ? status.tools.filter(isRecord) : [];
     const missing = tools.filter((tool) => tool.available === false && (tool.name === "xcrun" || tool.name === "xcodebuild"));
     const state = status.supported === false
       ? "can't run"
       : session
         ? remoteHolder ? `in use by a chat on ${asString(remoteHolder.machineName) ?? "another machine"}` : inUseBy(asString(session.chatSessionId), chat)
-        : asString(device?.state)?.toLowerCase() === "booted" ? "on" : "off";
+        : laneDevice ? laneDeviceOn ? "on" : "off" : "none yet: ade apple start makes this chat's";
+    const laneName = asString(laneDevice?.name) ?? (session ? asString(session.deviceName) : null);
     return {
       ...base,
-      what: name ? `${name} simulator` : "iPhone simulator",
+      what: laneName ? `${laneName} simulator` : "iPhone simulator",
       state,
       needs: missing.length ? missingThere(where.here, "Xcode") : null,
     };
@@ -490,6 +501,12 @@ async function listDevices(options: GlobalOptions, only: DeviceKind | null): Pro
     if (!machine.online) {
       return unavailable(`offline${machine.lastSeenAt ? ` (last seen ${new Date(machine.lastSeenAt).toLocaleString()})` : ""}`);
     }
+    // Online on the account, but its brain did not name its projects within
+    // the roster's budget (asleep, or no route): its devices would not answer
+    // either, so it is one row now rather than a wait for each kind.
+    if (!machine.projects && machine.note) {
+      return unavailable(`did not answer (asleep or unreachable): ${firstSentence(machine.note)}`);
+    }
     // Which project there answers: this repository's checkout, else the one
     // opened most recently (the devices are the machine's; your code is not).
     let machineProject: string | null = null;
@@ -560,6 +577,9 @@ function formatDevicesList(value: DevicesList): string {
   const footer = [
     ...value.notes,
     value.devices.some((row) => row.id !== null && row.chosen) ? "* this chat's device for that kind." : null,
+    value.devices.some((row) => row.kind === "ios")
+      ? "ios: a chat drives its lane's own simulator, never one a Mac has booted already: ade apple start makes it there (--udid <udid> attaches an installed one)."
+      : null,
     underRemoteMcp() ? MCP_DEVICE_HINT : "Pick one for this chat: ade devices use <id>. One command: --machine <name>.",
   ].filter(Boolean).join("\n");
   return `${table}\n${footer}\n`;
