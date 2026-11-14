@@ -528,17 +528,19 @@ function CodexTurnRecoveryCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
+  // One card for every provider (`turn_health`); a legacy Codex event names none.
+  const name = providerDisplayLabel(event.provider ?? "codex", "The agent");
   const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
     wait: "Keep waiting",
     steer: "Send nudge",
     interrupt_retry_same_thread: "Retry same server",
-    restart_resume_thread: "Restart & resume",
+    restart_resume_thread: `Restart ${name}`,
   };
   const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
-    waiting: "Waiting for Codex output…",
+    waiting: `Waiting for ${name}…`,
     nudged: "Status nudge sent.",
     retrying: "Retry started in this thread.",
-    resumed: "Codex app-server restarted and the thread resumed.",
+    resumed: `${name} restarted and picked up your last request.`,
   };
   const recoveryOptions = event.recoveryOptions ?? [
     "restart_resume_thread",
@@ -551,12 +553,12 @@ function CodexTurnRecoveryCard({
   const secondaryOptions = (["steer", "interrupt_retry_same_thread"] as const)
     .filter((option) => recoveryOptions.includes(option));
   const title = event.reason === "waiting_on_approval"
-    ? "Codex is waiting for approval"
+    ? `${name} is waiting for approval`
     : event.reason === "waiting_on_input"
-      ? "Codex is waiting for your input"
+      ? `${name} is waiting for your input`
       : event.reason === "no_progress"
-        ? "Codex stopped making progress"
-        : "Codex did not start responding";
+        ? `${name} has gone quiet`
+        : `${name} is slow to answer`;
   const timing = (() => {
     const detectedAt = event.detectedAt ? Date.parse(event.detectedAt) : Number.NaN;
     const turnStartedAt = event.turnStartedAt ? Date.parse(event.turnStartedAt) : Number.NaN;
@@ -597,6 +599,7 @@ function CodexTurnRecoveryCard({
         {event.message}
       </div>
       {event.automaticRecoveryAttempted ? (
+        // Only on cards from older brains, which restarted Codex once on their own.
         <div className="mt-1 text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48">
           ADE already tried one automatic restart. It will not restart again without you.
         </div>
@@ -1669,12 +1672,14 @@ const FOLDED_MESSAGE_ICON: Record<FoldedMessageSource, typeof Robot> = {
   agent: Robot,
   automation: Lightning,
   schedule: Clock,
+  ade: Info,
 };
 
 const FOLDED_MESSAGE_KIND_LABEL: Record<FoldedMessageSource, string> = {
   agent: "Message from another agent",
   automation: "Automation prompt",
   schedule: "Scheduled prompt",
+  ade: "Message ADE sent",
 };
 
 /**

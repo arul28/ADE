@@ -176,6 +176,8 @@ export function parseAgentChatSendArgs(value: Record<string, unknown>): AgentCha
     ...(typeof value.compactFirst === "boolean" ? { compactFirst: value.compactFirst } : {}),
     ...(includeThreadComments ? { includeThreadComments: true } : {}),
     ...guestCommentsField(includeThreadComments, value.includeGuestComments),
+    // A phone's offline queue or a web retry resends with the same id.
+    ...(asTrimmedString(value.clientSendId) ? { clientSendId: asTrimmedString(value.clientSendId)!.slice(0, 128) } : {}),
   };
 }
 
@@ -324,6 +326,7 @@ export function parseChatLaunchQueueMessageArgs(value: unknown): ChatLaunchQueue
     text: typeof record.text === "string" ? record.text : "",
     ...(asTrimmedString(record.displayText) ? { displayText: asTrimmedString(record.displayText)! } : {}),
     ...(attachments?.length ? { attachments } : {}),
+    ...(asTrimmedString(record.clientSendId) ? { clientSendId: asTrimmedString(record.clientSendId)!.slice(0, 128) } : {}),
   };
 }
 

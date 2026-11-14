@@ -12861,6 +12861,8 @@ function buildChatPlan(args: string[]): CliPlan {
       text: sendText,
       kind: "auto",
       ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+      // One id per send: a retried call (a reconnect, an MCP client's retry) is not sent twice.
+      clientSendId: randomUUID(),
     }));
     return {
       kind: "execute",
@@ -12905,6 +12907,7 @@ function buildChatPlan(args: string[]): CliPlan {
             text: messageText,
             kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+            clientSendId: randomUUID(),
           })),
         ),
       ],

@@ -1218,6 +1218,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         if let sideChat = metadata[agentChatSideChatMetadataKey], !(sideChat is NSNull) {
           parsed.userMessageFromSideChat = true
         }
+        if let continuation = metadata["hostContinuation"] as? [String: Any] {
+          parsed.userMessageAdeReason = (continuation["reason"] as? String) ?? ""
+        }
         if let author = metadata["author"] as? [String: Any], (author["kind"] as? String) == "guest" {
           parsed.userMessageGuestAuthorName = ((author["name"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }

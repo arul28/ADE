@@ -3232,6 +3232,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// True for a `user_message` a side chat sent to this chat because the user
   /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
   var userMessageFromSideChat: Bool = false
+  /// Why ADE wrote this `user_message` (`metadata.hostContinuation.reason`), or
+  /// nil. Such a message draws as an "ADE" row with that reason, never as the
+  /// reader's bubble.
+  var userMessageAdeReason: String?
   /// The name of the other person who wrote a `user_message` on a shared lane
   /// (`metadata.author.kind == "guest"`): the bubble says "From <name>", so a
   /// guest's message never reads as the owner's own. Empty when the guest has
@@ -3326,6 +3330,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var summary: String?
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
+    var metadataHostContinuationReason: String?
     var metadataMarksRecoveryHandOff = false
     var metadataMarksRestartResume = false
     var metadataGuestAuthorName: String?
@@ -3337,6 +3342,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
 
     private struct ScheduledWake: Decodable {
       var scheduleId: String?
+    }
+
+    private struct HostContinuation: Decodable {
+      var reason: String?
     }
 
     private struct MetadataKey: CodingKey {
@@ -3394,6 +3403,9 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
           (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
         if let wake = try? metadata.decodeIfPresent(ScheduledWake.self, forKey: MetadataKey("scheduledWake")) {
           metadataMarksRestartResume = workIsRestartResumeScheduleId(wake.scheduleId)
+        }
+        if let continuation = try? metadata.decodeIfPresent(HostContinuation.self, forKey: MetadataKey("hostContinuation")) {
+          metadataHostContinuationReason = continuation.reason ?? ""
         }
         if let author = try? metadata.decodeIfPresent(MessageAuthor.self, forKey: MetadataKey("author")),
            author.kind == "guest" {
@@ -3466,6 +3478,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
+    userMessageAdeReason = rawEvent?.type == "user_message" ? rawEvent?.metadataHostContinuationReason : nil
     userMessageGuestAuthorName = rawEvent?.type == "user_message" ? rawEvent?.metadataGuestAuthorName : nil
     userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     userMessageIsRestartResume = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRestartResume == true

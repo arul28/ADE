@@ -16036,7 +16036,10 @@ final class SyncService: ObservableObject {
     // unless the caller already named a target explicitly (e.g. the hub
     // composer creating into a chosen project).
     let scope = chatCommandScope(for: sessionId)
-    var args: [String: Any] = ["sessionId": sessionId, "text": text]
+    // One id per send (`AgentChatSendArgs.clientSendId`): if this command is
+    // delivered twice (the offline queue replaying it after a reconnect), the
+    // host writes the message once. Older hosts ignore the key.
+    var args: [String: Any] = ["sessionId": sessionId, "text": text, "clientSendId": UUID().uuidString]
     // The Chats page is one of ADE's own surfaces: a personal chat written
     // before profiles existed becomes an assistant chat when used from here
     // (`PersonalChatAssistantClaim` on the host). Project chats never carry it.

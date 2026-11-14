@@ -2931,7 +2931,82 @@ function getMockChatTranscriptEvents(sessionId: string): any[] {
   const base = Array.isArray(events)
     ? events.filter((entry) => entry?.sessionId === sessionId && entry?.event)
     : [];
-  return [...base, ...browserMockQuestionEvents(sessionId), ...(browserMockSentEvents.get(sessionId) ?? [])];
+  return [
+    ...base,
+    ...browserMockQuestionEvents(sessionId),
+    ...browserMockCodexStallEvents(sessionId),
+    ...(browserMockSentEvents.get(sessionId) ?? []),
+  ];
+}
+
+/**
+ * `?mockCodexStall=1` (or `=claude`, `=cursor`, …): the question chat (or `mockStallSession`) ends on a turn that has not
+ * answered, so the preview shows the restart card and the ADE rows (a message
+ * ADE wrote, never the user's bubble) without a slow Codex.
+ */
+function browserMockCodexStallEvents(sessionId: string): any[] {
+  const href = typeof window === "undefined" ? "" : window.location.href;
+  const match = /[?&]mockCodexStall=([a-z]+|1)\b/.exec(href);
+  if (!match) return [];
+  // `&mockStallSession=<id>` puts it on that chat instead (a snapshot without the question chat).
+  const target = /[?&]mockStallSession=([A-Za-z0-9-]+)/.exec(href)?.[1] ?? BROWSER_MOCK_QUESTION_SESSION_ID;
+  if (sessionId !== target) return [];
+  // `=1` is Codex; `=claude`, `=cursor`, … shows the same card for that provider.
+  const provider = match[1] === "1" ? "codex" : match[1]!;
+  const name = provider.charAt(0).toUpperCase() + provider.slice(1);
+  const startedAt = Date.now() - 3 * 60_000;
+  const at = (offsetMs: number) => new Date(startedAt + offsetMs).toISOString();
+  const turnId = "mock-stall-turn";
+  return [
+    {
+      sessionId,
+      timestamp: at(0),
+      sequence: 991_000,
+      event: { type: "user_message", text: "Add a settings page with a dark mode toggle.", turnId },
+    },
+    {
+      sessionId,
+      timestamp: at(500),
+      sequence: 991_001,
+      event: {
+        type: "user_message",
+        text: "Status check: briefly report your current progress or what is blocking this turn, then continue the task.",
+        turnId,
+        metadata: { hostContinuation: { reason: "stall_nudge" } },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at(1_000),
+      sequence: 991_002,
+      event: {
+        type: "user_message",
+        text: "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress.",
+        turnId,
+        metadata: { hostContinuation: { reason: "interrupted_turn_recovery" } },
+      },
+    },
+    {
+      sessionId,
+      timestamp: at(120_000),
+      sequence: 991_003,
+      event: {
+        type: "turn_health",
+        provider,
+        turnId,
+        state: "stalled",
+        reason: "no_output",
+        message: `${name} hasn't answered in 2 minutes. Restart ${name}, or keep waiting.`,
+        turnStartedAt: at(0),
+        lastProgressAt: at(0),
+        detectedAt: at(120_000),
+        recoveryCount: 0,
+        supportedActions: ["wait", "restart_resume"],
+        automaticRecoveryAttempted: false,
+        sourceSessionId: sessionId,
+      },
+    },
+  ];
 }
 
 // Live chat events in the preview: messages sent here and thread-comment
