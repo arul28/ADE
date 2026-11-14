@@ -1322,7 +1322,7 @@ before budgets. The event-level `ade_feature_used` 140-per-day /
 remains 200. Approval responses, pending input reads, and provider runtime
 polling do not emit this fact.
 
-When a user moves a chat to another Claude or Codex account
+When a user moves a chat or a CLI session to another Claude or Codex account
 (`chat.switchAccount`), the chat service emits `chat/account_switched` with
 `outcome: "completed"` after the thread copy and the account change succeed,
 through its `onAccountSwitched` hook. It carries only the Claude/Codex family:

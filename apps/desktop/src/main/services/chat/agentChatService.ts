@@ -81571,7 +81571,14 @@ export function createAgentChatService(args: {
       const cli = agentCliActions.target(switchArgs?.sessionId, "switch the account of");
       if (!cli) return await switchAccount(switchArgs);
       if (!switchArgs.instanceId?.trim()) throw new Error("Account id is required.");
-      return await agentCliActions.switchAccount(cli, switchArgs.instanceId);
+      const provider = cli.resumeMetadata?.provider;
+      const before = cli.resumeMetadata?.launch?.instanceId?.trim() || cli.resumeMetadata?.instanceId?.trim() || provider;
+      const result = await agentCliActions.switchAccount(cli, switchArgs.instanceId);
+      // The same fact a chat's move records, so a CLI's move counts too.
+      if (result.ok && result.instanceId !== before && (provider === "claude" || provider === "codex")) {
+        onAccountSwitched?.({ provider });
+      }
+      return result;
     },
     setScheduledWorkPaused,
     /** The lane share host installs its check of queued guest messages. Returns its removal. */
