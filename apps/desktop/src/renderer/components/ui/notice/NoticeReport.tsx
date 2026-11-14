@@ -116,7 +116,8 @@ export function useNoticeFailure(notice: {
   // Read once, when the notice is first shown, and kept: the same error in
   // two projects is two failures (each has its own note and sent state), and
   // a toast that stays up after a project switch is still about the first.
-  const [shownInProjectRoot] = useState(() => useAppStore.getState().project?.rootPath ?? null);
+  const openProjectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const [shownInProjectRoot] = useState(openProjectRoot);
   const state = useIssueReport({
     surface: report?.surface ?? "notice",
     headline: report?.headline ?? null,

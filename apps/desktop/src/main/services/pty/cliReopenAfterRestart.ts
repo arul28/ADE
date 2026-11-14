@@ -276,7 +276,15 @@ export function neutralizeCliSessionsToReopen(
   const dir = cacheDir(projectRoot);
   let held = true;
   let failed = 0;
-  for (const name of listFileNames(dir)) {
+  // A folder that is not there has no lists. One that cannot be read (locked,
+  // unavailable) may hold lists that still continue work: not held.
+  let names: string[];
+  try {
+    names = fs.readdirSync(dir).filter(isListFileName);
+  } catch (error) {
+    return isMissing(error) ? { held: true, failed: 0 } : { held: false, failed: 1 };
+  }
+  for (const name of names) {
     if (!writerPids.has(listFileWriterPid(name))) continue;
     const filePath = path.join(dir, name);
     // A list with nothing to continue needs no rewrite.
