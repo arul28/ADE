@@ -6515,6 +6515,7 @@ final class SyncService: ObservableObject {
   ) async throws {
     beginProjectSwitchTiming()
     let switchMachineKey = focusedMachineKey
+    let switchConnectionChoice = userConnectionChoiceGeneration
     let raw: Any
     do {
       raw = try await sendProjectSwitchRequest(project, rootPath: rootPath)
@@ -6524,7 +6525,11 @@ final class SyncService: ObservableObject {
       // the phone reconnects to it by itself: ask once more on that connection,
       // and only on that machine.
       guard isCurrentProjectSelection(selectionGeneration),
-            await awaitReconnectForProjectSwitch(selectionGeneration: selectionGeneration, machineKey: switchMachineKey) else {
+            await awaitReconnectForProjectSwitch(
+              selectionGeneration: selectionGeneration,
+              machineKey: switchMachineKey,
+              connectionChoice: switchConnectionChoice
+            ) else {
         throw error
       }
       syncConnectLog.notice("ADE_SYNC_TRACE project_switch resent_after_reconnect error=\(syncLogErrorSummary(error), privacy: .public)")
@@ -6738,12 +6743,20 @@ final class SyncService: ObservableObject {
 
   /// Waits for the automatic reconnect after a socket closed under a project
   /// switch. False when it does not come back in time, when another project
-  /// was chosen meanwhile, or when the phone moved to another machine.
-  private func awaitReconnectForProjectSwitch(selectionGeneration: UInt64, machineKey: String?, timeout: TimeInterval = 20) async -> Bool {
+  /// was chosen meanwhile, or when the phone moved to another machine. A
+  /// machine the user picked counts at once, also while that machine still
+  /// wakes; background pairings do not move `userConnectionChoiceGeneration`.
+  private func awaitReconnectForProjectSwitch(
+    selectionGeneration: UInt64,
+    machineKey: String?,
+    connectionChoice: UInt64,
+    timeout: TimeInterval = 20
+  ) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
       guard !Task.isCancelled, isCurrentProjectSelection(selectionGeneration),
-            focusedMachineKey == machineKey else { return false }
+            focusedMachineKey == machineKey,
+            userConnectionChoiceGeneration == connectionChoice else { return false }
       if canSendLiveRequests() { return true }
       try? await Task.sleep(nanoseconds: 250_000_000)
     }

@@ -1686,8 +1686,13 @@ struct WorkSessionDestinationView: View {
         wakeFailure: syncService.cloudWakeFailure(fleetKey: sessionCloudMachineKey),
         // A chat with no cached row loaded nothing while the computer slept:
         // read it now that the computer answers.
-        onAwake: { if session == nil { await load() } }
+        onAwake: { await loadMissingSessionWhenLive() }
       )
+      // The wake can return before this chat's link reads as live.
+      .onChange(of: isLiveAndReachable) { _, live in
+        guard live, session == nil, initialLoadCompleted else { return }
+        Task { await loadMissingSessionWhenLive() }
+      }
       .workSessionNavigationChrome(
         // The wide column's chrome is the rail around the split (`body`).
         mode: duoUsesPane || isFullScreenTerminalSession ? .embedded : navigationChrome,
@@ -1821,8 +1826,14 @@ struct WorkSessionDestinationView: View {
           openingDeliveryWarning = SyncRequestTimeout.chatSendMessage
         }
         stageInitialOpeningPromptEchoIfNeeded()
+        let wasLiveBeforeLoad = isLiveAndReachable
         await load()
         initialLoadCompleted = true
+        // The computer answered while that load ran (a cloud wake): read the
+        // chat once more instead of showing it as unavailable.
+        if !wasLiveBeforeLoad, session == nil {
+          await loadMissingSessionWhenLive()
+        }
         await sendInitialOpeningPromptIfNeeded()
         refreshChatInfoSnapshots()
         // Remote subagent probing hits the host; skip the eager pass for a
@@ -2585,6 +2596,18 @@ struct WorkSessionDestinationView: View {
   /// subscribed before this runs. The summary and artifact loads run side by
   /// side instead of in series.
   @MainActor
+  /// Reads a chat that has no session row yet once its computer is live and
+  /// reachable, after any load still running ends.
+  func loadMissingSessionWhenLive() async {
+    // A cross-project quick look reads no session row.
+    guard !isRemoteOnlyChat else { return }
+    while openingLoadInFlight, !Task.isCancelled {
+      try? await Task.sleep(for: .milliseconds(200))
+    }
+    guard !Task.isCancelled, session == nil, isLiveAndReachable else { return }
+    await load()
+  }
+
   func load() async {
     guard !openingLoadInFlight else { return }
     openingLoadInFlight = true
