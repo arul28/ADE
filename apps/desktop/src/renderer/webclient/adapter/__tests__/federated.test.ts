@@ -953,13 +953,19 @@ describe("createFederatedWebAdapter", () => {
     }));
     const federated = createFederatedWebAdapter({
       manager: fixture.manager,
-      accountClient: { getSnapshot: () => ({ machines: [machine] }), onMachinesChanged: () => () => {} } as unknown as BrowserAccountClient,
+      accountClient: {
+        getSnapshot: () => ({ machines: [machine] }),
+        // A person's connect to a computer whose saved connection is down reads the account list first.
+        loadMachines: async () => ({ machines: [machine] }),
+        onMachinesChanged: () => () => {},
+      } as unknown as BrowserAccountClient,
       accountKey: `wake-disconnect-${wake}-${disconnectDuringWake}`,
       fallbackClient: fixture.fallbackClient,
     });
 
     const connecting = federated.ade.machines.connect("cloud-1");
-    await vi.waitFor(() => expect(cloudWake.wake).toHaveBeenCalled());
+    // This case's own wake has started (the mock is shared by the cases).
+    await vi.waitFor(() => expect(typeof finishWake).toBe("function"));
     if (disconnectDuringWake) disconnected.add(environment.envId);
     finishWake();
     const result = await connecting;

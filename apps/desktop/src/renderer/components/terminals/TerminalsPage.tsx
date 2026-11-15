@@ -132,7 +132,6 @@ import {
   cancelCrossMachineOptimisticChatSession,
   requestCrossMachineLanesForMachine,
   seedCrossMachineOptimisticChatSession,
-  unionSlotIdForBinding,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
 import { writeClientLayout } from "../ui/clientLayoutStore";
@@ -351,6 +350,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     }
     return byId;
   }, [crossMachineSlices, selectableSessions]);
+  // The union slice of each other-machine checkout, by its binding key: a
+  // computer's second checkout is its own slice (`checkoutSlotId`).
+  const unionSlotIdByBindingKey = useMemo(() => {
+    const byKey = new Map<string, string>();
+    for (const machine of crossMachineSlices) {
+      const key = machine.binding?.key;
+      if (key && !byKey.has(key)) byKey.set(key, machine.machineId);
+    }
+    return byKey;
+  }, [crossMachineSlices]);
+  const unionSlotIdOf = useCallback(
+    (pin: OpenProjectBinding | null | undefined): string =>
+      (pin ? unionSlotIdByBindingKey.get(pin.key) : undefined) ?? machineIdForBinding(pin),
+    [unionSlotIdByBindingKey],
+  );
 
   useEffect(() => {
     const visibleIds = new Set(selectableSessionsById.keys());
@@ -722,14 +736,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // which lists every machine's lanes. The project tab never changes
       // machine to show one lane.
       if (binding) {
-        work.navigate(openLaneOnMachinePath(session.laneId, unionSlotIdForBinding(binding), session.id));
+        work.navigate(openLaneOnMachinePath(session.laneId, unionSlotIdOf(binding), session.id));
         return;
       }
       work.selectLane(session.laneId);
       work.focusSession(session.id);
       work.navigate(openLaneInLanesTabPath(session.laneId, session.id));
     },
-    [work],
+    [unionSlotIdOf, work],
   );
 
   const handleGoToLaneById = useLatestCallback(
@@ -1273,7 +1287,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // A chat on another machine is keyed by its machine, as its lane's delete was (see SessionListPane).
   const activeLaneDeleteKey = activeLaneId && activeWorkSessionRuntimePin
     && activeWorkSessionRuntimePin.key !== projectBinding?.key
-    ? foreignLaneKey(unionSlotIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
+    ? foreignLaneKey(unionSlotIdOf(activeWorkSessionRuntimePin), activeLaneId)
     : activeLaneId;
   const activeLaneDeleteProgress = useAppStore((state) => (
     activeLaneDeleteKey ? state.laneDeleteProgressByLaneId[activeLaneDeleteKey] ?? null : null
@@ -1614,14 +1628,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
   const foreignLaneForSession = useCallback((session: TerminalSessionSummary) => {
     const pin = resolveSessionRuntimePin(session);
-    const own = pin ? foreignSessionLanes.get(unionSlotIdForBinding(pin))?.get(session.id) : undefined;
+    const own = pin ? foreignSessionLanes.get(unionSlotIdOf(pin))?.get(session.id) : undefined;
     if (own) return own;
     for (const bySessionId of foreignSessionLanes.values()) {
       const lane = bySessionId.get(session.id);
       if (lane) return lane;
     }
     return null;
-  }, [foreignSessionLanes, resolveSessionRuntimePin]);
+  }, [foreignSessionLanes, resolveSessionRuntimePin, unionSlotIdOf]);
 
   // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
   // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
@@ -2362,7 +2376,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           // A row on another machine is re-read after the move and after an
           // undo, as a board drag does, so the card does not sit stale.
           const refreshForeign = runtimePin && runtimePin.key !== projectBinding?.key
-            ? () => requestCrossMachineLanesForMachine(unionSlotIdForBinding(runtimePin))
+            ? () => requestCrossMachineLanesForMachine(unionSlotIdOf(runtimePin))
             : undefined;
           moveSessionOnBoard({
             session,
