@@ -1,4 +1,7 @@
+import path from "node:path";
 import { defineConfig } from "vitest/config";
+import { BaseSequencer } from "vitest/node";
+import { createDurationShardSequencer } from "../../scripts/ci/test-shards.mjs";
 import { windowsScaledTimeout } from "./vitest.timeouts";
 
 // Windows runners do real file, SQLite and pipe work several times slower than
@@ -14,6 +17,16 @@ export default defineConfig({
     setupFiles: ["src/test/setup.ts"],
     testTimeout: timeoutMs,
     hookTimeout: timeoutMs,
+    // `--shard=N/M` splits the files by their recorded durations instead of
+    // by a hash of their paths.
+    sequence: {
+      sequencer: createDurationShardSequencer(BaseSequencer, {
+        durationsFile: path.resolve(__dirname, "vitest.durations.json"),
+        // The recorded durations leave out import and setup time; this
+        // adds a small fixed cost for each file.
+        perFileMs: 300,
+      }),
+    },
     coverage: {
       provider: "v8",
       reporter: ["text", "lcov"],

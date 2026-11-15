@@ -81,8 +81,8 @@ describe("parseWorkflowFile", () => {
     expect(install?.needs).toEqual([]);
 
     // `needs: install` given as a bare string, not a list.
-    const typecheck = parsed.jobs.find((entry) => entry.id === "typecheck");
-    expect(typecheck?.needs).toEqual(["install"]);
+    const services = parsed.jobs.find((entry) => entry.id === "services");
+    expect(services?.needs).toEqual(["install"]);
 
     // The gate depends on everything upstream.
     const gate = parsed.jobs.find((entry) => entry.id === "ci-pass");
@@ -267,8 +267,8 @@ describe("createWorkflowGraph.build", () => {
           runAttempt: 2,
           jobs: [
             job({ id: 10, name: "install" }),
-            job({ id: 11, name: "typecheck" }),
-            job({ id: 12, name: "lint-desktop" }),
+            job({ id: 11, name: "services" }),
+            job({ id: 12, name: "packages" }),
             job({ id: 13, name: "ci-pass" }),
           ],
         }),
@@ -281,13 +281,13 @@ describe("createWorkflowGraph.build", () => {
 
     const byId = new Map(graph.nodes.map((node) => [node.jobId, node]));
     expect(byId.get("install")?.tier).toBe(0);
-    expect(byId.get("typecheck")?.tier).toBe(1);
-    expect(byId.get("lint-desktop")?.tier).toBe(1);
+    expect(byId.get("services")?.tier).toBe(1);
+    expect(byId.get("packages")?.tier).toBe(1);
     // The gate sits one tier past its deepest dependency.
     expect(byId.get("ci-pass")!.tier).toBeGreaterThan(1);
 
-    expect(graph.edges).toContainEqual({ from: "install", to: "typecheck" });
-    expect(graph.edges).toContainEqual({ from: "typecheck", to: "ci-pass" });
+    expect(graph.edges).toContainEqual({ from: "install", to: "services" });
+    expect(graph.edges).toContainEqual({ from: "services", to: "ci-pass" });
     // `secret-scan` has no needs, so it must have no inbound edge.
     expect(graph.edges.filter((edge) => edge.to === "secret-scan")).toEqual([]);
   });
