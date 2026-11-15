@@ -4110,6 +4110,64 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.hasCredentialForTesting(currentOwner))
   }
 
+  /// An explicit sign-out leaves none of the account's projects on this
+  /// phone's lists, also after a relaunch, except those of a computer still
+  /// paired by code. The same account signing in again shows them again.
+  @MainActor
+  func testExplicitSignOutHidesAccountProjectsExceptCodePairedOnes() throws {
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: makeTemporaryDirectory())
+    let service = SyncService(database: database)
+    service.clearSavedProfilesForTesting()
+    defer {
+      service.showSignedOutAccountProjects(ownerId: "user_1")
+      service.clearSavedProfilesForTesting()
+    }
+    for (id, root) in [("project_studio", "/demo/studio/hello-world"), ("project_cloud", "/demo/cloud/hello-world")] {
+      try database.upsertMobileProjectCache(MobileProjectSummary(
+        id: id, displayName: "hello-world", rootPath: root, defaultBaseRef: "main",
+        lastOpenedAt: nil, laneCount: 0, isAvailable: true, isCached: true
+      ))
+    }
+    func copy(_ checkoutId: String, on machineKey: String, root: String) -> AccountProjectCopy {
+      AccountProjectCopy(projectId: "acct-project", machineKey: machineKey, checkoutId: checkoutId,
+                         rootPath: root, isMain: false, lastSeenAt: 1)
+    }
+    let copies = [
+      copy("project_studio", on: "mk-studio", root: "/demo/studio/hello-world"),
+      copy("project_cloud", on: "mk-cloud", root: "/demo/cloud/hello-world"),
+    ]
+    service.refreshProjectCatalog()
+    XCTAssertEqual(Set(service.projects.map(\.id)), ["project_studio", "project_cloud"])
+
+    // Demo Studio is paired by code; Demo Cloud was reached through the account only.
+    service.installSavedProfileForTesting(HostConnectionProfile(
+      hostIdentity: "studio-device",
+      hostName: "Demo Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "studio-device",
+      lastSuccessfulAddress: "192.168.1.2",
+      savedAddressCandidates: ["192.168.1.2"],
+      discoveredLanAddresses: ["192.168.1.2"],
+      tailscaleAddress: nil
+    ), token: "studio-secret")
+    service.hideSignedOutAccountProjects(
+      ownerId: "user_1", copies: copies, machineKeyByIdentity: ["studio-device": "mk-studio"]
+    )
+    XCTAssertEqual(service.projects.map(\.id), ["project_studio"])
+
+    // No paired computer left: nothing of the account stays, also after a relaunch.
+    service.clearSavedProfilesForTesting()
+    service.hideSignedOutAccountProjects(ownerId: "user_1", copies: copies, machineKeyByIdentity: [:])
+    XCTAssertEqual(service.projects.map(\.id), [])
+    XCTAssertEqual(SyncService(database: database).projects.map(\.id), [])
+
+    service.showSignedOutAccountProjects(ownerId: "user_1")
+    XCTAssertEqual(Set(service.projects.map(\.id)), ["project_studio", "project_cloud"])
+  }
+
   @MainActor
   func testManualRepairDeclassifiesAccountMachineBeforeSignOut() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))

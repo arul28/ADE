@@ -4715,6 +4715,7 @@ final class SyncService: ObservableObject {
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
   private let hiddenProjectsKey = "ade.sync.hiddenProjects"
   private let removedFromHostProjectsKey = "ade.sync.removedFromHostProjects"
+  private let signedOutAccountProjectsKey = "ade.sync.signedOutAccountProjects"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   /// App Group key for offline new-chat creation snapshots. Stored in the
   /// shared suite so a synthesized "pending sync" row survives relaunch and is
@@ -5054,6 +5055,13 @@ final class SyncService: ObservableObject {
   /// which the machine never deletes: its catalog already left them out, and
   /// lists one again if it is added back there.
   private var removedFromHostKeys: [Set<String>] = []
+  /// Cached project rows an explicit sign-out took off this phone's lists,
+  /// by the account that signed out: the `id:` keys of projects on
+  /// computers the phone reached only through that account. The rows stay
+  /// in the replica, which syncs with machines; this only hides them. The
+  /// same account signing in again, or a code-paired machine listing the
+  /// folder, shows them again.
+  private var signedOutAccountProjectKeys: [String: Set<String>] = [:]
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
@@ -6205,6 +6213,7 @@ final class SyncService: ObservableObject {
     preferRemoteSelection: Bool = true
   ) {
     forgetRemovedFromHost(listedIn: catalog.projects)
+    forgetSignedOutAccountProjects(listedIn: catalog.projects)
     remoteProjectCatalog = catalog.projects.filter { !isProjectHidden($0) }
     refreshProjectCatalog(preferRemoteSelection: preferRemoteSelection)
   }
@@ -6955,12 +6964,89 @@ final class SyncService: ObservableObject {
   private func isCachedProjectHidden(_ project: MobileProjectSummary) -> Bool {
     if isProjectHidden(project) { return true }
     let keys = hiddenKeys(for: project)
+    if signedOutAccountProjectKeys.values.contains(where: { !$0.isDisjoint(with: keys) }) { return true }
     return removedFromHostKeys.contains { !$0.isDisjoint(with: keys) }
   }
 
   private func loadProjectVisibilityKeys() {
     hiddenProjectKeys = loadHiddenProjectKeys()
     removedFromHostKeys = activeHostStorageKey().map(loadRemovedFromHostKeys(hostKey:)) ?? []
+    let stored = UserDefaults.standard.dictionary(forKey: signedOutAccountProjectsKey) as? [String: [String]] ?? [:]
+    signedOutAccountProjectKeys = stored.mapValues { Set($0) }.filter { !$0.value.isEmpty }
+  }
+
+  private func saveSignedOutAccountProjectKeys() {
+    let kept = signedOutAccountProjectKeys.filter { !$0.value.isEmpty }
+    signedOutAccountProjectKeys = kept
+    if kept.isEmpty {
+      UserDefaults.standard.removeObject(forKey: signedOutAccountProjectsKey)
+    } else {
+      UserDefaults.standard.set(kept.mapValues { $0.sorted() }, forKey: signedOutAccountProjectsKey)
+    }
+  }
+
+  /// The person signed out of `ownerId`: the projects of computers this
+  /// phone reached only through that account leave its lists, so the
+  /// account's work is not left on the Hub. Call it after the account's
+  /// pairings are removed. `copies` are the account's project copies and
+  /// `machineKeyByIdentity` maps a device identity (lowercased) to its
+  /// account machine key; both are read before the sign-out clears them.
+  /// A copy on a computer still paired by code stays. With no paired
+  /// computer left, every cached project goes and the Hub shows its
+  /// signed-out empty state.
+  func hideSignedOutAccountProjects(
+    ownerId: String,
+    copies: [AccountProjectCopy],
+    machineKeyByIdentity: [String: String]
+  ) {
+    let owner = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !owner.isEmpty else { return }
+    let remaining = Array(loadSavedProfilesRaw().values)
+    var keys = Set<String>()
+    if remaining.isEmpty {
+      for row in database.listMobileProjects() {
+        keys.formUnion(hiddenKeys(projectId: row.id, rootPath: nil))
+      }
+    } else {
+      let pairedMachineKeys = Set(remaining.compactMap { profile -> String? in
+        guard let identity = syncNonEmpty(profile.hostIdentity ?? profile.lastHostDeviceId) else { return nil }
+        return machineKeyByIdentity[identity.lowercased()]
+      })
+      var kept = Set<String>()
+      for copy in copies {
+        let copyKeys = hiddenKeys(projectId: copy.checkoutId, rootPath: nil)
+        if pairedMachineKeys.contains(copy.machineKey) {
+          kept.formUnion(copyKeys)
+        } else {
+          keys.formUnion(copyKeys)
+        }
+      }
+      keys.subtract(kept)
+    }
+    guard !keys.isEmpty else { return }
+    signedOutAccountProjectKeys[owner, default: []].formUnion(keys)
+    saveSignedOutAccountProjectKeys()
+    refreshProjectCatalog()
+  }
+
+  /// The account signed in again: its cached projects show again (its own
+  /// list governs the Hub from here). Another account's stay hidden.
+  func showSignedOutAccountProjects(ownerId: String) {
+    let owner = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard signedOutAccountProjectKeys.removeValue(forKey: owner) != nil else { return }
+    saveSignedOutAccountProjectKeys()
+    refreshProjectCatalog()
+  }
+
+  /// A machine lists a folder an earlier sign-out hid: it is reachable
+  /// without the account now, so its cached row shows again.
+  private func forgetSignedOutAccountProjects(listedIn catalog: [MobileProjectSummary]) {
+    guard !signedOutAccountProjectKeys.isEmpty else { return }
+    let listed = catalog.reduce(into: Set<String>()) { $0.formUnion(hiddenKeys(projectId: $1.id, rootPath: nil)) }
+    let next = signedOutAccountProjectKeys.mapValues { $0.subtracting(listed) }
+    guard next != signedOutAccountProjectKeys else { return }
+    signedOutAccountProjectKeys = next
+    saveSignedOutAccountProjectKeys()
   }
 
   /// Stored as one line per folder, its keys joined by a newline.
