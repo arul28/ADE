@@ -18420,8 +18420,9 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
+        // A file gets a fresh PNG capture, not the live view's JPEG frame.
         appControlStep("result", "screenshot",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { format: "png" }),
         ),
       ],
       saveScreenshot: { outPath, surface: "app-control" },
@@ -37562,7 +37563,11 @@ function saveScreenshotResult(
     );
   }
   const bytes = Buffer.from(match[1]!, "base64");
-  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
+  // Named for what the bytes are: a JPEG (a live frame) never lands under a
+  // .png name, which PNG-only readers refuse.
+  const jpeg = /^data:image\/jpe?g;/.test(dataUrl!);
+  const requested = path.resolve(outPath ?? nextTempScreenshotPath());
+  const savedPath = jpeg && /\.png$/i.test(requested) ? requested.replace(/\.png$/i, ".jpg") : requested;
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
   // A temp screenshot stays private: exclusive create, owner-only. An explicit
   // `--out` is the caller's own path and keeps the default mode.

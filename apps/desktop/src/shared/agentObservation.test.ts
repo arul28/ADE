@@ -111,5 +111,9 @@ describe("AGENT_DOM_COLLECTOR_FUNCTION text matching", () => {
     document.querySelector("p")?.remove();
     expect(COLLECT({ locate: { text: "Apple Simulators" } }).target).toBeNull();
     expect(COLLECT({ locate: { text: "Start Versic Tablet" } }).target?.testId).toBe("device-card");
+
+    // A word split by inline markup still matches beside inert content.
+    document.body.innerHTML = `<button data-testid="restart">Re<strong>start</strong><span inert>Old</span></button>`;
+    expect(COLLECT({ locate: { text: "Restart" } }).target?.testId).toBe("restart");
   });
 });

@@ -553,7 +553,9 @@ function(inputArg) {
     for (let current = walker.nextNode(); current; current = walker.nextNode()) {
       if (current.nodeType === Node.TEXT_NODE) parts.push(current.textContent || "");
     }
-    return parts.join(" ");
+    // Joined as textContent joins them: a word split by inline markup
+    // ("Re<b>start</b>") stays one word.
+    return parts.join("");
   };
   // What a control declares as its name, not the text of what it contains.
   const declaredText = (node) => {
