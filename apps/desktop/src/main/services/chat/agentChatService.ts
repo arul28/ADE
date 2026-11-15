@@ -70925,7 +70925,9 @@ export function createAgentChatService(args: {
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     const crossMachineMove = scope.crossMachineMove(row.id)?.record ?? null;
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
-    const remoteWork = withRemoteWorkSeenAt(row.id, pendingRemoteWork.get(row.id) ?? remoteWorkBySession.get(row.id) ?? persisted?.remoteWork ?? null);
+    // Saved before live: another brain may have moved the chat's work since,
+    // and the live list is only for a session with no state file.
+    const remoteWork = withRemoteWorkSeenAt(row.id, pendingRemoteWork.get(row.id) ?? persisted?.remoteWork ?? remoteWorkBySession.get(row.id) ?? null);
     return {
       ...(remoteWork?.length ? { remoteWork } : {}),
       sessionId: row.id,
