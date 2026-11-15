@@ -375,6 +375,34 @@ describe("createAgentChatService", () => {
       ]);
     });
 
+    it("keeps a chat's work on another machine across a restart", async () => {
+      // The tools pane finds the simulator a chat started on a Mac through
+      // this record. A restart used to drop it, so the pane offered to boot a
+      // simulator that was already running there.
+      const db = createScheduledWorkDb().db;
+      const first = createService({ db });
+      const session = await first.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      first.service.noteRemoteWork({
+        sessionId: session.id,
+        machineKey: "mac-studio",
+        machineName: "Mac Studio",
+        machinePlatform: "darwin",
+        projectId: "project-there",
+        projectRootPath: "/Volumes/Dev/ADE",
+        terminalId: null,
+        workCopyLaneId: "remote-work-abc123",
+        usesSimulator: true,
+      });
+      await first.service.disposeAll();
+
+      const restarted = createService({ db });
+      const summary = await restarted.service.getSessionSummary(session.id);
+      expect(summary?.remoteWork).toEqual([
+        expect.objectContaining({ machineKey: "mac-studio", workCopyLaneId: "remote-work-abc123", usesSimulator: true }),
+      ]);
+      restarted.service.forceDisposeAll();
+    });
+
     it("scheduled fire into a detached session still delivers by cold resume", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);

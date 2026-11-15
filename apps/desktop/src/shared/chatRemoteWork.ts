@@ -20,6 +20,55 @@ export function activeRemoteWork(
     !Number.isFinite(turnStart) || Date.parse(use.lastStartedAt) >= turnStart);
 }
 
+/**
+ * A chat's remote-work entries read back from its saved state. Anything that
+ * is not a well-formed entry is dropped, never guessed at.
+ */
+export function normalizeRemoteWorkUses(value: unknown): AgentChatRemoteWorkUse[] | null {
+  if (!Array.isArray(value)) return null;
+  const text = (raw: unknown): string | null => (typeof raw === "string" && raw.trim() ? raw : null);
+  const uses: AgentChatRemoteWorkUse[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as Record<string, unknown>;
+    const machineKey = text(entry.machineKey);
+    const machineName = text(entry.machineName);
+    const lastStartedAt = text(entry.lastStartedAt);
+    if (!machineKey || !machineName || !lastStartedAt) continue;
+    uses.push({
+      machineKey,
+      machineName,
+      machinePlatform: text(entry.machinePlatform),
+      projectId: text(entry.projectId),
+      projectRootPath: text(entry.projectRootPath),
+      terminalIds: Array.isArray(entry.terminalIds) ? entry.terminalIds.filter((id): id is string => typeof id === "string" && id.length > 0) : [],
+      workCopyLaneId: text(entry.workCopyLaneId),
+      usesSimulator: entry.usesSimulator === true,
+      ...(entry.usesAndroidEmulator === true ? { usesAndroidEmulator: true } : {}),
+      ...(entry.usesDesktop === true ? { usesDesktop: true } : {}),
+      ...(entry.usesAppControl === true ? { usesAppControl: true } : {}),
+      lastStartedAt,
+    });
+  }
+  return uses.length ? uses : null;
+}
+
+/** The same entry apart from when it was last used: nothing worth saving changed. */
+export function sameRemoteWorkUse(a: AgentChatRemoteWorkUse, b: AgentChatRemoteWorkUse): boolean {
+  return a.machineKey === b.machineKey
+    && a.machineName === b.machineName
+    && a.machinePlatform === b.machinePlatform
+    && a.projectId === b.projectId
+    && a.projectRootPath === b.projectRootPath
+    && a.workCopyLaneId === b.workCopyLaneId
+    && a.usesSimulator === b.usesSimulator
+    && Boolean(a.usesAndroidEmulator) === Boolean(b.usesAndroidEmulator)
+    && Boolean(a.usesDesktop) === Boolean(b.usesDesktop)
+    && Boolean(a.usesAppControl) === Boolean(b.usesAppControl)
+    && a.terminalIds.length === b.terminalIds.length
+    && a.terminalIds.every((id, index) => id === b.terminalIds[index]);
+}
+
 /** A remote-work entry whose machine told us the work copy's lane. */
 export type RemoteWorkCopyUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
 
