@@ -2871,12 +2871,16 @@ listed for a 20-second reconnect window (`fleetMachineListsWork`,
 the window restarts when the app comes back to the front. A machine that is
 parked, not connected or disconnected by the user lists no rows, and the Hub
 and filter counts follow what is listed. An ADE Cloud computer's rows always
-list, from its last roster, also while it sleeps. Opening one of its chats or
-lanes wakes it through a connected machine (`beginCloudWakeIfAsleep`) and
-shows "Waking <computer>…" in the opened screen until it answers. The phone
-knows an asleep cloud computer's work only from that computer's cached roster,
-so a cloud computer this phone never paired shows no rows, and a wake needs
-another connected machine to send it. There is no control in a project that switches
+list, from its last roster, also while it sleeps. A cloud computer this phone
+never paired lists the chats and lane it last saved to the account
+(`restingCloudMachineRows`, from the account server's saved chats). Opening one
+of its chats or lanes wakes it (`beginCloudWakeIfAsleep` →
+`wakeCloudMachineIfNeeded`: through the focused machine, else another connected
+machine that can send cloud commands, else the account server itself, so no
+other computer has to be connected) and shows "Waking <computer>…" in the
+opened screen until it answers. One wake per computer: a second open waits for
+the first. A wake answer that arrives after an account change is dropped. There
+is no control in a project that switches
 the machine to see work: the Lanes and Work machine filters only narrow the
 list, and a machine is picked only where new work starts (Start on). The
 focused machine stays the phone's internal home for calls that name no lane

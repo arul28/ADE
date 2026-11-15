@@ -4811,6 +4811,8 @@ final class SyncService: ObservableObject {
   /// Why the last wake of an ADE Cloud computer failed, by fleet key. The
   /// screen that opened its work says so; a new wake or a live link clears it.
   @Published private(set) var cloudWakeFailures: [String: String] = [:]
+  /// Moves on each account change, so a wake answer that arrives after it is dropped.
+  private var cloudWakeAccountEpoch: UInt64 = 0
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
@@ -29278,7 +29280,14 @@ extension SyncService {
     // the same one. A cloud wake costs money, so it is never sent twice.
     guard wakingCloudMachineKeys.insert(fleetKey).inserted else { return true }
     let name = cloudMachineName(fleetKey: fleetKey) ?? "The cloud computer"
+    let accountEpoch = cloudWakeAccountEpoch
     let result = await wakeCloudMachineIfNeeded(machineKey: accountKey, name: name)
+    // The account changed while the request was out: its answer, a failure
+    // too, belongs to the last account.
+    guard accountEpoch == cloudWakeAccountEpoch else {
+      endCloudWake(fleetKey: fleetKey)
+      return false
+    }
     guard case .started = result else {
       if case .failed(let message) = result { recordCloudWakeFailure(fleetKey: fleetKey, message: message) }
       endCloudWake(fleetKey: fleetKey)
@@ -29366,6 +29375,8 @@ extension SyncService {
   /// A wake of `fleetKey` failed: the screen that opened its work shows
   /// `message`, and the log keeps it. The rows stay listed.
   func recordCloudWakeFailure(fleetKey: String, message: String) {
+    // A computer of the last account (an account change while it woke).
+    guard cloudMachineFleetKeys.contains(fleetKey) else { return }
     syncConnectLog.error("ADE_SYNC_TRACE cloud_wake failed reason=\(message, privacy: .public)")
     cloudWakeFailures[fleetKey] = message
   }
@@ -29388,6 +29399,7 @@ extension SyncService {
 
   /// An account change: the last account's wake messages go too.
   func clearCloudWakeFailures() {
+    cloudWakeAccountEpoch &+= 1
     cloudWakeFailures = [:]
   }
 

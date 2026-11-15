@@ -3965,6 +3965,9 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.cloudServerInstances.isEmpty)
     XCTAssertTrue(service.cloudMachineFleetKeys.isEmpty)
     XCTAssertTrue(service.cloudWakeFailures.isEmpty)
+    // A wake of the last account that fails after the change stays dropped.
+    service.recordCloudWakeFailure(fleetKey: "machine:old-cloud", message: "Old Cloud did not answer.")
+    XCTAssertTrue(service.cloudWakeFailures.isEmpty)
     XCTAssertTrue(fleet.restingCloudMachines.isEmpty)
     XCTAssertEqual(UserDefaults.standard.stringArray(forKey: defaultsKey) ?? [], [], "A relaunch must not bring the old account's cloud computers back.")
   }
