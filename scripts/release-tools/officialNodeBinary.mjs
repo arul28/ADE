@@ -18,12 +18,14 @@ import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import https from "node:https";
 import path from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const seaFuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const maxDownloadRedirects = 10;
+const downloadIdleTimeoutMs = 60_000;
 
 export async function isSeaCapableNodeBinary(binaryPath) {
   try {
@@ -50,39 +52,38 @@ function nodeArchiveCandidates(version, target) {
   ];
 }
 
+// Writes to `<destination>.partial` and renames it when the body is complete,
+// so a download that stops halfway never leaves a file a later run would take
+// for a finished one. pipeline() rejects on a response that fails after its
+// headers arrived, and the idle timeout ends a connection that goes silent.
 async function downloadFile(url, destinationPath, redirectsRemaining = maxDownloadRedirects) {
   await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-  await new Promise((resolve, reject) => {
-    const request = https.get(url, (response) => {
-      if (
-        response.statusCode &&
-        response.statusCode >= 300 &&
-        response.statusCode < 400 &&
-        response.headers.location
-      ) {
-        response.resume();
-        if (redirectsRemaining <= 0) {
-          reject(new Error(`Too many redirects while downloading ${url}`));
-          return;
-        }
-        downloadFile(new URL(response.headers.location, url).toString(), destinationPath, redirectsRemaining - 1)
-          .then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error(`HTTP ${response.statusCode ?? "unknown"}`));
-        return;
-      }
-      const output = createWriteStream(destinationPath, { mode: 0o644 });
-      response.pipe(output);
-      output.once("finish", () => {
-        output.close(resolve);
-      });
-      output.once("error", reject);
+  const partialPath = `${destinationPath}.partial`;
+  const response = await new Promise((resolve, reject) => {
+    const request = https.get(url, resolve);
+    request.setTimeout(downloadIdleTimeoutMs, () => {
+      request.destroy(new Error(`No data for ${downloadIdleTimeoutMs / 1000} s while downloading ${url}`));
     });
     request.once("error", reject);
   });
+  if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+    response.resume();
+    if (redirectsRemaining <= 0) {
+      throw new Error(`Too many redirects while downloading ${url}`);
+    }
+    return downloadFile(new URL(response.headers.location, url).toString(), destinationPath, redirectsRemaining - 1);
+  }
+  if (response.statusCode !== 200) {
+    response.resume();
+    throw new Error(`HTTP ${response.statusCode ?? "unknown"}`);
+  }
+  try {
+    await pipeline(response, createWriteStream(partialPath, { mode: 0o644 }));
+    await fs.rename(partialPath, destinationPath);
+  } catch (error) {
+    await fs.rm(partialPath, { force: true });
+    throw error;
+  }
 }
 
 async function sha256OfFile(filePath) {

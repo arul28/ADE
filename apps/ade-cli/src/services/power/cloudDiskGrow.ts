@@ -245,6 +245,27 @@ export function createCloudDiskGrower(deps: {
   };
 
   /**
+   * Grows taken back (they never started) whose rollback couldn't be saved yet:
+   * the disk that just filled may have no room for the rewrite. Read over the
+   * file, and saved with the next history write that succeeds. This boot only,
+   * which is enough: a grow that never started brings no restart.
+   */
+  const rollbacks = new Map<string, SetupGrowHistory[string] | null>();
+  const currentHistory = (): SetupGrowHistory => {
+    const history = readHistory();
+    for (const [launchId, entry] of rollbacks) {
+      if (entry) history[launchId] = entry;
+      else delete history[launchId];
+    }
+    return history;
+  };
+  const saveHistory = (history: SetupGrowHistory): boolean => {
+    if (!writeHistory(history)) return false;
+    rollbacks.clear();
+    return true;
+  };
+
+  /**
    * Each running setup, by launch (this boot only: a resumed run starts
    * again): the free space it started with, the lowest it read while it ran,
    * and the sampler reading it (stopped once the run says ENOSPC or ends).
@@ -558,7 +579,8 @@ export function createCloudDiskGrower(deps: {
             || pressure !== "normal";
           const usedBytes = startFree == null ? null : Math.max(0, startFree - lowFree);
           const peakBytes = space.totalBytes - lowFree;
-          const history = readHistory();
+          if (rollbacks.size) saveHistory(currentHistory());
+          const history = currentHistory();
           const before = history[launchId];
           const log = { launchId, freeMb: Math.round(space.freeBytes / 2 ** 20), lowMb: Math.round(lowFree / 2 ** 20), totalMb: Math.round(space.totalBytes / 2 ** 20), pressure, usedMb: usedBytes == null ? null : Math.round(usedBytes / 2 ** 20), peakMb: Math.round(peakBytes / 2 ** 20), grows: before?.grows ?? 0, line };
           if (!short) {
@@ -580,18 +602,17 @@ export function createCloudDiskGrower(deps: {
           const pending = pendingGrows.get(launchId);
           pendingGrows.delete(launchId);
           if (!pending) return null;
-          const before = readHistory()[launchId];
-          if (!writeHistory({ ...readHistory(), [launchId]: { ...pending, at: now() } })) {
+          const history = currentHistory();
+          const before = history[launchId];
+          if (!saveHistory({ ...history, [launchId]: { ...pending, at: now() } })) {
             return { state: "refused", error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
           }
           const room = await grower.makeRoomForSetup({ stillIdle, signal, ...(onAsking ? { onAsking } : {}) });
           // A grow that never started (refused by the plan, busy, cancelled) isn't one:
           // a Retry after the person makes room must grow again, not read "another step wouldn't help".
           if (room?.state !== "growing") {
-            const history = readHistory();
-            if (before) history[launchId] = before;
-            else delete history[launchId];
-            writeHistory(history);
+            rollbacks.set(launchId, before ?? null);
+            saveHistory(currentHistory());
           }
           return room;
         },
