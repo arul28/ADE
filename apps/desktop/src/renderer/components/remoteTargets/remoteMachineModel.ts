@@ -1018,22 +1018,45 @@ function intersects(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
-/** True when an account machine is the same host as a saved target. */
-export function accountMachineMatchesTarget(
+/** True when an account machine is the one a saved target was paired with. */
+function accountMachineIsPairedTarget(
   machine: AdeAccountMachine,
   target: RemoteRuntimeTarget,
 ): boolean {
   const pairedHostIdentity = target.pairedMachine?.hostIdentity?.trim();
   const pairedMachineKey = target.pairedMachine?.machineKey?.trim();
-  if (
+  return Boolean(
     (pairedHostIdentity && machine.deviceId?.trim() === pairedHostIdentity)
-    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey)
-  ) {
-    return true;
-  }
+    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey),
+  );
+}
+
+/** True when an account machine is the same host as a saved target. */
+export function accountMachineMatchesTarget(
+  machine: AdeAccountMachine,
+  target: RemoteRuntimeTarget,
+): boolean {
+  if (accountMachineIsPairedTarget(machine, target)) return true;
   const machineIds = accountMachineRouteIdentities(machine);
   if (machineIds.size === 0) return false;
   return intersects(machineIds, targetRouteIdentities(target));
+}
+
+/**
+ * The directory entry for a saved target. The machine it was paired with wins
+ * over an entry that only shares a route with it: two ADE homes on one
+ * computer publish the same addresses, so a route match can name the other
+ * home and show its presence. A target that names its machine key is matched
+ * by that key only; a shared route is the fallback for a target that names none.
+ */
+export function accountMachineForTarget(
+  machines: readonly AdeAccountMachine[],
+  target: RemoteRuntimeTarget,
+): AdeAccountMachine | null {
+  const paired = machines.find((machine) => accountMachineIsPairedTarget(machine, target));
+  if (paired) return paired;
+  if (target.pairedMachine?.machineKey?.trim()) return null;
+  return machines.find((machine) => accountMachineMatchesTarget(machine, target)) ?? null;
 }
 
 /** True when an account machine is the same host as a locally-discovered machine. */
@@ -1168,7 +1191,7 @@ export function assignMachineSections(args: {
   // AVAILABLE, offline greyed in UNAVAILABLE.
   for (const machine of accountMachines) {
     const matchedTarget = targets.find((target) =>
-      accountMachineMatchesTarget(machine, target),
+      accountMachineForTarget(accountMachines, target) === machine,
     );
     if (matchedTarget) {
       // A saved target already owns this host; only annotate offline account

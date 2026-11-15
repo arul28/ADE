@@ -43,7 +43,7 @@ import {
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
 import {
-  accountMachineMatchesTarget,
+  accountMachineForTarget as findAccountMachineForTarget,
   assignMachineSections,
   discoveredPairingInput,
   discoveredTargetInput,
@@ -1124,9 +1124,7 @@ export function RemoteTargetList({
   // the stale pairing. Without a directory match there is nothing to re-adopt.
   const accountMachineForTarget = useCallback(
     (target: RemoteRuntimeTarget): AdeAccountMachine | null =>
-      (visibleAccountMachines ?? []).find((machine) =>
-        accountMachineMatchesTarget(machine, target),
-      ) ?? null,
+      findAccountMachineForTarget(visibleAccountMachines ?? [], target),
     [visibleAccountMachines],
   );
 

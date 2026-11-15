@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import type { NavigateFunction } from "react-router-dom";
 import { SquaresFour } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
-import { useActivityReadFailed, useLiveActivityRefresh } from "../activity/useActivitySync";
+import { useActivityIncomplete, useLiveActivityRefresh } from "../activity/useActivitySync";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import type { RemoteRuntimeConnectionSnapshot } from "../../../shared/types";
@@ -55,7 +55,7 @@ export function useHomePageWiring(args: {
   const projectName = project?.displayName ?? null;
   const running = useRunningChats();
   useLiveActivityRefresh();
-  const activityFailed = useActivityReadFailed();
+  const activityIncomplete = useActivityIncomplete();
   const recentStats = useRecentStats();
   const pullRequests = usePullRequests(projectRoot);
   const usageGroups = useUsageGroups();
@@ -102,7 +102,7 @@ export function useHomePageWiring(args: {
     return buildHomeHeadline({
       needsYou: needsYouCount,
       working: running.length - needsYouCount,
-      chatsUnknown: activityFailed,
+      chatsUnknown: activityIncomplete,
       prs: prCounts,
       daily: stats?.daily ?? null,
       streakDays: stats?.summary.currentStreakDays ?? 0,
@@ -110,7 +110,7 @@ export function useHomePageWiring(args: {
       limits,
       today,
     });
-  }, [activityFailed, dayStart, needsYouCount, projectRoot, pullRequests, recentStats, running.length, usageGroups.groups]);
+  }, [activityIncomplete, dayStart, needsYouCount, projectRoot, pullRequests, recentStats, running.length, usageGroups.groups]);
 
   const hasProject = project != null;
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);

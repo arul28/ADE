@@ -233,6 +233,7 @@ export function useChatSubagentRows(
     () => settleChildRowsLikeCards(
       selfHealSubagentSnapshots(withRoster, { runtimeAlive, childChatStatuses: childStatuses }),
       childById,
+      childStatuses,
     ),
     [withRoster, runtimeAlive, childStatuses, childById],
   );
@@ -260,17 +261,26 @@ const HEALED_STOP_SUMMARIES: ReadonlySet<string> = new Set([
   ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
 ]);
 
+/**
+ * A spawned chat's row says what its card and its Work row say: the child
+ * chat's own state on its machine. That also holds for a row the transcript
+ * left "running": a child that never got a prompt, or whose turn ended without
+ * a report, is idle there, and its row, the toolbar badge, the card strip and
+ * `ade chat status` all call it done. Only a child that is working (by its
+ * runtime's word or its machine's) keeps a row running.
+ */
 function settleChildRowsLikeCards(
   rows: ChatSubagentSnapshot[],
   childById: ReadonlyMap<string, ChildChat>,
+  childStatuses: ReadonlyMap<string, AgentChatSessionStatus> | undefined,
 ): ChatSubagentSnapshot[] {
   if (childById.size === 0) return rows;
   let changed = false;
   const next = rows.map((row) => {
-    if (row.status === "running") return row;
     const id = paneRowChildSessionId(row);
     const child = id != null ? childById.get(id) : undefined;
     if (!child) return row;
+    if (row.status === "running" && childStatuses?.get(child.session.id) === "active") return row;
     const status = childChatPaneStatus(child.phase);
     if (status === "running" || status === row.status) return row;
     changed = true;

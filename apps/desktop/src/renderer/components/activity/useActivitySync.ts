@@ -178,17 +178,23 @@ export function useLiveActivityRefresh(): void {
 }
 
 /**
- * Whether the last finished Activity read failed. A read in flight keeps the
- * previous answer, so a page that re-reads every few seconds does not flip
- * between "failed" and "fine" while the outage lasts.
+ * Whether Activity may be missing chats: the last finished read failed, or it
+ * answered without the account stream ("degraded": this computer only, other
+ * computers may be missing) or from a host that cannot refresh it. A read in
+ * flight keeps the previous answer, so a page that re-reads every few seconds
+ * does not flip between "missing" and "fine" while the outage lasts.
  */
-export function useActivityReadFailed(): boolean {
+export function useActivityIncomplete(): boolean {
   const syncStatus = useActivityStore((state) => state.syncStatus);
-  const [failed, setFailed] = useState(syncStatus === "error");
+  const availabilityState = useActivityStore((state) => state.availability?.state ?? null);
+  const incomplete = syncStatus === "error"
+    || availabilityState === "degraded"
+    || availabilityState === "incompatible";
+  const [answer, setAnswer] = useState(incomplete);
   useEffect(() => {
-    if (syncStatus !== "syncing") setFailed(syncStatus === "error");
-  }, [syncStatus]);
-  return failed;
+    if (syncStatus !== "syncing") setAnswer(incomplete);
+  }, [incomplete, syncStatus]);
+  return answer;
 }
 
 /**

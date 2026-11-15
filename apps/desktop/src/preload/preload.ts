@@ -5143,6 +5143,14 @@ const projectStateEventFanout = createIpcEventFanout<AdeProjectEvent>(
   IPC.projectStateEvent,
 );
 const ptyDataEventFanout = createIpcEventFanout<PtyDataEvent>(IPC.ptyData);
+// Many panes, chips and notices read these, and a second project surface (a
+// tab moved to another computer's copy) mounts its own readers. One IPC
+// listener per channel serves them all, so the count of readers never meets
+// Node's listener limit.
+const runtimeStatusFanout = createIpcEventFanout<LocalRuntimeStatus>(IPC.appRuntimeStatusChanged);
+const remoteConnectionSnapshotFanout = createIpcEventFanout<RemoteRuntimeConnectionSnapshot>(
+  IPC.remoteRuntimeConnectionSnapshotChanged,
+);
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
 
 function normalizeProviderInstanceListResult(
@@ -5239,14 +5247,10 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.appOpenInBrowser, args),
     getAppIcon: async (args: { name: string }): Promise<string | null> =>
       ipcRenderer.invoke(IPC.appGetAppIcon, args),
-    onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: LocalRuntimeStatus,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.appRuntimeStatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.appRuntimeStatusChanged, listener);
-    },
+    // A closure per call: the fan-out keeps a Set, and one function passed
+    // twice must still be two subscriptions.
+    onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) =>
+      runtimeStatusFanout((status) => cb(status)),
     getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
       ipcRenderer.invoke(IPC.appGetResourceUsage),
     getRuntimeHealth: async (): Promise<RuntimeHealthSnapshot> =>
@@ -5885,18 +5889,7 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.remoteRuntimeGetConnectionSnapshot),
     onConnectionSnapshotChanged: (
       cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: RemoteRuntimeConnectionSnapshot,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.remoteRuntimeConnectionSnapshotChanged, listener);
-      return () =>
-        ipcRenderer.removeListener(
-          IPC.remoteRuntimeConnectionSnapshotChanged,
-          listener,
-        );
-    },
+    ) => remoteConnectionSnapshotFanout((snapshot) => cb(snapshot)),
     listDiscoveredMachines: async (): Promise<
       RemoteRuntimeDiscoveryResult
     > => ipcRenderer.invoke(IPC.remoteRuntimeListDiscoveredMachines),
