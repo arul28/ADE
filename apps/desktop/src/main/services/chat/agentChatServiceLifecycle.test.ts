@@ -401,11 +401,36 @@ describe("createAgentChatService", () => {
       expect(summary?.remoteWork).toEqual([
         expect.objectContaining({ machineKey: "mac-studio", workCopyLaneId: "remote-work-abc123", usesSimulator: true }),
       ]);
+
+      // A second brain that has the chat loaded and records work elsewhere:
+      // a later save of any field in the first brain keeps it.
+      const sibling = createService({ db });
+      await sibling.service.updateSession({ sessionId: session.id, reasoningEffort: "high" });
+      restarted.service.noteRemoteWork({
+        sessionId: session.id,
+        machineKey: "macbook",
+        machineName: "MacBook Pro",
+        machinePlatform: "darwin",
+        projectId: "project-there",
+        projectRootPath: "/Users/me/ADE",
+        terminalId: "term-1",
+        workCopyLaneId: "remote-work-def456",
+        usesSimulator: false,
+      });
+      await sibling.service.updateSession({ sessionId: session.id, reasoningEffort: "low" });
+      expect((await createService({ db }).service.getSessionSummary(session.id))?.remoteWork?.map((use) => use.machineKey))
+        .toEqual(["mac-studio", "macbook"]);
+      sibling.service.forceDisposeAll();
+
+      // A clean while the chat is not loaded here is saved too.
+      restarted.service.noteRemoteWorkCleaned({ sessionId: session.id, machineKey: "macbook" });
+      expect((await createService({ db }).service.getSessionSummary(session.id))?.remoteWork)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ machineKey: "macbook", workCopyLaneId: null, terminalIds: [] })]));
       // Archiving the lane still cleans up on that machine.
       restarted.service.releaseRemoteWorkForLane("lane-1", "archived");
       expect(ended).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.id,
-        uses: [expect.objectContaining({ machineKey: "mac-studio" })],
+        uses: expect.arrayContaining([expect.objectContaining({ machineKey: "mac-studio" }), expect.objectContaining({ machineKey: "macbook" })]),
       }));
       restarted.service.forceDisposeAll();
     });

@@ -14225,6 +14225,15 @@ export function createAgentChatService(args: {
 
   /** Other machines each chat ran commands on; saved with the chat. See `noteRemoteWork`. */
   const remoteWorkBySession = new Map<string, AgentChatRemoteWorkUse[]>();
+  /** A loaded chat's changed remote-work list until its next persist writes it. */
+  const pendingRemoteWork = new Map<string, AgentChatRemoteWorkUse[]>();
+  /** When each entry was last used (`noteRemoteWork`); memory only. */
+  const remoteWorkSeenAt = new Map<string, Map<string, string>>();
+  const forgetRemoteWork = (sessionId: string): void => {
+    remoteWorkBySession.delete(sessionId);
+    pendingRemoteWork.delete(sessionId);
+    remoteWorkSeenAt.delete(sessionId);
+  };
   /**
    * Every machine and project each chat used a device on, by `machineKey` +
    * `projectId`. Kept apart from the six-entry list above, which drops old
@@ -21437,7 +21446,10 @@ export function createAgentChatService(args: {
       ...(managed.laneShareMoveFirstSend ? { laneShareMoveFirstSend: managed.laneShareMoveFirstSend } : {}),
       ...(managed.deviceSources && Object.keys(managed.deviceSources).length ? { deviceSources: managed.deviceSources } : {}),
       ...((): { remoteWork?: AgentChatRemoteWorkUse[] } => {
-        const remoteWork = remoteWorkUsesFor(managed.session.id);
+        // This brain's unsaved change, else what the file holds now: another
+        // brain may have written it since, and a persist of any other field
+        // must not put an older copy back.
+        const remoteWork = pendingRemoteWork.get(managed.session.id) ?? savedRemoteWork(managed.session.id) ?? [];
         return remoteWork.length ? { remoteWork } : {};
       })(),
       ...(runtimeOwner ? { runtimeOwner } : {}),
@@ -21742,6 +21754,7 @@ export function createAgentChatService(args: {
         fsync: pointerChanged || options.fsync === true,
       });
       persisted = true;
+      pendingRemoteWork.delete(managed.session.id);
       if (pointerChanged) {
         lastPersistedPointerFingerprints.set(managed.session.id, currentPointerFingerprint);
         try {
@@ -70912,7 +70925,7 @@ export function createAgentChatService(args: {
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     const crossMachineMove = scope.crossMachineMove(row.id)?.record ?? null;
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
-    const remoteWork = remoteWorkBySession.get(row.id) ?? persisted?.remoteWork ?? null;
+    const remoteWork = withRemoteWorkSeenAt(row.id, pendingRemoteWork.get(row.id) ?? remoteWorkBySession.get(row.id) ?? persisted?.remoteWork ?? null);
     return {
       ...(remoteWork?.length ? { remoteWork } : {}),
       sessionId: row.id,
@@ -75785,7 +75798,7 @@ export function createAgentChatService(args: {
       await cancelScheduledWorkFor(trimmedSessionId);
       const deletedCli = await cliLifecycle.deleteCli(existing, { remember: deleteOptions.remember === true });
       releaseRemoteWorkOfEndedChat(trimmedSessionId, "deleted");
-      remoteWorkBySession.delete(trimmedSessionId);
+      forgetRemoteWork(trimmedSessionId);
       return deletedCli;
     }
     if (!isChatToolType(existing.toolType)) {
@@ -75917,7 +75930,7 @@ export function createAgentChatService(args: {
     remoteDeviceTargetsBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
     releaseRemoteWorkOfEndedChat(trimmedSessionId, "deleted");
-    remoteWorkBySession.delete(trimmedSessionId);
+    forgetRemoteWork(trimmedSessionId);
     quietTurnHandler.forget(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -81859,27 +81872,72 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * A chat's remote-work record: the live one, else the one saved with the
-   * chat (read once after a restart and kept live from then on). A chat that
-   * never worked elsewhere reads its saved state once and keeps an empty list.
+   * The remote-work record saved in a chat's state file, or null when it has
+   * none or the file cannot be read. Read every time (the file cache checks
+   * the file's stat): another brain may have written it.
    */
-  const remoteWorkUsesFor = (sessionId: string): AgentChatRemoteWorkUse[] => {
-    const live = remoteWorkBySession.get(sessionId);
-    if (live) return live;
-    let saved: AgentChatRemoteWorkUse[] = [];
+  const savedRemoteWork = (sessionId: string): AgentChatRemoteWorkUse[] | null => {
     try {
-      saved = readPersistedState(sessionId)?.remoteWork ?? [];
+      return readPersistedState(sessionId)?.remoteWork ?? null;
     } catch (error) {
       logger.debug?.("agent_chat.remote_work_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+      return null;
     }
-    remoteWorkBySession.set(sessionId, saved);
-    return saved;
   };
 
-  /** Save the chat's remote-work record with its state (a loaded chat only: its file is the one written). */
-  const persistRemoteWork = (sessionId: string): void => {
+  /**
+   * The record with each entry's last use (`remoteWorkSeenAt`), which stays in
+   * memory: a chat sends taps and shots many times a minute, and a file write
+   * for each would be waste. Views read it to mark the machines the current
+   * turn is working on.
+   */
+  const withRemoteWorkSeenAt = (
+    sessionId: string,
+    uses: AgentChatRemoteWorkUse[] | null,
+  ): AgentChatRemoteWorkUse[] | null => {
+    const seen = remoteWorkSeenAt.get(sessionId);
+    if (!uses || !seen) return uses;
+    return uses.map((use) => {
+      const at = seen.get(remoteWorkUseKey(use));
+      return at && at > use.lastStartedAt ? { ...use, lastStartedAt: at } : use;
+    });
+  };
+
+  /**
+   * A chat's remote-work record now: this brain's unsaved change, else the
+   * saved one, else the live one of a session with no state file (an agent
+   * CLI in a terminal).
+   */
+  const remoteWorkUsesFor = (sessionId: string): AgentChatRemoteWorkUse[] =>
+    withRemoteWorkSeenAt(
+      sessionId,
+      pendingRemoteWork.get(sessionId) ?? savedRemoteWork(sessionId) ?? remoteWorkBySession.get(sessionId) ?? [],
+    ) ?? [];
+
+  /**
+   * Record a changed list and save it with the chat: through the loaded
+   * chat's persist, else straight into its state file. A session with no
+   * state file keeps it live only.
+   */
+  const writeRemoteWork = (sessionId: string, list: AgentChatRemoteWorkUse[]): void => {
+    remoteWorkBySession.set(sessionId, list);
     const managed = managedSessions.get(sessionId);
-    if (managed) persistChatState(managed);
+    if (managed) {
+      pendingRemoteWork.set(sessionId, list);
+      persistChatState(managed);
+      return;
+    }
+    const filePath = metadataPathFor(sessionId);
+    const recovered = persistedStateFiles.read(filePath);
+    if (recovered.value === null) return;
+    try {
+      const record = { ...(recovered.value as Record<string, unknown>) };
+      if (list.length) record.remoteWork = list;
+      else delete record.remoteWork;
+      writeJsonWithPrevious(filePath, record, { validate: isPersistedChatStateShape });
+    } catch (error) {
+      logger.warn("agent_chat.remote_work_write_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+    }
   };
 
   /**
@@ -81937,10 +81995,13 @@ export function createAgentChatService(args: {
       const withoutDevice = list.slice(0, -1).findIndex((use) => !remoteWorkUsesDevice(use));
       list.splice(withoutDevice >= 0 ? withoutDevice : 0, 1);
     }
-    remoteWorkBySession.set(sessionId, list);
     // Saved only when what it names changed: a chat sends taps and shots many
     // times a minute, and only the time of each would differ.
-    if (!previous || !sameRemoteWorkUse(previous, next) || list.length !== uses.length) persistRemoteWork(sessionId);
+    const seen = remoteWorkSeenAt.get(sessionId) ?? new Map<string, string>();
+    seen.set(remoteWorkUseKey(next), next.lastStartedAt);
+    remoteWorkSeenAt.set(sessionId, seen);
+    if (!previous || !sameRemoteWorkUse(previous, next) || list.length !== uses.length) writeRemoteWork(sessionId, list);
+    else remoteWorkBySession.set(sessionId, list);
     if (remoteWorkUsesDevice(next)) {
       const targets = remoteDeviceTargetsBySession.get(sessionId) ?? new Map();
       targets.set(remoteWorkUseKey(next), { machineKey: next.machineKey, machineName: next.machineName, projectId: next.projectId });
@@ -81975,8 +82036,7 @@ export function createAgentChatService(args: {
       return { ...use, terminalIds: [], workCopyLaneId: null };
     });
     if (!changed) return;
-    remoteWorkBySession.set(sessionId, list);
-    persistRemoteWork(sessionId);
+    writeRemoteWork(sessionId, list);
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
   };
 
