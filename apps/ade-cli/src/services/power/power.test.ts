@@ -981,7 +981,11 @@ describe("cloud disk grow for a lane setup", () => {
         statfs.mockReturnValue(disk(fullFree!, total!));
         const answer = setup.diskFull({ launchId: "launch-1", error: ENOSPC });
         // The launch saved its mark: a grow the server started counts; a refused one doesn't.
-        if (answer.grow) await setup.makeRoom({ launchId: "launch-1", laneId: "lane-1", signal: new AbortController().signal });
+        if (answer.grow) {
+          const room = await setup.makeRoom({ launchId: "launch-1", laneId: "lane-1", signal: new AbortController().signal });
+          // A Retry after a refusal really reaches the server and starts its grow.
+          expect(room?.state).toBe(refuse ? "refused" : "growing");
+        }
         setup.setupEnded({ launchId: "launch-1" });
         answers.push(answer.grow);
       }
