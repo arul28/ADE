@@ -5551,6 +5551,20 @@ describe("adeRpcServer", () => {
     expect(foreignTerminalRead?.isError).toBeUndefined();
     expect(fixture.runtime.ptyService.readTerminal).toHaveBeenCalledWith(expect.objectContaining({ terminalId: "terminal-2" }));
 
+    // A list that names a chat shows that chat's shells, one a chat on another
+    // machine owns here included; the caller's default list still leaves those out.
+    const remoteShell = { id: "terminal-remote", laneId: "lane-2", chatSessionId: "remote:mac-mini:chat-9" };
+    (fixture.runtime.ptyService.listTerminals as ReturnType<typeof vi.fn>).mockImplementation(() => [ownTerminal, remoteShell]);
+    const namedList = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "list",
+      args: { chatSessionId: "remote:mac-mini:chat-9", includeArchived: true },
+    });
+    expect(namedList?.isError).toBeUndefined();
+    expect(namedList.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: "terminal-remote" })]));
+    const defaultList = await callTool(handler, "run_ade_action", { domain: "terminal", action: "list", args: {} });
+    expect(defaultList.result).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: "terminal-remote" })]));
+
     // A watch wakes the chat that armed it: an agent arms one only for its own
     // chat, always as the agent, on any terminal (watching is reading).
     const watch = vi.fn(async (args: unknown) => ({ watchId: "watch-1", ...(args as object) }));

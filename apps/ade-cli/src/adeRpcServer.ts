@@ -7214,13 +7214,19 @@ async function runTool(args: {
       // `terminal.write` `fromUser` strip above already removed a claim a
       // non-user caller may not make, and re-reading the raw args would put it
       // back.
+      const requestedTerminalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs);
+      // A list that names a chat or lane is a read of exactly that, which any
+      // caller may make; only the default list (the caller's own) is filtered below.
+      const namedTerminalList = Boolean(
+        asOptionalTrimmedString(requestedTerminalArgs.chatSessionId) || extractLaneId(requestedTerminalArgs),
+      );
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
+        requestedTerminalArgs,
       );
-      if (action === "list") {
+      if (action === "list" && !namedTerminalList) {
         // A lane-wide list leaves out shells a chat on another machine owns here.
         const caller = asOptionalTrimmedString(session.identity.chatSessionId);
         // A chat on another machine lists only its own shells here (the scope
