@@ -2192,7 +2192,7 @@ describe("TopBar", () => {
         });
       }
 
-      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledWith("laptop", "app-l"));
+      await waitFor(() => expect(switchRemoteProject).toHaveBeenCalledWith("laptop", "app-l", { carryWorkView: true }));
       const keys = useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key);
       expect(keys).toEqual(["remote:laptop:app-l"]);
       expect(useAppStore.getState().noMachineTabs.map((tab) => tab.displayName)).toEqual(["solo"]);

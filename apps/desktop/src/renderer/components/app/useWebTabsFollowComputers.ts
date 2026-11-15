@@ -122,7 +122,7 @@ export function useWebTabsFollowComputers({
       store.openNewTab();
       return;
     }
-    await store.switchRemoteProject(plan.fallback.binding.targetId, plan.fallback.binding.projectId).catch((error: unknown) => {
+    await store.switchRemoteProject(plan.fallback.binding.targetId, plan.fallback.binding.projectId, { carryWorkView: true }).catch((error: unknown) => {
       // The tab moved; only its page did not open. A click on the tab opens it again.
       captureError(error, { fingerprint: ["repository-tabs", "web-move-open"], level: "warning", handled: true });
     });

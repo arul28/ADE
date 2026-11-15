@@ -2051,9 +2051,15 @@ export type AppState = {
    */
   requestLaneStatusRead: (options?: { maxAgeMs?: number }) => void;
   openRepo: () => Promise<ProjectInfo | null>;
+  /**
+   * Opens a folder of this computer in front. `carryWorkView`: the same tab
+   * moves here from another copy of its repository (its computer went away or
+   * its copy was removed), so the open chat, tabs and grid come along. A
+   * switch to another tab never passes it: each tab keeps its own view.
+   */
   switchProjectToPath: (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
   /** The user said Trust: add this folder to git's safe.directory and open it. */
@@ -2063,12 +2069,12 @@ export type AppState = {
   /**
    * Opens a remote copy in front. `keepNoMachineTab`: a waiting tab in front
    * stays on its page until this copy is open, instead of showing the project
-   * under it while the open runs.
+   * under it while the open runs. `carryWorkView`: as for `switchProjectToPath`.
    */
   switchRemoteProject: (
     targetId: string,
     projectId: string,
-    options?: { keepNoMachineTab?: boolean },
+    options?: { keepNoMachineTab?: boolean; carryWorkView?: boolean },
   ) => Promise<OpenProjectBinding>;
   /**
    * True once for the binding of a remote open that Home superseded: the
@@ -3738,7 +3744,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchProjectToPath: async (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean },
   ) => {
     // Worktree gate: when opening a path that is NOT already a warm tab, inspect
     // it first. If it's an external linked worktree whose owning repo resolves,
@@ -3779,7 +3785,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
       get().setProject(cachedProject, { replaceBinding: true });
-      carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
     }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
@@ -3834,7 +3840,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     try {
       const project = await window.ade.project.switchToPath(rootPath);
       get().setProject(project, { replaceBinding: true });
-      carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
+      if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination
@@ -4014,7 +4020,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (binding.kind !== "remote") {
         throw new Error("Remote project open returned a local project binding.");
       }
-      carryWorkViewToCopy(outgoingBinding, binding);
+      if (options?.carryWorkView) carryWorkViewToCopy(outgoingBinding, binding);
       set((prev) => {
         const projectKey = normalizeProjectKey(binding.key);
         const cachedLanes =
@@ -4374,7 +4380,9 @@ function localBindingForCarry(current: OpenProjectBinding | null, project: Proje
 
 /**
  * A tab that moves to another copy of the same repository keeps what it had
- * open: the chat in front, its open tabs and grid. Each copy keeps its own
+ * open: the chat in front, its open tabs and grid. Only a caller that moves
+ * the same tab asks for it (`carryWorkView`); two folders of one repository
+ * on this computer are separate tabs with separate views. Each copy keeps its own
  * view under its own key, so without this the open chat closed whenever the
  * tab's computer went away and the tab moved to a copy on another computer.
  */

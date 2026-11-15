@@ -1922,11 +1922,12 @@ export function TopBar({
         waitingTabs.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
       try {
         if (activePlan?.fallback?.kind === "local") {
-          await latestState.switchProjectToPath(activePlan.fallback.rootPath);
+          await latestState.switchProjectToPath(activePlan.fallback.rootPath, { carryWorkView: true });
         } else if (activePlan?.fallback?.kind === "remote") {
           await latestState.switchRemoteProject(
             activePlan.fallback.binding.targetId,
             activePlan.fallback.binding.projectId,
+            { carryWorkView: true },
           );
         } else {
           const nextRemoteTab = nextRemoteTabs[0] ?? null;
@@ -2175,8 +2176,8 @@ export function TopBar({
       const activeKey = state.projectBinding?.kind === "remote" ? state.projectBinding.key : state.project?.rootPath ?? null;
       try {
         if (activeKey && removed.has(activeKey)) {
-          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath);
-          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId);
+          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath, { carryWorkView: true });
+          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId, { carryWorkView: true });
         }
       } catch (error) {
         // The switch failed: the tab closes rather than pointing at a removed copy.
