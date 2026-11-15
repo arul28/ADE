@@ -1354,7 +1354,9 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   again only when its run's peak use (the disk's size less that low point)
   passed the last grown run's, so an installer that leaves files behind and
   frees them in the next run still grows each step (four grows at most). A grow
-  counts toward that only once the launch's mark is saved. The reserve
+  counts toward that only once the launch's mark is saved and the server
+  started it: a grow that never started (the plan's disk, busy, cancelled) is
+  taken back, so a Retry after the person makes room grows again. The reserve
   is freed, the launch record gets a room mark (`roomMark`: when, and how many
   restarts it resumed after; no grow when that write fails: "free some space or
   Clear caches, then retry"), and the grower asks for one step (the same server
