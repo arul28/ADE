@@ -9,6 +9,13 @@ import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
  * worktree (`.git` file, `commondir`) and `config.worktree`.
  */
 
+/** A git config value: a quoted one without its quotes, an unquoted one up to a comment. */
+function gitConfigValue(raw: string): string {
+  const quoted = raw.match(/^"((?:[^"\\]|\\.)*)"/);
+  if (quoted) return quoted[1]!.replace(/\\(.)/g, "$1").trim();
+  return raw.replace(/\s*[#;].*$/, "").trim();
+}
+
 function readOriginUrlFromConfig(configPath: string): string | null {
   try {
     // Reading a FIFO here would freeze the whole process.
@@ -16,14 +23,17 @@ function readOriginUrlFromConfig(configPath: string): string | null {
     const raw = fs.readFileSync(configPath, "utf8");
     let inOriginSection = false;
     for (const line of raw.split(/\r?\n/)) {
-      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
+      // A section header may carry a trailing comment. The section name
+      // ("remote") is case-insensitive; the subsection ("origin") is not.
+      const section = line.match(/^\s*\[([^\]]+)\]\s*(?:[#;].*)?$/);
       if (section) {
-        inOriginSection = /^remote\s+"origin"$/i.test(section[1]?.trim() ?? "");
+        inOriginSection = /^[Rr][Ee][Mm][Oo][Tt][Ee]\s+"origin"$/.test(section[1]?.trim() ?? "");
         continue;
       }
       if (!inOriginSection) continue;
-      const url = line.match(/^\s*url\s*=\s*(.+?)\s*$/);
-      if (url?.[1]?.trim()) return url[1].trim();
+      const url = line.match(/^\s*url\s*=\s*(.+?)\s*$/i);
+      const value = url?.[1] ? gitConfigValue(url[1]) : "";
+      if (value) return value;
     }
     return null;
   } catch {

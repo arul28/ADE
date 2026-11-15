@@ -1428,6 +1428,12 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   also puts the shim on the first chat after it starts: it reads the repo's
   owner from the git config file (`gitConfigOrigin.ts`), as the desktop does,
   so a launch's chat no longer misses it.
+- Login shells: Debian's `/etc/profile` sets PATH from scratch, and ADE's
+  terminals are `bash -l`, so they lost the `ade` and `gh` shims (`gh` then
+  ran with no token). `/etc/profile.d/ade-shims.sh`
+  (`infra/ade-cloud/template/ade-shims-profile.sh`) puts back
+  `ADE_CLI_BIN_DIR` and the folder of the git credential helper ADE set
+  (`git-credential-ade-github`, beside the `gh` shim).
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

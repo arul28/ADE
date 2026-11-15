@@ -147,6 +147,10 @@ RUN chmod 755 /usr/local/bin/ade-entrypoint.sh
 RUN dpkg-divert --local --rename --divert /usr/bin/bwrap.real --add /usr/bin/bwrap
 COPY bwrap-gvisor.sh /usr/bin/bwrap
 RUN chmod 755 /usr/bin/bwrap && /usr/bin/bwrap --version
+# Debian's /etc/profile resets PATH in a login shell (ADE's terminals are
+# `bash -l`); this puts ADE's `ade` and `gh` shims back in front.
+COPY ade-shims-profile.sh /etc/profile.d/ade-shims.sh
+RUN chmod 644 /etc/profile.d/ade-shims.sh
 
 USER node
 WORKDIR /home/node

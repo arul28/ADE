@@ -29,13 +29,13 @@ if [ -z "${AGENT37_API_KEY:-}" ]; then
 fi
 command -v npx >/dev/null 2>&1 || { echo "build-template: needs Node's npx." >&2; exit 1; }
 
-# The build context is the template folder only: Dockerfile, entrypoint and
-# the bwrap wrapper. Copy it so a stray file next to them never ships in the image.
+# The build context is the template folder only: Dockerfile, entrypoint, the
+# bwrap wrapper and the login-shell PATH fix. Copy it so a stray file next to them never ships in the image.
 work="$(mktemp -d "${TMPDIR:-/tmp}/ade-cloud-template.XXXXXX")"
 trap 'rm -rf "$work"' EXIT INT TERM
 context="$work/context"
 mkdir "$context"
-cp "$here/template/Dockerfile" "$here/template/ade-entrypoint.sh" "$here/template/bwrap-gvisor.sh" "$context/"
+cp "$here/template/Dockerfile" "$here/template/ade-entrypoint.sh" "$here/template/bwrap-gvisor.sh" "$here/template/ade-shims-profile.sh" "$context/"
 if [ "$ade_version" != "latest" ]; then
   # A pinned release goes in as the Dockerfile's default, so the cloud build
   # needs no build-arg support.
