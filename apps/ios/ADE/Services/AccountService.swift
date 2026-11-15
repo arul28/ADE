@@ -77,6 +77,8 @@ struct AccountLocalSignOutState {
 
   func suppress() {
     defaults.set(true, forKey: Self.suppressionKey)
+    // Written through before the next step, so an app kill keeps it.
+    defaults.synchronize()
   }
 
   func clearAfterInteractiveSignIn() {
@@ -104,6 +106,8 @@ struct AccountSignOutProgress {
 
   func begin(ownerId: String?) {
     defaults.set(ownerId ?? "", forKey: Self.key)
+    // Written through before the first sign-out step, so an app kill keeps it.
+    defaults.synchronize()
   }
 
   func finish() {

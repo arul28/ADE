@@ -1239,6 +1239,28 @@ struct HubScreen: View {
       hubProjectPresentations = nextPresentations
     }
     placeNewProjects(nextPresentations)
+    publishActivityHiddenChats(rosters: focusedRosters.compactMap(\.roster) + Array(merge.mergedRosters.values) + merge.extraProjects.map(\.roster))
+  }
+
+  /// Activity counts what the Hub counts: a chat in a roster that no shown card
+  /// lists (its project is hidden on this phone or removed from the account)
+  /// leaves Activity, the widgets and the Live Activity too.
+  private func publishActivityHiddenChats(rosters: [RemoteRosterProject]) {
+    var listed = Set<String>()
+    func collect(_ rows: [HubChatRowPresentation]) {
+      for row in rows {
+        listed.insert(row.chat.id)
+        collect(row.childRows)
+      }
+    }
+    for presentation in hubProjectPresentations + shownDuplicateFolders + localSections.flatMap(\.presentations) {
+      for lane in presentation.lanes { collect(lane.rows) }
+    }
+    var hidden = Set<String>()
+    for roster in rosters {
+      for chat in roster.chats where !listed.contains(chat.id) { hidden.insert(chat.id) }
+    }
+    syncService.setActivityHiddenChatIds(hidden)
   }
 
   private func loadHubLayoutForConnection(_ connectionKey: String?) {

@@ -4114,11 +4114,19 @@ func performGenerationScopedPostHelloWork(
   complete()
 }
 
+/// What Activity rebuilds on for one other computer (`observeFleetForActivity`).
+private struct ActivityFleetSignature: Equatable {
+  let line: String
+  let savedWork: [RemoteRosterProject]
+}
+
 private struct SyncHydrationProjectScope: Equatable {
   let projectId: String
   let rootPath: String?
   let projectSelectionGeneration: UInt64
   let connectionGeneration: UInt64
+  /// An account change between the request and its answer drops the answer.
+  let accountDataGeneration: Int
 }
 
 private struct SyncDomainHydrationAttempt {
@@ -4788,6 +4796,10 @@ final class SyncService: ObservableObject {
   private var lastFocusedActivityRows: [TerminalSessionSummary]?
   /// The other computers the last Activity rebuild covered, for the snapshot.
   private var activityOtherMachines: [WorkspaceSnapshotMachine] = []
+  /// Chats of the projects the Hub does not show (hidden on this phone, or
+  /// removed from the account). Activity, the widgets and the Live Activity
+  /// leave them out too, so their counts match the Hub's.
+  private var activityHiddenChatIds: Set<String> = []
   /// When the focused machine's link dropped (or the app came back to the
   /// front): the start of its reconnect window. Nil while connected.
   private var focusedNotLiveSince: Date? = Date()
@@ -4827,6 +4839,9 @@ final class SyncService: ObservableObject {
   /// Opens waiting on each waking computer: the mark stays until the last
   /// one is done.
   private var cloudWakeWaiters: [String: Int] = [:]
+  /// The wake request still on its way, by fleet key. A second open of the
+  /// same computer waits for its answer, a refusal too.
+  private var cloudWakeRequests: [String: Task<Bool, Never>] = [:]
   /// Why the last wake of an ADE Cloud computer failed, by fleet key. The
   /// screen that opened its work says so; a new wake or a live link clears it.
   @Published private(set) var cloudWakeFailures: [String: String] = [:]
@@ -11221,6 +11236,7 @@ final class SyncService: ObservableObject {
     workSessionsCacheLoadedKeys = []
     lastFocusedActivityRows = nil
     activityOtherMachines = []
+    activityHiddenChatIds = []
     pullRequestListConditionalCache = nil
     if let dir = Self.workSessionsCacheDirectory {
       try? FileManager.default.removeItem(at: dir)
@@ -11568,7 +11584,6 @@ final class SyncService: ObservableObject {
 
   private func workSessionsCacheURL() -> URL? {
     guard let key = savedConditionalReadKey("work"), let dir = Self.workSessionsCacheDirectory else { return nil }
-    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir.appendingPathComponent("work-\(DpopKeyService.sha256Hex(key)).json")
   }
 
@@ -11595,6 +11610,10 @@ final class SyncService: ObservableObject {
       return
     }
     let saved = SavedWorkSessions(key: cache.key, signature: cache.signature, sessions: cache.sessions)
+    // Only the writer makes the folder, and only here: an account reset
+    // deletes it, so a write already on its way fails instead of saving the
+    // old account's list again.
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     Task.detached(priority: .utility) {
       guard let data = try? JSONEncoder().encode(saved) else { return }
       try? data.write(to: url, options: .atomic)
@@ -11806,7 +11825,8 @@ final class SyncService: ObservableObject {
       projectId: projectId,
       rootPath: normalizedProjectRoot(activeProjectRootPath),
       projectSelectionGeneration: projectSelectionGeneration,
-      connectionGeneration: connectionGeneration
+      connectionGeneration: connectionGeneration,
+      accountDataGeneration: accountDataGeneration
     )
   }
 
@@ -11816,6 +11836,7 @@ final class SyncService: ObservableObject {
     guard !Task.isCancelled,
           projectSelectionGeneration == scope.projectSelectionGeneration,
           connectionGeneration == scope.connectionGeneration,
+          accountDataGeneration == scope.accountDataGeneration,
           normalizedProjectId(activeProjectId) == scope.projectId,
           normalizedProjectRoot(activeProjectRootPath) == scope.rootPath
     else { throw CancellationError() }
@@ -26225,7 +26246,7 @@ extension SyncService {
     // Every computer at once: the Hub and Work list them all, so Activity, the
     // widgets and the Live Activity must count the same rows.
     let others = activitySessionsOutsideFocusedCopy(skipping: Set(focusedSessions.map(\.id)))
-    let sessions = focusedSessions + others.sessions
+    let sessions = (focusedSessions + others.sessions).filter { !activityHiddenChatIds.contains($0.id) }
     let focusedProject = activeProject
     let now = Date()
 
@@ -26484,6 +26505,13 @@ extension SyncService {
     return (sessions, machineBySession, projectBySession, machines)
   }
 
+  /// The Hub names the chats of the projects it does not show.
+  func setActivityHiddenChatIds(_ ids: Set<String>) {
+    guard ids != activityHiddenChatIds else { return }
+    activityHiddenChatIds = ids
+    refreshActiveSessionsAndSnapshot(rows: lastFocusedActivityRows)
+  }
+
   /// Another computer's roster or listing changed: rebuild Activity with the
   /// focused rows it already holds. Coalesced, because a busy shell on another
   /// computer moves its roster each second.
@@ -26496,7 +26524,12 @@ extension SyncService {
       .combineLatest(fleet.$restingCloudMachines)
       .map { machines, resting in
         (machines + resting).map { machine in
-          "\(machine.machineKey)|\(machine.rosterRevision)|\(machine.listsWork)|\(machine.isWanted)|\(machine.isCloud)|\(machine.projects.count)"
+          ActivityFleetSignature(
+            line: "\(machine.machineKey)|\(machine.rosterRevision)|\(machine.listsWork)|\(machine.isWanted)|\(machine.isCloud)|\(machine.projects.count)",
+            // A resting cloud computer's saved work has no roster revision
+            // (always 0): its chats themselves tell a change.
+            savedWork: machine.rosterRevision == 0 ? machine.projects : []
+          )
         }
       }
       .removeDuplicates()
@@ -29737,26 +29770,39 @@ extension SyncService {
           !isFocusedAndLive(fleetKey),
           let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey
     else { return false }
-    cloudWakeFailures[fleetKey] = nil
     cloudWakeWaiters[fleetKey, default: 0] += 1
     // A wake of this computer is already on its way: this open waits for
     // the same one. A cloud wake costs money, so it is never sent twice.
-    guard wakingCloudMachineKeys.insert(fleetKey).inserted else { return true }
-    let name = cloudMachineName(fleetKey: fleetKey) ?? "The cloud computer"
-    let accountEpoch = cloudWakeAccountEpoch
-    let result = await wakeCloudMachineIfNeeded(machineKey: accountKey, name: name)
-    // The account changed while the request was out: its answer, a failure
-    // too, belongs to the last account.
-    guard accountEpoch == cloudWakeAccountEpoch else {
-      endCloudWake(fleetKey: fleetKey)
-      return false
+    let request: Task<Bool, Never>
+    if let pending = cloudWakeRequests[fleetKey] {
+      // Its answer is not in yet: wait for it, so a refusal ends this open
+      // too.
+      request = pending
+    } else {
+      cloudWakeFailures[fleetKey] = nil
+      // The computer accepted a wake and is starting.
+      guard wakingCloudMachineKeys.insert(fleetKey).inserted else { return true }
+      let name = cloudMachineName(fleetKey: fleetKey) ?? "The cloud computer"
+      let accountEpoch = cloudWakeAccountEpoch
+      request = Task { @MainActor [weak self] in
+        guard let self else { return false }
+        let result = await self.wakeCloudMachineIfNeeded(machineKey: accountKey, name: name)
+        self.cloudWakeRequests[fleetKey] = nil
+        // The account changed while the request was out: its answer, a
+        // failure too, belongs to the last account.
+        guard accountEpoch == self.cloudWakeAccountEpoch else { return false }
+        guard case .started = result else {
+          if case .failed(let message) = result { self.recordCloudWakeFailure(fleetKey: fleetKey, message: message) }
+          return false
+        }
+        return true
+      }
+      cloudWakeRequests[fleetKey] = request
     }
-    guard case .started = result else {
-      if case .failed(let message) = result { recordCloudWakeFailure(fleetKey: fleetKey, message: message) }
-      endCloudWake(fleetKey: fleetKey)
-      return false
-    }
-    return true
+    let started = await request.value
+    // Each open that waited ends its own wait.
+    if !started { endCloudWake(fleetKey: fleetKey) }
+    return started
   }
 
   /// The name of the ADE Cloud computer `fleetKey` while an open waits for it
