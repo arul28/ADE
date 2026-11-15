@@ -377,6 +377,7 @@ final class MachineFleet: ObservableObject {
     keepLiveChoices += 1
     for connection in connections.values {
       connection.stop(reason: "Signed out.", clearAttention: true)
+      connection.discardPendingRosterSave()
     }
     connections.removeAll()
     presenceRefreshTask?.cancel()

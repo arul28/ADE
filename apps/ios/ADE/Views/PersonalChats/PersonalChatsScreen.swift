@@ -309,6 +309,7 @@ struct PersonalChatsScreen: View {
     }
     if !quietly { loading = true }
     defer { loading = false }
+    let accountGeneration = syncService.accountDataGeneration
     let timeout: UInt64 = 5_000_000_000
     async let focusedRefresh: Void = refreshFocused(timeoutNanoseconds: timeout)
     // A machine whose ADE has no personal chats has nothing to list; it is not a failure.
@@ -329,6 +330,8 @@ struct PersonalChatsScreen: View {
         }
       }
       for await (machineKey, name, summaries) in group {
+        // An account that left during the reads took these chats with it.
+        guard syncService.accountDataGeneration == accountGeneration else { continue }
         guard let summaries else {
           failedMachineNames[machineKey] = name
           continue
@@ -400,7 +403,7 @@ struct PersonalChatsScreen: View {
   }
 
   private static func cacheKey(_ machineKey: String) -> String {
-    "ade.personalChats.fleet.cache.v1.\(Data(machineKey.utf8).base64EncodedString())"
+    syncFleetPersonalChatsCacheKeyPrefix + Data(machineKey.utf8).base64EncodedString()
   }
 }
 

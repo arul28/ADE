@@ -982,6 +982,14 @@ final class MachineConnection {
     return projects.map { $0.excludingIdentityChats() }
   }
 
+  /// Drops a roster save that waits to run. The fleet calls it when the
+  /// account leaves: the account change purges the roster caches, and a save
+  /// that captured the old roster must not write it back.
+  func discardPendingRosterSave() {
+    rosterPersistTask?.cancel()
+    rosterPersistTask = nil
+  }
+
   private func schedulePersistRoster() {
     rosterPersistTask?.cancel()
     guard let key = rosterCacheKey else { return }

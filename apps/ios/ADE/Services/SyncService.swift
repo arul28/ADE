@@ -5187,6 +5187,13 @@ final class SyncService: ObservableObject {
   /// 2s debounce task shared by all writers of the App Group workspace
   /// snapshot. Coalesces bursty state changes into a single widget reload.
   private var snapshotDebouncerTask: Task<Void, Never>?
+  /// The workspace snapshot write that runs now (its read and its save).
+  /// Each write waits for the one before it; an account change cancels it.
+  private var snapshotWriteTask: Task<Void, Never>?
+  /// Moves on each account change (`resetLocalReplicaAfterAccountLeft`). A
+  /// write that read rows before the change compares it before it saves, so
+  /// it cannot put a former account's rows back after the wipe.
+  private(set) var accountDataGeneration = 0
   private var tailnetInterfaceScanTask: Task<Void, Never>?
   private var pathChangeRoamTask: Task<Void, Never>?
   private var tailnetInterfaceScanGeneration: UInt64 = 0
@@ -7342,6 +7349,7 @@ final class SyncService: ObservableObject {
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
     snapshotDebouncerTask?.cancel()
+    snapshotWriteTask?.cancel()
     tailnetInterfaceScanTask?.cancel()
     pathChangeRoamTask?.cancel()
     activeSessionsObservationTask?.cancel()
@@ -11043,8 +11051,15 @@ final class SyncService: ObservableObject {
     if wasLive {
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
     }
+    // First: every write that read the account's rows sees the change before
+    // it saves, also one whose task outlives the cancels below.
+    accountDataGeneration &+= 1
     snapshotDebouncerTask?.cancel()
     snapshotDebouncerTask = nil
+    snapshotWriteTask?.cancel()
+    snapshotWriteTask = nil
+    rosterPersistTask?.cancel()
+    rosterPersistTask = nil
     forgetAccountAutoPairAttempts()
     remoteCursorProfilePersistTask?.cancel()
     remoteCursorProfilePersistTask = nil
@@ -11080,16 +11095,25 @@ final class SyncService: ObservableObject {
 
     // Offline rosters (chat titles and previews) of every computer that is not
     // paired any more, also ones removed before this sign-out.
-    var keptRosterKeys = Set<String>()
+    // Personal chat lists (chat titles) go the same way. The per-computer
+    // lists of the fleet all go: the fleet is the account's, and a computer
+    // still paired by code lists its chats again when it is read.
+    var keptCacheKeys = Set<String>()
     for (key, profile) in profiles {
-      keptRosterKeys.insert(syncRosterCacheKey(host: key))
+      keptCacheKeys.insert(syncRosterCacheKey(host: key))
+      keptCacheKeys.insert(syncPersonalChatsCacheKey(host: key))
       if let host = savedProfileHostStorageKey(profile) {
-        keptRosterKeys.insert(syncRosterCacheKey(host: host))
+        keptCacheKeys.insert(syncRosterCacheKey(host: host))
+        keptCacheKeys.insert(syncPersonalChatsCacheKey(host: host))
       }
     }
-    let rosterPrefix = syncRosterCacheKey(host: "")
+    let purgedPrefixes = [
+      syncRosterCacheKey(host: ""),
+      syncPersonalChatsCacheKey(host: ""),
+      syncFleetPersonalChatsCacheKeyPrefix,
+    ]
     for key in ADESharedContainer.defaults.dictionaryRepresentation().keys
-      where key.hasPrefix(rosterPrefix) && !keptRosterKeys.contains(key)
+      where purgedPrefixes.contains(where: key.hasPrefix) && !keptCacheKeys.contains(key)
     {
       ADESharedContainer.defaults.removeObject(forKey: key)
     }
@@ -11105,6 +11129,8 @@ final class SyncService: ObservableObject {
 
     // The in-memory and App Group copies of the old rows.
     chatSummaryCache = [:]
+    personalChatSessions = loadCachedPersonalChats()
+    personalChatsRevision &+= 1
     remoteProjectCatalog = []
     setActiveProjectId(nil)
     UserDefaults.standard.removeObject(forKey: lastProjectRouteIdKey)
@@ -11113,7 +11139,13 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog()
     refreshActiveSessionsAndSnapshot()
     reloadRosterForActiveHost()
-    if ADESharedContainer.writeWorkspaceSnapshot(.empty) {
+    // Through the writers' serial queue: a save queued before this one runs
+    // first and is overwritten; none of the old account can be queued after
+    // it (`accountDataGeneration`).
+    let emptied = Self.workspaceSnapshotWriteQueue.sync {
+      ADESharedContainer.writeWorkspaceSnapshot(.empty)
+    }
+    if emptied {
       workspaceSnapshotRevision += 1
       WidgetReloadBridge.reloadAllTimelines()
     }
@@ -26284,16 +26316,31 @@ extension SyncService {
       try? await Task.sleep(nanoseconds: 2_000_000_000)
       guard let self, !Task.isCancelled else { return }
       self.snapshotDebouncerTask = nil
-      await self.writeWorkspaceSnapshotNow()
+      self.startWorkspaceSnapshotWrite()
+    }
+  }
+
+  /// Runs one write in `snapshotWriteTask`, after the write before it, so an
+  /// account change can cancel the write that runs now and two writes never
+  /// save out of order.
+  private func startWorkspaceSnapshotWrite() {
+    let previous = snapshotWriteTask
+    let generation = accountDataGeneration
+    snapshotWriteTask = Task { @MainActor [weak self] in
+      await previous?.value
+      guard let self, !Task.isCancelled else { return }
+      await self.writeWorkspaceSnapshotNow(accountGeneration: generation)
     }
   }
 
   /// The PR read and the JSON encode run off the main actor: the read waits
   /// for any changeset apply that holds the database queue, and both hung the
   /// app when they ran on the main thread.
-  private func writeWorkspaceSnapshotNow() async {
+  private func writeWorkspaceSnapshotNow(accountGeneration generation: Int) async {
     let items = await readDatabaseOffMain { Array($0.fetchPullRequestListItems().prefix(12)) }
-    guard !Task.isCancelled else { return }
+    // An account that left while the read ran took these rows with it. No
+    // await follows before the save is queued, so this check holds for it.
+    guard !Task.isCancelled, generation == accountDataGeneration else { return }
     let prs: [PrSnapshot] = items.map { item in
       PrSnapshot(
         id: item.id,
@@ -26342,7 +26389,7 @@ extension SyncService {
         continuation.resume(returning: ADESharedContainer.writeWorkspaceSnapshot(snapshot))
       }
     }
-    if written, !Task.isCancelled {
+    if written, !Task.isCancelled, generation == accountDataGeneration {
       workspaceSnapshotRevision += 1
       WidgetReloadBridge.reloadAllTimelines()
     }
@@ -27504,9 +27551,12 @@ extension SyncService {
     rosterPersistTask?.cancel()
     let snapshot = rosterProjects
     let cacheKey = rosterCacheKey
+    let accountGeneration = accountDataGeneration
     rosterPersistTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 600_000_000)
-      guard let self, !Task.isCancelled else { return }
+      // An account change purges the roster caches; a save that captured the
+      // old roster must not write it back.
+      guard let self, !Task.isCancelled, accountGeneration == self.accountDataGeneration else { return }
       self.persistRoster(snapshot, cacheKey: cacheKey)
     }
   }
@@ -27810,11 +27860,17 @@ enum PersonalChatLifecycleAction: String {
   case delete
 }
 
+/// The saved personal chat list of one paired host (the focused machine).
+func syncPersonalChatsCacheKey(host: String) -> String {
+  "ade.personalChats.cache.v1.\(Data(host.utf8).base64EncodedString())"
+}
+
+/// Start of every per-computer personal chat list the fleet screen saves.
+let syncFleetPersonalChatsCacheKeyPrefix = "ade.personalChats.fleet.cache.v1."
+
 extension SyncService {
   private var personalChatsCacheKey: String {
-    let host = activeHostStorageKey() ?? "unpaired"
-    let encoded = Data(host.utf8).base64EncodedString()
-    return "ade.personalChats.cache.v1.\(encoded)"
+    syncPersonalChatsCacheKey(host: activeHostStorageKey() ?? "unpaired")
   }
 
   func loadCachedPersonalChats() -> [AgentChatSessionSummary] {
@@ -27876,6 +27932,7 @@ extension SyncService {
       }
     }
     try requireInvokableRemoteAction("personalChats.list")
+    let accountGeneration = accountDataGeneration
     let sessions = try await sendDecodableCommand(
       action: "personalChats.list",
       args: ["includeArchived": includeArchived],
@@ -27885,6 +27942,9 @@ extension SyncService {
       as: [AgentChatSessionSummary].self
     )
     let sorted = sortPersonalChats(sessions)
+    // An account that left during the read took this list with it: return
+    // it to the caller, but do not keep or save it.
+    guard accountGeneration == accountDataGeneration else { return sorted }
     if sorted != personalChatSessions {
       personalChatSessions = sorted
       personalChatsRevision &+= 1
