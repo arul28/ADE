@@ -1218,7 +1218,7 @@ export type CliPlan =
        * null `outPath` saves to a temp file in text mode and leaves `--json`
        * output untouched.
        */
-      saveScreenshot?: { outPath: string | null };
+      saveScreenshot?: { outPath: string | null; surface?: "browser" | "app-control" };
       syncWebOpen?: boolean;
       syncWebNoClipboard?: boolean;
       /**
@@ -4198,7 +4198,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
     $ ade app-control select --x 120 --y 420       Add that element to the chat as context
@@ -18410,14 +18410,22 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    // Written here, from the image the call returns: `--out` used to be passed
+    // on as an unknown argument, so the command exited 0 and wrote nothing.
+    const outPath = readValue(args, ["--out", "--output", "--path"]);
+    if (outPath != null && (!outPath.trim() || outPath.startsWith("-"))) {
+      throw new CliUsageError("app-control screenshot --out needs a file path.");
+    }
     return {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
+        // A file gets a fresh PNG capture, not the live view's JPEG frame.
         appControlStep("result", "screenshot",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { format: "png" }),
         ),
       ],
+      saveScreenshot: { outPath, surface: "app-control" },
     };
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
@@ -30167,6 +30175,10 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // No swap here: when memory runs out the provider restarts the whole computer. The biggest process goes instead.
+  const cloudMemoryGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudMemoryGuard")).startCloudMemoryGuard({ logger: headlessProjectLogger })
+    : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
   const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
@@ -32091,6 +32103,7 @@ async function runServe(
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     cloudKeepAwake?.dispose();
+    cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
@@ -32969,11 +32982,19 @@ async function runServe(
         try { process.kill(pid, 0); return true; } catch { return false; }
       },
     });
+    // Named by its release as analytics names it (`stable`, `beta`, `alpha`),
+    // `dev` for a development brain. ADE_PACKAGE_CHANNEL alone is set only for
+    // Alpha, so it named every Stable, Beta and ADE Cloud brain "dev".
+    const releaseChannel = resolveReleaseChannel({
+      env: process.env,
+      packaged: brainReportsAsRelease(process.env),
+      version: VERSION,
+    });
     const otherBrains = brainRegistry.join({
       pid: process.pid,
       endpoint: socketPath,
       startedAtMs: readProcessStartTimeMs(process.pid),
-      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+      label: releaseChannel === "development" ? "dev" : releaseChannel,
     });
     const sharedHomeSentence = describeOtherBrains(otherBrains);
     if (sharedHomeSentence) {
@@ -37534,6 +37555,7 @@ function nextTempScreenshotPath(): string {
 function saveScreenshotResult(
   result: unknown,
   outPath: string | null,
+  surface: "browser" | "app-control" = "browser",
 ): { savedPath: string; width: number | null; height: number | null; bytes: number } {
   const unwrapped = unwrapActionEnvelope(result);
   const shot = isRecord(unwrapped) ? unwrapped : {};
@@ -37544,12 +37566,16 @@ function saveScreenshotResult(
     // reach the fallback and print a stack trace instead of one clear line.
     const reason = asString(shot.reason);
     throw new CliToolError(
-      `browser screenshot failed — the browser returned no screenshot image${reason ? ` (${reason})` : ""}.`,
+      `${surface} screenshot failed — ${surface === "browser" ? "the browser" : "the app"} returned no screenshot image${reason ? ` (${reason})` : ""}.`,
       undefined,
     );
   }
   const bytes = Buffer.from(match[1]!, "base64");
-  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
+  // Named for what the bytes are: a JPEG (a live frame) never lands under a
+  // .png name, which PNG-only readers refuse.
+  const jpeg = /^data:image\/jpe?g;/.test(dataUrl!);
+  const requested = path.resolve(outPath ?? nextTempScreenshotPath());
+  const savedPath = jpeg && /\.png$/i.test(requested) ? requested.replace(/\.png$/i, ".jpg") : requested;
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
   // A temp screenshot stays private: exclusive create, owner-only. An explicit
   // `--out` is the caller's own path and keeps the default mode.
@@ -42784,10 +42810,11 @@ async function runParsedCli(
       };
     }
     if (plan.saveScreenshot && (plan.saveScreenshot.outPath || parsed.options.text)) {
-      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
+      const surface = plan.saveScreenshot.surface ?? "browser";
+      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath, surface);
       return {
         output: parsed.options.text
-          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
+          ? `${surface === "browser" ? browserTargetLine(unwrapActionEnvelope(result)) : ""}${renderKeyValues(surface === "browser" ? "ADE browser screenshot" : "ADE App Control screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],

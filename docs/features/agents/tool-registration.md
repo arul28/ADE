@@ -301,7 +301,9 @@ gives it an ordered fallback chain when `command -v ade` fails:
 For agents a brain launches, `ADE_CLI_PATH` is a shim written by
 `createHeadlessAdeCliAgentEnv` (`apps/ade-cli/src/bootstrap.ts`, body from
 `apps/ade-cli/src/services/runtime/adeCliShim.ts`) under
-`<tmpdir>/ade-cli-shims/<hash>/`. It names the brain that wrote it: when
+`<tmpdir>/ade-cli-shims/<hash>/` (`ade-cli-shims-<uid>` on Linux, whose `/tmp`
+is shared and where another user's folder is private to them:
+`defaultCliShimsRoot`). It names the brain that wrote it: when
 the caller's env sets neither `ADE_HOME` nor `ADE_RUNTIME_SOCKET_PATH`, it
 defaults both to that brain's (`ade serve` records the socket it serves in
 `ADE_RUNTIME_SOCKET_PATH`, including a launchd brain started with only

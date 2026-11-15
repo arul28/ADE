@@ -1354,7 +1354,9 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   again only when its run's peak use (the disk's size less that low point)
   passed the last grown run's, so an installer that leaves files behind and
   frees them in the next run still grows each step (four grows at most). A grow
-  counts toward that only once the launch's mark is saved. The reserve
+  counts toward that only once the launch's mark is saved and the server
+  started it: a grow that never started (the plan's disk, busy, cancelled) is
+  taken back, so a Retry after the person makes room grows again. The reserve
   is freed, the launch record gets a room mark (`roomMark`: when, and how many
   restarts it resumed after; no grow when that write fails: "free some space or
   Clear caches, then retry"), and the grower asks for one step (the same server
@@ -1378,6 +1380,67 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   stage with the refusal's way out (extra disk, a bigger size, a plan) and
   Retry; a boot launch keeps following a failed launch across restarts, so a
   Retry that grows goes on with nobody watching.
+- Memory (`lanes/laneSetupMemoryGuard.ts`): a cloud computer has no swap, and
+  when its memory runs out the provider restarts the whole computer, brain
+  included (the provider's own health report says "oom_suspected: false"
+  even then). `npm ci` from a warm cache does that on a Small: it holds the
+  unpacked packages in memory (3.6 GB+ for ADE's desktop app; 0.7 GB on a
+  Mac), and a setup rerun after a disk grow always has a warm cache. Every
+  lane setup script and dependency install on a cloud computer therefore runs
+  beside a small `sh` guard (never a teardown, which frees memory, or Docker,
+  whose containers run under the daemon outside the command's process group) (not a brain timer: the brain's event loop lags
+  seconds while setup saturates the CPUs) that reads `MemAvailable` every
+  0.5 s and kills the command's process group below a tenth of the computer's
+  memory (256 MB to 1 GB). The step then fails with "Setup used nearly all of
+  this computer's memory (N GB), so ADE stopped it before the computer had to
+  restart. Use a bigger size, or make setup use less memory, then retry."
+  (`laneSetupOutOfMemoryError`, logged `lane_env_init.setup_stopped_for_memory`),
+  never as a signal stop. A failed setup step's error keeps the end of the
+  output (where npm says why), without warning lines, and the exit code.
+  Beyond setup, the brain runs one machine-wide guard
+  (`ade-cli/src/services/power/cloudMemoryGuard.ts`, started at serve on a
+  cloud computer): below a twentieth of memory (200 to 512 MB) it kills the
+  one biggest process of the brain's user, never the brain, its `ade __…`
+  workers, the entrypoint or the provider's processes, and logs
+  `cloud.memory_guard_killed` with the command. An agent's `npm install` or a
+  terminal's build then fails with "Killed" instead of restarting the
+  computer under every chat. Measured on ADE's own repo: `npm ci` for
+  `apps/desktop` peaks near 3.8 GB, so it sets up on a Medium (8 GB) and the
+  setup guard stops it on a Small.
+- Build tools: the image has `build-essential` and `pkg-config`, so npm
+  packages with native code and no prebuilt binary (node-pty, some sqlite and
+  bcrypt builds) compile on install; before, every such setup failed with
+  "gyp ERR!" on every size.
+- Codex's sandbox: Codex runs each shell command in bubblewrap with its own
+  network namespace, which gVisor can't set up ("bwrap: loopback: Failed
+  RTM_NEWADDR"), so no Codex command ran outside full-auto. The image's
+  `/usr/bin/bwrap` is a wrapper (`infra/ade-cloud/template/bwrap-gvisor.sh`)
+  around Debian's bubblewrap that drops `--unshare-net` only for Codex's
+  sandbox, which also blocks the network with its seccomp filter. Checked on a
+  cloud computer: plan mode can't write and can't reach the network (a raw IP
+  is refused too), default mode writes only in the workspace, and Codex's
+  network-on setting still reaches the network. Codex prefers a `bwrap` on
+  PATH to its bundled one; when the wrapper can't run, Codex falls back to its
+  own and fails as before.
+- `gh`: the image has the GitHub CLI (GitHub's apt repository). ADE's `gh`
+  shim only adds the account's GitHub token and then runs the real `gh`, so
+  before it every `gh` on a cloud computer was "command not found". The brain
+  also puts the shim on the first chat after it starts: it reads the repo's
+  owner from the git config file (`gitConfigOrigin.ts`), as the desktop does,
+  so a launch's chat no longer misses it.
+- Login shells keep their PATH: Debian's `/etc/profile` sets PATH from
+  scratch, so a login shell lost everything the brain put on PATH: the `ade`
+  and `gh` shims, `~/.local/bin`, npm's global bin, the Android tools. Checked
+  on beta.39: a Codex chat (then `bash -lc` for every command) found no `gh`
+  in `~/.local/bin` though its own PATH had it. The image's `/etc/profile`
+  saves the PATH it was given on its first line, and
+  `/etc/profile.d/ade-shims.sh` (`infra/ade-cloud/template/ade-shims-profile.sh`)
+  puts it back in front, keeping Debian's folders after it (as macOS's
+  path_helper does). The Dockerfile checks it at build time. ADE itself no
+  longer starts login shells on Linux (terminals are interactive non-login
+  shells and Codex runs with `allow_login_shell=false`; see
+  [Linux support](../../development/linux-support.md)), so the script covers
+  login shells started outside ADE, such as an SSH session.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

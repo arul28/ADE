@@ -47,7 +47,7 @@ import type { Logger } from "../logging/logger";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
@@ -466,6 +466,7 @@ async function runCodexExec(args: {
   const cliArgs: string[] = [
     "exec",
     ...CODEX_NO_UPDATE_CHECK_ARGS,
+    ...codexLinuxShellArgs(process.platform),
     "--color",
     "never",
     "--output-schema",

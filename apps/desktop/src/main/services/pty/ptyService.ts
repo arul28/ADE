@@ -74,6 +74,7 @@ import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
 import type {
@@ -1217,7 +1218,16 @@ function cleanShellSpec(file: string): ShellSpec {
   return { file, args: [], env: { ENV: "" } };
 }
 
+/**
+ * A shell the person opens to type in. macOS starts a login shell, as
+ * Terminal and iTerm do. Linux starts an interactive non-login shell, as GNOME
+ * Terminal, Konsole and VS Code do: a login shell runs /etc/profile, which on
+ * Debian sets PATH from scratch and drops ADE's `ade` and `gh` shims. The
+ * login shell's PATH still arrives, resolved into the terminal's environment
+ * (withResolvedCliLaunchPath), and ~/.bashrc or ~/.zshrc still runs.
+ */
 function loginShellSpec(file: string): ShellSpec {
+  if (process.platform === "linux") return { file, args: [] };
   const name = path.basename(file).toLowerCase();
   if (name === "zsh" || name === "bash") return { file, args: ["-l"] };
   if (name === "fish") return { file, args: ["--login"] };
@@ -7646,6 +7656,19 @@ export function createPtyService({
           const preferredKey = pathKey(preferred.file);
           shellCandidates = [preferred, ...shellCandidates.filter((shell) => pathKey(shell.file) !== preferredKey)];
         }
+      }
+      // Linux opens this shell without `-l` (loginShellSpec), so its login PATH
+      // comes from the probe above, which ran `$SHELL`. A saved shell other
+      // than `$SHELL` (zsh picked, SHELL=/bin/bash) adds its own login PATH
+      // (~/.zprofile), behind ADE's entries.
+      const chosenShell = shellCandidates[0]?.file;
+      if (
+        process.platform === "linux"
+        && useLoginInteractiveShell
+        && chosenShell
+        && pathKey(chosenShell) !== pathKey(launchEnv.SHELL?.trim() || "/bin/sh")
+      ) {
+        setPathEnvValue(launchEnv, getPathEnvValue(withResolvedCliLaunchPath({ ...launchEnv, SHELL: chosenShell })) ?? "");
       }
       let launchedDirectCommand = false;
       // Set when the launch names a provider CLI: its pinned copy runs, and a

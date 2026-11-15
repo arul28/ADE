@@ -205,6 +205,8 @@ const mockState = vi.hoisted(() => ({
   codexLineHandler: null as ((line: string) => void) | null,
   cursorSdkAcquireCalls: [] as Array<Record<string, unknown>>,
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
+  /** Waiting on `cursorSendsReached`; settled as each send is recorded. */
+  cursorSendWaiters: [] as Array<{ count: number; resolve: () => void }>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
   /** Text pushed through `Run.steer()`, in call order. */
@@ -949,6 +951,12 @@ vi.mock("./cursorSdkPool", () => ({
         // test's ledger; see `mockState.generation`.
         if (acquiredGeneration === mockState.generation) {
           mockState.cursorSdkSendCalls.push(payload);
+          const sent = mockState.cursorSdkSendCalls.length;
+          mockState.cursorSendWaiters = mockState.cursorSendWaiters.filter((waiter) => {
+            if (sent < waiter.count) return true;
+            waiter.resolve();
+            return false;
+          });
         }
         mockState.onCursorSendPrompt?.(pooled);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
@@ -2006,6 +2014,19 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
+/**
+ * Resolves once this test has recorded `count` Cursor sends. It waits on the
+ * send itself, not a poll against the wall clock: a recycle re-send can take
+ * longer than a poll's budget on a loaded CI runner. Real timers only; a test
+ * that must advance fake timers to reach the send keeps `vi.waitFor`.
+ */
+function cursorSendsReached(count: number): Promise<void> {
+  if (mockState.cursorSdkSendCalls.length >= count) return Promise.resolve();
+  return new Promise((resolve) => {
+    mockState.cursorSendWaiters.push({ count, resolve });
+  });
+}
+
 async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!condition()) {
@@ -2303,6 +2324,7 @@ beforeEach(() => {
   mockState.codexLineHandler = null;
   mockState.cursorSdkAcquireCalls = [];
   mockState.cursorSdkSendCalls = [];
+  mockState.cursorSendWaiters = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
   mockState.cursorSdkSteerCalls = [];
@@ -2554,6 +2576,7 @@ export {
   tmpHomeRoot,
   tmpRoot,
   turnDiffMockState,
+  cursorSendsReached,
   waitFor,
   waitForCondition,
   waitForEvent,
