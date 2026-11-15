@@ -9,7 +9,7 @@ import { readComputerSignal, settleFreePlanComputer } from "./freePlan";
 import { settleFreePlanGithub } from "./freePlanGithub";
 import { routeReferrals } from "./referrals";
 import { trustedHttpsOrigin } from "../trustedOrigin";
-import { handleLaunchJoin, isLaunchJoinRequest, routeLaunches } from "./launches";
+import { handleLaunchJoin, isLaunchJoinRequest, launchAutoSizeCheck, routeLaunches } from "./launches";
 import { createAnswerOf, createInProgress, type CreateComputerExtras, type CreateComputerOutcome, type ReplayOutcome } from "./createOutcome";
 import { serverGitCheck } from "./accountVault";
 import { handleAutomationDelivery, isAutomationDeliveryRequest, noteAutomationLaunchProgress, routeAutomations } from "./automations";
@@ -29,7 +29,7 @@ import {
 } from "./lanesWithoutComputer";
 import { parseDiskUsageReport, recordDiskUsage, withUseFacts } from "./diskUsage";
 import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleUse } from "./idleCleanup";
-import { CLOUD_PATHS, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
+import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
 import { boundedDisplayText } from "../displayText";
@@ -778,6 +778,18 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     nextDisk = body.disk;
   }
   const shapeChanges = size.cpu !== computer.cpu || size.memoryGb !== computer.memory_gb;
+  // A server launch's setup moving its own computer up a size (`CLOUD_AUTO_SIZE`): only the
+  // computer's own brain sends it, only for a launch whose size was ADE's default, and once.
+  // The launch and the repository are recorded with the resize itself, never for a refused one.
+  let launchStatements: D1PreparedStatement[] = [];
+  if (body.launchId !== undefined) {
+    if (typeof body.launchId !== "string" || origin !== "system" || body.disk !== undefined) {
+      return badRequest("That size change isn't valid.");
+    }
+    const check = await launchAutoSizeCheck(env, computer, body.launchId.trim().toLowerCase(), size, now);
+    if (!check.ok) return fail("size_kept", cloudAutoSizeRefusalSentence(check.reason), 409, { reason: check.reason });
+    launchStatements = check.statements;
+  }
   if (nextDisk !== currentDisk) {
     if (nextDisk % DISK_STEP_GB !== 0) return badDiskStep();
     const tooBig = tierRefusal(size, nextDisk, false);
@@ -844,6 +856,7 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
       .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
     ...statusChangeStatements(env, computer, status, now, "resize"),
+    ...launchStatements,
   );
   // The bigger disk is billed only now that the provider made it; a refused grow gave its room back above.
   if (nextDisk !== currentDisk) statements.push(diskDayStatement(env, account, now));

@@ -15,6 +15,7 @@ import { deriveDeterministicLaneNameFromPrompt, deriveDeterministicLaneTitleFrom
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import type {
   ChatLaunchCloudStageId,
+  ChatLaunchCloudState,
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
@@ -29,6 +30,7 @@ import { AdeExpectedError } from "../../../shared/expectedError";
 import { getErrorMessage } from "../shared/utils";
 import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineCreator";
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
+import { CLOUD_AUTO_SIZE, cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
 import { createCloudLaneLaunchRecordStore, type CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
   CANCEL_PIPELINE_WAIT_MS,
@@ -274,6 +276,25 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // this launch's sentences name it the same, never the placeholder it started on.
     const laneName = next.laneName?.trim();
     if (laneName) record.computerName = normalizeCloudMachineName(laneName);
+    // The brain's rows are the ones it was handed: the computer's row says the size this app knows now.
+    showComputerSize(record);
+    // Setup moved the computer up (the brain's sentence for it): the size comes from the server, once.
+    const environment = next.stages.find((stage) => stage.id === "environment");
+    if (environment?.detail === cloudAutoSizeSentence("setup_memory") && record.snapshot.cloud.sizeId !== CLOUD_AUTO_SIZE.to) {
+      void refreshServerSize(record).then((changed) => {
+        if (!changed || records.get(record.snapshot.launchId) !== record) return;
+        showComputerSize(record);
+        publish(record);
+      });
+    }
+  };
+
+  /** The computer row's words, once the size is bigger than the one asked for (`sizeNote`). */
+  const showComputerSize = (record: CloudLaneLaunchRecord): void => {
+    if (!record.snapshot.cloud.sizeNote) return;
+    const computer = record.snapshot.stages.find((stage) => stage.id === "computer");
+    const words = computerWords(record);
+    if (computer && words) computer.detail = words;
   };
 
   /**
@@ -314,7 +335,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   // The computer, through the server launcher (cloudLaneComputerStages.ts)
   // ---------------------------------------------------------------------------
 
-  const { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers } = createCloudLaneComputerStages(
+  const { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers, refreshServerSize, computerWords } = createCloudLaneComputerStages(
     deps,
     { stageOf, setStage, finishStage, publish, persist: (record) => store.persist(record), assertActive },
     { logger, sleep },
@@ -771,6 +792,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         ...snapshot,
         cloud: {
           sizeId: cloud.sizeId,
+          ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
           projectOrigin: project.identity,
           instanceId: null,
           machineKey: null,
@@ -877,7 +899,13 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     return served(record);
   };
 
-  const retry = async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
+  /**
+   * `options.sizeChoice` "capped": the retry's caller is held to a size limit
+   * that no longer allows the one step up (an unattended agent whose limits
+   * were lowered since the first start), so a default size becomes "capped"
+   * in the saved launch and in the request the server keeps.
+   */
+  const retry = async (args: ChatLaunchIdArgs, options: { sizeChoice?: ChatLaunchCloudState["sizeChoice"] } = {}): Promise<ChatLaunchSnapshot | null> => {
     const record = recordFor(args);
     if (!record) return null;
     if (isHandedOff(record)) {
@@ -891,6 +919,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       return served(record);
     }
     if (record.snapshot.phase !== "failed") return served(record);
+    if (options.sizeChoice === "capped" && record.snapshot.cloud.sizeChoice === "default") record.snapshot.cloud.sizeChoice = "capped";
     const runtime = runtimeFor(record.snapshot.launchId);
     if (runtime.abort.signal.aborted) runtime.abort = new AbortController();
     // A computer that failed on its own side begins again on a new one; the server leaves any other launch as it is.
