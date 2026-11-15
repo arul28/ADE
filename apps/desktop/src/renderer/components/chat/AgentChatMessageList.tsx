@@ -5998,6 +5998,13 @@ const OLDER_HISTORY_AUTO_FILL_DELAY_MS = 1_500;
 const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
 /** How often backfill looks again while a scroll restore is still landing. */
 const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
+/**
+ * A backfill page waits until the reader's scrolling has been quiet this long.
+ * Each page re-runs the row pipeline over the resident transcript, and one
+ * that lands during a wheel scroll drops frames. A reader near the top is
+ * waiting for the page and still gets it at once.
+ */
+const OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS = 400;
 function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
   return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
 }
@@ -6666,6 +6673,8 @@ function AgentChatMessageListMain({
   backfillArmStateRef.current = { armed: backfillArmed, key: backfillSessionKey };
   /** A press on the list is held (a scrollbar drag, among others). */
   const readerPointerHeldRef = useRef(false);
+  /** When the reader last scrolled (`performance.now()`); backfill waits for a quiet spell. */
+  const lastReaderScrollAtRef = useRef(Number.NEGATIVE_INFINITY);
   const armOlderHistoryBackfill = useCallback(() => {
     const { armed, key } = backfillArmStateRef.current;
     if (armed) return;
@@ -6753,6 +6762,15 @@ function AgentChatMessageListMain({
       // (a timer, not another idle slot, which can come back every frame).
       if (scrollRestoreActiveRef.current) {
         timer = setTimeout(run, OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS);
+        return;
+      }
+      // The reader is scrolling: a prepend now would drop frames. Look again
+      // once the scroll has been quiet, unless they are near the top and waiting.
+      const sinceScrollMs = performance.now() - lastReaderScrollAtRef.current;
+      const root = scrollRef.current;
+      const readerWaiting = root != null && root.scrollTop <= resolveOlderHistoryPrefetchTriggerPx(root.clientHeight);
+      if (!readerWaiting && sinceScrollMs < OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS) {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS - sinceScrollMs);
         return;
       }
       maybeRequestOlderHistory(scrollRef.current?.scrollTop ?? 0, "backfill");
@@ -8677,6 +8695,7 @@ function AgentChatMessageListMain({
 
   /** Wheel, touch, press, or a scroll key: the reader is driving now. */
   const noteReaderScrollIntent = useCallback(() => {
+    lastReaderScrollAtRef.current = performance.now();
     autoOlderLoadsSinceUserScrollRef.current = 0;
     if (scrollRestoreActiveRef.current) finishScrollRestore();
   }, [finishScrollRestore]);
@@ -8845,6 +8864,7 @@ function AgentChatMessageListMain({
     }
     // A scroll we did not author is the reader moving: automatic older pages
     // get their one chained page back.
+    lastReaderScrollAtRef.current = performance.now();
     autoOlderLoadsSinceUserScrollRef.current = 0;
     // A scrollbar drag upward (wheel, keys and touch arm through the scroll direction).
     if (readerPointerHeldRef.current && target.scrollTop < previousScrollTop - 0.5) armOlderHistoryBackfill();
