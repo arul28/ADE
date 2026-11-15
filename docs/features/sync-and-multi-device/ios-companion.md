@@ -2677,8 +2677,14 @@ opens it or filters to it. The five chips at the top (All · Needs you ·
 Working · Waiting · Done, the same `HubRosterFilterBar` the Hub uses) are the
 count display and the single-select filter. A failed row sits under Needs you
 with its own red mark; a Waiting row says why ("Snoozed", "CI running",
-"Review requested"). It includes project filtering and machine/project context on every item,
-and remains useful when the phone is
+"Review requested"). It includes project filtering. A row names its project
+and lane but not its computer; the long-press menu names the computer ("On
+Demo Studio"), and so do the chat header and the prompt box. The widgets name
+the project only. Sessions count the rows the Hub counts: chats, CLI sessions
+and shells, with a chat's own shell rows kept inside that chat. The live
+`WorkspaceSnapshot` write waits at most 2 s and does not restart on each
+change, so a shell that prints every second cannot hold the drawer and the
+widgets on an old snapshot. The drawer remains useful when the phone is
 account-signed-in but not directly paired to a machine. Rows can be dismissed
 with a swipe; account fallback and offline states remain explicit.
 

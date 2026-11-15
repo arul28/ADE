@@ -394,11 +394,10 @@ public enum ActivityWidgetPresentation {
         )
     }
 
+    /// The row's project. Rows name no computer, as Activity and Work rows do.
     private static func scope(for item: AccountAttentionItem) -> String? {
-        let machine = item.machine.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let project = item.project.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = [machine, project].filter { !$0.isEmpty }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        return project.isEmpty ? nil : project
     }
 
     private static func title(for item: AccountAttentionItem, hideDetails: Bool) -> String {

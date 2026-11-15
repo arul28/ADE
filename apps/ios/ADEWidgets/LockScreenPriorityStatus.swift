@@ -115,7 +115,8 @@ struct LockScreenPriorityStatus {
         }
 
         let presentation = Self.presentation(for: focus.phase)
-        let scope = "\(focus.machine.name) · \(focus.project.name)"
+        // The focused row's project; rows name no computer.
+        let scope = focus.project.name
         let attentionCount = needsYou.count
         let ambientCount = visible.count
         let privateTitle = focus.privacyPreview

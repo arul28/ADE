@@ -18462,7 +18462,8 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "settled-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "stale-running-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
-    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
+    // A shell counts as the Hub counts it: a failed one is listed, as failed.
+    XCTAssertEqual(service.activeSessions.first(where: { $0.sessionId == "failed-shell" })?.status, "failed")
 
     // A follow-up ask can change only its copy/item id. The active-session
     // signature must still publish that content-only delta to the drawer.

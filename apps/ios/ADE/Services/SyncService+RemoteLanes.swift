@@ -222,6 +222,14 @@ extension SyncService {
     }
   }
 
+  /// Forgets which account computers this app run tried to pair. Call it
+  /// when an account leaves: its pairings are deleted, so the computers must
+  /// be paired again when that account (or another) signs in.
+  func forgetAccountAutoPairAttempts() {
+    syncAutoPairedAccountMachines.removeAll()
+    syncAutoPairFailedHeartbeat.removeAll()
+  }
+
   func connectActiveProjectAccountCopies() {
     guard !syncAutoPairRunning,
           let project = accountProjectForActiveProject(),

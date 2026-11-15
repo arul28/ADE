@@ -10996,6 +10996,9 @@ final class SyncService: ObservableObject {
       if resetWhenNoneOwned { resetLocalReplicaAfterAccountLeft() }
       return
     }
+    // The account's pairings go below, so a later sign-in must be free to
+    // pair those computers again.
+    forgetAccountAutoPairAttempts()
 
     let active = activeHostProfile ?? loadProfile()
     let activeIsOwned = active?.accountOwnerId.map(shouldRemove) == true
@@ -11042,6 +11045,7 @@ final class SyncService: ObservableObject {
     }
     snapshotDebouncerTask?.cancel()
     snapshotDebouncerTask = nil
+    forgetAccountAutoPairAttempts()
     remoteCursorProfilePersistTask?.cancel()
     remoteCursorProfilePersistTask = nil
     pendingRemoteProfileDbVersion = nil
@@ -26039,10 +26043,12 @@ extension SyncService {
     }
     let now = Date()
 
-    // `activeSessions` holds every relevant chat session — running,
+    // `activeSessions` holds every relevant session — running,
     // awaiting-input, idle, and failed. The widget reads the running subset
-    // while the in-app Activity drawer still gets the full set. Non-chat
-    // (shell / CLI) sessions are excluded entirely.
+    // while the in-app Activity drawer still gets the full set. A CLI session
+    // or shell counts as the Hub counts it: a top-level row of its own, unless
+    // a chat launched it (then the chat stands for it). The lock-screen
+    // running roster and running count stay chats only.
     // Completed / ended sessions are dropped since they're terminal.
     var allAgents: [AgentSnapshot] = []
     var runningAgents: [AgentSnapshot] = []
@@ -26058,9 +26064,13 @@ extension SyncService {
     // Side chats live inside their main chat, so they are hidden the same way.
     let hiddenSessionIds = identitySessionIdsForSessions(sessions).union(sideChatHiddenSessionIds())
 
+    let chatIds = Set(sessions.lazy.filter { isWorkChatToolType($0.toolType) }.map(\.id))
     for session in sessions {
       let isChat = isWorkChatToolType(session.toolType)
-      guard isChat else { continue }
+      if !isChat, let parent = session.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+         !parent.isEmpty, parent != session.id, chatIds.contains(parent) {
+        continue
+      }
       guard session.archivedAt == nil else { continue }
 
       let summary = chatSummaryCache[session.id]
@@ -26087,7 +26097,7 @@ extension SyncService {
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
-      if isWorking && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
+      if isChat && isWorking && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
 
       let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -26107,7 +26117,9 @@ extension SyncService {
       ]
         .compactMap { parseIso8601($0 ?? "") }
         .max()
-        ?? (isRunningRuntime ? now : started)
+        // A shell or CLI row keeps its start time: its row changes with each
+        // line it prints, and `now` would publish a new roster every time.
+        ?? (isRunningRuntime && isChat ? now : started)
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
 
       let resolvedModelId: String? = {
@@ -26127,7 +26139,9 @@ extension SyncService {
         awaitingInput: isAwaiting,
         lastActivityAt: lastActivity,
         elapsedSeconds: elapsed,
-        preview: session.attentionMessage ?? session.statusNote ?? session.lastOutputPreview,
+        // The last output line of a shell or CLI changes each second; it is not
+        // a preview worth a new roster each time.
+        preview: session.attentionMessage ?? session.statusNote ?? (isChat ? session.lastOutputPreview : nil),
         pendingInputItemId: isAwaiting ? (session.pendingInputItemId ?? pendingInputItemIdForSnapshot(sessionId: session.id)) : nil,
         progress: nil,
         phase: nil,
@@ -26145,9 +26159,9 @@ extension SyncService {
       // lock screen never shows a session that isn't producing output now.
       if isAwaiting {
         awaitingInputCount += 1
-      } else if isRunningRuntime && lastActivity >= runningRecencyCutoff {
+      } else if isChat && isRunningRuntime && lastActivity >= runningRecencyCutoff {
         runningAgents.append(snap)
-      } else if isIdleRuntime {
+      } else if isChat && isIdleRuntime {
         idleCount += 1
       }
     }
@@ -26261,10 +26275,15 @@ extension SyncService {
   /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
   /// so bursty sync traffic collapses into a single widget-timeline reload.
   private func scheduleWorkspaceSnapshotWrite() {
-    snapshotDebouncerTask?.cancel()
+    // A pending write reads `activeSessions` when it runs, so a change that
+    // arrives while it waits joins it. Do not restart the wait: a session that
+    // changes more often than every 2 s (a shell that prints each second) then
+    // stopped every write, and the widget and Activity kept the old snapshot.
+    guard snapshotDebouncerTask == nil else { return }
     snapshotDebouncerTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 2_000_000_000)
       guard let self, !Task.isCancelled else { return }
+      self.snapshotDebouncerTask = nil
       await self.writeWorkspaceSnapshotNow()
     }
   }
