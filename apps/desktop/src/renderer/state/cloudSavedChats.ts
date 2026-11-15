@@ -224,7 +224,25 @@ type SavedChatsBridge = NonNullable<NonNullable<Window["ade"]["cloud"]>["savedCh
 export type SavedChatReach = {
   pinFor: (location: SavedChatLocation) => Promise<OpenProjectBinding | null>;
   reached: (location: SavedChatLocation) => void;
+  /**
+   * Wakes the ADE Cloud computer behind a pin whose connection refused a call
+   * before it was sent, and returns the pin to call with. Null when the pin is
+   * not such a computer.
+   */
+  wakeForSend?: (pin: Extract<OpenProjectBinding, { kind: "remote" }>, sessionId: string) => Promise<OpenProjectBinding | null>;
 };
+
+/**
+ * ADE Web's refusals before a command leaves: while a connection comes back,
+ * and while it has no command list yet (it is dialing). Nothing was sent, so
+ * one more call is safe.
+ */
+const RECONNECTING_REFUSAL = "Reconnecting to this computer. Try again when connected.";
+const NOT_LISTED_REFUSAL = "UnsupportedRemoteCommandError";
+
+function refusedBeforeSend(error: unknown): boolean {
+  return error instanceof Error && (error.message === RECONNECTING_REFUSAL || error.name === NOT_LISTED_REFUSAL);
+}
 
 /**
  * The chat API, with reads answered from the saved copy while the chat's
@@ -252,7 +270,28 @@ export function withSavedChatReads(
       return saved(location);
     }
   };
-  const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "delete"> = {
+  /**
+   * A call to a chat on an ADE Cloud computer that went to sleep before the
+   * chat said so: ADE Web refuses it before it leaves (the connection dials
+   * again). Wake the computer through the account and call once more, so a
+   * send wakes it also before the chat shows it asleep.
+   */
+  const wakeOnRefusal = async <P extends OpenProjectBinding | null | undefined, T>(
+    pin: P,
+    sessionId: string,
+    run: (pin: P) => Promise<T>,
+  ): Promise<T> => {
+    try {
+      return await run(pin);
+    } catch (error) {
+      if (!refusedBeforeSend(error) || !reach?.wakeForSend || pin?.kind !== "remote" || !isCloudConnectionTarget(pin.targetId)) throw error;
+      const wokenPin = await reach.wakeForSend(pin, sessionId);
+      if (!wokenPin) throw error;
+      // The woken computer's pin: the same kind of value the caller passed.
+      return run(wokenPin as P);
+    }
+  };
+  const savedReads: Pick<AgentChatApi, "getEventHistory" | "getEventHistoryPage" | "getSummary" | "send" | "steer" | "updateSession" | "delete"> = {
     getEventHistory: async (args, pin) => {
       const saved = async (location: SavedChatLocation) => {
         const page = await bridge.read({ machineKey: location.readMachineKey, chatId: location.chatId }).catch(logSavedChatReadFailure);
@@ -286,7 +325,7 @@ export function withSavedChatReads(
       // to sleep: a plain send through the connection only dials, which an
       // asleep computer does not answer.
       if (!location || !reach || !(isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
-        return api.send(args, pin);
+        return wakeOnRefusal(pin, args.sessionId, (callPin) => api.send(args, callPin));
       }
       const reachedPin = await reach.pinFor(location);
       if (!reachedPin) return api.send(args, pin);
@@ -294,6 +333,12 @@ export function withSavedChatReads(
       reach.reached(location);
       return result;
     },
+    // The chat's settings go with a send (the model, the mode): the first call
+    // of a send that a sleeping computer refuses.
+    updateSession: async (args, pin) => wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession(args, callPin)),
+    // A message typed while a turn reads running. It names the turn it may
+    // join, so after the wake it goes in once or is refused, never twice.
+    steer: async (args, pin) => wakeOnRefusal(pin, args.sessionId, (callPin) => api.steer(args, callPin)),
     delete: async (args, pin) => {
       const location = locate(args.sessionId, pin);
       if (location?.computerGone) {

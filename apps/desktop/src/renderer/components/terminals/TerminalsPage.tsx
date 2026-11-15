@@ -132,6 +132,7 @@ import {
   cancelCrossMachineOptimisticChatSession,
   requestCrossMachineLanesForMachine,
   seedCrossMachineOptimisticChatSession,
+  unionSlotIdForBinding,
   useRetainedCrossMachineSlices,
 } from "../../state/crossMachineLanes";
 import { writeClientLayout } from "../ui/clientLayoutStore";
@@ -721,7 +722,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       // which lists every machine's lanes. The project tab never changes
       // machine to show one lane.
       if (binding) {
-        work.navigate(openLaneOnMachinePath(session.laneId, machineIdForBinding(binding), session.id));
+        work.navigate(openLaneOnMachinePath(session.laneId, unionSlotIdForBinding(binding), session.id));
         return;
       }
       work.selectLane(session.laneId);
@@ -1272,7 +1273,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // A chat on another machine is keyed by its machine, as its lane's delete was (see SessionListPane).
   const activeLaneDeleteKey = activeLaneId && activeWorkSessionRuntimePin
     && activeWorkSessionRuntimePin.key !== projectBinding?.key
-    ? foreignLaneKey(machineIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
+    ? foreignLaneKey(unionSlotIdForBinding(activeWorkSessionRuntimePin), activeLaneId)
     : activeLaneId;
   const activeLaneDeleteProgress = useAppStore((state) => (
     activeLaneDeleteKey ? state.laneDeleteProgressByLaneId[activeLaneDeleteKey] ?? null : null
@@ -1613,7 +1614,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
   const foreignLaneForSession = useCallback((session: TerminalSessionSummary) => {
     const pin = resolveSessionRuntimePin(session);
-    const own = pin ? foreignSessionLanes.get(machineIdForBinding(pin))?.get(session.id) : undefined;
+    const own = pin ? foreignSessionLanes.get(unionSlotIdForBinding(pin))?.get(session.id) : undefined;
     if (own) return own;
     for (const bySessionId of foreignSessionLanes.values()) {
       const lane = bySessionId.get(session.id);
@@ -2361,7 +2362,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           // A row on another machine is re-read after the move and after an
           // undo, as a board drag does, so the card does not sit stale.
           const refreshForeign = runtimePin && runtimePin.key !== projectBinding?.key
-            ? () => requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin))
+            ? () => requestCrossMachineLanesForMachine(unionSlotIdForBinding(runtimePin))
             : undefined;
           moveSessionOnBoard({
             session,

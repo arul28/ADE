@@ -72,6 +72,24 @@ export function machineIdForBinding(
 }
 
 /**
+ * A machine can hold more than one checkout of a project. The Work union reads
+ * each one into its own slice: the first under the machine id, every other one
+ * under `<machine id>#checkout:<project id or folder>`. Each slice keeps its
+ * own binding, so its rows open and act on that checkout.
+ */
+const CHECKOUT_SLOT_MARK = "#checkout:";
+
+export function checkoutSlotId(machineId: string, checkoutKey: string): string {
+  return `${machineId}${CHECKOUT_SLOT_MARK}${checkoutKey}`;
+}
+
+/** The machine a union slice belongs to: the id itself, or its machine for a second checkout. */
+export function machineIdOfSlot(slotId: string): string {
+  const at = slotId.indexOf(CHECKOUT_SLOT_MARK);
+  return at < 0 ? slotId : slotId.slice(0, at);
+}
+
+/**
  * A machine's platform as Node or the account directory names it ("darwin",
  * "macos", "windows", "win32-x64", "linux"), or null when it says nothing
  * usable. "darwin" is read first: it contains "win". The one platform rule for

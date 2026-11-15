@@ -107,10 +107,13 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // not read while the chat is online, so its key is the last one read for
   // this chat's target.
   const lastMachineKeyRef = useRef<{ targetId: string | null; machineKey: string } | null>(null);
+  // The computer keeps its key after it comes up, so the failure is cleared on
+  // `online` either way; a stale one read as a failed wake at the next sleep.
   useEffect(() => {
     if (machineKey) lastMachineKeyRef.current = { targetId, machineKey };
-    else if (scope.online && lastMachineKeyRef.current?.targetId === targetId) {
+    if (scope.online && lastMachineKeyRef.current?.targetId === targetId) {
       clearCloudMachineWakeFailure(lastMachineKeyRef.current.machineKey);
+      setFailure((current) => (current?.targetId === targetId ? null : current));
     }
   }, [machineKey, scope.online, targetId]);
   // A failed wake from here wins over the inferred progress: a computer stuck

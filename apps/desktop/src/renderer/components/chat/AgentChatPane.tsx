@@ -17175,7 +17175,14 @@ export function AgentChatPane({
     connected.sort((a, b) => a.order - b.order);
     // This computer's own name as its second line, from the sync snapshot the
     // app already read (no read of its own). Before that read it has none.
-    const thisComputerName = peekLocalSyncStatus()?.localDevice?.name?.trim() || null;
+    // A device with no name of its own carries the OS host name there
+    // ("Desk-MacBook.local"): that is not a name a person gave it, so the row
+    // shows none.
+    const localDevice = peekLocalSyncStatus()?.localDevice;
+    const deviceName = localDevice?.name?.trim() || null;
+    const hostKey = (value: unknown) => (typeof value === "string" ? value.trim().replace(/\.$/, "").replace(/\.local$/i, "").toLowerCase() : "");
+    const hostNames = new Set([hostKey(localDevice?.lastHost), hostKey(localDevice?.metadata?.hostname)].filter(Boolean));
+    const thisComputerName = deviceName && !hostNames.has(hostKey(deviceName)) ? deviceName : null;
     const withThisComputerName = (row: DraftMachineOption): DraftMachineOption => (
       row.id === THIS_MACHINE_ID && !row.detail && thisComputerName && thisComputerName !== row.name
         ? { ...row, detail: thisComputerName }

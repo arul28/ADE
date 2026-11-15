@@ -58,7 +58,7 @@ import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repository
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { findMachineProject, remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { captureError } from "../../../shared/sentry/capture";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
@@ -154,6 +154,8 @@ import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
+/** How long a connected computer's list must lack an open tab's copy before the tab moves off it. */
+const COPY_REMOVED_SETTLE_MS = 3_000;
 // While the indicator is hidden, a sample only decides whether to show it.
 // Each one runs a machine-wide `ps` in Electron main (about 17 ms of CPU), so a
 // calm app checks every 10 s and speeds up once there is load to track.
@@ -2394,6 +2396,54 @@ export function TopBar({
     },
     [closeTabGroups, noMachineTabFor, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
   );
+
+  // A copy removed outside this window (on its computer, or from another
+  // window or the phone): its computer stays connected and its project list
+  // no longer has it. The tab moves as it does after a removal made here.
+  // An empty list proves nothing (it has not arrived after a reconnect), and
+  // the list must say so for a few seconds first.
+  const missingCopySinceRef = useRef(new Map<string, number>());
+  const followedCopyRemovalsRef = useRef(new Set<string>());
+  const [missingCopyTick, setMissingCopyTick] = useState(0);
+  useEffect(() => {
+    const nowMs = Date.now();
+    const missingSince = missingCopySinceRef.current;
+    const stillMissing = new Set<string>();
+    for (const tab of openRemoteProjectTabsRef.current) {
+      const connection = remoteSnapshot?.connections.find((entry) => entry.target.id === tab.targetId) ?? null;
+      const projects = connection?.projects ?? [];
+      if (connection?.state !== "connected" || typeof connection.reconnectingSinceMs === "number" || projects.length === 0) continue;
+      const present = projects.filter((entry) => entry.exists !== false);
+      if (findMachineProject(present, { projectId: tab.projectId, rootPath: tab.rootPath })) continue;
+      stillMissing.add(tab.key);
+    }
+    for (const key of [...missingSince.keys()]) if (!stillMissing.has(key)) missingSince.delete(key);
+    for (const key of [...followedCopyRemovalsRef.current]) if (!stillMissing.has(key)) followedCopyRemovalsRef.current.delete(key);
+    let nextCheckMs: number | null = null;
+    for (const key of stillMissing) {
+      if (followedCopyRemovalsRef.current.has(key)) continue;
+      const since = missingSince.get(key) ?? nowMs;
+      missingSince.set(key, since);
+      const dueMs = since + COPY_REMOVED_SETTLE_MS;
+      if (nowMs < dueMs) {
+        nextCheckMs = Math.min(nextCheckMs ?? dueMs, dueMs);
+        continue;
+      }
+      const group = tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === key));
+      if (!group) continue;
+      followedCopyRemovalsRef.current.add(key);
+      void handleProjectCopiesRemoved(group.id, null, null, {
+        scope: "this",
+        accountRemoved: false,
+        removedBindingKeys: [key],
+        unknownBindingKeys: [],
+        cloneRunning: false,
+      });
+    }
+    if (nextCheckMs == null) return undefined;
+    const timer = window.setTimeout(() => setMissingCopyTick((tick) => tick + 1), Math.max(0, nextCheckMs - nowMs));
+    return () => window.clearTimeout(timer);
+  }, [handleProjectCopiesRemoved, missingCopyTick, remoteSnapshot]);
 
   const recentForMachine = useCallback(
     (machine: ProjectTabMachine): RecentProjectSummary | null => {

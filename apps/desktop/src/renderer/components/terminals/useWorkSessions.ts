@@ -68,7 +68,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
+import { requestCrossMachineLanesForMachine, seedCrossMachineOptimisticSession, unionSlotIdForBinding, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
@@ -94,6 +94,12 @@ const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
 /** Upper bound on the single snooze-expiry timer (setTimeout overflows past ~24.8 days). */
 const SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
 const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
+/**
+ * How long an open row this page has not seen yet stays open after the project
+ * opens. Another computer's rows arrive after the tab's own list (a connect, a
+ * saved chat list), so a reload must not close the chat that was open there.
+ */
+const UNSEEN_OPEN_ROW_GRACE_MS = 30_000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -847,7 +853,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (!binding || bindingKey === activeChatLaunchBindingKey || !crossMachineBindingKeys.has(bindingKey)) continue;
       if (foreignLaunchRefreshRequestedRef.current.has(snapshot.launchId)) continue;
       foreignLaunchRefreshRequestedRef.current.add(snapshot.launchId);
-      requestCrossMachineLanesForMachine(machineIdForBinding(binding));
+      requestCrossMachineLanesForMachine(unionSlotIdForBinding(binding));
     }
   }, [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys]);
   // Once the roster has listed a launch's real chat, its stand-in never bridges
@@ -2502,6 +2508,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     () => (selectedSessionId ? sessionsById.get(selectedSessionId) ?? null : null),
     [selectedSessionId, sessionsById],
   );
+  // Rows this page has listed since the project opened. Until the grace ends,
+  // an open row never listed yet is still loading, not gone.
+  const seenSessionIdsRef = useRef(new Set<string>());
+  const [unseenOpenRowGraceOver, setUnseenOpenRowGraceOver] = useState(false);
+  useEffect(() => {
+    seenSessionIdsRef.current = new Set();
+    setUnseenOpenRowGraceOver(false);
+    const timer = window.setTimeout(() => setUnseenOpenRowGraceOver(true), UNSEEN_OPEN_ROW_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [projectStateKey]);
   const canPruneSessionIndex = useCallback(
     () => pendingProjectSwitchRef.current == null && hasAuthoritativeSessionsRef.current,
     [],
@@ -2531,8 +2547,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const sessionId of knownLaunchSessionIds) {
       validIds.add(sessionId);
     }
+    const seen = seenSessionIdsRef.current;
+    for (const sessionId of sessionsById.keys()) seen.add(sessionId);
 
     setProjectViewState((prev) => {
+      if (!unseenOpenRowGraceOver) {
+        for (const id of prev.openItemIds) if (!seen.has(id)) validIds.add(id);
+        if (prev.selectedItemId && !seen.has(prev.selectedItemId)) validIds.add(prev.selectedItemId);
+      }
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
       const userIsViewingDraft = prev.activeItemId == null && prev.selectedItemId == null;
       const nextActive =
@@ -2563,7 +2585,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState]);
+  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState, unseenOpenRowGraceOver]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;

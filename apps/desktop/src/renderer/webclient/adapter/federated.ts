@@ -827,11 +827,19 @@ export function createFederatedWebAdapter({
     async connect(machineKey: string, options?: MachineConnectOptions): Promise<MachineConnectResult> {
       const key = typeof machineKey === "string" ? machineKey.trim() : "";
       if (!key) return { ok: false, reason: "invalid", machineKey: "", message: "ADE needs to know which computer to reach." };
-      const machine = accountMachineFor(key);
-      if (!machine) {
+      const listed = accountMachineFor(key);
+      if (!listed) {
         return { ok: false, reason: "not_in_account", machineKey: key, message: "That computer is no longer on your ADE account." };
       }
-      const saved = manager.findAccountMachineEnvironment(machine);
+      const saved = manager.findAccountMachineEnvironment(listed);
+      // A person's connect (a click, a send) while the saved connection is
+      // down or coming back: the account list may not say yet that the
+      // computer went to sleep, and then it would only be dialed. Read it once.
+      if (options?.background !== true && options?.connect !== false && saved
+        && manager.getClient(saved.envId)?.getStatus().state !== "connected") {
+        await accountClient.loadMachines().catch(() => undefined);
+      }
+      const machine = accountMachineFor(key) ?? listed;
       if (options?.connect === false) {
         // This tab saves a pairing only by connecting; a save-only call
         // answers with what it has.

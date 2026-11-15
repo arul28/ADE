@@ -22,7 +22,7 @@ import {
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
-import { machineIdForBinding } from "../../../shared/machineIdentity";
+import { machineIdForBinding, machineIdOfSlot } from "../../../shared/machineIdentity";
 import { useMachineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import { machineShowsConnected, rowShowsConnected } from "../../state/cloudRestingRows";
@@ -1417,12 +1417,22 @@ export const SessionListPane = React.memo(function SessionListPane({
   const machineLabelOf = useMachineLabelForMachine();
   const activeMachineLabel = useMachineLabelForBinding(projectBinding);
   const machineFilterOptions = useMemo<WorkFilterMachineOption[]>(() => {
-    const others = Object.values(crossMachineEntries)
+    // A computer with two checkouts has two slices; the filter lists the computer once.
+    const byMachine = new Map<string, WorkFilterMachineOption>();
+    for (const entry of Object.values(crossMachineEntries)) {
+      const machineId = machineIdOfSlot(entry.machineId);
       // A deleted cloud computer is no machine to filter by: its lanes have their own place.
-      .filter((entry) => entry.machineId !== activeMachineId && entry.computerGone !== true)
+      if (machineId === activeMachineId || entry.computerGone === true) continue;
+      const online = machineShowsConnected(entry);
+      const known = byMachine.get(machineId);
+      if (known) {
+        known.online ||= online;
+        continue;
+      }
       // A sleeping cloud computer is not listed as offline: a send wakes it.
-      .map((entry) => ({ id: entry.machineId, name: machineLabelOf({ machineId: entry.machineId, binding: entry.binding, name: entry.machineName }), online: machineShowsConnected(entry) }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      byMachine.set(machineId, { id: machineId, name: machineLabelOf({ machineId, binding: entry.binding, name: entry.machineName }), online });
+    }
+    const others = [...byMachine.values()].sort((a, b) => a.name.localeCompare(b.name));
     return [
       {
         id: activeMachineId,
@@ -1949,7 +1959,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               // remote lane instead of incorrectly treating an unknown PR as open.
               laneHasPr: () => false,
               laneIsDirty: (laneId) => laneId === row.lane.id && row.lane.status.dirty,
-              machineId: row.machineId,
+              machineId: machineIdOfSlot(row.machineId),
               effectiveFilingBuckets,
             });
           })

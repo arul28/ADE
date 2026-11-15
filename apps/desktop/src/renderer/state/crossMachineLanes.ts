@@ -43,6 +43,9 @@ import type {
 } from "../../shared/types";
 import { buildOptimisticChatSessionSummary, isChatToolType } from "../lib/sessions";
 import {
+  checkoutSlotId,
+  machineIdForBinding,
+  machineIdOfSlot,
   THIS_MACHINE_ID,
   THIS_MACHINE_NAME,
 } from "../../shared/machineIdentity";
@@ -56,6 +59,7 @@ import {
   cachedGitRemoteIdentity,
   deriveLaneMachineOptions,
   originUrlForBinding,
+  otherMatchedCheckouts,
   rememberProjectOriginSummaries,
   type LaneMachineOption,
 } from "../components/lanes/laneMachines";
@@ -207,6 +211,34 @@ export function resolveThisMachineBindingForOrigin(
     displayName: localProject.displayName,
     gitOriginUrl: localProject.gitOriginUrl ?? null,
   };
+}
+
+/**
+ * This computer's checkouts of the repository, other than `exceptRootPath`.
+ * Lane worktrees and folders that are gone are not checkouts.
+ */
+export function resolveThisMachineCheckoutsForOrigin(
+  projects: readonly RecentProjectSummary[],
+  originUrl: string | null | undefined,
+  exceptRootPath: string | null,
+): Array<Extract<OpenProjectBinding, { kind: "local" }>> {
+  const originIdentity = normalizeGitRemoteIdentity(originUrl);
+  if (!originIdentity) return [];
+  return projects
+    .filter((candidate) =>
+      candidate.kind !== "remote"
+      && candidate.exists !== false
+      && !candidate.worktreeOf
+      && candidate.rootPath !== exceptRootPath
+      && normalizeGitRemoteIdentity(candidate.gitOriginUrl) === originIdentity)
+    .map((candidate) => ({
+      kind: "local" as const,
+      key: `local:${candidate.rootPath}`,
+      rootPath: candidate.rootPath,
+      displayName: candidate.displayName,
+      gitOriginUrl: candidate.gitOriginUrl ?? null,
+    }))
+    .sort((a, b) => a.rootPath.localeCompare(b.rootPath));
 }
 
 // ── Derived rows ────────────────────────────────────────────────────────────
@@ -869,7 +901,7 @@ export function buildCrossMachineLaneRows(input: {
         machineName: entry.machineName,
         online: entry.online,
         ...(cloudResting ? { cloudResting: true } : {}),
-        isThisMachine: entry.machineId === THIS_MACHINE_ID,
+        isThisMachine: machineIdOfSlot(entry.machineId) === THIS_MACHINE_ID,
         isActiveBinding: false,
         sessions: sessionsByLaneId?.get(lane.id) ?? [],
         targetId: entry.targetId,
@@ -1153,6 +1185,12 @@ export type CrossMachineLaneScope = {
   boundProjectId: string | null;
   /** Verified local checkout of the same repo, while the tab is remote-bound. */
   thisMachineBinding?: Extract<OpenProjectBinding, { kind: "local" }> | null;
+  /**
+   * This computer's other checkouts of the repository: beside the tab's own
+   * folder when the tab is local, beside `thisMachineBinding` when it is not.
+   * Each one is read into its own slice.
+   */
+  thisMachineOtherBindings?: readonly Extract<OpenProjectBinding, { kind: "local" }>[];
   /** The tab's copy: its change feeds are subscribed on this address. Null: no feed. */
   tabBinding?: OpenProjectBinding | null;
 };
@@ -1264,6 +1302,10 @@ function isDocumentVisible(): boolean {
   return typeof document === "undefined" || document.visibilityState !== "hidden";
 }
 
+function bindingKeysOf(bindings: readonly OpenProjectBinding[] | null | undefined): string {
+  return (bindings ?? []).map((binding) => binding.key).join("\n");
+}
+
 function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean {
   return (
     a.scopeKey === b.scopeKey
@@ -1273,6 +1315,7 @@ function sameScope(a: CrossMachineLaneScope, b: CrossMachineLaneScope): boolean 
     && a.boundTargetId === b.boundTargetId
     && a.boundProjectId === b.boundProjectId
     && a.thisMachineBinding?.key === b.thisMachineBinding?.key
+    && bindingKeysOf(a.thisMachineOtherBindings) === bindingKeysOf(b.thisMachineOtherBindings)
     && (a.tabBinding?.key ?? null) === (b.tabBinding?.key ?? null)
   );
 }
@@ -1438,6 +1481,9 @@ function resolveBoundRepoOriginUrl(scope: CrossMachineLaneScope): string | null 
 
 /** Eligibility truth as of the newest snapshot this runtime has seen. */
 function isMachineEligibleNow(machineId: string): boolean {
+  if (machineIdOfSlot(machineId) !== machineId) {
+    return resolveOtherCheckoutTargets().some((target) => target.slotId === machineId);
+  }
   return resolveEligibleMachines().some((option) => option.id === machineId);
 }
 
@@ -1726,6 +1772,7 @@ async function readThisMachine(
   binding: Extract<OpenProjectBinding, { kind: "local" }>,
   generation: number,
   depth: LaneReadDepth,
+  slotId: string = THIS_MACHINE_ID,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
   const readLanes = async (includeStatus: boolean) => {
@@ -1737,7 +1784,7 @@ async function readThisMachine(
       MACHINE_READ_TIMEOUT_MS,
       "lane.list on This computer",
     );
-    return includeStatus ? lanes : withPreservedLaneStatus(THIS_MACHINE_ID, lanes);
+    return includeStatus ? lanes : withPreservedLaneStatus(slotId, lanes);
   };
   // See `readMachine`: PRs ride the lane cadence for the same reasons, and the
   // read is best-effort — a machine that fails only this read must still
@@ -1758,13 +1805,13 @@ async function readThisMachine(
   };
   try {
     const readStartedAtMs = Date.now();
-    const statusDue = shouldReadLaneStatus(THIS_MACHINE_ID, depth);
-    const lanesDue = statusDue || shouldReadLanes(THIS_MACHINE_ID);
+    const statusDue = shouldReadLaneStatus(slotId, depth);
+    const lanesDue = statusDue || shouldReadLanes(slotId);
     const [laneResult, sessions, duePrs] = await Promise.all([
       lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         window.ade.sessions.list(
-          foreignSessionListArgs(THIS_MACHINE_ID),
+          foreignSessionListArgs(slotId),
           binding,
         ),
         MACHINE_READ_TIMEOUT_MS,
@@ -1773,9 +1820,9 @@ async function readThisMachine(
       lanesDue ? readPrs() : null,
     ]);
     if (generation !== runtime.generation) return;
-    noteForeignSessionPage(THIS_MACHINE_ID, sessions);
+    noteForeignSessionPage(slotId, sessions);
     const lanes = await resolveLaneCadence(
-      THIS_MACHINE_ID,
+      slotId,
       laneResult,
       sessions,
       generation,
@@ -1788,7 +1835,7 @@ async function readThisMachine(
     const prs = duePrs ?? (lanes && !lanesDue ? await readPrs() : null);
     if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({
-      machineId: THIS_MACHINE_ID,
+      machineId: slotId,
       machineName: THIS_MACHINE_NAME,
       targetId: null,
       projectId: null,
@@ -1804,7 +1851,7 @@ async function readThisMachine(
     if (generation !== runtime.generation) return;
     const message = error instanceof Error ? error.message : String(error);
     store.mergeCrossMachineLanes({
-      machineId: THIS_MACHINE_ID,
+      machineId: slotId,
       machineName: THIS_MACHINE_NAME,
       targetId: null,
       projectId: null,
@@ -1812,7 +1859,7 @@ async function readThisMachine(
       online: true,
       error: message,
     });
-    reportPersistentMachineReadFailure(THIS_MACHINE_ID, message);
+    reportPersistentMachineReadFailure(slotId, message);
   }
 }
 
@@ -1848,7 +1895,7 @@ async function runRefresh(): Promise<void> {
   runtime.pendingLaneReadDepth = "identity";
   const scope = runtime.scope;
   const store = rootAppStoreApi.getState();
-  const targets = resolveEligibleMachines();
+  const targets = resolveReadTargets();
   store.applyCrossMachineLaneScope(
     scope.scopeKey,
     resolveRefillIntendedMachineIds(targets, true),
@@ -1861,27 +1908,25 @@ async function runRefresh(): Promise<void> {
     .fill(null)
     .map(async () => {
       for (;;) {
-        const option = targets[cursor++];
-        if (!option) return;
+        const target = targets[cursor++];
+        if (!target) return;
         if (generation !== runtime.generation) return;
+        const { option, checkout } = target;
         await readMachine(
-          option.id,
+          target.slotId,
           option.name,
           option.targetId as string,
-          option.project?.projectId as string,
+          checkout.projectId,
           {
             kind: "remote",
-            key: remoteProjectBindingKey(
-              option.targetId as string,
-              option.project?.projectId as string,
-            ),
+            key: remoteProjectBindingKey(option.targetId as string, checkout.projectId),
             targetId: option.targetId as string,
             runtimeName: option.name,
             transport: option.transport ?? "ssh",
             ...(option.hostname ? { hostname: option.hostname } : {}),
-            projectId: option.project?.projectId as string,
-            rootPath: option.project?.rootPath as string,
-            displayName: option.project?.displayName as string,
+            projectId: checkout.projectId,
+            rootPath: checkout.rootPath,
+            displayName: checkout.displayName,
           },
           generation,
           depth,
@@ -1893,7 +1938,78 @@ async function runRefresh(): Promise<void> {
     ...(scope.boundTargetId && scope.thisMachineBinding
       ? [readThisMachine(scope.thisMachineBinding, generation, depth)]
       : []),
+    ...thisMachineOtherCheckouts().map(({ slotId, binding }) =>
+      readThisMachine(binding, generation, depth, slotId)),
   ]);
+}
+
+/** One checkout to read for the union: a machine's first checkout, or another one under its own slot. */
+type UnionReadTarget = {
+  slotId: string;
+  option: LaneMachineOption;
+  checkout: { projectId: string; rootPath: string; displayName: string };
+};
+
+function resolveReadTargets(): UnionReadTarget[] {
+  const targets: UnionReadTarget[] = resolveEligibleMachines().map((option) => ({
+    slotId: option.id,
+    option,
+    checkout: {
+      projectId: option.project?.projectId as string,
+      rootPath: option.project?.rootPath as string,
+      displayName: option.project?.displayName as string,
+    },
+  }));
+  return [...targets, ...resolveOtherCheckoutTargets()];
+}
+
+/**
+ * The other checkouts of this repository on each connected computer, the
+ * tab's own computer included: every checkout of the project lists its rows.
+ * ADE Cloud computers are left out; each holds one checkout of a project, and
+ * their saved chats are keyed on the computer.
+ */
+function resolveOtherCheckoutTargets(): UnionReadTarget[] {
+  const scope = runtime.scope;
+  const repoIdentity = cachedGitRemoteIdentity(scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(scope));
+  const repoAccountProjectId = scope.repoAccountProjectId?.trim() || null;
+  if (!repoIdentity && !repoAccountProjectId) return [];
+  const targets: UnionReadTarget[] = [];
+  for (const option of resolveMachineOptions()) {
+    if (option.id === THIS_MACHINE_ID || !option.targetId) continue;
+    if (!option.isBound && !isEligibleMachineOption(option)) continue;
+    if (isCloudConnectionTarget(option.targetId) || asleepOnItsConnection(option.id)) continue;
+    const connection = runtime.connections.find((candidate) => candidate.target.id === option.targetId);
+    const keepProjectId = option.isBound ? scope.boundProjectId : option.project?.projectId ?? null;
+    for (const checkout of otherMatchedCheckouts(connection?.projects ?? [], repoIdentity, repoAccountProjectId, keepProjectId)) {
+      targets.push({ slotId: checkoutSlotId(option.id, checkout.projectId), option, checkout });
+    }
+  }
+  return targets;
+}
+
+/** This computer's other checkouts of the repository, each under its own slot. */
+function thisMachineOtherCheckouts(): Array<{ slotId: string; binding: Extract<OpenProjectBinding, { kind: "local" }> }> {
+  return (runtime.scope.thisMachineOtherBindings ?? []).map((binding) => ({
+    slotId: checkoutSlotId(THIS_MACHINE_ID, binding.rootPath),
+    binding,
+  }));
+}
+
+/**
+ * The union slice id for a call-routing binding: the slice that reads that
+ * checkout, or the machine id when no slice does. A second checkout on a
+ * machine has a slice id of its own, so joins on the union (lane keys, a
+ * chat's lane, a lane link) go through this, not `machineIdForBinding`.
+ */
+export function unionSlotIdForBinding(binding: OpenProjectBinding | null | undefined): string {
+  const machineId = machineIdForBinding(binding);
+  if (!binding) return machineId;
+  const live = rootAppStoreApi.getState().crossMachineLanesByMachineId ?? {};
+  for (const entry of Object.values(live)) {
+    if (entry.binding?.key === binding.key) return entry.machineId;
+  }
+  return retainedEntryForPin(binding)?.machineId ?? machineId;
 }
 
 /**
@@ -2022,7 +2138,7 @@ function resolveEligibleMachines(): LaneMachineOption[] {
  * remains distinguishable from a removed machine throughout the refill.
  */
 function resolveRefillIntendedMachineIds(
-  targets: readonly LaneMachineOption[],
+  targets: readonly UnionReadTarget[],
   preserveExisting: boolean,
 ): string[] {
   const store = rootAppStoreApi.getState();
@@ -2035,10 +2151,11 @@ function resolveRefillIntendedMachineIds(
       intended.add(machineId);
     }
   }
-  for (const target of targets) intended.add(target.id);
+  for (const target of targets) intended.add(target.slotId);
   if (runtime.scope.boundTargetId && runtime.scope.thisMachineBinding) {
     intended.add(THIS_MACHINE_ID);
   }
+  for (const { slotId } of thisMachineOtherCheckouts()) intended.add(slotId);
   return Array.from(intended).sort();
 }
 
@@ -2142,8 +2259,12 @@ function applyReachability(): void {
       if (restingCloud.machineIds.has(machineId)) continue;
       // Shown connected while it reconnects, but it dropped then: the floor
       // runs from the drop, so every client hides it at the same moment.
-      const drop = runtime.dropsByMachineId.get(machineId)
-        ?? { droppedAtMs: machine.reconnectingSinceMs, sawAttempt: true, attemptFailed: false };
+      // A record older than this reconnect is from an earlier drop: the floor
+      // (and the asleep check, which reads it) runs from this one.
+      const known = runtime.dropsByMachineId.get(machineId);
+      const drop = known && known.droppedAtMs >= machine.reconnectingSinceMs
+        ? known
+        : { droppedAtMs: machine.reconnectingSinceMs, sawAttempt: true, attemptFailed: false };
       runtime.dropsByMachineId.set(machineId, drop);
       const dimAtMs = drop.droppedAtMs + UNREACHABLE_FLOOR_MS;
       if (nowMs < dimAtMs) {
@@ -2160,31 +2281,66 @@ function applyReachability(): void {
     restingCloud.machineIds.delete(machineId);
     reachable.push(machineId);
   }
+  // A computer's other checkouts follow its verdict; this computer's are always live.
+  const otherSlotIds = new Set<string>();
+  const reachableMachineIds = new Set(reachable);
+  for (const { slotId } of resolveOtherCheckoutTargets()) {
+    otherSlotIds.add(slotId);
+    // The tab's own computer is never one of the union's machines, so it is
+    // not in `reachable`; its other checkouts are listed only while it is connected.
+    const slotMachineId = machineIdOfSlot(slotId);
+    if (reachableMachineIds.has(slotMachineId) || slotMachineId === runtime.scope.boundTargetId) {
+      runtime.dropsByMachineId.delete(slotId);
+      reachable.push(slotId);
+    }
+  }
+  const localSlotIds = new Set(thisMachineOtherCheckouts().map(({ slotId }) => slotId));
+  for (const slotId of localSlotIds) reachable.push(slotId);
   const scopedMachineIds = new Set([
     ...Object.keys(store.crossMachineLanesByMachineId),
     ...(store.crossMachineLaneIntendedMachineIds ?? []),
   ]);
   for (const machineId of scopedMachineIds) {
     const entry = store.crossMachineLanesByMachineId[machineId] ?? null;
+    const slotMachineId = machineIdOfSlot(machineId);
     // This computer is not a connection target and is always reachable; holding a
-    // drop record for it would leak a map entry nothing can ever clear.
-    if (machineId === THIS_MACHINE_ID) continue;
+    // drop record for it would leak a map entry nothing can ever clear. Another
+    // checkout of it leaves when the tab's scope no longer names it.
+    if (slotMachineId === THIS_MACHINE_ID) {
+      if (machineId !== THIS_MACHINE_ID && !localSlotIds.has(machineId)) forgotten.push(machineId);
+      continue;
+    }
     // A deleted computer's saved chats belong to no connection; the list read owns it.
     if (isSavedChatsMachineId(machineId)) continue;
-    const machine = connectivity.get(machineId);
-    if (machine?.eligible) continue;
+    // Another checkout on a computer: read while it is listed, verdict from its computer.
+    if (otherSlotIds.has(machineId)) continue;
+    const machine = connectivity.get(slotMachineId);
+    if (slotMachineId === machineId && machine?.eligible) continue;
 
     if (!machine) {
       forgotten.push(machineId);
       continue;
     }
+    if (slotMachineId !== machineId && machine.state === "connected") {
+      // Connected, and its project list no longer names this checkout: it was
+      // removed there. An empty list after a reconnect proves nothing yet.
+      const projects = runtime.connections.find((candidate) => candidate.target.id === slotMachineId)?.projects ?? [];
+      if (projects.length > 0 && !projects.some((project) => checkoutSlotId(slotMachineId, project.projectId) === machineId)) {
+        forgotten.push(machineId);
+        continue;
+      }
+    }
     // Only an origin can prove a repository absent. `repoMatchFor` will say
     // "missing" off a folder-name mismatch alone, and the scope's origin URL is
     // re-resolved from the bound machine — so it can be transiently null while
     // that machine blips. Deleting rows on that evidence is not recoverable.
+    // Nor can an empty project list: a computer that just woke or reconnected
+    // reads connected before its list arrives, and forgetting it then closed
+    // its open chat.
     if (
       machine.state === "connected"
       && machine.option?.repoMatch === "missing"
+      && (runtime.connections.find((candidate) => candidate.target.id === slotMachineId)?.projects?.length ?? 0) > 0
       && (runtime.scope.repoOriginUrl ?? resolveBoundRepoOriginUrl(runtime.scope))
     ) {
       forgotten.push(machineId);
@@ -2244,7 +2400,7 @@ function applyReachability(): void {
   }
   const reachableIds = new Set(reachable);
   const dimmed = Object.entries(store.crossMachineLanesByMachineId).some(([machineId, entry]) =>
-    entry.online && machineId !== THIS_MACHINE_ID && !reachableIds.has(machineId) && !forgotten.includes(machineId));
+    entry.online && machineIdOfSlot(machineId) !== THIS_MACHINE_ID && !reachableIds.has(machineId) && !forgotten.includes(machineId));
   store.setCrossMachineMachinesOnline(reachable);
   // A machine whose rows just dimmed may be an ADE Cloud computer that fell
   // asleep: its saved chats take over its rows now, not at the next snapshot
@@ -2282,11 +2438,38 @@ const restingCloud: {
   probing: boolean;
   turnWatchTimer: ReturnType<typeof setTimeout> | null;
   turnWatchReading: boolean;
-} = { machineIds: new Map(), probeTimer: null, probing: false, turnWatchTimer: null, turnWatchReading: false };
+  /** The resting computers the watch reads for alone, and since when, for its back-off. */
+  restWatch: { ids: string; sinceMs: number; gapMs: number } | null;
+} = { machineIds: new Map(), probeTimer: null, probing: false, turnWatchTimer: null, turnWatchReading: false, restWatch: null };
 /** How soon a dropped ADE Cloud computer is asked about again, while its floor runs. */
 const RESTING_CLOUD_PROBE_GAP_MS = 8_000;
 /** How often the account is asked about an ADE Cloud computer while a turn runs there, or while it rests. */
 const CLOUD_TURN_WATCH_MS = 4_000;
+/**
+ * A computer that only rests is read every `CLOUD_TURN_WATCH_MS` for this long
+ * (a wake from another device shows within seconds), then less often, the gap
+ * doubling up to `CLOUD_REST_WATCH_MAX_MS`: a cloud chat left open on an asleep
+ * computer must not read the account every 4 s for hours.
+ */
+const CLOUD_REST_WATCH_FAST_MS = 60_000;
+const CLOUD_REST_WATCH_MAX_MS = 30_000;
+
+/** The wait before the next read of the account's cloud computers. */
+function nextCloudWatchGapMs(nowMs: number): number {
+  if (cloudConnectionsWithLiveTurns().length > 0) {
+    restingCloud.restWatch = null;
+    return CLOUD_TURN_WATCH_MS;
+  }
+  const ids = restingDroppedCloudConnections().map((connection) => connection.target.id).sort().join("\n");
+  const watch = restingCloud.restWatch;
+  if (!watch || watch.ids !== ids) {
+    restingCloud.restWatch = { ids, sinceMs: nowMs, gapMs: CLOUD_TURN_WATCH_MS };
+    return CLOUD_TURN_WATCH_MS;
+  }
+  if (nowMs - watch.sinceMs < CLOUD_REST_WATCH_FAST_MS) return CLOUD_TURN_WATCH_MS;
+  watch.gapMs = Math.min(watch.gapMs * 2, CLOUD_REST_WATCH_MAX_MS);
+  return watch.gapMs;
+}
 
 /**
  * Views on screen that show an ADE Cloud computer's work: a Work list with a
@@ -2357,11 +2540,15 @@ function cloudKeyOfConnection(connection: RemoteRuntimeConnectionStatus): string
  * ADE Cloud connections that dropped inside their floor and are not known to
  * rest. Only a drop this page recorded counts: a computer it never read has no
  * rows to dim, and asking about it would repeat for as long as it stays down.
+ * A connection that ADE Web still shows connected while it dials again
+ * (`reconnectingSinceMs`) dropped too: the account is asked at once, not after
+ * that half-minute hold, so its chat says "asleep" within seconds.
  */
 function droppedCloudConnections(nowMs: number): RemoteRuntimeConnectionStatus[] {
   return runtime.connections.filter((connection) => {
     const machineId = connection.target.id;
-    if (connection.state === "connected" || restingCloud.machineIds.has(machineId)) return false;
+    const held = connection.state === "connected" && typeof connection.reconnectingSinceMs === "number";
+    if ((connection.state === "connected" && !held) || restingCloud.machineIds.has(machineId)) return false;
     if (!isCloudConnectionTarget(machineId)) return false;
     const drop = runtime.dropsByMachineId.get(machineId);
     return drop != null && nowMs - drop.droppedAtMs < UNREACHABLE_FLOOR_MS;
@@ -2482,10 +2669,11 @@ function syncCloudTurnWatch(): void {
       clearTimeout(restingCloud.turnWatchTimer);
       restingCloud.turnWatchTimer = null;
     }
+    restingCloud.restWatch = null;
     return;
   }
   if (restingCloud.turnWatchTimer || restingCloud.turnWatchReading) return;
-  restingCloud.turnWatchTimer = setTimeout(readCloudTurnComputers, CLOUD_TURN_WATCH_MS);
+  restingCloud.turnWatchTimer = setTimeout(readCloudTurnComputers, nextCloudWatchGapMs(Date.now()));
 }
 
 function readCloudTurnComputers(): void {
@@ -2573,6 +2761,7 @@ function resetMachineTracking(): void {
     clearTimeout(restingCloud.turnWatchTimer);
     restingCloud.turnWatchTimer = null;
   }
+  restingCloud.restWatch = null;
   restingCloud.machineIds.clear();
   wokenConnectRetries.clear();
   runtime.dropsByMachineId.clear();
@@ -2884,7 +3073,7 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     runtime.scope = scope;
     rootAppStoreApi.getState().applyCrossMachineLaneScope(
       scope.scopeKey,
-      resolveRefillIntendedMachineIds(resolveEligibleMachines(), preserveExistingIntent),
+      resolveRefillIntendedMachineIds(resolveReadTargets(), preserveExistingIntent),
     );
   }
   runtime.scope = scope;
@@ -2946,6 +3135,7 @@ export function useCrossMachineLaneSync(active = true): void {
     /** The bound remote checkout's account project id. Local recents do not carry one yet. */
     accountProjectId?: string | null;
     thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+    thisMachineOtherBindings?: readonly Extract<OpenProjectBinding, { kind: "local" }>[];
   } | null>(null);
 
   const repoDisplayName = projectBinding?.displayName ?? projectDisplayName;
@@ -2960,6 +3150,9 @@ export function useCrossMachineLaneSync(active = true): void {
   const repoAccountProjectId = localRepoIdentity?.scopeKey === scopeKey
     ? localRepoIdentity.accountProjectId ?? null
     : null;
+  const thisMachineOtherBindings = localRepoIdentity?.scopeKey === scopeKey
+    ? localRepoIdentity.thisMachineOtherBindings
+    : undefined;
 
   useEffect(() => {
     if (!projectRoot) return;
@@ -2984,6 +3177,7 @@ export function useCrossMachineLaneSync(active = true): void {
       originUrl: string | null;
       accountProjectId?: string | null;
       thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+      thisMachineOtherBindings?: readonly Extract<OpenProjectBinding, { kind: "local" }>[];
     }) => {
       setLocalRepoIdentity((current) =>
         current
@@ -2991,8 +3185,24 @@ export function useCrossMachineLaneSync(active = true): void {
         && current.originUrl === identity.originUrl
         && (current.accountProjectId ?? null) === (identity.accountProjectId ?? null)
         && current.thisMachineBinding?.key === identity.thisMachineBinding?.key
+        && bindingKeysOf(current.thisMachineOtherBindings) === bindingKeysOf(identity.thisMachineOtherBindings)
           ? current
           : { scopeKey, ...identity });
+    };
+    // Every local checkout of the repository: the first is the one a remote
+    // tab reads as this computer, the rest get slices of their own.
+    const localCheckouts = (
+      projects: readonly RecentProjectSummary[],
+      originUrl: string | null | undefined,
+      exceptRootPath: string | null,
+    ) => {
+      const checkouts = resolveThisMachineCheckoutsForOrigin(projects, originUrl, exceptRootPath);
+      if (exceptRootPath) return { thisMachineBinding: null, thisMachineOtherBindings: checkouts };
+      const first = resolveThisMachineBindingForOrigin(projects, originUrl);
+      return {
+        thisMachineBinding: first,
+        thisMachineOtherBindings: checkouts.filter((checkout) => checkout.key !== first?.key),
+      };
     };
     const applySnapshotIdentity = (
       snapshot: RemoteRuntimeConnectionSnapshot | null,
@@ -3000,7 +3210,10 @@ export function useCrossMachineLaneSync(active = true): void {
     ) => {
       if (!boundTargetId || !boundProjectId) {
         const project = projects.find((candidate) => candidate.rootPath === projectRoot);
-        commitIdentity({ originUrl: project?.gitOriginUrl ?? null, thisMachineBinding: null });
+        commitIdentity({
+          originUrl: project?.gitOriginUrl ?? null,
+          ...localCheckouts(projects, project?.gitOriginUrl, projectRoot),
+        });
         return;
       }
       if (snapshot == null || snapshot.updatedAt < latestAppliedSnapshotUpdatedAt) return;
@@ -3047,17 +3260,14 @@ export function useCrossMachineLaneSync(active = true): void {
               scopeKey,
               originUrl: knownOrigin,
               accountProjectId: null,
-              thisMachineBinding: resolveThisMachineBindingForOrigin(projects, knownOrigin),
+              ...localCheckouts(projects, knownOrigin, null),
             });
         return;
       }
       commitIdentity({
         originUrl: boundProject?.gitOriginUrl ?? null,
         accountProjectId: boundProject?.accountProjectId ?? null,
-        thisMachineBinding: resolveThisMachineBindingForOrigin(
-          projects,
-          boundProject?.gitOriginUrl,
-        ),
+        ...localCheckouts(projects, boundProject?.gitOriginUrl, null),
       });
     };
     // Recents are stable for the life of this effect — opening a local project
@@ -3121,10 +3331,11 @@ export function useCrossMachineLaneSync(active = true): void {
         boundTargetId,
         boundProjectId,
         thisMachineBinding,
+        thisMachineOtherBindings,
         tabBinding,
       });
     },
-    [active, boundProjectId, boundTargetId, repoAccountProjectId, repoDisplayName, repoOriginUrl, scopeKey, tabBinding, thisMachineBinding],
+    [active, boundProjectId, boundTargetId, repoAccountProjectId, repoDisplayName, repoOriginUrl, scopeKey, tabBinding, thisMachineBinding, thisMachineOtherBindings],
   );
 }
 
