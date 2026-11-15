@@ -278,7 +278,7 @@ export function installAdeCliShim(args: {
   entryPath: string;
   execPath: string;
   brain: AdeCliShimBrain;
-  /** Where shim directories live (`<tmp>/ade-cli-shims`). */
+  /** Where shim directories live (`defaultCliShimsRoot()`). */
   shimsRoot: string;
   platform?: NodeJS.Platform;
   /** Electron's resources directory, to find the Windows launcher. */

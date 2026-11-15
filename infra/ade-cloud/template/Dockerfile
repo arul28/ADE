@@ -15,11 +15,17 @@ FROM node:24-bookworm-slim
 # boxes, and librsvg2-common (0.1 MB) lets GTK draw its SVG icons. About
 # 30 MB in all (Debian 12 package sizes, --no-install-recommends).
 #
+# build-essential and pkg-config: npm packages with native code and no
+# prebuilt binary for this platform (node-pty, some sqlite and bcrypt builds,
+# canvas) compile on install with node-gyp, which needs make and a C/C++
+# compiler. Without them every such project's setup failed on ADE Cloud, on
+# every size ("gyp ERR!"). About 200 MB.
+#
 # /etc/machine-id stays absent: ADE's hardware anchor hashes it, and one value
 # baked into the image would be shared by every box made from it, which makes
 # the account directory merge different boxes into one row.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git gawk tini python3 unzip procps \
+      ca-certificates curl git gawk tini python3 unzip procps build-essential pkg-config \
       xvfb openbox dbus at-spi2-core ffmpeg chromium \
       xterm thunar fonts-liberation fonts-noto-color-emoji librsvg2-common \
  && rm -rf /var/lib/apt/lists/* \
@@ -109,7 +115,8 @@ RUN set -eu; baked=/opt/ade-tools; scratch=/tmp/ade-bake; mkdir -p "$baked"; \
       cp -a "$root/." "$baked/"; rm -rf "$root"; \
       echo "bake: $tool baked ($tool_kb KB; image now about $(( (image_kb + tool_kb) / 1024 )) MB)"; \
     done; \
-    rm -rf "$scratch" "$scratch.log"; chmod -R a+rX "$baked"; \
+    # The bake runs as root: its ADE leaves its shims folder in /tmp, private to root.
+    rm -rf "$scratch" "$scratch.log" /tmp/ade-cli-shims /tmp/ade-cli-shims-0; chmod -R a+rX "$baked"; \
     # The system layer's cache folder (see ADE_SYSTEM_CACHE_ROOT below).
     mkdir -p /var/cache/ade/tools && chown -R node:node /var/cache/ade
 
