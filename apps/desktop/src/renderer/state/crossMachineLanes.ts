@@ -2006,8 +2006,9 @@ function isEligibleMachineOption(option: LaneMachineOption): boolean {
 
 function resolveEligibleMachines(): LaneMachineOption[] {
   const eligible: LaneMachineOption[] = [];
-  for (const machine of resolveMachineConnectivity().values()) {
-    if (machine.eligible && machine.option) eligible.push(machine.option);
+  for (const [machineId, machine] of resolveMachineConnectivity()) {
+    // Not read while asleep: a late read would mark its rows live again.
+    if (machine.eligible && machine.option && !asleepOnItsConnection(machineId)) eligible.push(machine.option);
   }
   return eligible;
 }
@@ -2154,8 +2155,7 @@ function applyReachability(): void {
     // The account says it went to sleep while its connection still reads
     // connected (a relay can hold the connection open for a while): its rows
     // dim now. A new connection (it was woken) clears the mark.
-    const asleepOnConnection = restingCloud.machineIds.get(machineId);
-    if (asleepOnConnection != null && asleepOnConnection === connectedAtOf(machineId)) continue;
+    if (asleepOnItsConnection(machineId)) continue;
     runtime.dropsByMachineId.delete(machineId);
     restingCloud.machineIds.delete(machineId);
     reachable.push(machineId);
@@ -2294,6 +2294,15 @@ function connectedAtOf(machineId: string): string {
   return String(connection?.connectedAt ?? "");
 }
 
+/**
+ * Whether the account named this ADE Cloud computer asleep while its current
+ * connection still reads connected. A new connection (it was woken) ends it.
+ */
+function asleepOnItsConnection(machineId: string): boolean {
+  const mark = restingCloud.machineIds.get(machineId);
+  return mark != null && mark === connectedAtOf(machineId);
+}
+
 /** The account key of the ADE Cloud computer behind a connection, or null. */
 function cloudKeyOfConnection(connection: RemoteRuntimeConnectionStatus): string | null {
   return cloudConnectionMachineKey(connection.target.id)
@@ -2302,30 +2311,52 @@ function cloudKeyOfConnection(connection: RemoteRuntimeConnectionStatus): string
     ?? null;
 }
 
-/** ADE Cloud connections that dropped inside their floor and are not known to rest. */
+/**
+ * ADE Cloud connections that dropped inside their floor and are not known to
+ * rest. Only a drop this page recorded counts: a computer it never read has no
+ * rows to dim, and asking about it would repeat for as long as it stays down.
+ */
 function droppedCloudConnections(nowMs: number): RemoteRuntimeConnectionStatus[] {
   return runtime.connections.filter((connection) => {
     const machineId = connection.target.id;
     if (connection.state === "connected" || restingCloud.machineIds.has(machineId)) return false;
     if (!isCloudConnectionTarget(machineId)) return false;
     const drop = runtime.dropsByMachineId.get(machineId);
-    return drop == null || nowMs - drop.droppedAtMs < UNREACHABLE_FLOOR_MS;
+    return drop != null && nowMs - drop.droppedAtMs < UNREACHABLE_FLOOR_MS;
   });
+}
+
+/**
+ * Connected ADE Cloud connections the account named asleep. A relay can keep
+ * such a connection up through the sleep and the wake, so the account is asked
+ * again until it says the computer woke.
+ */
+function asleepConnectedCloudConnections(): RemoteRuntimeConnectionStatus[] {
+  return runtime.connections.filter((connection) =>
+    connection.state === "connected" && asleepOnItsConnection(connection.target.id));
+}
+
+/** Whether a cloud read that began in `lifecycle` may still apply or try again. */
+function cloudReadsWanted(lifecycle: number): boolean {
+  return lifecycle === runtime.lifecycle && runtime.refCount > 0 && isDocumentVisible();
 }
 
 /**
  * Asks the account whether a dropped ADE Cloud computer went to sleep: one read
  * of the account's computers, again every few seconds while the floor runs (the
- * provider can name the box asleep a little after its brain stopped).
+ * provider can name the box asleep a little after its brain stopped). The same
+ * read tells when a computer named asleep on a live connection woke again.
  */
 function probeRestingCloudComputers(): void {
   if (restingCloud.probing || restingCloud.probeTimer) return;
+  const lifecycle = runtime.lifecycle;
   const listMachines = window.ade?.cloud?.listMachines;
-  if (!isAdeAvailable(listMachines) || droppedCloudConnections(Date.now()).length === 0) return;
+  if (!cloudReadsWanted(lifecycle) || !isAdeAvailable(listMachines)) return;
+  if (droppedCloudConnections(Date.now()).length === 0 && asleepConnectedCloudConnections().length === 0) return;
   restingCloud.probing = true;
   void listMachines().then(
     (result) => {
-      if (result?.state !== "ok") return;
+      if (result?.state !== "ok" || lifecycle !== runtime.lifecycle) return;
       let changed = false;
       for (const connection of droppedCloudConnections(Date.now())) {
         const box = cloudBoxForMachine(result.machines, {
@@ -2336,12 +2367,26 @@ function probeRestingCloudComputers(): void {
         restingCloud.machineIds.set(connection.target.id, null);
         changed = true;
       }
-      if (changed) applyReachability();
+      for (const connection of asleepConnectedCloudConnections()) {
+        const box = cloudBoxForMachine(result.machines, {
+          machineKey: cloudKeyOfConnection(connection),
+          hostname: connection.target.hostname,
+        });
+        if (!box || cloudMachineResting(box.state)) continue;
+        restingCloud.machineIds.delete(connection.target.id);
+        changed = true;
+      }
+      if (changed) {
+        applyReachability();
+        scheduleRefresh("status");
+      }
     },
     () => undefined,
   ).finally(() => {
     restingCloud.probing = false;
-    if (droppedCloudConnections(Date.now()).length === 0) return;
+    // The last reader left or the window hid: the next attach or show asks again.
+    if (!cloudReadsWanted(lifecycle)) return;
+    if (droppedCloudConnections(Date.now()).length === 0 && asleepConnectedCloudConnections().length === 0) return;
     restingCloud.probeTimer = setTimeout(() => {
       restingCloud.probeTimer = null;
       probeRestingCloudComputers();
@@ -2389,12 +2434,13 @@ function readCloudTurnComputers(): void {
   const watched = cloudConnectionsWithLiveTurns();
   if (!isAdeAvailable(listMachines) || watched.length === 0 || !isDocumentVisible()) return;
   restingCloud.turnWatchReading = true;
+  const lifecycle = runtime.lifecycle;
   // A read that began before a connection did may describe the computer
   // before it woke: each connection keeps the mark it had when the read began.
   const marks = new Map(watched.map((connection) => [connection.target.id, connectedAtOf(connection.target.id)]));
   void listMachines().then(
     (result) => {
-      if (result?.state !== "ok") return;
+      if (result?.state !== "ok" || lifecycle !== runtime.lifecycle) return;
       let changed = false;
       for (const connection of cloudConnectionsWithLiveTurns()) {
         const mark = marks.get(connection.target.id);
@@ -2413,6 +2459,8 @@ function readCloudTurnComputers(): void {
   ).finally(() => {
     restingCloud.turnWatchReading = false;
     syncCloudTurnWatch();
+    // A computer just named asleep is asked about again until it wakes.
+    probeRestingCloudComputers();
   });
 }
 
@@ -2474,6 +2522,12 @@ let connectionSnapshotSeen = false;
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
   connectionSnapshotSeen = true;
+  // A computer named asleep on a live connection that then dropped rests as a
+  // dropped one: its next connection is a wake, whatever its `connectedAt`.
+  for (const connection of runtime.connections) {
+    if (connection.state === "connected") continue;
+    if (restingCloud.machineIds.get(connection.target.id) != null) restingCloud.machineIds.set(connection.target.id, null);
+  }
   // A machine that drops may come back on another build (an upgrade restarts
   // its brain), so its page is asked for in full again on the next read.
   for (const connection of runtime.connections) {
@@ -2526,7 +2580,9 @@ function attach(): void {
   if (typeof document !== "undefined") {
     const onVisibilityChange = () => {
       syncCloudTurnWatch();
-      if (isDocumentVisible()) scheduleRefresh("status");
+      if (!isDocumentVisible()) return;
+      probeRestingCloudComputers();
+      scheduleRefresh("status");
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     runtime.disposers.push(() => {

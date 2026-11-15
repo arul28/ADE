@@ -1192,12 +1192,20 @@ export function TopBar({
   useConnectRepositoryCopies();
   const repositoryIdentity = useRepositoryIdentity();
   // A move: a tab's copy is replaced by another copy of its repository (the
-  // copy in front changed to one no tab had open, or a fallback, a clone or a
-  // removal put one in its place). The new copy stays in the tab the move was
-  // made in (`joinTabOf`) while the old copy is open; once it closes, a copy
-  // that replaced a tab of its own keeps a tab of its own.
-  const lastTabsRef = useRef<{ activeKey: string | null; openKeys: ReadonlySet<string>; tabPage: boolean }>({
+  // copy in front changed to one on another computer that no tab had open, or
+  // a fallback, a clone or a removal put one in its place). The new copy stays
+  // in the tab the move was made in (`joinTabOf`) while the old copy is open;
+  // once it closes, a copy that replaced a tab of its own keeps a tab of its
+  // own. A second checkout on the same computer is not a move: it opens in a
+  // tab of its own.
+  const lastTabsRef = useRef<{
+    activeKey: string | null;
+    activeMachine: string | null;
+    openKeys: ReadonlySet<string>;
+    tabPage: boolean;
+  }>({
     activeKey: null,
+    activeMachine: null,
     openKeys: new Set(),
     tabPage: false,
   });
@@ -1226,11 +1234,13 @@ export function TopBar({
     const last = lastTabsRef.current;
     const moves = joinTabOfRef.current;
     const inheritedOwn = inheritedOwnTabsRef.current;
+    const activeMachine = activeTabBindingKey ? remoteBinding?.targetId ?? "local" : null;
     if (
       activeTabBindingKey
       && last.tabPage
       && last.activeKey
       && last.activeKey !== activeTabBindingKey
+      && last.activeMachine !== activeMachine
       && last.openKeys.has(last.activeKey)
       && !last.openKeys.has(activeTabBindingKey)
     ) {
@@ -1248,9 +1258,9 @@ export function TopBar({
       }
     }
     for (const key of inheritedOwn) if (gone(key)) inheritedOwn.delete(key);
-    lastTabsRef.current = { activeKey: activeTabBindingKey, openKeys, tabPage: projectTabPageInFront };
+    lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
     return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
-  }, [activeTabBindingKey, openProjectTabRoots, openRemoteProjectTabs, projectTabPageInFront]);
+  }, [activeTabBindingKey, openProjectTabRoots, openRemoteProjectTabs, projectTabPageInFront, remoteBinding?.targetId]);
   const tabGroups = useMemo(
     () =>
       groupProjectTabs({
