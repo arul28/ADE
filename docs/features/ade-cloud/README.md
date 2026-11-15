@@ -1378,6 +1378,22 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   stage with the refusal's way out (extra disk, a bigger size, a plan) and
   Retry; a boot launch keeps following a failed launch across restarts, so a
   Retry that grows goes on with nobody watching.
+- Memory (`lanes/laneSetupMemoryGuard.ts`): a cloud computer has no swap, and
+  when its memory runs out the provider restarts the whole computer, brain
+  included (the provider's own health report says "oom_suspected: false"
+  even then). `npm ci` from a warm cache does that on a Small: it holds the
+  unpacked packages in memory (3.6 GB+ for ADE's desktop app; 0.7 GB on a
+  Mac), and a setup rerun after a disk grow always has a warm cache. Every
+  lane setup, dependency or Docker command on a cloud computer therefore runs
+  beside a small `sh` guard (not a brain timer: the brain's event loop lags
+  seconds while setup saturates the CPUs) that reads `MemAvailable` every
+  0.5 s and kills the command's process group below a tenth of the computer's
+  memory (256 MB to 1 GB). The step then fails with "Setup used nearly all of
+  this computer's memory (N GB), so ADE stopped it before the computer had to
+  restart. Use a bigger size, or make setup use less memory, then retry."
+  (`laneSetupOutOfMemoryError`, logged `lane_env_init.setup_stopped_for_memory`),
+  never as a signal stop. A failed setup step's error keeps the end of the
+  output (where npm says why), without warning lines, and the exit code.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

@@ -109,7 +109,8 @@ RUN set -eu; baked=/opt/ade-tools; scratch=/tmp/ade-bake; mkdir -p "$baked"; \
       cp -a "$root/." "$baked/"; rm -rf "$root"; \
       echo "bake: $tool baked ($tool_kb KB; image now about $(( (image_kb + tool_kb) / 1024 )) MB)"; \
     done; \
-    rm -rf "$scratch" "$scratch.log"; chmod -R a+rX "$baked"; \
+    # The bake runs as root: its ADE leaves its shims folder in /tmp, private to root.
+    rm -rf "$scratch" "$scratch.log" /tmp/ade-cli-shims /tmp/ade-cli-shims-0; chmod -R a+rX "$baked"; \
     # The system layer's cache folder (see ADE_SYSTEM_CACHE_ROOT below).
     mkdir -p /var/cache/ade/tools && chown -R node:node /var/cache/ade
 

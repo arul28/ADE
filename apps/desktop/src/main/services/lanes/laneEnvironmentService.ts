@@ -16,7 +16,7 @@ import type {
   LaneSummary
 } from "../../../shared/types";
 import { laneSetupScriptHasWork } from "../../../shared/types";
-import { diskFullLine, LANE_SETUP_DISK_FULL_ERROR, laneSetupDiskFullError } from "../../../shared/types/storage";
+import { diskFullLine, LANE_SETUP_DISK_FULL_ERROR, laneSetupDiskFullError, laneSetupOutOfMemoryError } from "../../../shared/types/storage";
 
 /** What a command's output keeps past its 10 MB start: the end, where a tool says why it stopped. */
 const OUTPUT_TAIL_CHARS = 64 * 1024;
@@ -28,17 +28,49 @@ function setupStepError(message: string, code?: unknown): string {
   return line ? laneSetupDiskFullError(line) : message;
 }
 
+/** How much of a failed command's output a step error keeps. */
+const FAILURE_EXCERPT_CHARS = 500;
+/** Lines that never say why a command failed: npm's deprecation and notice lines fill its first pages. */
+const NOISE_LINE = /^(?:npm |yarn |pnpm )?(?:warn(?:ing)?|notice)\b/i;
+// eslint-disable-next-line no-control-regex
+const ANSI = /\u001b\[[0-9;?]*[ -\/]*[@-~]/g;
+
+/**
+ * The end of a failed command's output, where a tool says why it stopped,
+ * without the warning lines before it; the raw end when that is all there is.
+ */
+function failureExcerpt(result: { stdout: string; stderr: string; tail: string }): string {
+  const output = (result.tail || `${result.stderr}\n${result.stdout}`).replace(ANSI, "");
+  const lines = output.split(/\r?\n/).map((line) => line.trimEnd()).filter((line) => line.trim().length > 0);
+  const said = lines.filter((line) => !NOISE_LINE.test(line.trim()));
+  const kept: string[] = [];
+  let size = 0;
+  for (const line of (said.length > 0 ? said : lines).reverse()) {
+    if (kept.length > 0 && size + line.length + 1 > FAILURE_EXCERPT_CHARS) break;
+    kept.unshift(line);
+    size += line.length + 1;
+  }
+  const text = kept.join("\n");
+  return text.length > FAILURE_EXCERPT_CHARS ? `…${text.slice(-(FAILURE_EXCERPT_CHARS - 1))}` : text;
+}
+
+/** A setup command as a step error names it: a long script by its start. */
+function commandLabel(label: string): string {
+  const flat = label.replace(/\s+/g, " ").trim();
+  return flat.length > 160 ? `${flat.slice(0, 159)}…` : flat;
+}
+
 /**
  * Why a command failed, from its whole output (start and end): the disk-full
  * sentence when it ran out of disk, else the ENOSPC line that isn't the disk
- * (a file-watcher limit, said after pages of warnings), else the start.
+ * (a file-watcher limit, said after pages of warnings), else the output's end.
  */
-function commandFailure(result: { stdout: string; stderr: string; tail: string }, fallback: string): { diskFull: boolean; text: string } {
+function commandFailure(result: { stdout: string; stderr: string; tail: string }): { diskFull: boolean; text: string } {
   const all = `${result.stderr}\n${result.stdout}\n${result.tail}`;
   const line = diskFullLine(all);
   if (line) return { diskFull: true, text: laneSetupDiskFullError(line) };
   const enospc = all.split(/\r?\n/).find((entry) => /\bENOSPC\b/.test(entry))?.trim().slice(0, 300);
-  return { diskFull: false, text: enospc || fallback };
+  return { diskFull: false, text: enospc || failureExcerpt(result) };
 }
 import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../ai/cliExecutableResolver";
@@ -58,6 +90,7 @@ import {
 } from "../shared/processExecution";
 import { mergeLaneEnvInitConfig } from "./laneEnvInitMerge";
 import { createLaneEnvironmentProcesses } from "./laneEnvironmentProcesses";
+import { watchSetupMemory, type SetupMemoryStop } from "./laneSetupMemoryGuard";
 import {
   resolveSetupScriptConfig,
   unsupportedWindowsScriptPathError,
@@ -209,7 +242,7 @@ export type LaneEnvInitOptions = {
   precondition?: () => Promise<boolean>;
 };
 
-type SpawnResult = { exitCode: number; stdout: string; stderr: string; tail: string; stoppedBySignal?: boolean };
+type SpawnResult = { exitCode: number; stdout: string; stderr: string; tail: string; stoppedBySignal?: boolean; stoppedForMemory?: SetupMemoryStop };
 
 export function createLaneEnvironmentService({
   projectRoot,
@@ -396,6 +429,10 @@ export function createLaneEnvironmentService({
         detached: process.platform !== "win32",
       });
       processes.trackChild(child, cwd);
+      // On a cloud computer, a command that takes the last memory is stopped before the provider restarts the computer.
+      const memoryGuard = watchSetupMemory(child.pid, {
+        onError: (error) => logger.warn("lane_env_init.memory_guard_failed", { error: error instanceof Error ? error.message : String(error) }),
+      });
       let stdout = "";
       let stderr = "";
       // Both streams' last 64 KB together, so a reason said past the 10 MB cap is still read.
@@ -422,15 +459,30 @@ export function createLaneEnvironmentService({
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        memoryGuard?.dispose();
         resolve({ exitCode: 1, stdout, stderr: error instanceof Error ? error.message : String(error), tail: tail.slice(-OUTPUT_TAIL_CHARS) });
       });
       child.on("close", (code, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        // Killed by a signal, or a shell that exited 128 + HUP/INT/TERM: and not our timeout's kill.
-        const stoppedBySignal = !timedOut && (signal != null || code === 129 || code === 130 || code === 143);
-        resolve({ exitCode: code ?? 1, stdout, stderr, tail: tail.slice(-OUTPUT_TAIL_CHARS), ...(stoppedBySignal ? { stoppedBySignal } : {}) });
+        const finish = () => {
+          memoryGuard?.dispose();
+          const stoppedForMemory = memoryGuard?.stopped() ?? null;
+          // Killed by a signal, or a shell that exited 128 + HUP/INT/TERM: and not our timeout's or the memory guard's kill.
+          const stoppedBySignal = !timedOut && !stoppedForMemory && (signal != null || code === 129 || code === 130 || code === 143);
+          resolve({
+            exitCode: code ?? 1,
+            stdout,
+            stderr,
+            tail: tail.slice(-OUTPUT_TAIL_CHARS),
+            ...(stoppedBySignal ? { stoppedBySignal } : {}),
+            ...(stoppedForMemory ? { stoppedForMemory } : {}),
+          });
+        };
+        // The guard exits right after its kill; a SIGKILL'd command waits for it to know whether it was the guard's.
+        if (memoryGuard && (signal === "SIGKILL" || code === 137)) void memoryGuard.settled(2_000).then(finish);
+        else finish();
       });
     });
   }
@@ -486,7 +538,7 @@ export function createLaneEnvironmentService({
     worktreePath: string,
     docker: LaneDockerConfig,
     laneId: string
-  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
+  ): Promise<SpawnResult> {
     if (!docker.composePath?.trim()) {
       logger.warn("lane_env_init.docker_compose_missing", { path: docker.composePath ?? "" });
       return { exitCode: 0, stdout: "", stderr: "", tail: "" };
@@ -528,15 +580,19 @@ export function createLaneEnvironmentService({
       }
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
       const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
+      if (result.stoppedForMemory) {
+        logger.warn("lane_env_init.dependency_stopped_for_memory", { command: commandLabel(dep.command.join(" ")), ...result.stoppedForMemory });
+        failures.push(laneSetupOutOfMemoryError(result.stoppedForMemory.totalMb));
+        continue;
+      }
       if (result.stoppedBySignal) throw new SetupStoppedBySignalError(`${dep.command.join(" ")}: stopped by a signal`);
       if (result.exitCode !== 0) {
-        // The excerpt is the output's start; a full disk is often said only at its end.
-        const failure = commandFailure(result, result.stderr.slice(0, 500));
-        failures.push(failure.diskFull ? failure.text : `${dep.command.join(" ")}: ${failure.text}`);
+        const failure = commandFailure(result);
+        failures.push(failure.diskFull ? failure.text : `${commandLabel(dep.command.join(" "))}: exited with code ${result.exitCode}${failure.text ? `: ${failure.text}` : ""}`);
         logger.warn("lane_env_init.dependency_install_failed", {
-          command: dep.command.join(" "),
+          command: commandLabel(dep.command.join(" ")),
           exitCode: result.exitCode,
-          stderr: result.stderr.slice(0, 500)
+          stderr: failure.text
         });
       }
     }
@@ -665,13 +721,17 @@ export function createLaneEnvironmentService({
 
     for (const step of steps) {
       const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
+      if (result.stoppedForMemory) {
+        logger.warn("lane_env_init.setup_stopped_for_memory", { laneId, command: commandLabel(step.label), ...result.stoppedForMemory });
+        return laneSetupOutOfMemoryError(result.stoppedForMemory.totalMb);
+      }
       if (result.stoppedBySignal) {
         logger.warn("lane_env_init.setup_script_stopped_by_signal", { laneId, command: step.label, exitCode: result.exitCode });
         throw new SetupStoppedBySignalError(`${step.label}: stopped by a signal`);
       }
       if (result.exitCode !== 0) {
-        // npm says ENOSPC after pages of warnings, past the excerpt: the whole output is read for it.
-        const failure = commandFailure(result, (result.stderr.trim() || result.stdout.trim()).slice(0, 500));
+        // npm says why it stopped after pages of warnings: the whole output is read, and the error keeps its end.
+        const failure = commandFailure(result);
         if (failure.diskFull) {
           logger.warn("lane_env_init.setup_script_disk_full", { laneId, exitCode: result.exitCode, line: failure.text.slice(LANE_SETUP_DISK_FULL_ERROR.length).trim().slice(0, 160) });
           return failure.text;
@@ -679,11 +739,11 @@ export function createLaneEnvironmentService({
         const detail = failure.text;
         logger.warn("lane_env_init.setup_script_failed", {
           laneId,
-          command: step.label,
+          command: commandLabel(step.label),
           exitCode: result.exitCode,
           stderr: detail,
         });
-        return `${step.label}: ${detail || `exited with code ${result.exitCode}`}`;
+        return `${commandLabel(step.label)}: exited with code ${result.exitCode}${detail ? `: ${detail}` : ""}`;
       }
       logger.debug("lane_env_init.setup_script_command_ok", { laneId, command: step.label });
     }
@@ -856,7 +916,9 @@ export function createLaneEnvironmentService({
           run: async () => {
             const result = await startDocker(lane.worktreePath, docker, lane.id);
             // A pull that fills the disk says so after pages of progress: the whole output is read for it.
-            return result.exitCode !== 0 ? commandFailure(result, result.stderr.slice(0, 500)).text : null;
+            if (result.exitCode === 0) return null;
+            if (result.stoppedForMemory) return laneSetupOutOfMemoryError(result.stoppedForMemory.totalMb);
+            return commandFailure(result).text || `exited with code ${result.exitCode}`;
           },
         });
       }
