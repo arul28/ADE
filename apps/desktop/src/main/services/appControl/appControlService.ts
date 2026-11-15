@@ -34,6 +34,7 @@ import type {
   AppControlSelectResult,
   AppControlSession,
   AppControlSessionTargetArgs,
+  AppControlScreenshot,
   AppControlSnapshot,
   AppControlSnapshotArgs,
   AppControlStatus,
@@ -600,7 +601,8 @@ export function createAppControlService(serviceArgs: CreateAppControlServiceArgs
     laneForAppProcess,
     focusWindow: onLane("focusWindow", (controller) => controller.focusWindow()),
     minimizeWindow: onLane("minimizeWindow", (controller) => controller.minimizeWindow()),
-    screenshot: onLane("screenshot", (controller) => controller.screenshot()),
+    screenshot: async (ref: AppControlLaneRef & { format?: "png" } = {}): Promise<AppControlScreenshot> =>
+      await (await sessionController(ref, "screenshot")).screenshot({ png: ref.format === "png" }),
     getSnapshot: async (snapshotArgs: AppControlSnapshotArgs = {}): Promise<AppControlSnapshot> =>
       await (await sessionController(snapshotArgs, "getSnapshot")).getSnapshot(snapshotArgs),
     inspectPoint: async (point: AppControlInspectPointArgs): Promise<AppControlInspectResult> =>

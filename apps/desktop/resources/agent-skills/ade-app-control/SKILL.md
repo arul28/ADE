@@ -177,7 +177,9 @@ animation, a retry. Use a **still** (`proof`) when one screen proves the claim.
 - Confirm the final state before `record stop`, so the video ends on it.
 - `proof` observes the app and files that screenshot with your caption. Write
   a caption that says what the capture shows, then check that the screenshot
-  really shows it. `screenshot` captures without filing anything.
+  really shows it. `screenshot --out shot.png --text` captures without filing
+  anything and writes the PNG there (`--text` alone saves a temp file and
+  prints its path).
 
 The **ade-proof-artifacts** skill covers `ade proof attach`, allowed roots and
 how to confirm a filing.

@@ -93,4 +93,27 @@ describe("AGENT_DOM_COLLECTOR_FUNCTION text matching", () => {
     expect(button.target?.tagName).toBe("button");
     expect(button.target?.testId).toBe("save-button");
   });
+
+  it("never resolves text that only an inert panel holds to the container around it", () => {
+    // A tools pane keeps its grid mounted, inert, behind the open tool. A
+    // match on the grid's text must not become a click at the pane's center,
+    // which lands on the tool's own buttons.
+    document.body.innerHTML = `
+      <div tabindex="0" data-testid="pane">
+        <div inert><button data-testid="hidden-tile">Apple Simulators</button></div>
+        <div><button data-testid="device-card">Start Versic Tablet</button></div>
+      </div>
+      <p>Apple Simulators run on a Mac</p>`;
+
+    const shown = COLLECT({ locate: { text: "Apple Simulators" } });
+    expect(shown.target?.tagName).toBe("p");
+
+    document.querySelector("p")?.remove();
+    expect(COLLECT({ locate: { text: "Apple Simulators" } }).target).toBeNull();
+    expect(COLLECT({ locate: { text: "Start Versic Tablet" } }).target?.testId).toBe("device-card");
+
+    // A word split by inline markup still matches beside inert content.
+    document.body.innerHTML = `<button data-testid="restart">Re<strong>start</strong><span inert>Old</span></button>`;
+    expect(COLLECT({ locate: { text: "Restart" } }).target?.testId).toBe("restart");
+  });
 });

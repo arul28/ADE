@@ -3997,7 +3997,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return targets;
   };
 
-  const listInstalledLaunchTargets = async (deviceUdid?: string | null): Promise<IosSimulatorLaunchTarget[]> => {
+  /**
+   * Apps installed on the simulator. Apple's own apps are left out of lists
+   * (pickers show the person's apps), except `systemBundleId`: a caller that
+   * names Settings or Safari by its bundle id gets it.
+   */
+  const listInstalledLaunchTargets = async (
+    deviceUdid?: string | null,
+    options: { systemBundleId?: string | null } = {},
+  ): Promise<IosSimulatorLaunchTarget[]> => {
     if (!deviceUdid || !cachedCommandExists("xcrun")) return [];
     let stdout = "";
     try {
@@ -4010,7 +4018,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     for (const match of entries) {
       const bundleId = match[1];
       const body = match[2] ?? "";
-      if (!bundleId || bundleId.startsWith("com.apple.")) continue;
+      if (!bundleId || (bundleId.startsWith("com.apple.") && bundleId !== options.systemBundleId)) continue;
       const name =
         /CFBundleDisplayName\s*=\s*"([^"]+)";/.exec(body)?.[1]
         ?? /CFBundleName\s*=\s*"([^"]+)";/.exec(body)?.[1]
@@ -4870,6 +4878,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
     if (!target && launchArgs.bundleId) {
       target = targets.find((candidate) => candidate.bundleId === launchArgs.bundleId) ?? null;
+      if (!target && launchArgs.bundleId.startsWith("com.apple.")) {
+        const system = await listInstalledLaunchTargets(deviceUdid, { systemBundleId: launchArgs.bundleId });
+        target = system.find((candidate) => candidate.bundleId === launchArgs.bundleId) ?? null;
+      }
     }
     if (!target && explicitAppBundle) {
       const bundleId = await readPlistValue(path.join(explicitAppBundle, "Info.plist"), "CFBundleIdentifier");
