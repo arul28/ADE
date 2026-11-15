@@ -303,7 +303,12 @@ export function createCloudDiskGrower(deps: {
     || (failedAt != null && now() - failedAt < FAILED_RETRY_MS);
 
   /** Asks the server for one more step of disk. A grow restarts the computer, so `stillIdle` is asked right before. */
-  const growOneStep = async (stillIdle: () => boolean | Promise<boolean>, disk: { space: DiskSpace; pressure: DiskPressureState }, signal?: AbortSignal): Promise<GrowStep> => {
+  const growOneStep = async (
+    stillIdle: () => boolean | Promise<boolean>,
+    disk: { space: DiskSpace; pressure: DiskPressureState },
+    signal?: AbortSignal,
+    onAsking?: (toGb: number) => void,
+  ): Promise<GrowStep> => {
     const client = await deps.client();
     if (!client) return { state: "unavailable" };
     const instance = await client.getInstance(deps.instanceId);
@@ -322,6 +327,11 @@ export function createCloudDiskGrower(deps: {
     // The note is what holds the cooldown and the pending grow across the restart: no grow without it.
     if (!writeState({ v: 1, state: "growing", toGb, at: now(), instanceId: deps.instanceId, fromBytes: disk.space.totalBytes })) {
       return { state: "unsaved" };
+    }
+    try {
+      onAsking?.(toGb);
+    } catch {
+      // Only words on a card: never in the grow's way.
     }
     try {
       await client.resizeInstance(deps.instanceId, { cpu, memory, disk: toGb }, { computerIdle: true, origin: "auto" });
@@ -447,7 +457,8 @@ export function createCloudDiskGrower(deps: {
      * the grow restarts the computer. A grow already asked for whose disk
      * hasn't grown yet is waited on, not asked again.
      */
-    async makeRoomForSetup(args: { stillIdle: () => boolean | Promise<boolean>; signal: AbortSignal }): Promise<ChatLaunchEnvironmentRoom | null> {
+    async makeRoomForSetup(args: { stillIdle: () => boolean | Promise<boolean>; signal: AbortSignal; onAsking?: (detail: string) => void }): Promise<ChatLaunchEnvironmentRoom | null> {
+      const onAsking = args.onAsking ? (toGb: number) => args.onAsking!(growingDetail(toGb)) : undefined;
       if (args.signal.aborted) return null;
       const disk = measure();
       if (!disk) return null;
@@ -463,13 +474,13 @@ export function createCloudDiskGrower(deps: {
       if (inFlight) return { state: "refused", error: "Setup filled this computer's disk while ADE was already growing it. Retry in a minute or two." };
       inFlight = true;
       try {
-        let step = await growOneStep(args.stillIdle, disk, args.signal);
+        let step = await growOneStep(args.stillIdle, disk, args.signal, onAsking);
         // Two of the account's computers growing at once: the one that lost the reservation asks again, twice at most.
         for (const waitMs of SETUP_GROW_RACE_RETRY_MS) {
           if (step.state !== "changed" || args.signal.aborted) break;
           await new Promise((resolve) => setTimeout(resolve, waitMs + Math.floor(Math.random() * 1_000)).unref?.());
           // Checked again before it asks: a Cancel during the wait grows nothing.
-          step = await growOneStep(args.stillIdle, disk, args.signal);
+          step = await growOneStep(args.stillIdle, disk, args.signal, onAsking);
         }
         switch (step.state) {
           case "growing":
@@ -564,7 +575,7 @@ export function createCloudDiskGrower(deps: {
           deps.logger?.info("cloud.setup_disk_full_grow", log);
           return { grow: true };
         },
-        async makeRoom({ launchId, signal }) {
+        async makeRoom({ launchId, signal, onAsking }) {
           // The launch's mark is saved: only now does this grow count toward the next one's rule.
           const pending = pendingGrows.get(launchId);
           pendingGrows.delete(launchId);
@@ -572,7 +583,7 @@ export function createCloudDiskGrower(deps: {
           if (!writeHistory({ ...readHistory(), [launchId]: { ...pending, at: now() } })) {
             return { state: "refused", error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
           }
-          return await grower.makeRoomForSetup({ stillIdle, signal });
+          return await grower.makeRoomForSetup({ stillIdle, signal, ...(onAsking ? { onAsking } : {}) });
         },
       };
     },

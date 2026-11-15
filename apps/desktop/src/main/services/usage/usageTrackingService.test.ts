@@ -7241,14 +7241,20 @@ describe("per-account quota attribution", () => {
     });
   }
 
-  /** One background poll. It reads real files between its timers, so the fake clock moves one step at a time. */
+  /**
+   * One background poll. It reads real files between its timers, so the fake
+   * clock moves one step at a time, and only while a timer is pending: a step
+   * taken while the poll waits on the disk would move the fake Date by an
+   * amount that depends on how slow the disk is, and a slow runner could
+   * then run past the refresh allowance between two polls.
+   */
   async function backgroundPoll(instances: TestInstance[]) {
     let settled = false;
     const pending = _testing.pollClaudeUsage(logger as never, { reason: "automatic" }, instances)
       .finally(() => { settled = true; });
     while (!settled) {
       await new Promise((resolve) => setImmediate(resolve));
-      await vi.advanceTimersByTimeAsync(100);
+      if (vi.getTimerCount() > 0) await vi.advanceTimersByTimeAsync(100);
     }
     return await pending;
   }

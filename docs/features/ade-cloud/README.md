@@ -1364,14 +1364,26 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   passed the last grown run's, so an installer that leaves files behind and
   frees them in the next run still grows each step (four grows at most). A grow
   counts toward that only once the launch's mark is saved. The reserve
-  is freed, the launch record is marked `awaitingRoom` (no grow when that write
-  fails: "free some space or Clear caches, then retry"), and the grower asks
-  for one step (the same server rules, only while no other work and at most
-  this one setup runs). The environment stage keeps running with "growing it to
-  N GB", which the boot launch also reports. The grow restarts the computer;
-  the brain opens the projects with waiting launches at start, and the reloaded
-  record is not "interrupted": its setup runs again by itself. Start now during
-  the wait starts the agent right after the restart. A refused grow fails the
+  is freed, the launch record gets a room mark (`roomMark`: when, and how many
+  restarts it resumed after; no grow when that write fails: "free some space or
+  Clear caches, then retry"), and the grower asks for one step (the same server
+  rules, only while no other work and at most this one setup runs). The
+  environment stage says "growing it to N GB" (written down just before the
+  ask, since the restart often beats the answer), which the boot launch also
+  reports. The grow restarts the computer, sometimes more than once; the brain
+  opens the projects with marked launches at start, and a reloaded marked
+  record resumes: its setup runs again by itself ("running again after the disk
+  grew (restart N)"), counted and written down first. The mark stays while the
+  setup runs again and goes once the environment stage settles, on Cancel and
+  on Retry. Past 3 resumes, or an hour after the mark (a computer that slept),
+  the launch reads as interrupted with Retry (`chat_launch.environment_resume_refused`).
+  Start now waits only while the grow is in flight (it starts the agent right
+  after the restart); during the rerun it starts the agent at once. An agent
+  started early clears the mark, so a restart then reads as interrupted
+  instead of rerunning setup under it. A rerun's setup command stopped by a
+  signal ADE didn't send (a service stop signals every process at once) waits
+  up to 10 s for the brain's own shutdown and keeps its mark when it comes.
+  `ade chat launch-status` prints the running stage's sentence as `now`. A refused grow fails the
   stage with the refusal's way out (extra disk, a bigger size, a plan) and
   Retry; a boot launch keeps following a failed launch across restarts, so a
   Retry that grows goes on with nobody watching.
