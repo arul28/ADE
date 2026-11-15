@@ -26,10 +26,14 @@ describe("useConnectRepositoryCopies", () => {
   let gammaUp = false;
   // Each test starts a day after the last, so no cached directory read carries over.
   let day = 0;
-  const connect = vi.fn(async (machineKey: string) =>
+  const answer = async (machineKey: string): Promise<
+    | { ok: true; machineKey: string }
+    | { ok: false; reason: "unreachable" | "no_room"; machineKey: string; message: string }
+  > =>
     gammaUp
       ? { ok: true as const, machineKey }
-      : { ok: false as const, reason: "unreachable" as const, machineKey, message: "no answer" });
+      : { ok: false as const, reason: "unreachable" as const, machineKey, message: "no answer" };
+  const connect = vi.fn(answer);
   const listMachines = vi.fn(async () => ({ state: "ok" as const, machines: [gammaRow(true)], message: null }));
 
   beforeEach(() => {
@@ -37,7 +41,8 @@ describe("useConnectRepositoryCopies", () => {
     day += 1;
     vi.setSystemTime(Date.UTC(2030, 0, day));
     gammaUp = false;
-    connect.mockClear();
+    connect.mockReset();
+    connect.mockImplementation(answer);
     listMachines.mockClear();
     (window as unknown as { ade: unknown }).ade = {
       machines: { connect },
@@ -67,6 +72,7 @@ describe("useConnectRepositoryCopies", () => {
 
   afterEach(() => {
     cleanup();
+    useAppStore.setState({ noMachineTabs: [], activeNoMachineTabId: null });
     publishAccountProjectList(null);
     vi.useRealTimers();
   });
@@ -95,6 +101,42 @@ describe("useConnectRepositoryCopies", () => {
       await vi.advanceTimersByTimeAsync(61_000);
     });
     expect(connect).toHaveBeenCalledWith(GAMMA, { background: true });
+  });
+
+  it("keeps trying the copies of a no-machine tab in front, not those of the project tab behind it", async () => {
+    useAppStore.setState({
+      projectBinding: null,
+      noMachineTabs: [{ id: "ap_atlas", displayName: "atlas", iconDataUrl: null }],
+      activeNoMachineTabId: "ap_atlas",
+    });
+    renderHook(() => useConnectRepositoryCopies());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+    });
+    gammaUp = true;
+    connect.mockClear();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(61_000);
+    });
+    expect(connect).toHaveBeenCalledWith(GAMMA, { background: true });
+  });
+
+  it("joins a computer left out for room once a connection frees up, with no focus or change", async () => {
+    let room = false;
+    connect.mockImplementation(async (machineKey: string) =>
+      room
+        ? { ok: true as const, machineKey }
+        : { ok: false as const, reason: "no_room" as const, machineKey, message: "full" });
+    renderHook(() => useConnectRepositoryCopies());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+    room = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(connect).toHaveBeenCalledTimes(2);
   });
 
   it("dials nothing while the page is hidden", async () => {

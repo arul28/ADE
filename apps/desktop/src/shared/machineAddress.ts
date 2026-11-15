@@ -40,10 +40,12 @@ export type MachineAddress =
  * - `signed_out`: this computer is not signed in to an ADE account.
  * - `invalid`: no key was given.
  * - `declined`: a background connect left the machine alone on purpose: the
- *   person disconnected it or set it not to reconnect on its own, or ADE Web
- *   already holds its limit of connections. Nothing is wrong with it.
+ *   person disconnected it or set it not to reconnect on its own. Nothing is
+ *   wrong with it.
+ * - `no_room`: a background connect found ADE Web at its limit of connections
+ *   and did not park another computer. It can join when a connection closes.
  */
-export type MachineConnectFailureReason = "not_in_account" | "unreachable" | "signed_out" | "invalid" | "declined";
+export type MachineConnectFailureReason = "not_in_account" | "unreachable" | "signed_out" | "invalid" | "declined" | "no_room";
 
 export type MachineConnectResult =
   | { ok: true; address: MachineAddress }

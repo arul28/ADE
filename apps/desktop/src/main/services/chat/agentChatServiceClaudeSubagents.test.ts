@@ -39,6 +39,7 @@ import {
   dedicatedTranscriptPath,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 
 /**
  * The setup every Claude approval test shares: one session whose stream never
@@ -562,6 +563,33 @@ describe("createAgentChatService", () => {
       const status = await service.getTurnStatus(parent.id);
       expect(status?.subagents).toEqual([
         expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
+      ]);
+
+      // Another live brain on this ADE home runs the child. This brain cannot
+      // see that turn, so its status keeps the row as written. Only the OS
+      // process table (the registry's liveness probe) is faked.
+      writePersistedChatState(child.id, {
+        ...readPersistedChatState(child.id),
+        runtimeOwner: {
+          brainId: "brain-other",
+          pid: 4242,
+          startedAt: "2026-10-09T03:00:00.000Z",
+          socketPath: "/tmp/owner-brain.sock",
+          claimedAt: "2026-10-09T03:00:00.000Z",
+          adeHome: resolveAdeHomeForOwnership(),
+        },
+      });
+      const second = createService({
+        processRegistry: {
+          pid: process.pid,
+          startedAt: "2026-10-09T03:30:00.000Z",
+          isProcessIdentityLive: (pid: number) => pid === 4242,
+        },
+        runtimeSocketPath: "/tmp/second-brain.sock",
+      });
+      const heldElsewhere = await second.service.getTurnStatus(parent.id);
+      expect(heldElsewhere?.subagents).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "running" }),
       ]);
     });
 

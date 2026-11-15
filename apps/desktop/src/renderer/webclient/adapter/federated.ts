@@ -875,7 +875,9 @@ export function createFederatedWebAdapter({
         const message = error instanceof Error ? error.message : String(error);
         // Skipped on purpose (the person's Disconnect, or no room left in
         // this browser): nothing is wrong with the machine.
-        if (error instanceof WebMachineConnectSkipped) return { ok: false, reason: "declined", machineKey: key, message };
+        if (error instanceof WebMachineConnectSkipped) {
+          return { ok: false, reason: error.reason === "no_room" ? "no_room" : "declined", machineKey: key, message };
+        }
         if (wakeFailure) {
           return { ok: false, reason: "unreachable", machineKey: key, message: `ADE couldn't wake ${machineDisplayName(machine)}: ${wakeFailure}` };
         }

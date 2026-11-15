@@ -71540,15 +71540,20 @@ export function createAgentChatService(args: {
         continue;
       }
       const child = managedSessions.get(childId);
+      // A child that another live brain runs is that brain's to report, so its
+      // row stays as written; this brain cannot see that child's turn.
+      const heldElsewhere = child == null && chatOwnedByAnotherBrain(childId);
       const working = child?.session.status === "active" || (child != null && collectPendingInputRequests(child).length > 0);
       const note = snapshot.finalSummary ?? snapshot.summary ?? snapshot.description;
-      const status: AgentChatSubagentSnapshot["status"] = working
-        ? "running"
-        : deriveOrphanChildChatState(row, false) === "failed"
-          ? "failed"
-          : snapshot.status === "stopped" && !SWEEP_STOP_SUMMARIES.has(note ?? "")
-            ? "stopped"
-            : "completed";
+      const status: AgentChatSubagentSnapshot["status"] = heldElsewhere
+        ? snapshot.status
+        : working
+          ? "running"
+          : deriveOrphanChildChatState(row, false) === "failed"
+            ? "failed"
+            : snapshot.status === "stopped" && !SWEEP_STOP_SUMMARIES.has(note ?? "")
+              ? "stopped"
+              : "completed";
       const isSpawnRow = snapshot.taskId.startsWith("chat:");
       const settled: AgentChatSubagentSnapshot = {
         ...snapshot,

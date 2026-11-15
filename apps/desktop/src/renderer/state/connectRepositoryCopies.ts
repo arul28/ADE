@@ -15,7 +15,9 @@
  * - A sleeping ADE Cloud computer is not online, so it is not woken here;
  *   opening one of its lanes wakes it.
  * - ADE Web holds at most `WEB_MACHINE_SESSION_LIMIT` connections; a
- *   background connect never parks another computer for room.
+ *   background connect never parks another computer for room. A computer
+ *   left out for room is tried again every `RETRY_BASE_MS`, so it joins soon
+ *   after any connection closes, also one of another project.
  * - A pass runs when the tab or the set of unconnected copies changes, when
  *   the window gets focus, and when the page becomes visible again. Such a
  *   pass tries a computer again before its backoff ends, at most once per
@@ -37,7 +39,7 @@ import { isPageHidden } from "../lib/pageVisibility";
 import type { RepositoryCopy } from "../../shared/repositoryTab";
 import type { AdeAccountMachine } from "../../shared/types";
 import { resolveMachinePresence, type MachinePresence } from "../../shared/types/power";
-import { useActiveRepositoryTab } from "./repositoryScope";
+import { useVisibleRepositoryTab } from "./repositoryScope";
 import { useRepositoryCopies } from "./useRepositoryCopies";
 
 /** The first retry of a computer that did not join (offline, unreachable); each failure in a row doubles it. */
@@ -53,9 +55,8 @@ type RetryState = {
   /** The last try; a focus or a change tries again once `RETRY_BASE_MS` passed since. */
   triedAt: number;
   /**
-   * Declined without asking the machine (no room on ADE Web, or the person's
-   * Disconnect): the timer leaves it alone, and the next change or focus may
-   * try it at once (a freed slot).
+   * The person's Disconnect (or "don't reconnect"): the timer leaves it alone,
+   * and only the next change or focus asks again.
    */
   declined: boolean;
 };
@@ -124,6 +125,12 @@ async function connectInBackground(machineKeys: readonly string[], fromTimer: bo
       retryByMachineKey.set(key, { failures: 0, nextAt: 0, triedAt: Date.now(), declined: true });
       continue;
     }
+    if (result.reason === "no_room") {
+      // Nothing is wrong with it: look again on the next tick, without backoff.
+      const at = Date.now();
+      retryByMachineKey.set(key, { failures: 0, nextAt: at + RETRY_BASE_MS, triedAt: at, declined: false });
+      continue;
+    }
     noteFailure(key, Date.now());
     // Once per computer while it stays down, not once per try.
     if ((retryByMachineKey.get(key)?.failures ?? 0) === 1) {
@@ -177,10 +184,11 @@ function schedule(machineKeys: readonly string[], fromTimer: boolean): void {
 
 /**
  * Keeps every online computer with a copy of the tab's repository connected
- * while the tab is in front (desktop and ADE Web). Mount once per window.
+ * while the tab is in front (desktop and ADE Web), also a no-machine tab whose
+ * copies are all on computers that are not connected. Mount once per window.
  */
 export function useConnectRepositoryCopies(): void {
-  const tab = useActiveRepositoryTab();
+  const tab = useVisibleRepositoryTab();
   const copies = useRepositoryCopies(tab, tab?.kind === "account");
   const keys = unconnectedCopyMachineKeys(copies);
   useEffect(() => {

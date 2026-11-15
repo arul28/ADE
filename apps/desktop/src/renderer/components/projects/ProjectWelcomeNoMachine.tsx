@@ -2,11 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Desktop, FolderSimple, WifiSlash } from "@phosphor-icons/react";
 import {
-  repositoryTabFromAccountProject,
   resolveDefaultCopy,
   type RepositoryCopy,
-  type RepositoryTab,
 } from "../../../shared/repositoryTab";
+import { repositoryTabOfNoMachineTab } from "../../state/repositoryScope";
 import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopies } from "../../state/useRepositoryCopies";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -31,24 +30,6 @@ import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { isWebResumeOwnedTab } from "../app/webResumeOwnedTabs";
 import { accountMachinePresence, unconnectedCopyMachineKeys } from "../../state/connectRepositoryCopies";
 import "./ProjectWelcomePage.css";
-
-/** The repository tab of a no-machine tab: the account project when the account knows it. */
-function repositoryTabOf(tab: NoMachineRepositoryTab, list: ReturnType<typeof useAccountProjectList>): RepositoryTab {
-  // A second folder of a repository on one computer keys its tab by that
-  // folder; the repository is named apart.
-  const repositoryId = tab.repositoryId ?? tab.id;
-  const project = list.state === "ready" ? list.projects.find((entry) => entry.id === repositoryId) : undefined;
-  if (project) return repositoryTabFromAccountProject(project, { displayName: tab.displayName, iconDataUrl: tab.iconDataUrl });
-  const address = repositoryId.startsWith("repo:") ? repositoryId.slice("repo:".length) : repositoryId;
-  return {
-    kind: "account",
-    id: repositoryId,
-    displayName: tab.displayName,
-    iconDataUrl: tab.iconDataUrl,
-    host: address.split("/")[0]?.toLowerCase() || "github.com",
-    repoKeys: [repositoryId.startsWith("repo:") ? repositoryId : `repo:${address}`],
-  };
-}
 
 /** One copy's key on this page: its computer and folder. */
 function copyKeyOf(copy: RepositoryCopy): string {
@@ -105,7 +86,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const [openingCopyKey, setOpeningCopyKey] = useState<string | null>(null);
   const [openError, setOpenError] = useState<{ title: string; technicalDetail: string } | null>(null);
   const list = useAccountProjectList();
-  const repositoryTab = useMemo(() => repositoryTabOf(tab, list), [list, tab]);
+  const repositoryTab = useMemo(() => repositoryTabOfNoMachineTab(tab, list), [list, tab]);
   const copies = useRepositoryCopies(repositoryTab);
   const repoAddress = repositoryTab.kind === "account" ? repositoryTab.repoKeys[0]?.slice("repo:".length) ?? null : null;
   const copyRepoKey = repoKeyForOriginIdentity(repoAddress);
