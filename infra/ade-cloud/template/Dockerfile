@@ -49,6 +49,20 @@ RUN curl -fsSL https://ade-app.dev/install.sh -o /tmp/install.sh \
  && ln -s /opt/ade/bin/ade /usr/local/bin/ade \
  && ade --version
 
+# The GitHub CLI. Agents run `gh` (PRs, issues, checks), and ADE's `gh` shim
+# (githubShellShim.ts) only adds the account's GitHub token and then runs the
+# real one: with no `gh` in the image, every `gh` on ADE Cloud was "command
+# not found". From GitHub's own apt repository: Debian bookworm's package is
+# years behind. About 50 MB.
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
+
 # Docker, for projects whose setup starts a stack (docker compose, Supabase).
 # Only a VM's own kernel runs it; on a sandboxed box the entrypoint skips it.
 # dockerd needs root, and the brain runs as `node`: the one thing `node` may

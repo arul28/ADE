@@ -1422,6 +1422,12 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   network-on setting still reaches the network. Codex prefers a `bwrap` on
   PATH to its bundled one; when the wrapper can't run, Codex falls back to its
   own and fails as before.
+- `gh`: the image has the GitHub CLI (GitHub's apt repository). ADE's `gh`
+  shim only adds the account's GitHub token and then runs the real `gh`, so
+  before it every `gh` on a cloud computer was "command not found". The brain
+  also puts the shim on the first chat after it starts: it reads the repo's
+  owner from the git config file (`gitConfigOrigin.ts`), as the desktop does,
+  so a launch's chat no longer misses it.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer
