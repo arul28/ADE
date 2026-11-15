@@ -82015,9 +82015,13 @@ export function createAgentChatService(args: {
   const releaseRemoteWorkForLane = (laneId: string, ended: "archived" | "deleted"): void => {
     const trimmed = laneId.trim();
     if (!trimmed) return;
-    for (const sessionId of [...remoteWorkBySession.keys()]) {
-      if (sessionService.get(sessionId)?.laneId === trimmed) releaseRemoteWorkOfEndedChat(sessionId, ended);
+    // Every chat of the lane, not only those read since this brain started:
+    // the record is saved with each chat (`remoteWorkUsesFor` reads it back).
+    const sessionIds = new Set(sessionService.list({ laneId: trimmed, limit: null, toolTypes: CHAT_SESSION_TOOL_TYPES }).map((row) => row.id));
+    for (const sessionId of remoteWorkBySession.keys()) {
+      if (sessionService.get(sessionId)?.laneId === trimmed) sessionIds.add(sessionId);
     }
+    for (const sessionId of sessionIds) releaseRemoteWorkOfEndedChat(sessionId, ended);
   };
 
   return {

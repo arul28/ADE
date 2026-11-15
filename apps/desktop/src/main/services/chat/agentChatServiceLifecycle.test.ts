@@ -395,11 +395,18 @@ describe("createAgentChatService", () => {
       });
       await first.service.disposeAll();
 
-      const restarted = createService({ db });
+      const ended = vi.fn();
+      const restarted = createService({ db, onRemoteWorkChatEnded: ended });
       const summary = await restarted.service.getSessionSummary(session.id);
       expect(summary?.remoteWork).toEqual([
         expect.objectContaining({ machineKey: "mac-studio", workCopyLaneId: "remote-work-abc123", usesSimulator: true }),
       ]);
+      // Archiving the lane still cleans up on that machine.
+      restarted.service.releaseRemoteWorkForLane("lane-1", "archived");
+      expect(ended).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: session.id,
+        uses: [expect.objectContaining({ machineKey: "mac-studio" })],
+      }));
       restarted.service.forceDisposeAll();
     });
 
