@@ -549,12 +549,21 @@ function(inputArg) {
         ? NodeFilter.FILTER_REJECT
         : NodeFilter.FILTER_ACCEPT,
     });
+    const view = doc.defaultView || window;
     const parts = [];
     for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-      if (current.nodeType === Node.TEXT_NODE) parts.push(current.textContent || "");
+      if (current.nodeType === Node.TEXT_NODE) {
+        parts.push(current.textContent || "");
+      } else if (current.tagName === "BR") {
+        parts.push(" ");
+      } else if (!String(view.getComputedStyle(current).display || "inline").startsWith("inline")) {
+        // A block starts a new line where it renders, as innerText reads it.
+        parts.push(" ");
+      }
     }
-    // Joined as textContent joins them: a word split by inline markup
-    // ("Re<b>start</b>") stays one word.
+    // Inline pieces join with nothing between them, as they render: a word
+    // split by inline markup ("Re<b>start</b>") stays one word, while a <br>
+    // or a block break still separates words.
     return parts.join("");
   };
   // What a control declares as its name, not the text of what it contains.
