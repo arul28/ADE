@@ -6147,6 +6147,21 @@ export function AgentChatPane({
   // below, which run from window-event listeners (stale-closure-safe).
   const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
   selectedEventsForDisplayRef.current = selectedEventsForDisplay;
+  // The transcript list draws `liveTranscript`: the events in
+  // `eventsBySessionRef`, which run ahead of the committed events above until
+  // the pane's next render (a history read writes the ref, and a render that
+  // does not yet carry its state update already shows the rows). A handler for
+  // a row the list shows reads what the list read, so a visible Retry always
+  // finds the message of its turn.
+  const liveTranscriptRef = useRef(liveTranscript);
+  liveTranscriptRef.current = liveTranscript;
+  const readVisibleTranscript = useCallback((): AgentChatEventEnvelope[] => {
+    const transcript = liveTranscriptRef.current;
+    const live = transcript ? transcript.store.read(transcript.sessionId) : undefined;
+    return !transcript || !live || live === transcript.committed
+      ? selectedEventsForDisplayRef.current
+      : transcript.toDisplay(live);
+  }, []);
   const chatHasMessages = useMemo(
     () => selectedEventsForDisplay.some((env) => env.event.type === "user_message" || env.event.type === "text"),
     [selectedEventsForDisplay],
@@ -11664,7 +11679,7 @@ export function AgentChatPane({
       rejectAuthRetry(sessionId);
       return "Another message is already being sent. Wait for it to finish before retrying.";
     }
-    const events = selectedEventsForDisplayRef.current;
+    const events = readVisibleTranscript();
     let userEvent = failedTurnId ? findUserMessageForTurn(events, failedTurnId) : null;
     if (!failedTurnId) {
       for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -11739,7 +11754,7 @@ export function AgentChatPane({
       submitInFlightRef.current = false;
       setBusy(false);
     }
-  }, [refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
+  }, [readVisibleTranscript, refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
 
   // A scene's `ade.reply` → the prompt box. Nothing is sent: the reader can
   // add to the draft and sends it themselves. Picking another option swaps
@@ -17787,13 +17802,13 @@ export function AgentChatPane({
     : null;
   /** The chat's last message of the person, for the new thread. */
   const lastParentUserText = useCallback((): string | null => {
-    const events = selectedEventsForDisplayRef.current;
+    const events = readVisibleTranscript();
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const evt = events[index]?.event;
       if (evt != null && isParentUserMessage(evt) && typeof evt.text === "string" && evt.text.trim()) return evt.text;
     }
     return null;
-  }, []);
+  }, [readVisibleTranscript]);
   const continueSwitchInNewThread = useCallback(async (): Promise<string | null> => {
     if (!selectedSessionId || !selectedSessionModelId) return "ADE could not tell this chat's model.";
     const note = lastParentUserText();

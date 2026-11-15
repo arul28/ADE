@@ -4639,6 +4639,10 @@ describe("AgentChatPane submit recovery", () => {
         value: originalElementQuerySelector,
       });
       departingHost.remove();
+      // The stubbed animations never finish, so the flight's overlay never
+      // removes itself. Left in <body>, it filled the DOM dump of every later
+      // failure in this file and hid the part that showed the cause.
+      for (const host of document.querySelectorAll("[data-chat-first-message-flight]")) host.remove();
       if (originalAnimate) {
         Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
       } else {
