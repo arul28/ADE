@@ -94,6 +94,27 @@ async function waitForFakeTimers(
   throw lastError;
 }
 
+/**
+ * Runs `work` with fake timeouts, stepping them a quarter second at a time
+ * until it settles, then puts real timers back. For a Claude turn whose fake
+ * stream stays open after its result (as a live SDK query does): the turn
+ * then waits out the one-second post-result drain for a tail message, and
+ * stepping turns that second of sleep into a few microtask flushes. Stepping
+ * stops the moment `work` settles, so no later timer fires early.
+ */
+async function settleSteppingTimeouts<T>(work: () => Promise<T>): Promise<T> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let settled = false;
+    const pending = work().finally(() => { settled = true; });
+    pending.catch(() => {});
+    while (!settled) await vi.advanceTimersByTimeAsync(250);
+    return await pending;
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 const streamText = vi.fn();
 const claudeSdkCreateSessionCompat = vi.hoisted(() => vi.fn());
 const claudeSdkResumeSessionCompat = vi.hoisted(() => vi.fn());
@@ -2465,6 +2486,7 @@ const flushCursorSdkSilenceRecycle = async (): Promise<void> => {
 
 
 export {
+  settleSteppingTimeouts,
   CLAUDE_MUTATING_BUILTIN_TOOLS,
   CLAUDE_READ_ONLY_TOOLS,
   CODEX_REPLAY_MAX_CHARS,

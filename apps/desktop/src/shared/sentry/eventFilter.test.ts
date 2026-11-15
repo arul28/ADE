@@ -212,8 +212,10 @@ describe("createSentryEventHooks", () => {
     expect(reported).toContain("host.example/status");
     // Past the 64,000-char scrub bound the input is cut before it is scrubbed;
     // wherever that cut lands in the credential, none of it is kept.
+    // The filler is spaced words: one unbroken 64k run costs the email pattern seconds per scrub.
+    const filler = (length: number) => `${"x".repeat(63)} `.repeat(Math.ceil(length / 64)).slice(0, length - 1) + "x";
     for (const prefix of [63_975, 63_980, 63_988, 63_995, 63_999]) {
-      const long = `${"x".repeat(prefix)} https://ade:hunter2secret@host.example/status`;
+      const long = `${filler(prefix)} https://ade:hunter2secret@host.example/status`;
       expect(scrubFreeTextThenCut(long, 64_000)).not.toMatch(/hunter|ade:/);
     }
     // A short path grows into `[path]`; the newest line of a tail still comes whole.

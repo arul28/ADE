@@ -660,10 +660,17 @@ describe("createSyncService", () => {
     });
 
     try {
-      const snapshot = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      // Fake timeouts, stepped until the read returns, stand in for its bounded wait.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let settled = false;
+      const read = service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true })
+        .finally(() => { settled = true; });
+      while (!settled) await vi.advanceTimersByTimeAsync(250);
+      const snapshot = await read;
       expect(snapshot.transferReadiness.ready).toBe(false);
       expect(snapshot.transferReadiness.blockers).toEqual([]);
     } finally {
+      vi.useRealTimers();
       await service.dispose();
       db.close();
     }

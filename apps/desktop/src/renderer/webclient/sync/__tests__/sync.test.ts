@@ -252,6 +252,7 @@ class ScriptedSocket implements WebSocketLike {
     rawUrl: string,
     private readonly onClientEnvelope: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
     openDelayMs = 0,
+    relayReady = false,
   ) {
     this.rawUrl = rawUrl;
     const normalized = new URL(rawUrl);
@@ -265,6 +266,9 @@ class ScriptedSocket implements WebSocketLike {
       if (this.readyState !== 0) return;
       this.readyState = 1;
       this.onopen?.(new Event("open"));
+      // A relay that answers `ready=2` at once, so the client never waits out
+      // the negotiation window that only a relay predating it runs into.
+      if (relayReady && normalized.searchParams.get("ready") === "2") completeRelayReadyV2(this);
     }, openDelayMs);
   }
 
@@ -293,7 +297,7 @@ class ScriptedSocket implements WebSocketLike {
 
 function createSocketFactory(
   handler: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
-  options: { openDelayMs?: number | ((socketIndex: number) => number) } = {},
+  options: { openDelayMs?: number | ((socketIndex: number) => number); relayReady?: boolean } = {},
 ) {
   const sockets: ScriptedSocket[] = [];
   return {
@@ -303,7 +307,7 @@ function createSocketFactory(
       const openDelayMs = typeof options.openDelayMs === "function"
         ? options.openDelayMs(socketIndex)
         : options.openDelayMs;
-      const socket = new ScriptedSocket(url, handler, openDelayMs);
+      const socket = new ScriptedSocket(url, handler, openDelayMs, options.relayReady);
       sockets.push(socket);
       return socket;
     },
@@ -2276,7 +2280,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const connection = new SyncConnection({ socketFactory: script.factory, document: null });
     const closeEvents: Array<{ code: number; reason: string }> = [];
     connection.on("close", (event) => closeEvents.push(event));
@@ -2581,7 +2585,7 @@ describe("browser sync connection and client", () => {
           host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
         },
       });
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
     await expect(client.connect(environment.envId, signedInRelayAccess)).rejects.toBeInstanceOf(WebRelayAuthRequiredError);
@@ -2626,7 +2630,7 @@ describe("browser sync connection and client", () => {
             host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
           },
         });
-      });
+      }, { relayReady: true });
       const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
       const seen: Array<{ state: string; error: string | null }> = [];
       const unsubscribe = client.subscribe(() => {
@@ -2687,7 +2691,7 @@ describe("browser sync connection and client", () => {
             message: "A later route failed.",
           },
         });
-      });
+      }, { relayReady: true });
       const connection = new SyncConnection({ socketFactory: script.factory, document: null });
       const endpoints = [
         { url: "ws://192.168.1.10:8787", kind: "candidate" as const, dialable: true },
@@ -2716,7 +2720,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(accountEnvironment.envId, signedInRelayAccess);
     expect(client.getStatus().state).toBe("connected");
@@ -2875,7 +2879,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(localEnvironment.envId, signedInRelayAccess);
     const expectedOwnerUserId = accountLeaseOwnerForActiveConnection({
@@ -3075,7 +3079,7 @@ describe("browser sync connection and client", () => {
           },
         },
       });
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({
       storage,
       socketFactory: script.factory,
@@ -3291,7 +3295,7 @@ describe("browser sync connection and client", () => {
           },
         });
       }
-    });
+    }, { relayReady: true });
     const attributedClient = new AdeSyncClient({ storage: attributedStorage, socketFactory: attributedScript.factory, document: null });
     await expect(attributedClient.connect(attributedEnv.envId, signedInRelayAccess)).rejects.toThrow("Revoked");
     await flush();
@@ -3316,7 +3320,7 @@ describe("browser sync connection and client", () => {
           },
         });
       }
-    });
+    }, { relayReady: true });
     const ambiguousClient = new AdeSyncClient({ storage: ambiguousStorage, socketFactory: ambiguousScript.factory, document: null });
     await expect(ambiguousClient.connect(ambiguousEnv.envId, signedInRelayAccess)).rejects.toThrow("Wrong machine");
     expect(await ambiguousClient.listEnvironments()).toHaveLength(1);
@@ -4413,7 +4417,7 @@ describe("browser sync connection and client", () => {
           payload: { commandId, ok: true, result: { value: 1 } },
         });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4448,7 +4452,7 @@ describe("browser sync connection and client", () => {
           payload: { sessionId: "term-1", data: "older", startOffset: 0, endOffset: 5, atStart: true },
         });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4479,7 +4483,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: macHello });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     const records: SyncMacDesktopStreamRecordPayload[] = [];
     const ended: SyncMacDesktopStreamEndedPayload[] = [];
@@ -4528,7 +4532,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4561,7 +4565,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: macHello });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 
@@ -4576,7 +4580,7 @@ describe("browser sync connection and client", () => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
-    });
+    }, { relayReady: true });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     await client.connect(environment.envId, signedInRelayAccess);
 

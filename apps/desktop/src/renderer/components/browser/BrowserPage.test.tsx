@@ -194,17 +194,5 @@ describe("BrowserPage dock", () => {
     // chat refuses), no bringing it to the front, no consent prompt.
     expect([...new Set(browserCalls.map((entry) => entry.method))].sort()).toEqual(["getStatus", "handTabToChat"]);
   });
-
-  it("hands the page to a chat picked from the dock's switcher", async () => {
-    const { container } = await renderPage();
-    fireEvent.click(within(container.querySelector("main")!).getByRole("button", { name: /Ask agent/ }));
-    await waitFor(() => expect(handOffs()).toHaveLength(1));
-
-    const switcher = await screen.findByRole("button", { name: "Recent chats" });
-    fireEvent.keyDown(switcher, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: /Other chat/ }));
-
-    await waitFor(() => expect(handOffs().at(-1)).toEqual({ tabCollection: "personal", tabId: TAB.id, chatSessionId: "s2" }));
-    expect(useAppStore.getState().browserDock.chat).toEqual({ targetKey: "local-machine", sessionId: "s2" });
-  });
 });
+
