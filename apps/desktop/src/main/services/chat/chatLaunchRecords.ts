@@ -30,11 +30,62 @@ export type ChatLaunchRecord = {
   /** A checkout already ran once, so a retry must first clear its leftovers. */
   checkoutAttempted: boolean;
   /**
-   * The setup filled the disk and the host is making room (an ADE Cloud
-   * computer grows its disk, which restarts it). Revived still running, and
-   * its setup runs again (`makeRoomForEnvironment` in chatLaunchService.ts).
+   * The setup filled the disk and the host made room (an ADE Cloud computer
+   * grows its disk, which restarts it): resume this launch's setup after a
+   * restart. Written when the grow is asked for, kept while setup runs again
+   * (a grow may restart the computer more than once), and cleared once the
+   * environment stage settles, on Cancel and on Retry. `at` is when this
+   * grow's mark was written; `resumes` counts the restarts it resumed after.
    */
+  roomMark?: ChatLaunchRoomMark | null;
+  /** Written by beta.34 (one resume, then cleared): read once as a mark of its own. */
   awaitingRoom?: boolean;
+};
+
+export type ChatLaunchRoomMark = { at: string; resumes: number };
+
+/** A launch waiting for room is resumed after this many restarts at most; the next one reads as interrupted. */
+export const CHAT_LAUNCH_ROOM_MAX_RESUMES = 3;
+/** Nor once its mark is this old: a computer asleep for days doesn't rerun a stale setup when it wakes. */
+export const CHAT_LAUNCH_ROOM_MAX_AGE_MS = 60 * 60_000;
+
+/**
+ * The record's mark; null when none. An older ADE's `awaitingRoom` reads as a mark
+ * dated at the record's last update (not now), so a beta.34 record whose brain
+ * never booted again after the grow is held to the same age cap.
+ */
+function roomMarkOf(record: ChatLaunchRecord): ChatLaunchRoomMark | null {
+  const mark = record.roomMark;
+  if (mark && typeof mark.at === "string" && typeof mark.resumes === "number") return mark;
+  if (record.awaitingRoom === true) return { at: record.snapshot.updatedAt, resumes: 0 };
+  return null;
+}
+
+/**
+ * Whether a reloaded record goes on after a restart: `resume` while its setup
+ * waits for room within the bound, `cap` or `age` when the bound turns it
+ * into an interrupted launch, null when it has no mark (or isn't running).
+ */
+export function chatLaunchRoomVerdict(record: ChatLaunchRecord, nowMs: number): { kind: "resume" | "cap" | "age"; mark: ChatLaunchRoomMark; ageMs: number } | null {
+  if (record?.snapshot?.phase !== "running") return null;
+  const mark = roomMarkOf(record);
+  if (!mark) return null;
+  const at = Date.parse(mark.at);
+  const ageMs = Number.isFinite(at) ? nowMs - at : Number.POSITIVE_INFINITY;
+  if (!(ageMs >= 0 && ageMs < CHAT_LAUNCH_ROOM_MAX_AGE_MS)) return { kind: "age", mark, ageMs };
+  if (mark.resumes >= CHAT_LAUNCH_ROOM_MAX_RESUMES) return { kind: "cap", mark, ageMs };
+  return { kind: "resume", mark, ageMs };
+}
+
+const ROOM_REFUSED: Record<"cap" | "age", { stage: string; launch: string }> = {
+  cap: {
+    stage: `Interrupted: ADE restarted ${CHAT_LAUNCH_ROOM_MAX_RESUMES + 1} times while setup ran again after the disk grew.`,
+    launch: "Setup kept being interrupted by restarts after the disk grew. Retry to set up again.",
+  },
+  age: {
+    stage: "Interrupted: setup was waiting to run again after the disk grew, and the computer was off too long.",
+    launch: "Setup was waiting to run again after the disk grew, but too much time went by. Retry to set up again.",
+  },
 };
 
 /**
@@ -56,18 +107,20 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   if (!snapshot || typeof snapshot.launchId !== "string") return null;
   const owesMessages = snapshot.phase === "completed" && (snapshot.queuedMessages?.length ?? 0) > 0;
   if (isChatLaunchTerminal(snapshot.phase) && !owesMessages) return null;
-  const awaitingRoom = record.awaitingRoom === true && snapshot.phase === "running";
-  record.awaitingRoom = awaitingRoom;
-  if (!awaitingRoom && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")) {
+  const room = chatLaunchRoomVerdict(record, Date.parse(nowIso));
+  record.roomMark = room?.kind === "resume" ? room.mark : null;
+  delete record.awaitingRoom;
+  if (room?.kind !== "resume" && (snapshot.phase === "running" || snapshot.phase === "awaiting-client")) {
     // The process that ran it is gone. Say so instead of spinning forever.
+    const refused = room ? ROOM_REFUSED[room.kind] : null;
     const running = snapshot.stages.find((stage) => stage.status === "running");
     if (running) {
       running.status = "failed";
       running.endedAt = nowIso;
-      running.error = "Interrupted when ADE restarted.";
+      running.error = refused?.stage ?? "Interrupted when ADE restarted.";
     }
     snapshot.phase = "failed";
-    snapshot.error = "Setup was interrupted when ADE restarted.";
+    snapshot.error = refused?.launch ?? "Setup was interrupted when ADE restarted.";
     snapshot.updatedAt = nowIso;
   }
   snapshot.sequence += RELOAD_SEQUENCE_JUMP;
@@ -84,7 +137,7 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
 
 /**
  * Whether a launch in `launchesDir` waits for room on the disk (its setup
- * filled it, and the host grew it: `awaitingRoom`). A brain opens such a
+ * filled it, and the host grew it: `roomMark`). A brain opens such a
  * project at start, so the launch goes on after the restart with nobody
  * watching. A read of a few small files, once per brain start.
  */
@@ -98,8 +151,9 @@ export function hasChatLaunchAwaitingRoom(launchesDir: string): boolean {
   for (const entry of entries) {
     if (!entry.endsWith(".json")) continue;
     try {
-      const record = JSON.parse(fs.readFileSync(path.join(launchesDir, entry), "utf8")) as Partial<ChatLaunchRecord>;
-      if (record.awaitingRoom === true && record.snapshot?.phase === "running") return true;
+      const record = JSON.parse(fs.readFileSync(path.join(launchesDir, entry), "utf8")) as ChatLaunchRecord;
+      // Past its bound too: opening the project is what reads it as interrupted.
+      if (chatLaunchRoomVerdict(record, Date.now())) return true;
     } catch {
       // Unreadable: the service's own load says so.
     }
@@ -148,7 +202,17 @@ export function createChatLaunchRecordStore(args: { launchesDir: string; logger:
       if (!entry.endsWith(".json")) continue;
       const file = path.join(launchesDir, entry);
       try {
-        const record = reviveChatLaunchRecord(JSON.parse(fs.readFileSync(file, "utf8")) as ChatLaunchRecord, nowIso);
+        const raw = JSON.parse(fs.readFileSync(file, "utf8")) as ChatLaunchRecord;
+        const room = chatLaunchRoomVerdict(raw, Date.parse(nowIso));
+        if (room && room.kind !== "resume") {
+          logger.warn("chat_launch.environment_resume_refused", {
+            launchId: raw.snapshot.launchId,
+            reason: room.kind,
+            resumes: room.mark.resumes,
+            ageMs: Number.isFinite(room.ageMs) ? Math.round(room.ageMs) : null,
+          });
+        }
+        const record = reviveChatLaunchRecord(raw, nowIso);
         if (!record) {
           fs.rmSync(file, { force: true });
           continue;

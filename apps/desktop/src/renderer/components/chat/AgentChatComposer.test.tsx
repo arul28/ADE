@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within, type RenderResult } from "@testing-library/react";
 import { useState, type ComponentProps, type ReactNode } from "react";
 import type {
@@ -110,6 +110,14 @@ vi.mock("@lobehub/icons", () => {
     DeepSeek: brand(),
     Meta: brand(),
   };
+});
+
+// The Linear issue picker loads its detail pane (and its "Attach issue"
+// button) with React.lazy. The first dynamic import of that module transforms
+// it, which took 0.9-1.5 s on a loaded machine: longer than a `findBy` waits.
+// Load it once here, so a test waits only for the render it checks.
+beforeAll(async () => {
+  await import("../app/LinearIssueDetailPane");
 });
 
 beforeEach(() => {

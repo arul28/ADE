@@ -11962,6 +11962,9 @@ export function formatChatLaunch(value: unknown): string {
   const machine = wrapper && isRecord(wrapper.machine) ? wrapper.machine : null;
   // A lane launch (`ade lanes create --machine cloud`) starts no chat.
   const noun = snapshot.kind === "lane" ? "lane" : "chat";
+  // What the running stage says now ("…running again after the disk grew (restart 2)").
+  const live = (Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : []).find((stage) => stage.status === "running");
+  const liveDetail = live ? asString(live.detail) : null;
   return renderKeyValues(`ADE ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
     // A lane on ADE Cloud: the computer made for it.
@@ -11973,6 +11976,7 @@ export function formatChatLaunch(value: unknown): string {
     ["model", snapshot.modelId],
     ["template", snapshot.templateName],
     ["stages", formatChatLaunchStages(snapshot)],
+    ["now", liveDetail ? `${asString(live!.id) ?? "?"}: ${liveDetail}` : null],
     ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
     ["error", snapshot.error],
     ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
@@ -31644,7 +31648,7 @@ async function runServe(
   });
 
   // A lane launch's setup that filled the disk waits through the grow's
-  // restart (`awaitingRoom`): its project opens now, so the launch goes on
+  // restart (`roomMark`): its project opens now, so the launch goes on
   // (and reads as busy, so the computer stays awake) with nobody watching.
   if (!embedded && cloudInstanceId) {
     void (async () => {
