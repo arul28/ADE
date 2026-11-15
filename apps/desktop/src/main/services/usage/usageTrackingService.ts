@@ -173,6 +173,7 @@ import {
   type AccountUsageContribution,
 } from "./accountUsageRollup";
 import { createPeerLiveQuota, type AccountLiveQuotaFetcher } from "./peerLiveQuota";
+import type { AccountResetCreditSpender } from "./accountUsageLiveRefresh";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
 import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 import { buildCostBreakdown } from "./usageCostBreakdown";
@@ -281,6 +282,11 @@ const COST_REFRESH_RETRY_MAX_MS = 15 * 60_000;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
 const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
+/**
+ * A spend sent to the machine that holds the credit: the claim (up to 25 s for
+ * Claude) plus that machine's quota re-read (up to 20 s), with room for the hop.
+ */
+const PEER_RESET_CREDIT_TIMEOUT_MS = 60_000;
 /**
  * Schema *and computation* version of the persisted usage snapshot.
  *
@@ -857,14 +863,29 @@ function scopedConfigHome(
  * background poll that refuses the Keychain can never see it. The read is
  * cached per account, so the Keychain is opened once per process, then the
  * cache serves every later poll.
+ *
+ * The cache holds a token for about eight hours. Without another Keychain
+ * read, the default account's background polls then stop, and its meters
+ * freeze until the user refreshes. So once a poll in this process has read
+ * the default login from the Keychain (`defaultKeychainRead`), background
+ * polls may read it again: the user has already allowed that lookup.
  */
 export function claudePollAllowsKeychain(
   reason: UsageProviderPollContext["reason"],
   configHome: string | undefined,
+  defaultKeychainRead = defaultClaudeKeychainRead,
 ): boolean {
   if (configHome?.trim()) return true;
-  return reason === "user";
+  return reason === "user" || defaultKeychainRead;
 }
+
+/**
+ * True after a poll in this process opened the Keychain for the default
+ * Claude account and found its login there. False again after a read that
+ * the Keychain refused. Process-local: a new brain waits for the next user
+ * poll before it reads that Keychain item in the background.
+ */
+let defaultClaudeKeychainRead = false;
 
 /**
  * Per-account rate-limit memory for multi-account providers.
@@ -1291,8 +1312,9 @@ async function pollQuotaInstances(
  *
  * The next background poll reads the refreshed login: a scoped account's own
  * Keychain item, or the credentials file the CLI rewrites off macOS. The base
- * account on macOS is left out: its background poll skips the Keychain, so a
- * refresh there would respawn the CLI on every allowance without being read.
+ * account on macOS is left out until a poll has read its Keychain item: before
+ * that its background poll skips the Keychain, so a refresh there would
+ * respawn the CLI on every allowance without being read.
  */
 async function refreshClaudeLoginInBackground(
   logger: Logger,
@@ -1302,7 +1324,7 @@ async function refreshClaudeLoginInBackground(
   configHome: string | undefined,
 ): Promise<FreshUsageProviderPollResult | null> {
   if (context.reason === "user") return null;
-  if (configHome === undefined && process.platform === "darwin") return null;
+  if (configHome === undefined && process.platform === "darwin" && !defaultClaudeKeychainRead) return null;
   if (!claimClaudeBackgroundRefresh(accountId)) return null;
   const refreshed = await measureUsagePhase(
     logger,
@@ -1385,6 +1407,14 @@ async function pollClaudeInstance(
       ...(configHome ? { configHome } : {}),
     }),
   );
+  if (!configHome && allowKeychain) {
+    // Only a login that came out of the Keychain counts. A file login, or a
+    // file found after the Keychain timed out or the prompt was cancelled,
+    // says nothing about whether a background read would prompt.
+    const source = login.state === "ok" ? login.credentials.source : login.state === "expired" ? login.source : undefined;
+    if (source === "macos-keychain") defaultClaudeKeychainRead = true;
+    else if (login.state === "unreadable") defaultClaudeKeychainRead = false;
+  }
   // On macOS the login lives in the Keychain. A read that skipped it saw only
   // the credentials file, so its miss says nothing about the account.
   if (login.state !== "unreadable" && (allowKeychain || process.platform !== "darwin" || login.state === "ok")) {
@@ -1964,7 +1994,8 @@ const CODEX_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
 const CODEX_RESET_CREDIT_CONSUME_TIMEOUT_MS = 20_000;
 
 type CodexResetCreditCacheEntry = {
-  credits: CodexResetCredits;
+  /** Null until a read succeeds: a failed first read is not a count of zero. */
+  credits: CodexResetCredits | null;
   readAt: number;
 };
 
@@ -2036,7 +2067,7 @@ async function probeCodexResetCredits(args: {
       // spawn a process on every snapshot. The previous reading is kept when
       // there was one; only the clock moves.
       codexResetCreditCache.set(key, {
-        credits: cached?.credits ?? { availableCount: 0 },
+        credits: cached?.credits ?? null,
         readAt: Date.now(),
       });
     } finally {
@@ -2168,7 +2199,8 @@ const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
 const CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
 
 type ClaudeResetCreditCacheEntry = {
-  credits: ClaudeResetCredits;
+  /** Null until a read succeeds: a failed first read is not a count of zero. */
+  credits: ClaudeResetCredits | null;
   readAt: number;
 };
 
@@ -2233,7 +2265,7 @@ async function probeClaudeResetCredits(args: {
       claudeResetCreditCache.set(key, {
         credits: read.status === "ok"
           ? read.credits ?? { availableCount: 0 }
-          : cached?.credits ?? { availableCount: 0 },
+          : cached?.credits ?? null,
         readAt: Date.now(),
       });
     } catch (error) {
@@ -2244,7 +2276,7 @@ async function probeClaudeResetCredits(args: {
       // re-send on every snapshot. The previous reading is kept when there was
       // one; only the clock moves.
       claudeResetCreditCache.set(key, {
-        credits: cached?.credits ?? { availableCount: 0 },
+        credits: cached?.credits ?? null,
         readAt: Date.now(),
       });
     } finally {
@@ -4739,6 +4771,12 @@ export function createUsageTrackingService({
     fetchAccountRollups = fetcher;
   }
 
+  /** How a reset banked on another machine is spent there; null until the brain installs it. */
+  let spendPeerResetCredit: AccountResetCreditSpender | null = null;
+  function setAccountResetCreditSpender(spender: AccountResetCreditSpender | null): void {
+    spendPeerResetCredit = spender;
+  }
+
   /**
    * Store what a fan-out over the account's machines returned.
    *
@@ -6078,6 +6116,7 @@ export function createUsageTrackingService({
       return quotaForDisplay(await poll(options));
     },
     setAccountLiveQuotaFetcher: peerQuota.setFetcher,
+    setAccountResetCreditSpender,
     getOwnLiveQuota,
   };
 
@@ -6145,6 +6184,53 @@ export function createUsageTrackingService({
     // caller sent — a missing one must answer like every other bad account id
     // rather than throwing a TypeError out of the RPC.
     const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
+    // A login whose banked resets only another machine can read: that machine
+    // holds the working login, so the claim has to run there.
+    const shown = accountId
+      ? quotaForDisplay(lastSnapshot).accounts?.find((account) => account.id === accountId)
+      : undefined;
+    const lentFrom = shown?.resetCreditsOn;
+    if (lentFrom) return await consumePeerResetCredit(accountId, lentFrom, shown?.email?.trim() ?? "");
+    return await consumeOwnResetCredit({ accountId });
+  }
+
+  /**
+   * Spend a reset that a peer holds, on that peer, then read its quota again
+   * so the lent count and the windows catch up.
+   */
+  async function consumePeerResetCredit(
+    accountId: string,
+    lentFrom: NonNullable<UsageAccount["resetCreditsOn"]>,
+    email: string,
+  ): Promise<UsageResetCreditResult> {
+    const provider = resetCreditProviderForAccountId(accountId) ?? undefined;
+    const result = spendPeerResetCredit
+      ? await spendPeerResetCredit({ ...lentFrom, email, timeoutMs: PEER_RESET_CREDIT_TIMEOUT_MS })
+      : {
+        ok: false,
+        status: "failure" as const,
+        message: `This reset is banked on ${lentFrom.label}, and ADE here cannot reach it. Spend it there.`,
+      };
+    if (result.status === "failure") {
+      logger.warn("usage.peer_reset_credit_failed", { provider, error: result.message ?? null });
+    }
+    // Wait for the peer's new count, so the row stops offering the credit
+    // that was just spent before a second click can claim another one. The
+    // old count goes first: a read that fails must not bring it back.
+    if (result.status !== "failure") peerQuota.forgetResetCredits(lentFrom.machineKey, lentFrom.accountId);
+    await peerQuota.refreshNow();
+    captureResetCreditOutcome(result, provider);
+    return result;
+  }
+
+  /**
+   * Spend one of this machine's own banked resets. A peer that sends the spend
+   * here calls this directly, so a claim never travels on to a third machine.
+   */
+  async function consumeOwnResetCredit(
+    args: { accountId: string; email?: string },
+  ): Promise<UsageResetCreditResult> {
+    const accountId = typeof args?.accountId === "string" ? args.accountId.trim() : "";
     if (!accountId) {
       const failure: UsageResetCreditResult = {
         ok: false,
@@ -6172,6 +6258,20 @@ export function createUsageTrackingService({
         message: "That account is not signed in on this computer.",
       };
       captureResetCreditOutcome(failure, provider ?? undefined);
+      return failure;
+    }
+    // A peer names the login its row showed. The same id can hold another
+    // login now (a new sign-in in the account's folder), and that login's
+    // reset is not the one the user asked to spend.
+    const expectedEmail = typeof args?.email === "string" ? args.email.trim().toLowerCase() : "";
+    const heldEmail = lastSnapshot?.accounts?.find((account) => account.id === accountId)?.email?.trim().toLowerCase() ?? "";
+    if (expectedEmail && heldEmail !== expectedEmail) {
+      const failure: UsageResetCreditResult = {
+        ok: false,
+        status: "failure",
+        message: "That login is no longer signed in on this computer. Nothing was spent.",
+      };
+      captureResetCreditOutcome(failure, provider);
       return failure;
     }
     const configHome = scopedConfigHome(provider, instance);
@@ -6679,6 +6779,7 @@ export function createUsageTrackingService({
       ...accountQuotaReads,
       noteQuotaDemand,
       consumeResetCredit,
+      consumeOwnResetCredit,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
       getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
@@ -6723,6 +6824,7 @@ export function createUsageTrackingService({
     ...accountQuotaReads,
     noteQuotaDemand,
     consumeResetCredit,
+    consumeOwnResetCredit,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
     getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),

@@ -183,6 +183,17 @@ export async function resolveDeviceDisplayNameSettled(): Promise<string> {
   return cachedDeviceDisplayName ?? immediate;
 }
 
+/**
+ * The name this computer has in ADE: the name of its sync device record
+ * (`ensureLocalDevice`, the macOS ComputerName, else the hostname), without
+ * `.local`. Null only when there is no name at all. Never throws.
+ */
+export async function thisMachineDisplayName(): Promise<string | null> {
+  const strip = (value: string) => value.replace(/\.local$/iu, "").trim();
+  const name = strip(await resolveDeviceDisplayNameSettled().catch(() => ""));
+  return name || strip(os.hostname()) || null;
+}
+
 function readJsonArray(raw: string | null | undefined): string[] {
   return safeJsonParse<string[]>(raw, []).filter((value) => typeof value === "string" && value.trim().length > 0);
 }

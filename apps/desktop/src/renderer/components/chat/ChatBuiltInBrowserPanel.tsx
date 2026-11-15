@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent, type PointerEvent, type ReactNode } from "react";
+import { BrowserPasswordsButton } from "./browser/BrowserPasswordsButton";
 import {
   Check,
   WarningCircle,
 } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useReducedMotion } from "motion/react";
-import { machineNameForBinding } from "../../../shared/machineIdentity";
+import { machineLabelForBinding } from "../../state/adeCloudLaneIndex";
 import type { AgentChatFileRef, BrowserLinkOpenMode, OpenProjectBinding } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type {
@@ -378,8 +379,8 @@ export function ChatBuiltInBrowserPanel({
   // Screenshots go to the surrounding chat's attachment store: a personal
   // chat's own, not the active project's.
   const agentChatApi = useAgentChatApi();
-  // A personal chat's adapter is bound to its machine; see `chatApiPin`.
-  const personalPane = useChatPaneScope()?.kind === "personal";
+  // A personal or shared chat's adapter is bound to its machine; see `chatApiPin`.
+  const boundPane = useChatPaneScope() != null;
   // Also rendered from the Work sidebar and the personal-chats page, so the
   // scope is derived from the pin this panel is handed.
   const chatScope = useChatRuntimeScopeForPin(runtimePin, null);
@@ -653,7 +654,8 @@ export function ChatBuiltInBrowserPanel({
     if (!pin) return { ok: true, tunnel: null, reason: null };
     const parsed = parseLoopbackUrl(url);
     if (!parsed) return { ok: true, tunnel: null, reason: null };
-    const machineLabel = machineNameForBinding(pin);
+    // Read when the navigation runs, so it is the lane index as it is now.
+    const machineLabel = machineLabelForBinding(pin);
     const approved = await ensureTunnelApproval(parsed.port, machineLabel, options);
     if (!approved) {
       return {
@@ -944,7 +946,7 @@ export function ChatBuiltInBrowserPanel({
         const saved = await agentChatApi.saveTempAttachment({
           data: stripDataUrlPrefix(screenshotDataUrl),
           filename: item.kind === "built_in_browser_capture" ? "built-in-browser-capture.png" : "built-in-browser-selection.png",
-        }, requireChatPin(chatApiPin(runtimePin, personalPane)));
+        }, requireChatPin(chatApiPin(runtimePin, boundPane)));
         attachmentPath = saved.path;
         onAddAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
       } catch (error) {
@@ -1673,7 +1675,7 @@ export function ChatBuiltInBrowserPanel({
       const saved = await agentChatApi.saveTempAttachment({
         data: stripDataUrlPrefix(crop.dataUrl),
         filename: "built-in-browser-capture.png",
-      }, requireChatPin(chatApiPin(runtimePin, personalPane)));
+      }, requireChatPin(chatApiPin(runtimePin, boundPane)));
       attachmentPath = saved.path;
       onAddAttachment({ path: saved.path, type: inferAttachmentType(saved.path, "image/png") });
     }
@@ -3175,6 +3177,7 @@ export function ChatBuiltInBrowserPanel({
           previewControls={hostToolbarEnd
             ? toolbarEnd
             : <WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
+          passwords={<BrowserPasswordsButton tabId={hasTab ? activeTabId : null} currentUrl={currentUrl} />}
         />
 
         <BrowserFindBar

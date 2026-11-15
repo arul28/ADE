@@ -634,7 +634,22 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     // adapter's single connection.
     getStatus: async (args?: unknown, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.getStatus", pin, infra);
-      return await call("ai.getStatus", args, aiStatus());
+      // The host reads only these two flags. `undefined`, `{}` and the
+      // all-false form are one request, so the readers that start together
+      // (the AI cache, Cloud agents, the model options) share one answer of
+      // ~47 KB instead of each sending its own. A plain read keeps its answer
+      // for a few seconds; a forced read always asks the host.
+      const record = asRecord(args);
+      const force = record.force === true;
+      const refreshOpenCodeInventory = record.refreshOpenCodeInventory === true;
+      return await commands.call(
+        "ai.getStatus",
+        {
+          ...(force ? { force: true } : {}),
+          ...(refreshOpenCodeInventory ? { refreshOpenCodeInventory: true } : {}),
+        },
+        { fallback: aiStatus(), ...(force || refreshOpenCodeInventory ? {} : { cacheTtlMs: AI_STATUS_SHARED_READ_MS }) },
+      );
     },
     // The connected brain answers; offline, or on any failure, `null` means
     // the caller's own logic decides, exactly as on desktop.
@@ -1370,23 +1385,18 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
 
-const PROJECT_SECRETS_DESKTOP_ONLY = "Project secrets can only be changed in the ADE desktop app on that machine.";
+const PROJECT_SECRETS_DESKTOP_ONLY = "Secrets can only be changed in the ADE desktop app (Settings › Passwords & Secrets).";
 
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   return {
-    list: async () => ({ secrets: [] }),
-    get: async () => ({ value: null }),
-    // Secret values stay on their machine. Saving one here used to resolve as
-    // if it worked while nothing was stored, so a chat asking for a secret
-    // waited forever; every caller shows this message instead.
+    list: async () => ({ secrets: [], storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" as const } }),
+    // Saving one here used to resolve as if it worked while nothing was
+    // stored, so a chat asking for a secret waited forever; every caller
+    // shows this message instead.
     set: async () => {
       throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
     },
-    delete: async () => {
-      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
-    },
-    pullFromAccount: async () => ({ state: "unavailable" as const }),
-  } as unknown as AdeNamespace<"projectSecrets">;
+  };
 }
 
 function createTranscriptionNamespace(): AdeNamespace<"transcription"> {
@@ -1452,7 +1462,7 @@ function createLoginImportUnavailableStub(): Record<string, unknown> {
  * way they read the desktop's — `supported: false` is the flag they check, not
  * a licence to omit the rest of the record.
  */
-export function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
+function unsupportedBuiltInBrowserStatus(): BuiltInBrowserStatus & {
   supported: false;
   available: false;
   state: "unsupported";
@@ -1655,6 +1665,9 @@ function onboardingStatus(): Record<string, unknown> {
     steps: [],
   };
 }
+
+/** How long readers share one plain `ai.getStatus` answer. A forced read never waits on it. */
+const AI_STATUS_SHARED_READ_MS = 5_000;
 
 function aiStatus(): Record<string, unknown> {
   return {

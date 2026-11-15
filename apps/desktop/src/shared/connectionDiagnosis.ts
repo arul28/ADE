@@ -336,23 +336,38 @@ function listenerCheck(health: SyncRouteHealth["listener"]): HostReachabilityChe
     };
   }
   if (!health.loopbackAdeValidated) {
+    // Wi-Fi and the relay do not go through this computer's loopback address,
+    // and ADE repairs the local route by itself; only Tailscale waits.
+    if (health.port != null && health.shadowedBy) {
+      return {
+        id: "listener",
+        label: "ADE",
+        state: "warning",
+        detail: `Another program (${health.shadowedBy}) is using port ${health.port} on this computer. ADE is working around it; Wi-Fi and relay connections keep working.`,
+        fix: "Nothing to do unless this stays. If it does, quit that program or restart ADE.",
+      };
+    }
+    // No holder was found: the check may simply not have been answered in
+    // time (a busy computer), so do not claim another program has the port.
     return {
       id: "listener",
       label: "ADE",
-      state: "failed",
+      state: "warning",
       detail: health.port != null
-        ? `Something other than ADE answered on port ${health.port}.`
-        : "ADE could not confirm its own connection port.",
-      fix: "Quit the program using that port, or restart ADE so it picks another.",
+        ? `ADE could not confirm its connection on port ${health.port}. It keeps checking and repairs this by itself; Wi-Fi and relay connections keep working.`
+        : "ADE could not confirm its connection port. It keeps checking and repairs this by itself.",
+      fix: "Nothing to do unless this stays. If it does, restart ADE.",
     };
   }
   return {
     id: "listener",
     label: "ADE",
     state: "ok",
-    detail: health.port != null
-      ? `Accepting connections on port ${health.port}.`
-      : "Accepting connections.",
+    detail: health.port == null
+      ? "Accepting connections."
+      : health.shadowedBy
+        ? `Accepting connections on port ${health.port}. Another program (${health.shadowedBy}) is using that port on this computer only; ADE routed around it.`
+        : `Accepting connections on port ${health.port}.`,
   };
 }
 

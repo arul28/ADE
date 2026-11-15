@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import { createSign, generateKeyPairSync } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
@@ -194,9 +195,11 @@ describe("staleAdeTailnetServePorts", () => {
     const json = serveStatus({
       "8787": "127.0.0.1:8787",
       "8788": "127.0.0.1:8788",
+      // A side door a crashed brain pointed Tailscale at, a few ports above.
+      "8789": "127.0.0.1:8791",
       "8852": "127.0.0.1:8852",
     });
-    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788]);
+    expect(staleAdeTailnetServePorts(json, 8852)).toEqual([8787, 8788, 8789]);
   });
 
   it("leaves a hand-rolled serve in the same range alone", () => {
@@ -1338,7 +1341,16 @@ describe("brain project actions fallback handler", () => {
       transcriptPath: vi.fn(async () => transcriptPath),
       isTurnActive: vi.fn(async () => true),
     };
+    // A routed command that carries `tag` records when it starts and waits for its gate.
+    const routedStarted: string[] = [];
+    const routedGates = new Map<string, Promise<void>>();
     const executeRoutedCommand = vi.fn(async (payload: SyncCommandPayload & { projectId: string }) => {
+      const tag = typeof payload.args.tag === "string" ? payload.args.tag : null;
+      if (tag) {
+        routedStarted.push(tag);
+        await routedGates.get(tag);
+        return { tag };
+      }
       if (payload.action === "chat.fail") {
         throw Object.assign(new Error("coded route failure"), { code: "coded_failure" });
       }
@@ -1370,7 +1382,7 @@ describe("brain project actions fallback handler", () => {
           { action: "chat.local", scope: "project", policy: { viewerAllowed: true, localOnly: true } },
         ] satisfies SyncRemoteCommandDescriptor[],
         getDescriptor: async (_projectId: string, action: string) =>
-          ["chat.send", "chat.fail"].includes(action)
+          ["chat.send", "chat.fail", "lanes.list"].includes(action)
             ? { action, scope: "project", policy: { viewerAllowed: true } }
             : null,
         execute: executeRoutedCommand,
@@ -1488,6 +1500,34 @@ describe("brain project actions fallback handler", () => {
       const codedError = await waitForEnvelope(envelopes, "command_result", "route-coded-error");
       expect(codedError.payload).toMatchObject({ error: { code: "coded_failure" } });
       expect(executeRoutedCommand).toHaveBeenCalledTimes(2);
+
+      // Routed reads run a few at a time behind the last write: a read sent
+      // after a write waits for it, and two reads do not wait for each other.
+      let releaseWrite!: () => void;
+      let releaseFirstRead!: () => void;
+      routedGates.set("write", new Promise<void>((resolve) => { releaseWrite = resolve; }));
+      routedGates.set("read-1", new Promise<void>((resolve) => { releaseFirstRead = resolve; }));
+      routeCommand("order-write", { commandId: "order-write", projectId: "project-1", action: "chat.send", args: { tag: "write" } });
+      routeCommand("order-read-1", { commandId: "order-read-1", projectId: "project-1", action: "lanes.list", args: { tag: "read-1" } });
+      routeCommand("order-read-2", { commandId: "order-read-2", projectId: "project-1", action: "lanes.list", args: { tag: "read-2" } });
+      client.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "order-probe",
+        payload: { commandId: "order-probe", action: "personalChats.list", args: {} },
+      }));
+      // The socket handles envelopes in order: the probe's answer means both reads were received.
+      await waitForEnvelope(envelopes, "command_result", "order-probe");
+      expect(routedStarted).toEqual(["write"]);
+      releaseWrite();
+      await expect(waitForEnvelope(envelopes, "command_result", "order-write"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { tag: "write" } } });
+      await waitForValue(() => routedStarted.includes("read-2") || undefined, "second routed read while the first runs");
+      expect(routedStarted).toEqual(["write", "read-1", "read-2"]);
+      await expect(waitForEnvelope(envelopes, "command_result", "order-read-2"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { tag: "read-2" } } });
+      releaseFirstRead();
+      await expect(waitForEnvelope(envelopes, "command_result", "order-read-1"))
+        .resolves.toMatchObject({ payload: { ok: true, result: { tag: "read-1" } } });
 
       client.send(encodeSyncEnvelope({
         type: "command",
@@ -4883,6 +4923,8 @@ describe("sync host account authentication", () => {
         "git.getFile",
         "git.listCommitFiles",
         "git.getCommitMessage",
+        "chat.getImageDataUrl",
+        "chat.getTurnFileDiff",
         "work.deleteSession",
       ];
       const chatState = {
@@ -4946,6 +4988,8 @@ describe("sync host account authentication", () => {
         ...(options.executeFileRequest ? { remoteCommandExecutor: { executeFileRequest: options.executeFileRequest } as never } : {}),
         onLaneShareEvent: laneShareEvents,
         agentChatService,
+        // Each lane's worktree, where ADE puts one: `<project>/.ade/worktrees/<lane>`.
+        laneService: { ...baseArgs.laneService, getLaneBaseAndBranch: (laneId: string) => ({ worktreePath: path.join(projectRoot, ".ade", "worktrees", laneId) }) },
         sessionService: {
           list: () => [],
           get: (id: string) => (laneBySession[id]
@@ -4989,6 +5033,7 @@ describe("sync host account authentication", () => {
       return {
         host,
         port,
+        projectRoot,
         proof: listener.getRelayBridgeProof(),
         execute,
         effects,
@@ -6409,10 +6454,12 @@ describe("sync host account authentication", () => {
             modelHandoffHistory: [{ fromModelId: "claude-sonnet", toModelId: "claude-opus" }],
             title: "claude-opus stays in free text",
           })) as never);
-          expect(await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
-            ok: true,
-            result: { modelId: null, presetId: null, modelHandoffHistory: null, title: "claude-opus stays in free text" },
-          });
+          // A summary reaches a guest only through its allow-list: the model is
+          // hidden, and preset and handoff history are not sent at all.
+          const summary = await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" });
+          expect(summary).toMatchObject({ ok: true, result: { modelId: null, title: "claude-opus stays in free text" } });
+          expect(summary.result).not.toHaveProperty("presetId");
+          expect(summary.result).not.toHaveProperty("modelHandoffHistory");
         } finally {
           await env.close([guest?.client ?? null]);
         }
@@ -6447,11 +6494,15 @@ describe("sync host account authentication", () => {
           env.execute.mockImplementationOnce((async () => ({
             sessionId: "session-shared",
             crossMachineHandoff: { targetMachineName: "Studio Mac", targetMachineKey: "machine-studio" },
+            transcriptPath: "/Users/owner/.ade/transcripts/session-shared.jsonl",
+            providerResumeSessionId: "provider-session-1",
           })) as never);
-          expect(await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" })).toMatchObject({
-            ok: true,
-            result: { sessionId: "session-shared", crossMachineHandoff: { targetMachineName: null, targetMachineKey: null } },
-          });
+          // Fields outside the guest allow-list (machine handoff, disk paths, provider ids) are not sent.
+          const summary = await runCommand(guest.client, "summary", "chat.getSummary", { sessionId: "session-shared" });
+          expect(summary).toMatchObject({ ok: true, result: { sessionId: "session-shared" } });
+          expect(summary.result).not.toHaveProperty("crossMachineHandoff");
+          expect(summary.result).not.toHaveProperty("transcriptPath");
+          expect(summary.result).not.toHaveProperty("providerResumeSessionId");
         } finally {
           await env.close([guest?.client ?? null]);
         }
@@ -6731,6 +6782,103 @@ describe("sync host account authentication", () => {
                 : [{ laneId: sharedLane, path: "src/a.ts", mode: "unstaged", refuseIgnored: true }]);
           }
         } finally {
+          await env.close([guest?.client ?? null]);
+        }
+      });
+
+      // The real chat pane reads a chat's images and its turns' diffs. The
+      // host resolves every path itself: an image in the granted lane's
+      // worktree (not `.ade/`, not `.git`; with the file right, any it does
+      // not ignore; else only one the chat named, never by a guest's own
+      // message) or a staged attachment the chat named; a turn diff only of
+      // a change this chat's own turn reported, read in the lane's worktree.
+      const shaBefore = "b".repeat(40);
+      const shaAfter = "c".repeat(40);
+      it.each<[string, string, string, (files: { attachment: string; adeFile: string; worktreeAde: string; otherLane: string }) => Record<string, unknown>, boolean, { diffRight?: boolean; fileRight?: boolean; namedBeforeShare?: boolean }?]>([
+        ["a staged attachment this chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.attachment }), true],
+        ["a staged attachment this chat does not name", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.attachment.replace("named", "unnamed") }), false],
+        ["a staged attachment named only before the share", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.attachment }), false, { namedBeforeShare: true }],
+        ["another file under .ade that the chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.adeFile }), false],
+        ["a file under the lane worktree's own .ade that the chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.worktreeAde }), false],
+        ["an image in another lane's worktree that the chat names", "chat.getImageDataUrl", "session-shared", (f) => ({ path: f.otherLane }), false],
+        ["a path that climbs out of the lane's worktree", "chat.getImageDataUrl", "session-shared", () => ({ path: "../lane-private/shot.png" }), false],
+        ["an image in the lane's worktree that git does not ignore", "chat.getImageDataUrl", "session-shared", () => ({ path: "shots/plain.png" }), true, { fileRight: true }],
+        ["an unnamed worktree image without the file right", "chat.getImageDataUrl", "session-shared", () => ({ path: "shots/plain.png" }), false],
+        ["an ignored image only a guest's own message names", "chat.getImageDataUrl", "session-shared", () => ({ path: "ignored/guest.png" }), false, { fileRight: true }],
+        ["an ignored image in the lane's worktree the chat does not name", "chat.getImageDataUrl", "session-shared", () => ({ path: "ignored/hidden.png" }), false],
+        ["an image of a chat in another lane", "chat.getImageDataUrl", "session-private", (f) => ({ path: f.attachment }), false],
+        ["a turn diff this chat reported", "chat.getTurnFileDiff", "session-shared", () => ({ beforeSha: shaBefore, afterSha: shaAfter, filePath: "src/a.ts" }), true],
+        ["a turn diff without the diff right", "chat.getTurnFileDiff", "session-shared", () => ({ beforeSha: shaBefore, afterSha: shaAfter, filePath: "src/a.ts" }), false, { diffRight: false }],
+        ["a turn diff of commits this chat never reported", "chat.getTurnFileDiff", "session-shared", () => ({ beforeSha: "d".repeat(40), afterSha: shaAfter, filePath: "src/a.ts" }), false],
+        ["a turn diff of a file this turn did not list", "chat.getTurnFileDiff", "session-shared", () => ({ beforeSha: shaBefore, afterSha: shaAfter, filePath: "src/b.ts" }), false],
+        ["a turn diff of a file under .ade", "chat.getTurnFileDiff", "session-shared", () => ({ beforeSha: shaBefore, afterSha: shaAfter, filePath: ".ade/secrets.json" }), false],
+        ["a turn diff of a chat in another lane", "chat.getTurnFileDiff", "session-private", () => ({ beforeSha: shaBefore, afterSha: shaAfter, filePath: "src/a.ts" }), false],
+      ])("chat pane reads: %s", async (_label, action, sessionId, argsFor, allowed, options = {}) => {
+        const rights = laneSharePresetRights("watch");
+        rights.tools.diff = options.diffRight ?? true;
+        rights.tools.file = options.fileRight ?? false;
+        // The host asks the real git whether a worktree file is ignored.
+        const { spawn: realSpawn } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+        spawnMock.mockImplementation(realSpawn as never);
+        const directory = fakeDirectory(grantsBody([grant()]));
+        const env = await startGuestHost(directory, { rights });
+        let guest: Awaited<ReturnType<typeof connectGuest>> | null = null;
+        try {
+          const write = (relPath: string) => {
+            const file = path.join(env.projectRoot, relPath);
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, "png");
+            return file;
+          };
+          const worktree = path.join(env.projectRoot, ".ade", "worktrees", sharedLane);
+          fs.mkdirSync(worktree, { recursive: true });
+          execFileSync("git", ["init", "-q"], { cwd: worktree });
+          fs.writeFileSync(path.join(worktree, ".gitignore"), "ignored/\n");
+          write(path.join(".ade", "worktrees", sharedLane, "shots", "plain.png"));
+          write(path.join(".ade", "worktrees", sharedLane, "ignored", "hidden.png"));
+          write(path.join(".ade", "worktrees", sharedLane, "ignored", "guest.png"));
+          const files = {
+            attachment: write(path.join(".ade", "attachments", "named.png")),
+            adeFile: write(path.join(".ade", "ade.db")),
+            worktreeAde: write(path.join(".ade", "worktrees", sharedLane, ".ade", "cache.png")),
+            otherLane: write(path.join(".ade", "worktrees", privateLane, "shot.png")),
+          };
+          write(path.join(".ade", "attachments", "unnamed.png"));
+          const at = new Date(Date.now() - (options.namedBeforeShare ? 2 * sharedAgo : 60_000)).toISOString();
+          // What this chat's transcript names: an attachment, `.ade` files, another lane's file, one turn's diff.
+          (env.agentChatService.getChatEventHistory as ReturnType<typeof vi.fn>).mockResolvedValue({
+            truncated: false,
+            events: [
+              { sessionId: "session-shared", timestamp: at, event: { type: "user_message", text: "look", attachments: [{ type: "image", path: files.attachment }] } },
+              // A guest's message may name any path; it never vouches for one.
+              { sessionId: "session-shared", timestamp: at, event: { type: "user_message", text: "ignored/guest.png", metadata: { author: { kind: "guest", userId: "guest-1", name: null } } } },
+              { sessionId: "session-shared", timestamp: at, event: { type: "codex_image_view", path: files.adeFile } },
+              { sessionId: "session-shared", timestamp: at, event: { type: "codex_image_view", path: files.worktreeAde } },
+              { sessionId: "session-shared", timestamp: at, event: { type: "codex_image_view", path: files.otherLane } },
+              {
+                sessionId: "session-shared",
+                timestamp: at,
+                event: { type: "turn_diff_summary", turnId: "t1", beforeSha: shaBefore, afterSha: shaAfter, files: [{ path: "src/a.ts", additions: 1, deletions: 0, status: "M" }], totalAdditions: 1, totalDeletions: 0 },
+              },
+            ],
+          });
+          guest = await connectGuest(env.port, env.proof, directory);
+          const args = argsFor(files);
+          const result = await runCommand(guest.client, "read", action, { sessionId, ...args, laneId: privateLane, cwd: "/" });
+          expect(result.ok).toBe(allowed);
+          const ran = env.execute.mock.calls.filter(([payload]) => payload.action === action).map(([payload]) => payload.args);
+          if (!allowed) {
+            expect(ran).toEqual([]);
+          } else if (action === "chat.getImageDataUrl") {
+            // The host's own resolved path; nothing else the guest sent.
+            const expected = fs.realpathSync(path.isAbsolute(String(args.path)) ? String(args.path) : path.join(worktree, String(args.path)));
+            expect(ran).toEqual([{ sessionId, path: expected }]);
+          } else {
+            // The granted lane's worktree, set by the host: never the lane or cwd the guest sent.
+            expect(ran).toEqual([{ sessionId, ...args, laneId: sharedLane }]);
+          }
+        } finally {
+          spawnMock.mockReset();
           await env.close([guest?.client ?? null]);
         }
       });
@@ -12406,7 +12554,7 @@ describe("sync host handoff over a shared listener", () => {
   });
 });
 
-describe("shared listener waitUntilListening ADE-validation gate", () => {
+describe("shared listener waitUntilListening loopback verdict", () => {
   beforeEach(() => {
     publishMock.mockReset();
     spawnMock.mockReset();
@@ -12420,7 +12568,11 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
     publishMock.mockImplementation(() => ({ on: vi.fn(), stop: vi.fn() }));
   });
 
-  it("force re-probes a shared listener at handoff and blocks discovery for a post-bind shadow", async () => {
+  // A program holding 127.0.0.1:<port> costs only the Tailscale route (Serve
+  // forwards to loopback). Relay pipes arrive in process and LAN reaches the
+  // wildcard bind, so the host keeps hosting; refusing to host here once took
+  // every route down at once.
+  it("keeps hosting through a post-bind loopback shadow and records it", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     let probeOk = true;
     const loopbackProbe = vi.fn(async (
@@ -12448,6 +12600,7 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",
       loopbackProbe,
+      inspectPort: (port) => ({ port, holders: [] }),
     });
     const boundPort = await listener.ensureListening([0]);
     const bindProbeCalls = loopbackProbe.mock.calls.length;
@@ -12458,82 +12611,13 @@ describe("shared listener waitUntilListening ADE-validation gate", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
 
     try {
-      await expect(host.waitUntilListening()).rejects.toThrow(/post-bind shadow/);
+      await expect(host.waitUntilListening()).resolves.toBe(boundPort);
       expect(loopbackProbe.mock.calls.length).toBeGreaterThan(bindProbeCalls);
-      expect(loopbackProbe).toHaveBeenLastCalledWith(
-        boundPort,
-        listener.getExpectedLoopbackNonce(),
-      );
-      expect(listener.getLoopbackValidationStatus()).toMatchObject({
-        port: boundPort,
-        loopbackAdeValidated: false,
-        reason: expect.stringMatching(/post-bind shadow/),
-      });
       expect(host.getLoopbackValidationStatus()).toMatchObject({
         port: boundPort,
         loopbackAdeValidated: false,
         reason: expect.stringMatching(/post-bind shadow/),
       });
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
-    } finally {
-      await host.dispose();
-      await listener.close();
-      cleanup();
-    }
-  });
-
-  it("throws before discovery when the shared listener loopback is not ADE-validated", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
-    const boundPort = await listener.ensureListening([0]);
-    // The brain-level listener bound, but its loopback probe never confirmed ADE.
-    vi.spyOn(listener, "getLoopbackValidationStatus").mockReturnValue({
-      port: boundPort,
-      loopbackAdeValidated: false,
-      lastFailureAt: new Date().toISOString(),
-      reason: `127.0.0.1:${boundPort} did not answer as ADE.`,
-      lastSuccessAt: null,
-    });
-    const host = createSyncHostService({
-      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
-      sharedListener: listener,
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
-
-    try {
-      await expect(host.waitUntilListening()).rejects.toThrow(/was not ADE-validated/);
-      // The host must refuse to advertise an unvalidated shared listener.
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
-    } finally {
-      await host.dispose();
-      await listener.close();
-      cleanup();
-    }
-  });
-
-  it("throws before discovery when the shared listener validated a different port", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
-    const boundPort = await listener.ensureListening([0]);
-    // Loopback was validated, but for a stale port that no longer matches the
-    // listener's live bind — the host must reject rather than publish it.
-    vi.spyOn(listener, "getLoopbackValidationStatus").mockReturnValue({
-      port: boundPort + 1,
-      loopbackAdeValidated: true,
-      lastFailureAt: null,
-      reason: null,
-      lastSuccessAt: new Date().toISOString(),
-    });
-    const host = createSyncHostService({
-      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
-      sharedListener: listener,
-    } as unknown as Parameters<typeof createSyncHostService>[0]);
-
-    try {
-      await expect(host.waitUntilListening()).rejects.toThrow(/was not ADE-validated/);
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(spawnMock).not.toHaveBeenCalled();
     } finally {
       await host.dispose();
       await listener.close();

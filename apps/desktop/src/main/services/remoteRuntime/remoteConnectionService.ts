@@ -118,6 +118,7 @@ import {
 import { adeActionAccess, isBackgroundAdeWrite, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import { findMachineProject } from "../../../shared/projectIdentity";
+import { isMachineScopeOlderBrainError, MACHINE_SCOPE_PROJECT_ID, machineScopeDomainAnswered, machineScopeUpdateMessage } from "../../../shared/machineScope";
 // How long a woken machine gets to come back online before the call fails as usual.
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
 
@@ -432,6 +433,8 @@ export class RemoteConnectionService {
   private autoconnectTimer: NodeJS.Timeout | null = null;
   /** Strictly increasing, so a window can always tell the newer of two snapshots. */
   private lastSnapshotAt = 0;
+  /** Machine and id pairs already logged by `noteUnroutedProjectId`. */
+  private readonly unroutedProjectIdsLogged = new Set<string>();
   private readonly inFlightStreamEvents = new Map<
     string,
     Promise<RemoteRuntimeStreamEventsResult>
@@ -1649,13 +1652,37 @@ export class RemoteConnectionService {
     known: readonly RemoteRuntimeProjectRecord[] | null = null,
     onPhase?: (phase: RemoteEventSetupPhase) => void,
   ): Promise<string> {
-    if (!projectRootPath) return projectId;
+    if (!projectRootPath) return this.noteUnroutedProjectId(target.id, projectId, false);
     let projects = known;
     if (!projects && !this.statusById.get(target.id)?.projects?.length) {
       projects = coerceProjects(await this.pool.projectsForTarget(target, { onPhase }));
       this.mergeStatus(target.id, { projects: [...projects] });
     }
-    return this.projectIdOnMachine(target.id, projectId, projectRootPath, projects);
+    return this.noteUnroutedProjectId(
+      target.id,
+      this.projectIdOnMachine(target.id, projectId, projectRootPath, projects),
+      true,
+    );
+  }
+
+  /**
+   * A machine names its projects `project_<hash>`. An id of another shape (the
+   * app's own project id) that found no record by folder goes out as asked, and
+   * the machine refuses it as an unknown project. Log the first one for each
+   * machine and id, with the pin's shape, to find the caller that sent it.
+   */
+  private noteUnroutedProjectId(targetId: string, projectId: string, hadRootPath: boolean): string {
+    if (projectId.startsWith("project_")) return projectId;
+    const key = `${targetId}\u0000${projectId}`;
+    if (this.unroutedProjectIdsLogged.has(key)) return projectId;
+    this.unroutedProjectIdsLogged.add(key);
+    this.options.logger?.info("remote.project_id_unrouted", {
+      targetId,
+      projectId,
+      hadRootPath,
+      knownProjectCount: this.statusById.get(targetId)?.projects?.length ?? 0,
+    });
+    return projectId;
   }
 
   /** A machine woken for a call lists its projects, as a Connect does. */
@@ -1664,6 +1691,52 @@ export class RemoteConnectionService {
       this.mergeStatus(targetId, { projects: result.projects });
     }
     return result.projects;
+  }
+
+  /**
+   * A machine-scope call (a computer's own settings, `shared/machineScope.ts`)
+   * to a brain that predates the route: it would answer "unknown project", so
+   * it gets the sentence that says what to do instead. Null for any other
+   * call. Before the machine's capabilities are known, only its answer
+   * (`error`, "unknown project") tells.
+   */
+  private machineScopeRefusal(targetId: string, projectId: string, error?: unknown, domain?: string): Error | null {
+    if (projectId !== MACHINE_SCOPE_PROJECT_ID) return null;
+    const capabilities = this.statusById.get(targetId)?.capabilities;
+    // A brain of the route's first version answers it, but not a domain
+    // added since (Keep awake, Android, Passwords).
+    const older = capabilities
+      ? capabilities.machineScope !== true || !machineScopeDomainAnswered(capabilities.machineScopeDomains, domain)
+      : isMachineScopeOlderBrainError(error);
+    if (!older) return null;
+    const known = this.registry.get(targetId);
+    return new Error(machineScopeUpdateMessage(known?.name?.trim() || known?.hostname?.trim() || "That computer"));
+  }
+
+  /**
+   * `run` for a call that may be a machine-scope call (`machineScopeRefusal`):
+   * refused up front when the machine is known to predate the route, and its
+   * "unknown project" answer turned into that sentence. Any other failure
+   * goes to `onFailure` (a refusal is the machine answering, not a failed
+   * connection) and is thrown as it was.
+   */
+  private async withMachineScopeRefusal<T>(
+    targetId: string,
+    projectId: string,
+    run: () => Promise<T>,
+    onFailure: (error: unknown) => void,
+    domain?: string,
+  ): Promise<T> {
+    const refusedBefore = this.machineScopeRefusal(targetId, projectId, undefined, domain);
+    if (refusedBefore) throw refusedBefore;
+    try {
+      return await run();
+    } catch (error) {
+      const refused = this.machineScopeRefusal(targetId, projectId, error, domain);
+      if (refused) throw refused;
+      onFailure(error);
+      throw error;
+    }
   }
 
   async callAction(
@@ -1694,14 +1767,17 @@ export class RemoteConnectionService {
       if (sleeping && await this.wakeForUse(sleeping)) {
         this.clearAutomaticReconnectState(targetId);
         wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
-      } else if (this.asleepChecks.isResting(targetId)) {
-        // Not woken by this app: another device woke it already. The rest
-        // ends, and the dial below finds out (a failed one asks again).
+      } else if (sleeping && this.asleepChecks.isResting(targetId)) {
+        // Not woken by this app: another device woke it, or the provider
+        // already says "running" while ADE there is still starting. Its link
+        // comes back a few seconds after that, so the call waits for it as for
+        // its own wake, instead of failing on the first dial ("Can't reach").
         this.clearAutomaticReconnectState(targetId);
+        wokenProjects = this.noteWokenProjects(targetId, await this.connectWokenMachine(sleeping));
       }
     }
     const target = await this.requireTargetForImplicitUse(targetId);
-    try {
+    return await this.withMachineScopeRefusal(targetId, projectId, async () => {
       let result: RemoteRuntimeActionResult;
       try {
         result = await this.pool.callActionForTarget(target, await routedProjectId(target), request);
@@ -1724,10 +1800,7 @@ export class RemoteConnectionService {
       });
       this.clearAutomaticReconnectState(targetId);
       return result;
-    } catch (error) {
-      this.markCallFailure(targetId, error);
-      throw error;
-    }
+    }, (error) => this.markCallFailure(targetId, error), request.domain);
   }
 
   /**
@@ -1768,7 +1841,7 @@ export class RemoteConnectionService {
     // poll owns the machine's status by then.
     return await this.withEventSetupDeadline(targetId, "read", async (notePhase, gaveUp) => {
       const target = await this.requireTargetForImplicitUse(targetId);
-      try {
+      return await this.withMachineScopeRefusal(targetId, projectId, async () => {
         const result = await this.pool.streamEventsForTarget(
           target,
           await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
@@ -1783,10 +1856,9 @@ export class RemoteConnectionService {
         });
         this.clearAutomaticReconnectState(targetId);
         return result;
-      } catch (error) {
+      }, (error) => {
         if (!gaveUp()) this.markCallFailure(targetId, error);
-        throw error;
-      }
+      });
     });
   }
 
@@ -1846,7 +1918,7 @@ export class RemoteConnectionService {
       "subscribe",
       async (notePhase, gaveUp) => {
         const target = await this.requireTargetForImplicitUse(targetId);
-        try {
+        return await this.withMachineScopeRefusal(targetId, projectId, async () => {
           const cleanup = await this.pool.subscribeEventsForTarget(
             target,
             await this.routedProjectId(target, projectId, options?.projectRootPath, null, notePhase),
@@ -1870,10 +1942,9 @@ export class RemoteConnectionService {
           });
           this.clearAutomaticReconnectState(targetId);
           return cleanup;
-        } catch (error) {
+        }, (error) => {
           if (!gaveUp()) this.markCallFailure(targetId, error);
-          throw error;
-        }
+        });
       },
       (lateCleanup) => lateCleanup(),
     );

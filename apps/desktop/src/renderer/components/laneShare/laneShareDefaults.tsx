@@ -12,7 +12,7 @@ import {
 import { confirmDialog } from "../ui/dialog";
 
 /**
- * "My default rights": the start value of the share sheet for a new person.
+ * "Default access": the start value of the share sheet for a new person.
  * One value per account, in the account settings store (scope `all`), so
  * every machine of the account starts from the same rights. The end date is
  * never part of it: an end is chosen per share.

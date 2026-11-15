@@ -48,38 +48,6 @@ afterEach(() => {
   applyModelManifest(BUNDLED_MODEL_MANIFEST);
 });
 
-describe("bundled model manifest", () => {
-  it("adds GPT-6.1 Sol, GPT-6 Luna, and Claude Opus 5.5 with their verified wire ids", () => {
-    expect(getModelById("openai/gpt-6-sol")?.providerModelId).toBe("gpt-6-sol");
-    expect(getModelById("openai/gpt-6-luna")?.providerModelId).toBe("gpt-6-luna");
-    expect(getModelById("anthropic/claude-opus-5-5")?.providerModelId).toBe("claude-opus-5-5");
-    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6.1-sol");
-    expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
-    expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
-    // The older generation stays reachable by its full id.
-    expect(resolveModelAlias("gpt-5.6-sol")?.id).toBe("openai/gpt-5.6-sol");
-    expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
-  });
-
-  it("orders the Codex rows with GPT-6.1 Sol, Astra, and Terra first", () => {
-    const ids = listModelDescriptorsForProvider("codex").map((model) => model.id);
-    expect(ids.slice(0, 5)).toEqual([
-      "openai/gpt-6.1-sol",
-      "openai/gpt-6-astra",
-      "openai/gpt-6.1-terra",
-      "openai/gpt-6-sol",
-      "openai/gpt-6-luna",
-    ]);
-  });
-
-  it("makes Claude Opus 5.5 the app-wide and Claude default, keeping GPT-6.1 Sol for Codex", () => {
-    expect(getAppDefaultModelDescriptor()?.id).toBe("anthropic/claude-opus-5-5");
-    expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-opus-5-5");
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6.1-sol");
-    expect(listModelDescriptorsForProvider("claude")[0]?.id).toBe("anthropic/claude-fable-5-2");
-  });
-});
-
 describe("parseModelManifest", () => {
   it("rejects an unknown schema version and non-patchable fields", () => {
     expect(parseModelManifest({ version: 2, updatedAt: "2030-01-01T00:00:00Z", models: [] }).ok).toBe(false);

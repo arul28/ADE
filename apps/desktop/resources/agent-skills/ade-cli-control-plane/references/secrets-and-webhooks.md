@@ -1,23 +1,32 @@
-# Project secrets and webhooks
+# Secrets and webhooks
 
 ## Project secrets
 
-ADE project secrets are encrypted, project-scoped, and shared by ADE Desktop,
-the CLI, runtime-backed actions, lanes, and agents on the same machine. They live
-under the active project root, not inside an individual lane worktree.
+A project's secrets live in Passwords & Secrets: the person's vault, encrypted
+on their account and synced to every computer they sign in to. A secret is
+for every project or for one repository; a project sees those for every
+project, then its own over them. A secret saved with `--storage device` stays
+on this computer only. The person manages them in Settings › Passwords &
+Secrets.
 
 Use them only when the user names a secret or clearly asks you to use a stored
-credential. List output is metadata-only; `get` prints the value, so avoid
-echoing it into logs or chat unless the user explicitly asks.
+credential. You use a secret, you never read it: `ade secrets exec` runs a
+command on this computer with the project's secrets in its environment and
+prints its output with every value of 8 characters or more masked. A shorter
+value is not masked (the command says which). Masking is best effort: a
+command that changes a value (reverses, splits or re-encodes it) can print it
+unmasked, whatever its length. So never run a command that prints a secret,
+and never copy output that could hold one into chat or a log.
+`ade secrets get` is the person's, in the ADE desktop app.
 
 ```
-ade secrets list --text
-ade secrets pull --text                 # take this repository's account secrets out of the vault
-ade secrets get STRIPE_API_KEY --text
-ade secrets set STRIPE_API_KEY --value sk_...
+ade secrets list --text                 # names, where each lives, never a value
+ade secrets exec -- npm run deploy      # every secret in the environment
+ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe customers list --api-key "$STRIPE_API_KEY"'
+ade secrets set STRIPE_API_KEY --value sk_...      # this project, every computer
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
-ade secrets delete STRIPE_API_KEY
+ade secrets delete STRIPE_API_KEY       # this project's own secret only
 ade actions list --domain project_secret --text
 ```
 
@@ -37,8 +46,8 @@ value. For a token a shell CLI needs that should not stay in ADE, add
 `--delivery file --request-id <key>`: the user may choose a temporary private
 file, and you get `{saved: true, delivery: "file", file}`. Read it only inside
 a command (`TOKEN="$(cat <file>)" wrangler deploy`) and never print it; it is
-deleted after 24 hours or when the chat is archived. Otherwise use the secret by name without printing it, e.g.
-`gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
+deleted after 24 hours or when the chat is archived. Otherwise use the secret by name with `ade secrets exec`, e.g.
+`ade secrets exec --env NAME -- sh -c 'gh secret set X --body "$NAME"'`. If the user
 declines, carry on without it or explain what is blocked.
 
 ## Webhook automations

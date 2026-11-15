@@ -15,11 +15,11 @@ import {
   GitBranch,
   Wrench,
   HardDrives,
-  Key,
   Keyboard,
   MagnifyingGlass,
   MapPin,
   Palette,
+  Password,
   PuzzlePiece,
   Robot,
   ShareNetwork,
@@ -32,7 +32,7 @@ import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { ADE_CLOUD_PLACE_ID, ProvidersPlaceProvider, SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
 import { useSettingsMachinePage } from "../settings/SettingsMachinesNav";
-import { SettingsMachinesContext, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
+import { SettingsMachinesContext, settingsMachineNames, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
 import { MachinePicker, reachableMachines } from "../settings/ProvidersMachinePicker";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
@@ -74,6 +74,7 @@ import {
   decodeSettingsHash,
   integrationPageForAnchor,
   openIntegrationFromUrl,
+  settingsTabPickerKind,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
 
@@ -99,7 +100,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   "project-agents": Robot,
   storage: HardDrives,
   location: MapPin,
-  secrets: Key,
+  passwords: Password,
   integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
@@ -109,6 +110,35 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   "ade-mcp": ShareNetwork,
   "ade-cloud": Cloud,
   sharing: UsersThree,
+};
+
+/**
+ * Each page's icon sits on its own colour, so a page is found by colour as
+ * much as by name. White glyphs, so each tint is dark enough to carry one.
+ */
+const TAB_ICON_TINTS: Record<SettingsTabId, string> = {
+  general: "#7d7d85",
+  account: "#2f7cf6",
+  "ade-cloud": "#2a9fd8",
+  sharing: "#1f9fb0",
+  chat: "#2fa24f",
+  notifications: "#e5483d",
+  appearance: "#a855f7",
+  behaviour: "#5b63e6",
+  keyboard: "#6b6b73",
+  apple: "#8a8a92",
+  android: "#2e9e62",
+  agents: "#d9467a",
+  integrations: "#e8890c",
+  "ade-mcp": "#6457e8",
+  passwords: "#c98a06",
+  stats: "#ec6a35",
+  "lanes-git": "#e0532f",
+  "project-agents": "#9b4fd8",
+  storage: "#2f8fd0",
+  location: "#e23d62",
+  machines: "#5a6577",
+  advanced: "#6f6f77",
 };
 
 /** Shown in the top row, right under General, whatever their group. */
@@ -132,7 +162,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "notifications",
   "stats",
   "sharing",
-  "secrets",
+  "passwords",
   "behaviour",
   "ade-mcp",
   "ade-cloud",
@@ -624,7 +654,22 @@ export function SettingsPage({
           transition: "background 120ms ease, color 120ms ease",
         }}
       >
-        <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
+        <span
+          aria-hidden
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 20,
+            height: 20,
+            flexShrink: 0,
+            borderRadius: 5,
+            background: TAB_ICON_TINTS[tab.id],
+            boxShadow: "inset 0 0 0 0.5px rgba(255,255,255,0.18)",
+          }}
+        >
+          <Icon size={12.5} weight="bold" color="#fff" />
+        </span>
         <span>{tab.label}</span>
       </button>
     );
@@ -670,12 +715,15 @@ export function SettingsPage({
   // Providers also offers ADE Cloud (`?machine=ade-cloud`), even beside one machine.
   const offersAdeCloud = section === "agents" && machinesEnabled && cloudEnabled;
   const adeCloudPlace = offersAdeCloud && machineParam === ADE_CLOUD_PLACE_ID;
+  // How the tab reaches a machine (`settingsTabPickerKind`).
+  const titlePickerKind = settingsTabPickerKind(section);
   const titlePicker = (section === "agents" || section === "android") && machinesEnabled && !standalone
-    && (reachableMachines(machines).length > 1 || offersAdeCloud);
+    && (reachableMachines(machines, titlePickerKind).length > 1 || offersAdeCloud);
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
     machines,
     thisMachineName: thisMachineDeviceName,
+    machineNames: settingsMachineNames(machines, thisMachineDeviceName),
     openMachine: (machineId, tab = "machines") => navigateToTab(tab, undefined, machineId),
     openTab: (tab, anchor) => {
       const resolved = resolveSettingsTab(tab);
@@ -851,6 +899,7 @@ export function SettingsPage({
                 <span style={{ marginLeft: 8 }} data-ph-mask="">
                   <MachinePicker
                     variant="title"
+                    kind={titlePickerKind}
                     machines={machines}
                     selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
                     thisMachineName={thisMachineDeviceName}

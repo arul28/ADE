@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle, CircleNotch, Desktop, Plus, XCircle } from "@phosphor-icons/react";
 import { THIS_MACHINE_ID } from "../../../../shared/machineIdentity";
-import type { RepositoryCopy } from "../../../../shared/repositoryTab";
+import { computerCountLabel, copyComputers, type RepositoryCopy } from "../../../../shared/repositoryTab";
 import { useActiveRepositoryTab } from "../../../state/repositoryScope";
 import { useRepositoryCopies, useStartOn } from "../../../state/useRepositoryCopies";
 import { useAppStore } from "../../../state/appStore";
@@ -65,6 +65,8 @@ function ProjectCopiesList() {
     [choices],
   );
   const shownCopies = useMemo(() => copies.filter((copy) => !copy.isAdeCloud), [copies]);
+  // The same count as Home and the copies menu (`copyComputers`).
+  const computers = useMemo(() => copyComputers(copies), [copies]);
   const jobFor = (machineId: string): CopyJob | null =>
     jobs.find((job) => job.machine.machineId === machineId) ?? null;
   const inUseKey = binding?.kind === "remote" ? binding.key : binding?.rootPath ?? null;
@@ -89,7 +91,9 @@ function ProjectCopiesList() {
       group="Project"
       anchor="project-copies"
       title="Copies"
-      hint="Each computer keeps its own folder of this project. New lanes start in the main one."
+      hint={computers.count > 0
+        ? `On ${computerCountLabel(computers.count)}. Each computer keeps its own folder; new lanes start in the main one.`
+        : "Each computer keeps its own folder of this project. New lanes start in the main one."}
       actions={inUseKey && !webMode ? (
         <button
           type="button"

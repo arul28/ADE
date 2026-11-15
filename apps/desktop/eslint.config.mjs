@@ -1,11 +1,7 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import tsParser from "@typescript-eslint/parser";
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import reactHooks from "eslint-plugin-react-hooks";
 import adeUi, { adeUiRecommendedRules } from "./eslint-rules/ade-ui.mjs";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default [
   {
@@ -22,9 +18,13 @@ export default [
     files: ["src/**/*.{ts,tsx}"],
     languageOptions: {
       parser: tsParser,
+      // No `project`: no rule here reads type information, and building the
+      // TypeScript program for it took 7 GB and two thirds of the lint time
+      // with the same results. `tsc` (npm run typecheck) checks types. A
+      // type-aware rule added later fails with a parserServices error until
+      // `project` returns; then scripts/lint-ratchet.mjs builds that program
+      // once per worker, so measure its memory before you keep the default.
       parserOptions: {
-        project: "./tsconfig.json",
-        tsconfigRootDir: __dirname,
         ecmaVersion: "latest",
         sourceType: "module",
         ecmaFeatures: {

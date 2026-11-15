@@ -1,14 +1,15 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { CHAT_LAUNCH_KINDS } from "../../desktop/src/shared/types/chatLaunch";
+import { MACHINE_SCOPE_DOMAINS, MACHINE_SCOPE_PROJECT_ID, machineScopeActionAllowed, machineScopeRefusalMessage } from "../../desktop/src/shared/machineScope";
 import { readDeletedChatOnDisk } from "../../desktop/src/main/services/chat/deletedChats";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { isInsideTempFolder } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
+import { markExpected } from "../../desktop/src/shared/expectedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { conditionalActionResult } from "./conditionalActionResult";
 import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../desktop/src/shared/conditionalActionResult";
-import { isRemoteRuntimeEventCategory } from "../../desktop/src/shared/types/remoteRuntime";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -89,6 +90,8 @@ import {
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
+import type { AndroidEmulatorEvent } from "../../desktop/src/shared/types/androidEmulator";
+import type { AndroidMachineSettingsService } from "../../desktop/src/main/services/android/androidMachineSettingsService";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
 import { readRuntimeBusyFacts, summarizeRuntimeActivity, summarizeRuntimeUpdateImpact } from "./services/runtime/runtimeWorkSummary";
 import type { CloudBusyFacts } from "./services/power/cloudKeepAwake";
@@ -114,8 +117,17 @@ import {
 import { buildSendNotificationAction } from "../../desktop/src/main/services/adeActions/registry";
 import { sendNotifyAsChatMessage } from "./services/push/chatMessageNotify";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
+import { requestMachineRemovalFromUser } from "./services/account/machineRemovalRequest";
+import { captureAgentCardAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { isRemoteMcpAction } from "../../desktop/src/shared/types/remoteMcp";
 import { isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import {
+  isRemoteRuntimeEventCategory,
+  sanitizeMachineName,
+  sanitizeUpdateRequestedBy,
+  type UpdateRequestClientKind,
+  type UpdateRequestedBy,
+} from "../../desktop/src/shared/types/remoteRuntime";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -154,7 +166,12 @@ import {
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
 import type { AdeAccountMachine, MachineConnectionRoutes } from "../../desktop/src/shared/types/account";
-import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES, type AttentionItem } from "../../desktop/src/shared/types/attention";
+import {
+  ATTENTION_CONTRACT_VERSION,
+  ATTENTION_SNAPSHOT_INCLUDE_MESSAGES,
+  type AttentionItem,
+  type AttentionSnapshot,
+} from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -168,6 +185,7 @@ import type { AgentMachineBridge } from "./services/account/agentMachineBridge";
 import type { CrossScopeChats } from "./services/chat/crossScopeChats";
 import {
   rememberChildWakeToken,
+  noteExternalChatTurn,
   rememberExternalChat,
 } from "../../desktop/src/main/services/chat/externalChats";
 import {
@@ -177,6 +195,7 @@ import {
   createdChatSessionId,
   omitRemoteCaller,
   readMachineCallScope,
+  remoteActionResult,
 } from "./services/account/agentRemoteRpc";
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
@@ -345,6 +364,11 @@ export type MultiProjectRpcHandlerOptions = {
    */
   peerDeviceId?: string | null;
   /**
+   * The device name the host stored in that peer's paired record. It names
+   * who asked for a remote update in place of the client's own claim.
+   */
+  peerDeviceName?: string | null;
+  /**
    * Backs `machines.call` / `machines.list`: this brain's agents reaching the
    * account's other machines. Absent on embedded and test runtimes, which then
    * refuse both methods.
@@ -366,7 +390,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<
     PersonalChatScope,
     "capabilities" | "call" | "streamEvents" | "dispose"
-  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall">>;
+  > & Partial<Pick<PersonalChatScope, "activitySummary" | "updateImpact" | "subscribeEvents" | "providerAccountsCall" | "credentialsCall" | "presetsCall" | "runtimeForDelivery">>;
   /** Profile of the outer runtime, used to trust the sole embedded host. */
   runtimeProfile?: "full" | "chat" | "embedded";
   /**
@@ -392,7 +416,7 @@ export type MultiProjectRpcHandlerOptions = {
   /** On a cloud computer: interrupts work and writes the saved chat copy before a stop (`ade cloud prepare-stop`). */
   prepareCloudStop?: ((args: { timeoutMs: number }) => Promise<unknown>) | null;
   /** On a cloud computer: commits and pushes every lane's work (`ade cloud push-work`). */
-  pushCloudWork?: ((args: { check: boolean }) => Promise<unknown>) | null;
+  pushCloudWork?: ((args: { check: boolean; message?: string | null }) => Promise<unknown>) | null;
   /** On a cloud computer: keeps it awake while `run` works (a first clone), and counts the end as use. */
   holdCloudWork?: (<T>(reason: string, ttlMs: number, run: () => Promise<T>) => Promise<T>) | null;
   /** `ade providers sign-in --remote` and its code and status companions (remoteProviderSignIn.ts). */
@@ -407,6 +431,19 @@ export type MultiProjectRpcHandlerOptions = {
    * `accountVault.call`. Without it, those methods answer unavailable.
    */
   machineAccountDomains?: MachineAccountDomains;
+  /**
+   * The account stores the machine scope is lent: the settings store, so a
+   * provider's account-saved entries (OpenCode's cloud logins) reach the
+   * account the same way a project copy's do, and Passwords. Null on a brain
+   * with sync off, whose project runtimes have neither.
+   */
+  machineScopeAccountStores?: (() => MachineScopeAccountStores) | null;
+  /**
+   * The machine scope's Android settings (the SDK, its install, the machine
+   * preferences): built once per machine-owned runtime, its events sent to
+   * that runtime's feed. Absent on an embedded runtime.
+   */
+  machineScopeAndroid?: (() => Promise<(onEvent: (event: AndroidEmulatorEvent) => void) => AndroidMachineSettingsService>) | null;
   /**
    * The shared project record (a repository's name and icon on every machine
    * of the account). Without it, names and icons come from this machine only.
@@ -482,6 +519,12 @@ export type MultiProjectRpcHandlerOptions = {
       lastCommand: string;
       blockedMs: number;
       ts: string;
+    } | null;
+    /** This brain started after the one before it stopped unplanned (`brainUnplannedRestart.ts`). Optional for older embedders. */
+    lastUnplannedRestart?: {
+      ts: string;
+      chats: number;
+      cliSessions: number;
     } | null;
   };
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
@@ -637,6 +680,7 @@ const RUNTIME_METHODS = new Set([
   "providers.status",
   "usage.getUsageRollup",
   "usage.getLiveQuota",
+  "usage.consumeResetCredit",
   "personalChats.call",
   "providerAccounts.call",
   "credentials.call",
@@ -876,6 +920,78 @@ function machineAccountAppGithubOptions(accountUserId: () => string | null) {
     getAccountUserId: accountUserId,
     getAccountDirectoryBaseUrl: () => getSharedAccountDirectoryBaseUrl() || null,
   };
+}
+
+/** The account stores a machine scope is lent while sync is on. */
+export type MachineScopeAccountStores = {
+  settings: NonNullable<AdeRuntime["accountSettingsStore"]>;
+  passwords: NonNullable<AdeRuntime["passwordService"]>;
+};
+
+/** What the machine scope is lent beyond the machine-owned runtime's own services. */
+type MachineScopeLent = {
+  account: MachineScopeAccountStores | null;
+  keepAwake: AdeRuntime["keepAwakeService"] | null;
+  android: AndroidMachineSettingsService | null;
+};
+
+/**
+ * The machine scope's Android service: its settings only. Lanes, devices and
+ * recordings need a project, and `machineScopeActionAllowed` keeps every
+ * other action from reaching here; this says so if one ever does.
+ */
+function machineScopeAndroidService(settings: AndroidMachineSettingsService): NonNullable<AdeRuntime["androidEmulatorService"]> {
+  return new Proxy(settings, {
+    get(target, property) {
+      if (Object.hasOwn(target, property)) return target[property as keyof AndroidMachineSettingsService];
+      return () => Promise.reject(new Error("Android devices need a project; this computer's settings have none."));
+    },
+  }) as unknown as NonNullable<AdeRuntime["androidEmulatorService"]>;
+}
+
+/** One overlay per machine-owned runtime, so every connection shares it. */
+const lentMachineScopeRuntimes = new WeakMap<AdeRuntime, AdeRuntime>();
+
+/**
+ * The machine-owned runtime (sync off, chat profile) with what the machine
+ * route needs lent to it: this brain's account stores (only when sync is on),
+ * its keep-awake service, and the machine's Android settings. A prototype
+ * overlay keeps the runtime's getters and methods live. It is made once per
+ * runtime, and `lend` is called once with it: what the action registry hangs
+ * on a runtime (the sign-in status bridges) is then added once, and disposing
+ * the runtime runs the overlay's teardown first (the lent Android settings,
+ * then whatever wraps the overlay), then the runtime's own.
+ */
+function withLentMachineServices(runtime: AdeRuntime, lend: (runtime: AdeRuntime) => MachineScopeLent): AdeRuntime {
+  const cached = lentMachineScopeRuntimes.get(runtime);
+  if (cached) return cached;
+  const lent = lend(runtime);
+  const scoped = Object.create(runtime) as AdeRuntime;
+  const define = <K extends keyof AdeRuntime>(key: K, value: AdeRuntime[K]) =>
+    Object.defineProperty(scoped, key, { value, enumerable: true });
+  if (lent.account) {
+    define("accountSettingsStore", lent.account.settings);
+    define("passwordService", lent.account.passwords);
+  }
+  if (lent.keepAwake) define("keepAwakeService", lent.keepAwake);
+  if (lent.android) define("androidEmulatorService", machineScopeAndroidService(lent.android));
+  const ownDispose = runtime.dispose;
+  // The overlay's own `dispose` ends in the runtime's; whatever wraps it
+  // (`ensureAuthStatusRelayBridges`) runs first.
+  Object.defineProperty(scoped, "dispose", {
+    value: (reason?: Parameters<AdeRuntime["dispose"]>[0]) => {
+      lent.android?.dispose();
+      return ownDispose(reason);
+    },
+    writable: true,
+    enumerable: true,
+  });
+  runtime.dispose = (reason) => {
+    lentMachineScopeRuntimes.delete(runtime);
+    return scoped.dispose(reason);
+  };
+  lentMachineScopeRuntimes.set(runtime, scoped);
+  return scoped;
 }
 
 async function createMachineProjectScaffoldService() {
@@ -1518,25 +1634,22 @@ function readProjectRegistrationIntent(
 
 /**
  * A call that runs in the caller's work copy there: `ade shell start
- * --machine` (pty.create), or a lane-less `ade apple … --machine` or
- * `ade android … --machine`. Null for anything else.
+ * --machine` (pty.create), or a lane-less `ade apple … --machine`,
+ * `ade android … --machine`, `ade screen … --machine` (its desktop screen)
+ * or `ade app-control … --machine`. Null for anything else.
  */
-function remoteWorkCallKind(method: string, params: Record<string, unknown>): "shell" | "simulator" | "android" | null {
+function remoteWorkCallKind(
+  method: string,
+  params: Record<string, unknown>,
+): "shell" | "simulator" | "android" | "desktop" | "app_control" | null {
   if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
   const call = params.arguments;
   if (!isRecord(call.args) || !isRecord(call.args.remoteWork)) return null;
   if (call.domain === "pty" && call.action === "create") return "shell";
   if (call.domain === "ios_simulator") return "simulator";
   if (call.domain === "android_emulator") return "android";
-  return null;
-}
-
-/** The action's own result in a forwarded `ade/actions/call` answer (`{ structuredContent: { result } }`, or older shapes). */
-function remoteActionResult(answer: unknown): Record<string, unknown> | null {
-  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
-  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
-    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
-  }
+  if (call.domain === "mac_desktop") return "desktop";
+  if (call.domain === "app_control") return "app_control";
   return null;
 }
 
@@ -1700,6 +1813,28 @@ export function createMultiProjectRpcRequestHandler(
   const currentAccountOwnerUserId = (): string | null => {
     const status = accountAuthService.getStatus();
     return status.signedIn ? status.userId?.trim() || null : null;
+  };
+  /** The account's machine directory, as this brain reaches it. */
+  const accountMachineDirectory = (): AccountMachineDirectoryService =>
+    new AccountMachineDirectoryService(accountAuthService, {
+      appVersion: options.serverVersion,
+      directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+        projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+      }),
+    });
+  /** This computer's account machine key, or null when it has none or it cannot be read. */
+  const localAccountMachineKey = (): string | null => {
+    try {
+      return createSyncCloudRelayStore({
+        filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+      }).getMachineIdentity().machineKey.trim() || null;
+    } catch (error) {
+      // Without the key a removal card cannot mark this computer, so say why.
+      machineProjectLogger.warn("account.local_machine_key_unreadable", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   };
   const accountOwnerUserIdFromStatus = (value: unknown): string | null => {
     if (!isRecord(value) || value.signedIn !== true) return null;
@@ -1902,14 +2037,63 @@ export function createMultiProjectRpcRequestHandler(
     }
   };
 
+  /**
+   * This computer's own settings with no project (`MACHINE_SCOPE_PROJECT_ID`):
+   * the machine-owned runtime personal chats run in.
+   */
+  const machineScopeRuntime = async (): Promise<AdeRuntime> => {
+    if (typeof personalChatScope.runtimeForDelivery !== "function") {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime has no machine scope.");
+    }
+    const runtime = await personalChatScope.runtimeForDelivery();
+    const lentAlready = lentMachineScopeRuntimes.get(runtime);
+    if (lentAlready) return lentAlready;
+    const createAndroid = await options.machineScopeAndroid?.();
+    return withLentMachineServices(runtime, (owner) => ({
+      account: options.machineScopeAccountStores?.() ?? null,
+      // The brain's own service, the one `keepAwake.call` answers from.
+      keepAwake: (options.keepAwakeService as AdeRuntime["keepAwakeService"] | null | undefined) ?? null,
+      android: createAndroid?.((event) => {
+        owner.eventBuffer.push({
+          timestamp: new Date().toISOString(),
+          category: "runtime",
+          payload: { type: "android_emulator_event", event },
+        });
+      }) ?? null,
+    }));
+  };
+
+  /**
+   * The runtime a project id names, and its App Control (whose frames a
+   * connection asks for): a project's scope, or for `MACHINE_SCOPE_PROJECT_ID`
+   * this computer's own settings, which show no App Control frames. The one
+   * place the machine scope is told apart from a project.
+   */
+  const scopeFor = async (
+    projectId: ProjectId,
+    requestedBy?: string,
+  ): Promise<{ runtime: AdeRuntime; appControl: NonNullable<AdeRuntime["appControlService"]> | null; machineScope: boolean }> => {
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) {
+      return { runtime: await machineScopeRuntime(), appControl: null, machineScope: true };
+    }
+    const scope = await scopeRegistry.get(projectId, { requestedBy });
+    return { runtime: scope.runtime, appControl: scope.runtime.appControlService ?? null, machineScope: false };
+  };
+
+  /**
+   * The request handler for a project id (`scopeFor`), built and initialized
+   * the same way for a project and for the machine scope, so their role
+   * checks are the same. One cache and one dispose path for both.
+   */
   const getProjectHandler = async (
     projectId: ProjectId,
+    requestedBy?: string,
   ): Promise<HandlerEntry> => {
     const cached = handlers.get(projectId);
     if (cached) return await cached;
 
     const pending = (async () => {
-      const scope = await scopeRegistry.get(projectId);
+      const scope = await scopeFor(projectId, requestedBy);
       const handler = createAdeRpcRequestHandler({
         runtime: scope.runtime,
         serverVersion: options.serverVersion,
@@ -1917,7 +2101,7 @@ export function createMultiProjectRpcRequestHandler(
       if (initializedParams) {
         await handler({
           jsonrpc: "2.0",
-          id: "initialize-project-scope",
+          id: scope.machineScope ? "initialize-machine-scope" : "initialize-project-scope",
           method: "ade/initialize",
           params: initializedParams,
         });
@@ -1929,7 +2113,7 @@ export function createMultiProjectRpcRequestHandler(
     try {
       return await pending;
     } catch (error) {
-      handlers.delete(projectId);
+      if (handlers.get(projectId) === pending) handlers.delete(projectId);
       throw error;
     }
   };
@@ -1964,6 +2148,8 @@ export function createMultiProjectRpcRequestHandler(
         machineName: typeof claim.machineName === "string" ? claim.machineName.trim().slice(0, 120) || null : null,
         permissionLevel: readPermissionLevel(claim.permissionLevel),
       });
+      // The latest turn it called in, for `release_remote_work_devices`.
+      if (typeof claim.turnId === "string") noteExternalChatTurn(foreignId, claim.turnId.trim().slice(0, 200));
     }
     return foreignId;
   };
@@ -2310,7 +2496,9 @@ export function createMultiProjectRpcRequestHandler(
     // past the required-send ceiling and the host closed the whole connection
     // (4001 "Required sync response backpressured"). See `runtimeEventVolume`.
     const includeHighVolumeEvents = params.includeHighVolumeEvents === true;
-    const scope = await scopeRegistry.get(projectId);
+    // The machine scope (a computer's own settings) streams its runtime's
+    // events the same way (`scopeFor`); it has no App Control frames.
+    const scope = await scopeFor(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
     const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean => {
@@ -2336,7 +2524,7 @@ export function createMultiProjectRpcRequestHandler(
         "The connection closed before the runtime event subscription was ready.",
       );
     }
-    const frameService = scope.runtime.appControlService ?? null;
+    const frameService = scope.appControl;
     // A scope that restarted under this connection has a fresh service with no
     // demand; this puts back what the connection last declared for it.
     frameDemand.apply(projectId, frameService);
@@ -2457,13 +2645,15 @@ export function createMultiProjectRpcRequestHandler(
       );
     }
     // Recorded before the scope lookup, so a slower lookup for an older call
-    // applies this newer demand rather than its own.
+    // applies this newer demand rather than its own. A computer's own
+    // settings show no App Control frames (`scopeFor`): nothing to record,
+    // and nothing to look up.
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return { applied: false };
     frameDemand.declare(projectId, readAppControlFrameDemand(params));
-    const scope = await scopeRegistry.get(projectId);
-    if (disposed) return { applied: false };
-    const service = scope.runtime.appControlService ?? null;
-    frameDemand.apply(projectId, service);
-    return { applied: service != null };
+    const scope = await scopeFor(projectId);
+    if (disposed || !scope.appControl) return { applied: false };
+    frameDemand.apply(projectId, scope.appControl);
+    return { applied: true };
   };
 
   const unsubscribeRuntimeEvents = (params: Record<string, unknown>) => {
@@ -2497,23 +2687,32 @@ export function createMultiProjectRpcRequestHandler(
       ? projectRegistry.findByRootPath(path.resolve(params.projectRoot.trim()))?.projectId ?? null
       : null);
 
+  /**
+   * A project scope that has finished opening and can answer a sync read, or
+   * null. Never boots a project, never runs host activation and never waits
+   * on a scope that is still opening: a read that activated a host turned a
+   * status check into "Another ADE brain is already hosting mobile sync"
+   * whenever a second brain held the port. With no ready scope, the caller
+   * answers with the machine's state.
+   */
+  const resolveReadySyncServiceForRead = () =>
+    scopeRegistry.resolveReadySyncScope?.()?.runtime.syncService ?? null;
+
   // Status is a recovery control: if a project scope is already alive, use it
   // without re-entering host activation (which may be timed out or backed off).
-  // Preserve the ordinary resolver when nothing is booted.
+  // With nothing booted the caller answers with the machine-level status.
   const resolveRecoverySyncService = async (params: Record<string, unknown>) => {
     const requestedProjectId = requestedSyncProjectId(params);
     const targetProjectId = requestedProjectId
       ?? scopeRegistry.getActiveSyncHostProjectId?.()
       ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
-    const scope = targetProjectId
-      ? scopeRegistry.getIfReady?.(targetProjectId) ?? null
-      : null;
-    // Only consult the ordinary resolver when no precise recovery target is
-    // known. A missing target scope must never redirect a destructive action.
-    const resolvedScope = targetProjectId
-      ? scope
-      : await scopeRegistry.resolveActiveSyncHost();
-    return resolvedScope?.runtime.syncService ?? null;
+    // A known target answers only from its own ready scope. A missing target
+    // scope must never redirect a destructive action.
+    const syncService = targetProjectId
+      ? scopeRegistry.getIfReady?.(targetProjectId)?.runtime.syncService ?? null
+      : resolveReadySyncServiceForRead();
+    if (syncService) await applyPendingLanePresence();
+    return syncService;
   };
 
   // Disconnect rewrites the saved connection and clears the device records, so
@@ -2545,9 +2744,67 @@ export function createMultiProjectRpcRequestHandler(
       "Sync service is not available. Register a project first.",
     );
 
+  /**
+   * The Lanes page's open lanes: the newest list, kept for the sync host. It
+   * is a hint for paired phones, so it never starts a sync host by itself
+   * (that start timed out at 10 s and failed the write, ADE-DESKTOP-7). Only
+   * the known host's own ready scope gets it: another scope has no host
+   * service, and a list stored there never reaches the real host. While no
+   * host is known, or its scope is not ready, the list waits. It goes out on
+   * each scope-ready or host-switch notice and on any sync call that finds a
+   * running sync service, whenever that host has not taken this list yet.
+   */
+  let lanePresence: { laneIds: string[]; generation: number } | null = null;
+  let lanePresenceGeneration = 0;
+  /** The newest list the host's sync service took, and which service took it. */
+  let lanePresenceSent: { syncService: object; generation: number } | null = null;
+
+  /** The known sync host's ready scope's sync service, or null to keep the list waiting. */
+  const resolveLanePresenceSyncService = () => {
+    const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId?.() ?? null;
+    if (!activeHostProjectId) return null;
+    return scopeRegistry.getIfReady?.(activeHostProjectId)?.runtime.syncService ?? null;
+  };
+
+  /**
+   * Sends the newest open lanes to the sync host when it has not taken them.
+   * A newer list always wins: a failed or late send of an older list never
+   * replaces it, because each send reads the newest list. Never throws
+   * unless `throwOnError` (the write that set the list); the list stays for
+   * the next chance either way.
+   */
+  const applyPendingLanePresence = async (options: { throwOnError?: boolean } = {}): Promise<void> => {
+    const list = lanePresence;
+    if (!list) return;
+    const syncService = resolveLanePresenceSyncService();
+    if (!syncService) return;
+    const sent = lanePresenceSent;
+    if (sent?.syncService === syncService && sent.generation >= list.generation) return;
+    try {
+      await syncService.setActiveLanePresence(list.laneIds);
+      const latest = lanePresenceSent;
+      if (latest?.syncService !== syncService || latest.generation < list.generation) {
+        lanePresenceSent = { syncService, generation: list.generation };
+      }
+    } catch (error) {
+      if (options.throwOnError) throw error;
+      console.warn(
+        "[sync] could not send the open lanes to the sync host",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+  const removeSyncScopeReadyListener =
+    typeof (scopeRegistry as Partial<ProjectScopeRegistry>).onSyncScopeReady === "function"
+      ? scopeRegistry.onSyncScopeReady(() => {
+          void applyPendingLanePresence().catch(() => {});
+        })
+      : null;
+
   const getSyncService = async () => {
     const syncService = await resolveSyncService();
     if (!syncService) throw syncServiceUnavailable();
+    await applyPendingLanePresence();
     return syncService;
   };
 
@@ -2567,19 +2824,23 @@ export function createMultiProjectRpcRequestHandler(
     machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
   ): Promise<TFallback | TService> => {
     const syncService = await resolveSyncService();
-    if (syncService) return await run(syncService);
+    if (syncService) {
+      await applyPendingLanePresence();
+      return await run(syncService);
+    }
     const controls = options.projectlessSyncControls;
     if (controls) return await machineFallback(controls);
     throw syncServiceUnavailable();
   };
 
   /**
-   * `withSyncService` for a read. The scope that hosts sync, or most recently
-   * tried to (a held failure, else the last requested switch, which outlives
-   * the backoff), answers as it is when it is ready; only with no such scope
-   * does the read go through `withSyncService`. Re-entering host activation
-   * for a read answered the Phone tab with "Another ADE brain is already
-   * hosting mobile sync" whenever activation was blocked or backed off.
+   * `withSyncService` for a read, which never activates a sync host. The scope
+   * that hosts sync, or most recently tried to (a held failure, else the last
+   * requested switch, which outlives the backoff), answers as it is when it is
+   * ready; then any project scope already booted; then the machine-level
+   * controls. Re-entering host activation for a read answered the Phone tab
+   * with "Another ADE brain is already hosting mobile sync" whenever
+   * activation was blocked, backed off, or a second brain held the port.
    */
   const readSyncService = async <TService, TFallback>(
     run: (syncService: ActiveSyncService) => TService | Promise<TService>,
@@ -2591,8 +2852,14 @@ export function createMultiProjectRpcRequestHandler(
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;
-    if (readySyncService) return await run(readySyncService);
-    return await withSyncService(run, machineFallback);
+    const runningSyncService = readySyncService ?? resolveReadySyncServiceForRead();
+    if (runningSyncService) {
+      await applyPendingLanePresence();
+      return await run(runningSyncService);
+    }
+    const controls = options.projectlessSyncControls;
+    if (controls) return await machineFallback(controls);
+    throw syncServiceUnavailable();
   };
 
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
@@ -2703,14 +2970,53 @@ export function createMultiProjectRpcRequestHandler(
             }
           : null,
         lastWedge: status?.lastWedge ? { ...status.lastWedge } : null,
+        lastUnplannedRestart: status?.lastUnplannedRestart
+          ? {
+              ts: status.lastUnplannedRestart.ts,
+              chats: status.lastUnplannedRestart.chats,
+              cliSessions: status.lastUnplannedRestart.cliSessions,
+            }
+          : null,
       };
     } catch {
       return {
         syncPort: null,
         publishHealth: null,
         lastWedge: null,
+        lastUnplannedRestart: null,
       };
     }
+  };
+
+  /**
+   * A call for `MACHINE_SCOPE_PROJECT_ID`: a computer's own settings, never a
+   * project. Only the actions `machineScopeActionAllowed` lists (and
+   * `stream_events`) answer here.
+   */
+  const routeMachineScopeCall = async (request: JsonRpcRequest, params: Record<string, unknown>): Promise<unknown> => {
+    const method = typeof request.method === "string" ? request.method : "";
+    // Another machine's agents act through a project they were given, not
+    // this computer's settings.
+    if (isAgentRemoteClientName(callerClientName())) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This computer's settings are not open to another machine's agents.");
+    }
+    if (method !== "ade/actions/call" || (params.name !== "run_ade_action" && params.name !== "stream_events")) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `${method} needs a project; this computer's settings do not answer it.`);
+    }
+    const envelope = params.name === "run_ade_action" ? safeParams(params.arguments) : null;
+    if (envelope) {
+      const domain = typeof envelope.domain === "string" ? envelope.domain : "";
+      const action = typeof envelope.action === "string" ? envelope.action : "";
+      if (!machineScopeActionAllowed(domain, action)) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, machineScopeRefusalMessage(domain, action));
+      }
+    }
+    const entry = await getProjectHandler(MACHINE_SCOPE_PROJECT_ID);
+    const result = await entry.handler({ ...request, params: omitProjectId(omitRemoteCaller(params)) });
+    if (envelope && params[CONDITIONAL_ACTION_PARAM] === true) {
+      return conditionalActionResult(result, params[CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM]);
+    }
+    return result;
   };
 
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
@@ -2774,6 +3080,13 @@ export function createMultiProjectRpcRequestHandler(
           },
           ...sdkCapabilities(),
           account: true,
+          // `MACHINE_SCOPE_PROJECT_ID` names this computer's own settings
+          // (Providers) with no project: `ade/actions/call` for the actions
+          // `machineScopeActionAllowed` lists, and `runtimeEvents.subscribe`.
+          machineScope: true,
+          // The domains it answers there: a desktop shows the ones an older
+          // brain lacks (Keep awake, Android, Passwords) as "update ADE".
+          machineScopeDomains: [...MACHINE_SCOPE_DOMAINS],
         },
       };
     }
@@ -2850,6 +3163,51 @@ export function createMultiProjectRpcRequestHandler(
       // stays open to any role, with identity fields removed below for non-CTO
       // callers.
       const role = callerRole();
+      // An agent in a chat may not remove a computer, but it may ask: the
+      // person answers a user-only card in that chat, and the brain removes
+      // the computer while it accepts their answer, with the same directory
+      // call as below. The agent's role is never raised; a person's terminal
+      // carries no chat and takes the path below.
+      const removalChatSessionId = action === "deleteMachine" ? callerChatSessionId() : null;
+      if (removalChatSessionId) {
+        const removalArgs = isRecord(params.args) ? params.args : {};
+        const located = await options.crossScopeChats?.locateChat(removalChatSessionId, { boot: false }).catch(() => null) ?? null;
+        const chatService = located?.runtime.agentChatService ?? null;
+        if (!chatService) {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.policyDenied,
+            "account.deleteMachine is not available to agents, and this ADE does not hold your chat to ask the person in. Ask the person to remove the computer on the Account page.",
+          );
+        }
+        reconcileAccountOwnership(currentAccountOwnerUserId());
+        const removalDirectory = accountMachineDirectory();
+        // How the card ended, like the brain's other agent cards. A second chat
+        // that was told another card is open asked nothing, so it is not counted.
+        const captureRemovalCard = (outcome: "completed" | "cancelled" | "failed") =>
+          captureAgentCardAnalytics({ analytics: located?.runtime.productAnalyticsService, surface: "api", card: "machine_removal", outcome });
+        try {
+          const result = await requestMachineRemovalFromUser({
+            requestChatInput: (input) => chatService.requestChatInput(input),
+            listMachines: () => removalDirectory.listMachines(),
+            deleteMachine: (machineKey) => removalDirectory.deleteMachine(machineKey),
+            localMachineKey: localAccountMachineKey,
+          }, {
+            chatSessionId: removalChatSessionId,
+            machine: typeof removalArgs.machine === "string" ? removalArgs.machine : "",
+            ...(typeof removalArgs.timeoutMs === "number" ? { timeoutMs: removalArgs.timeoutMs } : {}),
+          });
+          if (result.status !== "pending_approval") {
+            captureRemovalCard(result.status === "removed" ? "completed" : result.status === "kept" ? "cancelled" : "failed");
+          }
+          return { domain: "account", action, result, statusHints: {} };
+        } catch (error) {
+          captureRemovalCard("failed");
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidRequest,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      }
       const ctoOnlyAccountAction = isCtoOnlyAdeAction("account", action)
         || action === "renameMachine"
         // Re-pairing this machine into the account is a machine-operator act,
@@ -2897,12 +3255,7 @@ export function createMultiProjectRpcRequestHandler(
             "account.showMachine requires a machine name, machine key, or device id.",
           );
         }
-        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const machineDirectory = accountMachineDirectory();
         const listed = await machineDirectory.listMachines();
         if (listed.state !== "ok") {
           return {
@@ -2931,15 +3284,7 @@ export function createMultiProjectRpcRequestHandler(
         } catch {
           activityItems = null;
         }
-        let localMachineKey: string | null = null;
-        try {
-          localMachineKey = createSyncCloudRelayStore({
-            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
-          }).getMachineIdentity().machineKey;
-        } catch {
-          localMachineKey = null;
-        }
-        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey });
+        const snapshot = buildAccountMachineSnapshot({ machine, activityItems, localMachineKey: localAccountMachineKey() });
         return {
           domain: "account",
           action,
@@ -2990,12 +3335,7 @@ export function createMultiProjectRpcRequestHandler(
         || action === "deleteMachine"
       ) {
         reconcileAccountOwnership(currentAccountOwnerUserId());
-        const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
-          appVersion: options.serverVersion,
-          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-            projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-          }),
-        });
+        const machineDirectory = accountMachineDirectory();
         const actionArgs = isRecord(params.args) ? params.args : {};
         if (action === "listMachines") {
           const result = await machineDirectory.listMachines();
@@ -3084,12 +3424,7 @@ export function createMultiProjectRpcRequestHandler(
             filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
           }).getMachineIdentity().machineKey.trim();
           if (ownMachineKey) {
-            await new AccountMachineDirectoryService(accountAuthService, {
-              appVersion: options.serverVersion,
-              directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
-                projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
-              }),
-            }).deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
+            await accountMachineDirectory().deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
           }
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
@@ -3174,12 +3509,18 @@ export function createMultiProjectRpcRequestHandler(
         && params.targetVersion.trim()
         ? params.targetVersion.trim()
         : null;
+      // Who asked, for the logs and the next start's continue message. It
+      // never changes the routing.
+      const requestedBy = updateRequester(params.requestedBy, {
+        authenticatedName: options.peerDeviceId ? options.peerDeviceName ?? null : null,
+        clientName: callerClientName(),
+      });
       if (machineUpdateAndRestartInFlight) return await machineUpdateAndRestartInFlight;
       const run = (async () => {
         const { runMachineUpdateAndRestart } = await import(
           "./services/runtime/machineUpdateAndRestart"
         );
-        return await runMachineUpdateAndRestart(controls, targetVersion);
+        return await runMachineUpdateAndRestart(controls, targetVersion, requestedBy);
       })();
       machineUpdateAndRestartInFlight = run;
       try {
@@ -3291,7 +3632,7 @@ export function createMultiProjectRpcRequestHandler(
     // "Push all work to GitHub", run over exec on a computer that may be out of hours.
     if (method === "cloud.pushWork") {
       if (!options.pushCloudWork) throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "This runtime can't push this computer's work.");
-      return await options.pushCloudWork({ check: params.check === true });
+      return await options.pushCloudWork({ check: params.check === true, message: readOptionalString(params.message) ?? null });
     }
     // Only reads. A method of its own: a brain that predates it refuses it
     // instead of reading the check as a push.
@@ -3408,10 +3749,32 @@ export function createMultiProjectRpcRequestHandler(
       const activeScope = await scopeRegistry.resolveActiveSyncHost();
       const publisher = activeScope?.runtime.pushPublisherService;
       if (!publisher) {
-        throw new JsonRpcError(
+        // A brain with no project it can open (signed out, a fresh install, or
+        // only projects whose folders are gone) has no push publisher, and no
+        // work to show. A read answers with an empty snapshot, not an
+        // "unavailable" error.
+        const hasOpenableProject = projectRegistry.list()
+          .some((record) => !projectRegistry.isProjectDataMissing(record));
+        if (!activeScope && !hasOpenableProject && (action === "getSnapshot" || action === "getMachineSnapshot")) {
+          return {
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            scope: "machine",
+            // The same owner the publisher stamps: the signed-in user, else none.
+            accountOwnerId: currentAccountOwnerUserId(),
+            streamId: null,
+            revision: 0,
+            generatedAt: new Date().toISOString(),
+            machines: [],
+            items: [],
+            tombstones: [],
+          } satisfies AttentionSnapshot;
+        }
+        // Projects are there but the one that hosts sync is still opening: a
+        // state the caller retries, not a defect.
+        throw markExpected(new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
           "Account Activity is unavailable until the ADE brain is ready.",
-        );
+        ), "environment");
       }
       if (action === "getSnapshot") {
         const since = Number.isFinite(Number(args.since))
@@ -3568,6 +3931,23 @@ export function createMultiProjectRpcRequestHandler(
       return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getOwnLiveQuota() ?? null;
     }
 
+    // Another machine spends a reset banked here: it shows this machine's
+    // credits for a login it cannot read itself. It spends one of this
+    // machine's own credits only, so a claim never travels on to a third
+    // machine. Agents may spend, matching the `usage.consumeResetCredit` action.
+    if (method === "usage.consumeResetCredit") {
+      if (!callerHasRoleAtLeast(callerRole(), "agent")) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "usage.consumeResetCredit requires the agent role.");
+      }
+      const accountId = typeof params.accountId === "string" ? params.accountId.trim() : "";
+      const service = peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir);
+      if (!service) {
+        return { ok: false, status: "failure", message: "Usage tracking has not started on this computer yet." };
+      }
+      const email = typeof params.email === "string" ? params.email.trim() : "";
+      return await service.consumeOwnResetCredit({ accountId, ...(email ? { email } : {}) });
+    }
+
     if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {
       const action = typeof params.action === "string" ? params.action.trim() : "";
       if (!action) {
@@ -3667,7 +4047,10 @@ export function createMultiProjectRpcRequestHandler(
         );
       }
       if (method === "machines.list") {
-        return await bridge.listMachines({ includeProjects: params.includeProjects === true });
+        return await bridge.listMachines({
+          includeProjects: params.includeProjects === true,
+          ...(typeof params.projectsBudgetMs === "number" ? { projectsBudgetMs: params.projectsBudgetMs } : {}),
+        });
       }
       const machine = typeof params.machine === "string" ? params.machine.trim() : "";
       const requestParams = isRecord(params.request) ? params.request : {};
@@ -3706,6 +4089,7 @@ export function createMultiProjectRpcRequestHandler(
           caller: {
             chatSessionId: callerChat,
             permissionLevel: located?.runtime.agentChatService?.permissionLevelOf(callerChat ?? "") ?? null,
+            turnId: callerChat ? located?.runtime.agentChatService?.remoteTurnIdOf(callerChat) ?? null : null,
             ...(wakeToken ? { wakeToken } : {}),
           },
           timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
@@ -3717,15 +4101,17 @@ export function createMultiProjectRpcRequestHandler(
         // Bookkeeping for the chat's views: the call already ran there, so a
         // failure here is logged and never turns it into a failed call.
         const workCopyLaneId = remoteWorkKind ? remoteWorkCopyLaneId(answer.result) : null;
-        // An Android status or device list with no copy there yet names no
-        // emulator, so it is not work there.
-        if (callerChat && remoteWorkKind && (remoteWorkKind !== "android" || workCopyLaneId)) {
+        // An Android, Desktop or App Control status read with no copy there
+        // yet names no device, screen or session, so it is not work there.
+        if (callerChat && remoteWorkKind && (remoteWorkKind === "shell" || remoteWorkKind === "simulator" || workCopyLaneId)) {
           try {
             located?.runtime.agentChatService?.noteRemoteWork({
               terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
               workCopyLaneId,
               usesSimulator: remoteWorkKind === "simulator",
               usesAndroidEmulator: remoteWorkKind === "android",
+              usesDesktop: remoteWorkKind === "desktop",
+              usesAppControl: remoteWorkKind === "app_control",
               sessionId: callerChat,
               machineKey: answer.machine.machineKey,
               machineName: answer.machine.name,
@@ -3735,6 +4121,17 @@ export function createMultiProjectRpcRequestHandler(
             });
           } catch (error) {
             console.warn("[remote-work] could not record the chat's work on another machine", error);
+          }
+        }
+        // `ade shell clean --machine`: the copy (and its lane, shells and
+        // devices) is gone there, so the chat's record drops them; the
+        // machine entry stays.
+        if (callerChat && forwardMethod === "ade/actions/call" && forwardParams.name === "release_remote_work_copy"
+          && remoteActionResult(answer.result)?.released === true) {
+          try {
+            located?.runtime.agentChatService?.noteRemoteWorkCleaned({ sessionId: callerChat, machineKey: answer.machine.machineKey });
+          } catch (error) {
+            console.warn("[remote-work] could not forget the chat's work on another machine", error);
           }
         }
         // A child this chat started there: remember it, so that machine's
@@ -4406,7 +4803,8 @@ export function createMultiProjectRpcRequestHandler(
             (laneId): laneId is string => typeof laneId === "string",
           )
         : [];
-      await (await getSyncService()).setActiveLanePresence(laneIds);
+      lanePresence = { laneIds, generation: ++lanePresenceGeneration };
+      await applyPendingLanePresence({ throwOnError: true });
       return null;
     }
 
@@ -4441,9 +4839,10 @@ export function createMultiProjectRpcRequestHandler(
         `Method ${method} requires params.projectId.`,
       );
     }
+    if (projectId === MACHINE_SCOPE_PROJECT_ID) return await routeMachineScopeCall(request, params);
     const foreignCaller = resolveForeignCaller(params);
     const handlerFor = (target: ProjectId): Promise<HandlerEntry> => (
-      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target)
+      foreignCaller ? getForeignCallerProjectHandler(target, foreignCaller) : getProjectHandler(target, method)
     );
     let forwardedParams = omitProjectId(omitRemoteCaller(params));
     const parentSlot = childParentSlot(method, forwardedParams);
@@ -4555,6 +4954,7 @@ export function createMultiProjectRpcRequestHandler(
     }
     foreignHandlers.clear();
     removeScopeDisposeListener?.();
+    removeSyncScopeReadyListener?.();
     if (options.disposeScopesOnDispose ?? !options.scopeRegistry) {
       void scopeRegistry.disposeAll();
     }
@@ -4579,4 +4979,31 @@ export function createPersonalChatScope(
     // returns the actionable error to the caller.
   });
   return scope;
+}
+
+/**
+ * The kind of client a caller of `machine.updateAndRestart` is, from the name
+ * its connection gave, for a caller that names no known kind of its own.
+ */
+function updateRequestClientKindFromClientName(name: string | null): UpdateRequestClientKind {
+  if (isDesktopClientName(name)) return "desktop";
+  if (isRemoteBrainCallerClientName(name)) return "agent";
+  if (name === "ade-cli") return "cli";
+  return "unknown";
+}
+
+/**
+ * Who asked for a remote update. The machine name comes from the paired
+ * device record the connection authenticated with; the client's own claim
+ * counts only when there is none. The client kind comes from the claim when
+ * it is a known kind, else from the connection's client name.
+ */
+function updateRequester(
+  claimed: unknown,
+  connection: { authenticatedName: string | null; clientName: string | null },
+): UpdateRequestedBy {
+  const claim = sanitizeUpdateRequestedBy(claimed);
+  const machineName = sanitizeMachineName(connection.authenticatedName) ?? claim?.machineName ?? null;
+  const clientKind = claim?.clientKind ?? updateRequestClientKindFromClientName(connection.clientName);
+  return { ...(machineName ? { machineName } : {}), clientKind };
 }

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { useNoticeCornerHeld } from "./cornerNoticeDock";
 import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react";
 
 import { ToastCard } from "../../ui/notice/ToastCard";
@@ -50,9 +51,20 @@ export function ToastStack() {
  */
 function ToastStackCard({ toast }: { toast: Toast }) {
   const onRendered = toast.onRendered;
+  // Held (a browser page covers both notice corners): the card stays mounted
+  // but is not on screen, so it is not delivered yet.
+  const held = useNoticeCornerHeld();
   useEffect(() => {
-    onRendered?.();
-  }, [onRendered]);
+    if (!held) onRendered?.();
+  }, [held, onRendered]);
+  // A card can go away under the pointer (dismissed, or the stack held) with
+  // no mouse-leave: drop its hover pause so the countdown is not stuck. A hold
+  // still keeps it stopped.
+  const toastId = toast.id;
+  useEffect(() => () => resumeToast(toastId), [toastId]);
+  useEffect(() => {
+    if (held) resumeToast(toastId);
+  }, [held, toastId]);
 
   return (
     <ToastCard

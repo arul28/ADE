@@ -162,8 +162,10 @@ describe("EncryptedFileCredentialStore", () => {
       console.info(`credential lock wait ${heldForMs}ms: sync ${syncWaitMs}ms / ${syncTimerLagMs}ms timer lag / ${syncDelayMaxMs.toFixed(1)}ms histogram max; async ${asyncWaitMs}ms / ${asyncTimerLagMs}ms timer lag / ${asyncDelayMaxMs.toFixed(1)}ms histogram max`);
       expect(syncTimerLagMs).toBeGreaterThan(heldForMs * 0.5);
       expect(asyncWaitMs).toBeGreaterThanOrEqual(heldForMs - 10);
+      // The timer is the loop's own answer to "was it free while waiting".
+      // The histogram's max also catches unrelated pauses on a loaded runner
+      // (237 ms seen on CI), so it is logged, not asserted.
       expect(asyncTimerLagMs).toBeLessThan(heldForMs * 0.5);
-      expect(asyncDelayMaxMs).toBeLessThan(heldForMs * 0.5);
     } finally {
       delay.disable();
       try { fs.unlinkSync(lockPath); } catch { /* already released */ }

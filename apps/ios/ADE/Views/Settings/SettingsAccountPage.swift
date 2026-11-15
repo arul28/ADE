@@ -62,6 +62,7 @@ struct SettingsAccountPage: View {
         heroSection(identity)
         githubAccountSection
         computersSection
+        SettingsPasswordsSection()
         detailsSection(identity)
         inviteSection
       } else {
@@ -295,7 +296,7 @@ struct SettingsAccountPage: View {
     case .needsReauth:
       githubConnectRow(
         title: "GitHub connection ended",
-        hint: "Your GitHub connection ended. Connect GitHub again to keep working with pull requests.",
+        hint: "Connect GitHub again to keep working with pull requests.",
         symbol: "exclamationmark.triangle",
         tint: .amber
       )

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildDiagnosticIssueUrl,
   buildDiagnosticReport,
   projectPathLabel,
   redactDiagnosticText,
@@ -381,58 +380,5 @@ describe("redactDiagnosticText hostnames", () => {
   it("leaves an unrelated word that merely contains the hostname alone", () => {
     const out = redactDiagnosticText("superhostname-extra", { hostname: "hostname" });
     expect(out).toBe("superhostname-extra");
-  });
-});
-
-describe("buildDiagnosticIssueUrl", () => {
-  it("targets the ADE repo with a title and a compact stub body", () => {
-    const url = buildDiagnosticIssueUrl({
-      surface: "project_recovery",
-      headline: "ADE couldn't open this project",
-      code: "db_integrity",
-      appVersion: "1.2.61",
-      platform: "darwin",
-      arch: "arm64",
-      installId: "ade_0123456789abcdef0123456789abcdef",
-    });
-    const parsed = new URL(url);
-
-    expect(parsed.origin + parsed.pathname).toBe("https://github.com/arul28/ADE/issues/new");
-    expect(parsed.searchParams.get("title")).toBe("[report] ADE couldn't open this project (db_integrity)");
-    expect(parsed.searchParams.get("body")).toContain("clipboard");
-    expect(parsed.searchParams.get("body")).toContain("ade_0123456789abcdef0123456789abcdef");
-    // Well under GitHub's URL ceiling: the full report rides the clipboard.
-    expect(url.length).toBeLessThan(2_000);
-  });
-
-  // Regression: the headline is renderer-supplied (an update failure message
-  // carries OS paths) and used to reach the issue title and stub body raw.
-  it("redacts the caller-supplied headline in the title and the stub body", () => {
-    const url = buildDiagnosticIssueUrl({
-      surface: "auto_update",
-      headline: "Update failed writing /Users/ada/Library/Application Support/ADE on adas-macbook-pro.local",
-      code: "update_write_failed",
-      appVersion: "1.2.61",
-      platform: "darwin",
-      arch: "arm64",
-      installId: "ade_0123456789abcdef0123456789abcdef",
-      redaction: CONTEXT,
-    });
-    const parsed = new URL(url);
-    const title = parsed.searchParams.get("title") ?? "";
-    const body = parsed.searchParams.get("body") ?? "";
-
-    expect(title).not.toContain("/Users/ada");
-    expect(title).not.toMatch(/adas-macbook-pro/i);
-    expect(title).toContain("~/Library/Application Support/ADE");
-    expect(title).toContain("<host>");
-    expect(body).not.toContain("/Users/ada");
-    // The URL itself is still a normal encoded URL, not a redacted string.
-    expect(parsed.origin + parsed.pathname).toBe("https://github.com/arul28/ADE/issues/new");
-  });
-
-  it("leaves the title untouched when no redaction context is supplied", () => {
-    const url = buildDiagnosticIssueUrl({ surface: "cli", headline: "plain headline" });
-    expect(new URL(url).searchParams.get("title")).toBe("[report] plain headline");
   });
 });

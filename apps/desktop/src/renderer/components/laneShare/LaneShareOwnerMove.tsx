@@ -267,7 +267,7 @@ function OwnerConsent({
           <button type="button" className="self-start text-[11.5px] text-fg/60 underline-offset-2 hover:underline" onClick={() => setEditRights((open) => !open)}>
             {editRights ? "Hide the rights of the share back" : `Share back with ${who}: the same rights (change)`}
           </button>
-          {editRights ? <LaneShareRightsPanel rights={rights} endsAt={endsAt} onChange={setRights} onEndsAtChange={setEndsAt} now={Date.now()} cliTyping={cliTyping} /> : null}
+          {editRights ? <LaneShareRightsPanel rights={rights} endsAt={endsAt} onChange={setRights} onEndsAtChange={setEndsAt} now={Date.now()} cliTyping={cliTyping} runtimePin={pin} /> : null}
         </div>
       ) : null}
       <div className="flex items-center gap-2">

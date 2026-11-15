@@ -4,7 +4,9 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { cloudAsleepForUse, cloudRestChanged, cloudUpdateBlocker, cloudWakeForUse } from "../adeCloud/cloudWakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { thisMachineDisplayName } from "../../../../../ade-cli/src/services/sync/deviceRegistryService";
 import { accountProjectIdForCopy, localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
+import { isMachineScopeRootPath, MACHINE_SCOPE_ROOT_PATH } from "../../../shared/machineScope";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -431,6 +433,9 @@ function resolveAuthorizedLocalRuntimeRootPath(
   requestedRootPath: string | null | undefined,
   authorizeLocalRuntimeRoot?: RuntimeBridgeArgs["authorizeLocalRuntimeRoot"],
 ): string | null {
+  // This computer's own settings (`shared/machineScope.ts`): no project, so
+  // any window of this desktop may reach them.
+  if (isMachineScopeRootPath(requestedRootPath)) return MACHINE_SCOPE_ROOT_PATH;
   const roots = collectAuthorizedLocalRuntimeRoots(session);
   const requested = normalizeLocalRuntimeRootPath(requestedRootPath);
   if (requested) {
@@ -1030,6 +1035,7 @@ export function registerRuntimeBridge({
       sender.isDestroyed()
     )
       return;
+    if (eventEpoch) subscription.eventEpoch = eventEpoch;
     if (!shouldForwardRuntimeEvent(sender, event)) return;
     const payload: RemoteRuntimeEventNotificationPayload = {
       bindingKey,
@@ -1049,12 +1055,16 @@ export function registerRuntimeBridge({
     requestKey: string,
     subscribe: RuntimeEventSubscribe,
     fileWatchRuntimeKey: string,
-  ): Promise<RuntimeEventSubscriptionInit | null> => {
+  ): Promise<Partial<RuntimeEventSubscriptionInit> | null> => {
     // `requestKey` is prefixed with `bindingKey`, so an identical request key is
-    // an identical binding: this pump already owns a live subscription and only
-    // needs its idle-expiry clock refreshed.
+    // an identical binding: a pump already owns a live subscription and only
+    // needs its idle-expiry clock refreshed. Several pumps of one window can
+    // share it (the bound pump and a chat pinned to the same copy), and only
+    // the one that subscribed saw the subscribe answer. Each poll gets the
+    // current epoch, so a pump that did not subscribe still sees a restarted
+    // runtime and rewinds; without it, it drops every event of the new runtime.
     const existing = refreshRuntimeEventSubscription(sender.id, requestKey);
-    if (existing) return null;
+    if (existing) return existing.eventEpoch ? { eventEpoch: existing.eventEpoch } : null;
     const subscription = addRuntimeEventSubscription({
       sender,
       bindingKey,
@@ -1065,13 +1075,14 @@ export function registerRuntimeBridge({
       removeRuntimeEventSubscription(sender.id, requestKey, subscription);
       notePageRuntimeDisconnected(sender.id, fileWatchRuntimeKey);
     };
-    let subscriptionInit: RuntimeEventSubscriptionInit | null = null;
+    let subscriptionInit: Partial<RuntimeEventSubscriptionInit> | null = null;
     try {
       const cleanup = await subscribe(
         (event, eventEpoch) => sendRuntimeEvent(subscription, event, eventEpoch),
         onEnded,
         (result) => {
           subscriptionInit = result;
+          if (result.eventEpoch) subscription.eventEpoch = result.eventEpoch;
         },
       );
       if (
@@ -1889,7 +1900,15 @@ export function registerRuntimeBridge({
       >(
         target.id,
         "machine.updateAndRestart",
-        { targetVersion },
+        {
+          targetVersion,
+          // Who asked, for the other machine's logs and its agents' continue
+          // message. An older brain ignores the field.
+          requestedBy: {
+            machineName: (await thisMachineDisplayName()) ?? undefined,
+            clientKind: "desktop",
+          },
+        },
         {
           // Downloading and installing a build can take minutes, and the
           // restart itself drops the connection — a silent retry would run the

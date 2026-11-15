@@ -5,7 +5,7 @@ import YAML from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 import { createProjectConfigService } from "../config/projectConfigService";
-import { openKvDb } from "../state/kvDb";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { createAutomationRuleAccountStore } from "./automationRuleAccountStore";
 
 /**
@@ -84,7 +84,7 @@ async function createComputer(args: {
     getAccountUserId: () => user.id,
     getDeviceId: () => args.name,
   });
-  const db = await openKvDb(path.join(adeDir, "ade.db"), silent);
+  const db = await openFreshKvDb(path.join(adeDir, "ade.db"), silent);
   const config = createProjectConfigService({ projectRoot, adeDir, projectId: args.name, db, logger: silent });
   const store = createAutomationRuleAccountStore({
     backend: account,

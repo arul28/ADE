@@ -77,7 +77,6 @@ export const IPC = {
   appCommandsReady: "ade.app.commandsReady",
   appRequestWindowClose: "ade.app.requestWindowClose",
   appSetTitleBarOverlay: "ade.app.setTitleBarOverlay",
-  appPlaceNoticeLayer: "ade.app.placeNoticeLayer",
   appProjectChanged: "ade.app.projectChanged",
   appProjectBindingChanged: "ade.app.projectBindingChanged",
   appOpenExternal: "ade.app.openExternal",
@@ -132,6 +131,7 @@ export const IPC = {
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
+  projectListThisComputer: "ade.project.listThisComputer",
   projectAccountList: "ade.project.accountList",
   projectAccountAdd: "ade.project.accountAdd",
   projectAccountRemove: "ade.project.accountRemove",
@@ -179,17 +179,22 @@ export const IPC = {
   machineResetStart: "ade.machineReset.start",
   /** Folder picker for the "move lanes out" rescue option. */
   machineResetChooseRescueDir: "ade.machineReset.chooseRescueDir",
-  /** Assemble, save, copy to the clipboard, and open a prefilled GitHub issue. */
-  diagnosticsOpenIssue: "ade.diagnostics.openIssue",
   /** Renderer-detected failure asking main to consider one automatic send. */
   diagnosticsAutoReport: "ade.diagnostics.autoReport",
   /**
-   * "Send a report to ADE", pressed by hand in Settings, with nothing visibly
-   * broken. Main owns the report, the per-device manual budget and the upload;
-   * unlike the automatic path it answers with what happened, because someone is
-   * watching.
+   * Build and redact one report for the person to read before it is sent
+   * (the report dialog, Settings' "Send a report"). Sends nothing and claims
+   * no budget; answers the text with a one-use id.
    */
-  diagnosticsSendManual: "ade.diagnostics.sendManual",
+  diagnosticsPrepareReport: "ade.diagnostics.prepareReport",
+  /**
+   * Upload a prepared report by id, byte for byte, and claim the manual
+   * budget then. Main owns the report, the budget and the upload; unlike the
+   * automatic path it answers with what happened, because someone is watching.
+   */
+  diagnosticsSendReport: "ade.diagnostics.sendReport",
+  /** Drop a prepared report (Cancel). */
+  diagnosticsDiscardReport: "ade.diagnostics.discardReport",
   /** Read the automatic-report setting. No UI reads it any more; kept for the preload contract. */
   diagnosticsGetSharing: "ade.diagnostics.getSharing",
   /** Flip the automatic-report setting. No UI calls it any more; kept for the preload contract. */
@@ -778,6 +783,15 @@ export const IPC = {
   builtInBrowserKeepTab: "ade.builtInBrowser.keepTab",
   builtInBrowserCloseTab: "ade.builtInBrowser.closeTab",
   builtInBrowserReload: "ade.builtInBrowser.reload",
+  // The Messages integration on this Mac (Settings › Integrations › Messages).
+  messagesIntegrationStatus: "ade.messagesIntegration.status",
+  messagesIntegrationSet: "ade.messagesIntegration.set",
+  // Passwords for the person in the browser: the key button and "Save to Passwords?".
+  builtInBrowserSavedLogins: "ade.builtInBrowser.savedLogins",
+  builtInBrowserFillSavedLogin: "ade.builtInBrowser.fillSavedLogin",
+  builtInBrowserLoginOffer: "ade.builtInBrowser.loginOffer",
+  builtInBrowserAcceptLoginOffer: "ade.builtInBrowser.acceptLoginOffer",
+  builtInBrowserDismissLoginOffer: "ade.builtInBrowser.dismissLoginOffer",
   builtInBrowserGoBack: "ade.builtInBrowser.goBack",
   builtInBrowserGoForward: "ade.builtInBrowser.goForward",
   builtInBrowserStop: "ade.builtInBrowser.stop",
@@ -1038,15 +1052,6 @@ export const IPC = {
   aiGetToolsCache: "ade.ai.getToolsCache",
   aiEnsureToolsCache: "ade.ai.ensureToolsCache",
   aiToolsCacheEvent: "ade.ai.toolsCacheEvent",
-  projectSecretsList: "ade.projectSecrets.list",
-  projectSecretsGet: "ade.projectSecrets.get",
-  projectSecretsSet: "ade.projectSecrets.set",
-  projectSecretsDelete: "ade.projectSecrets.delete",
-  projectSecretsPullFromAccount: "ade.projectSecrets.pullFromAccount",
-  projectSecretsChooseEnvFile: "ade.projectSecrets.chooseEnvFile",
-  projectSecretsPreviewEnvImport: "ade.projectSecrets.previewEnvImport",
-  projectSecretsImportEnv: "ade.projectSecrets.importEnv",
-  projectSecretsExportEnv: "ade.projectSecrets.exportEnv",
   aiCursorCloudListRepositories: "ade.ai.cursorCloud.listRepositories",
   aiCursorCloudListAgents: "ade.ai.cursorCloud.listAgents",
   aiCursorCloudListRuns: "ade.ai.cursorCloud.listRuns",
@@ -1149,6 +1154,8 @@ export const IPC = {
   accountSignOut: "ade.account.signOut",
   accountListMachines: "ade.account.listMachines",
   laneShareGuestListReceived: "ade.laneShareGuest.listReceived",
+  laneShareGuestListGiven: "ade.laneShareGuest.listGiven",
+  laneShareGuestRevokeGiven: "ade.laneShareGuest.revokeGiven",
   laneShareGuestOpen: "ade.laneShareGuest.open",
   laneShareGuestAccept: "ade.laneShareGuest.accept",
   laneShareGuestLeave: "ade.laneShareGuest.leave",
@@ -1193,11 +1200,15 @@ export const IPC = {
   cloudSetExtraHours: "ade.cloud.setExtraHours",
   cloudOpenCheckout: "ade.cloud.openCheckout",
   cloudSetExtraDisk: "ade.cloud.setExtraDisk",
+  cloudPickPlanCleanup: "ade.cloud.pickPlanCleanup",
   /** Enters a friend's invite (a link or a code) for this account (`CloudInviteRedeemOutcome`). Account level: no pin. */
   cloudRedeemInvite: "ade.cloud.redeemInvite",
   cloudOpenBillingPortal: "ade.cloud.openBillingPortal",
+  /** Opens Stripe's page to save a card with no charge (a too-new GitHub account's free hours start now). Account level: no pin. */
+  cloudOpenFreeUnlock: "ade.cloud.openFreeUnlock",
   cloudPersonIsHere: "ade.cloud.personIsHere",
   cloudPushAllWork: "ade.cloud.pushAllWork",
+  cloudKeepIdleComputer: "ade.cloud.keepIdleComputer",
   /** Delete lane, keep a lane on a fresh computer, lanes without a computer, tier changes (`cloudLaneLife.ts`). Account level. */
   cloudLaneLifeCall: "ade.cloud.laneLife.call",
   /** A tier change's steps (`CloudLaneJobSnapshot`), to every window. */
@@ -1240,6 +1251,19 @@ export const IPC = {
    * A bound or pinned window calls the `provider_logins` action domain instead.
    */
   providerLoginsCall: "ade.providerLogins.call",
+  /**
+   * Passwords on this computer's brain, with no project bound: `{ action, args }`
+   * through the brain's `passwords.call`. A bound or pinned window calls the
+   * `passwords` action domain instead. The handler allows summaries and
+   * person-only writes; it never exposes `resolveForFill` or a value.
+   */
+  passwordsCall: "ade.passwords.call",
+  /** Settings › Passwords & Secrets: Reveal / Copy after Touch ID or Windows Hello, on this computer. */
+  passwordsReveal: "ade.passwords.reveal",
+  /** Passwords & Secrets: pick a .env file on this computer; its entries come back to choose from. */
+  passwordsChooseEnvFile: "ade.passwords.chooseEnvFile",
+  /** Passwords & Secrets: this computer's projects, by the key their secrets are saved under. */
+  passwordsProjects: "ade.passwords.projects",
 
   /**
    * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and

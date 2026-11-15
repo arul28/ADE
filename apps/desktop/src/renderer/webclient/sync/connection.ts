@@ -355,6 +355,11 @@ export class SyncConnection {
     return { ...this.status };
   }
 
+  /** False once a refusal or a disconnect stopped the dialing. */
+  willReconnect(): boolean {
+    return this.shouldReconnect;
+  }
+
   getHelloOk(): SyncHelloOkPayload | null {
     return this.latestHello;
   }

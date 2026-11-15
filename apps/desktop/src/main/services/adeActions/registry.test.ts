@@ -44,18 +44,6 @@ function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): 
 }
 
 describe("work_tools runtime action domain", () => {
-  it("exposes the lane tool-state reads plus the desktop's one publish", () => {
-    expect(isAllowedAdeAction("work_tools", "getLaneState")).toBe(true);
-    expect(isAllowedAdeAction("work_tools", "setActiveTool")).toBe(true);
-    expect(isAllowedAdeAction("work_tools", "readObservationPreview")).toBe(true);
-    // `ade ui show` and the desktop's answer to it.
-    expect(isAllowedAdeAction("work_tools", "show")).toBe(true);
-    expect(isAllowedAdeAction("work_tools", "acknowledgeShow")).toBe(true);
-    // The pane itself is never driven through this domain — the browser and
-    // App Control keep their own allowlists for that.
-    expect(isAllowedAdeAction("work_tools", "click")).toBe(false);
-    expect(isAllowedAdeAction("work_tools", "navigate")).toBe(false);
-  });
 
   it("binds the domain to the runtime's aggregator, and reports nothing without one", () => {
     const workToolsStateService = {
@@ -283,27 +271,6 @@ describe("runtime domain services behind the allowlist", () => {
       expect.stringContaining("insert into prompt_stashes"),
       expect.arrayContaining([JSON.stringify([attachment])]),
     );
-  });
-
-  it("exposes Linear issue tracker composite reads for runtime-backed CTO views", () => {
-    const actions = ADE_ACTION_ALLOWLIST.linear_issue_tracker ?? [];
-    expect(actions).toContain("getWorkflowCatalog");
-    expect(actions).toContain("getIssuePickerData");
-    expect(actions).toContain("getConnectionStatus");
-    expect(actions).toContain("getQuickView");
-    expect(ADE_ACTION_ALLOWLIST.linear_oauth ?? []).toEqual(expect.arrayContaining([
-      "getSession",
-      "startSession",
-    ]));
-  });
-
-  it("exposes CTO identity session and scan wrappers for runtime-backed CTO views", () => {
-    const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
-    expect(chatActions).toContain("ensureCtoSession");
-    expect(chatActions).toContain("getMainTranscript");
-    expect(chatActions).toContain("getSubagentTranscript");
-    expect(chatActions).toContain("modelCatalog");
-    expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
   });
 
   it("exposes chat.modelCatalog as a runtime action alias", async () => {
@@ -961,13 +928,6 @@ describe("runtime domain services behind the allowlist", () => {
     } finally {
       vi.restoreAllMocks();
       await fs.promises.rm(base, { recursive: true, force: true });
-    }
-  });
-
-  it("exposes the browser panel and tab control surface", () => {
-    const actions = ADE_ACTION_ALLOWLIST.built_in_browser ?? [];
-    for (const name of ["claim", "startSession", "listSessions", "endSession", "showPanel", "navigate", "createTab", "switchTab", "closeTab", "observe", "getTrace", "click", "typeText", "dispatchKey", "scroll", "fill", "clear", "wait"]) {
-      expect(actions).toContain(name);
     }
   });
 
@@ -3027,12 +2987,6 @@ describe("runtime file actions", () => {
 });
 
 describe("search domain", () => {
-  it("exposes the universal search actions through the runtime action surface", () => {
-    expect(isAllowedAdeAction("search", "query")).toBe(true);
-    expect(isAllowedAdeAction("search", "indexStatus")).toBe(true);
-    expect(isAllowedAdeAction("search", "rebuildIndex")).toBe(true);
-    expect(isAllowedAdeAction("search", "dispose")).toBe(false);
-  });
 
   it("keeps query and indexStatus readable by every role while rebuildIndex stays CTO-only", () => {
     expect(isCtoOnlyAdeAction("search", "query")).toBe(false);

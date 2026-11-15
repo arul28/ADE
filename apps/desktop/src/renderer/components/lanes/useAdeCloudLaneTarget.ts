@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import type { CloudAccountState } from "../../../shared/adeCloud";
 import { cloudLaneLaunchStartRefusal } from "../../../shared/cloudLaneLaunch";
 import { useAdeCloudDraft } from "../chat/useAdeCloudDraft";
 
@@ -23,7 +22,6 @@ export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
     })?.message ?? null,
     [originUrl],
   );
-  const freeComputers = freeComputersOf(draft.account);
   return {
     /** ADE Cloud access is on for this account: the choice is listed. */
     offered: draft.available,
@@ -36,23 +34,12 @@ export function useAdeCloudLaneTarget(open: boolean, originUrl: string | null) {
     chooseTier: draft.chooseTier,
     resetTier: draft.resetTier,
     setDefaultTier: draft.setDefaultTier,
-    /** Free computers on the account, or null before the account answers. */
-    freeComputers,
-    /** The line under the name in a machine list. */
-    detail: freeComputers
-      ? `${freeComputers.free} of ${freeComputers.limit} computers free`
-      : "A new computer for each lane",
+    /** The line under the name in a machine list. No plan limits how many computers an account has. */
+    detail: "A new computer for each lane",
   };
 }
 
 export type AdeCloudLaneTarget = ReturnType<typeof useAdeCloudLaneTarget>;
-
-function freeComputersOf(account: CloudAccountState | null): { free: number; limit: number } | null {
-  // A partial answer (an older server) can lack the part: then it is unknown.
-  const computers = (account as Partial<CloudAccountState> | null)?.computers;
-  if (!computers || computers.limit <= 0) return null;
-  return { free: Math.max(0, computers.limit - computers.total), limit: computers.limit };
-}
 
 /**
  * What a machine list needs to show ADE Cloud as one of its rows: listed only

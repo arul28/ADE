@@ -407,6 +407,16 @@ function originLine(signIn: ProviderLoginSignIn, all: readonly ProviderLoginSign
   return copies > 1 ? `From ${copies} computers` : `From ${signIn.origin.label}`;
 }
 
+/**
+ * A pick that names a sign-in the account no longer has: a person's Remove
+ * clears its pick (providerLoginWrites.ts), so this is a sign-out on the
+ * computer it came from (capture removes that copy, and moves the pick to
+ * another copy of the same account when there is one).
+ * T14: nothing else is there to use. T15: ADE Cloud uses another account's.
+ */
+const PICK_GONE_TEXT = "The sign-in you picked was signed out on the computer it came from. Sign in on a computer to use it here.";
+const PICK_GONE_IN_PLACE_TEXT = "Used in place of the sign-in you picked, which was signed out on the computer it came from";
+
 function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus | null): Omit<AdeCloudTile, "provider"> {
   const { provider, account, cloud, now } = input;
   if (account.state !== "ok") return CHECKING_TILE;
@@ -422,6 +432,11 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
     signIn ? { kind: "switch", key: signIn.key, on: signIn.onForCloud, confirmOn: provider === "copilot" } : null;
   // Why the GitHub login matters: never cut, at any width.
   const repoLine: ProviderTileFact[] = provider === "copilot" ? [{ text: COPILOT_REPO_LINE, whole: true }] : [];
+  // The person's pick names a sign-in that left the account (the computer it
+  // came from signed out of it, and no other copy of that account is left):
+  // ADE Cloud can't use it, and the tile says so instead of going quiet.
+  const picked = account.status.cloud.inUse[provider];
+  const pickGone = Boolean(picked && picked !== "key" && !signIns.some((signIn) => signIn.key === picked));
 
   if (applied?.ownerOff) return unknown("T8", "ADE couldn't renew it in time", { kind: "recheck" });
   if (applied?.state === "failed") {
@@ -447,9 +462,14 @@ function carriedTile(input: AdeCloudTileInput, row: ProviderLoginProviderStatus 
       return signedIn("T12", [{ text: `${originLine(inUse, signIns)} · Ends on ${shortDate(expiresAt, now)}`, tone: "warn" }, ...repoLine], action);
     }
     const email = inUse.account?.email?.trim() || inUse.account?.id?.trim() || null;
-    return signedIn("T3", [{ text: email ? `${email} · ${originLine(inUse, signIns)}` : originLine(inUse, signIns) }, ...repoLine], action);
+    const inUseFact: ProviderTileFact = { text: email ? `${email} · ${originLine(inUse, signIns)}` : originLine(inUse, signIns) };
+    if (pickGone) {
+      return signedIn("T15", [inUseFact, { text: PICK_GONE_IN_PLACE_TEXT, tone: "warn" }, ...repoLine], action);
+    }
+    return signedIn("T3", [inUseFact, ...repoLine], action);
   }
   if (signIns.length > 0) return notSignedIn("T9", "Off for ADE Cloud", switchFor(only));
+  if (pickGone) return notSignedIn("T14", PICK_GONE_TEXT, { kind: "sign-in-here" });
   // Only a sign-in known to be there (or an older ADE that cannot say) offers Allow.
   const keyringHasIt = row?.keychain?.present === true || row?.keychain?.present === undefined;
   if (provider === "antigravity" && input.keyringIsThisComputer && row?.keychain?.canAllow && keyringHasIt) {

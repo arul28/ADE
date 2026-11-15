@@ -30,6 +30,9 @@ import type { GitHubRelayAuthAuditLog } from "./githubRelayConfig";
  *   when the cached token reached its stop time);
  * - a GitHub 401 to the token calls `onRejected()`, which asks the server
  *   once and answers the replacement, if any;
+ * - a read that finds a new token (the account connected again on another
+ *   computer) calls `onChanged`, so the owner restarts a relay poll that
+ *   stopped on the old one;
  * - the vault tick calls `adoptLocalSignIn()`;
  * - the status adds `statusFor(repo)`;
  * - the relay installation check and the relay poll use `relayAppUserAuth`,
@@ -118,14 +121,35 @@ export function createGithubAccountAppCredential(deps: {
     : null;
 
   let lastToken: string | null = null;
+  /** Whether a read happened in this process, and the last token one found. */
+  let readBefore = false;
+  let lastNonNullToken: string | null = null;
 
-  /** The current account App token, or null. Never throws. */
-  const readToken = async (): Promise<string | null> => {
+  /**
+   * Records a read. True when it brought a token this process did not have:
+   * a new one after another, or one after a read found none. The first read
+   * after start is not a change, and a token that comes back after a short
+   * gap (a network error) is not one either.
+   */
+  const noteToken = (token: string | null): boolean => {
+    const changed = token != null && readBefore && token !== lastNonNullToken;
+    readBefore = true;
+    if (token != null) lastNonNullToken = token;
+    lastToken = token;
+    return changed;
+  };
+
+  /**
+   * The current account App token, or null. Never throws.
+   * `force`: ask even when a negative answer still stands (a person pressed
+   * Refresh).
+   */
+  const readToken = async (opts: { force?: boolean } = {}): Promise<string | null> => {
     if (!client) return null;
     try {
-      const result = await client.getToken();
+      const result = await client.getToken(opts.force ? { force: true } : {});
       const token = result.ok ? result.token : null;
-      lastToken = token;
+      if (noteToken(token)) deps.onChanged();
       return token;
     } catch (error) {
       deps.logger.warn("github.account_app_token_read_failed", {
@@ -142,13 +166,15 @@ export function createGithubAccountAppCredential(deps: {
    * GitHub answered 401 to `token`. Asks the server once for the current token
    * (the server and this process each ask GitHub about one token at most once
    * a minute). Answers a different token to retry with, or null.
+   * `userRequested`: a person pressed Refresh; the one-minute window per
+   * token does not apply.
    */
-  const onRejected = async (token: string): Promise<string | null> => {
+  const onRejected = async (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => {
     if (!client) return null;
     try {
-      const result = await client.getToken({ afterRejected: token });
+      const result = await client.getToken({ afterRejected: token, userRequested: opts.userRequested === true });
       if (result.ok && result.token !== token) {
-        lastToken = result.token;
+        noteToken(result.token);
         deps.onChanged();
         return result.token;
       }
@@ -252,16 +278,45 @@ export function createGithubAccountAppCredential(deps: {
    * account's. The legacy error stays the answer when neither works, so the
    * relay copy keeps naming the real problem.
    */
+  /**
+   * This machine's own token that the relay refused, while the account had
+   * another. Its record still looks valid until it expires, so without this
+   * the next relay call would send it again and leave the account's unused.
+   */
+  let refusedOwnToken: string | null = null;
   const relayAppUserAuth = {
     auditLog: deps.appUserAuth.auditLog,
-    getValidTokenForRelay: async (): Promise<string> => {
+    /** `userRequested`: a person pressed Refresh, so a standing negative answer is asked again. */
+    getValidTokenForRelay: async (opts: { userRequested?: boolean } = {}): Promise<string> => {
+      let own: string;
       try {
-        return await deps.appUserAuth.getValidTokenForRelay();
+        own = await deps.appUserAuth.getValidTokenForRelay();
       } catch (legacyError) {
-        const token = await readToken();
+        const token = await readToken({ force: opts.userRequested === true });
         if (token) return token;
         throw legacyError;
       }
+      if (own !== refusedOwnToken) return own;
+      // A refreshed own token is a new one, and is tried again.
+      return (await readToken({ force: opts.userRequested === true })) ?? own;
+    },
+    /**
+     * GitHub answered 401 to a relay token: this computer's own sign-in, or
+     * the account's cached token after the account connected again elsewhere
+     * (a Disconnect deleted the old one at GitHub). Asks the account
+     * directory once for the current token (`onRejected`); null when there is
+     * no other.
+     */
+    onTokenRejected: async (token: string, opts: { userRequested?: boolean } = {}): Promise<string | null> => {
+      // Marked before the lookup: a replacement fires `onChanged`, which can
+      // start a relay poll at once, and that poll must not send this token
+      // again. With no replacement the own token stays the fallback.
+      const ownToken = token === deps.appUserAuth.getStoredTokenForHealth();
+      const previous = refusedOwnToken;
+      if (ownToken) refusedOwnToken = token;
+      const replacement = await onRejected(token, opts);
+      if (ownToken && !replacement && refusedOwnToken === token) refusedOwnToken = previous;
+      return replacement;
     },
   };
 

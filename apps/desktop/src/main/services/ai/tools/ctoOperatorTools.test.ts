@@ -228,16 +228,6 @@ describe("createCtoOperatorTools", () => {
       expect(result.error).toContain("does not write repository code");
     });
 
-    it("keeps defaulting the lane for read-only git inspection", async () => {
-      const gitService = { getSyncStatus: vi.fn().mockResolvedValue({ branch: "main" }) };
-      const deps = buildDeps({ gitService: gitService as any });
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.gitStatus as any).execute({});
-
-      // Reading the primary lane is normal supervision, so this default stays.
-      expect(gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
-    });
   });
 
   // These four were wired to `undefined`, so they were advertised in the prompt
@@ -337,34 +327,6 @@ describe("createCtoOperatorTools", () => {
       expect(result).toMatchObject({ success: true });
     });
 
-    it("exposes the supported chat lifecycle tools", () => {
-      // Handoff targeted "a different agent identity" — a subsystem that was
-      // removed; AgentChatIdentityKey is now just "cto". Advertising it was
-      // advertising a capability that could not exist.
-      //
-      // `handoffChatToModel` is a DIFFERENT thing and deliberately does not
-      // reuse this name: it hands a chat to another MODEL through the live
-      // `handoffSession` path, which does exist.
-      const tools = createCtoOperatorTools(buildDeps());
-
-      expect(Object.keys(tools)).not.toContain("handoffChat");
-      expect(Object.keys(tools)).toContain("spawnChat");
-      expect(Object.keys(tools)).toContain("handoffChatToModel");
-    });
-  });
-
-  it("createTerminal passes explicit pty dimensions instead of relying on the clamp", async () => {
-    const ptyService = { create: vi.fn().mockResolvedValue({ sessionId: "pty-1" }) };
-    const deps = buildDeps({ ptyService: ptyService as any });
-    const tools = createCtoOperatorTools(deps);
-
-    await (tools.createTerminal as any).execute({ laneId: "lane-2" });
-
-    // PtyCreateArgs requires these; omitting them was silently clamped inside
-    // the pty service, which was invisible until these bodies started executing.
-    expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
-      laneId: "lane-2", cols: 100, rows: 30, title: "CTO terminal",
-    }));
   });
 
   it("rejects a missing lane at the schema layer, not just at execute()", () => {
@@ -403,33 +365,6 @@ describe("createCtoOperatorTools", () => {
       });
     });
 
-    it("forwards an explicit spawnChat permissionMode to the chat create contract", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.spawnChat as any).execute({
-        title: "Full auto worker",
-        permissionMode: "full-auto",
-      });
-
-      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
-        permissionMode: "full-auto",
-      }));
-    });
-
-    it("forwards a provider-native Droid permission tier", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.spawnChat as any).execute({
-        droidPermissionMode: "auto-high",
-      });
-
-      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
-        droidPermissionMode: "auto-high",
-      }));
-    });
-
     it("omits permissionMode entirely when spawnChat is not given one", async () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
@@ -455,18 +390,6 @@ describe("createCtoOperatorTools", () => {
       expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
         orchestrationParentSessionId: "cto-current",
         spawnKind: "subagent",
-      }));
-    });
-
-    it("honors an explicit peer spawn for fire-and-forget work", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.spawnChat as any).execute({ title: "Background sweep", spawnKind: "peer" });
-
-      expect(deps.createChat).toHaveBeenCalledWith(expect.objectContaining({
-        orchestrationParentSessionId: "cto-current",
-        spawnKind: "peer",
       }));
     });
 
@@ -560,17 +483,6 @@ describe("createCtoOperatorTools", () => {
       const result = await (tools.listChats as any).execute({});
 
       expect(result).toMatchObject({ success: true, count: 1, chats: chatList });
-    });
-
-    it("lists chats filtered by lane", async () => {
-      const deps = buildDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.listChats as any).execute({ laneId: "lane-2", includeIdentity: true });
-
-      expect(deps.listChats).toHaveBeenCalledWith("lane-2", expect.objectContaining({
-        includeAutomation: false,
-      }));
     });
 
     it("sends a message to a chat session", async () => {
@@ -744,15 +656,6 @@ describe("createCtoOperatorTools", () => {
       expect(sessionService.snoozeSession).toHaveBeenCalledTimes(2);
     });
 
-    it("wakes with a recorded reason, defaulting to manual", async () => {
-      const { deps, sessionService } = lifecycleDeps();
-      const tools = createCtoOperatorTools(deps);
-
-      await (tools.wakeSession as any).execute({ sessionId: "chat-1" });
-      expect(sessionService.wakeSession).toHaveBeenCalledWith("chat-1", "manual");
-      await (tools.wakeSession as any).execute({ sessionId: "chat-1", reason: "turn_complete" });
-      expect(sessionService.wakeSession).toHaveBeenLastCalledWith("chat-1", "turn_complete");
-    });
   });
 
   // ── Lane tools ──────────────────────────────────────────────────

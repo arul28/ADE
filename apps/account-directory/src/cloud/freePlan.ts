@@ -72,7 +72,7 @@ export function readComputerSignal(request: Request): CloudComputerSignal {
   return CLIENT_HASH.test(raw) ? { kind: "id", clientHash: raw, platform } : null;
 }
 
-let keyCache: { secret: string; key: Promise<CryptoKey> } | null = null;
+const keyCache = new Map<string, { secret: string; key: Promise<CryptoKey> }>();
 let devKeyLogged = false;
 
 function decodeSecret(secret: string): Uint8Array<ArrayBuffer> {
@@ -87,10 +87,10 @@ function decodeSecret(secret: string): Uint8Array<ArrayBuffer> {
   return encoder.encode(secret) as Uint8Array<ArrayBuffer>;
 }
 
-async function deriveKey(secret: string): Promise<CryptoKey> {
+async function deriveKey(secret: string, label: string): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey("raw", decodeSecret(secret), "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: encoder.encode(COMPUTER_KEY_LABEL) },
+    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: encoder.encode(label) },
     material,
     { name: "HMAC", hash: "SHA-256", length: 256 },
     false,
@@ -98,24 +98,37 @@ async function deriveKey(secret: string): Promise<CryptoKey> {
   );
 }
 
-/** The server's key for computer ids, from `CLOUD_CHAT_MASTER_KEY` (a dev constant without it). */
-function computerKey(env: Pick<CloudEnv, "CLOUD_CHAT_MASTER_KEY">): Promise<CryptoKey> {
+/** The server's HMAC key for `label`, from `CLOUD_CHAT_MASTER_KEY` (a dev constant without it). */
+function workerKey(env: Pick<CloudEnv, "CLOUD_CHAT_MASTER_KEY">, label: string): Promise<CryptoKey> {
   let secret = env.CLOUD_CHAT_MASTER_KEY?.trim() ?? "";
   if (!secret) {
     if (!devKeyLogged) {
       devKeyLogged = true;
-      logCloud("cloud.free_plan.dev_key", { note: "CLOUD_CHAT_MASTER_KEY unset: computer ids are keyed with the development constant" });
+      logCloud("cloud.free_plan.dev_key", { note: "CLOUD_CHAT_MASTER_KEY unset: stored ids are keyed with the development constant" });
     }
     secret = DEV_COMPUTER_KEY;
   }
-  if (keyCache?.secret !== secret) keyCache = { secret, key: deriveKey(secret) };
-  return keyCache.key;
+  const cached = keyCache.get(label);
+  if (cached?.secret === secret) return cached.key;
+  const key = deriveKey(secret, label);
+  keyCache.set(label, { secret, key });
+  return key;
+}
+
+/**
+ * HMAC-SHA-256 (hex) of `value` under a key derived from the Worker's
+ * `CLOUD_CHAT_MASTER_KEY` with HKDF and `label`: no new secret, and a stored
+ * value can't be matched against anything outside this Worker. Each use takes
+ * its own label, so two uses never share a key.
+ */
+export async function workerKeyedHash(env: Pick<CloudEnv, "CLOUD_CHAT_MASTER_KEY">, label: string, value: string): Promise<string> {
+  const signature = await crypto.subtle.sign("HMAC", await workerKey(env, label), encoder.encode(value));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 /** The stored id of a computer: the HMAC of the client's hash. */
-export async function serverComputerHash(env: Pick<CloudEnv, "CLOUD_CHAT_MASTER_KEY">, clientHash: string): Promise<string> {
-  const signature = await crypto.subtle.sign("HMAC", await computerKey(env), encoder.encode(clientHash));
-  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+export function serverComputerHash(env: Pick<CloudEnv, "CLOUD_CHAT_MASTER_KEY">, clientHash: string): Promise<string> {
+  return workerKeyedHash(env, COMPUTER_KEY_LABEL, clientHash);
 }
 
 type ClaimView = { seen: number | null; holder: string | null; own: string | null };
@@ -155,7 +168,7 @@ async function refuse(env: CloudEnv, account: AccountRow, hash: string, platform
 /** An account refused before now holds a computer of its own: the free plan's hours come back for this period. */
 async function restore(env: CloudEnv, account: AccountRow, platform: string | null, { now, waitUntil }: Ctx): Promise<void> {
   await env.DB.prepare(`
-    update cloud_accounts set free_refused_at = null, included_milli = case when ${FREE_RULES_SQL} then ? else included_milli end,
+    update cloud_accounts set free_refused_at = null, included_milli = case when ${FREE_RULES_SQL} and free_github_hold is null then ? else included_milli end,
       warned_zero_at = null, hours_restored_at = case when warned_zero_at is not null then ? else hours_restored_at end, updated_at = ?
     where user_id = ? and free_refused_at is not null
   `).bind(FREE_INCLUDED_MILLI, now, now, account.user_id).run();

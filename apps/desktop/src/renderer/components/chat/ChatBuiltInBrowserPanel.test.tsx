@@ -4,7 +4,6 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PARKED_SURFACE_ATTRIBUTE } from "../../lib/parkedSurface";
 import { ChatBuiltInBrowserPanel } from "./ChatBuiltInBrowserPanel";
-import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 import {
   consumeAppZoomCommand,
   resetAppZoomCommandsForTests,
@@ -128,7 +127,8 @@ function statusWith(overrides: Partial<BuiltInBrowserStatus>): BuiltInBrowserSta
 }
 
 function installBrowserApi() {
-  let eventListener: ((event: unknown) => void) | null = null;
+  // Several parts of the panel listen (the panel, the key button), as in the preload.
+  const eventListeners = new Set<(event: unknown) => void>();
   let remoteRequestListener: ((event: unknown) => void) | null = null;
   const api = {
     getStatus: vi.fn().mockResolvedValue(browserStatus),
@@ -268,9 +268,9 @@ function installBrowserApi() {
       import: vi.fn(),
     },
     onEvent: vi.fn((listener: (event: unknown) => void) => {
-      eventListener = listener;
+      eventListeners.add(listener);
       return () => {
-        eventListener = null;
+        eventListeners.delete(listener);
       };
     }),
     localizeRemoteUrl: vi.fn(async ({ url }: { url: string }) => ({
@@ -339,7 +339,9 @@ function installBrowserApi() {
   });
   return {
     api,
-    emit: (event: unknown) => eventListener?.(event),
+    emit: (event: unknown) => {
+      for (const listener of [...eventListeners]) listener(event);
+    },
   };
 }
 
@@ -422,18 +424,6 @@ afterEach(() => {
 });
 
 describe("ChatBuiltInBrowserPanel", () => {
-  it("carries the preview toggle and maximize buttons on its chrome row", async () => {
-    installBrowserApi();
-
-    render(
-      <WorkToolsMaximizeContext.Provider value={{ maximized: false, setMaximized: vi.fn() }}>
-        <ChatBuiltInBrowserPanel sessionId="chat-1" />
-      </WorkToolsMaximizeContext.Provider>,
-    );
-
-    expect(await screen.findByRole("button", { name: "Show preview when minimized" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
-  });
 
   it("exposes global profile diagnostics and permission removal only through the trusted renderer", async () => {
     const { api } = installBrowserApi();

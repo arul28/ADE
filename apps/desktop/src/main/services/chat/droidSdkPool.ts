@@ -52,6 +52,14 @@ export type DroidSdkPooled = {
   dispose: () => void;
 };
 
+/**
+ * False once the worker exited, was killed, or its IPC channel closed. The
+ * channel can close before the exit event, so `connected` is read too.
+ */
+export function isDroidSdkPooledAlive(pooled: DroidSdkPooled): boolean {
+  return pooled.process.exitCode == null && !pooled.process.killed && pooled.process.connected !== false;
+}
+
 let droidSdkGenCounter = 0;
 const pools = new Map<string, { ref: number; generation: number; pooled: DroidSdkPooled }>();
 const pendingInits = new Map<string, Promise<DroidSdkPooled>>();
@@ -140,7 +148,7 @@ export async function acquireDroidSdkConnection(args: {
 }): Promise<{ pooled: DroidSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
-    if (existing && existing.pooled.process.exitCode == null && !existing.pooled.process.killed) {
+    if (existing && isDroidSdkPooledAlive(existing.pooled)) {
       existing.ref += 1;
       return { pooled: existing.pooled, generation: existing.generation };
     }
@@ -156,9 +164,7 @@ export async function acquireDroidSdkConnection(args: {
 
     const pooled = await init;
     const entry = pools.get(args.poolKey);
-    const live = entry?.pooled === pooled
-      && pooled.process.exitCode == null
-      && !pooled.process.killed;
+    const live = entry?.pooled === pooled && isDroidSdkPooledAlive(pooled);
     if (!entry || !live) {
       if (initOwner) {
         throw new Error("Droid SDK worker was disposed during initialization.");

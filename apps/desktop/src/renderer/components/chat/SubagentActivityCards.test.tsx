@@ -3,12 +3,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
-  SUBAGENT_CARD_CHROME,
   SubagentCardGrid,
   SubagentResultCard,
   SubagentSpawnCard,
   SubagentStoppedGroupCard,
-  subagentCardGridCellClass,
 } from "./SubagentActivityCards";
 import { subagentCardGridSpan } from "./chatTranscriptRows";
 import type {
@@ -142,20 +140,6 @@ describe("SubagentSpawnCard", () => {
     expect(onStop).toHaveBeenCalledWith("task-1");
     expect(onOpenTranscript).toHaveBeenCalledTimes(1);
   });
-
-  it("wears the owning runtime's provider mark on the bottom line", () => {
-    const { container } = render(<SubagentSpawnCard event={spawnEvent()} provider="opencode" />);
-    const mark = container.querySelector("[data-subagent-provider]");
-    expect(mark?.getAttribute("data-subagent-provider")).toBe("opencode");
-    // The same tool-type mapping the Work session rows use.
-    expect(screen.getByTestId("tool-logo").getAttribute("data-tool-type")).toBe("opencode-chat");
-  });
-
-  it("renders no provider mark when the runtime is unknown", () => {
-    const { container } = render(<SubagentSpawnCard event={spawnEvent()} provider={null} />);
-    expect(container.querySelector("[data-subagent-provider]")).toBeNull();
-    expect(screen.queryByTestId("tool-logo")).toBeNull();
-  });
 });
 
 describe("SubagentResultCard", () => {
@@ -184,13 +168,6 @@ describe("SubagentResultCard", () => {
       ...overrides,
     };
   }
-
-  it("renders settled metadata beside the result summary", () => {
-    render(<SubagentResultCard event={resultEvent({ spawnKind: "subagent" })} />);
-    expect(screen.queryByText("SUBAGENT")).toBeNull();
-    expect(screen.getByTitle(/subagent/)).toBeTruthy();
-    expect(screen.getByText("Kickoff turn finished.")).toBeTruthy();
-  });
 
   it("navigates to the spawned chat once the card has settled", () => {
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
@@ -317,19 +294,6 @@ describe("SubagentResultCard", () => {
       .toContain("stopped · you interrupted · ran for 1m");
   });
 
-  it("wears the owning runtime's provider mark beside the counters", () => {
-    const { container } = render(<SubagentResultCard event={resultEvent()} provider="claude" />);
-    expect(container.querySelector("[data-subagent-provider]")?.getAttribute("data-subagent-provider")).toBe("claude");
-    expect(screen.getByTestId("tool-logo").getAttribute("data-tool-type")).toBe("claude-chat");
-  });
-
-  it("renders the provider mark even when the result has no counters", () => {
-    const { container } = render(
-      <SubagentResultCard event={resultEvent({ toolUseCount: null, totalTokens: null })} provider="codex" />,
-    );
-    expect(container.querySelector("[data-subagent-provider]")?.getAttribute("data-subagent-provider")).toBe("codex");
-  });
-
   it.each([
     ["user", null, "you interrupted"],
     ["system", "the ADE brain restarted", "the ADE brain restarted"],
@@ -395,54 +359,6 @@ describe("SubagentResultCard", () => {
   });
 });
 
-describe("subagent card chrome", () => {
-  it("gives a running card the same container as a settled one", () => {
-    const running = render(<SubagentSpawnCard event={spawnEvent({ spawnKind: null, childSessionId: null })} />);
-    const runningFrame = running.container.querySelector("[data-subagent-card]") as HTMLElement;
-    expect(runningFrame.getAttribute("data-subagent-status")).toBe("running");
-    for (const cls of SUBAGENT_CARD_CHROME.split(" ")) expect([...runningFrame.classList]).toContain(cls);
-    const runningClasses = runningFrame.className;
-    running.unmount();
-
-    const settled = render(
-      <SubagentResultCard
-        event={{
-          type: "subagent_result_card",
-          agentKey: "child-abc",
-          description: "Wave 2 UI",
-          status: "completed",
-          summaryPreview: "Done.",
-          error: null,
-          stopSource: "unknown",
-          stopReason: null,
-          lastActivity: null,
-          resultLanded: false,
-          startedAt: "2026-07-14T10:00:00.000Z",
-          endedAt: "2026-07-14T10:01:00.000Z",
-          durationMs: 60_000,
-          totalTokens: null,
-          toolUseCount: null,
-          worktreeBranch: null,
-          worktreePath: null,
-          parentLabel: null,
-          childSessionId: null,
-          spawnKind: null,
-        }}
-      />,
-    );
-    const settledFrame = settled.container.querySelector("[data-subagent-card]") as HTMLElement;
-    // Border, background, radius, padding: identical frames, only state differs.
-    expect(settledFrame.className).toBe(runningClasses);
-  });
-
-  it("keeps spawned-chat kind in the card's quiet facts, not on its face", () => {
-    const { container } = render(<SubagentSpawnCard event={spawnEvent({ spawnKind: "subagent" })} />);
-    const frame = container.querySelector("[data-subagent-card]") as HTMLElement;
-    expect(frame.getAttribute("title")).toContain("subagent");
-    expect(frame.textContent).not.toContain("subagent");
-  });
-});
-
 describe("SubagentCardGrid", () => {
   const spansAt = (count: number, columns: number) =>
     Array.from({ length: count }, (_, index) => subagentCardGridSpan(index, count, columns));
@@ -464,42 +380,22 @@ describe("SubagentCardGrid", () => {
     expect(spansAt(3, 1)).toEqual([6, 6, 6]);
   });
 
-  it("maps each span to a container-query class at the estimate's breakpoints", () => {
-    // Fifth of five: full width at one and two columns (5 % 2 leaves it alone), a half at three.
-    expect(subagentCardGridCellClass(4, 5).split(" ")).toEqual([
-      "col-span-6",
-      "@min-[472px]:col-span-6",
-      "@min-[712px]:col-span-3",
-    ]);
-    expect(subagentCardGridCellClass(0, 5).split(" ")).toEqual([
-      "col-span-6",
-      "@min-[472px]:col-span-3",
-      "@min-[712px]:col-span-2",
-    ]);
-  });
-
-  it("draws its members keyed in one six-track container grid, and never remounts a card when one joins", () => {
+  it("draws its members keyed, and never remounts a card when one joins", () => {
     const members = ["a", "b", "c", "d"].map((key) => ({ key: `subagent-spawn:${key}` }));
     const view = render(
       <SubagentCardGrid members={members} renderCard={(member) => <span data-card>{member.key}</span>} />,
     );
     const grid = view.container.querySelector("[data-subagent-card-grid]") as HTMLElement;
     expect(grid.getAttribute("data-subagent-card-count")).toBe("4");
-    expect([...grid.classList]).toContain("@container");
-    expect([...grid.classList]).toContain("grid-cols-6");
-    expect([...grid.classList]).toContain("items-stretch");
     const cells = () => [...grid.querySelectorAll("[data-subagent-card-key]")] as HTMLElement[];
     expect(cells().map((cell) => cell.getAttribute("data-subagent-card-key"))).toEqual(members.map((member) => member.key));
-    // 4 cards: the fourth is full width under three thirds.
-    expect(cells()[3]!.className).toContain("@min-[712px]:col-span-6");
 
     const firstCard = view.container.querySelector("[data-card]");
     const joined = [...members, { key: "subagent-spawn:e" }];
     view.rerender(<SubagentCardGrid members={joined} renderCard={(member) => <span data-card>{member.key}</span>} />);
-    // Same DOM node: only the span classes changed.
+    // Same DOM node: the card that was there is not remounted.
     expect(view.container.querySelector("[data-card]")).toBe(firstCard);
-    expect(cells()[3]!.className).toContain("@min-[712px]:col-span-3");
-    expect(cells()[4]!.className).toContain("@min-[712px]:col-span-3");
+    expect(cells().map((cell) => cell.getAttribute("data-subagent-card-key"))).toEqual(joined.map((member) => member.key));
   });
 });
 

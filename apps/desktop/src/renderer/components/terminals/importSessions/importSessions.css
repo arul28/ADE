@@ -222,6 +222,20 @@
 /* The model picker's own sizes are 24px and 32px; the bar is 30px. */
 .import-actions [data-model-picker-trigger] { height: 30px; font-size: 11.5px; }
 .import-actions-label { font-size: 11.5px; color: var(--kit-text-3); }
+/* The account picker matches the lane pill and the model trigger: 30px bar. */
+.import-account-select {
+  height: 30px;
+  max-width: 240px;
+  padding: 0 8px;
+  border: 1px solid var(--kit-rule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kit-text-2);
+  font-size: 11.5px;
+  outline: none;
+}
+.import-account-select:focus-visible { border-color: color-mix(in srgb, var(--kit-text-2) 45%, transparent); }
+.import-account-select:disabled { opacity: 0.6; }
 .import-actions-end {
   display: flex;
   align-items: center;

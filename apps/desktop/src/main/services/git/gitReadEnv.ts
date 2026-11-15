@@ -22,6 +22,14 @@ export const GIT_READ_ENV = { GIT_OPTIONAL_LOCKS: "0" } as const;
 export const GIT_ENGLISH_MESSAGES_ENV = { LANGUAGE: "C", LC_MESSAGES: "C" } as const;
 
 /**
+ * No prompt of any kind. `GIT_TERMINAL_PROMPT=0` stops only the terminal one;
+ * an askpass helper ADE inherited (an editor's, a GUI's) would still open, and
+ * git would wait on it until the time limit. Git skips askpass when the
+ * variable is set but empty.
+ */
+export const GIT_HEADLESS_PROMPT_ENV: NodeJS.ProcessEnv = { GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "" };
+
+/**
  * Git options ADE puts before every command so a personal git config cannot
  * change what ADE reads. `status.showUntrackedFiles=no` hides new files from
  * `git status` and from `git worktree remove`'s own dirty check, so a lane that

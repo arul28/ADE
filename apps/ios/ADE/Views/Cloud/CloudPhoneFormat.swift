@@ -5,30 +5,71 @@ import SwiftUI
 // the `cloud*` text helpers every card shares (the desktop's
 // `cloudDashboardModel.ts` and `shared/cloudTiers.ts`).
 
-/// The lines under the hours, in the desktop's order: why the free plan has
-/// no hours here, earned hours, extra hours, and the forecast.
-func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [String] {
-  var lines: [String] = []
+/// One line under the hours on the hero: a warning in words, or a short chip.
+struct CloudHoursNote: Hashable {
+  enum Tone: Hashable { case warn, chip, lamp, on, off }
+  let text: String
+  let tone: Tone
+}
+
+/// The hero's lines under the hours: why the free plan has no hours (warnings,
+/// in full), then short chips for earned hours, extra hours and the pace.
+func cloudHoursNotes(_ account: CloudPhoneAccount, now: Date) -> [CloudHoursNote] {
+  var notes: [CloudHoursNote] = []
   if let free = account.freePlan, free.state == "refused" {
     // The phone's own words: the server's sentence names a plan to get
     // (App Store 3.1.1, see `cloudPhoneWords`).
-    lines.append("This computer already used another account's free hours, so the free plan has no hours here.")
+    notes.append(.init(text: "This computer already used another account's free hours, so the free plan has no hours here.", tone: .warn))
+  }
+  if let line = cloudFreeGithubLine(account) {
+    notes.append(.init(text: line, tone: .warn))
   }
   if let earned = account.earnedHours, earned.leftMilli > 0 {
-    lines.append("+\(cloudHours(earned.leftMilli)) hours earned from invites. They never expire.")
+    notes.append(.init(text: "+\(cloudHours(earned.leftMilli)) h earned", tone: .lamp))
   }
   if let extra = account.extraHours, extra.available {
     if extra.enabled {
       let used = extra.usedMilli ?? 0
-      lines.append(used > 0 ? "Extra hours are on: \(cloudHours(used)) h used this month." : "Extra hours are on.")
+      notes.append(.init(text: used > 0 ? "Extra hours on, \(cloudHours(used)) h used" : "Extra hours on", tone: .on))
     } else {
-      lines.append("Extra hours are off. Work stops when your hours run out.")
+      notes.append(.init(text: "Extra hours off", tone: .off))
     }
   }
   if let forecast = cloudHoursForecast(account, now: now) {
-    lines.append("\(forecast) (estimate)")
+    notes.append(.init(text: forecast, tone: .chip))
   }
-  return lines
+  return notes
+}
+
+/// Why the free plan's GitHub rules hold its hours, in the phone's own words:
+/// facts only, no card or plan to get (App Store 3.1.1). The desktop offers
+/// the card (no charge) that starts a new GitHub account's hours early.
+func cloudFreeGithubLine(_ account: CloudPhoneAccount) -> String? {
+  guard let github = account.freePlan?.github, let state = github.state else { return nil }
+  switch state {
+  case "no_github":
+    return "Free hours need a GitHub account at least 30 days old. Connect GitHub to start."
+  case "too_new":
+    if let at = github.oldEnoughAt {
+      return "Your GitHub account is new, so free hours start on \(cloudFreeGithubDay(at))."
+    }
+    return "Your GitHub account is new, so free hours start when it is 30 days old."
+  case "used":
+    return "This GitHub account already gives another ADE account its free hours, so the free plan has no hours here."
+  case "checking":
+    return "ADE couldn't check your GitHub account just now. It tries again in a few minutes."
+  default:
+    return nil
+  }
+}
+
+/// "December 13", in UTC like the server and the desktop, so every screen names the same day.
+func cloudFreeGithubDay(_ ms: Double) -> String {
+  let formatter = DateFormatter()
+  formatter.locale = Locale(identifier: "en_US")
+  formatter.timeZone = TimeZone(identifier: "UTC")
+  formatter.dateFormat = "MMMM d"
+  return formatter.string(from: Date(timeIntervalSince1970: ms / 1000))
 }
 
 /// Each plan's name inside a sentence (`CLOUD_PLAN_SENTENCE_NAMES`).
@@ -36,6 +77,7 @@ func cloudPlanSentenceName(_ id: String) -> String {
   switch id {
   case "free": return "the free plan"
   case "pro": return "Pro"
+  case "max": return "Max"
   default: return "Plus"
   }
 }
@@ -45,7 +87,7 @@ func cloudPlanSentenceName(_ id: String) -> String {
 func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> String? {
   var parts: [String] = []
   if !done.freed.isEmpty {
-    let list = done.freed.map { entry in entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
+    let list = done.freed.map { entry in entry.pushed == false ? entry.name : entry.branch.map { "\(entry.name) (work on \($0))" } ?? entry.name }.joined(separator: ", ")
     let these = done.freed.count == 1 ? "this computer" : "these computers"
     // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
     let lanesKept = done.freed.filter { $0.laneKept == true }.count
@@ -57,12 +99,73 @@ func cloudPlanCleanupDoneSentence(_ done: CloudPhoneAccount.PlanCleanupDone) -> 
     } else {
       kept = " \(lanesKept == 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay"); the next message to a lane makes a new computer."
     }
-    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE pushed each lane's work to GitHub and removed \(these): \(list).\(kept)")
+    let how = done.freed.allSatisfy { $0.pushed != false } ? "pushed each lane's work to GitHub and removed" : "removed"
+    parts.append("To fit \(cloudPlanSentenceName(done.planId)), ADE \(how) \(these): \(list).\(kept)")
   }
   if !done.kept.isEmpty {
-    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.")
+    parts.append("ADE kept \(done.kept.map(\.name).joined(separator: ", ")), because its work couldn't all be pushed to GitHub. Push its work or delete it yourself, or pick again in ADE.")
   }
   return parts.isEmpty ? nil : parts.joined(separator: " ")
+}
+
+/// A cheaper plan's limits on the phone: the server's sentence, then what
+/// holds until the person picks on the desktop (the phone can't pick). Nil
+/// when there is nothing to say.
+func cloudPlanCleanupMessage(_ cleanup: CloudPhoneAccount.PlanCleanup) -> String? {
+  if let ids = cleanup.freeing?.instanceIds {
+    return "ADE is freeing \(ids.count == 1 ? "1 computer" : "\(ids.count) computers") you picked to fit \(cloudPlanSentenceName(cleanup.planId ?? "plus")). Their lanes and chats stay."
+  }
+  guard let sentence = cloudPhoneWords(cleanup.sentence) else { return nil }
+  let when = cleanup.startsAt.map { "You move to \(cloudPlanSentenceName(cleanup.planId ?? "plus")) on \(cloudDate($0))." }
+    ?? "ADE can't make a new computer until their disk fits."
+  return "\(sentence) \(when) ADE deletes nothing on its own: delete computers, or pick the ones ADE frees in the ADE desktop app."
+}
+
+/// "in 1 day", "in 5 hours", "within the hour" (`inHowLong`).
+private func cloudInHowLong(_ at: Double, now: Double) -> String {
+  let left = max(0, at - now)
+  let hours = Int((left / 3_600_000).rounded())
+  if hours < 1 { return "within the hour" }
+  if hours < 20 { return "in \(hours) \(hours == 1 ? "hour" : "hours")" }
+  let days = max(1, Int((left / 86_400_000).rounded()))
+  return "in \(days) \(days == 1 ? "day" : "days")"
+}
+
+/// "deleted in 1 day", "deleted in 5 hours" (`idleCleanupWhen`).
+func cloudIdleCleanupWhen(_ deletesAt: Double, now: Double) -> String {
+  "deleted \(cloudInHowLong(deletesAt, now: now))"
+}
+
+/// One idle cleanup notice on the phone, in the desktop's words, with how to
+/// keep it from here (send a message in the lane) since "Keep it" is on the desktop.
+func cloudIdleCleanupMessage(_ entry: CloudPhoneAccount.IdleCleanup, now: Double) -> String {
+  let subject = entry.laneName.map { $0.isEmpty ? entry.displayName : "\($0)'s computer" } ?? entry.displayName
+  if let held = entry.held {
+    return "\(subject) wasn't deleted: ADE couldn't save its work. \(held.reason) Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again \(cloudInHowLong(held.retryAt ?? entry.deletesAt, now: now)).\(cloudIgnoredFilesShort(entry.ignoredFiles))"
+  }
+  let save = entry.laneName != nil
+    ? "ADE pushes its work to \(entry.branch ?? "the lane's branch") first, and the lane and its chats stay."
+    : "ADE pushes its work to GitHub first."
+  let ignored = cloudIgnoredFilesShort(entry.ignoredFiles)
+  return "\(subject) will be \(cloudIdleCleanupWhen(entry.deletesAt, now: now)), on \(cloudDate(entry.deletesAt)), because it isn't used. \(save)\(ignored) To keep it, send a message in the lane, or choose Keep it in the ADE desktop app."
+}
+
+/// The ignored files a delete loses, in one short sentence (with a leading space), or "" when none were found.
+func cloudIgnoredFilesShort(_ ignored: CloudPhoneAccount.IdleCleanup.IgnoredFiles?) -> String {
+  guard let ignored else { return " Files git ignores, such as .env, aren't pushed." }
+  let list: String?
+  if ignored.paths.isEmpty {
+    list = ignored.more > 0 ? "\(ignored.more) \(ignored.more == 1 ? "file" : "files")" : nil
+  } else {
+    let shown = ignored.paths.joined(separator: ", ")
+    list = ignored.more > 0 ? "\(shown) and \(ignored.more) more" : shown
+  }
+  if ignored.incomplete == true {
+    guard let list else { return " ADE couldn't read every lane to see which files git ignores, such as .env; those aren't pushed." }
+    return " Files git ignores aren't pushed, so these won't be kept: \(list). ADE couldn't read every lane, so there may be more."
+  }
+  guard let list else { return "" }
+  return " Files git ignores aren't pushed, so these won't be kept: \(list)."
 }
 
 /// Why timed wake-ups were cancelled and how they come back
@@ -99,7 +202,8 @@ func cloudPhoneWords(_ message: String?) -> String? {
 /// "At this pace your hours last until Nov 24", from the last days' use; nil
 /// when the server doesn't say or nothing was used (`hoursForecast`).
 func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
-  guard let recent = account.recentUse, recent.days > 0, recent.usedMilli > 0,
+  // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
+  guard let recent = account.recentUse, recent.days > 0, recent.usedMilli > 0, (account.hours.usedMilli ?? 1) > 0,
         let periodEnd = account.billing?.periodEnd else { return nil }
   let left = Double(account.hours.leftMilli)
   guard left > 0 else { return nil }
@@ -109,8 +213,14 @@ func cloudHoursForecast(_ account: CloudPhoneAccount, now: Date) -> String? {
   return "At this pace your hours last until \(cloudDate(endsAt))"
 }
 
-/// One mark at most, so the name keeps its room: no lane, then unused, then safe to delete.
-func cloudMachineMark(_ machine: CloudPhoneMachine, now: Date) -> (text: String, tone: ADEKitTone)? {
+/// One mark at most, so the name keeps its room: the idle cleanup's warning,
+/// no lane, then unused, then safe to delete.
+func cloudMachineMark(_ machine: CloudPhoneMachine, idle: CloudPhoneAccount.IdleCleanup? = nil, now: Date) -> (text: String, tone: ADEKitTone)? {
+  if let idle {
+    if idle.held != nil { return ("Not deleted", .warn) }
+    let when = cloudIdleCleanupWhen(idle.deletesAt, now: now.timeIntervalSince1970 * 1000)
+    return (when.prefix(1).uppercased() + when.dropFirst(), .warn)
+  }
   if machine.noLane { return ("No lane", .neutral) }
   if cloudMachineOld(machine, now: now) { return ("Unused", .warn) }
   if machine.laneWork?.prState == "merged", machine.laneWork?.unpushed == false { return ("Safe to delete", .ok) }
@@ -260,6 +370,7 @@ func cloudPlanLabel(_ id: String) -> String {
   switch id {
   case "free": return "Free"
   case "pro": return "Pro"
+  case "max": return "Max"
   default: return "Plus"
   }
 }
@@ -269,11 +380,13 @@ func cloudPlanName(_ account: CloudPhoneAccount) -> String {
   "\(cloudPlanLabel(account.currentPlanId)) plan"
 }
 
-/// Hours from thousandths, as the desktop writes them: "118", "42.5".
+/// Hours from thousandths, as the desktop writes them (`formatCloudHours`):
+/// "1,600", "299.8", "42.5". Whole hours plainly, anything else to the tenth,
+/// rounded down at every size, so 299.8 left never reads "299" or "300".
 func cloudHours(_ milli: Int) -> String {
-  let hours = Double(max(0, milli)) / 1000
-  let shown = hours >= 100 ? hours.rounded(.down) : (hours * 10).rounded(.down) / 10
-  return shown.formatted(.number.precision(.fractionLength(0...1)).grouping(.never))
+  let tenths = max(0, milli) / 100
+  let shown = Double(tenths) / 10
+  return shown.formatted(.number.precision(.fractionLength(0...1)).locale(Locale(identifier: "en_US")))
 }
 
 /// "2.5× hours", as the desktop writes it.
@@ -325,4 +438,147 @@ func cloudLimitsPresetName(_ limits: CloudPhoneLimits) -> String {
 func cloudLimitsSummary(_ limits: CloudPhoneLimits) -> String {
   guard limits.unattendedSpend else { return "Unattended agents ask before anything uses hours" }
   return "\(limits.machinesPerDay) new computers a day, up to \(cloudShapeLabel(limits.maxShape))"
+}
+
+// MARK: - "You're on Plus"
+
+/// A purchase or a move up that just landed (the desktop's `CloudPlanMoment`).
+struct CloudPlanMoment: Equatable {
+  /// `<plan>:<periodStart>`, as `CloudPlanSeenStore.momentKey`.
+  let key: String
+  /// The account it is about (`CloudPlanSeenStore.accountKey`).
+  let accountKey: String
+  let planId: String
+  let includedMilli: Int
+  let diskGb: Double?
+  let renewsAt: Double
+  /// Free hours left before the upgrade that the paid period replaced; nil when none were.
+  let replacedFreeMilli: Int?
+
+  var title: String { "You're on \(cloudPlanLabel(planId))" }
+
+  var detail: String {
+    let hours = cloudHours(includedMilli)
+    var line = "\(hours) hours\(diskGb.map { " and \(cloudGb($0)) of disk" } ?? "") a month. Renews \(cloudDate(renewsAt))."
+    if let replaced = replacedFreeMilli {
+      line += " Your \(cloudHours(replaced)) unused free hours were replaced by \(cloudPlanLabel(planId))'s \(hours)."
+    }
+    return line
+  }
+}
+
+/// What this phone last saw of the account, per account (its invite code):
+/// the plan, the period and the hours left then (the desktop's
+/// `cloudPlanMoment.ts`, in UserDefaults). A phone that never saw the account
+/// seeds quietly, so updating the app never celebrates an old purchase; a
+/// moment is said once per account, plan and period.
+enum CloudPlanSeenStore {
+  static let defaultsKey = "ade.cloud.planSeen.v1"
+  private static let rank: [String: Int] = ["free": 0, "plus": 1, "pro": 2, "max": 3]
+
+  /// The account's invite code; without one, a shared "account" key that
+  /// another account on this phone could have written, so it records but
+  /// never celebrates (`canCelebrate` false), as on the desktop.
+  static func accountKey(_ account: CloudPhoneAccount) -> (key: String, canCelebrate: Bool) {
+    if let code = account.referral?.code, !code.isEmpty { return (code, true) }
+    return ("account", false)
+  }
+
+  /// `<plan>:<periodStart>`: a moment is said once per account, plan and period.
+  static func momentKey(_ account: CloudPhoneAccount) -> String {
+    "\(account.currentPlanId):\(Int(account.billing?.periodStart ?? 0))"
+  }
+
+  /// Records what the account shows now and returns the moment to show, if the plan just went up.
+  static func observe(_ account: CloudPhoneAccount, defaults: UserDefaults = .standard) -> CloudPlanMoment? {
+    let planId = account.currentPlanId
+    let periodStart = account.billing?.periodStart ?? 0
+    let key = momentKey(account)
+    var all = defaults.dictionary(forKey: defaultsKey) as? [String: [String: Any]] ?? [:]
+    let (accountKey, canCelebrate) = accountKey(account)
+    let previous = all[accountKey]
+    let previousPlan = previous?["planId"] as? String
+    let previousStart = previous?["periodStart"] as? Double
+    let previousLeft = previous?["leftMilli"] as? Int ?? 0
+    let celebrated = previous?["celebrated"] as? String
+    // Paid and in good standing: a failed payment is never a moment.
+    let landed = planId != "free" && account.plan == "paid" && account.billing?.notice != "past_due"
+    let wentUp = (rank[planId] ?? 0) > (rank[previousPlan ?? "free"] ?? 0)
+    let moment: CloudPlanMoment? = (canCelebrate && previousPlan != nil && landed && celebrated != key && wentUp) ? CloudPlanMoment(
+      key: key,
+      accountKey: accountKey,
+      planId: planId,
+      includedMilli: account.hours.includedMilli,
+      diskGb: account.disk?.limitGb,
+      renewsAt: account.billing?.periodEnd ?? 0,
+      replacedFreeMilli: previousPlan == "free" && previousStart != periodStart && previousLeft > 0 ? previousLeft : nil
+    ) : nil
+    var record: [String: Any] = ["planId": planId, "periodStart": periodStart, "leftMilli": max(0, account.hours.leftMilli)]
+    if let shown = moment?.key ?? celebrated { record["celebrated"] = shown }
+    all[accountKey] = record
+    defaults.set(all, forKey: defaultsKey)
+    return moment
+  }
+}
+
+// MARK: Cloud computer labels
+
+/// What a person sees for an ADE Cloud lane computer: "Cloud · <lane>", never
+/// its generated name (an instance id as host name, a lane-derived computer
+/// name), as the desktop's `machineLabelForMachine`. The account's lane
+/// computers as last read, kept on this phone (lane names and ids, no secret),
+/// so the Machines list, pickers and chat headers can name them before the
+/// ADE Cloud page is opened. A label only: routing keeps the machine key.
+enum CloudLaneComputerLabels {
+  static let defaultsKey = "ade.cloudLaneComputers.v1"
+  /// The short name for any ADE Cloud computer.
+  static let cloudLabel = "Cloud"
+
+  /// Records the lane computers of a good read of the account's computers,
+  /// and tells views that show the labels outside an observed model (the PRs
+  /// header) when they changed (`CloudLaneComputerLabelsRevision`).
+  @MainActor
+  static func note(_ machines: [CloudPhoneMachine], defaults: UserDefaults = .standard) {
+    var lanes: [String: String] = [:]
+    for machine in machines {
+      guard let laneName = machine.lane?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !laneName.isEmpty else { continue }
+      lanes[machine.instanceId.lowercased()] = laneName
+      if let key = machine.machineKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty { lanes[key.lowercased()] = laneName }
+    }
+    if (defaults.dictionary(forKey: defaultsKey) as? [String: String]) == lanes { return }
+    defaults.set(lanes, forKey: defaultsKey)
+    CloudLaneComputerLabelsRevision.shared.value += 1
+  }
+
+  /// "Cloud · fix-login" for a lane computer known by its machine key or host name; nil for any other machine.
+  static func label(machineKey: String?, hostName: String? = nil, defaults: UserDefaults = .standard) -> String? {
+    let lanes = defaults.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+    guard !lanes.isEmpty else { return nil }
+    for candidate in [machineKey, hostName] {
+      guard let id = candidate?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !id.isEmpty else { continue }
+      if let lane = lanes[id] { return "\(cloudLabel) · \(lane)" }
+    }
+    return nil
+  }
+
+  /// `name`, or "Cloud · <lane>" when the machine is a lane computer.
+  static func present(_ name: String, machineKey: String?, hostName: String? = nil) -> String {
+    label(machineKey: machineKey, hostName: hostName) ?? name
+  }
+}
+
+/// Bumped when the saved lane-computer labels change, for a view that reads
+/// them through a plain value (`PRsTabShell` rebuilds its inputs on it).
+@MainActor
+final class CloudLaneComputerLabelsRevision: ObservableObject {
+  static let shared = CloudLaneComputerLabelsRevision()
+  @Published var value = 0
+}
+
+extension AccountMachine {
+  /// The name a row shows: "Cloud · <lane>" for an ADE Cloud lane computer,
+  /// else `displayName`. Rename fields and name matching keep `displayName`.
+  var presentedName: String {
+    CloudLaneComputerLabels.label(machineKey: machineKey, hostName: name) ?? displayName
+  }
 }

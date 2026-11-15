@@ -8,7 +8,7 @@
  * already one plain sentence; that sentence is the error the person sees.
  */
 
-import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState } from "../../../shared/adeCloud";
+import { readCloudPlanCleanup, readCloudReferralSummary, type CloudAccountState, type CloudFreeUnlockResult } from "../../../shared/adeCloud";
 import {
   CLOUD_COMPUTER_HEADER,
   CLOUD_COMPUTER_PLATFORM_HEADER,
@@ -29,6 +29,7 @@ import {
   type CloudUpdateCheck,
 } from "./cloudProvider";
 import { cloudSavedChatUrl, cloudSavedChatsUrl, type CloudSavedChatList, type CloudSavedChatPage } from "../../../shared/cloudSavedChats";
+import { markExpected } from "../../../shared/expectedError";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -129,7 +130,7 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     const controller = new AbortController();
     const timedOut = () => init.signal?.aborted
       ? new CloudProviderError("Cancelled.", "cancelled", 0)
-      : new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0);
+      : markExpected(new CloudProviderError("ADE Cloud did not answer in time. Try again.", "timeout", 0), "network");
     // The caller's signal (a cancelled create) stops the request too.
     const onCallerAbort = () => controller.abort();
     if (init.signal?.aborted) controller.abort();
@@ -155,7 +156,11 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
         });
       } catch (error) {
         if (controller.signal.aborted) throw timedOut();
-        throw new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0);
+        // Offline, DNS, a dropped connection: the person's network, not a defect.
+        throw markExpected(
+          new CloudProviderError(`Could not reach ADE Cloud: ${error instanceof Error ? error.message : String(error)}`, "network", 0),
+          "network",
+        );
       }
       body = response.status === 204
         ? null
@@ -239,6 +244,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       return statusOf(await request("POST", instancePath(id, "sleep"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
 
+    async keepIdleComputer(id: string): Promise<void> {
+      await request("POST", instancePath(id, "keep"), { body: {} });
+    },
+
     async requestIdleSleep(id: string): Promise<string> {
       return statusOf(await request("POST", instancePath(id, "idle"), { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }), "sleeping");
     },
@@ -278,6 +287,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async reportDiskUsage(id, report): Promise<void> {
       await request("POST", instancePath(id, "disk-usage"), { body: report });
+    },
+
+    async reportSustainedCpu(id, report): Promise<void> {
+      await request("POST", instancePath(id, "cpu-report"), { body: report });
     },
 
     async resizeInstance(id, resources, options): Promise<string> {
@@ -345,21 +358,33 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
       };
     },
 
-    async billingCheckout(plan): Promise<CloudCheckoutResult> {
-      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus" } }));
+    async billingCheckout(plan, cleanup): Promise<CloudCheckoutResult> {
+      const body = record(await request("POST", "/cloud/billing/checkout", { body: { plan: plan ?? "plus", knowsMax: true, ...(cleanup ? { cleanup } : {}) } }));
       if (body?.url === null && (body.change === "now" || body.change === "next_period")) {
-        // A downgrade over the cheaper plan's limits: what they will free, for the warning.
-        const cleanup = readCloudPlanCleanup(body.cleanup);
-        return { url: null, change: body.change, ...(cleanup ? { cleanup } : {}) };
+        // A downgrade with a pick: the computers ADE frees now. Without one, over the cheaper plan: what goes over.
+        const over = readCloudPlanCleanup(body.cleanup);
+        const freeing = Array.isArray(body.freeing) ? body.freeing.filter((id): id is string => typeof id === "string") : null;
+        return { url: null, change: body.change, ...(over ? { cleanup: over } : {}), ...(freeing ? { freeing } : {}) };
       }
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
+    },
+
+    async pickPlanCleanup(input): Promise<CloudAccountState> {
+      return await request("POST", CLOUD_PATHS.billingPlanCleanup, { body: input }) as CloudAccountState;
     },
 
     async billingPortal(): Promise<{ url: string }> {
       const body = record(await request("POST", "/cloud/billing/portal"));
       if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
       return { url: body.url };
+    },
+
+    async billingFreeUnlock(): Promise<CloudFreeUnlockResult> {
+      const body = record(await request("POST", CLOUD_PATHS.billingFreeUnlock, { body: {} }));
+      if (body?.unlocked === true) return { url: null, unlocked: true };
+      if (typeof body?.url !== "string" || !body.url) throw new CloudProviderError(BAD_RESPONSE, "bad_response", 200);
+      return { url: body.url, unlocked: false };
     },
 
     async setExtraHours(enabled: boolean): Promise<CloudAccountState> {

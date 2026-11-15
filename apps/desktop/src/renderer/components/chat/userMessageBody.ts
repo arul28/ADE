@@ -5,7 +5,7 @@
  * searches the same text, so the two cannot drift: a branch added here is a
  * branch both of them take. Pure: no React, no components.
  */
-import type { AgentChatEvent } from "../../../shared/types/chat";
+import { hostContinuationReasonLabel, type AgentChatEvent } from "../../../shared/types/chat";
 import { splitChatOutputContextSegments, type ChatOutputContextSegment } from "../../../shared/chatOutputContext";
 import { parseThreadReviewBlock, type ParsedThreadReviewComment } from "../../../shared/threadComments";
 
@@ -32,12 +32,13 @@ type UserMessageBody =
   /** Leading context chips (iOS) and/or quote cards, then the rest as plain text. */
   | { kind: "chips"; chips: string[]; rest: string; segments: ChatOutputContextSegment[] | null }
   /**
-   * A message another agent, an automation, or a scheduled wake sent. Not the
-   * reader speaking, and often long and repeated, so it folds to one line.
+   * A message another agent, an automation, a scheduled wake, or ADE itself
+   * sent. Not the reader speaking, and often long and repeated, so it folds to
+   * one line.
    */
   | { kind: "folded"; fold: FoldedMessage };
 
-export type FoldedMessageSource = "agent" | "automation" | "schedule";
+export type FoldedMessageSource = "agent" | "automation" | "schedule" | "ade";
 
 export type FoldedMessage = {
   source: FoldedMessageSource;
@@ -105,6 +106,15 @@ function foldedMessage(event: UserMessageEvent): FoldedMessage | null {
     // The "Woke on schedule" divider above already names the reason, so the
     // row previews the prompt itself.
     return make("schedule", SCHEDULE_SENDER[wake.kind] ?? "Scheduled wake-up", null);
+  }
+  // ADE wrote it (a recovery resume, a status check, a wake): never the
+  // reader's bubble. The row says why; the words the agent read open below.
+  const continuation = metadata.hostContinuation;
+  if (continuation && typeof continuation.reason === "string") {
+    // The host's line when it sent one, else this build's (`HOST_CONTINUATION_REASON_LABEL`).
+    const reason = continuation.label?.trim() || hostContinuationReasonLabel(continuation.reason);
+    const fold = make("ade", "ADE", null);
+    return reason ? { ...fold, preview: reason } : fold;
   }
   return null;
 }

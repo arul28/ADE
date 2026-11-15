@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  appleDeviceModel,
-  appleDeviceModelById,
-  resolveAppleDeviceModelId,
-} from "./appleDeviceModels";
+import { resolveAppleDeviceModelId } from "./appleDeviceModels";
 
 describe("resolveAppleDeviceModelId", () => {
   it("reads the CoreSimulator type id, not the name a person chose", () => {
@@ -50,21 +46,5 @@ describe("resolveAppleDeviceModelId", () => {
     expect(resolveAppleDeviceModelId("iphone", { deviceTypeName: "Unknown Simulator" })).toBe("iphone-18-pro");
     expect(resolveAppleDeviceModelId("ipad", { deviceTypeName: null })).toBe("ipad-pro-13-m5");
     expect(resolveAppleDeviceModelId("ipad", { deviceTypeName: "something else" })).toBe("ipad-pro-13-m5");
-  });
-});
-
-describe("appleDeviceModel", () => {
-  it("returns Vite URLs for each bundled body and never the keyboard accessory", () => {
-    const pro = appleDeviceModel("iphone", { deviceTypeName: "iPhone 17 Pro" });
-    const max = appleDeviceModel("iphone", { deviceTypeName: "iPhone 17 Pro Max" });
-    const ipad = appleDeviceModel("ipad", { deviceTypeName: "iPad Pro 11-inch" });
-    expect(pro.id).toBe("iphone-18-pro");
-    expect(max.id).toBe("iphone-18-pro-max");
-    expect(ipad.id).toBe("ipad-pro-13-m5");
-    expect(pro.url).toMatch(/iphone-18-pro/);
-    expect(max.url).toMatch(/iphone-18-pro-max/);
-    expect(ipad.url).toMatch(/ipad-pro-13-m5/);
-    expect(pro.url).not.toMatch(/magic-keyboard/);
-    expect(appleDeviceModelById("iphone-18-pro").url).toBe(pro.url);
   });
 });

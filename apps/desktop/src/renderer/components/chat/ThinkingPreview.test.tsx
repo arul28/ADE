@@ -271,7 +271,6 @@ describe("live thinking preview in the transcript", () => {
 
     const block = screen.getByTestId("thought-block");
     expect(block.textContent).toContain("Weighing options. Picked the second.");
-    expect(block.className).toContain("ade-thinking-card");
     // Full height: no fixed-height preview card or fades once opened.
     expect(screen.queryByTestId("thinking-preview-card")).toBeNull();
   });

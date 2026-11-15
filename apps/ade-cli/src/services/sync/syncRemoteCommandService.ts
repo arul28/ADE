@@ -44,7 +44,13 @@ import {
 } from "../../../../desktop/src/shared/modelPermissions";
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
-import { accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import { ACCOUNT_SCOPE_ALL, accountRepoScopeKey } from "../../../../desktop/src/shared/accountSettingsScope";
+import {
+  ANNOUNCEMENTS_SEEN_SETTING_KEY,
+  mergeSeenAnnouncements,
+  normalizeSeenAnnouncements,
+  seenAnnouncementsCover,
+} from "../../../../desktop/src/shared/announcementsSeen";
 import {
   FAST_MODE_SETTING_KEY,
   FAST_MODE_SETTING_SCOPE,
@@ -2726,7 +2732,13 @@ function createAgentChatAttachmentUpload(
 
 async function getRemoteTurnFileDiff(args: SyncRemoteCommandServiceArgs, payload: Record<string, unknown>) {
   const parsed = parseAgentChatTurnFileDiffArgs(payload);
-  const cwd = requireProjectRoot(args, "chat.getTurnFileDiff");
+  // A lane names the worktree to read in (a lane-sharing guest's read always
+  // does, set by the host). Lanes share one object store, so the commits read
+  // the same; a lane with no worktree here is refused, never the project root.
+  const laneId = asTrimmedString(payload.laneId);
+  const laneCwd = laneId ? resolveLaneWorktreePathForSync(args, laneId) : null;
+  if (laneId && !laneCwd) throw new Error("chat.getTurnFileDiff: that lane has no worktree on this computer.");
+  const cwd = laneCwd ?? requireProjectRoot(args, "chat.getTurnFileDiff");
   const language = parsed.filePath.split(".").pop() ?? undefined;
   const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
     const result = await runGit(["show", spec], {
@@ -5587,6 +5599,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").listPendingInputs({
       sessionId: requireString(payload.sessionId, "chat.listPendingInputs requires sessionId."),
     }));
+  // What the chat's runtime can show (subagents, review mode). The web
+  // client's adapter already asks for it and fell back to "nothing" when no
+  // host served it.
+  register("chat.getSessionCapabilities", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getSessionCapabilities({
+      sessionId: requireString(payload.sessionId, "chat.getSessionCapabilities requires sessionId."),
+    }));
   register("chat.listSubagents", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatSubagentListArgs(payload);
@@ -8408,6 +8427,29 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       handler,
     });
   };
+
+  // ADE Web's "What's new" seen pages: one account setting, read and grown
+  // through this brain because a browser has no account-settings store. Only
+  // this key, and only by union, so a caller can add seen pages but never
+  // remove one or touch any other setting. Not in the lane-share guest list:
+  // a guest's pages would land on the host's account.
+  register("announcements.getSeen", { viewerAllowed: true }, async () => {
+    if (!args.accountSettingsStore) return { available: false, value: {} };
+    return {
+      available: true,
+      value: normalizeSeenAnnouncements(args.accountSettingsStore.get(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY)),
+    };
+  }, "runtime");
+  register("announcements.markSeen", { viewerAllowed: true }, async (payload) => {
+    const store = requireService(args.accountSettingsStore, "Account settings are not available on this machine.");
+    const current = normalizeSeenAnnouncements(store.get(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY));
+    const merged = mergeSeenAnnouncements(current, normalizeSeenAnnouncements(payload.seen));
+    if (seenAnnouncementsCover(current, merged)) return { ok: true, value: current };
+    if (!store.set(ACCOUNT_SCOPE_ALL, ANNOUNCEMENTS_SEEN_SETTING_KEY, merged)) {
+      return { ok: false, value: current };
+    }
+    return { ok: true, value: merged };
+  }, "runtime");
 
   register("analytics.capture", { viewerAllowed: true }, async (payload) => {
     if (!args.productAnalyticsService) {

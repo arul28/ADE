@@ -278,18 +278,6 @@ describe("ReasoningEffortPicker", () => {
     expect(screen.getByText(/automatically delegates work across multiple agents/i).getAttribute("data-reasoning-ultra-warning")).toBe("true");
   });
 
-  it("labels GPT-5.6 low effort as Light", () => {
-    render(
-      <ReasoningEffortPicker
-        modelId="openai/gpt-5.6-sol"
-        reasoningEffort="low"
-        onChange={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: /Reasoning effort/i }).textContent).toContain("LIGHT");
-  });
-
   it("clamps a remembered Ultra effort when switching to Luna", () => {
     reasoningByFamilyStore.openai = "ultra";
     render(

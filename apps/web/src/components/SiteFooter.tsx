@@ -48,6 +48,9 @@ export function SiteFooter() {
                 <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS} data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS} data-ade-analytics-position={MARKETING_CTA_POSITIONS.FOOTER} target="_blank" rel="noreferrer">
                   Download for iOS
                 </a>
+                <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING}>
+                  Pricing
+                </Link>
                 <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#features" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_FEATURES}>
                   Features
                 </Link>

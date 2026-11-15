@@ -47,12 +47,13 @@ import {
   secureWriteFileWithinRoot,
   readFileWithinRootSecure,
   secureWriteAtomicWithinRoot,
+  withUserPath,
 } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
 import { nonAsarFs } from "../shared/nonAsarFs";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
-import { markExpected } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 
 export type FileServiceLaneAdapter = Pick<
@@ -478,8 +479,10 @@ function ensureSafePath(
   try {
     absPath = resolvePathWithinRoot(rootPath, joinedPath, { allowMissing: opts.allowMissing });
   } catch (error) {
+    // Files paths come from the user or an agent, so a path outside the
+    // workspace is their answer, not a fault.
     if (isPathEscapeError(error)) {
-      throw new Error("Refusing to access path outside workspace");
+      throw markExpected(new Error("Refusing to access path outside workspace"), "user");
     }
     // Files paths come from the user or an agent (a tab on a deleted
     // worktree, a guessed name): a missing one is an answer, not a fault.
@@ -509,7 +512,7 @@ function decodeBase64Strict(text: string): Buffer {
  */
 function readExistingWithinRoot(rootPath: string, relPath: string, offset: number): Buffer {
   try {
-    return readFileWithinRootSecure(rootPath, relPath, { maxBytes: offset });
+    return withUserPath(() => readFileWithinRootSecure(rootPath, relPath, { maxBytes: offset }));
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return Buffer.alloc(0);
     const tooLarge = error instanceof Error ? /^File is too large \((\d+) bytes\)$/.exec(error.message) : null;
@@ -696,7 +699,8 @@ export function createFileService({
   ): string => `${rootPath}::${parentPath}::${includeIgnored ? "ignored" : "tracked"}`;
 
   const resolveWorkspace = (workspaceId: string) => {
-    if (typeof workspaceId !== "string" || !workspaceId.trim()) throw new Error("workspaceId is required.");
+    // A caller (often an agent) that left out its workspace: it fixes the call.
+    if (typeof workspaceId !== "string" || !workspaceId.trim()) throw new AdeExpectedError("workspaceId is required.", "user");
     return externalWorkspaces?.resolve(workspaceId) ?? laneService.resolveWorkspaceById(workspaceId);
   };
 
@@ -1092,7 +1096,7 @@ export function createFileService({
     writeTextAtomic({ laneId, relPath, text }: { laneId: string; relPath: string; text: string }): void {
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       assertMutablePathAllowed(worktreePath, relPath);
-      secureWriteAtomicWithinRoot(worktreePath, relPath, text);
+      withUserPath(() => secureWriteAtomicWithinRoot(worktreePath, relPath, text));
       invalidateGitStatusCache(worktreePath);
       clearPagedDirectoryEntriesCacheForRoot(worktreePath);
       if (onLaneWorktreeMutation) {
@@ -1441,7 +1445,7 @@ export function createFileService({
         }
         content = Buffer.concat([existing, chunk]);
       }
-      secureWriteAtomicWithinRoot(workspace.rootPath, args.path, content);
+      withUserPath(() => secureWriteAtomicWithinRoot(workspace.rootPath, args.path, content));
       const receipt: FilesWriteReceipt = {
         path: normalizedRel,
         bytes: content.length,
@@ -1468,7 +1472,7 @@ export function createFileService({
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
       const { absPath } = ensureSafePath(workspace.rootPath, args.path, { allowMissing: true });
       if (!nonAsarFs.existsSync(absPath)) {
-        secureWriteFileWithinRoot(workspace.rootPath, args.path, args.content ?? "", "utf8");
+        withUserPath(() => secureWriteFileWithinRoot(workspace.rootPath, args.path, args.content ?? "", "utf8"));
       }
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
@@ -1485,7 +1489,7 @@ export function createFileService({
     createDirectory(args: FilesCreateDirectoryArgs): void {
       const workspace = resolveWorkspace(args.workspaceId);
       const normalizedRel = assertMutablePathAllowed(workspace.rootPath, args.path);
-      secureMkdirWithinRoot(workspace.rootPath, args.path);
+      withUserPath(() => secureMkdirWithinRoot(workspace.rootPath, args.path));
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       // A new folder holds no files, so the index gains the folder (and any
@@ -1507,7 +1511,7 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       const oldRel = assertMutablePathAllowed(workspace.rootPath, args.oldPath);
       const newRel = assertMutablePathAllowed(workspace.rootPath, args.newPath);
-      secureRenameWithinRoot(workspace.rootPath, args.oldPath, args.newPath);
+      withUserPath(() => secureRenameWithinRoot(workspace.rootPath, args.oldPath, args.newPath));
       invalidateGitStatusCache(workspace.rootPath);
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       if (oldRel === ".gitignore" || newRel === ".gitignore") {

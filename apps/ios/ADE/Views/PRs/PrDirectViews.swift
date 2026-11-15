@@ -69,7 +69,7 @@ func githubDirectStateCopy(
   case .signInExpired:
     return GitHubDirectStateCopy(
       title: "GitHub connection ended",
-      body: "Your GitHub connection ended. Connect GitHub again to keep working with pull requests.",
+      body: "Connect GitHub again to keep working with pull requests.",
       primary: .connect("Connect GitHub")
     )
   case .appNotInstalled:

@@ -4,7 +4,7 @@ Everything here was agreed with the owner in the Cloud 2 lane. Do not re-open a 
 
 ## Ground rules for every agent
 - Do not start subagents or parallel reviewers; do all the work yourself.
-- Never print, log or commit a key. Read secrets inside a command: `"$ADE_CLI_PATH" secrets get NAME --text`. Names: `AGENT37_API_KEY`, `ADE_STRIPE_SANDBOX_SECRET_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
+- Never print, log or commit a key. Run commands with the secrets in their environment: `"$ADE_CLI_PATH" secrets exec -- <command>` (values are masked in its output; agents cannot read them directly). Names: `AGENT37_API_KEY`, `ADE_STRIPE_SANDBOX_SECRET_KEY`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`.
 - Never deploy, never run a remote migration, never change anything on Cloudflare, never use the live Stripe key (`ADE_SECRET_FOR_AGENTS`). Validate against a local `wrangler dev` with a local D1.
 - Agent 37: only delete computers you made; tag yours with metadata `created_by: c2-test`. Other computers in the workspace are not yours; never touch them. Put a `finally` on every test script so yours get deleted.
 - Do not commit; the lead commits between stages. Do not rebase or switch branches. Other agents may be editing other files in this same worktree; re-read before you edit.

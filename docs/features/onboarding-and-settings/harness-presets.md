@@ -356,7 +356,14 @@ Its
 private config home lives under `provider-homes/route/<hash>/`, outside the
 preset namespace the orphan pruner sweeps. Route homes idle for 30 days are
 removed, and removing any key removes them all (they are rebuilt on the next
-launch), because a Droid route home holds its key.
+launch), because a Droid route home holds its key. A launch of a route marks
+its own home as in use before the prune runs, so the launch never removes the
+home it is about to use.
+
+A CLI session started on a preset or a route lives in that home, and Import
+lists it from there (see
+[Where the other CLIs' sessions live](../terminals-and-sessions/external-session-import.md#where-the-other-clis-sessions-live)).
+Removing a route home also removes the CLI sessions in it.
 
 ## Launching on a preset
 

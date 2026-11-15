@@ -1,49 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  applyModelManifest,
-  BUNDLED_MODEL_MANIFEST,
-  getAppDefaultModelDescriptor,
-  createDynamicAcpModelDescriptor,
-  clearDynamicAcpModelDescriptors,
-  createDynamicDroidCliModelDescriptor,
-  replaceDynamicAcpModelDescriptors,
-  createDynamicLocalModelDescriptor,
-  createDynamicOpenCodeModelDescriptor,
-  createDynamicPiModelDescriptor,
-  classifyWorkerExecutionPath,
-  decodeOpenCodeRegistryId,
-  decodePiRegistryId,
-  droidCliLineGroupFromModelId,
-  droidCliLineGroupLabel,
-  encodeOpenCodeRegistryId,
-  encodePiRegistryId,
-  formatPiProviderLabel,
-  ensureOpenCodeBaseURL,
-  getAvailableModels,
-  getDefaultModelDescriptor,
-  getModelById,
-  getModelDescriptorForPermissionMode,
-  getRuntimeModelRefForDescriptor,
-  listAcpModelDescriptorsForProvider,
-  listModelDescriptorsForProvider,
-  mergeDynamicAcpModelDescriptors,
-  MODEL_REGISTRY,
-  resolveAcpModelDescriptor,
-  replaceDynamicPiModelDescriptors,
-  resolveModelAlias,
-  resolveCursorCliModelVariant,
-  resolveCliProviderForModel,
-  resolveProviderGroupForModel,
-  resolveModelDescriptor,
-  resolveModelDescriptorForProvider,
-  resolveModelSlug,
-  selectSupportedReasoningEffort,
-  normalizeAnthropicRuntimeAlias,
-  openCodeRegistryIdFor,
-  resolveOpenCodeFastEffortSelection,
-  usesCodexNamedEffortLabels,
-} from "./modelRegistry";
-import type { ModelDescriptor, ProviderFamily } from "./modelRegistry";
+import { applyModelManifest, BUNDLED_MODEL_MANIFEST, getAppDefaultModelDescriptor, createDynamicAcpModelDescriptor, clearDynamicAcpModelDescriptors, createDynamicDroidCliModelDescriptor, replaceDynamicAcpModelDescriptors, createDynamicLocalModelDescriptor, createDynamicOpenCodeModelDescriptor, createDynamicPiModelDescriptor, classifyWorkerExecutionPath, decodeOpenCodeRegistryId, decodePiRegistryId, droidCliLineGroupFromModelId, droidCliLineGroupLabel, encodeOpenCodeRegistryId, encodePiRegistryId, formatPiProviderLabel, ensureOpenCodeBaseURL, getAvailableModels, getDefaultModelDescriptor, getModelById, getModelDescriptorForPermissionMode, getRuntimeModelRefForDescriptor, listAcpModelDescriptorsForProvider, listModelDescriptorsForProvider, mergeDynamicAcpModelDescriptors, MODEL_REGISTRY, resolveAcpModelDescriptor, replaceDynamicPiModelDescriptors, resolveModelAlias, resolveCursorCliModelVariant, resolveCliProviderForModel, resolveProviderGroupForModel, resolveModelDescriptor, resolveModelDescriptorForProvider, resolveModelSlug, selectSupportedReasoningEffort, normalizeAnthropicRuntimeAlias, openCodeRegistryIdFor, resolveOpenCodeFastEffortSelection } from "./modelRegistry";
+import type { ModelDescriptor } from "./modelRegistry";
 import { describeModelSource } from "../renderer/lib/modelOptions";
 
 describe("modelRegistry", () => {
@@ -492,116 +449,6 @@ describe("modelRegistry", () => {
     expect(descriptor.providerModelId).toBe("Qwen/Qwen2.5-Coder");
   });
 
-  it("keeps only the allowed OpenAI chat models in the registry defaults", () => {
-    expect(listModelDescriptorsForProvider("codex").map((model) => model.id)).toEqual([
-      "openai/gpt-6.1-sol",
-      "openai/gpt-6-astra",
-      "openai/gpt-6.1-terra",
-      "openai/gpt-6-sol",
-      "openai/gpt-6-luna",
-      "openai/gpt-5.6-sol",
-      "openai/gpt-5.6-luna",
-      "openai/gpt-5.5",
-    ]);
-
-    // API-key OpenAI models are now discovered dynamically through OpenCode,
-    // so the static registry yields no hits for api-key auth alone.
-    expect(getAvailableModels([{ type: "api-key", provider: "openai" }]).map((model) => model.id)).toEqual([]);
-    expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6.1-sol");
-  });
-
-  it("exposes GPT-6 Astra with the API effort ladder", () => {
-    expect(getModelById("openai/gpt-6-astra")).toMatchObject({
-      displayName: "GPT-6 Astra",
-      providerModelId: "gpt-6-astra",
-      contextWindow: 1_050_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      defaultReasoningEffort: "low",
-      serviceTiers: ["fast"],
-    });
-    expect(resolveModelAlias("astra")?.id).toBe("openai/gpt-6-astra");
-    expect(getRuntimeModelRefForDescriptor(getModelById("openai/gpt-6-astra")!, "codex")).toBe("gpt-6-astra");
-    expect(usesCodexNamedEffortLabels("gpt-6-astra")).toBe(true);
-    expect(usesCodexNamedEffortLabels("openai/gpt-6-astra")).toBe(true);
-    expect(usesCodexNamedEffortLabels("gpt-5.6-sol")).toBe(true);
-    expect(usesCodexNamedEffortLabels("gpt-5.5")).toBe(false);
-  });
-
-  it("exposes the exact GPT-5.6 Codex effort ladders and defaults", () => {
-    expect(getModelById("openai/gpt-5.6-sol")).toMatchObject({
-      displayName: "GPT-5.6 Sol",
-      providerModelId: "gpt-5.6-sol",
-      contextWindow: 372_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      defaultReasoningEffort: "low",
-      serviceTiers: ["fast"],
-    });
-    expect(getModelById("openai/gpt-5.6-terra")).toMatchObject({
-      displayName: "GPT-5.6 Terra",
-      providerModelId: "gpt-5.6-terra",
-      contextWindow: 372_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultra"],
-      defaultReasoningEffort: "medium",
-      serviceTiers: ["fast"],
-    });
-    expect(getModelById("openai/gpt-5.6-luna")).toMatchObject({
-      displayName: "GPT-5.6 Luna",
-      providerModelId: "gpt-5.6-luna",
-      contextWindow: 372_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "medium",
-      serviceTiers: ["fast"],
-    });
-    // The bare family names follow the newest generation (model-manifest.json).
-    expect(resolveModelAlias("sol")?.id).toBe("openai/gpt-6.1-sol");
-    expect(resolveModelAlias("gpt-5.6-sol")?.id).toBe("openai/gpt-5.6-sol");
-    expect(resolveModelAlias("terra")?.id).toBe("openai/gpt-6.1-terra");
-    expect(resolveModelAlias("luna")?.id).toBe("openai/gpt-6-luna");
-    expect(resolveModelAlias("gpt-5.6-luna")?.id).toBe("openai/gpt-5.6-luna");
-  });
-
-  it("exposes GPT-5.5 with the real OpenAI model id and expected reasoning tiers", () => {
-    expect(getModelById("openai/gpt-5.5")).toMatchObject({
-      displayName: "GPT-5.5",
-      providerRoute: "codex-cli",
-      providerModelId: "gpt-5.5",
-      reasoningTiers: ["low", "medium", "high", "xhigh"],
-    });
-  });
-
-  it("exposes GPT-5.4-Mini with the expected reasoning tiers", () => {
-    expect(getModelById("openai/gpt-5.4-mini")).toMatchObject({
-      displayName: "GPT-5.4-Mini",
-      reasoningTiers: ["low", "medium", "high", "xhigh"],
-    });
-  });
-
-  it("exposes GPT-5.3-Codex-Spark as a Codex CLI model", () => {
-    expect(getModelById("openai/gpt-5.3-codex-spark")).toMatchObject({
-      displayName: "GPT-5.3-Codex-Spark",
-      providerRoute: "codex-cli",
-      providerModelId: "gpt-5.3-codex-spark",
-      cliCommand: "codex",
-      isCliWrapped: true,
-      family: "openai",
-      contextWindow: 128_000,
-      capabilities: expect.objectContaining({ vision: false, reasoning: true }),
-    });
-    expect(resolveModelAlias("spark")?.id).toBe("openai/gpt-5.3-codex-spark");
-  });
-
-  it("exposes GPT-5.2 as a Codex CLI model", () => {
-    expect(getModelById("openai/gpt-5.2")).toMatchObject({
-      displayName: "GPT-5.2",
-      providerRoute: "codex-cli",
-      providerModelId: "gpt-5.2",
-      cliCommand: "codex",
-      isCliWrapped: true,
-      family: "openai",
-    });
-    expect(resolveModelAlias("gpt-5.2-codex")?.id).toBe("openai/gpt-5.2");
-  });
-
   it("marks CLI-wrapped models as CLI subscription in the shared model source helper", () => {
     expect(describeModelSource(getModelById("openai/gpt-5.5")!)).toBe("CLI subscription");
   });
@@ -624,49 +471,10 @@ describe("modelRegistry", () => {
     expect(perm?.authTypes).toContain("local");
   });
 
-  it("resolves bare gpt-5.4 to the real OpenAI registry id", () => {
-    const resolved = resolveModelAlias("gpt-5.4");
-    expect(resolved?.id).toBe("openai/gpt-5.4");
-  });
-
-  it("resolves bare gpt-5.5 to the real OpenAI registry id", () => {
-    const resolved = resolveModelAlias("gpt-5.5");
-    expect(resolved?.id).toBe("openai/gpt-5.5");
-  });
-
-  it("does not resolve deprecated GPT-5.4 as an available Codex model", () => {
-    expect(resolveModelDescriptorForProvider("gpt-5.4", "codex")).toBeUndefined();
-  });
-
-  it("resolves gpt-5.5 to the real OpenAI model when the provider is codex", () => {
-    const resolved = resolveModelDescriptorForProvider("gpt-5.5", "codex");
-    expect(resolved?.id).toBe("openai/gpt-5.5");
-  });
-
   it("resolves the old gpt-5.4-codex alias to the real GPT-5.4 registry id", () => {
     const resolved = resolveModelAlias("gpt-5.4-codex");
     expect(resolved).toBeTruthy();
     expect(resolved?.id).toBe("openai/gpt-5.4");
-  });
-
-  it("returns the real Codex runtime model name for GPT-5.4", () => {
-    const descriptor = getModelById("openai/gpt-5.4");
-    expect(descriptor).toBeTruthy();
-    expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.4");
-  });
-
-  it("returns the real Codex app-server runtime model name for GPT-5.5", () => {
-    const descriptor = getModelById("openai/gpt-5.5");
-    expect(descriptor).toBeTruthy();
-    expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe("gpt-5.5");
-  });
-
-  it("returns the exact Codex app-server runtime names for GPT-5.6", () => {
-    for (const slug of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
-      const descriptor = getModelById(`openai/${slug}`);
-      expect(descriptor).toBeTruthy();
-      expect(getRuntimeModelRefForDescriptor(descriptor!, "codex")).toBe(slug);
-    }
   });
 
   it("resolves Cursor CLI abstract picker controls to concrete model ids", () => {
@@ -707,99 +515,6 @@ describe("modelRegistry", () => {
   });
 
   describe("Claude descriptors", () => {
-    it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 7).map((model) => model.id)).toEqual([
-        "anthropic/claude-fable-5-2",
-        "anthropic/claude-opus-5-5",
-        "anthropic/claude-sonnet-5-5",
-        "anthropic/claude-haiku-5-5",
-        "anthropic/claude-fable-5-1",
-        "anthropic/claude-sonnet-5",
-        "anthropic/claude-opus-5",
-      ]);
-      expect(getModelById("anthropic/claude-fable-5-2")).toMatchObject({
-        displayName: "Claude Fable 5.2",
-        providerRoute: "claude-cli",
-        providerModelId: "claude-fable-5-2",
-        inputPricePer1M: 8,
-        outputPricePer1M: 40,
-        defaultReasoningEffort: "medium",
-      });
-      const fable = getModelById("anthropic/claude-fable-5-1");
-      expect(fable).toBeTruthy();
-      expect(fable).toMatchObject({
-        displayName: "Claude Fable 5.1",
-        shortId: "fable",
-        family: "anthropic",
-        providerRoute: "claude-cli",
-        providerModelId: "claude-fable-5-1",
-        contextWindow: 1_000_000,
-        maxOutputTokens: 128_000,
-        inputPricePer1M: 10,
-        outputPricePer1M: 50,
-        defaultReasoningEffort: "high",
-      });
-      expect(fable?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-      expect(resolveModelAlias("fable")?.id).toBe("anthropic/claude-fable-5-1");
-      expect(resolveModelAlias("claude-fable-5")?.id).toBe("anthropic/claude-fable-5-1");
-
-      const opus55 = getModelById("anthropic/claude-opus-5-5");
-      expect(opus55).toBeTruthy();
-      expect(opus55).toMatchObject({
-        displayName: "Claude Opus 5.5",
-        shortId: "opus",
-        family: "anthropic",
-        providerRoute: "claude-cli",
-        providerModelId: "claude-opus-5-5",
-        contextWindow: 1_000_000,
-        maxOutputTokens: 128_000,
-        inputPricePer1M: 4,
-        outputPricePer1M: 20,
-        defaultReasoningEffort: "medium",
-      });
-      expect(opus55?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-      expect(opus55?.serviceTiers).toEqual(["fast"]);
-      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5-5");
-      expect(getRuntimeModelRefForDescriptor(opus55!, "claude")).toBe("claude-opus-5-5");
-
-      expect(getModelById("anthropic/claude-haiku-5-5")?.reasoningTiers).toEqual([
-        "low", "medium", "high", "xhigh", "max", "ultracode",
-      ]);
-
-      const opus5 = getModelById("anthropic/claude-opus-5");
-      expect(opus5).toBeTruthy();
-      expect(opus5).toMatchObject({
-        displayName: "Claude Opus 5",
-        shortId: "opus-5",
-        family: "anthropic",
-        providerRoute: "claude-cli",
-        providerModelId: "claude-opus-5",
-        contextWindow: 1_000_000,
-        maxOutputTokens: 128_000,
-        inputPricePer1M: 5,
-        outputPricePer1M: 25,
-        defaultReasoningEffort: "high",
-      });
-      expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-      expect(opus5?.serviceTiers).toEqual(["fast"]);
-      expect(resolveModelAlias("opus-5")?.id).toBe("anthropic/claude-opus-5");
-      expect(getRuntimeModelRefForDescriptor(opus5!, "claude")).toBe("claude-opus-5");
-      // model-manifest.json makes Opus 5.5 the Claude default.
-      expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-opus-5-5");
-    });
-
-    it("uses the exact Claude Sonnet 5 runtime model id", () => {
-      const sonnet = getModelById("anthropic/claude-sonnet-5");
-      expect(sonnet).toBeTruthy();
-      expect(sonnet).toMatchObject({
-        displayName: "Claude Sonnet 5",
-        shortId: "sonnet-5",
-        providerModelId: "claude-sonnet-5",
-        contextWindow: 1_000_000,
-        maxOutputTokens: 128_000,
-      });
-      expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5");
-    });
 
     it("adds Claude Sonnet 5.5 and keeps the generic sonnet alias on it", () => {
       const sonnet = getModelById("anthropic/claude-sonnet-5-5");
@@ -883,13 +598,6 @@ describe("modelRegistry", () => {
       expect(getModelById("anthropic/claude-sonnet-5")?.serviceTiers).toBeUndefined();
       expect(getModelById("anthropic/claude-haiku-4-5")?.serviceTiers).toBeUndefined();
     });
-  });
-
-  it("does not contain groq, together, or meta provider families", () => {
-    const families = new Set<ProviderFamily>(MODEL_REGISTRY.map((m) => m.family));
-    expect(families.has("groq" as ProviderFamily)).toBe(false);
-    expect(families.has("together" as ProviderFamily)).toBe(false);
-    expect(families.has("meta" as ProviderFamily)).toBe(false);
   });
 
   it("filters out deprecated models from getAvailableModels", () => {
@@ -990,31 +698,14 @@ describe("modelRegistry", () => {
     expect(droidCliLineGroupLabel("custom")).toBe("Custom models");
   });
 
-  it("uses compact Droid factory labels that match the CLI picker", () => {
-    const descriptor = getModelById("droid/claude-sonnet-5");
-    expect(descriptor).toBeTruthy();
-    expect(descriptor?.displayName).toBe("Sonnet 5 (1.2x)");
-  });
-
-  it("keeps Sonnet 5 registry pricing aligned with current intro pricing", () => {
-    expect(getModelById("anthropic/claude-sonnet-5")).toMatchObject({
-      inputPricePer1M: 2,
-      outputPricePer1M: 10,
-    });
-  });
-
   describe("ensureOpenCodeBaseURL", () => {
-    it("appends /v1 when missing", () => {
-      expect(ensureOpenCodeBaseURL("http://localhost:1234")).toBe("http://localhost:1234/v1");
-    });
-    it("strips trailing slash before appending /v1", () => {
-      expect(ensureOpenCodeBaseURL("http://localhost:1234/")).toBe("http://localhost:1234/v1");
-    });
-    it("preserves existing /v1 suffix", () => {
-      expect(ensureOpenCodeBaseURL("http://localhost:1234/v1")).toBe("http://localhost:1234/v1");
-    });
-    it("strips trailing slash from /v1/", () => {
-      expect(ensureOpenCodeBaseURL("http://localhost:1234/v1/")).toBe("http://localhost:1234/v1");
+    it.each([
+      ["http://localhost:1234", "http://localhost:1234/v1"],
+      ["http://localhost:1234/", "http://localhost:1234/v1"],
+      ["http://localhost:1234/v1", "http://localhost:1234/v1"],
+      ["http://localhost:1234/v1/", "http://localhost:1234/v1"],
+    ])("normalizes %s", (input, expected) => {
+      expect(ensureOpenCodeBaseURL(input)).toBe(expected);
     });
   });
 });

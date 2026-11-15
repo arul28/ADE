@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   CaretLeft,
@@ -47,7 +47,7 @@ import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPane
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
 import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
-import { SecretsSection } from "./SecretsSection";
+import { PasswordsSection } from "./passwords/PasswordsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { GeneralPage } from "./general/GeneralPage";
 import { MachinesPage } from "./machines/MachinesPage";
@@ -56,14 +56,18 @@ import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
   MachineUnavailableNotice,
+  routedPageFor,
+  machineRouteNeedsUpdate,
   machineSectionAvailable,
   type MachineSectionKind,
+  type PickableSectionKind,
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
+import type { MachineScopeLaterDomain } from "../../../shared/machineScope";
 import { WebSettingsSection } from "./WebScopePill";
 import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
-import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
+import { SettingsMachineScopeProvider, useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
 import { NoProjectCopyNotice, ProjectCopyBar, ProjectCopyScopeProvider, settingsCopyScope, useProjectCopyPage } from "./ProjectCopyScope";
 import {
   SETTINGS_ENTRIES,
@@ -312,6 +316,12 @@ type TabSection = {
   /** For pages under Machines: how the section reaches its machine. */
   machine?: MachineSectionKind;
   /**
+   * A `machine` section's domain on the machine route when it came after the
+   * route's first version: a machine whose ADE predates it is reached through
+   * its copy of this repository, or says to update ADE there.
+   */
+  machineDomain?: MachineScopeLaterDomain;
+  /**
    * A link to this section with no `?machine=` opens the tab's machine rather
    * than This computer: it is about the project tab's own connection (a banner
    * or a PR reporting that machine's GitHub, say). Implied by `bound`.
@@ -388,7 +398,7 @@ const TAB_GROUPS = {
   cloud: {
     title: ADE_CLOUD_NAME,
     description: "Cloud computers for your lanes, made and signed in from ADE.",
-    icon: <CloudMark size={15} bold />,
+    icon: <CloudMark size={15} brand />,
     tone: "slate",
   },
   mcp: {
@@ -490,8 +500,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
-    // carries that machine's pin.
-    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "routed", title: "Terminal shell" },
+    // carries that machine's pin, the machine route when this window's
+    // project has no copy there.
+    { entryIds: ["behaviour.terminal-shell"], render: () => <TerminalShellSection />, machine: "machine", title: "Terminal shell" },
     // `.ade/local.yaml`, read by the link router of the window bound to that
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
@@ -516,7 +527,10 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
   apple: [{ entryIds: "tab", render: () => <SettingsColumn wide><AppleDevicesSection /></SettingsColumn> }],
-  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "routed", title: "Android devices" }],
+  // The SDK and the machine preferences are the computer's: the machine
+  // route, so the page shows for every online computer and never waits on a
+  // project's drive.
+  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "machine", machineDomain: "android_emulator", title: "Android devices" }],
   chat: [
     {
       entryIds: "tab",
@@ -571,20 +585,38 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // Account-wide lists read through the tab's bound runtime (it asks the
   // account directory); edits of a share go to the machine that holds it.
   sharing: [{ entryIds: "tab", render: () => <SettingsColumn wide><SharingSettingsPage /></SettingsColumn> }],
-  secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
+  // Passwords & Secrets is the account's, read on this computer: its brain
+  // answers through `passwords.call`, with or without a project open, and
+  // whichever machine the project tab is bound to.
+  passwords: [{ entryIds: "tab", render: () => <SettingsColumn wide><PasswordsSection /></SettingsColumn>, machine: "local", title: "Passwords & Secrets" }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
 
 /**
- * Providers is routed: every runtime call, the key store, provider accounts,
- * login terminals and auth-status feeds take the machine's pin. What stays on
- * This computer (opening a config file in the OS) is disabled in place.
+ * Providers is about the computer, not the project: every runtime call, the
+ * key store, provider accounts, login terminals and auth-status feeds take the
+ * machine's pin, which is the copy of this repository on it when there is one
+ * and the machine route otherwise (`routedPageFor`). What stays on This
+ * computer (opening a config file in the OS) is disabled in place.
  */
-const AGENTS_TAB_KIND: MachineSectionKind = "routed";
+const AGENTS_TAB_KIND = "machine" satisfies PickableSectionKind;
 
-/** A section that loads with no project: this desktop's own, or the account's. */
+/**
+ * How a tab whose title names its machine reaches one, for the title's
+ * machine picker: Providers by the machine route, else its section's kind.
+ */
+export function settingsTabPickerKind(tab: SettingsTabId): PickableSectionKind {
+  if (tab === "agents") return AGENTS_TAB_KIND;
+  const kind = TAB_SECTIONS[tab]?.[0]?.machine;
+  return kind === "machine" ? kind : "routed";
+}
+
+/**
+ * A section that loads with no project: this desktop's own, the account's, or
+ * a computer's own settings (the machine route needs no project).
+ */
 function standaloneSection(section: TabSection): boolean {
-  return section.machine === undefined || section.machine === "local";
+  return section.machine === undefined || section.machine === "local" || section.machine === "machine";
 }
 
 /**
@@ -655,6 +687,46 @@ function ProjectCopyTabContent({ tab }: { tab: SettingsTabId }) {
   );
 }
 
+/**
+ * A `machine` or `account` section: rendered under the machine's routed
+ * scope (`routedPageFor`), so its pin is the copy of this repository there or
+ * else the machine's own route. Keyed on that route: a machine that gains or
+ * loses its copy remounts the section on the new route instead of keeping
+ * closures and feeds bound to the old one. A machine whose brain is too old
+ * for the machine route gets the sentence that says to update it.
+ */
+function MachineRouted({
+  page,
+  domain,
+  titles,
+  children,
+}: {
+  page: SettingsMachinePage;
+  domain?: MachineScopeLaterDomain;
+  titles: string[];
+  children: React.ReactNode;
+}) {
+  const routed = useMemo(() => routedPageFor(page, domain), [domain, page]);
+  if (!routed) {
+    return (
+      <MachineUnavailableNotice
+        machine={page}
+        unavailableTitles={titles}
+        needsUpdate={machineRouteNeedsUpdate(page, domain)}
+      />
+    );
+  }
+  // Keyed on both routes: a machine that gains or loses its copy of this
+  // repository remounts the section, so nothing stays bound to the old copy.
+  const projectTarget = routed.projectTarget;
+  const projectKey = projectTarget?.kind === "pinned" ? projectTarget.binding.key : projectTarget?.kind ?? "";
+  return (
+    <SettingsMachineScopeProvider key={`${routed.pin?.key ?? routed.machineId}|${projectKey}`} scope={routed}>
+      {children}
+    </SettingsMachineScopeProvider>
+  );
+}
+
 function MachineTabContent({
   tab,
   machine,
@@ -678,14 +750,16 @@ function MachineTabContent({
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {
-    if (machine && !machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
-      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
-    }
-    return (
+    const content = (
       <SettingsColumn wide>
         <AgentsTabContent />
       </SettingsColumn>
     );
+    if (!machine) return content;
+    if (!machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
+      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
+    }
+    return <MachineRouted page={machine} titles={["Providers"]}>{content}</MachineRouted>;
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;
@@ -707,7 +781,11 @@ function MachineTabContent({
       entryIds,
       node: (
         <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-          {section.render()}
+          {section.machine === "machine" && machine ? (
+            <MachineRouted page={machine} domain={section.machineDomain} titles={[section.title ?? "These settings"]}>
+              {section.render()}
+            </MachineRouted>
+          ) : section.render()}
         </WebSettingsSection>
       ),
     };

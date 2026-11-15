@@ -154,7 +154,15 @@ export type ChatScheduledWorkScheduler = {
    * `globallyPaused` is the caller's read of the global pause, for a caller that
    * reads many sessions in one pass; it defaults to asking `isGlobalPaused` now.
    */
-  nextWakeAt(sessionId: string, globallyPaused?: boolean): number | null;
+  /**
+   * Earliest fire time of a pending row. `skip` leaves rows out, for a caller
+   * that shows the time to the user and must not count ADE's own resumes.
+   */
+  nextWakeAt(
+    sessionId: string,
+    globallyPaused?: boolean,
+    skip?: (schedule: ChatScheduledWorkRecord) => boolean,
+  ): number | null;
   claimNativeFire(sessionId: string, turnId: string, scheduleId?: string): ChatScheduledWorkRecord | null;
   recordTurnStarted(scheduleId: string, turnId: string): Promise<void>;
   recordTurnFinished(turnId: string, outcomeSummary?: string): Promise<void>;
@@ -857,7 +865,7 @@ export function createChatScheduledWorkScheduler(
       return pausedSessionIds.has(sessionId);
     },
 
-    nextWakeAt(sessionId, globallyPaused = options.isGlobalPaused()): number | null {
+    nextWakeAt(sessionId, globallyPaused = options.isGlobalPaused(), skip): number | null {
       if (globallyPaused || pausedSessionIds.has(sessionId)) return null;
       let next: number | null = null;
       for (const schedule of schedules.values()) {
@@ -867,7 +875,8 @@ export function createChatScheduledWorkScheduler(
           schedule.pausedFlag ||
           isExpired(schedule) ||
           schedule.fireAt == null ||
-          !Number.isFinite(schedule.fireAt)
+          !Number.isFinite(schedule.fireAt) ||
+          skip?.(schedule)
         ) continue;
         next = next == null ? schedule.fireAt : Math.min(next, schedule.fireAt);
       }

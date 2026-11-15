@@ -3,20 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PrActionStep, PrWorkflowGraph, PrWorkflowGraphNode } from "../../../../shared/types";
-import {
-  buildCheckDetailPlan,
-  buildLogExcerptMarkdown,
-  deriveFallbackGraph,
-  graphBuckets,
-  graphUnavailableCopy,
-  hydrateWorkflowGraph,
-  matrixLegCaption,
-  nodeElapsedMs,
-  readStoredChecksView,
-  resolveLogJobId,
-  stepProgress,
-  writeStoredChecksView,
-} from "./prChecksModel";
+import { buildCheckDetailPlan, buildLogExcerptMarkdown, graphBuckets, hydrateWorkflowGraph, matrixLegCaption, nodeElapsedMs, readStoredChecksView, resolveLogJobId, stepProgress, writeStoredChecksView } from "./prChecksModel";
 import type { UnifiedCheckItem } from "../shared/prUnifiedChecks";
 import { fetchCheckLogForState, isCheckLogFetchWorthwhile } from "./prChecksApi";
 
@@ -176,29 +163,6 @@ describe("prChecksModel — node presentation", () => {
       detailsUrl: "https://github.com/o/r/actions/runs/5/job/777",
     }))).toBe(777);
     expect(resolveLogJobId(node({ jobId: "nothing" }))).toBeNull();
-  });
-});
-
-describe("prChecksModel — fallback graph", () => {
-  const item = (o: Partial<UnifiedCheckItem> & Pick<UnifiedCheckItem, "id" | "name">): UnifiedCheckItem => ({
-    displayName: o.name,
-    status: "completed",
-    conclusion: "success",
-    duration: null,
-    detailsUrl: null,
-    source: "actions_job",
-    startedAt: null,
-    completedAt: null,
-    jobId: null,
-    runId: null,
-    checkRunId: null,
-    ...o,
-  });
-
-  it("explains a reusable workflow in plain language", () => {
-    expect(graphUnavailableCopy("reusable-workflow")).toContain("calls another workflow");
-    expect(graphUnavailableCopy("no-workflow-file")).toContain("couldn't find the workflow file");
-    expect(graphUnavailableCopy(null)).toContain("grouped by workflow");
   });
 });
 

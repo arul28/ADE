@@ -624,6 +624,8 @@ describe("ProjectScopeRegistry", () => {
       expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
       expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
       expect(scopeRegistry.getIfBooted(second.projectId)).toBeNull();
+      // The abandoned scope booted, but it is being torn down: never ready.
+      expect(scopeRegistry.getIfReady(second.projectId)).toBeNull();
     } finally {
       vi.useRealTimers();
     }
@@ -1382,7 +1384,7 @@ describe("ProjectScopeRegistry sync-host phase backoff", () => {
     await expect(scopeRegistry.ensureSyncHost(first.projectId)).rejects.toBe(probe.failure);
     expect(probe.counts.activated).toBe(1);
     expect(scopeRegistry.getMostRecentFailingSyncHostProjectId()).toBe(first.projectId);
-    const booted = await scopeRegistry.resolveBootedSyncScope();
+    const booted = scopeRegistry.resolveReadySyncScope();
     expect(booted?.registryProjectId).toBe(first.projectId);
     expect(probe.counts.activated).toBe(1);
 

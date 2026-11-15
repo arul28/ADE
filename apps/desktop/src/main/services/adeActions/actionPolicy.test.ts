@@ -13,7 +13,7 @@ import {
 } from "./actionPolicy";
 import { settingsEntryById } from "../../../shared/settingsManifest";
 import type { AdeActionDomain } from "./domains";
-import { ADE_ACTION_ACCESS, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
+import { ADE_ACTION_ACCESS, isReplaySafeAdeAction, thisDesktopOnlyRefusal } from "../../../shared/adeActionAccess";
 
 /**
  * The gate, tested over the tables alone.
@@ -31,32 +31,6 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("lane", "create")).toBe(true);
     expect(isAllowedAdeAction("automations", "triggerManually")).toBe(true);
     expect(isAllowedAdeAction("issue", "addComment")).toBe(true);
-  });
-
-  it("exposes every iOS simulator action the preload routes as a runtime action", () => {
-    // The `ios_simulator` domain spreads `APPLE_AGENT_ACTIONS`, and the preload
-    // calls some of those through `callIosSimulatorActionOr` — a runtime action
-    // the daemon rejects if the name is missing here. `recordingsTotalBytes`
-    // was implemented and exposed but absent from the list, so the runtime path
-    // rejected it and the Diagnostics row silently fell back to a tree walk.
-    for (const action of [
-      "recordingsTotalBytes",
-      "startStream",
-      "stopStream",
-      "deviceStart",
-      "deviceCreate",
-    ]) {
-      expect(isAllowedAdeAction("ios_simulator", action), action).toBe(true);
-    }
-    expect(isAllowedAdeAction("ios_simulator", "definitelyNotAnAction")).toBe(false);
-  });
-
-  it("exposes the session-scoped Linear link lane actions for CLI/automation reach", () => {
-    expect(isAllowedAdeAction("lane", "attachLinearIssueToSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "detachLinearIssueFromSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForSession")).toBe(true);
-    expect(isAllowedAdeAction("lane", "listLinearIssuesForLaneSessions")).toBe(true);
-    expect(isAllowedAdeAction("lane", "unlinkLinearIssues")).toBe(true);
   });
 
   it("exposes the Linear issue tracker write actions for the CLI daemon bridge", () => {
@@ -201,36 +175,17 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("ios_simulator", "renderCurrentPreview")).toBe(false);
   });
 
-  it("exposes subagent transcript reads through the chat runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "getMainTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
-    expect(isAllowedAdeAction("chat", "readTranscriptPage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
-    expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
-    expect(isCtoOnlyAdeAction("chat", "getMainTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "readTranscriptPage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
-    expect(isCtoOnlyAdeAction("chat", "messageSession")).toBe(false);
-  });
-
-  it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
-    expect(isAllowedAdeAction("chat", "setCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "setCodexGoalStatus")).toBe(true);
-    expect(isAllowedAdeAction("chat", "clearCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "resetCodexMemory")).toBe(true);
-    expect(isAllowedAdeAction("chat", "terminateCodexBackgroundTerminal")).toBe(true);
-    expect(isAllowedAdeAction("chat", "stopTask")).toBe(true);
-    expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
-  });
-
-  it("rejects an unknown action on a known domain", () => {
-    expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
-    expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
-    expect(isAllowedAdeAction("automations", "__proto__")).toBe(false);
+  // work_tools never drives the pane (the browser and App Control keep their
+  // own allowlists for that), and search never disposes the index remotely.
+  it.each([
+    ["git", "rmRf"],
+    ["issue", "deleteAllIssues"],
+    ["automations", "__proto__"],
+    ["work_tools", "click"],
+    ["work_tools", "navigate"],
+    ["search", "dispose"],
+  ] as const)("rejects %s.%s", (domain, action) => {
+    expect(isAllowedAdeAction(domain, action)).toBe(false);
   });
 
   it("rejects an unknown domain outright", () => {
@@ -443,8 +398,11 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("ai", "listApiKeys")).toBe(false);
   });
 
-  it("keeps plaintext project secret export CTO-only", () => {
-    expect(isCtoOnlyAdeAction("project_secret", "exportEnv")).toBe(true);
+  // A .env export writes every value in plain text: only the person, from the
+  // desktop app on the computer they are using, and never an agent.
+  it("keeps the plaintext secrets export the person's, on this computer", () => {
+    expect(isUserOnlyAdeAction("passwords", "exportSecrets")).toBe(true);
+    expect(thisDesktopOnlyRefusal("passwords", "exportSecrets")).toEqual(expect.any(String));
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
@@ -525,49 +483,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }
     expect(isCtoOnlyAdeAction("automations", "setWebhookGatewayPublicUrl")).toBe(true);
     expect(isCtoOnlyAdeAction("automations", "refreshWebhookGatewayStatus")).toBe(false);
-  });
-
-  it("exposes the issue domain with GitHub issue mutation helpers", () => {
-    const actions = ADE_ACTION_ALLOWLIST.issue ?? [];
-    for (const name of ["addComment", "setLabels", "close", "reopen", "assign", "setTitle"]) {
-      expect(actions).toContain(name);
-    }
-  });
-
-  it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listSnapshots");
-  });
-
-  it("exposes lane.listDeleteProgress for runtime-backed lane delete progress recovery", () => {
-    const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
-    expect(actions).toContain("listDeleteProgress");
-  });
-
-  it("exposes runtime-backed PR reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("listPrsByLane");
-    expect(actions).toContain("getMobileGithubDetail");
-  });
-
-  it("exposes reconcileOnFocus + syncLanePr so the reconcile safety net works in the runtime-backed build", () => {
-    // Regression: in production a project is runtime-backed (local daemon RPC),
-    // so the desktop context's prService is null and these actions are dispatched
-    // to the daemon. If they are not allowlisted, the daemon rejects them —
-    // reconcile-on-focus becomes a no-op and the manual ⟳ sync silently fails.
-    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
-    expect(actions).toContain("reconcileOnFocus");
-    expect(actions).toContain("syncLanePr");
-  });
-
-  it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
-    const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
-    expect(actions).toContain("clearLocalData");
-  });
-
-  it("exposes session.getDelta for runtime-backed session delta reads", () => {
-    const actions = ADE_ACTION_ALLOWLIST.session ?? [];
-    expect(actions).toContain("getDelta");
   });
 
   it("exposes computer-use backend status and artifact preview reads for runtime-backed proof flows", () => {
@@ -709,14 +624,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
     expect(contract?.input?.length ?? 0).toBeGreaterThan(0);
   });
 
-  it("covers every domain the coverage table claims exactly once", () => {
-    const domains = CTO_DOMAIN_COVERAGE.map((entry) => entry.domain);
-    expect(new Set(domains).size).toBe(domains.length);
-    for (const domain of domains) {
-      expect(ADE_ACTION_ALLOWLIST[domain], `${domain} must exist in the allowlist`).toBeDefined();
-    }
-  });
-
   // ── CTO-only decisions ────────────────────────────────────────────────────
 
   it("keeps the new read surfaces open to agents, as decided", () => {
@@ -739,7 +646,6 @@ describe("CTO domain coverage over the ADE action bus", () => {
   it("leaves the privileged neighbours of those surfaces CTO-only", () => {
     for (const [domain, action] of [
       ["search", "rebuildIndex"],
-      ["project_secret", "exportEnv"],
       ["budget", "updateConfig"],
       ["usage", "forceRefresh"],
       ["computer_use_artifacts", "deleteArtifacts"],

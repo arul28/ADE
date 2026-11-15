@@ -1,12 +1,15 @@
 /**
  * What an ADE Cloud computer's brain tells ADE Cloud about itself at its idle
  * step (`ade serve`, wired in `runServe`): its lanes' work for the dashboard
- * (unpushed work, the pull request's state), its disk use, an update when it
- * is idle and behind its channel, and that it booted.
+ * (unpushed work, the pull request's state), its disk use, the files git
+ * ignores that a delete would lose (the idle cleanup's warning lists them),
+ * an update when it is idle and behind its channel, that it booted, and hours
+ * near full CPU with no chat turn running.
  */
 
 import type { CloudBrainAccess } from "../../../../desktop/src/main/services/adeCloud/cloudBrainAccess";
-import type { CloudDiskUsageReport } from "../../../../desktop/src/shared/adeCloud";
+import type { CloudDiskUsageReport, CloudIgnoredFiles, CloudSustainedCpuReport } from "../../../../desktop/src/shared/adeCloud";
+import { readCloudIgnoredFiles } from "./cloudIgnoredFiles";
 import type { ProjectScopeRegistry } from "../projects/projectScope";
 import type { ProjectRegistry } from "../projects/projectRegistry";
 
@@ -25,16 +28,28 @@ export function createCloudComputerReports(deps: {
   scopeRegistry: () => Pick<ProjectScopeRegistry, "getIfBooted">;
   getCloudBrainAccess: () => Promise<CloudBrainAccess>;
   version: string;
+  logger?: { warn(event: string, data?: unknown): void };
 }) {
   const { instanceId, projectRegistry, getCloudBrainAccess } = deps;
   let updateRetryAt = 0;
+  // Only projects already open: the idle step never boots one to look.
+  // `failed` counts projects whose lookup threw: what they hold wasn't read.
+  const openRuntimes = async () => {
+    const scopeRegistry = deps.scopeRegistry();
+    let failed = 0;
+    const runtimes = (await Promise.all(projectRegistry.list().map(async (record) =>
+      (await scopeRegistry.getIfBooted(record.projectId)?.catch((error: unknown) => {
+        failed += 1;
+        deps.logger?.warn("cloud.project_lookup_failed", { projectId: record.projectId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }))?.runtime ?? null)))
+      .filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+    return { runtimes, failed };
+  };
+  const bootedRuntimes = async () => (await openRuntimes()).runtimes;
   return {
-    // Only projects already open: the idle step never boots one to look.
     readWork: async () => {
-      const scopeRegistry = deps.scopeRegistry();
-      const runtimes = (await Promise.all(projectRegistry.list().map(async (record) =>
-        (await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null))?.runtime ?? null)))
-        .filter((runtime): runtime is NonNullable<typeof runtime> => Boolean(runtime));
+      const runtimes = await bootedRuntimes();
       if (!runtimes.length) return null;
       let unpushed = false;
       let prState: "draft" | "open" | "merged" | "closed" | null = null;
@@ -45,6 +60,21 @@ export function createCloudComputerReports(deps: {
         }
       }
       return { checkedAt: Date.now(), unpushed, prState };
+    },
+    /**
+     * Every lane's files git ignores, archived lanes included (their worktrees
+     * go with the computer too), summed up. Marked incomplete when a lane or a
+     * project couldn't be read; null with no lane.
+     */
+    readIgnored: async (): Promise<CloudIgnoredFiles | null> => {
+      const lanes = [];
+      const { runtimes, failed } = await openRuntimes();
+      for (const runtime of runtimes) {
+        for (const lane of await runtime.laneService.list({ includeArchived: true, includeStatus: false })) {
+          if (lane.worktreePath) lanes.push({ laneName: lane.name, worktreePath: lane.worktreePath });
+        }
+      }
+      return lanes.length ? await readCloudIgnoredFiles(lanes, { logger: deps.logger, incomplete: failed > 0 }) : null;
     },
     send: async (report: CloudDiskUsageReport) => {
       const client = await (await getCloudBrainAccess()).client();
@@ -66,6 +96,13 @@ export function createCloudComputerReports(deps: {
         updateRetryAt = Date.now() + UPDATE_RETRY_AFTER_MS;
         throw error;
       }
+    },
+    // Hours near full CPU with no chat turn or agent working (`cloudSustainedCpu.ts`): a line in the owner's daily report.
+    reportSustainedCpu: async (report: CloudSustainedCpuReport) => {
+      if (!instanceId) return;
+      const client = await (await getCloudBrainAccess()).client();
+      if (!client?.reportSustainedCpu) throw new Error("no ADE Cloud access");
+      await client.reportSustainedCpu(instanceId, report);
     },
     reportBooted: async () => {
       if (!instanceId) return { sleepWhenIdle: false };

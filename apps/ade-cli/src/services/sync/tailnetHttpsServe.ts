@@ -2,17 +2,36 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { MachineTailnetHttpsRoute } from "../../../../desktop/src/shared/types";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
+import { enqueueTailscaleServe } from "./tailscaleServeCommand";
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT, SYNC_PORT_SCAN_ABOVE } from "./syncProtocol";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
 
 const execFileAsync = promisify(execFile);
 
 /** A stuck `tailscale` can ignore SIGTERM, so a timeout kills it outright. */
-const runServe = (serveArgs: string[], timeoutMs: number) => execFileAsync(
+const runServe = (serveArgs: string[], timeoutMs: number) => enqueueTailscaleServe(() => execFileAsync(
   resolveTailscaleCliPath(),
   ["serve", ...serveArgs],
   { timeout: timeoutMs, windowsHide: true, killSignal: "SIGKILL" },
-);
+));
+
+/**
+ * The loopback port an ADE serve entry for `syncPort` forwards to, or null when
+ * the forward is not one ADE makes: `127.0.0.1:<syncPort>` itself, or the side
+ * door the listener opens a few ports above it while another program holds
+ * that address. A stale side door cannot be identity-probed, so this is a
+ * shape match: a hand-set serve of exactly this shape is treated as ADE's
+ * too, and reclaim removes it only while nothing serves at either end.
+ */
+export function adeLoopbackForwardPort(syncPort: number, forward: unknown): number | null {
+  if (typeof forward !== "string") return null;
+  const match = /^(?:http:\/\/)?127\.0\.0\.1:(\d{1,5})$/.exec(forward);
+  if (!match) return null;
+  const target = Number(match[1]);
+  if (!(target > 0 && target <= 65_535)) return null;
+  const isSideDoor = target > syncPort && target <= syncPort + SYNC_PORT_SCAN_ABOVE;
+  return target === syncPort || isSideDoor ? target : null;
+}
 
 /**
  * The secure Tailscale route sits this far above the sync port, so each ADE
@@ -27,13 +46,15 @@ export function tailnetHttpsPortFor(syncPort: number): number {
 
 /**
  * HTTPS Serve entries ADE published for an earlier sync port and never tore
- * down. Same rule as the TCP ones: only ADE's exact shape (an HTTPS port in
- * ADE's offset range proxying `/` to 127.0.0.1 on the matching sync port).
+ * down. Same rule as the TCP ones: only ADE's shape (an HTTPS port in ADE's
+ * offset range proxying `/` to 127.0.0.1, on the matching sync port or the
+ * side door the listener opened while another program held that port).
+ * Returns each entry with the loopback port it forwards to.
  */
-export function staleAdeTailnetHttpsPorts(
+export function staleAdeTailnetHttpsEntries(
   serveStatusJson: string,
   currentHttpsPort: number | null,
-): number[] {
+): Array<{ port: number; target: number }> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(serveStatusJson);
@@ -44,21 +65,31 @@ export function staleAdeTailnetHttpsPorts(
   const tcp = root?.TCP;
   const web = root?.Web;
   if (!tcp || typeof tcp !== "object" || !web || typeof web !== "object") return [];
-  const stale: number[] = [];
+  const stale: Array<{ port: number; target: number }> = [];
   for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
     const port = Number.parseInt(key, 10);
     if (!Number.isInteger(port) || port === currentHttpsPort) continue;
     const syncPort = port - SYNC_TAILNET_HTTPS_PORT_OFFSET;
     if (syncPort < DEFAULT_SYNC_HOST_PORT || syncPort > SYNC_HOST_MAX_PORT) continue;
     if ((value as { HTTPS?: unknown } | null)?.HTTPS !== true) continue;
-    const proxiesToAde = Object.entries(web as Record<string, unknown>).some(([hostPort, entry]) => {
-      if (!hostPort.endsWith(`:${port}`)) return false;
+    let target: number | null = null;
+    for (const [hostPort, entry] of Object.entries(web as Record<string, unknown>)) {
+      if (!hostPort.endsWith(`:${port}`)) continue;
       const handlers = (entry as { Handlers?: Record<string, { Proxy?: unknown }> } | null)?.Handlers;
-      return handlers?.["/"]?.Proxy === `http://127.0.0.1:${syncPort}`;
-    });
-    if (proxiesToAde) stale.push(port);
+      target = adeLoopbackForwardPort(syncPort, handlers?.["/"]?.Proxy);
+      if (target != null) break;
+    }
+    if (target != null) stale.push({ port, target });
   }
-  return stale.sort((left, right) => left - right);
+  return stale.sort((left, right) => left.port - right.port);
+}
+
+/** The HTTPS ports of {@link staleAdeTailnetHttpsEntries}. */
+export function staleAdeTailnetHttpsPorts(
+  serveStatusJson: string,
+  currentHttpsPort: number | null,
+): number[] {
+  return staleAdeTailnetHttpsEntries(serveStatusJson, currentHttpsPort).map((entry) => entry.port);
 }
 
 type Logger = {
@@ -68,8 +99,12 @@ type Logger = {
 
 export type TailnetHttpsServe = {
   route(): MachineTailnetHttpsRoute;
-  /** Publish for this sync port, or say which tailnet switch is missing. */
-  publish(syncPort: number, options?: { force?: boolean }): Promise<void>;
+  /**
+   * Publish for this sync port, or say which tailnet switch is missing.
+   * `targetPort` is where 127.0.0.1 reaches ADE (the sync port, or the
+   * listener's side door); the HTTPS port still follows the sync port.
+   */
+  publish(syncPort: number, options?: { force?: boolean; targetPort?: number }): Promise<void>;
   unpublish(): Promise<void>;
   /** Tear down ADE's HTTPS entries for earlier sync ports, from one `serve status --json` read. */
   reclaimStale(serveStatusJson: string): Promise<void>;
@@ -95,6 +130,7 @@ export function createTailnetHttpsServe(args: {
     error: "Tailscale has not been checked yet.",
   };
   let servedPort: number | null = null;
+  let servedTarget: number | null = null;
   // The HTTPS port the newest publish is for; null after an unpublish. A
   // publish that finishes after it was superseded removes what it added
   // unless a newer publish wants the same port.
@@ -107,7 +143,8 @@ export function createTailnetHttpsServe(args: {
     if (changed) args.onChanged();
   };
 
-  const publish = async (syncPort: number, options?: { force?: boolean }): Promise<void> => {
+  const publish = async (syncPort: number, options?: { force?: boolean; targetPort?: number }): Promise<void> => {
+    const targetPort = options?.targetPort ?? syncPort;
     const attempt = ++sequence;
     // A newer attempt that stops before `serve` must still let an older one
     // in flight take its entry back, so only an attempt that reaches `serve`
@@ -142,11 +179,17 @@ export function createTailnetHttpsServe(args: {
     }
     const httpsPort = tailnetHttpsPortFor(syncPort);
     const url = `wss://${status.dnsName}:${httpsPort}`;
-    if (!options?.force && servedPort === httpsPort && route.state === "published" && route.url === url) return;
+    if (
+      !options?.force
+      && servedPort === httpsPort
+      && servedTarget === targetPort
+      && route.state === "published"
+      && route.url === url
+    ) return;
     setRoute({ state: "publishing", url: null, error: null });
     wantedPort = httpsPort;
     try {
-      await runServe(["--bg", `--https=${httpsPort}`, `http://127.0.0.1:${syncPort}`], 15_000);
+      await runServe(["--bg", `--https=${httpsPort}`, `http://127.0.0.1:${targetPort}`], 15_000);
       if (!isCurrent()) {
         // Unpublished (or moved to another port) while this ran: take back the
         // entry it just added, so the computer isn't left reachable on it.
@@ -157,6 +200,7 @@ export function createTailnetHttpsServe(args: {
         return;
       }
       servedPort = httpsPort;
+      servedTarget = targetPort;
       setRoute({ state: "published", url, error: null });
       args.logger.info("sync_host.tailnet_https_published", { httpsPort, syncPort });
     } catch (error: unknown) {
@@ -206,11 +250,14 @@ export function createTailnetHttpsServe(args: {
   // before each teardown so a sibling ADE's live entry is never removed.
   const reclaimStale = async (serveStatusJson: string): Promise<void> => {
     const syncPort = args.currentSyncPort();
-    const stale = staleAdeTailnetHttpsPorts(serveStatusJson, syncPort == null ? null : tailnetHttpsPortFor(syncPort));
+    const stale = staleAdeTailnetHttpsEntries(serveStatusJson, syncPort == null ? null : tailnetHttpsPortFor(syncPort));
     let reclaimed = 0;
-    for (const httpsPort of stale) {
+    for (const { port: httpsPort, target } of stale) {
       if (args.isDisposed() || httpsPort === servedPort) continue;
+      // A sibling ADE's live entry has something serving behind it, on its
+      // sync port or on the side door it forwards to.
       if (await args.isLocalPortServing(httpsPort - SYNC_TAILNET_HTTPS_PORT_OFFSET)) continue;
+      if (target !== httpsPort - SYNC_TAILNET_HTTPS_PORT_OFFSET && await args.isLocalPortServing(target)) continue;
       try {
         await runServe([`--https=${httpsPort}`, "off"], 10_000);
         reclaimed += 1;
@@ -219,7 +266,11 @@ export function createTailnetHttpsServe(args: {
       }
     }
     if (stale.length > 0) {
-      args.logger.info("sync_host.tailnet_https_reclaimed", { staleCount: stale.length, reclaimed, ports: stale.slice(0, 20) });
+      args.logger.info("sync_host.tailnet_https_reclaimed", {
+        staleCount: stale.length,
+        reclaimed,
+        ports: stale.slice(0, 20).map((entry) => entry.port),
+      });
     }
   };
 

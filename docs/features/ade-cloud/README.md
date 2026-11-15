@@ -65,7 +65,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Area | File (under `services/adeCloud/`) |
 |---|---|
 | Machine list and box actions | `cloudMachines.ts` |
-| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the headless approval a brain runs is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` |
+| Making a machine, its sign-in, joining the account | `cloudMachineCreator.ts`, `cloudApprovalWindow.ts`; the approval a machine with nobody at it runs (browserless first, headless Chromium as the fallback) is `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts` (`approveSignInLink`) |
 | Half-made machines after a quit | `cloudPendingCreates.ts` |
 | Copy and move | `cloudMachineCopy.ts` |
 | Reconnect a machine removed from ADE | `cloudReconnect.ts` |
@@ -86,7 +86,8 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | Lane life: delete, keep the lane and free its computer, tier change, work check; the job events to every window | `cloudLaneLife.ts`, `registerCloudLaneLifeIpc.ts`, `broadcast.ts` |
 | Lane renames written to the computer's metadata | `cloudLaneNameSync.ts` |
 | The disk measure and Clear caches on a cloud computer | `cloudDiskUsage.ts` |
-| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts` |
+| Boot and idle reports from a cloud computer (CLI) | `apps/ade-cli/src/services/power/cloudComputerReports.ts`, `apps/ade-cli/src/services/power/cloudKeepAwake.ts`, `apps/ade-cli/src/services/power/cloudIgnoredFiles.ts` |
+| Idle cleanup (warn, save, delete unused computers) | `apps/account-directory/src/cloud/idleCleanup.ts`, `apps/desktop/src/renderer/components/settings/cloudDashboard/CloudIdleCleanupNotice.tsx` |
 | CLI status read (`ade cloud status`) | `apps/ade-cli/src/cliCloudStatus.ts` |
 | The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
@@ -104,8 +105,11 @@ that stops (see Sleep and busy rules).
   (its settings stay account level) (`CloudSection.tsx` and the
   dashboard in `settings/cloudDashboard/`): the hero with hours, disk and
   computers against the plan, every lane and computer, Plans (`CloudPlans.tsx`:
-  the plans side by side, buy Plus or Pro, move between them or stay on Pro,
-  extra hours and extra disk, and Manage billing, which opens Stripe's portal),
+  one card per plan, the current one on its own patch of the hero's dusk sky
+  and the next one up with the main button; buy Plus or Pro, move between
+  them or stay on Pro; one "how hours and disk work" panel under the cards
+  holds every explanation and the account's own notes; extra hours and extra
+  disk as two tiles; and Manage billing, which opens Stripe's portal),
   Sizes, Invite friends, Sign-ins and what agents may do alone, with the
   80% / 95% / out-of-hours banners and computers due for deletion. Settings
   entries are `integrations.ade-cloud*`.
@@ -164,33 +168,90 @@ The server's `plans.ts` holds them, and `GET /cloud/account` sends them in
 `catalog`, so no client keeps its own copy (`cloudCatalogOf` in
 `shared/adeCloud.ts` fills gaps from an older server).
 
-| Plan | Price | Hours a month | Disk at one time | Computers at one time |
-|---|---|---|---|---|
-| Free | $0 | 50 | 12 GB shared | 3 |
-| Plus | $5 | 500 | 40 GB | 10 |
-| Pro | $20 | 1,500 | 120 GB | 30 |
+| Plan | Price | Hours a month | Disk at one time | iOS Simulator minutes (soon) | Extra hours |
+|---|---|---|---|---|---|
+| Free | $0 | 100 | 12 GB | 20 | none: work stops |
+| Plus | $5 | 300 | 30 GB | 30 | 2¢ an hour |
+| Pro | $20 | 1,600 | 80 GB | 160 | 1.5¢ an hour |
+| Max | $50 | 5,000 | 175 GB | 500 | 1.2¢ an hour |
 
-Hours are Small-computer hours. Disk and computers are what the account has
-at one time, never a monthly amount. The account says `plan: "free" | "paid"`
-for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
-`past_due` account follows the free rules but keeps what it has.
+Hours are Small-computer hours. Disk is what the account's computers hold at
+one time, never a monthly amount. No plan limits how many computers an
+account has (Cloud 7). The account says `plan: "free" | "paid"` for older
+builds and `planId: "free" | "plus" | "pro" | "max"` for new ones; a
+`past_due` account follows the free rules but keeps what it has. iOS
+Simulator minutes (`phoneMinutes` in the catalog: time on an iPhone simulator
+in the cloud) are shown on the plan table only, marked "soon"; nothing meters
+them yet. The plan screens say what a plan includes in plain words: computer
+hours on Linux computers, disk, the iOS Simulator minutes, and that computers
+sleep on their own a few minutes after work stops (the brain's
+`CLOUD_IDLE_SLEEP_AFTER_MS`), so hours only go to real work.
+
+- **Cloud 7 terms, from each account's next period** (migration 0033,
+  `old_plan_terms`): accounts that existed before keep Plus's 40 GB and Pro's
+  120 GB until their next period starts, so nobody is cut mid-period. Hours
+  are stored per period (`included_milli`), so the new hours (Plus 300,
+  Pro 1,600) start with the next period. Free is the exception (Cloud 8): a
+  free period that began on fewer hours than the free plan has now is raised
+  at once on the next read (`raiseFreeHours` in `store.ts`, never for an
+  account refused the free plan or held by the GitHub rules, and its
+  out-of-hours warning clears), since more hours never hurt. `ade cloud
+  status` says both numbers when a paid period's hours differ from its plan's
+  ("500 hours this period, 300 from 2026-12-01").
+- **Extra hours** are one flat price per plan (2¢, 1.5¢, 1.2¢), each its own
+  Stripe metered price on the one extra-hours meter
+  (`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID`). Checkout sells only the
+  plan (Cloud 8): the extra-hours item joins the subscription, at the price
+  of the plan in force, when the person first turns extra hours on
+  (`ensureExtraHoursItem`), before the switch goes on, so no extra hour is
+  ever reported with nothing to bill it (meter events bill by customer). It
+  stays at zero once off, which keeps billing hours used before. Extra disk
+  joins the same way (`ensureExtraDiskItem` from `setExtraDisk`, with the
+  same retry after a 5xx). Subscriptions from before Cloud 8
+  keep the items they hold. An upgrade moves the subscription's hours item to the new plan's
+  price at once; a downgrade or a subscription still on the old graduated
+  price (1¢, then 0.85¢) and the old $1 disk price moves at its next renewal
+  (`moveMeteredItems`, `cloud.metered_price_moved`).
+- **Awake cap (hidden):** about 25 computers awake at once per account
+  (`AWAKE_COMPUTER_CAP`). It is never shown as a plan limit. A wake waits up
+  to 12 seconds for room (another computer going to sleep), then answers 429
+  `too_many_awake` with a plain sentence; a create, copy, resize wake or
+  sign-in wake past it is refused at once. Each refusal reports
+  `cloud.awake_cap_reached`; the 10-minute owner check reports
+  `cloud.awake_cap_passed` (traffic wakes the server can't stop) and adds an
+  owner alert line. Older builds still read `computers.limit`: the server
+  sends `max(25, computers + 1)` there, so their "computers full" check never
+  blocks.
 
 - **Sizes:** the main list is Small (standard 2/4, 1x, disk up to 12 GB),
   Medium (standard 4/8, 2x, 20 GB), Large (full 4/8, 5x, 50 GB) and X-Large
   (full 4/16, 8x, 100 GB). The other four shapes stay valid with the
   provider's own disk limit (`catalog.sizes[].tier`, `label`, `diskMaxGb`).
+- **"You're on Plus":** when a purchase or a move up lands (the account
+  flips to a higher paid plan while ADE is open, or ADE opens for the first
+  time since the checkout), ADE says so once: a toast app-wide with the plan's
+  hours, disk and renewal date, and on the ADE Cloud page a banner and a
+  one-time glow on the new plan's card. From Free it also says how many unused
+  free hours the paid period replaced. What this computer last saw (plan,
+  period, hours left) is kept per account in localStorage
+  (`cloudPlanMoment.ts`), so a reload never repeats it and a computer that
+  never saw the account seeds quietly. The phone does the same with
+  UserDefaults. It records `ade_feature_used` `cloud_plan`/`completed`.
 - **Changing plans:** Plus to Pro applies now, charges the difference for the
   rest of the period, and keeps the hours used. Pro to Plus applies at the
-  period end (`billing.nextPlanId`). A downgrade is never refused: over
-  Plus's computers or disk, the answer carries `cleanup`, what Plus's limits
-  will free (see **A cheaper plan's limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
-  subscription itself: Stripe's portal can't switch a subscription with more
-  than one item.
+  period end (`billing.nextPlanId`); the same for Max to Pro or Plus. A
+  downgrade is never refused: over the cheaper plan's disk, the answer
+  carries `cleanup`, what that plan's disk will free (see **A cheaper plan's
+  limits**). Both go through `POST /cloud/billing/checkout {plan}` on the
+  subscription itself. The billing portal doesn't switch plans (its setup
+  turns `subscription_update` off): ADE's switch is the one that checks the
+  cheaper plan's limits, and a portal downgrade would leave a subscription
+  schedule that refuses ADE's own changes.
 - **Not set up yet:** Pro and extra disk are offered only once their Stripe
   prices are set. Until then `catalog.plans.plus`/`pro`,
   `catalog.extraDiskCentsPer10GbMonth` and `account.extraDisk` are absent, a
   checkout for Pro is a 400 and the extra-disk route is a 404.
-- **Extra disk** (Plus and Pro): disk past the plan's, $1 for each 10 GB a
+- **Extra disk** (Plus, Pro and Max): disk past the plan's, $2 for each 10 GB a
   month, counted by the day on the day's peak (`cloud_disk_days`, its own
   Stripe meter). It starts undecided; the first grow past the plan is refused
   with reason `needs_approval` and ADE asks once. On, a grow passes only
@@ -198,7 +259,11 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   person set (`POST /cloud/billing/extra-disk`), and what a period bills never
   passes it. Each day's row records the bought plan's disk and whether the day
   is billable (paid, in good standing, extra disk on) when it is written, and
-  is billed from the row alone, from the 10-minute owner check. A send that
+  is billed from the row alone, from the 10-minute owner check. The day extra
+  disk goes on is never billed: turning it on writes that day's row as not
+  billable first, even when nothing wrote one yet that day, because the day's
+  meter event is stamped at its midday and Stripe drops an event from before
+  the item's start unbilled. A send that
   fails is retried inside Stripe's one-day dedupe window; one never confirmed
   goes to the owner (`cloud.disk_meter_unconfirmed`), never resent. The daily
   run emails a person once when their extra disk, kept a month, passes the
@@ -207,30 +272,118 @@ for older builds and `planId: "free" | "plus" | "pro"` for new ones; a
   cancelled plan rolls to it; `past_due` does not count) with more than 12 GB
   keeps its computers but they stay stopped: a wake, a command, an update and
   a new timed wake are refused with 402 `over_plan_disk`, except the short
-  "Push all work to GitHub" wake, which does not restart the 30-day delete
+  "Push all work to GitHub" wake, which does not restart the idle cleanup's
   clock. Timed wakes already set are deleted, as at 0 hours. Deleting a computer always works,
-  and the 30-day delete of unused computers still runs. The owner report
-  lists these accounts. A cheaper plan's limits then free the oldest
-  computers (below).
-- **A cheaper plan's limits** (`planCleanup.ts`, migration 0027; "never stop
-  a person from paying less; warn them"): Pro to Plus, a cancel, or a plan
-  that ends after failed payments is never refused. Once the cheaper plan is
-  on and the account holds more computers or disk than it allows (disk that
-  extra disk covers counts as fitting; `past_due` is never cleaned), the
-  ten-minute owner check sets `plan_cleanup_due_at` 3 days out and emails the
-  list; at that time it frees the OLDEST computers past the limits, at most 4
-  a run. Each computer's own ADE interrupts its agents, saves its chats and
-  pushes every lane's work (`ade cloud prepare-stop`, `push-work`, run over
-  exec in a free 15-minute wake), a `work-state` read must find nothing left,
-  then the computer is deleted and its lane kept as a lane without a computer
-  (reason `plan_limit`); the next message to the lane makes a new computer.
-  A computer whose work can't all be pushed stays, the person is told, and it
-  is tried again a day later; nothing else goes in its place. The person sees
-  it before (the sentence `planCleanupSentence` at the change in ADE,
-  `downgradePreviews` and `planCleanup` on the account, an email when the
-  downgrade or cancel is made and another when the cheaper plan starts) and
-  after (an email naming each computer and the branch its work went to,
-  `planCleanupDone` for 14 days).
+  and the idle cleanup of unused computers still runs. The owner report
+  lists these accounts. A cheaper plan's limits apply too (below).
+- **A cheaper plan's limits** (`planCleanup.ts`, migrations 0027 and 0032;
+  the owner's rules of 2026-11-13): ADE never removes a computer on its own,
+  and there is no grace period. Disk that extra disk covers counts as
+  fitting; a `past_due` account is never cleaned.
+  - **In ADE (a move to a cheaper paid plan):** only disk counts. A move
+    that fits asks nothing special. A move that would leave more disk than
+    the cheaper plan allows (`downgradePreviews.plus` / `.pro`) opens a
+    question first
+    (`CloudPlanLimitsDialog.tsx`): "I'll clean up myself" (nothing changes;
+    it lists the oldest computers whose delete would be enough) or "Let ADE
+    handle it" (a "Push all work to GitHub first" switch, on by default, and
+    the computers to free, the oldest that make it fit checked to start; the
+    send stays off until the pick fits). The checkout request carries the
+    pick (`cleanup`, `CloudPlanCleanupPick`); the server checks it names only
+    the account's computers and makes the account fit before Stripe is asked
+    (409 `cleanup_does_not_fit` / `cleanup_changed` / `cleanup_running`
+    change nothing), changes the plan, and records the pick
+    (`plan_cleanup_choice_json`). The minute cron (`runPlanCleanupPicks`)
+    frees exactly those computers at once, a few a tick, not at the period
+    end. A request without a pick (an older build) changes the plan and
+    deletes nothing.
+  - **Outside ADE (a cancel in the billing portal, a plan that ended):** nothing is
+    deleted. Once the cheaper plan is in force and the account is still over
+    it, a new computer or a copy is refused with 403 `over_plan_limits`
+    (`overPlanLimitsSentence`), the ten-minute owner check emails the person
+    once (`plan_over_told_at`), and the dashboard's notice opens the same
+    question ("Choose what goes"), which sends `POST
+    /cloud/billing/plan-cleanup`. A cancel waiting for the period end gets an
+    email and the same notice, with the date.
+  - **Freeing one computer** keeps its lane. With push on, the computer's own
+    ADE interrupts its agents, saves its chats and pushes every lane's work
+    (`ade cloud prepare-stop`, `push-work`, run over exec in a free 15-minute
+    wake), a `work-state` read must find nothing left, then the computer is
+    deleted. A computer whose work can't all be pushed stays and the person
+    is told; nothing else goes in its place. With push off (a second
+    confirmation in ADE), an awake computer saves its chats and the computer
+    is deleted. Either way the lane stays as a lane without a computer
+    (reason `plan_limit`), with its chats; the next message to it makes a new
+    computer. After the pick, an email names each computer and the branch its
+    work went to, and the account carries `planCleanupDone` for 14 days. The
+    phone shows the notices and sends the person to the desktop to pick.
+- **Idle cleanup** (`idleCleanup.ts`, migration 0034; the owner's rules for
+  Cloud 7, replacing the 30-day delete). Idle means not awake since the later
+  of `last_awake_at` (or creation), `hours_restored_at` and `idle_kept_at`.
+  Free: warned at 2 days idle (email and in ADE, "deleted in 1 day"), one
+  more email about 6 hours before, deleted at 3 days. Paid (Plus, Pro, and a
+  `past_due` paid account): warned at 7 days ("deleted in 3 days"), one email
+  a day, deleted at 10 days. The minute cron runs it.
+  - **Never sooner than promised.** The warning stores the delete time it
+    announced (`idle_deletes_at`); the delete waits for it and for the last
+    email plus a gap (5 hours free, 20 hours paid). A late first warning still
+    gives the full lead. A plan change re-times it: the delete is the later
+    of the announced time and the new plan's rule, so an upgrade moves it
+    later (and warns again at the new plan's warning time) and a downgrade
+    never moves it earlier.
+  - **Never for** an account out of hours or without access, a computer that
+    is awake, pending, moving or updating, or one with a timed wake-up booked
+    (a `cloud_wakes` row: a chat's scheduled wake-up or an automation's
+    schedule, up to 32 days ahead; the wake itself counts as use). Using it
+    (`last_awake_at`), its hours coming back, or "Keep it" (`POST
+    /cloud/instances/:id/keep`, no wake, no hours) void the warning and
+    restart the clock; a booked wake-up voids it too (kept, `scheduled`). The
+    warning's and each follow-up's claim also checks that none of these
+    happened since the tick read the row.
+  - **Emails.** Paid follow-ups go out at 2 days and 1 day before the delete
+    (anchored on the delete time, so a late tick never pulls the next one
+    earlier). A send that fails keeps its claim, is reported (Sentry
+    `cloud.idle_cleanup_email_failed`, step `failed`), and never blocks the
+    steps after it; the in-app warning stands.
+  - **Save first.** In a free wake (as an update's), the computer's own ADE
+    stops its agents, saves its chats, commits with "saved by ADE before
+    cleanup" (`ade cloud push-work --message`) and does a normal push to each
+    lane's own branch (never force, no extra branch; `git add -A` leaves out
+    what git ignores), then a `work-state` read must find nothing left
+    (`pushAllWork`). If it doesn't go through, the computer is kept
+    (`idle_held_at`/`idle_held_reason`): one email and an in-app notice say
+    why, what to do and when ADE tries again (`held.retryAt`), Sentry gets
+    `cloud.idle_cleanup_push_refused` or `cloud.idle_cleanup_save_failed`,
+    and each failure in a row doubles the wait (1, 2, 4 ... days, at most
+    14; `idle_held_count`). A run that fails after the save (the provider
+    refuses the delete, or anything throws) records `idle_failed_at` and
+    waits 1, 2, 4 ... hours (at most a day) before it runs again. Used while
+    the save ran (Keep it, hours back, a booked wake-up, or a start, command
+    or sign-in through the account server, which marks `last_awake_at` while
+    `idle_claimed_at` is held), it isn't deleted; one the person started
+    stays awake for them, any other goes back to rest.
+  - **The lane stays** as a lane without a computer, reason `idle_cleanup`;
+    its chats stay and the next message makes a new computer from the branch.
+    The delete is `system` with reason `idle_cleanup`.
+  - **Ignored files.** At its idle step the computer reports, with its disk
+    report, a summary of what git ignores in its lanes (`ignored` on `POST
+    /cloud/instances/:id/disk-usage`: up to 10 paths, the likely precious
+    such as `.env` and local databases first, a count of the rest, build and
+    install folders only counted; `cloudIgnoredFiles.ts`). The server keeps
+    it (`ignored_files_json`) and the warning lists it, or says it isn't
+    known yet. A lane that can't be read (a timeout) marks the summary
+    `incomplete`, and the warning says there may be more; entries past
+    5,000 in a lane count in `more`.
+  - **Where it shows:** `account.dueForDeletion` (`CloudIdleCleanupEntry`:
+    when, the lane and branch, the idle days, the ignored files, `held`).
+    The dashboard shows a notice per computer with "Keep it" and a mark on
+    the lane row (`CloudIdleCleanupNotice.tsx`); the lane's chat header cloud
+    button gets a dot and a "Keep it" entry; the phone shows the notice and
+    says to send a message in the lane or keep it from the desktop.
+  - **Once per step:** every warning and email is claimed with a conditional
+    update before it is sent, and the save-and-delete with `idle_claimed_at`,
+    so overlapping cron ticks do it once. Each step writes a row to
+    `cloud_idle_cleanup_log`, which the owner report counts.
 - **Timed wake-ups cancelled:** when a blocked account's timed wakes are
   deleted (0 hours, or the free plan over its disk), the person gets one
   email a period, and the account carries `timedWakesCancelled` while that
@@ -311,6 +464,41 @@ logged dev constant without it) and keeps only that.
   sentence }`; the sentence is set only while refused on the free plan's rules.
 - Account deletion keeps the claim (re-making an account must not give the
   computer's free hours again) and deletes the computers seen and the invite code.
+
+**One free plan per GitHub account.** Migration `0035`, `freePlanGithub.ts`.
+On a free plan, free hours need a connected GitHub account at least 30 days
+old (`CLOUD_FREE_GITHUB_MIN_AGE_MS`). GitHub's `created_at` is read once from
+`GET /user` (at connect, adopt, or on the first settle) into
+`github_account_ages`; a failed read is retried with a backoff (5 minutes,
+doubling to 6 hours), never refused or granted for good. `cloud_free_github_claims`
+is unique on both the GitHub user id and the ADE account, like the computer
+claim, so a GitHub account switch never feeds two free plans and a lost race
+is refused. The settle runs with the computer claim (account read, creates,
+launches) and only while the GitHub App is configured. A hold
+(`free_github_hold`: `no_github`, `github_too_new`, `github_used`,
+`github_checking`) keeps `included_milli` at 0; paid plans, earned and extra
+hours are untouched. Accounts that used ADE Cloud before the rules are
+`free_github_exempt` (they still claim their GitHub account). A too-new
+GitHub account can start now with a card saved at no charge:
+`POST /cloud/billing/free-unlock` opens a Stripe Checkout in setup mode (or
+unlocks at once when a card is already on file, a past subscription counts);
+the webhook checks the SetupIntent succeeded and sets
+`free_card_unlocked_at`, kept if the card is removed later. The account read
+carries `freePlan.github` (`state`, `oldEnoughAt`, `canUnlockWithCard`,
+`githubLogin`, `sentence`); desktop (plan card and hero), CLI, the lane-start
+refusal and the `ade-cloud` skill show it; the phone states it without the
+card. PostHog `ade_cloud_free_plan` steps `github_*`, `card_unlock_started`,
+`card_unlocked`.
+
+**Abuse lines in the daily report.** `abuseSignals.ts`. A computer's brain
+samples CPU once a minute in its keep-awake check (`cloudSustainedCpu.ts`)
+and, after two hours at 85% or more with no chat turn or agent working, sends
+`POST /cloud/instances/:id/cpu-report` (again every six hours). It reports on
+itself, and a long build in a terminal looks the same, so the line is for a
+person to look at. Sign-up bursts: the Clerk `user.created` client IP is
+stored only as a Worker-keyed HMAC (`cloud_signup_ips`, kept 7 days), and 5
+or more sign-ups from one address in any hour make a line
+(`SIGNUP_BURST_PER_IP_HOUR`).
 
 **Referrals.** One invite code per account (`cloud_invite_codes`, 8 characters
 without 0/O/1/I/L), link `https://ade-app.dev/invite/<CODE>`, made at the
@@ -398,9 +586,13 @@ item of older versions, adopted as `claude-pass/legacy`) and `cloud-key-<provide
 env (only `ADE_MIN_VERSION`), so no sign-in value passes ADE's server or the
 host in plain text: its brain signs in to the account and takes every sign-in
 from the vault (`providerLoginApplyPass.ts` for the saved keys and carried
-logins, `claudePassSync.ts` for the passes). A computer an older ADE made keeps
-its env until it is deleted; its brain takes the variables out at the first
-apply. The old `cloud-ready` item is no longer read.
+logins, `claudePassSync.ts` for the passes). The Worker holds every client to
+that: the create route keeps only a version-shaped `ADE_MIN_VERSION` from the
+client's env and drops the rest (`CLIENT_ENV` in `cloud/routes.ts`; the names,
+never the values, are logged as `cloud.create_env_dropped`), so an older desktop
+that still sends the saved keys and the Claude token no longer puts them on a new
+computer. A computer made before that keeps its env until it is deleted; its
+brain takes the variables out at the first apply. The old `cloud-ready` item is no longer read.
 Kind `provider_login` holds the account's provider sign-ins: `<provider>/<origin>.<slot>`
 (the origin is 12 hex of the computer's machine key) and the Claude passes,
 `claude-pass/<12 hex>` (`claude-pass/legacy` for the item older versions saved).
@@ -426,7 +618,17 @@ place from the first pass that sees it (capture's `absentSince`), so this
 computer's own copy still leaves the account. The account's cards show one card
 per account for copies from several computers ("From 3 computers"), and the
 pick of one copy uses the freshest usable copy of the same account
-(`cloudPlacePicks`). The account is the email (`accountIdentityOf`), except
+(`cloudPlacePicks`). When a computer signs out of a sign-in (for some providers
+that also revokes the token its copy holds), its capture takes its copy out of
+the account after two passes 60 s apart; just before, a pick that names that
+copy moves to the freshest other live copy of the same account
+(`sameAccountCopyFor`, logged `provider_login.pick_moved`), so ADE Cloud stays on
+the account the person picked instead of the newest copy of any account. With
+no other copy of that account the pick stays (the same sign-in made there again
+comes back under the same key), and the provider's card says the sign-in was
+signed out on the computer it came from (T14 when nothing else is there, T15
+beside the other account's sign-in ADE Cloud uses meanwhile). A computer that
+signs out while ADE isn't running there takes its copy out at its next start. The account is the email (`accountIdentityOf`), except
 Codex: email and workspace id together, since one email can have several
 ChatGPT workspaces.
 Before a lane's computer is made, the launch's start runs `cloudGitPreflight`
@@ -556,10 +758,27 @@ step that works in a lane here (`automationCloudProblem`). A safe test run
 stays here. Every `ade-action` step that calls the `cloud` domain gets the
 same automation approval, whatever its args say.
 
+**Names.** A new lane on ADE Cloud is named exactly as a lane on this
+computer: it starts on the name from the prompt and a placeholder branch in
+the project's pattern, and the brain on its computer asks for the AI name and
+renames the lane and its branch (`cloudLaneConfig` keeps `autoName` whenever a
+local launch would be auto-named; a name the person chose is kept). The desktop
+follows a finished launch until that name lands, so the card and the
+computer's branch metadata get it. The computer's own name is set from the
+first name, and follows each rename (below).
+
 **Renames.** A cloud computer's brain writes a lane's new name to its
 computer's `ade_lane_name` metadata when that lane is the one the computer was
-made for (`cloudLaneNameSync.ts`). The write goes through the account server
-and wakes nothing.
+made for (`cloudLaneNameSync.ts`), and renames the computer and its account
+machine to it (cleaned of control characters and cut to 60 characters by
+`normalizeCloudMachineName`), whoever started the launch. Only its own
+computer (`ADE_CLOUD_INSTANCE_ID`) and the machine key on it; the server checks
+both are the account's, and cleans every computer name and custom machine name
+it is sent (`boundedDisplayText`: control and format characters out, except
+the zero-width joiner and non-joiner that emoji and Persian or Indic names need;
+60 and 80 characters). The writes go through the account server and wake
+nothing; a failed one is tried twice more with a doubling wait, never for a
+computer that is gone.
 
 A CLI session can also be the first session in a new ADE Cloud lane, but only
 from the app (pick CLI, then Run on: ADE Cloud). The computer's brain parks the
@@ -569,17 +788,19 @@ session on the new computer through `snapshot.cloud.binding`. The brain's
 a terminal in.
 
 - **Who runs it.** This computer's brain (`ade serve`), not the CLI process:
-  the brain holds the account and the provider key. The CLI calls
+  the brain holds the account. The launch itself goes through the server
+  launcher (below), as every cloud lane launch does, the app's too. The CLI calls
   `cloud.lane_launch` and then reads `cloud.lane_launch_status` every 2 s,
   printing the card's own status line on stderr. The core is the desktop's
   (`cloudLaneLaunchService.ts`); `cloudLaneLaunchBrainHost.ts` fills its deps
   in the brain. One host per process; only a process that set the machine
   transport (`ade serve`) builds one.
-- **How it reaches the new computer.** Through the brain's agent machine
-  bridge, by account machine key, the path `--machine <name>` takes: the
-  connect probe is `projects.list`, the clone is `machines.cloneForAgent` (the
-  computer's own Git sign-in), and the hand-off is `chat.startLaunch` there.
-  The bridge has no event stream, so the brain reads the computer's
+- **How it reaches the new computer.** The server makes it, and the
+  computer joins, clones and starts the launch itself. Once it is in the
+  account, the brain reaches it through its agent machine bridge, by account
+  machine key, the path `--machine <name>` takes: the connect probe is
+  `projects.list`, and the launch is read with `chat.getLaunch` there. The
+  bridge has no event stream, so the brain reads the computer's
   `chat.listLaunches` every 5 s until the launch ends.
 - **Asking first.** `lane_launch` and `lane_launch_cancel` get the RPC
   server's caller stamp (`CLOUD_APPROVED_ACTIONS`), and `lane_launch` asks
@@ -613,23 +834,46 @@ a terminal in.
   new computers, the refusal reads "your agents hit today's limit of N new
   computers a day. Change it in Settings › Integrations › ADE Cloud › What
   agents may do › New computers a day." A person is never counted.
-- **The join.** The same rule as a brain's make: the brain approves itself
-  only for an unattended yes with a headless browser here (a cloud computer);
-  otherwise the sign-in link goes to the agent's chat and to the CLI (stderr,
-  and `approvalUrl` in the status). A computer's ADE answers before its
-  network is always up, so the sign-in start is retried: `ade login`
-  (device mode) keeps trying an account directory it can't reach, that times
-  out or answers without JSON for 45 s, and says which it was; the launcher
-  starts the sign-in again for up to a minute while the computer's reason is
-  one of those (`startCloudBoxSignInWhenReady`, for computers made from an
-  older image). A sign-in that still didn't start puts the computer's own
-  reason (the last line of `cloud-sign-in.log` that says something, without
-  colour codes, tokens, links or ids: `cloudSignInFailureReason`) on the join
-  step and in Copy details.
+- **The join.** No approval: the server puts a one-time join key in the new
+  computer's env, and the computer signs itself in to the account (see the
+  server launcher below). The `computer`, `join` and `clone` rows show the
+  server's record, read every 3 s (every 10 s once nothing changed for a
+  minute); then the brain names the computer's account row after the lane,
+  pairs and follows the computer's own launch. If the computer still can't
+  sign itself in (Clerk's API down or refusing the ticket, and the browser
+  fallback stopped too: `needs_approval`), the join row names the page, the launch's snapshot carries it
+  (`cloud.approvalUrl`), the card shows **Approve** (it opens the page in
+  ADE's browser, where the person is signed in) and the CLI prints it
+  (`approvalUrl` in the status); the server's 30-minute join window still
+  applies. `ade cloud status` shows a computer that never signed in as "not
+  joined to ADE yet", never "up to date".
+- **What goes with it.** The server's facts (kind, size, repository, lane id
+  and name, its start or existing branch, `autoName`, the chat's provider,
+  model, effort, permissions, Fast and first message) and the whole launch as
+  the app or CLI set it up (`launch`, at most 256 KB): plan mode, a
+  provider's own permission modes, a lane template, a branch name, a color,
+  linked Linear, GitHub and Jira issues and a PR. `madeBy` is
+  `{ kind: "agent", agent, chatSessionId }` for an agent's launch, so the
+  computer carries `ade_made_by_agent` and `ade_made_by_chat` and the agent
+  limits count it.
+- **Approvals elsewhere.** A machine the brain makes itself (`ade cloud
+  create`, copy, move with no desktop attached) still joins with a device
+  sign-in: its link goes to the agent's chat as a notice, to `make_status`,
+  and as a push to the person's phones ("Approve <computer> joining your ADE
+  account", opening `ade://device?user_code=…`, the phone's own approval
+  sheet; `setCloudJoinApprovalPush` in `cloudBrainMaker.ts`, set by `ade
+  serve`). It goes through the push publisher's alert queue
+  (`handleSessionNotice`), so notifications off, quiet hours and the chat's
+  mute apply; one push per code. A brain with no push publisher yet (no
+  project open) logs `cloud.join_approval_push_skipped`.
 - **One computer per id.** The launch id is printed first (stderr, `--json`
   too). The same `--launch-id` again answers that launch, and a failed one
-  goes on from its failed step; the server returns the same computer for a
-  repeated request id. Ctrl-C stops only the waiting: the launch goes on in
+  is retried (a computer that failed on its own side begins again on a new
+  one); `--prompt` is not needed again (the launch
+  keeps it), and an id this ADE doesn't hold asks for `--prompt`. A step
+  resumed after the brain restarted keeps its first start time, and a row
+  publishes only when what it shows changes; the server answers the same
+  launch for a repeated id. Ctrl-C stops only the waiting: the launch goes on in
   the brain, which resumes saved records 5 s after it starts.
   `ade chat launch-status <id> --machine cloud` reads it, and
   `ade chat launch-cancel <id> --machine cloud` stops it and deletes its
@@ -641,9 +885,11 @@ a terminal in.
 
 ### A new lane with no computer of your own (the server launcher)
 
-A person with a computer launches from it, as above. A caller with none (the
-web client, the phone, an automation on ADE Cloud) starts the lane through
-ADE's server, and the new computer runs its own launch
+Every new lane on its own computer starts here: from the app and the CLI
+(their launch owner, `cloudLaneLaunchService.ts`, sends it and follows the
+computer's launch once it joins), and from a caller with no computer (the web
+client, the phone, an automation on ADE Cloud). The new computer runs its own
+launch
 (`apps/account-directory/src/cloud/launches.ts`, migration `0029`; plan:
 `docs/plans/cloud-6/c6-c8-launcher-spec.md`).
 
@@ -653,6 +899,17 @@ ADE's server, and the new computer runs its own launch
   create's request id: the same id answers the same launch and never makes a
   second computer. The create is the one create path (`createComputer` in
   `routes.ts`): the same limits, billing and metadata, plus `ade_launch_id`.
+  A caller whose lane name came from the prompt sends `lane.autoName: true`:
+  the computer's brain then names the lane and its branch with the AI name, as
+  a local lane is named. The kind is `chat` or `lane`. A CLI launch (a CLI
+  session the launching app starts once the computer's brain has the launch)
+  is sent as `lane` with `cli` in `launch.kind`, so a server or computer
+  that predates it runs the lane alone instead of refusing. An ADE
+  app also sends its own launch args (`launch`, kept as sent, at most
+  256 KB); the computer starts from them, and the facts win where both say
+  something. `retry: true` on a launch whose computer failed before its agent
+  started (it couldn't join in time, clone or start) deletes that computer
+  and begins again under the same id; the start then makes a new one.
 - **Join.** The computer's env carries `ADE_LAUNCH_ID` and an
   `ADE_LAUNCH_JOIN` code. The code is an HMAC under the Worker secret
   `CLOUD_LAUNCH_JOIN_KEY` of the launch id and a salt the row keeps from the
@@ -671,9 +928,27 @@ ADE's server, and the new computer runs its own launch
   server still makes the computer (a lost create answer, before a retried
   start adopts it) gets a retryable `409 join_not_ready`, and the brain asks
   again with a backoff for up to 10 minutes.
-  The answer is a sign-in link for the launch's account only, opened in the
-  computer's headless Chromium (`cloudHeadlessApproval.ts`, now in
-  `apps/ade-cli`). When the page stops on a confirm step, the launch shows
+  The answer is a sign-in link for the launch's account only: a Clerk
+  sign-in ticket on Clerk's hosted page, continuing to the OAuth authorize
+  step and the account service's `/device/callback`. The computer completes
+  it without a browser (`approveSignInLinkDirectly` in
+  `apps/ade-cli/src/services/account/cloudHeadlessApproval.ts`): the ticket
+  sign-in through Clerk's Frontend API, the authorize step with that
+  session, then the callback, in about a second. Only a link on the hosts
+  the computer already signs in with: the sign-in page on its Clerk
+  issuer's accounts host (`clerk.<domain>` → `accounts.<domain>`; a
+  development `<slug>.clerk.accounts.dev` → `<slug>.accounts.dev`), the
+  authorize step on the issuer's host, and the callback on the account
+  directory it talks to. Redirects go only to Clerk's host or that
+  callback. Any other link is sent nowhere, not even to the browser, and
+  goes to the person.
+  The hosted page sits behind a Cloudflare bot check ("Just a moment…",
+  Turnstile) that a headless Chromium on a datacenter address often can't
+  pass in 25 s; until 2026-11-14 the computer opened the link there, and
+  most joins (3 of 3 probes that day) fell back to a person. Clerk's
+  Frontend API isn't behind that check. A headless Chromium is the fallback
+  only while the ticket is still unused (Clerk unreachable or refusing the
+  ticket). When that stops too, the launch shows
   `needs_approval` with the device page and code, and the caller offers one
   Approve tap in the person's own browser. The computer waits no longer than
   the join window (`joinExpiresAt` in the join's answer), the minute cron's
@@ -795,7 +1070,7 @@ Each call is account level: it names a computer of the account, never a pin.
   work-state` lists the lanes with uncommitted or unpushed work, the same check
   as `ade cloud push-work --check`, and pushes nothing. Then the server deletes the
   computer with `keepLane` and keeps a lane without a computer
-  (`cloud_lanes_without_computer`, migration 0021). The 30-day rule keeps the
+  (`cloud_lanes_without_computer`, migration 0021). The idle cleanup keeps the
   lane the same way. A new computer made for the same lane id ends the row.
 - **Tier change.** In place when the kind stays (resize), else a move to the
   other kind. The provider refuses a resize of a sleeping computer, so the
@@ -812,8 +1087,10 @@ Each call is account level: it names a computer of the account, never a pin.
   a size at all: `cloud.resize` is declined for it.
 - **Push this branch?** `lane.cloudStartBranch` and `lane.pushCloudStartBranch`
   run on the machine that has the project (pinned), before a cloud launch.
-- **Files on the first message** go to the clone on the new computer at the
-  hand-off (`uploadAttachment`), once per launch.
+- **Files on the first message** go to the server launcher before the start
+  names them (`uploadLaunchFile`), once per launch; files on a message queued
+  meanwhile go to the clone on the new computer after the hand-off
+  (`uploadAttachment`).
 - **Cancel** forgets this app's saved connection to the deleted computer.
 
 The launch writes the lane's branch into the computer's metadata
@@ -910,7 +1187,7 @@ channel's image, only when nothing runs on them. The server's rules are in
   daily reconcile already leave out. The boot report closes the window, so
   hours count from then on; a computer the cron woke only for the update
   sleeps at its first idle check. Asleep, the update does not reset the
-  30-day delete clock. A person's update is metered as before.
+  idle cleanup's clock. A person's update is metered as before.
 - **What people see.** Where another machine has an Update button (Settings
   "Update other machines", the General page rows, the Machines list), a cloud
   computer shows one line: "Updates itself when idle", "Updating…", or
@@ -962,8 +1239,8 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
 
 - Busy: a running chat turn, a real running command, an agent CLI actually working,
   setup, a new-lane launch still setting up (`lane_setup`: fetch, checkout,
-  environment), first clone, move, copy, a lane launch between join and its
-  hand-off (`lane_launch`, a 30-minute hold the desktop sets and releases)
+  environment), first clone, move, copy, a server launch between its join and
+  its hand-off (the computer holds itself, `cloudBootLaunch.ts`)
   (holds in `$ADE_HOME/cloud/holds/*.json`), someone
   watching a tool (`work_tools.noteWatching`, once a minute, from the desktop, while
   its window is in front and the person moved in the last 3 minutes).
@@ -1062,6 +1339,105 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   names the cloud computer's disk (not the disk of the computer the person is
   on), then the grow under way, or the refusal's reason and way out (a bigger
   size, extra disk, a plan, Clear caches).
+- A lane launch's setup that fills the disk (every size starts at 4 GB, and a
+  big repository's install, such as ADE's own npm packages, outgrows it): the
+  setup step reads `ENOSPC` anywhere in the command's output (its start and
+  its last 64 KB) and says so in one sentence with the line that said it
+  (`laneSetupDiskFullError`). A file-watcher limit (`ENOSPC: System limit for
+  number of file watchers`) is not a full disk and shows as itself. On a cloud
+  computer (`cloudDiskGrower.setupDisk`) each setup run keeps a 4 MB reserve
+  (written off the event loop)
+  on the disk and reads its free space every 2 seconds while it runs (a local
+  statfs); an `ENOSPC` grows only when the run's lowest reading was really short
+  (under 1 GB or 10% free, or past the guard's warning), since a failed install
+  that deletes what it wrote reads roomy again right after. A launch grows
+  again only when its run's peak use (the disk's size less that low point)
+  passed the last grown run's, so an installer that leaves files behind and
+  frees them in the next run still grows each step (four grows at most). A grow
+  counts toward that only once the launch's mark is saved and the server
+  started it: a grow that never started (the plan's disk, busy, cancelled) is
+  taken back, so a Retry after the person makes room grows again. The reserve
+  is freed, the launch record gets a room mark (`roomMark`: when, and how many
+  restarts it resumed after; no grow when that write fails: "free some space or
+  Clear caches, then retry"), and the grower asks for one step (the same server
+  rules, only while no other work and at most this one setup runs). The
+  environment stage says "growing it to N GB" (written down just before the
+  ask, since the restart often beats the answer), which the boot launch also
+  reports. The grow restarts the computer, sometimes more than once; the brain
+  opens the projects with marked launches at start, and a reloaded marked
+  record resumes: its setup runs again by itself ("running again after the disk
+  grew (restart N)"), counted and written down first. The mark stays while the
+  setup runs again and goes once the environment stage settles, on Cancel and
+  on Retry. Past 3 resumes, or an hour after the mark (a computer that slept),
+  the launch reads as interrupted with Retry (`chat_launch.environment_resume_refused`).
+  Start now waits only while the grow is in flight (it starts the agent right
+  after the restart); during the rerun it starts the agent at once. An agent
+  started early clears the mark, so a restart then reads as interrupted
+  instead of rerunning setup under it. A rerun's setup command stopped by a
+  signal ADE didn't send (a service stop signals every process at once) waits
+  up to 10 s for the brain's own shutdown and keeps its mark when it comes.
+  `ade chat launch-status` prints the running stage's sentence as `now`. A refused grow fails the
+  stage with the refusal's way out (extra disk, a bigger size, a plan) and
+  Retry; a boot launch keeps following a failed launch across restarts, so a
+  Retry that grows goes on with nobody watching.
+- Memory (`lanes/laneSetupMemoryGuard.ts`): a cloud computer has no swap, and
+  when its memory runs out the provider restarts the whole computer, brain
+  included (the provider's own health report says "oom_suspected: false"
+  even then). `npm ci` from a warm cache does that on a Small: it holds the
+  unpacked packages in memory (3.6 GB+ for ADE's desktop app; 0.7 GB on a
+  Mac), and a setup rerun after a disk grow always has a warm cache. Every
+  lane setup script and dependency install on a cloud computer therefore runs
+  beside a small `sh` guard (never a teardown, which frees memory, or Docker,
+  whose containers run under the daemon outside the command's process group) (not a brain timer: the brain's event loop lags
+  seconds while setup saturates the CPUs) that reads `MemAvailable` every
+  0.5 s and kills the command's process group below a tenth of the computer's
+  memory (256 MB to 1 GB). The step then fails with "Setup used nearly all of
+  this computer's memory (N GB), so ADE stopped it before the computer had to
+  restart. Use a bigger size, or make setup use less memory, then retry."
+  (`laneSetupOutOfMemoryError`, logged `lane_env_init.setup_stopped_for_memory`),
+  never as a signal stop. A failed setup step's error keeps the end of the
+  output (where npm says why), without warning lines, and the exit code.
+  Beyond setup, the brain runs one machine-wide guard
+  (`ade-cli/src/services/power/cloudMemoryGuard.ts`, started at serve on a
+  cloud computer): below a twentieth of memory (200 to 512 MB) it kills the
+  one biggest process of the brain's user, never the brain, its `ade __…`
+  workers, the entrypoint or the provider's processes, and logs
+  `cloud.memory_guard_killed` with the command. An agent's `npm install` or a
+  terminal's build then fails with "Killed" instead of restarting the
+  computer under every chat. Measured on ADE's own repo: `npm ci` for
+  `apps/desktop` peaks near 3.8 GB, so it sets up on a Medium (8 GB) and the
+  setup guard stops it on a Small.
+- Build tools: the image has `build-essential` and `pkg-config`, so npm
+  packages with native code and no prebuilt binary (node-pty, some sqlite and
+  bcrypt builds) compile on install; before, every such setup failed with
+  "gyp ERR!" on every size.
+- Codex's sandbox: Codex runs each shell command in bubblewrap with its own
+  network namespace, which gVisor can't set up ("bwrap: loopback: Failed
+  RTM_NEWADDR"), so no Codex command ran outside full-auto. The image's
+  `/usr/bin/bwrap` is a wrapper (`infra/ade-cloud/template/bwrap-gvisor.sh`)
+  around Debian's bubblewrap that drops `--unshare-net` only for Codex's
+  sandbox, which also blocks the network with its seccomp filter. Checked on a
+  cloud computer: plan mode can't write and can't reach the network (a raw IP
+  is refused too), default mode writes only in the workspace, and Codex's
+  network-on setting still reaches the network. Codex prefers a `bwrap` on
+  PATH to its bundled one; when the wrapper can't run, Codex falls back to its
+  own and fails as before.
+- `gh`: the image has the GitHub CLI (GitHub's apt repository). ADE's `gh`
+  shim only adds the account's GitHub token and then runs the real `gh`, so
+  before it every `gh` on a cloud computer was "command not found". The brain
+  also puts the shim on the first chat after it starts: it reads the repo's
+  owner from the git config file (`gitConfigOrigin.ts`), as the desktop does,
+  so a launch's chat no longer misses it.
+- Login shells keep their PATH: Debian's `/etc/profile` sets PATH from
+  scratch, and Codex runs every command as `bash -lc` (ADE's terminals are
+  `bash -l`), so they lost everything the brain put on PATH: the `ade` and
+  `gh` shims, `~/.local/bin`, npm's global bin, the Android tools. Checked on
+  beta.39: a Codex chat found no `gh` in `~/.local/bin` though its own PATH
+  had it. The image's `/etc/profile` saves the PATH it was given on its first
+  line, and `/etc/profile.d/ade-shims.sh`
+  (`infra/ade-cloud/template/ade-shims-profile.sh`) puts it back in front,
+  keeping Debian's folders after it (as macOS's path_helper does). The
+  Dockerfile checks it at build time.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

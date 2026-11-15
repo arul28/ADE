@@ -1,11 +1,18 @@
 import { useSyncExternalStore } from "react";
 import { ANNOUNCEMENT_PAGES, type AnnouncementPageDef } from "./announcementPages";
 import { createLocalStore, finiteNumber, storedRecord } from "../../onboarding/localStore";
+import {
+  mergeSeenAnnouncements,
+  seenAnnouncementsCover,
+  type SeenAnnouncementsMap,
+} from "../../../shared/announcementsSeen";
 
 /**
- * Which "What's new" pages this computer has shown, and when it last showed
- * any. Per computer, like onboarding: this renderer's localStorage, never
- * synced. It outlives updates, so a page shown once never shows again.
+ * Which "What's new" pages have been shown, and when this computer last showed
+ * any. The seen pages are kept in this renderer's localStorage and also follow
+ * the account (`announcementSeenSync.ts`), so a page seen on one computer or
+ * in ADE Web does not show again on another. Signed out, the local copy is all
+ * there is. When this computer last showed a page stays per computer.
  */
 
 /** Same key as before the catalogue: its values were revisions, and any value means shown. */
@@ -19,7 +26,7 @@ export const PAGES_PER_SHOWING = 3;
 /** Inside a project, one showing a day. A little under 24h, so a daily habit is not missed by minutes. */
 const IN_PROJECT_GAP_MS = 20 * 60 * 60 * 1000;
 
-type SeenMap = Record<string, number>;
+type SeenMap = SeenAnnouncementsMap;
 
 function parseSeen(stored: unknown): SeenMap {
   const out: SeenMap = {};
@@ -76,6 +83,24 @@ export function markAnnouncementSeen(page: AnnouncementPageDef, now = Date.now()
 /** Called when a showing opens by itself (not from Help), so the next one waits a day. */
 export function markShowing(now = Date.now()): void {
   lastShownStore.set(now);
+}
+
+/** This computer's seen pages, for the account sync. */
+export function readSeenAnnouncements(): SeenMap {
+  return seenStore.get();
+}
+
+/** Adds pages seen elsewhere; never forgets one seen here. Returns the combined map. */
+export function mergeSeenAnnouncementsFromAccount(remote: SeenMap): SeenMap {
+  const current = seenStore.get();
+  const merged = mergeSeenAnnouncements(current, remote);
+  if (!seenAnnouncementsCover(current, merged)) seenStore.set(merged);
+  return merged;
+}
+
+/** Calls `listener` when this computer's seen pages change. */
+export function subscribeSeenAnnouncements(listener: () => void): () => void {
+  return seenStore.subscribe(listener);
 }
 
 export function useSeenAnnouncements(): SeenMap {

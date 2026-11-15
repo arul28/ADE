@@ -105,7 +105,14 @@ ${replaced}
   return page(document, 200);
 }
 
-export type FailureKind = "denied" | "error" | "expired" | "used" | "unknown" | "not_configured";
+/**
+ * `error`: ADE could not finish the sign-in on its side (an unreadable row, a
+ * callback that is not ours). `refused`: GitHub said no, by name (its short
+ * error code). `github_busy`: GitHub did not answer, or would not yet confirm
+ * the new token's account after retries; nothing was refused. Clients hear
+ * `error` for all three (`clientReturn`).
+ */
+export type FailureKind = "denied" | "error" | "refused" | "github_busy" | "expired" | "used" | "unknown" | "not_configured";
 
 /** `connectionKnown: false`: the link may have connected GitHub already, so the page shows no "Not connected" chain. */
 const FAILURES: Record<FailureKind, { title: string; lead: string; next: string; status: number; connectionKnown?: false }> = {
@@ -117,9 +124,21 @@ const FAILURES: Record<FailureKind, { title: string; lead: string; next: string;
   },
   error: {
     title: "GitHub was not connected",
-    lead: "GitHub did not accept this sign-in.",
-    next: "Start again in ADE. If it keeps happening, wait a few minutes and try again.",
+    lead: "ADE could not finish this sign-in.",
+    next: "Start again in ADE.",
+    status: 500,
+  },
+  refused: {
+    title: "GitHub was not connected",
+    lead: "GitHub refused this sign-in.",
+    next: "Start again in ADE. If GitHub refuses it again, wait a few minutes, then try once more.",
     status: 502,
+  },
+  github_busy: {
+    title: "GitHub was not connected",
+    lead: "GitHub did not finish the sign-in. It did not refuse it.",
+    next: "Wait a minute, then start again in ADE.",
+    status: 503,
   },
   expired: {
     title: "This link has expired",
@@ -148,11 +167,13 @@ const FAILURES: Record<FailureKind, { title: string; lead: string; next: string;
   },
 };
 
-export function failurePage(kind: FailureKind): Response {
+/** `githubCode`: GitHub's short error code (`bad_verification_code`), shown so a person can quote it. */
+export function failurePage(kind: FailureKind, githubCode?: string | null): Response {
   const copy = FAILURES[kind];
+  const code = githubCode && /^[a-z0-9_]{1,64}$/i.test(githubCode) ? githubCode : null;
   const document = brandDocument({
     title: copy.title,
-    card: `<p class="sub">${escapeHtml(copy.lead)}</p>
+    card: `<p class="sub">${escapeHtml(copy.lead)}${code ? ` GitHub's reason: <code>${escapeHtml(code)}</code>.` : ""}</p>
 ${copy.connectionKnown === false ? "" : identityChain({
     github: { label: GITHUB_LABEL, value: "Not connected", dim: true },
     ade: { label: ADE_LABEL, value: "No change", dim: true },

@@ -1,29 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ACTIVE_TURN_DISPATCH_MODES,
-  CTO_LIVE_REDIRECT_PROVIDERS,
-  providerSupportsLiveRedirect,
-  droidPermissionModeFromLegacyPermissionMode,
-  isAgentChatDroidPermissionMode,
-  legacyPermissionModeFromDroidPermissionMode,
-  activeTurnDispatchModes,
-  activeTurnInlineAttachmentBlock,
-  activeTurnInterruptContinues,
-  cursorSessionRunsInCloud,
-  defaultActiveTurnDispatchMode,
-  inferAttachmentType,
-  isHeicAttachment,
-  mergeAttachments,
-  providerSupportsCrossMachineHandoffFork,
-  providerSupportsHandoffFork,
-  supportsActiveTurnDispatchMode,
-  unsupportedActiveTurnDispatchModeMessage,
-  spawnCompletedNoticeMessage,
-  spawnCompletionDeliveryFailedNoticeMessage,
-  spawnParentGoneNoticeMessage,
-  type AgentChatFileRef,
-  type AgentChatModelsArgs,
-} from "./chat";
+import { ACTIVE_TURN_DISPATCH_MODES, providerSupportsLiveRedirect, droidPermissionModeFromLegacyPermissionMode, isAgentChatDroidPermissionMode, legacyPermissionModeFromDroidPermissionMode, activeTurnDispatchModes, activeTurnInlineAttachmentBlock, activeTurnInterruptContinues, cursorSessionRunsInCloud, defaultActiveTurnDispatchMode, inferAttachmentType, isHeicAttachment, mergeAttachments, providerSupportsCrossMachineHandoffFork, providerSupportsHandoffFork, supportsActiveTurnDispatchMode, unsupportedActiveTurnDispatchModeMessage, spawnCompletedNoticeMessage, spawnCompletionDeliveryFailedNoticeMessage, spawnParentGoneNoticeMessage, type AgentChatFileRef } from "./chat";
 
 describe("Droid permission vocabulary", () => {
   it("validates native tiers and converts the shared legacy ladder", () => {
@@ -119,15 +95,24 @@ describe("active-turn dispatch modes", () => {
 });
 
 describe("CTO live-redirect providers", () => {
-  it("lists exactly the providers that can redirect a turn already in flight", () => {
-    expect([...CTO_LIVE_REDIRECT_PROVIDERS]).toEqual(["claude", "codex", "cursor", "opencode"]);
-    for (const provider of ["claude", "codex", "cursor", "opencode"]) {
-      expect(providerSupportsLiveRedirect(provider)).toBe(true);
-    }
-    for (const provider of ["droid", "pi", "qwen", "kimi", "grok", "copilot", ""]) {
-      expect(providerSupportsLiveRedirect(provider)).toBe(false);
-    }
-    expect(providerSupportsLiveRedirect("  CURSOR ")).toBe(true);
+  it.each([
+    ["claude", true],
+    ["codex", true],
+    ["cursor", true],
+    ["opencode", true],
+    ["  CURSOR ", true],
+    ["droid", false],
+    ["pi", false],
+    ["muse", false],
+    ["qwen", false],
+    ["kimi", false],
+    ["grok", false],
+    ["copilot", false],
+    ["devin", false],
+    ["antigravity", false],
+    ["", false],
+  ])("providerSupportsLiveRedirect(%j) is %s", (provider, expected) => {
+    expect(providerSupportsLiveRedirect(provider)).toBe(expected);
   });
 
   it("is its own contract, not a read of the composer's dispatch table", () => {
@@ -141,13 +126,6 @@ describe("CTO live-redirect providers", () => {
       .map(([provider]) => provider);
     expect(interruptCapable).not.toContain("codex");
     expect(providerSupportsLiveRedirect("codex")).toBe(true);
-  });
-});
-
-describe("AgentChatModelsArgs", () => {
-  it("allows typed callers to request the aggregated model catalog", () => {
-    const args: AgentChatModelsArgs = {};
-    expect(args).toEqual({});
   });
 });
 
@@ -165,136 +143,65 @@ describe("handoff fork provider support", () => {
 });
 
 describe("inferAttachmentType", () => {
-  it("returns 'image' for image MIME types", () => {
-    expect(inferAttachmentType("file.bin", "image/png")).toBe("image");
-    expect(inferAttachmentType("file.bin", "image/jpeg")).toBe("image");
-    expect(inferAttachmentType("file.bin", "image/webp")).toBe("image");
-    expect(inferAttachmentType("file.bin", "image/svg+xml")).toBe("image");
-    expect(inferAttachmentType("file.bin", "IMAGE/HEIC")).toBe("image");
+  it.each([
+    ["an image MIME type", "file.bin", "image/png", "image"],
+    ["an upper-case HEIC MIME type", "file.bin", "IMAGE/HEIC", "image"],
+    ["an image extension, any case", "photo.PNG", undefined, "image"],
+    ["a tif extension", "photo.tif", undefined, "image"],
+    ["a non-image extension", "doc.pdf", undefined, "file"],
+    ["a non-image MIME with an image extension", "fake.png", "application/octet-stream", "image"],
+    ["a non-image MIME with a non-image extension", "file.txt", "application/octet-stream", "file"],
+    ["an image MIME over a non-image extension", "file.txt", "image/png", "image"],
+    ["a null MIME and a non-image extension", "file.ts", null, "file"],
+    ["a null MIME and an image extension", "photo.jpg", null, "image"],
+  ])("infers %s", (_name, file, mime, type) => {
+    expect(inferAttachmentType(file, mime)).toBe(type);
   });
 
-  it("returns 'image' for image file extensions when no mimeType is provided", () => {
-    expect(inferAttachmentType("photo.png")).toBe("image");
-    expect(inferAttachmentType("photo.PNG")).toBe("image");
-    expect(inferAttachmentType("photo.jpg")).toBe("image");
-    expect(inferAttachmentType("photo.jpeg")).toBe("image");
-    expect(inferAttachmentType("photo.gif")).toBe("image");
-    expect(inferAttachmentType("photo.webp")).toBe("image");
-    expect(inferAttachmentType("photo.bmp")).toBe("image");
-    expect(inferAttachmentType("photo.svg")).toBe("image");
-    expect(inferAttachmentType("photo.ico")).toBe("image");
-    expect(inferAttachmentType("photo.tiff")).toBe("image");
-    expect(inferAttachmentType("photo.tif")).toBe("image");
-    expect(inferAttachmentType("photo.heic")).toBe("image");
-    expect(inferAttachmentType("photo.HEIF")).toBe("image");
-  });
-
-  it("returns 'file' for non-image extensions and no image mimeType", () => {
-    expect(inferAttachmentType("doc.pdf")).toBe("file");
-    expect(inferAttachmentType("code.ts")).toBe("file");
-    expect(inferAttachmentType("archive.zip")).toBe("file");
-    expect(inferAttachmentType("readme.md")).toBe("file");
-    expect(inferAttachmentType("data.json")).toBe("file");
-  });
-
-  it("falls through to extension check when MIME type is non-image", () => {
-    // Non-image MIME type does not block the extension check
-    expect(inferAttachmentType("fake.png", "application/octet-stream")).toBe("image");
-    expect(inferAttachmentType("file.txt", "application/octet-stream")).toBe("file");
-  });
-
-  it("image MIME type overrides non-image extension", () => {
-    expect(inferAttachmentType("file.txt", "image/png")).toBe("image");
-    // Non-image MIME + image extension still matches by extension
-    expect(inferAttachmentType("photo.png", "text/plain")).toBe("image");
-  });
-
-  it("handles null/undefined mimeType gracefully", () => {
-    expect(inferAttachmentType("file.ts", null)).toBe("file");
-    expect(inferAttachmentType("photo.jpg", null)).toBe("image");
-    expect(inferAttachmentType("file.ts", undefined)).toBe("file");
-  });
-
-  it("recognizes HEIC/HEIF by either MIME type or extension", () => {
-    expect(isHeicAttachment("photo.heic")).toBe(true);
-    expect(isHeicAttachment("photo.HEIF")).toBe(true);
-    expect(isHeicAttachment("photo.bin", "image/heic")).toBe(true);
-    expect(isHeicAttachment("photo.bin", "image/heic; codecs=hevc")).toBe(true);
-    expect(isHeicAttachment("photo.bin", "image/heif-sequence")).toBe(true);
-    expect(isHeicAttachment("photo.jpg", "image/jpeg")).toBe(false);
+  it.each([
+    ["photo.heic", undefined, true],
+    ["photo.HEIF", undefined, true],
+    ["photo.bin", "image/heic; codecs=hevc", true],
+    ["photo.bin", "image/heif-sequence", true],
+    ["photo.jpg", "image/jpeg", false],
+  ])("recognizes HEIC/HEIF for %s %s as %s", (file, mime, expected) => {
+    expect(isHeicAttachment(file, mime)).toBe(expected);
   });
 });
 
 describe("mergeAttachments", () => {
-  it("merges two lists deduplicating by path (last-write wins)", () => {
+  it("dedupes by path with last write winning, drops blank incoming paths, and keeps current first", () => {
     const current: AgentChatFileRef[] = [
       { path: "/a.ts", type: "file" },
       { path: "/b.png", type: "image" },
     ];
     const incoming: AgentChatFileRef[] = [
-      { path: "/b.png", type: "file" }, // overrides: same path, different type
+      { path: "/b.png", type: "file" },
+      { path: "", type: "file" },
+      { path: "  ", type: "image" },
       { path: "/c.md", type: "file" },
     ];
 
     const result = mergeAttachments(current, incoming);
-    expect(result).toHaveLength(3);
-    expect(result.find((a) => a.path === "/b.png")!.type).toBe("file"); // last-write wins
-    expect(result.find((a) => a.path === "/c.md")).toBeTruthy();
+    expect(result.map((a) => a.path)).toEqual(["/a.ts", "/b.png", "/c.md"]);
+    expect(result.find((a) => a.path === "/b.png")!.type).toBe("file");
   });
 
-  it("filters out incoming entries with empty paths", () => {
-    const current: AgentChatFileRef[] = [{ path: "/a.ts", type: "file" }];
-    const incoming: AgentChatFileRef[] = [
-      { path: "", type: "file" },
-      { path: "  ", type: "image" },
-      { path: "/b.ts", type: "file" },
-    ];
-
-    const result = mergeAttachments(current, incoming);
-    expect(result).toHaveLength(2);
-    expect(result.map((a) => a.path)).toEqual(["/a.ts", "/b.ts"]);
-  });
-
-  it("returns empty array when both inputs are empty", () => {
+  it("treats an empty side as the other list, still filtering blank paths", () => {
     expect(mergeAttachments([], [])).toEqual([]);
-  });
-
-  it("returns current when incoming is empty", () => {
-    const current: AgentChatFileRef[] = [{ path: "/a.ts", type: "file" }];
-    const result = mergeAttachments(current, []);
-    expect(result).toEqual(current);
-  });
-
-  it("returns incoming when current is empty (filtering empty paths)", () => {
-    const incoming: AgentChatFileRef[] = [{ path: "/a.ts", type: "file" }];
-    const result = mergeAttachments([], incoming);
-    expect(result).toEqual(incoming);
-  });
-
-  it("preserves order: current first, then new incoming entries", () => {
-    const current: AgentChatFileRef[] = [
-      { path: "/first.ts", type: "file" },
-      { path: "/second.ts", type: "file" },
-    ];
-    const incoming: AgentChatFileRef[] = [
-      { path: "/third.ts", type: "file" },
-    ];
-
-    const result = mergeAttachments(current, incoming);
-    expect(result.map((a) => a.path)).toEqual(["/first.ts", "/second.ts", "/third.ts"]);
+    expect(mergeAttachments([{ path: "/a.ts", type: "file" }], [])).toEqual([{ path: "/a.ts", type: "file" }]);
+    expect(mergeAttachments([], [{ path: "", type: "file" }, { path: "/a.ts", type: "file" }])).toEqual([{ path: "/a.ts", type: "file" }]);
   });
 
   it("deduplicates image-url attachments by path field", () => {
-    const current: AgentChatFileRef[] = [
-      { path: "https://example.com/old.png", type: "image-url", url: "https://example.com/old.png" },
-    ];
     const incoming: AgentChatFileRef[] = [
       { path: "https://example.com/old.png", type: "image-url", url: "https://example.com/old.png?cache=1" },
     ];
-
-    const result = mergeAttachments(current, incoming);
-    expect(result).toHaveLength(1);
-    expect(result[0]).toEqual(incoming[0]);
+    const result = mergeAttachments(
+      [{ path: "https://example.com/old.png", type: "image-url", url: "https://example.com/old.png" }],
+      incoming,
+    );
+    expect(result).toEqual(incoming);
   });
 });
 

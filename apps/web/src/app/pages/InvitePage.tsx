@@ -25,7 +25,7 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
  * option, who invited you, and "Open in ADE" for a computer that already has
  * it (`ade://invite/<code>` fills the code in Settings › Account).
  *
- * Not linked from any page while ADE Cloud is hidden. The code never reaches
+ * Opened from the link an account shares. The code never reaches
  * analytics (the screen is `invite`, the address `/invite`), session replay
  * masks this page's text, and the ad pixel doesn't load here.
  */

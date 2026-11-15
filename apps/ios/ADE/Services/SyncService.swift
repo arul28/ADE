@@ -793,11 +793,23 @@ private struct AccountAdoptionRoutesExhaustedError: LocalizedError {
     default:
       routeSummary = "\(routeLabels.dropLast().joined(separator: ", ")), and \(routeLabels.last ?? "")"
     }
+    // The relay got through and only ADE on the computer stayed silent: the
+    // routes worked, so the message says what did not.
+    if syncErrorIsRelayHostDidNotAnswer(finalFailure) {
+      return syncRelayHostDidNotAnswerMessage(machineName: machineName)
+    }
     let failure = finalFailure.map { SyncUserFacingError.message(for: $0) }?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     let suffix = failure.flatMap { $0.isEmpty ? nil : $0 }.map { " \($0)" } ?? ""
     return "Couldn't connect to \(machineName) after trying \(routeSummary).\(suffix)"
   }
+}
+
+/// The close code a WebSocket's far end sent, or nil when it sent none (the
+/// task reports `.invalid`, 0, until a close frame arrives).
+func syncWebSocketCloseCode(_ task: URLSessionWebSocketTask) -> Int? {
+  let code = Int(task.closeCode.rawValue)
+  return code == 0 ? nil : code
 }
 
 private func adeIsValidJSONFragment(_ object: Any) -> Bool {
@@ -3077,6 +3089,13 @@ enum SyncUserFacingError {
     if let relayRequirement = error as? SyncRelayAuthorizationRequirement {
       return relayRequirement.localizedDescription
     }
+    if let exhausted = error as? AccountAdoptionRoutesExhaustedError,
+       syncErrorIsRelayHostDidNotAnswer(exhausted.finalFailure) {
+      return exhausted.localizedDescription
+    }
+    if syncErrorIsRelayHostDidNotAnswer(error) {
+      return syncRelayHostDidNotAnswerMessage()
+    }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
@@ -4191,7 +4210,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
     didSet {
       guard connectionState != oldValue else { return }
-      if connectionState == .connected { helloSentWithProvisionalDeviceId = deviceIdIsProvisional }
+      if connectionState == .connected {
+        helloSentWithProvisionalDeviceId = deviceIdIsProvisional
+        // A `provider_logins_changed` pushed while the phone was away is not
+        // replayed: an open sign-ins view reads again on the way back.
+        providerLoginsRevision += 1
+      }
       // Reaching an attached state hands naming back to the real host identity.
       // Clearing here — rather than at each of the several places that flip the
       // state — is what stops a stale attempt name from outliving the attempt.
@@ -4269,6 +4293,8 @@ final class SyncService: ObservableObject {
   @Published private(set) var activeProjectHostIdentity: String?
   @Published private(set) var projectSwitchInFlightRootPath: String?
   @Published private(set) var discoveredHosts: [DiscoveredSyncHost] = []
+  /// The pending merge of a burst of discovery callbacks (`scheduleDiscoveredHostsPublish`).
+  private var discoveredHostsPublishTask: Task<Void, Never>?
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(
     uniqueKeysWithValues: SyncDomain.allCases.map { ($0, .disconnected) }
   )
@@ -4392,6 +4418,10 @@ final class SyncService: ObservableObject {
   /// Host-pushed invalidation for GitHub projection changes that do not touch
   /// replicated `pull_requests` rows (notably unmapped PR webhooks).
   @Published private(set) var prsRemoteRevision = 0
+  /// Host-pushed: the provider sign-ins changed there (a pass or key saved, a
+  /// sign-in applied), or the connection came back. An open sign-ins card
+  /// reads `providerLogins.status` again.
+  @Published private(set) var providerLoginsRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
@@ -4681,6 +4711,7 @@ final class SyncService: ObservableObject {
   private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
   private let hiddenProjectsKey = "ade.sync.hiddenProjects"
+  private let removedFromHostProjectsKey = "ade.sync.removedFromHostProjects"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   /// App Group key for offline new-chat creation snapshots. Stored in the
   /// shared suite so a synthesized "pending sync" row survives relaunch and is
@@ -4964,6 +4995,12 @@ final class SyncService: ObservableObject {
   private var pullRequestListConditionalCache: (key: String, signature: String, prs: [PrSummary])?
   private var remoteProjectCatalog: [MobileProjectSummary] = []
   private var hiddenProjectKeys: Set<String> = []
+  /// Folders this phone removed from the focused machine
+  /// (`removeProjectFromFocusedMachine`): one entry per folder, holding all
+  /// its `hiddenKeys` (id and root). They hide only this phone's cached rows,
+  /// which the machine never deletes: its catalog already left them out, and
+  /// lists one again if it is added back there.
+  private var removedFromHostKeys: [Set<String>] = []
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
@@ -5819,9 +5856,53 @@ final class SyncService: ObservableObject {
     requestRosterSnapshot()
   }
 
-  func forgetProject(_ project: MobileProjectSummary) {
+  /// Removes a folder's entry from the focused machine (`project_forget_request`,
+  /// the desktop's "Remove from <computer>" without deleting the folder) and
+  /// waits for its answer. The folder stays on disk. The machine's next
+  /// catalog leaves the folder out; this phone also keeps its saved row off
+  /// the list until the machine lists the folder again.
+  func removeProjectFromFocusedMachine(projectId: String, rootPath: String?) async throws {
+    guard canSendLiveRequests() else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: machineConnectionUnreachableMessage])
+    }
+    let requestId = makeRequestId()
+    var payload: [String: Any] = ["projectId": projectId]
+    if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+      payload["rootPath"] = rootPath
+    }
+    // The machine this goes to; the phone can move to another one while the
+    // request waits.
+    let hostKey = activeHostStorageKey()
+    let removedProject = projects.first(where: { $0.id == projectId })
+      ?? MobileProjectSummary(id: projectId, displayName: "", rootPath: rootPath, laneCount: 0, isAvailable: false, isCached: false)
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Timed out removing that project.",
+      timeoutNanoseconds: 8_000_000_000
+    ) {
+      self.sendEnvelope(type: "project_forget_request", requestId: requestId, payload: payload)
+    }
+    guard let result = try? decode(raw, as: MobileProjectForgetResultPayload.self) else {
+      throw NSError(domain: "ADE", code: mobileProjectForgetUnreadableReplyCode, userInfo: [
+        NSLocalizedDescriptionKey: "The computer sent an unreadable answer.",
+      ])
+    }
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
+      ])
+    }
+    if let hostKey { rememberRemovedFromHost(removedProject, hostKey: hostKey) }
+    // The list and the open project in front belong to that machine only
+    // while it is still the one in front.
+    if hostKey == activeHostStorageKey() { dropProjectLocally(removedProject) }
+    syncConnectLog.info("project removed from focused machine")
+  }
+
+  /// Takes a folder off the phone's catalog now, and leaves it if it was open.
+  private func dropProjectLocally(_ project: MobileProjectSummary) {
     let wasActive = isActiveProject(project)
-    rememberHiddenProject(project)
     remoteProjectCatalog.removeAll { existing in
       existing.id == project.id
         || (normalizedProjectRoot(existing.rootPath) != nil
@@ -5840,38 +5921,12 @@ final class SyncService: ObservableObject {
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
     }
-
-    guard canSendLiveRequests() else { return }
-    let requestId = makeRequestId()
-    var payload: [String: Any] = ["projectId": project.id]
-    if let rootPath = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
-      payload["rootPath"] = rootPath
-    }
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      do {
-        let raw = try await awaitResponse(
-          requestId: requestId,
-          disconnectOnTimeout: false,
-          timeoutMessage: "Timed out removing that project.",
-          timeoutNanoseconds: 8_000_000_000
-        ) {
-          self.sendEnvelope(type: "project_forget_request", requestId: requestId, payload: payload)
-        }
-        let result = try decode(raw, as: MobileProjectForgetResultPayload.self)
-        if !result.ok {
-          syncConnectLog.info("project forget failed message=\((result.message ?? "unknown"), privacy: .public)")
-        }
-      } catch {
-        syncConnectLog.info("project forget request failed error=\(String(describing: error), privacy: .public)")
-      }
-    }
   }
 
   /// `cachedRows`: the project rows, already read off the main actor (the
   /// post-changeset refresh). Nil reads them here.
   func refreshProjectCatalog(preferRemoteSelection: Bool = false, cachedRows: [MobileProjectSummary]? = nil) {
-    let cachedProjects = (cachedRows ?? database.listMobileProjects()).filter { !isProjectHidden($0) }
+    let cachedProjects = (cachedRows ?? database.listMobileProjects()).filter { !isCachedProjectHidden($0) }
     let remoteCatalog = deduplicatedRemoteProjectCatalog()
     let hasRemoteCatalog = !remoteCatalog.isEmpty
     var mergedById = Dictionary(uniqueKeysWithValues: remoteCatalog.map { ($0.id, $0) })
@@ -6088,6 +6143,7 @@ final class SyncService: ObservableObject {
     _ catalog: MobileProjectCatalogPayload,
     preferRemoteSelection: Bool = true
   ) {
+    forgetRemovedFromHost(listedIn: catalog.projects)
     remoteProjectCatalog = catalog.projects.filter { !isProjectHidden($0) }
     refreshProjectCatalog(preferRemoteSelection: preferRemoteSelection)
   }
@@ -6753,11 +6809,15 @@ final class SyncService: ObservableObject {
   }
 
   private func hiddenKeys(for project: MobileProjectSummary) -> Set<String> {
+    hiddenKeys(projectId: project.id, rootPath: project.rootPath)
+  }
+
+  private func hiddenKeys(projectId: String?, rootPath: String?) -> Set<String> {
     var keys = Set<String>()
-    if let id = normalizedProjectId(project.id) {
+    if let id = normalizedProjectId(projectId) {
       keys.insert("id:\(id)")
     }
-    if let root = normalizedProjectRoot(project.rootPath) {
+    if let root = normalizedProjectRoot(rootPath) {
       keys.insert("root:\(root)")
     }
     return keys
@@ -6765,6 +6825,72 @@ final class SyncService: ObservableObject {
 
   private func isProjectHidden(_ project: MobileProjectSummary) -> Bool {
     !hiddenProjectKeys.isDisjoint(with: hiddenKeys(for: project))
+  }
+
+  /// A cached row stays off the list while it is hidden or this phone
+  /// removed it from the machine.
+  private func isCachedProjectHidden(_ project: MobileProjectSummary) -> Bool {
+    if isProjectHidden(project) { return true }
+    let keys = hiddenKeys(for: project)
+    return removedFromHostKeys.contains { !$0.isDisjoint(with: keys) }
+  }
+
+  private func loadProjectVisibilityKeys() {
+    hiddenProjectKeys = loadHiddenProjectKeys()
+    removedFromHostKeys = activeHostStorageKey().map(loadRemovedFromHostKeys(hostKey:)) ?? []
+  }
+
+  /// Stored as one line per folder, its keys joined by a newline.
+  private func loadRemovedFromHostKeys(hostKey: String) -> [Set<String>] {
+    (UserDefaults.standard.stringArray(forKey: "\(removedFromHostProjectsKey).\(hostKey)") ?? [])
+      .map { Set($0.split(separator: "\n").map(String.init)) }
+      .filter { !$0.isEmpty }
+  }
+
+  private func saveRemovedFromHostKeys(_ entries: [Set<String>], hostKey: String) {
+    let key = "\(removedFromHostProjectsKey).\(hostKey)"
+    if entries.isEmpty {
+      UserDefaults.standard.removeObject(forKey: key)
+    } else {
+      UserDefaults.standard.set(entries.map { $0.sorted().joined(separator: "\n") }.sorted(), forKey: key)
+    }
+  }
+
+  /// Marks a folder removed from the machine `hostKey` names. A reply that
+  /// arrives after the phone moved to another machine is kept for the
+  /// machine that removed it, not for the one in front.
+  private func rememberRemovedFromHost(_ project: MobileProjectSummary, hostKey: String) {
+    rememberRemovedFromHost(keys: hiddenKeys(for: project), hostKey: hostKey)
+  }
+
+  private func rememberRemovedFromHost(keys: Set<String>, hostKey: String) {
+    guard !keys.isEmpty else { return }
+    if hostKey == activeHostStorageKey() {
+      guard !removedFromHostKeys.contains(where: { keys.isSubset(of: $0) }) else { return }
+      removedFromHostKeys.append(keys)
+      saveRemovedFromHostKeys(removedFromHostKeys, hostKey: hostKey)
+    } else {
+      var entries = loadRemovedFromHostKeys(hostKey: hostKey)
+      guard !entries.contains(where: { keys.isSubset(of: $0) }) else { return }
+      entries.append(keys)
+      saveRemovedFromHostKeys(entries, hostKey: hostKey)
+    }
+  }
+
+  /// The machine lists a removed folder again (added back there, maybe under
+  /// a new id): its cached rows may show again, under every key it had.
+  private func forgetRemovedFromHost(listedIn catalog: [MobileProjectSummary]) {
+    guard !removedFromHostKeys.isEmpty, let hostKey = activeHostStorageKey() else { return }
+    // During a switch the old machine's socket stays current for a moment
+    // after the new machine's profile is saved; its catalog must not clear
+    // the new machine's marks. A socket before its hello (nil) is the new
+    // machine's own: the hello carries its catalog.
+    if let socketMachine = focusedSocketMachineKey, socketMachine != focusedMachineKey { return }
+    let listed = catalog.reduce(into: Set<String>()) { $0.formUnion(hiddenKeys(for: $1)) }
+    let kept = removedFromHostKeys.filter { $0.isDisjoint(with: listed) }
+    guard kept.count != removedFromHostKeys.count else { return }
+    removedFromHostKeys = kept
+    saveRemovedFromHostKeys(kept, hostKey: hostKey)
   }
 
   private func hiddenProjectsStorageKey() -> String {
@@ -6797,15 +6923,6 @@ final class SyncService: ObservableObject {
     if key != hiddenProjectsKey {
       UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
     }
-  }
-
-  private func rememberHiddenProject(_ project: MobileProjectSummary) {
-    let keys = hiddenKeys(for: project)
-    guard !keys.isEmpty else { return }
-    let previous = hiddenProjectKeys
-    hiddenProjectKeys.formUnion(keys)
-    guard hiddenProjectKeys != previous else { return }
-    saveHiddenProjectKeys()
   }
 
   private func unhideProject(_ project: MobileProjectSummary) {
@@ -6912,9 +7029,9 @@ final class SyncService: ObservableObject {
     activeHostProfile = loadProfile()
     setHostName(activeHostProfile?.hostName)
     database.setActiveProjectId(activeProjectId)
-    hiddenProjectKeys = loadHiddenProjectKeys()
+    loadProjectVisibilityKeys()
     projects = deduplicateProjectListByRoot(
-      sortedProjectList(database.listMobileProjects().filter { !isProjectHidden($0) })
+      sortedProjectList(database.listMobileProjects().filter { !isCachedProjectHidden($0) })
     )
     rosterProjects = loadCachedRoster()
     personalChatSessions = loadCachedPersonalChats()
@@ -6967,16 +7084,14 @@ final class SyncService: ObservableObject {
     discoveryBrowser.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
         self?.bonjourDiscoveredHosts = hosts
-        self?.publishMergedDiscoveredHosts()
-        self?.considerTransportUpgrade()
+        self?.scheduleDiscoveredHostsPublish()
       }
     }
     discoveryBrowser.start()
     tailnetDiscovery.onHostsChanged = { [weak self] hosts in
       Task { @MainActor in
         self?.tailnetDiscoveredHosts = hosts
-        self?.publishMergedDiscoveredHosts()
-        self?.considerTransportUpgrade()
+        self?.scheduleDiscoveredHostsPublish()
       }
     }
     tailnetDiscovery.preferredPortsProvider = { [weak self] in
@@ -7633,6 +7748,23 @@ final class SyncService: ObservableObject {
 
   private func publishMergedDiscoveredHosts() {
     applyDiscoveredHosts(bonjourDiscoveredHosts + tailnetDiscoveredHosts)
+  }
+
+  /// One merge for a burst of discovery callbacks. Bonjour reports each
+  /// service it resolves, and the tailnet scan reports each port, so a wake
+  /// or a network change sent many callbacks in a row. Each one ran a full
+  /// merge, a saved-profile pass and a publish on the main thread, and the
+  /// run of them held the main thread long enough for the watchdog to end the
+  /// app (ADE-IOS-27). The merge reads the latest lists when it runs.
+  private func scheduleDiscoveredHostsPublish() {
+    guard discoveredHostsPublishTask == nil else { return }
+    discoveredHostsPublishTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(for: .milliseconds(150))
+      guard let self else { return }
+      self.discoveredHostsPublishTask = nil
+      self.publishMergedDiscoveredHosts()
+      self.considerTransportUpgrade()
+    }
   }
 
   /// Discovery seeing the machine on the local network is the honest signal
@@ -8428,7 +8560,11 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription, underlying: error)
+            await mailbox.finish(
+              message: error.localizedDescription,
+              underlying: error,
+              closeCode: syncWebSocketCloseCode(candidateTask)
+            )
           }
         }
         defer { reader.cancel() }
@@ -10253,7 +10389,24 @@ final class SyncService: ObservableObject {
         explicitTailscaleAddresses +
         normalizedCandidateAddresses
       ))
-      let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
+      // A computer advertising itself right now (Bonjour, matched by device id)
+      // names its live port. Sweeping ADE's default ports as well reached a
+      // different ADE install on the same computer first (ADE and ADE Beta, a
+      // dev home) and sent it the PIN. Sweep only without a live advertisement.
+      let liveDiscoveryPorts = matchingDiscovery.map(\.port).filter { $0 > 0 }
+      let pairsWithLiveAdvertisement = hostIdentity?.isEmpty == false
+        && liveDiscoveryPorts.contains(requestedPort)
+      let portCandidates = syncConnectPortCandidates(
+        primaryPort: requestedPort,
+        addresses: addressCandidates,
+        allowFallbackSweep: !pairsWithLiveAdvertisement
+      )
+      // Route history belongs to one machine. Ranking this pairing by the
+      // previous machine's history put that machine's address and port first.
+      let previousRouteHistory = previousProfile.flatMap { profile -> HostConnectionProfile? in
+        guard let hostIdentity, !hostIdentity.isEmpty else { return nil }
+        return profile.hostIdentity == hostIdentity || profile.lastHostDeviceId == hostIdentity ? profile : nil
+      }
       // Relay URLs (full wss://) ride their own path/port, so they're kept out
       // of the direct port sweep. The ranked route walker gives each direct or
       // relay route one attempt before trying alternate direct ports.
@@ -10283,7 +10436,7 @@ final class SyncService: ObservableObject {
         directAttempts: directAttempts,
         relayRoutes: relayWalkCandidates,
         relayPort: requestedPort,
-        endpointStates: lastSuccessfulAddress.isEmpty ? nil : activeHostProfile?.endpointStates,
+        endpointStates: lastSuccessfulAddress.isEmpty ? nil : previousRouteHistory?.endpointStates,
         lastSuccessfulAddress: lastSuccessfulAddress.first,
         liveDirectAddresses: Set(discoveryAddresses + discoveryTailscaleAddresses)
       )
@@ -15906,7 +16059,10 @@ final class SyncService: ObservableObject {
     // unless the caller already named a target explicitly (e.g. the hub
     // composer creating into a chosen project).
     let scope = chatCommandScope(for: sessionId)
-    var args: [String: Any] = ["sessionId": sessionId, "text": text]
+    // One id per send (`AgentChatSendArgs.clientSendId`): if this command is
+    // delivered twice (the offline queue replaying it after a reconnect), the
+    // host writes the message once. Older hosts ignore the key.
+    var args: [String: Any] = ["sessionId": sessionId, "text": text, "clientSendId": UUID().uuidString]
     // The Chats page is one of ADE's own surfaces: a personal chat written
     // before profiles existed becomes an assistant chat when used from here
     // (`PersonalChatAssistantClaim` on the host). Project chats never carry it.
@@ -18177,7 +18333,7 @@ final class SyncService: ObservableObject {
       if hostName != profile.hostName {
         setHostName(profile.hostName)
       }
-      hiddenProjectKeys = loadHiddenProjectKeys()
+      loadProjectVisibilityKeys()
       if activeProjectId != nil {
         let hostIdentity = syncNormalizedCommandScopeValue(profile.hostIdentity)
           ?? syncNormalizedCommandScopeValue(profile.lastHostDeviceId)
@@ -18202,7 +18358,7 @@ final class SyncService: ObservableObject {
       // on a background reconnect is far worse than a stale draft lingering.
       activeHostProfile = nil
       setHostName(nil)
-      hiddenProjectKeys = loadHiddenProjectKeys()
+      loadProjectVisibilityKeys()
       activeProjectHostIdentity = nil
       UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
     }
@@ -18227,6 +18383,13 @@ final class SyncService: ObservableObject {
     let previous = profile
     transform(&profile)
     guard !syncProfilesEquivalentIgnoringUpdatedAt(previous, profile) else { return }
+    if previous.port != profile.port {
+      // Kept for a later drop report: what changed just before it.
+      CrashReporting.breadcrumb("sync.route", message: "saved port changed", data: [
+        "connection": "focused",
+        "live": canSendLiveRequests() ? "yes" : "no",
+      ])
+    }
     profile.updatedAt = syncDateFormatter.string(from: Date())
     saveProfile(profile)
   }
@@ -19234,11 +19397,18 @@ final class SyncService: ObservableObject {
       guard !trimmed.isEmpty else { return nil }
       return profile.hostIdentity == trimmed
     } ?? false
-    let nameMatches = hostName.flatMap { name in
+    // Two installs on one computer share its name; a differing device id
+    // means another machine, whatever the name says.
+    let identitiesDiffer = hostIdentity.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .flatMap { requested in
+        (syncNonEmpty(profile.hostIdentity) ?? syncNonEmpty(profile.lastHostDeviceId))
+          .map { !requested.isEmpty && $0 != requested }
+      } ?? false
+    let nameMatches = !identitiesDiffer && (hostName.flatMap { name in
       let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !trimmed.isEmpty else { return nil }
       return profile.hostName?.localizedCaseInsensitiveCompare(trimmed) == .orderedSame
-    } ?? false
+    } ?? false)
     guard identityMatches || nameMatches else { return [] }
 
     let candidates = Set(deduplicatedAddresses(
@@ -19252,6 +19422,18 @@ final class SyncService: ObservableObject {
   }
 
   private func matchesDiscoveredHost(_ discovered: DiscoveredSyncHost, profile: HostConnectionProfile) -> Bool {
+    // Identity first. Several ADE installs on one computer (ADE and ADE Beta,
+    // a dev home) share its addresses but each has its own device id and
+    // port; matching on a shared address took another install's port, so the
+    // phone dialed the wrong ADE on Wi-Fi, was refused, and fell back to the
+    // relay. Address and name only decide when a side has no identity.
+    let discoveredIdentity = discovered.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let profileIdentities = [profile.hostIdentity, profile.lastHostDeviceId]
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    if !discoveredIdentity.isEmpty, !profileIdentities.isEmpty {
+      return profileIdentities.contains(discoveredIdentity)
+    }
     let knownAddresses = Set(
       profile.savedAddressCandidates
       + profile.discoveredLanAddresses
@@ -19263,7 +19445,10 @@ final class SyncService: ObservableObject {
       + (discovered.tailscaleAddress.map { [$0] } ?? [])
     )
     if !knownAddresses.isDisjoint(with: discoveredAddresses) {
-      return true
+      // A row with no identity on a known address: the same brain only when
+      // it is on the profile's port too (another brain there has its own).
+      guard !profileIdentities.isEmpty, profile.port > 0 else { return true }
+      return discovered.port == profile.port
     }
 
     if let hostIdentity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -20020,7 +20205,11 @@ final class SyncService: ObservableObject {
               if self.isCandidateHelloTerminalFrame(text) { return }
             }
           } catch {
-            await mailbox.finish(message: error.localizedDescription, underlying: error)
+            await mailbox.finish(
+              message: error.localizedDescription,
+              underlying: error,
+              closeCode: syncWebSocketCloseCode(candidateTask)
+            )
           }
         }
         defer { reader.cancel() }
@@ -20727,17 +20916,22 @@ final class SyncService: ObservableObject {
       guard !matching.isEmpty else { continue }
       let updated = profileByApplyingDiscoveredRoutes(profile, matching: matching)
       guard updated != profile else { continue }
-      let token: String?
-      switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
-      case .value(let stored): token = stored
-      case .absent: token = nil
-      case .failed:
-        // Moving the profile without its secret would lose the secret.
-        pairingSecretReadFailed = true
-        continue
+      let updatedKey = profileStorageKey(updated) ?? key
+      // The secret moves only when the profile is re-keyed. A new address or
+      // port (most discovery updates) keeps the key, and reading the keychain
+      // here ran on the main thread for every such update (ADE-IOS-27).
+      var token: String?
+      if updatedKey != key {
+        switch pairedSecretRead(profile, migrate: false, fallbackToLastPaired: false) {
+        case .value(let stored): token = stored
+        case .absent: token = nil
+        case .failed:
+          // Moving the profile without its secret would lose the secret.
+          pairingSecretReadFailed = true
+          continue
+        }
       }
       profiles.removeValue(forKey: key)
-      let updatedKey = profileStorageKey(updated) ?? key
       profiles[updatedKey] = updated
       if let token, updatedKey != key {
         // Move the valid token to the new key, overwriting any stale token that
@@ -22429,6 +22623,14 @@ final class SyncService: ObservableObject {
                 code: 24,
                 userInfo: [NSLocalizedDescriptionKey: "The machine stopped responding. Reconnecting now."]
               )
+            } else if syncRelayHostDidNotAnswerCloseCodes.contains(closeCodeRawValue) {
+              // The receive error ("Socket is not connected") hides why the
+              // relay closed; say what the close code means. Copy only: the
+              // close code still drives recovery below.
+              failure = syncSocketCloseError(
+                closeCodeRawValue: closeCodeRawValue,
+                reason: task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+              )
             } else {
               failure = error
             }
@@ -22712,6 +22914,9 @@ final class SyncService: ObservableObject {
           updateProfile { $0.savedRelayCandidates = nil }
         }
       }
+      resolve(requestId: requestId, result: .success(payload))
+    case "provider_logins_changed":
+      providerLoginsRevision += 1
       resolve(requestId: requestId, result: .success(payload))
     case "prs_updated":
       // Coalesce at the view task boundary. The host sends only a tiny
@@ -23569,6 +23774,13 @@ final class SyncService: ObservableObject {
     case .ignore, .failOpening:
       return
     case .recoverTransport(let closeCodeRawValue):
+      // Before teardown, which clears the connection's age.
+      SyncLiveDropReport.report(
+        connection: "focused",
+        routeKind: currentAddress.map(syncConnectionRouteKind),
+        closeCode: closeCodeRawValue.map { $0 == 0 ? nil : $0 } ?? syncWebSocketCloseCode(task),
+        connectionAgeSeconds: connectionEstablishedUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+      )
       let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
       let flapBackoff = noteLiveConnectionClosed(
         closeCodeRawValue: closeCodeRawValue ?? task.closeCode.rawValue,
@@ -24378,7 +24590,7 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil,
+    targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     // Field diagnostics: one line per host command (name and round trip), so
@@ -24390,17 +24602,19 @@ final class SyncService: ObservableObject {
       }
     }
     let targetProjectId: String?
+    let targetProjectRootPath: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
       args: rawArgs,
       targetProjectId: rawTargetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
+      targetProjectRootPath: rawTargetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId, let focusedArgs):
+    case .focused(let projectId, let rootPath, let focusedArgs):
       targetProjectId = projectId
+      targetProjectRootPath = rootPath
       args = focusedArgs
     }
     let runtimeScoped = commandIsRuntimeScoped(action)
@@ -24419,7 +24633,10 @@ final class SyncService: ObservableObject {
     // sync project. Most callers default to the active project; shell launches
     // opt out when the selected lane does not carry trustworthy project scope.
     let resolvedProjectId = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId)
-    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath)
+    // The active project's root only stands in for the active project itself:
+    // another target project with no root sends none.
+    let activeRootFallback = (syncNormalizedCommandScopeValue(targetProjectId) == nil || targetProjectId == self.activeProjectId) ? self.activeProjectRootPath : nil
+    let resolvedProjectRootPath = runtimeScoped ? nil : (fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeRootFallback) : targetProjectRootPath)
     // The host already ran this exact request from the hello: wait for that
     // answer (or take it, if it came first) instead of asking again.
     if let pipelinedRequestId = takePipelinedHelloCommand(
@@ -24467,22 +24684,24 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId rawTargetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil,
+    targetProjectRootPath rawTargetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
     let targetProjectId: String?
+    let targetProjectRootPath: String?
     let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
       args: rawArgs,
       targetProjectId: rawTargetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
+      targetProjectRootPath: rawTargetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId, let focusedArgs):
+    case .focused(let projectId, let rootPath, let focusedArgs):
       targetProjectId = projectId
+      targetProjectRootPath = rootPath
       args = focusedArgs
     }
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
@@ -24821,7 +25040,7 @@ final class SyncService: ObservableObject {
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
             let cachedProjects = await self.readDatabaseOffMain { $0.listMobileProjects() }
-              .filter { !self.isProjectHidden($0) }
+              .filter { !self.isCachedProjectHidden($0) }
             guard cachedProjects.count == 1, let onlyProject = cachedProjects.first else {
               return nil
             }
@@ -24873,7 +25092,7 @@ final class SyncService: ObservableObject {
     let projectRows = await readDatabaseOffMain { $0.listMobileProjects() }
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     if activeProjectId == nil {
-      let cachedProjects = projectRows.filter { !isProjectHidden($0) }
+      let cachedProjects = projectRows.filter { !isCachedProjectHidden($0) }
       if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
         if supportsProjectCatalog {
           guard remoteProjectCatalog.count == 1,
@@ -25288,7 +25507,7 @@ extension SyncService {
       timeoutNanoseconds: nil
     ) {
     case .routed(let result): return result
-    case .focused(_, let focusedArgs): args = focusedArgs
+    case .focused(_, _, let focusedArgs): args = focusedArgs
     }
     guard supportsRemoteAction(action) else {
       throw NSError(
@@ -25450,10 +25669,17 @@ extension SyncService {
     }
 
     let update = try? decode(eventObject, as: AgentChatSessionMetaModeUpdate.self)
-    // Nothing to fold into the cached summary: no mode change and no title.
-    guard (update?.hasAnyField ?? false) || adoptedTitle != nil,
+    // The chat's whole list of other machines it works on (the brain sends
+    // it all at once after each new use). Absent = no change.
+    let remoteWork: [AgentChatRemoteWorkUse]? = (eventDict?["remoteWork"] as? [Any])
+      .flatMap { try? decode($0, as: [AgentChatRemoteWorkUse].self) }
+    // Nothing to fold into the cached summary: no mode change, no title, no remote work.
+    guard (update?.hasAnyField ?? false) || adoptedTitle != nil || remoteWork != nil,
           var summary = chatSummaryCache[envelope.sessionId]
     else { return }
+    if let remoteWork {
+      summary.remoteWork = remoteWork
+    }
     // `applyModeUpdate` applies an explicit `cursorModeId: null` /
     // `cursorConfigValues: null` clear directly to the cached summary (nulling
     // the field), so the cache is authoritative right here at receipt. The open
@@ -27804,19 +28030,30 @@ extension SyncService {
   /// focused (`rosterCacheKey`), so a machine keeps one offline roster whether
   /// it is focused or a fleet member.
   func fleetRosterCacheKey(for profile: HostConnectionProfile) -> String? {
-    // The same order as `activeHostStorageKey`, from the saved profile alone.
-    let host: String
+    savedProfileHostStorageKey(profile).map { syncRosterCacheKey(host: $0) }
+  }
+
+  /// A computer that is not in front removed a folder (Remove… on the Hub):
+  /// its cached rows stay off the list when it is in front later, until it
+  /// lists the folder again.
+  func noteProjectRemovedFromMachine(projectId: String, rootPath: String?, profile: HostConnectionProfile) {
+    guard let hostKey = savedProfileHostStorageKey(profile) else { return }
+    rememberRemovedFromHost(keys: hiddenKeys(projectId: projectId, rootPath: rootPath), hostKey: hostKey)
+  }
+
+  /// `activeHostStorageKey` from the saved profile alone, in the same order.
+  private func savedProfileHostStorageKey(_ profile: HostConnectionProfile) -> String? {
     if let identity = normalizedHostStorageKey(profile.hostIdentity)
       ?? normalizedHostStorageKey(profile.lastHostDeviceId) {
-      host = identity
-    } else if let address = normalizedHostStorageKey(profile.lastSuccessfulAddress) {
-      host = "\(address):\(profile.port)"
-    } else if let name = normalizedHostStorageKey(profile.hostName) {
-      host = "\(name):\(profile.port)"
-    } else {
-      return nil
+      return identity
     }
-    return syncRosterCacheKey(host: host)
+    if let address = normalizedHostStorageKey(profile.lastSuccessfulAddress) {
+      return "\(address):\(profile.port)"
+    }
+    if let name = normalizedHostStorageKey(profile.hostName) {
+      return "\(name):\(profile.port)"
+    }
+    return nil
   }
 
   /// A fleet dial error that means the pairing itself was rejected by the
@@ -28141,9 +28378,18 @@ extension SyncService {
     // (`workRemoteLaneId`). The host gets the plain lane id, and the command
     // goes to the lane's machine in the project that machine holds.
     let laneTarget = try syncRemoteLaneTarget(args: args)
+    // A chat's work copy on another machine (`registerRemoteWorkCopyLane`) lives in
+    // the project the chat's brain named, which need not be the checkout the
+    // focused repository matches there. Also on the focused machine itself.
+    let workCopyProject = (args["laneId"] as? String).flatMap(SyncRemoteWorkCopyProjects.shared.project(laneId:))
     if let laneTarget {
       args = laneTarget.args
-      if laneTarget.machineKey != focusedMachineKey {
+      if let workCopyProject {
+        targetProjectId = laneTarget.machineKey == focusedMachineKey
+          ? workCopyProject.projectId
+          : syncFleetMarkedProjectId(machineKey: laneTarget.machineKey, projectId: workCopyProject.projectId)
+        targetProjectRootPath = workCopyProject.rootPath
+      } else if laneTarget.machineKey != focusedMachineKey {
         let repo = try requireRemoteLaneRepo(machineKey: laneTarget.machineKey)
         targetProjectId = repo.markedProjectId
         targetProjectRootPath = repo.rootPath
@@ -28175,6 +28421,7 @@ extension SyncService {
     }
     return .focused(
       projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId,
+      rootPath: targetProjectRootPath,
       args: args
     )
   }

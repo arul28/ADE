@@ -120,7 +120,7 @@ function SubagentProviderMark({ provider, size = 20 }: { provider?: string | nul
  * `--chat-accent` tint that some chats resolve to nothing, which left it
  * frameless beside its framed, finished siblings.
  */
-export const SUBAGENT_CARD_CHROME = "rounded-[calc(var(--chat-radius-card)-6px)] border border-fg/[0.07] bg-fg/[0.03] px-3.5 py-3 hover:border-fg/[0.12]";
+const SUBAGENT_CARD_CHROME = "rounded-[calc(var(--chat-radius-card)-6px)] border border-fg/[0.07] bg-fg/[0.03] px-3.5 py-3 hover:border-fg/[0.12]";
 
 export const CARD_META_TEXT = "font-mono text-[length:calc(var(--chat-font-size)*10/14)] tabular-nums";
 /** The card's status word and its one overview line. */
@@ -530,7 +530,7 @@ const SPAN_AT_THREE_COLUMNS: Record<number, string> = {
 };
 
 /** The span classes for card `index` of `count` at every column count. */
-export function subagentCardGridCellClass(index: number, count: number): string {
+function subagentCardGridCellClass(index: number, count: number): string {
   return cn(
     SPAN_ONE_COLUMN,
     SPAN_AT_TWO_COLUMNS[subagentCardGridSpan(index, count, 2)],

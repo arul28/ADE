@@ -436,6 +436,8 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
     stopRecording: (args?: unknown) => gated(() => service.stopRecording({
       laneId: requiredLaneId(args, "stopRecording"),
       ...chatSessionId(args),
+      // `false` files nothing here: a caller on another machine files it in its own drawer.
+      ...(optionalBoolean(args, "proof") === false ? { proof: false } : {}),
     })),
     getStreamStatus: (args?: unknown) => gated(() => service.getStreamStatus({
       laneId: requiredLaneId(args, "getStreamStatus"),

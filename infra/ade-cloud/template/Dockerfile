@@ -15,11 +15,24 @@ FROM node:24-bookworm-slim
 # boxes, and librsvg2-common (0.1 MB) lets GTK draw its SVG icons. About
 # 30 MB in all (Debian 12 package sizes, --no-install-recommends).
 #
+# build-essential and pkg-config: npm packages with native code and no
+# prebuilt binary for this platform (node-pty, some sqlite and bcrypt builds,
+# canvas) compile on install with node-gyp, which needs make and a C/C++
+# compiler. Without them every such project's setup failed on ADE Cloud, on
+# every size ("gyp ERR!"). About 200 MB.
+#
+# bubblewrap: the sandbox Codex runs each shell command in. Codex prefers a
+# `bwrap` on PATH to its bundled one, and /usr/bin/bwrap is ADE's wrapper
+# (bwrap-gvisor.sh) around the real one: under gVisor a network namespace
+# can't be set up, so for Codex, which blocks the network with its own
+# seccomp filter, the wrapper drops that one flag. Without it no Codex
+# command ran on ADE Cloud outside full-auto. About 0.2 MB.
+#
 # /etc/machine-id stays absent: ADE's hardware anchor hashes it, and one value
 # baked into the image would be shared by every box made from it, which makes
 # the account directory merge different boxes into one row.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git gawk tini python3 unzip procps \
+      ca-certificates curl git gawk tini python3 unzip procps build-essential pkg-config bubblewrap \
       xvfb openbox dbus at-spi2-core ffmpeg chromium \
       xterm thunar fonts-liberation fonts-noto-color-emoji librsvg2-common \
  && rm -rf /var/lib/apt/lists/* \
@@ -35,6 +48,20 @@ RUN curl -fsSL https://ade-app.dev/install.sh -o /tmp/install.sh \
  && chmod -R a+rX /opt/ade && rm /tmp/install.sh \
  && ln -s /opt/ade/bin/ade /usr/local/bin/ade \
  && ade --version
+
+# The GitHub CLI. Agents run `gh` (PRs, issues, checks), and ADE's `gh` shim
+# (githubShellShim.ts) only adds the account's GitHub token and then runs the
+# real one: with no `gh` in the image, every `gh` on ADE Cloud was "command
+# not found". From GitHub's own apt repository: Debian bookworm's package is
+# years behind. About 50 MB.
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+ && apt-get update && apt-get install -y --no-install-recommends gh \
+ && rm -rf /var/lib/apt/lists/* \
+ && gh --version
 
 # Docker, for projects whose setup starts a stack (docker compose, Supabase).
 # Only a VM's own kernel runs it; on a sandboxed box the entrypoint skips it.
@@ -109,12 +136,24 @@ RUN set -eu; baked=/opt/ade-tools; scratch=/tmp/ade-bake; mkdir -p "$baked"; \
       cp -a "$root/." "$baked/"; rm -rf "$root"; \
       echo "bake: $tool baked ($tool_kb KB; image now about $(( (image_kb + tool_kb) / 1024 )) MB)"; \
     done; \
-    rm -rf "$scratch" "$scratch.log"; chmod -R a+rX "$baked"; \
+    # The bake runs as root: its ADE leaves its shims folder in /tmp, private to root.
+    rm -rf "$scratch" "$scratch.log" /tmp/ade-cli-shims /tmp/ade-cli-shims-0; chmod -R a+rX "$baked"; \
     # The system layer's cache folder (see ADE_SYSTEM_CACHE_ROOT below).
     mkdir -p /var/cache/ade/tools && chown -R node:node /var/cache/ade
 
 COPY ade-entrypoint.sh /usr/local/bin/ade-entrypoint.sh
 RUN chmod 755 /usr/local/bin/ade-entrypoint.sh
+# The real bubblewrap moves aside (dpkg keeps it there on upgrades); the wrapper takes its name.
+RUN dpkg-divert --local --rename --divert /usr/bin/bwrap.real --add /usr/bin/bwrap
+COPY bwrap-gvisor.sh /usr/bin/bwrap
+RUN chmod 755 /usr/bin/bwrap && /usr/bin/bwrap --version
+# Debian's /etc/profile resets PATH in a login shell, and Codex runs every
+# command as `bash -lc` (ADE's terminals are `bash -l`). /etc/profile saves
+# the PATH it was given first; profile.d/ade-shims.sh puts it back in front.
+COPY ade-shims-profile.sh /etc/profile.d/ade-shims.sh
+RUN chmod 644 /etc/profile.d/ade-shims.sh \
+ && sed -i '1i ade_login_inherited_path=${PATH:-}' /etc/profile \
+ && [ "$(env -i PATH=/ade-test:/usr/bin:/bin HOME=/tmp sh -lc 'echo ${PATH%%:*}')" = /ade-test ]
 
 USER node
 WORKDIR /home/node

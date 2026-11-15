@@ -1,3 +1,10 @@
+import {
+  isMachineScopeRootPath,
+  isMachineScopeOlderBrainError,
+  MACHINE_SCOPE_PROJECT_ID,
+  MACHINE_SCOPE_ROOT_PATH,
+  THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE,
+} from "../../../shared/machineScope";
 import { appControlFrameDemandParams, type AppControlFrameDemand } from "../../../shared/appControlFrameDemand";
 import { readWindowsProcessImages } from "../android/androidEmulatorImage";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -18,6 +25,7 @@ import {
   isRuntimeProtocolCompatible,
   parseRuntimeLastWedge,
   parseRuntimePublishHealth,
+  parseRuntimeUnplannedRestart,
 } from "../../../shared/adeRuntimeProtocol";
 import type {
   RemoteRuntimeActionRequest,
@@ -89,6 +97,15 @@ import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipc
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
+/** The machine scope as a project record, so the per-root calls reach it unchanged. */
+const MACHINE_SCOPE_PROJECT_RECORD: RemoteRuntimeProjectRecord = {
+  projectId: MACHINE_SCOPE_PROJECT_ID,
+  rootPath: MACHINE_SCOPE_ROOT_PATH,
+  displayName: "This computer",
+  addedAt: 0,
+  lastOpenedAt: 0,
+  gitOriginUrl: null,
+};
 const SLOW_ACTION_THRESHOLD_MS = 500;
 /**
  * A slow action that keeps being slow (a status poll every few seconds) says
@@ -778,6 +795,7 @@ export function readLocalRuntimeInfo(value: unknown): {
   syncPort: number | null;
   publishHealth: LocalRuntimeStatus["publishHealth"];
   lastWedge: LocalRuntimeStatus["lastWedge"];
+  lastUnplannedRestart: LocalRuntimeStatus["lastUnplannedRestart"];
   minCompatibleProtocol: number | null;
   protocolVersion: number | null;
 } {
@@ -789,6 +807,7 @@ export function readLocalRuntimeInfo(value: unknown): {
     syncPort: null,
     publishHealth: null,
     lastWedge: null,
+    lastUnplannedRestart: null,
     minCompatibleProtocol: null,
     protocolVersion: null,
   } satisfies ReturnType<typeof readLocalRuntimeInfo>;
@@ -831,6 +850,7 @@ export function readLocalRuntimeInfo(value: unknown): {
           }
         : null,
     lastWedge: parseRuntimeLastWedge(info.lastWedge),
+    lastUnplannedRestart: parseRuntimeUnplannedRestart(info.lastUnplannedRestart),
     minCompatibleProtocol:
       typeof minCompatibleProtocol === "number"
       && Number.isInteger(minCompatibleProtocol)
@@ -1266,6 +1286,9 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimeSyncPort: number | null = null;
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
   private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
+  private activeRuntimeLastUnplannedRestart: LocalRuntimeStatus["lastUnplannedRestart"] = null;
+  /** One-shot re-reads after connecting to a brain that just came back from a crash (its counts settle). */
+  private restartFactRefreshTimers: ReturnType<typeof setTimeout>[] = [];
   private ownedRuntimeChild: ChildProcess | null = null;
   /** The endpoint belongs to the child, even after its active connection resets. */
   private ownedRuntimeSocketPath: string | null = null;
@@ -1484,6 +1507,7 @@ export class LocalRuntimeConnectionPool {
           }
         : null,
       lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
+      lastUnplannedRestart: this.activeRuntimeLastUnplannedRestart ? { ...this.activeRuntimeLastUnplannedRestart } : null,
       runtimeMode: this.runtimeMode(),
       appFallback: this.appFallback ? { ...this.appFallback } : null,
       versionSkew: { ...this.versionSkewStatus },
@@ -1495,6 +1519,28 @@ export class LocalRuntimeConnectionPool {
   async getFreshStatus(): Promise<LocalRuntimeStatus> {
     await this.refreshRuntimeDiagnostics();
     return this.getStatus();
+  }
+
+  /**
+   * A brain that came back from a crash counts the chats and CLI sessions it
+   * continued during its first seconds, after this window connected. Two
+   * one-shot re-reads pick up the counts for the restart banner; nothing
+   * polls. Only while the restart is young.
+   */
+  private scheduleRestartFactRefresh(restart: LocalRuntimeStatus["lastUnplannedRestart"]): void {
+    for (const timer of this.restartFactRefreshTimers) clearTimeout(timer);
+    this.restartFactRefreshTimers = [];
+    if (!restart) return;
+    const ageMs = Date.now() - Date.parse(restart.ts);
+    if (!Number.isFinite(ageMs) || ageMs > 3 * 60_000) return;
+    for (const delayMs of [12_000, 45_000]) {
+      const timer = setTimeout(() => {
+        this.restartFactRefreshTimers = this.restartFactRefreshTimers.filter((entry) => entry !== timer);
+        void this.refreshRuntimeDiagnostics();
+      }, delayMs);
+      timer.unref?.();
+      this.restartFactRefreshTimers.push(timer);
+    }
   }
 
   private async refreshRuntimeDiagnostics(): Promise<void> {
@@ -1516,6 +1562,7 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimeSyncPort = runtimeInfo.syncPort;
         this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
         this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+        this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
         this.emitRuntimeStatusChange();
       } catch (error) {
         this.logger.debug("local_runtime.status_refresh_failed", {
@@ -2197,6 +2244,8 @@ export class LocalRuntimeConnectionPool {
     rootPath: string,
     registration: ProjectRegistrationIntent = SYSTEM_PROJECT_REGISTRATION,
   ): Promise<RemoteRuntimeProjectRecord> {
+    // This computer's own settings: the brain's machine scope, never registered.
+    if (isMachineScopeRootPath(rootPath)) return MACHINE_SCOPE_PROJECT_RECORD;
     const normalizedRoot = path.resolve(rootPath);
     while (true) {
       this.assertNotDisposed();
@@ -2329,6 +2378,12 @@ export class LocalRuntimeConnectionPool {
    * of time, not one per poll.
    */
   private dropStaleProjectRecord(rootPath: string, project: RemoteRuntimeProjectRecord, error: unknown): boolean {
+    if (project === MACHINE_SCOPE_PROJECT_RECORD) {
+      // Never registered, so never re-registered. A brain older than this app
+      // looks the scope up as a project: say what to do instead.
+      if (isMachineScopeOlderBrainError(error)) throw new Error(THIS_COMPUTER_MACHINE_SCOPE_UPDATE_MESSAGE);
+      return false;
+    }
     if (unknownProjectIdInError(error) !== project.projectId) return false;
     // `ensureProject` caches a moved project under its new folder; follow the
     // same redirect so the record dropped is the one that was handed out.
@@ -3121,6 +3176,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
+    this.activeRuntimeLastUnplannedRestart = null;
     this.ownedRuntimeChild = null;
     this.ownedRuntimeSocketPath = null;
     disposeOwnedRuntimeChild(ownedChild, ownedSocket);
@@ -3156,6 +3212,7 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimeSyncPort = null;
         this.activeRuntimePublishHealth = null;
         this.activeRuntimeLastWedge = null;
+        this.activeRuntimeLastUnplannedRestart = null;
       }
       throw error;
     });
@@ -3187,6 +3244,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = null;
     this.activeRuntimePublishHealth = null;
     this.activeRuntimeLastWedge = null;
+    this.activeRuntimeLastUnplannedRestart = null;
     this.projectsByRoot.clear();
     this.staleProjectReregisteredAtByRoot.clear();
     return true;
@@ -3724,8 +3782,15 @@ export class LocalRuntimeConnectionPool {
         // sends the person to a Repair that cannot change the answer.
         recoveryCode = "background_item_blocked";
       } else if (
-        this.serviceInstallStatus.state === "failed"
-        || this.serviceHealthStatus.state === "not_installed"
+        // A service its manager reports as running is installed, even when
+        // the last install attempt failed: the endpoint check below says
+        // whether it answers. "Not installed" there sent the person to a
+        // Repair that had just failed (ADE-DESKTOP-61, Windows).
+        this.serviceHealthStatus.running !== true
+        && (
+          this.serviceInstallStatus.state === "failed"
+          || this.serviceHealthStatus.state === "not_installed"
+        )
       ) {
         recoveryCode = "brain_not_installed";
       } else if (!await probeSocketHasOwner(socketPath)) {
@@ -3742,12 +3807,24 @@ export class LocalRuntimeConnectionPool {
         : "";
       // What the service manager said, so a report shows why no fallback ran.
       const install = this.serviceInstallStatus;
+      // The installer's own reason for a failed install; it used to reach only the log.
+      const installReason = install.state === "failed" && install.message
+        ? ` Installer said: ${install.message.trim().slice(0, 300)}`
+        : "";
       const serviceDetail = ` Service: install ${install.state}${install.failureStep ? ` at ${install.failureStep}` : ""}, `
-        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`;
-      throw codedRecoveryError(
+        + `health ${this.serviceHealthStatus.state}${this.serviceHealthStatus.running == null ? "" : `, running ${this.serviceHealthStatus.running}`}.`
+        + installReason;
+      const recoveryError = codedRecoveryError(
         `ADE's background service could not open this project. Technical details: ${message}${serviceDetail}${crashLoopDetail}${reportDetail}`,
         recoveryCode,
       );
+      // "Allow in the Background" is off for ADE: a macOS setting the person
+      // changes, which the recovery screen names. Every other code (a service
+      // that runs but does not answer, a failed install, a stale socket) is
+      // not known to be the machine's, so it stays reported.
+      throw recoveryCode === "background_item_blocked" && !crashLooping
+        ? markExpected(recoveryError, "environment")
+        : recoveryError;
     }
 
     const child = this.spawnRuntime(socketPath);
@@ -4273,7 +4350,9 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
     this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+    this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
     this.emitRuntimeStatusChange();
+    this.scheduleRestartFactRefresh(runtimeInfo.lastUnplannedRestart);
     client.onDisconnect((error) => {
       if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
@@ -4288,6 +4367,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
+      this.activeRuntimeLastUnplannedRestart = null;
       this.projectsByRoot.clear();
       this.staleProjectReregisteredAtByRoot.clear();
       this.emitRuntimeStatusChange();
@@ -4417,6 +4497,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
+      this.activeRuntimeLastUnplannedRestart = null;
       this.projectsByRoot.clear();
       this.staleProjectReregisteredAtByRoot.clear();
       if (client) closeRuntimeClient(client);

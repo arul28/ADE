@@ -27,6 +27,7 @@
  */
 
 import type { RelayAccountPurgeEnv } from "./activityRelay";
+import { recordSignupIp, signupClientIp } from "./cloud/abuseSignals";
 import { deleteCloudAccount } from "./cloud/accountDeletion";
 import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { deleteAccountProjects } from "./accountProjects/store";
@@ -44,6 +45,8 @@ export type SignupAnalyticsEnv = RelayAccountPurgeEnv & Partial<Omit<GithubAppEn
   CLOUD_CHATS?: R2Bucket;
   AGENT37_API_KEY?: string;
   STRIPE_SECRET_KEY?: string;
+  /** Keys the hashed sign-up address (`cloud/abuseSignals.ts`). */
+  CLOUD_CHAT_MASTER_KEY?: string;
 };
 
 const ROUTE = "/webhooks/clerk";
@@ -258,6 +261,11 @@ export async function handleSignupAnalyticsRequest(
       reportCloudFailure("cloud.account_delete_failed", { userId, message: error instanceof Error ? error.message : "unknown" });
       return json(502, { error: "cloud_delete_failed" });
     }
+  }
+  // The sign-up's address, hashed, for the daily report's burst alarm (`cloud/abuseSignals.ts`). Never fails the webhook.
+  if (payload.type === "user.created" && env.DB) {
+    const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : Date.now();
+    await recordSignupIp({ DB: env.DB, CLOUD_CHAT_MASTER_KEY: env.CLOUD_CHAT_MASTER_KEY }, userId, signupClientIp(payload), createdAtMs);
   }
   if (!analyticsToken) return payload.type === "user.deleted" ? json(200, { deleted: true }) : json(503, { error: "not_configured" });
 

@@ -57,6 +57,7 @@ import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
+import { openUrlInAdeBrowser } from "../../../lib/openExternal";
 import { CHAT_LAUNCH_HYDRATE_RETRY_MS, getChatLaunchEntry, hydrateChatLaunchFromHost, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
 import { useChatRuntimeScope } from "../ChatRuntimeScope";
 import { showToast } from "../../app/toast/toastStore";
@@ -513,9 +514,14 @@ export function LaneSetupCard({
   const gitWarning = snapshot.cloud?.warning && !snapshot.stages.some((stage) => stage.id === "clone" && stage.status === "done")
     ? snapshot.cloud.warning
     : null;
+  // ADE Cloud's own sign-in for the new computer stopped on a page a person must confirm: one tap, on the account's page.
+  const approvalUrl = snapshot.phase === "running"
+    && snapshot.stages.some((stage) => stage.id === "join" && stage.status === "running")
+    ? snapshot.cloud?.approvalUrl ?? null
+    : null;
   const textSize = compact ? "text-[11.5px]" : "text-[length:calc(var(--chat-font-size)*12/14)]";
   const metaSize = compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]";
-  const showActions = hasDetails || (envStage?.steps?.length ?? 0) > 0 || Boolean(onOpen)
+  const showActions = hasDetails || (envStage?.steps?.length ?? 0) > 0 || Boolean(onOpen) || Boolean(approvalUrl)
     || actions.startNow || actions.retry || actions.startAnyway || actions.delete || actions.cancel;
 
   return (
@@ -616,6 +622,17 @@ export function LaneSetupCard({
             <TextAction tone="primary" onClick={onOpen} testId="lane-setup-open">
               <ArrowSquareOut size={11} weight="bold" aria-hidden />
               Open
+            </TextAction>
+          ) : null}
+          {approvalUrl ? (
+            <TextAction
+              tone="primary"
+              // The approval is the account's, not a machine's: this computer's ADE browser, where the person is signed in.
+              onClick={() => openUrlInAdeBrowser(approvalUrl)}
+              testId="lane-setup-approve"
+            >
+              <UserCirclePlus size={11} weight="bold" aria-hidden />
+              Approve
             </TextAction>
           ) : null}
           {actions.startNow ? (

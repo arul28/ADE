@@ -42,12 +42,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   // for a lookup key on channels that carry nothing sensitive.
   [IPC.aiStoreApiKey]: new Set(["key"]),
   [IPC.aiSetOpencodeProviderKey]: new Set(["key"]),
-  // A project secret's whole point is that its value never leaves the store in
-  // the clear. `value` is too ordinary a word for the generic guard, `content`
-  // is a whole .env file, and `secrets` is a list of name/value pairs.
-  [IPC.projectSecretsSet]: new Set(["value"]),
-  [IPC.projectSecretsPreviewEnvImport]: new Set(["content"]),
-  [IPC.projectSecretsImportEnv]: new Set(["secrets"]),
+  // Passwords & Secrets: a saved value travels inside `args` (`saveSecret`'s
+  // value, `importSecrets`' entries). The trace keeps only the action name.
+  [IPC.passwordsCall]: new Set(["args"]),
   // An answer can be a secret: the private secret card and every `isSecret`
   // question send their value here, under a generic word.
   [IPC.agentChatRespondToInput]: new Set(["answers", "responseText"]),

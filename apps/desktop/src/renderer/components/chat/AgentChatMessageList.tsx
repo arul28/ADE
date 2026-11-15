@@ -71,6 +71,7 @@ import { cn } from "../ui/cn";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { isRestartInterruptedNotice } from "../../../shared/chatAutoResume";
 import { subscribeToTicker } from "../../lib/ticker";
 import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
@@ -251,7 +252,9 @@ import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts
 import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
 import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
 import { McpServerRequestReceipt } from "./McpServerCard";
+import { MachineRemovalReceipt } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestReceipt } from "./PasswordLoginCard";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -511,7 +514,7 @@ function SubagentAnswerUnsentNoticeRow({
   );
 }
 
-function CodexTurnRecoveryCard({
+function QuietTurnCard({
   event,
   sessionId,
   onRecover,
@@ -525,18 +528,20 @@ function CodexTurnRecoveryCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
   const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
+  // One card for every provider (`turn_health`); a legacy Codex event names none.
+  const name = providerDisplayLabel(event.provider ?? "codex", "The agent");
   const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
     wait: "Keep waiting",
     steer: "Send nudge",
     interrupt_retry_same_thread: "Retry same server",
-    restart_resume_thread: "Restart & resume",
+    restart_resume_thread: `Restart ${name}`,
   };
-  const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
-    waiting: "Waiting for Codex output…",
+  const resultLabels = useMemo<Record<AgentChatRecoverCodexTurnResult["status"], string>>(() => ({
+    waiting: `Waiting for ${name}…`,
     nudged: "Status nudge sent.",
     retrying: "Retry started in this thread.",
-    resumed: "Codex app-server restarted and the thread resumed.",
-  };
+    resumed: `${name} restarted and picked up your last request.`,
+  }), [name]);
   const recoveryOptions = event.recoveryOptions ?? [
     "restart_resume_thread",
     "wait",
@@ -548,12 +553,12 @@ function CodexTurnRecoveryCard({
   const secondaryOptions = (["steer", "interrupt_retry_same_thread"] as const)
     .filter((option) => recoveryOptions.includes(option));
   const title = event.reason === "waiting_on_approval"
-    ? "Codex is waiting for approval"
+    ? `${name} is waiting for approval`
     : event.reason === "waiting_on_input"
-      ? "Codex is waiting for your input"
+      ? `${name} is waiting for your input`
       : event.reason === "no_progress"
-        ? "Codex stopped making progress"
-        : "Codex did not start responding";
+        ? `${name} has gone quiet`
+        : `${name} is slow to answer`;
   const timing = (() => {
     const detectedAt = event.detectedAt ? Date.parse(event.detectedAt) : Number.NaN;
     const turnStartedAt = event.turnStartedAt ? Date.parse(event.turnStartedAt) : Number.NaN;
@@ -594,6 +599,7 @@ function CodexTurnRecoveryCard({
         {event.message}
       </div>
       {event.automaticRecoveryAttempted ? (
+        // Only on cards from older brains, which restarted Codex once on their own.
         <div className="mt-1 text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48">
           ADE already tried one automatic restart. It will not restart again without you.
         </div>
@@ -1564,9 +1570,12 @@ function stripLeadingWarningGlyph(message: string): string {
 function QuietNoticeRow({
   event,
   siblings,
+  timeLabel,
 }: {
   event: SystemNoticeEvent;
   siblings?: readonly QuietNoticeSibling[];
+  /** Shown after the message: when it happened (the restart notice). */
+  timeLabel?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const panelId = useId();
@@ -1585,6 +1594,11 @@ function QuietNoticeRow({
       <span className={QUIET_LINE_TEXT_CLASS} title={event.message}>
         {event.message}
       </span>
+      {timeLabel ? (
+        <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/35">
+          {timeLabel}
+        </span>
+      ) : null}
       {extraCount > 0 ? (
         <span className="shrink-0 tabular-nums text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/28">
           +{extraCount}
@@ -1658,12 +1672,14 @@ const FOLDED_MESSAGE_ICON: Record<FoldedMessageSource, typeof Robot> = {
   agent: Robot,
   automation: Lightning,
   schedule: Clock,
+  ade: Info,
 };
 
 const FOLDED_MESSAGE_KIND_LABEL: Record<FoldedMessageSource, string> = {
   agent: "Message from another agent",
   automation: "Automation prompt",
   schedule: "Scheduled prompt",
+  ade: "Message ADE sent",
 };
 
 /**
@@ -2920,7 +2936,7 @@ function renderEvent(
   envelope: RenderEnvelope,
   options?: SpawnedChatProviderProps & {
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-    onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     /** Re-runs compaction through the pane's guarded compact action. */
@@ -3746,10 +3762,10 @@ function renderEvent(
 
   if (event.type === "codex_turn_stalled") {
     return (
-      <CodexTurnRecoveryCard
+      <QuietTurnCard
         event={event}
         sessionId={options?.sessionId}
-        onRecover={options?.onCodexRecovery}
+        onRecover={options?.onQuietTurnRecovery}
       />
     );
   }
@@ -4205,7 +4221,13 @@ function renderEvent(
     // message, and the detail behind a click. Neighbouring receipts share the
     // line (`+N`), folded in `filterVisibleTranscriptRows`.
     if (isQuietNoticeEvent(event)) {
-      return <QuietNoticeRow event={event} siblings={envelope.quietNoticeSiblings} />;
+      return (
+        <QuietNoticeRow
+          event={event}
+          siblings={envelope.quietNoticeSiblings}
+          timeLabel={isRestartInterruptedNotice(event.message) ? formatTime(envelope.timestamp) : null}
+        />
+      );
     }
 
     if (hasDetail) {
@@ -4410,10 +4432,32 @@ function renderEvent(
       );
     }
 
+    if (nativeCard?.kind === "login") {
+      // The secure sign-in card's record: the site and the outcome only.
+      return (
+        <PasswordLoginRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
     if (nativeCard?.kind === "mcp-server") {
       // The MCP server card's record: the definition and the approval only.
       return (
         <McpServerRequestReceipt
+          card={nativeCard.card}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    if (nativeCard?.kind === "machine-removal") {
+      // The computer removal card's record: which computer, and the answer.
+      return (
+        <MachineRemovalReceipt
           card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}
@@ -5356,7 +5400,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   turnEndDurationMs?: number | null;
   turnToolEntries?: ChatWorkLogEntry[];
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -5444,7 +5488,7 @@ const EventRow = React.memo(function EventRow({
   turnEndDurationMs,
   turnToolEntries = [],
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -5575,7 +5619,7 @@ const EventRow = React.memo(function EventRow({
         ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
-            onCodexRecovery,
+            onQuietTurnRecovery,
             onRecoverContinuity,
             onRetryProviderFailure,
             onRetryCompaction,
@@ -6159,7 +6203,7 @@ function AgentChatMessageListMain({
   transcriptPending = false,
     className,
   onApproval,
-  onCodexRecovery,
+  onQuietTurnRecovery,
   onRecoverContinuity,
   onRetryProviderFailure,
   onRetryCompaction,
@@ -6240,7 +6284,7 @@ function AgentChatMessageListMain({
   transcriptPending?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
-  onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+  onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRecoverContinuity?: (args: AgentChatRecoverContinuityArgs) => Promise<AgentChatContinuityRecoveryResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   /** Re-runs compaction through the pane's guarded compact action. */
@@ -9056,7 +9100,7 @@ function AgentChatMessageListMain({
           inlineProof={inlineProof}
           onOpenProofDrawer={onOpenProofDrawer}
           onApproval={handleApproval}
-          onCodexRecovery={onCodexRecovery}
+          onQuietTurnRecovery={onQuietTurnRecovery}
           onRecoverContinuity={onRecoverContinuity}
           onRetryProviderFailure={onRetryProviderFailure}
           onRetryCompaction={onRetryCompaction}
@@ -9134,7 +9178,7 @@ function AgentChatMessageListMain({
         inlineProof={inlineProof}
         onOpenProofDrawer={onOpenProofDrawer}
         onApproval={handleApproval}
-        onCodexRecovery={onCodexRecovery}
+        onQuietTurnRecovery={onQuietTurnRecovery}
         onRecoverContinuity={onRecoverContinuity}
         onRetryProviderFailure={onRetryProviderFailure}
         onRetryCompaction={onRetryCompaction}
@@ -9190,7 +9234,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onQuietTurnRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

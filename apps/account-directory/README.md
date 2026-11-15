@@ -203,10 +203,26 @@ Every refusal on this Worker is a user who cannot get their computer back onto
 their account, and by the time they ask for help the request is gone. Each
 refusal path emits exactly one structured line to `console.log`. Workers
 observability keeps 10% of requests (`head_sampling_rate: 0.1` since
-2026-11-12, for the Workers Logs bill), so the line alone is often gone. Each
-refusal is therefore also a Sentry warning (`<event>: <code>`, one issue per
+2026-11-12, for the Workers Logs bill), so the line alone is often gone. Most
+refusals are therefore also a Sentry warning (`<event>: <code>`, one issue per
 event and code, tagged `refusal.code` and `correlation_id`, with the prefixes
-below and no account id), within the Worker's Sentry budget (`admitEvent`):
+below and no account id), within the Worker's Sentry budget (`admitEvent`).
+
+Three cases write the console line only and send no Sentry warning:
+
+- `directory.supersede_refused`: the machine registered and a duplicate stays
+  listed. Registration rides the heartbeat, so a warning per call would be one
+  issue per minute per machine.
+- `directory.register_refused` with `machine_revoked`: a removed machine that
+  keeps registering on its heartbeat. The client shows "sign in again".
+- `directory.register_refused` with `pairing_authentication_required`: a
+  re-pair with no fresh sign-in yet. The client shows "sign in again".
+
+For these three cases the only record is the sampled console line, so about 9
+in 10 of them leave no trace. Ask the user for the `correlationId` from the
+client log, and do not expect a Sentry issue.
+
+A refusal line looks like this:
 
 ```json
 {"event":"directory.register_refused","userId":"user_…","machineKeyPrefix":"abcdef12",
@@ -523,9 +539,10 @@ npx wrangler d1 export DB --remote --env production \
 branch):
 
 1. **Production** is deployed when this merges to `main`.
-   `.github/workflows/deploy-web.yml` runs `npm run deploy:production`, which
-   applies `migrations/0012_usage_research.sql` to
-   `ade-account-directory-production` and then deploys. To do it by hand:
+   `.github/workflows/deploy-web.yml` runs the two parts of
+   `npm run deploy:production` (`deploy:production:prepare`, then
+   `deploy:production:upload`), which apply `migrations/0012_usage_research.sql` to
+   `ade-account-directory-production` and then deploy. To do it by hand:
    `npx wrangler d1 migrations apply DB --remote --env production`, then
    `npx wrangler deploy --env production`.
 2. The **default (development)** environment is not deployed by CI. Run
@@ -842,10 +859,14 @@ the provider's limit (80%). A computer not awake for 30 days is deleted after
 
 `src/cloud/billing.ts` sells the plan through Stripe Managed Payments (secrets
 `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`; vars `STRIPE_PLAN_PRICE_ID`,
-`STRIPE_EXTRA_HOURS_PRICE_ID` (read before the older `STRIPE_EXTRA_PRICE_ID`),
-`STRIPE_METER_EVENT`, from `scripts/stripe-setup.mjs`). Plus, Pro, extra hours
-and extra disk are four products, so Checkout names each line and shows its
-one-line description (Managed Payments refuses `custom_text`); the customer
+`STRIPE_PRO_PRICE_ID`, `STRIPE_MAX_PRICE_ID`, one extra-hours price per plan
+`STRIPE_EXTRA_HOURS_{PLUS,PRO,MAX}_PRICE_ID` (2¢, 1.5¢, 1.2¢, flat, on one
+meter; the first, graduated `STRIPE_EXTRA_HOURS_PRICE_ID` stays for
+subscriptions made before Cloud 7 until their next renewal),
+`STRIPE_DISK_PRICE_ID` ($2 per 10 GB a month), `STRIPE_METER_EVENT`, from
+`scripts/stripe-setup.mjs`). Plus, Pro, Max, extra hours and extra disk are
+separate products, so Checkout names each line and shows its one-line
+description (Managed Payments refuses `custom_text`); the customer
 is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
 a URL for the person's browser, which comes back to `/billing/return`.
 `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.

@@ -24,6 +24,7 @@ const MACHINE_ACCOUNT_METHODS = {
   "cloud.call": "cloud",
   "accountVault.call": "account_vault",
   "providerLogins.call": "provider_logins",
+  "passwords.call": "passwords",
 } as const satisfies Record<string, AdeMachineScopedDomain>;
 
 export type MachineAccountMethod = keyof typeof MACHINE_ACCOUNT_METHODS;

@@ -579,15 +579,20 @@ export function createAccountAppTokenClient(options: AccountAppTokenClientOption
    * per account), and at most once a minute per token in this process.
    * `force`: ignore a negative answer that still stands (a person pressed
    * "Check again", or a sign-in just finished).
+   * `userRequested`: a person pressed Refresh. With `afterRejected`, the
+   * question goes to the server even inside the one-minute window, so each
+   * press asks once; background callers keep the window.
    */
-  const getToken = async (args: { afterRejected?: string | null; force?: boolean } = {}): Promise<AccountAppTokenResult> => {
+  const getToken = async (
+    args: { afterRejected?: string | null; force?: boolean; userRequested?: boolean } = {},
+  ): Promise<AccountAppTokenResult> => {
     const userId = options.getAccountUserId()?.trim() || null;
     if (!userId) return { ok: false, state: "signed_out", reason: null, retryAtEpochMs: null };
     const rejected = args.afterRejected?.trim() || null;
     if (rejected) {
       const digest = await sha256Hex(rejected);
       const last = scope.rejectedAt.get(digest) ?? 0;
-      if (now() - last < REJECTED_GUARD_MS) {
+      if (args.userRequested !== true && now() - last < REJECTED_GUARD_MS) {
         return { ok: false, state: "unavailable", reason: "rejected_recently", retryAtEpochMs: last + REJECTED_GUARD_MS };
       }
       scope.rejectedAt.set(digest, now());

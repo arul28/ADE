@@ -3,10 +3,12 @@ import {
   CLOUD_PLAN_LABELS,
   cloudCatalogOf,
   cloudHoursLeftMilli,
+  cloudPlanIdOf,
   formatCloudDate,
   formatCloudHoursRate,
   type CloudAccountState,
   type CloudDiskUsage,
+  type CloudIdleCleanupEntry,
   type CloudLaneWork,
   type CloudMachine,
 } from "../../../../shared/adeCloud";
@@ -47,6 +49,8 @@ export type DashLane = {
   without: CloudLaneWithoutComputer | null;
   /** A computer the account pays for that holds no lane (made before lanes had their own computer). */
   noLane: boolean;
+  /** The idle cleanup's warning for its computer (or its kept-after-a-failed-save state), else null. */
+  idle: CloudIdleCleanupEntry | null;
 };
 
 function stateOf(machine: CloudMachine): DashLaneState {
@@ -80,6 +84,7 @@ export function dashLanes(input: {
   now: number;
 }): DashLane[] {
   const tiers = cloudTiers(cloudCatalogOf(input.account));
+  const idle = new Map((input.account?.dueForDeletion ?? []).map((entry) => [entry.instanceId, entry]));
   // Every computer the account pays for: a lane's own, and one that holds no lane.
   const withComputer = input.machines
     .map((machine): DashLane => {
@@ -102,6 +107,7 @@ export function dashLanes(input: {
         machine,
         without: null,
         noLane: !machine.lane,
+        idle: idle.get(machine.instanceId) ?? null,
       };
     });
   const known = new Set(withComputer.map((lane) => lane.machine?.lane?.laneId));
@@ -126,6 +132,7 @@ export function dashLanes(input: {
         machine: null,
         without: lane,
         noLane: false,
+        idle: null,
       };
     });
   // Lanes first (awake, then the most recent), then lanes without a computer, then computers with no lane.
@@ -155,6 +162,8 @@ export function planName(account: CloudAccountState): string {
 export function hoursForecast(account: CloudAccountState, now: number): string | null {
   const recent = account.recentUse;
   if (!recent || recent.days <= 0 || recent.usedMilli <= 0) return null;
+  // Nothing used yet this period (a plan just bought, a month just reset): no pace to speak of.
+  if (account.hours.usedMilli <= 0) return null;
   const perDay = recent.usedMilli / recent.days;
   const left = cloudHoursLeftMilli(account);
   if (left <= 0) return null;
@@ -163,13 +172,22 @@ export function hoursForecast(account: CloudAccountState, now: number): string |
   return `At this pace your hours last until ${formatCloudDate(endsAt)}`;
 }
 
-/** The last-run phrase a lane row shows. */
+/** Why a lane has no computer, in a few words (the row's tooltip), or null for one that never had one here. */
+export function removedReasonText(lane: DashLane): string | null {
+  const reason = lane.without?.reason;
+  if (reason === "inactive") return "Removed after 30 days unused";
+  if (reason === "idle_cleanup") return "Removed while unused, after its work was pushed";
+  if (reason === "plan_limit") return "Removed to fit your plan, after its work was pushed";
+  if (reason === "freed") return "Freed to save space";
+  return null;
+}
+
+/** The last-run phrase a lane row shows: for a lane without a computer, when it went (the reason is the tooltip). */
 export function lastRunText(lane: DashLane, now: number): string {
   if (lane.state === "none") {
-    const reason = lane.without?.reason;
-    if (reason === "inactive") return "Computer removed after 30 days";
-    if (reason === "plan_limit") return "Computer removed to fit your plan";
-    return "No computer now";
+    const since = lane.without?.since;
+    if (since != null && Number.isFinite(since)) return `Removed ${formatAgo(since, now)}`;
+    return removedReasonText(lane) ?? "No computer now";
   }
   if (lane.state === "awake") return "Running now";
   if (lane.lastActiveAt == null) return "Not used yet";
@@ -197,4 +215,18 @@ export function cleanupOrder(lanes: readonly DashLane[]): DashLane[] {
 export function prefersReducedMotion(): boolean {
   if (typeof window === "undefined") return true;
   return document.documentElement.dataset.motion === "reduced" || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/**
+ * The hero's period chip: when the plan ends, fails to pay, changes, renews
+ * or resets, in that order. `tone` colours the chip; null is the plain one.
+ */
+export function heroPeriodChip(account: CloudAccountState): { text: string; tone: "warn" | "crit" | null } {
+  const { billing } = account;
+  const end = formatCloudDate(billing.periodEnd);
+  if (billing.cancelAtPeriodEnd) return { text: `Ends ${end}`, tone: "warn" };
+  if (billing.notice === "past_due") return { text: "Payment failed", tone: "crit" };
+  const nextPlanId = billing.nextPlanId ?? null;
+  if (nextPlanId && nextPlanId !== cloudPlanIdOf(account)) return { text: `${CLOUD_PLAN_LABELS[nextPlanId]} from ${end}`, tone: null };
+  return { text: `${account.plan === "paid" ? "Renews" : "Resets"} ${end}`, tone: null };
 }

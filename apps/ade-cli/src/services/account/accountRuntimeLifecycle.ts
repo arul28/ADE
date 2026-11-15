@@ -1,5 +1,7 @@
 import fs from "node:fs";
 
+import { createPasswordService, getSharedPasswordService, passwordsCloudSwitch, type PasswordService, type PasswordsRelay } from "../passwords/passwordService";
+import { isAdeCloudComputer } from "../../../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   createAccountStoreResultHelpers,
@@ -60,7 +62,8 @@ export type AccountRuntimeLifecycleOptions = {
   getAccountAccessToken: (options?: AccountAccessTokenOptions) => Promise<string | null>;
   getContexts: () => ReadonlyArray<AccountMigrationContext>;
   teardown: { push(release: () => void): void };
-  relay?: AccountSettingsRelay & AccountVaultRelay;
+  /** A test's relay; it speaks Passwords only when it has the Passwords calls. */
+  relay?: AccountSettingsRelay & AccountVaultRelay & Partial<PasswordsRelay>;
   purgeAccountApiKeys?: () => void;
   onAccountSettingsChanged?: () => void;
 };
@@ -129,6 +132,12 @@ export function createHeadlessAccountVaultBridge(
   };
 }
 
+function speaksPasswords<T extends Partial<PasswordsRelay>>(relay: T): relay is T & PasswordsRelay {
+  return typeof relay.getPasswordItems === "function"
+    && typeof relay.putPasswordItems === "function"
+    && typeof relay.requestPasswordKey === "function";
+}
+
 export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOptions) {
   const accountStoreUserId = (): string | null => {
     const status = options.accountAuthService.getStatus();
@@ -144,6 +153,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
 
   let accountSettingsStore: AccountSettingsStore | null = null;
   let accountVaultStore: AccountVaultStore | null = null;
+  let passwordService: PasswordService | null = null;
   const accountVaultBridge = createHeadlessAccountVaultBridge(() => accountVaultStore);
 
   if (options.enabled || options.storesOnly) {
@@ -179,6 +189,21 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
         logger: options.logger,
       }),
     );
+
+    // Passwords: sealed items and the vault key, through the same relay
+    // client. An ADE Cloud computer keeps the key in memory only.
+    const settingsForPasswords = accountSettingsStore;
+    passwordService = getSharedPasswordService(options.accountStoreAdeDir, () => createPasswordService({
+      adeDir: options.accountStoreAdeDir,
+      relay: speaksPasswords(accountStoreRelay) ? accountStoreRelay : null,
+      getAccountUserId: accountStoreUserId,
+      getDeviceId: accountStoreDeviceId,
+      machineKind: isAdeCloudComputer() ? "cloud" : "desktop",
+      // The ADE Cloud switch is an ordinary account setting (no secret in it).
+      ...passwordsCloudSwitch(settingsForPasswords),
+      logger: options.logger,
+    }));
+    passwordService.startPeriodicSync();
   }
 
   const purgeAccountOwnedCredentials = (): void => {
@@ -192,7 +217,6 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     }
     for (const context of options.getContexts()) {
       for (const [source, service] of [
-        ["project_secrets", context.projectSecretService],
         ["linear_credentials", context.linearCredentialService],
         ["jira_credentials", context.jiraCredentialService],
         ["github_pat", context.githubService ? { purgeAccountCredentials: context.githubService.purgeAccountPat } : null],
@@ -213,6 +237,9 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   const purgeAccountState = (): void => {
     accountMigrationGeneration += 1;
     accountVaultStore?.purge();
+    void passwordService?.purge().catch((error: unknown) => {
+      options.logger.warn("passwords.purge_failed", { error: error instanceof Error ? error.name : "unknown" });
+    });
     purgeAccountOwnedCredentials();
   };
 
@@ -289,7 +316,8 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
     hydrationInFlight = (async () => {
       for (const context of options.getContexts()) {
         try {
-          await context.projectSecretService?.hydrateFromVault();
+          // Old per-project secrets move into Passwords & Secrets (a no-op once done).
+          await context.projectSecretService?.migrateLegacy();
           // Integration connections follow the project too (Linear, Jira).
           await context.linearCredentialService?.hydrateFromVault();
           await context.jiraCredentialService?.hydrateFromVault();
@@ -362,6 +390,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   return {
     accountSettingsStore,
     accountVaultStore,
+    passwordService,
     getAccountVault: () => accountVaultStore ? accountVaultBridge : null,
     initialize,
   };

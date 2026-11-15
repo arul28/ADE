@@ -505,7 +505,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   has to be confirmed is not a failure, and `blockingHostKeyTrust` reports it as
   its own outcome (`needs_trust` / `changed`) rather than through `onError`, so
   callers reveal the trust prompt instead of showing a machine row an error it
-  did not have. Connection failures also carry a **Report issue** button. `remoteMachineModel.ts`
+  did not have. Connection failures also carry a **Report this error to ADE…** control. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
   (`sync_disabled`, `sync_not_started`, `not_host`, `account_signed_out`,
@@ -1047,15 +1047,13 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   bound to — and rejecting it left cross-machine Work views unable to act on
   their own local sessions. Membership stays window-scoped and is granted only
   by the window opening the project itself, never by a renderer-supplied path.
-- Settings > Secrets keeps file ownership explicit across this boundary. The
-  controller desktop opens Finder and reads at most 1 MB from the file the user
-  selected, then sends only its basename and content through the active
-  `project_secret.previewEnvImport` runtime action. Parsing, replacement
-  detection, and the selected batch import therefore run on the remote project
-  host. `project_secret.exportEnv` also runs on that host and writes a new
-  `ade-secrets.env` (or a numbered non-overwriting variant) to that machine's
-  Downloads folder; it never falls back to the controller's Downloads folder
-  while a remote project is bound.
+- Settings › Passwords & Secrets always talks to the computer the person is
+  using (`passwords.call` through main), whatever project tab the window is
+  on: the vault is the account's and syncs from there, and a "this computer
+  only" secret lives there. Its `.env` import reads a file picked on that
+  computer and its export writes to that computer's Downloads. A remote chat's
+  secret card, a webhook's signing secret and Cursor Cloud's env still reach
+  their project through `project_secret` on the pinned machine.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods, machine-scoped personal-chat methods, plus project-scoped
   action dispatch. `projects.getHandoffStoragePreflight` validates a proposed
@@ -2103,6 +2101,15 @@ projectless runtime method `machine.updateAndRestart` does that. It requires the
 `cto` role and only exists on the authenticated runtime RPC endpoint, so it
 inherits the paired/authenticated channel; it is never automatic and never
 silent.
+
+The host records who asked (`requestedBy`: a machine name and a client kind).
+The name comes from the paired device record of the connection; the client's
+own claim counts only when there is none, and it is cleaned and length-capped
+either way. It appears in `brain.remote_update_route` and
+`autoUpdate.remote_install_requested`, and, when the update was accepted, in
+the message agents get after the restart ("an update to 1.2.3 that "Mac Studio"
+asked for"). It never changes the routing, and an older client or app that
+sends or reads no such field keeps working.
 
 The client names the version it believes is newest (`targetVersion`); the host
 refuses to "update" to a version it already runs or has passed. A versioned

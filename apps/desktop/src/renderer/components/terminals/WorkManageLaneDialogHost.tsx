@@ -25,6 +25,7 @@ import {
 } from "../lanes/ManageLaneDialog";
 import { extractError } from "../../lib/format";
 import { usePinTargetsTab } from "../../state/crossMachineLanes";
+import { useTabCopyPin } from "../../state/repositoryScope";
 import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
 
@@ -45,9 +46,13 @@ export type WorkManageLaneDialogHostProps = {
 export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   laneId,
   lane: pinnedLane,
-  runtimePin,
+  runtimePin: lanePinProp,
   onClose,
 }: WorkManageLaneDialogHostProps) {
+  // No pin means the lane comes from the store's list, which is the tab's copy,
+  // so its calls go to that copy. An offline copy leaves no pin and the calls refuse.
+  const tabCopyPin = useTabCopyPin();
+  const runtimePin = lanePinProp ?? tabCopyPin ?? undefined;
   const lanes = useAppStore((state) => state.lanes);
   const laneSnapshots = useAppStore((state) => state.laneSnapshots);
   const refreshLanes = useAppStore((state) => state.refreshLanes);

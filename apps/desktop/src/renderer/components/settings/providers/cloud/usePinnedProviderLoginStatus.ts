@@ -1,6 +1,6 @@
 /**
  * One machine's sign-in read (`providerLogins.status`), kept under the pin's
- * key. It reads on open, on `providerLogins.onChanged` and on `refresh`. No
+ * key. It reads on open, on the pin's `providerLogins.onChanged` and on `refresh`. No
  * timer and no poll. A result for an old key is dropped, so a page that
  * changes machine never shows the last machine's sign-ins.
  */
@@ -52,11 +52,13 @@ export function usePinnedProviderLoginStatus({
   const bridge = typeof window === "undefined" ? undefined : window.ade?.providerLogins;
   const available = typeof bridge?.status === "function";
 
+  // The change events of the pin's machine: a sign-in saved or applied there
+  // reads again at once. Without the pin they would be the tab machine's.
   useEffect(() => {
     if (!enabled) return undefined;
-    const off = bridge?.onChanged?.(() => setTick((value) => value + 1));
+    const off = bridge?.onChanged?.(() => setTick((value) => value + 1), pinRef.current);
     return () => off?.();
-  }, [bridge, enabled]);
+  }, [bridge, enabled, pinKey]);
 
   const readOnce = useCallback(async (stale: () => boolean) => {
     const status = bridge?.status;

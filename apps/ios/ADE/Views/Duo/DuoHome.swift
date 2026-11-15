@@ -753,7 +753,7 @@ private struct DuoHomeFixtureScreen: View {
             onOpenProject: {},
             onChangeIcon: { _ in },
             onMoveToTop: {},
-            onForget: {}
+            onRemove: {}
           )
           .equatable()
         }

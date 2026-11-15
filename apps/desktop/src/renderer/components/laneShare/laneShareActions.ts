@@ -6,6 +6,16 @@ import { laneShareProblem } from "./laneShareModel";
 import { markLaneShareRevokePending, reloadLaneShares } from "./laneShareStore";
 import { requirePin } from "../../lib/requirePin";
 
+/** The one toast for revokes that failed (each line names the guest and why). */
+function showRevokeFailures(failed: readonly string[], total: number): void {
+  showToast({
+    tone: "error",
+    title: failed.length === total ? "Couldn't stop sharing" : "Some shares did not stop",
+    message: failed.join("\n"),
+    report: false,
+  });
+}
+
 /**
  * Stops shares on the lane's machine (`pin`), one revoke each. The host
  * closes the guest at once, then tells the directory; a failed directory
@@ -38,12 +48,7 @@ export async function revokeLaneShares(
   }
   await reloadLaneShares(listKey, pin);
   if (failed.length > 0) {
-    showToast({
-      tone: "error",
-      title: failed.length === entries.length ? "Couldn't stop sharing" : "Some shares did not stop",
-      message: failed.join("\n"),
-      report: false,
-    });
+    showRevokeFailures(failed, entries.length);
   } else if (pendingDirectory > 0) {
     showToast({
       tone: "warning",
@@ -61,6 +66,34 @@ export async function revokeLaneShares(
     });
   }
   return { revoked, pendingDirectory, failed };
+}
+
+/**
+ * Stops shares at the account directory, with no computer needed: the share
+ * window and lists of a computer that is off, or a share of another
+ * computer. The lane's computer drops a connected guest on its next grant
+ * read (about 30 seconds) and refuses every new connection at once.
+ */
+export async function revokeGivenShares(
+  entries: readonly Pick<LaneShareGivenEntry, "grantId" | "receiverEmail">[],
+): Promise<{ revoked: number; failed: string[] }> {
+  let revoked = 0;
+  const failed: string[] = [];
+  for (const entry of entries) {
+    try {
+      await window.ade.laneShareGuest.revokeGiven({ grantId: entry.grantId });
+      markLaneShareRevokePending(entry.grantId, false);
+      revoked += 1;
+    } catch (error) {
+      failed.push(`${entry.receiverEmail ?? "A guest"}: ${laneShareProblem(error).message}`);
+    }
+  }
+  if (failed.length > 0) {
+    showRevokeFailures(failed, entries.length);
+  } else if (revoked > 0) {
+    showToast({ tone: "success", title: revoked === 1 ? "Share stopped" : `${revoked} shares stopped` });
+  }
+  return { revoked, failed };
 }
 
 /** "Stop sharing with all": a confirm, then every live share of the lane. */

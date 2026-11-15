@@ -99,6 +99,11 @@ final class MachineConnection {
   /// to this machine (the Apple device video) resolves against it, never
   /// against the focused machine's address.
   private(set) var liveAddress: String?
+  /// When the current link went live, for the drop report's age.
+  private var liveSinceUptime: TimeInterval?
+  /// The socket this phone closed itself for heartbeat silence. Its close is
+  /// explained, so the drop report skips it.
+  private weak var heartbeatClosedSocket: URLSessionWebSocketTask?
   private var relayReauthorizationTask: Task<Void, Never>?
   /// Sleeping out a backoff delay between failed dials.
   private var waitingToRetry = false
@@ -160,6 +165,13 @@ final class MachineConnection {
   var isRunning: Bool { runTask != nil }
 
   func updateProfile(_ profile: HostConnectionProfile) {
+    if self.profile.port != profile.port {
+      // Kept for a later drop report: what changed just before it.
+      CrashReporting.breadcrumb("sync.route", message: "saved port changed", data: [
+        "connection": "fleet",
+        "live": isLive ? "yes" : "no",
+      ])
+    }
     self.profile = profile
   }
 
@@ -341,6 +353,7 @@ final class MachineConnection {
     socket = result.task
     liveRouteKind = syncConnectionRouteKind(result.address)
     liveAddress = result.address
+    liveSinceUptime = ProcessInfo.processInfo.systemUptime
     lastInboundUptime = ProcessInfo.processInfo.systemUptime
     lastUpdateAt = Date()
     setPhase(.live)
@@ -427,6 +440,12 @@ final class MachineConnection {
           machineConnectionLog.notice(
             "fleet socket closed machine=\(self.machineKey, privacy: .public) code=\(task.closeCode.rawValue) reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
           )
+          if heartbeatClosedSocket !== task { SyncLiveDropReport.report(
+            connection: "fleet",
+            routeKind: liveRouteKind,
+            closeCode: syncWebSocketCloseCode(task),
+            connectionAgeSeconds: liveSinceUptime.map { ProcessInfo.processInfo.systemUptime - $0 }
+          ) }
         }
         return
       }
@@ -650,6 +669,43 @@ final class MachineConnection {
     requestRosterSnapshot()
   }
 
+  /// Removes a folder's entry from this machine (`project_forget_request`).
+  /// The folder stays on disk. Never queued: it acts on this machine only.
+  func forgetProject(projectId: String, rootPath: String?) async throws {
+    var payload: [String: Any] = ["projectId": projectId]
+    if let rootPath = rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+      payload["rootPath"] = rootPath
+    }
+    let raw = try await request(
+      type: "project_forget_request",
+      payload: payload,
+      timeoutNanoseconds: 8_000_000_000,
+      timeoutMessage: "Timed out removing that project."
+    )
+    guard let result = machineConnectionDecode(raw, as: MobileProjectForgetResultPayload.self) else {
+      throw NSError(domain: "ADE", code: mobileProjectForgetUnreadableReplyCode, userInfo: [
+        NSLocalizedDescriptionKey: "The computer sent an unreadable answer.",
+      ])
+    }
+    guard result.ok else {
+      throw NSError(domain: "ADE", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: result.message ?? "The computer could not remove the project.",
+      ])
+    }
+    // Off this machine's roster and its offline cache now, so a link that
+    // drops before the next snapshot does not keep the row; the snapshot
+    // stays the authority.
+    let remaining = rosterProjects.filter { $0.projectId != projectId }
+    if remaining != rosterProjects {
+      rosterProjects = remaining
+      rosterRevision &+= 1
+      schedulePersistRoster()
+      onChange?()
+    }
+    syncService?.noteProjectRemovedFromMachine(projectId: projectId, rootPath: rootPath, profile: profile)
+    requestRosterSnapshot()
+  }
+
   /// Run a remote command on this machine, scoped to a project. Never queued:
   /// a command for another machine must not replay later to a different one.
   func sendCommand(
@@ -719,6 +775,7 @@ final class MachineConnection {
           // Nothing (not even a host ping) for three intervals: the path is
           // dead. Close; the run loop reconnects with backoff.
           machineConnectionLog.notice("fleet heartbeat silence machine=\(self.machineKey, privacy: .public)")
+          self.heartbeatClosedSocket = self.socket
           self.socket?.cancel(with: .goingAway, reason: nil)
           return
         }

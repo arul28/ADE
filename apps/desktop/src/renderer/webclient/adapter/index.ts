@@ -141,7 +141,7 @@ export function createAdeWebAdapter(
   const surface = {
     app: createAppNamespace(infra),
     account: createAccountNamespace(accountClient),
-    accountSettings: createAccountSettingsNamespace(),
+    accountSettings: createAccountSettingsNamespace(infra),
     attention: createAttentionNamespace(infra, accountClient),
     analytics,
     diagnostics: createDiagnosticsNamespace(analytics),

@@ -917,7 +917,7 @@ describe("syncRouteHealth", () => {
     expect(health.listener.lastSuccessAt).toBe("2026-07-16T00:00:00.000Z");
   });
 
-  it("borrows the loopback failure time only while relay is enabled and skipped", () => {
+  it("borrows the listener failure time only while relay is enabled and skipped", () => {
     const base = {
       relayConfigured: true,
       loopbackAdeValidated: false,
@@ -935,14 +935,31 @@ describe("syncRouteHealth", () => {
       lastFailureAtFallback: null,
     });
 
-    expect(skipped.skipReason)
-      .toBe("Relay route is unusable because 127.0.0.1:8791 did not answer as ADE.");
+    expect(skipped.skipReason).toBe("Relay tunnel status is unavailable in this ADE process.");
     expect(skipped.lastFailureAt).toBe("2026-07-15T00:00:00.000Z");
     // Relay is not enabled at all, so there is no relay failure to date-stamp.
     expect(signedOut.skipReason).toBe("Sign in to ADE to use ADE Relay.");
     expect(signedOut.lastFailureAt).toBeNull();
     // A caller with no probe history reports no time rather than borrowing one.
     expect(noFallback.lastFailureAt).toBeNull();
+  });
+
+  // Relay pipes are handed to the listener in process, so another program on
+  // 127.0.0.1:<port> must not take the relay route down with it.
+  it("keeps relay usable while another program shadows the loopback port", () => {
+    const health = buildRelayRouteHealth({
+      relayConfigured: true,
+      relayAccountSignedIn: true,
+      loopbackAdeValidated: false,
+      listenerReason: "Expected ADE 426 Upgrade Required on 127.0.0.1:8787, received 404 Not Found.",
+      listenerPort: 8787,
+      tunnelStatus: tunnelStatus({ connected: true, relayBridgeValidated: true }),
+      lastFailureAtFallback: "2026-07-15T00:00:00.000Z",
+    });
+
+    expect(health.skipReason).toBeNull();
+    expect(health.relayControlConnected).toBe(true);
+    expect(health.relayBridgeValidated).toBe(true);
   });
 
   it("ranks the 4505 eviction reason above the raw close text", () => {

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { lastNoticeCornerHold, noticeCornerHeld, subscribeNoticeCornerHeld } from "../app/toast/cornerNoticeDock";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CaretRight, Check, Warning, X } from "@phosphor-icons/react";
 import type { CloudAccountState } from "../../../shared/adeCloud";
@@ -96,10 +97,63 @@ function selectPanelJobs(
     }
     // Online or cancelled: only a finish this window watched, and only for a beat.
     if (!mark?.seenLive) continue;
-    const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+    const endedAt = shownSince(job);
     if (Number.isFinite(endedAt) && input.now - endedAt <= CLOUD_LANE_JOB_PANEL_DONE_MS) shown.push(job);
   }
   return shown.sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
+}
+
+/*
+ * How long each finished row has actually been on screen. A row's display
+ * period only runs while the notice corner is free: a hold (a browser page
+ * covering both corners) stops it, and the next release resumes it with the
+ * time it had left, however many holds come and go. A row that had used up
+ * its period stays gone.
+ */
+const finishedVisibility = new Map<string, { used: number; since: number | null }>();
+
+subscribeNoticeCornerHeld(() => {
+  const now = Date.now();
+  const held = noticeCornerHeld();
+  for (const [jobId, entry] of finishedVisibility) {
+    // A row that used up its period stays gone; recreated later, it starts from its old end.
+    if (entry.used >= CLOUD_LANE_JOB_PANEL_DONE_MS) {
+      finishedVisibility.delete(jobId);
+      continue;
+    }
+    if (held && entry.since != null) {
+      entry.used += now - entry.since;
+      entry.since = null;
+    } else if (!held && entry.since == null && entry.used < CLOUD_LANE_JOB_PANEL_DONE_MS) {
+      entry.since = now;
+    }
+  }
+});
+
+/**
+ * When a finished row's period would have started had it run without
+ * pauses: now minus the time it has been on screen. `now - shownSince` is
+ * then the visible time used, and `shownSince + DONE_MS` its next expiry.
+ */
+function shownSince(job: CloudLaneJobSnapshot): number {
+  const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+  if (!Number.isFinite(endedAt)) return endedAt;
+  const now = Date.now();
+  let entry = finishedVisibility.get(job.jobId);
+  if (!entry) {
+    // First sight of this finish: held, nothing has been seen yet; otherwise
+    // it has been showing since it ended (or since the hold it ended in let go).
+    const hold = lastNoticeCornerHold();
+    const visibleFrom = hold && endedAt >= hold[0] && endedAt <= hold[1] ? hold[1] : endedAt;
+    entry = noticeCornerHeld() ? { used: 0, since: null } : { used: 0, since: Math.min(now, visibleFrom) };
+    finishedVisibility.set(job.jobId, entry);
+    // Bounded: the oldest finishes are long past their period.
+    if (finishedVisibility.size > 500) {
+      const oldest = finishedVisibility.keys().next().value;
+      if (oldest !== undefined) finishedVisibility.delete(oldest);
+    }
+  }
+  return now - (entry.used + (entry.since != null ? now - entry.since : 0));
 }
 
 /** When the first finished row of `shown` leaves the panel; null while every row runs or failed. */
@@ -107,7 +161,9 @@ function nextExpiryOf(shown: readonly CloudLaneJobSnapshot[]): number | null {
   let soonest: number | null = null;
   for (const job of shown) {
     if (isLive(job) || job.phase === "failed") continue;
-    const endedAt = Date.parse(job.endedAt ?? job.updatedAt);
+    // A held corner shows nothing, so no finished row's period runs out.
+    if (noticeCornerHeld()) return null;
+    const endedAt = shownSince(job);
     if (!Number.isFinite(endedAt)) continue;
     const at = endedAt + CLOUD_LANE_JOB_PANEL_DONE_MS;
     if (soonest == null || at < soonest) soonest = at;
@@ -154,9 +210,12 @@ function subscribeShell(listener: () => void): () => void {
   if (!stopShell) {
     const offJobs = subscribeCloudLaneJobs(recomputeOnChange);
     const offHidden = subscribeHidden(recomputeOnChange);
+    // A hold ending restarts the finished rows' periods from now.
+    const offHeld = subscribeNoticeCornerHeld(() => recomputeShell(true));
     stopShell = () => {
       offJobs();
       offHidden();
+      offHeld();
       if (shellTimer != null) window.clearTimeout(shellTimer);
       shellTimer = null;
       stopShell = null;

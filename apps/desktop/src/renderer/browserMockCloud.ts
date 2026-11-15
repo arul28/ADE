@@ -6,19 +6,42 @@
  *  - `free` (default): Free plan, two lanes and one computer with no lane.
  *  - `empty`: Free plan, nothing made yet.
  *  - `plus`: Plus plan, six lanes, extra hours on, earned hours.
- *  - `pro`: Pro plan, a busy account.
+ *  - `pro`: Pro plan, a busy account over Plus's limits ("Move to Plus" asks first).
+ *  - `downgrade`: Pro with a move to Plus waiting (made in the billing portal), over Plus.
+ *  - `over`: Free plan in force, over its limits (a cancel made in the billing portal).
  *  - `full`: Free plan out of hours with the disk 92% full.
  *  - `blocked`: Free plan refused on this computer (another account used it).
+ *  - `idle`: Free plan, one lane unused 2 days (deleted in 1 day, ignored files listed) and one whose computer the idle cleanup removed.
+ *  - `idlepaid`: Plus, one lane unused 7 days (deleted in 3 days, no ignored-files summary yet).
+ *  - `idleheld`: Free plan, one lane ADE didn't delete because its push was refused.
+ *  - `pastdue`: Plus with its last payment failed (free plan rules until it's paid).
+ *  - `extradisk`: Plus with extra disk on, past the plan's 30 GB.
+ *  - `upgraded`: Plus a moment after checkout, with this computer last seeing Free
+ *    (79.1 free hours left): the "You're on Plus" confirmation shows once.
+ *  - `emptyplus`: Plus with nothing made yet and no use this period.
+ * On `free`, Get Plus lands the plan a moment later, as a checkout coming back does.
  * `&mockCloudAccess=off` answers "no ADE Cloud" (the hidden state).
  *
  * It runs after the sign-ins preview (`?mockSignIns=`), keeping its sign-in
  * calls and replacing only the account and computer reads.
  */
-import { CLOUD_MACHINE_DEFAULT_NAME, cloudFreePlanRefusedSentence, type CloudAccountState, type CloudMachine, type CloudMachinesResult } from "../shared/adeCloud";
+import {
+  CLOUD_MACHINE_DEFAULT_NAME,
+  cloudFreeGithubSentence,
+  cloudFreePlanRefusedSentence,
+  type CloudFreePlanGithubState,
+  planCleanupSentence,
+  type CloudAccountState,
+  type CloudIgnoredFiles,
+  type CloudMachine,
+  type CloudMachinesResult,
+  type CloudPlanCleanup,
+} from "../shared/adeCloud";
 import type { CloudLaneMachine, CloudLaneWithoutComputer } from "../shared/cloudLaneLaunch";
+import { CLOUD_PLAN_SEEN_STORAGE_KEY } from "./components/settings/cloudDashboard/cloudPlanMoment";
 
-type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "full" | "blocked";
-const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "full", "blocked"];
+type Scenario = "free" | "empty" | "plus" | "pro" | "downgrade" | "over" | "full" | "blocked" | "idle" | "idlepaid" | "idleheld" | "pastdue" | "extradisk" | "upgraded" | "emptyplus";
+const SCENARIOS: readonly Scenario[] = ["free", "empty", "plus", "pro", "downgrade", "over", "full", "blocked", "idle", "idlepaid", "idleheld", "pastdue", "extradisk", "upgraded", "emptyplus"];
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
@@ -38,15 +61,16 @@ const CATALOG: CloudAccountState["catalog"] = {
     { type: "vm", cpu: 4, memoryGb: 16, multiplierMilli: 8000, tier: "xlarge", label: "X-Large", diskMaxGb: 100 },
   ],
   plans: {
-    free: { includedMilli: 50_000, computerLimit: 3, diskGb: 12, priceUsd: 0 },
-    paid: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
-    plus: { includedMilli: 500_000, computerLimit: 10, diskGb: 40, priceUsd: 5 },
-    pro: { includedMilli: 1_500_000, computerLimit: 30, diskGb: 120, priceUsd: 20 },
+    free: { includedMilli: 100_000, diskGb: 12, priceUsd: 0, phoneMinutes: 20, extraHourCents: null },
+    paid: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+    plus: { includedMilli: 300_000, diskGb: 30, priceUsd: 5, phoneMinutes: 30, extraHourCents: 2 },
+    pro: { includedMilli: 1_600_000, diskGb: 80, priceUsd: 20, phoneMinutes: 160, extraHourCents: 1.5 },
+    max: { includedMilli: 5_000_000, diskGb: 175, priceUsd: 50, phoneMinutes: 500, extraHourCents: 1.2 },
   },
   diskStepGb: 4,
   paidPriceUsd: 5,
-  extraHourCents: 1,
-  extraDiskCentsPer10GbMonth: 100,
+  extraHourCents: 2,
+  extraDiskCentsPer10GbMonth: 200,
 };
 
 type LaneSpec = {
@@ -114,13 +138,23 @@ type Fixture = {
   planId: "free" | "plus" | "pro";
   usedMilli: number;
   lanes: LaneSpec[];
-  without: Array<{ name: string; reason: "freed" | "inactive" | "plan_limit" }>;
+  without: Array<{ name: string; reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit" }>;
+  /** The idle cleanup's warnings, by lane id in `lanes` (`ignored: null` before the computer reported them). */
+  idle?: Array<{ id: string; inMs: number; days: number; ignored: CloudIgnoredFiles | null; held?: string }>;
   extraHours?: boolean;
   earnedMilli?: number;
   blocked?: boolean;
   recentUsedMilli?: number;
   /** Pro with a move to Plus waiting, over Plus's limits: the cleanup notice and "Stay on Pro". */
   downgrade?: boolean;
+  /** The plan in force is over its limits: new computers refused until the person picks. */
+  over?: boolean;
+  /** The last payment failed: the plan stays, its rules are the free plan's until paid. */
+  pastDue?: boolean;
+  /** Extra disk on, with a $10 monthly limit and some of it used. */
+  extraDiskOn?: boolean;
+  /** The period started an hour ago (a plan just bought). */
+  freshPeriod?: boolean;
 };
 
 function fixture(scenario: Scenario): Fixture {
@@ -136,10 +170,10 @@ function fixture(scenario: Scenario): Fixture {
         recentUsedMilli: 61_000,
         lanes: [
           { id: "k3j9x0a1", lane: "checkout-redesign", tier: "medium", diskGb: 8, state: "running", lastActiveAgoMs: 0, createdAgoMs: 6 * DAY, pr: "open" },
-          { id: "m2q8w1b2", lane: "android-push", tier: "large", diskGb: 16, state: "asleep", lastActiveAgoMs: 5 * HOUR, createdAgoMs: 9 * DAY, unpushed: true },
+          { id: "m2q8w1b2", lane: "android-push", tier: "large", diskGb: 10, state: "asleep", lastActiveAgoMs: 5 * HOUR, createdAgoMs: 9 * DAY, unpushed: true },
           { id: "p7r4t5c3", lane: "fix-login-redirect", tier: "small", diskGb: 4, state: "asleep", lastActiveAgoMs: 2 * DAY, createdAgoMs: 4 * DAY, pr: "merged" },
           { id: "z1x2c3d4", lane: "search-index", tier: "small", diskGb: 4, state: "running", lastActiveAgoMs: 0, createdAgoMs: DAY },
-          { id: "q9w8e7f5", lane: "docs-pass", tier: "small", diskGb: 4, state: "asleep", lastActiveAgoMs: 19 * DAY, createdAgoMs: 30 * DAY, pr: "merged" },
+          { id: "q9w8e7f5", lane: "docs-pass", tier: "small", diskGb: 2, state: "asleep", lastActiveAgoMs: 19 * DAY, createdAgoMs: 30 * DAY, pr: "merged" },
         ],
         without: [{ name: "billing-webhooks", reason: "freed" }],
       };
@@ -153,7 +187,7 @@ function fixture(scenario: Scenario): Fixture {
           id: `pro${index}x7k2`,
           lane: ["api-gateway", "ios-onboarding", "perf-sweep", "e2e-flake", "design-tokens", "billing-v2", "android-emu", "ml-ranker", "docs-site", "infra-terraform", "chat-search"][index]!,
           tier: (["medium", "large", "small", "small", "small", "medium", "xlarge", "large", "small", "medium", "small"] as const)[index]!,
-          diskGb: [12, 28, 4, 8, 4, 16, 44, 24, 4, 8, 4][index]!,
+          diskGb: [8, 12, 4, 4, 4, 8, 10, 6, 2, 2, 2][index]!,
           state: index % 3 === 0 ? "running" : "asleep",
           lastActiveAgoMs: index % 3 === 0 ? 0 : (index + 1) * 7 * HOUR,
           createdAgoMs: (index + 2) * DAY,
@@ -163,10 +197,24 @@ function fixture(scenario: Scenario): Fixture {
       };
     case "downgrade":
       return { ...fixture("pro"), downgrade: true };
+    case "pastdue":
+      return { ...fixture("plus"), pastDue: true, extraHours: false };
+    case "extradisk":
+      return {
+        ...fixture("plus"),
+        extraDiskOn: true,
+        lanes: [...fixture("plus").lanes, { id: "x4d5i6s7", lane: "video-pipeline", tier: "large", diskGb: 6, state: "asleep", lastActiveAgoMs: 3 * HOUR, createdAgoMs: 2 * DAY }],
+      };
+    case "upgraded":
+      return { planId: "plus", usedMilli: 200, freshPeriod: true, lanes: fixture("free").lanes.slice(0, 2), without: [] };
+    case "emptyplus":
+      return { planId: "plus", usedMilli: 0, freshPeriod: true, recentUsedMilli: 4_000, lanes: [], without: [] };
+    case "over":
+      return { ...fixture("plus"), planId: "free", usedMilli: 9_000, extraHours: false, earnedMilli: undefined, over: true };
     case "full":
       return {
         planId: "free",
-        usedMilli: 50_000,
+        usedMilli: 100_000,
         recentUsedMilli: 9_000,
         lanes: [
           { id: "f1u2l3l4", lane: "monorepo-upgrade", tier: "small", diskGb: 8, state: "asleep", lastActiveAgoMs: 4 * HOUR, createdAgoMs: 12 * DAY, unpushed: true },
@@ -176,6 +224,30 @@ function fixture(scenario: Scenario): Fixture {
       };
     case "blocked":
       return { planId: "free", usedMilli: 0, lanes: [], without: [], blocked: true };
+    case "idle":
+    case "idleheld":
+      return {
+        planId: "free",
+        usedMilli: 8_400,
+        recentUsedMilli: 2_100,
+        lanes: [
+          { id: "a7c2e9k4", lane: "fix-login-redirect", tier: "small", diskGb: 4, state: "running", lastActiveAgoMs: 0, createdAgoMs: 2 * DAY, pr: "open" },
+          { id: "i9d1l2e3", lane: "pricing-page", tier: "small", diskGb: 4, state: "asleep", lastActiveAgoMs: 2 * DAY + HOUR, createdAgoMs: 6 * DAY, unpushed: true },
+        ],
+        without: scenario === "idle" ? [{ name: "onboarding-copy", reason: "idle_cleanup" }] : [],
+        idle: [{
+          id: "i9d1l2e3",
+          inMs: scenario === "idle" ? DAY - HOUR : 4 * HOUR,
+          days: 3,
+          ignored: { checkedAt: Date.now() - 2 * DAY, paths: [".env", ".env.local", "prisma/dev.db"], more: 2, rebuildable: 3 },
+          ...(scenario === "idleheld" ? { held: "Work that isn't on GitHub yet: pricing-page." } : {}),
+        }],
+      };
+    case "idlepaid":
+      return {
+        ...fixture("plus"),
+        idle: [{ id: "q9w8e7f5", inMs: 3 * DAY - HOUR, days: 10, ignored: null }],
+      };
     default:
       return {
         planId: "free",
@@ -191,6 +263,22 @@ function fixture(scenario: Scenario): Fixture {
   }
 }
 
+function mockGithub(kind: string | null, now: number): Record<string, unknown> | null {
+  const plus = CATALOG.plans.plus!.includedMilli;
+  const held = (state: CloudFreePlanGithubState, oldEnoughAt: number | null, githubLogin: string | null) => ({
+    state,
+    oldEnoughAt,
+    canUnlockWithCard: state === "too_new",
+    githubLogin,
+    sentence: cloudFreeGithubSentence(state, { oldEnoughAt, plusIncludedMilli: plus }),
+  });
+  if (kind === "none") return held("no_github", null, null);
+  if (kind === "new") return held("too_new", now + 19 * DAY, "octo-new");
+  if (kind === "used") return held("used", null, "octo-shared");
+  if (kind === "checking") return held("checking", null, null);
+  return null;
+}
+
 function periodBounds(now: number): { start: number; end: number } {
   const date = new Date(now);
   return {
@@ -201,17 +289,20 @@ function periodBounds(now: number): { start: number; end: number } {
 
 function account(fix: Fixture, machines: CloudLaneMachine[], now: number): CloudAccountState {
   const plan = CATALOG.plans[fix.planId]!;
-  const includedMilli = fix.blocked ? 0 : plan.includedMilli;
+  // `?cloudGithub=none|new|used|checking`: the free plan's GitHub rules holding its hours.
+  const github = fix.planId === "free" && !fix.blocked ? mockGithub(param("cloudGithub"), now) : null;
+  const includedMilli = fix.blocked || github ? 0 : plan.includedMilli;
   const used = Math.min(fix.usedMilli, includedMilli);
   const left = Math.max(0, includedMilli - used);
   const percent = includedMilli > 0 ? Math.round((used / includedMilli) * 100) : 100;
-  const period = periodBounds(now);
+  const period = fix.freshPeriod ? { start: now - HOUR, end: now - HOUR + 30 * DAY } : periodBounds(now);
   const diskUsed = machines.reduce((total, box) => total + (box.resources?.diskGb ?? 0), 0);
   const extra: Record<string, unknown> = {};
   if (fix.earnedMilli != null) extra.earnedHours = { leftMilli: fix.earnedMilli, usedThisPeriodMilli: 0, grantedMilli: fix.earnedMilli };
   extra.freePlan = fix.blocked
     ? { state: "refused", sentence: cloudFreePlanRefusedSentence(CATALOG.plans.plus!.includedMilli) }
     : { state: fix.planId === "free" ? "claimed" : "unclaimed", sentence: null };
+  if (github) (extra.freePlan as Record<string, unknown>).github = github;
   const friends = fix.earnedMilli ? Math.round(fix.earnedMilli / 20_000) : 0;
   extra.referral = {
     code: "K7Q2-M9",
@@ -229,7 +320,7 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
   };
   return {
     plan: fix.planId === "free" ? "free" : "paid",
-    rules: fix.planId === "free" ? "free" : "paid",
+    rules: fix.planId === "free" || fix.pastDue ? "free" : "paid",
     planId: fix.planId,
     hours: {
       includedMilli,
@@ -239,47 +330,68 @@ function account(fix: Fixture, machines: CloudLaneMachine[], now: number): Cloud
       state: left <= 0 ? "zero" : percent >= 95 ? "warn95" : percent >= 80 ? "warn80" : "none",
     },
     extraHours: { available: fix.planId !== "free", enabled: fix.extraHours === true, usedMilli: fix.planId === "pro" ? 4_200 : 0 },
-    extraDisk: fix.planId === "free" ? undefined : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
-    disk: { usedGb: fix.planId === "free" && fix.lanes.length === 2 && fix.usedMilli === 50_000 ? 11 : diskUsed, limitGb: plan.diskGb },
+    extraDisk: fix.planId === "free" ? undefined : fix.extraDiskOn
+      ? { available: true, state: "on", monthlyLimitCents: 1000, usedCents: 140 }
+      : { available: true, state: "off", monthlyLimitCents: null, usedCents: 0 },
+    disk: { usedGb: fix.planId === "free" && fix.lanes.length === 2 && fix.usedMilli === 100_000 ? 11 : diskUsed, limitGb: plan.diskGb },
     computers: {
       total: machines.length,
       awake: machines.filter((box) => box.state === "running").length,
-      limit: plan.computerLimit,
     },
     recentUse: fix.recentUsedMilli ? { days: 7, usedMilli: fix.recentUsedMilli } : undefined,
-    dueForDeletion: [],
+    dueForDeletion: (fix.idle ?? []).map((entry) => {
+      const box = machines.find((candidate) => candidate.instanceId === entry.id);
+      return {
+        instanceId: entry.id,
+        name: box?.name ?? null,
+        deletesAt: entry.held ? now + DAY - 2 * HOUR : now + entry.inMs,
+        laneName: box?.lane?.laneName ?? null,
+        branch: box?.lane ? `ade/${box.lane.laneName}` : null,
+        warnedAt: now - DAY,
+        idleDays: entry.days,
+        ignoredFiles: entry.ignored,
+        held: entry.held ? { at: now - 2 * HOUR, reason: entry.held } : null,
+      };
+    }),
     deletedInstanceIds: [],
     catalog: CATALOG,
     billing: {
       periodStart: period.start,
       periodEnd: period.end,
-      stripeStatus: fix.planId === "free" ? null : "active",
+      stripeStatus: fix.planId === "free" ? null : fix.pastDue ? "past_due" : "active",
       cancelAtPeriodEnd: false,
       nextPlanId: fix.downgrade ? "plus" : null,
-      notice: null,
+      notice: fix.pastDue ? "past_due" : null,
     },
-    ...(fix.downgrade
-      ? {
-          planCleanup: {
-            planId: "plus",
-            computers: machines.slice(0, 2).map((box) => ({
-              instanceId: box.instanceId,
-              name: box.name ?? null,
-              laneName: box.lane?.laneName ?? null,
-              branch: box.lane ? `ade/${box.lane.laneName}` : null,
-              diskGb: box.resources?.diskGb ?? 0,
-            })),
-            usedGb: diskUsed,
-            limitGb: CATALOG.plans.plus!.diskGb,
-            computerCount: machines.length,
-            computerLimit: CATALOG.plans.plus!.computerLimit,
-            dueAt: period.end + 3 * DAY,
-            sentence: "Plus allows 10 computers and 40 GB. ADE pushes the work of the 2 oldest computers to GitHub and frees them.",
-          },
-        }
-      : {}),
+    ...(fix.downgrade ? { planCleanup: mockCleanup(machines, "plus", period.end) } : {}),
+    ...(fix.over ? { planCleanup: mockCleanup(machines, "free", null) } : {}),
+    ...(fix.planId === "pro" && !fix.downgrade ? { downgradePreviews: { plus: mockCleanup(machines, "plus", period.end), free: mockCleanup(machines, "free", period.end) } } : {}),
     ...extra,
   } as CloudAccountState;
+}
+
+/** What goes over `planId` (oldest first), as the server's `planCleanupFor` says it. */
+function mockCleanup(machines: CloudLaneMachine[], planId: "free" | "plus" | "pro", startsAt: number | null): CloudPlanCleanup {
+  const plan = CATALOG.plans[planId]!;
+  const diskOf = (box: CloudLaneMachine) => box.resources?.diskGb ?? 0;
+  const usedGb = machines.reduce((total, box) => total + diskOf(box), 0);
+  const choices = [...machines].sort((a, b) => (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0)).map((box) => ({
+    instanceId: box.instanceId,
+    name: box.name ?? null,
+    laneName: box.lane?.laneName ?? null,
+    branch: box.lane ? `ade/${box.lane.laneName}` : null,
+    diskGb: diskOf(box),
+    createdAt: box.createdAtMs ?? 0,
+  }));
+  const computers: typeof choices = [];
+  let disk = usedGb;
+  for (const choice of choices) {
+    if (disk <= plan.diskGb) break;
+    computers.push(choice);
+    disk -= choice.diskGb;
+  }
+  const facts = { planId, usedGb, limitGb: plan.diskGb };
+  return { ...facts, computers, choices, startsAt, freeing: null, sentence: planCleanupSentence(facts) };
 }
 
 export function applyBrowserMockCloud(ade: any): void {
@@ -299,10 +411,26 @@ export function applyBrowserMockCloud(ade: any): void {
   const now = Date.now();
   const fix = fixture(scenario);
   const machines = fix.lanes.map((spec) => machine(spec, now));
-  const state = account(fix, machines, now);
+  let state = account(fix, machines, now);
+  // `upgraded`: this computer last saw the account on Free, a period ago, with 79.1 hours left
+  // (once per tab, as a real checkout coming back is seen once).
+  if (scenario === "upgraded") {
+    try {
+      if (window.sessionStorage.getItem("ade.browserMock.planSeenSeed") !== "1") {
+        window.sessionStorage.setItem("ade.browserMock.planSeenSeed", "1");
+        window.localStorage.setItem(CLOUD_PLAN_SEEN_STORAGE_KEY, JSON.stringify({
+          [state.referral?.code ?? "account"]: { planId: "free", periodStart: state.billing.periodStart - 30 * DAY, leftMilli: 79_100 },
+        }));
+      }
+    } catch {
+      // Storage off: the preview shows Plus without the confirmation.
+    }
+  }
   const without: CloudLaneWithoutComputer[] = fix.without.map((lane, index) => ({
     laneId: `lane-without-${index}`,
     laneName: lane.name,
+    branchRef: `ade/${lane.name}`,
+    since: now - DAY,
     reason: lane.reason,
     type: "default",
     cpu: 2,
@@ -336,15 +464,50 @@ export function applyBrowserMockCloud(ade: any): void {
       for (const listener of statusListeners) listener();
       return state;
     },
-    openCheckout: async (plan?: string) => {
-      console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`);
+    openCheckout: async (plan?: string, cleanup?: { push: boolean; instanceIds: string[] }) => {
+      console.info(`[browser mock] cloud.openCheckout ${plan ?? "plus"}`, cleanup ?? "");
       // A paid account changes plan without a checkout page, as the server does: Pro to Plus waits for the period's end.
-      if (fix.planId === "free" || !plan) return { opened: true };
-      return { opened: false, change: plan === "plus" && fix.planId === "pro" ? "next_period" : "now" };
+      if (fix.planId === "free") {
+        // The checkout page "comes back" a moment later: the plan lands with a fresh period.
+        const landed = (plan ?? "plus") as Fixture["planId"];
+        window.setTimeout(() => {
+          fix.planId = landed;
+          fix.freshPeriod = true;
+          fix.usedMilli = 0;
+          state = account(fix, machines, Date.now());
+          for (const listener of statusListeners) listener();
+        }, 1_500);
+        return { opened: true };
+      }
+      if (!plan) return { opened: true };
+      const downgrade = plan === "plus" && fix.planId === "pro";
+      if (downgrade && cleanup) {
+        state.billing = { ...state.billing, nextPlanId: "plus" };
+        state.downgradePreviews = {};
+        state.planCleanup = { ...mockCleanup(machines, "plus", state.billing.periodEnd), freeing: { ...cleanup, at: Date.now() } };
+        for (const listener of statusListeners) listener();
+      }
+      return { opened: false, change: downgrade ? "next_period" : "now", ...(cleanup ? { freeing: cleanup.instanceIds } : {}) };
+    },
+    keepIdleComputer: async (instanceId: string) => {
+      console.info("[browser mock] cloud.keepIdleComputer", instanceId);
+      state.dueForDeletion = state.dueForDeletion.filter((entry) => entry.instanceId !== instanceId);
+      for (const listener of statusListeners) listener();
+      return { ok: true };
+    },
+    pickPlanCleanup: async (input: { planId: string; push: boolean; instanceIds: string[] }) => {
+      console.info("[browser mock] cloud.pickPlanCleanup", input);
+      if (state.planCleanup) state.planCleanup = { ...state.planCleanup, freeing: { push: input.push, instanceIds: input.instanceIds, at: Date.now() } };
+      for (const listener of statusListeners) listener();
+      return state;
     },
     openBillingPortal: async () => {
       console.info("[browser mock] cloud.openBillingPortal");
       return { opened: true };
+    },
+    openFreeUnlock: async () => {
+      console.info("[browser mock] cloud.openFreeUnlock");
+      return { opened: true, unlocked: false };
     },
     laneLife: async ({ method }: { method: string }) => {
       if (method === "lanesWithoutComputer") return without;

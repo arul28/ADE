@@ -1,279 +1,339 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EncryptedFileCredentialStore, type CredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { createPasswordService, type PasswordsRelay } from "../../../../../ade-cli/src/services/passwords/passwordService";
+import type { PasswordRelayItem, PasswordRelayWrite } from "../../../../../ade-cli/src/services/push/pushRelayClient";
+import type { AccountVaultItem } from "../../../shared/types/accountVault";
 import { formatProjectSecretEnv, parseProjectSecretEnv } from "./projectSecretEnv";
-import { createProjectSecretService } from "./projectSecretService";
-import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import { createProjectSecretService, type LegacySecretVault } from "./projectSecretService";
+import { createSecretTempFileStore } from "./secretTempFiles";
+import { runWithSecrets } from "./secretExec";
+import { execFileSync } from "node:child_process";
 
 const tempRoots: string[] = [];
 
-function makeProjectRoot(): string {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-secrets-"));
-  tempRoots.push(root);
-  fs.mkdirSync(path.join(root, ".ade"), { recursive: true });
+function tempDir(prefix: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempRoots.push(dir);
+  return dir;
+}
+
+function makeProjectRoot(origin: string | null = "git@github.com:acme/project.git"): string {
+  const root = tempDir("ade-project-secrets-");
+  fs.mkdirSync(path.join(root, ".ade", "secrets"), { recursive: true });
+  if (origin) {
+    fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".git", "config"), `[remote "origin"]\n\turl = ${origin}\n`, "utf8");
+  }
   return root;
 }
 
-function addOrigin(projectRoot: string, origin = "git@github.com:acme/project.git"): void {
-  fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
-  fs.writeFileSync(path.join(projectRoot, ".git", "config"), `[remote "origin"]\n\turl = ${origin}\n`, "utf8");
+/** One account's relay: opaque rows, revisions, one key; `ifRevision` as the real relay checks it. Offline answers null. */
+function fakeRelay(control = { online: true }): PasswordsRelay & { rows: Map<string, PasswordRelayItem> } {
+  const rows = new Map<string, PasswordRelayItem>();
+  let clock = 0;
+  const key = { dek: crypto.randomBytes(32).toString("base64"), epoch: 1 };
+  return {
+    rows,
+    async getPasswordItems() {
+      if (!control.online) return null;
+      return { items: [...rows.values()], cursor: null, truncated: false, epoch: key.epoch };
+    },
+    async putPasswordItems(items: PasswordRelayWrite[]) {
+      if (!control.online) return null;
+      return items.map((item) => {
+        const stored = rows.get(item.id);
+        const allowed = item.ifRevision === "absent" ? !stored : !item.ifRevision || stored?.revision === item.ifRevision;
+        if (!allowed) return { id: item.id, status: "stale" as const, revision: stored?.revision ?? null };
+        const revision = `r${(clock += 1)}`;
+        rows.set(item.id, { id: item.id, ciphertext: item.deleted ? null : item.ciphertext ?? null, revision, deleted: Boolean(item.deleted) });
+        return { id: item.id, status: "ok" as const, revision };
+      });
+    },
+    async requestPasswordKey() {
+      return key;
+    },
+  };
 }
 
-function makeVaultMock(): AccountVaultBridge & {
-  list: ReturnType<typeof vi.fn>;
-  get: ReturnType<typeof vi.fn>;
-  set: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-} {
+/** This computer's Passwords & Secrets, on a real encrypted file store (a new process can open it). */
+function computer(options: { adeDir?: string; relay?: PasswordsRelay; signedIn?: () => boolean; now?: () => Date; enabled?: boolean } = {}) {
+  const adeDir = options.adeDir ?? tempDir("ade-home-");
+  if (options.enabled === false) {
+    fs.mkdirSync(path.join(adeDir, "passwords"), { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "passwords", "state.json"), JSON.stringify({ enabled: false }));
+  }
+  const relay = options.relay ?? fakeRelay();
+  const store: CredentialStore = new EncryptedFileCredentialStore({
+    credentialsPath: path.join(adeDir, "passwords", "passwords.v1.enc"),
+    machineKeyPath: path.join(adeDir, "secrets", ".machine-key"),
+    lockPath: path.join(adeDir, "passwords", "passwords.v1.enc.lock"),
+  });
+  const passwords = createPasswordService({
+    adeDir,
+    relay,
+    getAccountUserId: () => (options.signedIn?.() ?? true) ? "user_a" : null,
+    getDeviceId: () => "mac",
+    machineKind: "desktop",
+    store,
+    ...(options.now ? { now: options.now } : {}),
+  });
+  return { adeDir, relay, passwords };
+}
+
+/** Secrets in the old per-project store, exactly as the old service wrote them. */
+function writeLegacyStore(
+  projectRoot: string,
+  secrets: Array<{ name: string; value: string; storage: "account" | "device"; updatedAt: string; source?: "device" | "account"; accountUserId?: string }>,
+): string {
+  const dir = path.join(projectRoot, ".ade", "secrets");
+  const credentialsPath = path.join(dir, "project-secrets.v1.enc");
+  const store = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath: path.join(dir, ".project-secrets-key"), lockPath: `${credentialsPath}.lock` });
+  store.updateSync((values) => {
+    const entries: Record<string, unknown> = {};
+    for (const secret of secrets) {
+      values[`secret:${secret.name}`] = secret.value;
+      entries[secret.name] = { createdAt: secret.updatedAt, updatedAt: secret.updatedAt, valueLength: secret.value.length, storage: secret.storage, source: secret.source ?? "device", accountUserId: secret.accountUserId ?? null };
+    }
+    values.__ade_project_secrets_index_v1 = JSON.stringify({ version: 1, entries });
+  });
+  return credentialsPath;
+}
+
+/** The account vault's old `project_secret` rows, as an older ADE left them. */
+function legacyVault(items: AccountVaultItem[]): LegacySecretVault & { rows: Map<string, AccountVaultItem> } {
+  const rows = new Map(items.map((item) => [`${item.scope}|${item.key}`, item]));
   return {
-    list: vi.fn(async () => ({ ok: true as const, value: [] })),
-    get: vi.fn(async () => ({ ok: true as const, value: null })),
-    set: vi.fn(async () => ({ ok: true as const, value: null })),
-    remove: vi.fn(async () => ({ ok: true as const, value: null })),
-    sync: vi.fn(async () => ({ ok: true as const, value: null })),
-  } as unknown as AccountVaultBridge & {
-    list: ReturnType<typeof vi.fn>;
-    get: ReturnType<typeof vi.fn>;
-    set: ReturnType<typeof vi.fn>;
-    remove: ReturnType<typeof vi.fn>;
+    rows,
+    list: async (scope) => ({ ok: true as const, value: [...rows.values()].filter((item) => item.scope === scope).map((item) => ({ ...item, value: null })) }),
+    get: async (scope, _kind, key) => ({ ok: true as const, value: rows.get(`${scope}|${key}`)?.value ?? null }),
+    remove: async (scope, _kind, key) => {
+      rows.delete(`${scope}|${key}`);
+      return { ok: true as const, value: null };
+    },
   };
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-describe("createProjectSecretService", () => {
-  it("stores values encrypted while listing only metadata", () => {
-    const projectRoot = makeProjectRoot();
-    const service = createProjectSecretService(projectRoot);
+const SCOPE = "repo:github.com/acme/project";
 
-    const secretValue = " sk_test_secret ";
-    const saved = service.set({ name: "STRIPE_API_KEY", value: secretValue });
-
-    expect(saved.name).toBe("STRIPE_API_KEY");
-    expect(saved.valueLength).toBe(secretValue.length);
-    expect(saved.storage).toBe("device");
-    expect(service.get({ name: "STRIPE_API_KEY" }).value).toBe(secretValue);
-    expect(service.list().secrets).toEqual([
-      expect.objectContaining({
-        name: "STRIPE_API_KEY",
-        valueLength: secretValue.length,
-        storage: "device",
-      }),
+describe("a project's secrets in Passwords & Secrets", () => {
+  it("moves the old per-project store in: account secrets for the repository, this-computer ones stay here, the newer value wins, and the old file goes", async () => {
+    const root = makeProjectRoot();
+    const file = writeLegacyStore(root, [
+      { name: "STRIPE_KEY", value: "old-stripe", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" },
+      { name: "LOCAL_TOKEN", value: "old-local", storage: "device", updatedAt: "2026-11-01T00:00:00.000Z" },
+      { name: "NEWER_HERE", value: "old-value", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" },
     ]);
+    const mac = computer({ now: () => new Date("2026-11-05T00:00:00.000Z") });
+    await mac.passwords.saveSecret({ name: "NEWER_HERE", value: "kept-value", projectScope: SCOPE });
+    const secrets = createProjectSecretService(root, { getPasswordService: () => mac.passwords });
 
-    const encryptedPath = path.join(projectRoot, ".ade", "secrets", "project-secrets.v1.enc");
-    expect(fs.existsSync(encryptedPath)).toBe(true);
-    expect(fs.readFileSync(encryptedPath, "utf8")).not.toContain("sk_test_secret");
-  });
+    await secrets.migrateLegacy();
 
-  it("writes account secrets to the repository-scoped account vault", () => {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
-
-    const saved = service.set({ name: "ACCOUNT_TOKEN", value: "account-value", storage: "account" });
-
-    expect(saved.storage).toBe("account");
-    expect(service.list().secrets).toEqual([
-      expect.objectContaining({ name: "ACCOUNT_TOKEN", storage: "account" }),
+    const listed = (await secrets.listFresh()).secrets.map((secret) => [secret.name, secret.storage, secret.updatedAt]);
+    expect(listed).toEqual([
+      ["LOCAL_TOKEN", "device", "2026-11-01T00:00:00.000Z"],
+      ["NEWER_HERE", "account", "2026-11-05T00:00:00.000Z"],
+      ["STRIPE_KEY", "account", "2026-11-01T00:00:00.000Z"],
     ]);
-    expect(vault.set).toHaveBeenCalledWith(
-      "repo:github.com/acme/project",
-      "project_secret",
-      "ACCOUNT_TOKEN",
-      "account-value",
-    );
+    expect((await secrets.getFresh({ name: "STRIPE_KEY" })).value).toBe("old-stripe");
+    expect((await secrets.getFresh({ name: "NEWER_HERE" })).value).toBe("kept-value");
+    expect(fs.existsSync(file)).toBe(false);
+
+    // The account's copy reaches another computer; this computer's own does not.
+    const laptop = computer({ relay: mac.relay });
+    await laptop.passwords.sync();
+    const there = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => laptop.passwords });
+    expect((await there.listFresh()).secrets.map((secret) => secret.name)).toEqual(["NEWER_HERE", "STRIPE_KEY"]);
   });
 
-  it("keeps device-only secrets local and falls back when there is no remote", () => {
+  it("while the account can't be used, moves only this computer's secrets and keeps the old file until it can", async () => {
+    const root = makeProjectRoot();
+    const file = writeLegacyStore(root, [
+      { name: "STRIPE_KEY", value: "old-stripe", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" },
+      { name: "LOCAL_TOKEN", value: "old-local", storage: "device", updatedAt: "2026-11-01T00:00:00.000Z" },
+    ]);
+    let signedIn = false;
+    const mac = computer({ signedIn: () => signedIn });
+    const secrets = createProjectSecretService(root, { getPasswordService: () => mac.passwords });
+
+    await secrets.migrateLegacy();
+    expect(fs.existsSync(file)).toBe(true);
+    // Waiting, a process still gets the old file's secret.
+    expect(secrets.valuesForProcess()).toEqual({ LOCAL_TOKEN: "old-local", STRIPE_KEY: "old-stripe" });
+
+    signedIn = true;
+    await secrets.migrateLegacy();
+    expect((await secrets.listFresh()).secrets.map((secret) => [secret.name, secret.storage])).toEqual([
+      ["LOCAL_TOKEN", "device"],
+      ["STRIPE_KEY", "account"],
+    ]);
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it("moves on two computers at once without a duplicate, and never brings back a secret deleted after the first move", async () => {
+    const legacy = [{ name: "STRIPE_KEY", value: "old-stripe", storage: "account" as const, updatedAt: "2026-11-01T00:00:00.000Z" }];
+    const mac = computer();
+    const laptop = computer({ relay: mac.relay });
+    const macRoot = makeProjectRoot();
+    const laptopRoot = makeProjectRoot();
+    writeLegacyStore(macRoot, legacy);
+    writeLegacyStore(laptopRoot, legacy);
+    const onMac = createProjectSecretService(macRoot, { getPasswordService: () => mac.passwords });
+    const onLaptop = createProjectSecretService(laptopRoot, { getPasswordService: () => laptop.passwords });
+
+    await Promise.all([onMac.migrateLegacy(), onLaptop.migrateLegacy()]);
+    await mac.passwords.sync();
+    await laptop.passwords.sync();
+
+    const stripeItems = async (passwords: typeof mac.passwords) =>
+      (await passwords.allSecretEntries()).filter((entry) => entry.name === "STRIPE_KEY");
+    expect(await stripeItems(mac.passwords)).toHaveLength(1);
+    expect(await stripeItems(laptop.passwords)).toHaveLength(1);
+
+    // Deleted on the Mac; a third computer still holding the old file moves later.
+    const [moved] = await stripeItems(mac.passwords);
+    await mac.passwords.remove(moved!.id);
+    await mac.passwords.sync();
+    const studio = computer({ relay: mac.relay });
+    const studioRoot = makeProjectRoot();
+    writeLegacyStore(studioRoot, legacy);
+    const onStudio = createProjectSecretService(studioRoot, { getPasswordService: () => studio.passwords });
+    await onStudio.migrateLegacy();
+    await studio.passwords.sync();
+    expect(await stripeItems(studio.passwords)).toEqual([]);
+  });
+
+  it("moves the account's old rows, under the repository and its SSH-alias key, and clears them; a deleted row stays deleted", async () => {
+    const root = makeProjectRoot("git@github.com:acme/project.git");
+    const vault = legacyVault([
+      { scope: SCOPE, kind: "project_secret", key: "FROM_ACCOUNT", value: "account-value", updatedAt: "2026-11-02T00:00:00.000Z" },
+      { scope: SCOPE, kind: "project_secret", key: "GONE", value: null, updatedAt: "2026-11-02T00:00:00.000Z", deleted: true },
+      { scope: SCOPE, kind: "provider_api_key", key: "anthropic", value: "not-a-secret-row", updatedAt: "2026-11-02T00:00:00.000Z" },
+    ]);
+    const mac = computer();
+    const secrets = createProjectSecretService(root, { getPasswordService: () => mac.passwords, getAccountVault: () => vault });
+
+    await secrets.migrateLegacy();
+
+    expect((await secrets.listFresh()).secrets.map((secret) => secret.name)).toEqual(["FROM_ACCOUNT"]);
+    expect((await secrets.getFresh({ name: "FROM_ACCOUNT" })).value).toBe("account-value");
+    expect([...vault.rows.keys()].filter((key) => key.endsWith("FROM_ACCOUNT"))).toEqual([]);
+    expect(vault.rows.has(`${SCOPE}|anthropic`)).toBe(true);
+  });
+
+  it("gives a project the secrets for every project, then its own; this computer's own wins; another project's stay out", async () => {
+    const mac = computer();
+    await mac.passwords.saveSecret({ name: "SHARED", value: "every-project", projectScope: null });
+    await mac.passwords.saveSecret({ name: "SHARED", value: "this-project", projectScope: SCOPE });
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "account-token", projectScope: SCOPE });
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "local-token", projectScope: SCOPE, deviceOnly: true });
+    await mac.passwords.saveSecret({ name: "OTHER", value: "other-project", projectScope: "repo:github.com/acme/other" });
+    const secrets = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => mac.passwords });
+
+    expect(Object.fromEntries([...(await mac.passwords.secretsForProject(SCOPE)).values()].map((entry) => [entry.name, entry.value]))).toEqual({
+      SHARED: "this-project",
+      TOKEN: "local-token",
+    });
+    await expect(secrets.getFresh({ name: "OTHER" })).rejects.toThrow(/No secret named OTHER/);
+
+    // A process that never opened the vault (a CLI command, a webhook check)
+    // reads the same, without waiting, from what this computer holds.
+    await mac.passwords.sync();
+    const cold = computer({ adeDir: mac.adeDir, relay: mac.relay });
+    const coldSecrets = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => cold.passwords });
+    expect(coldSecrets.valuesForProcess()).toEqual({ SHARED: "this-project", TOKEN: "local-token" });
+    expect(coldSecrets.get({ name: "TOKEN" }).value).toBe("local-token");
+  });
+
+  it("keeps the old file, and gives processes its value, until the relay holds the moved secret", async () => {
+    const control = { online: false };
+    const relay = fakeRelay(control);
+    const mac = computer({ relay });
     const projectRoot = makeProjectRoot();
-    const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, { getAccountVault: () => vault });
+    const legacyFile = writeLegacyStore(projectRoot, [{ name: "STRIPE_KEY", value: "sk_old", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" }]);
+    const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords });
 
-    const saved = service.set({ name: "LOCAL_TOKEN", value: "local-value", storage: "account" });
+    expect(await secrets.migrateLegacy()).toMatchObject({ done: false, waiting: 1 });
+    expect(fs.existsSync(legacyFile)).toBe(true);
+    expect(secrets.valuesForProcess()).toEqual({ STRIPE_KEY: "sk_old" });
 
-    expect(saved.storage).toBe("device");
-    expect(service.list().secrets[0]?.storage).toBe("device");
-    expect(vault.set).not.toHaveBeenCalled();
+    control.online = true;
+    expect(await secrets.migrateLegacy()).toMatchObject({ done: true, waiting: 0 });
+    expect(fs.existsSync(legacyFile)).toBe(false);
+    expect(relay.rows.size).toBe(1);
+    expect(secrets.valuesForProcess()).toEqual({ STRIPE_KEY: "sk_old" });
   });
 
-  it("hydrates missing repository account secrets without overwriting local values", async () => {
+  it("never moves another account's old copy, nor one the account deleted after it was saved", async () => {
+    const mac = computer();
     const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    vault.list.mockResolvedValue({
-      ok: true,
-      value: [{
-        scope: "repo:github.com/acme/project",
-        kind: "project_secret",
-        key: "FROM_ACCOUNT",
-        value: null,
-        updatedAt: "2026-07-16T00:00:00.000Z",
-      }],
-    });
-    vault.get.mockResolvedValue({ ok: true, value: "account-value" });
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
+    const legacyFile = writeLegacyStore(projectRoot, [
+      { name: "GONE", value: "deleted-later", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z" },
+      { name: "THEIRS", value: "user-b-value", storage: "account", updatedAt: "2026-11-01T00:00:00.000Z", source: "account", accountUserId: "user_b" },
+    ]);
+    const vault = legacyVault([
+      { scope: SCOPE, kind: "project_secret", key: "GONE", value: null, updatedAt: "2026-11-03T00:00:00.000Z", deleted: true } as AccountVaultItem,
+    ]);
+    const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords, getAccountVault: () => vault });
 
-    await service.hydrateFromVault();
-
-    expect(service.get({ name: "FROM_ACCOUNT" })).toEqual(expect.objectContaining({
-      name: "FROM_ACCOUNT",
-      value: "account-value",
-      storage: "account",
-    }));
-    expect(vault.get).toHaveBeenCalledWith(
-      "repo:github.com/acme/project",
-      "project_secret",
-      "FROM_ACCOUNT",
-    );
-    expect(vault.set).not.toHaveBeenCalled();
+    // Before the move, a process never sees the other account's value.
+    expect(secrets.valuesForProcess()).toEqual({ GONE: "deleted-later" });
+    expect(await secrets.migrateLegacy()).toMatchObject({ done: true, moved: 0 });
+    expect(fs.existsSync(legacyFile)).toBe(false);
+    expect(await mac.passwords.allSecretEntries()).toEqual([]);
+    expect(secrets.valuesForProcess()).toEqual({});
   });
 
-  it("removes an account secret from the vault when changed to device-only", () => {
+  it("`ade secrets set` keeps a this-computer-only secret on this computer, and delete needs the name twice and removes every copy", async () => {
+    const relay = fakeRelay();
+    const mac = computer({ relay });
     const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    // A signed-in user is part of this fixture because the vault store itself
-    // drops every mutation made while signed out, and the service now reports
-    // the destination it can honour rather than the one that was asked for.
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
-    service.set({ name: "MOVE_ME", value: "account-value", storage: "account" });
-    vault.set.mockClear();
+    writeLegacyStore(projectRoot, [{ name: "TOKEN", value: "old-file", storage: "device", updatedAt: "2026-10-01T00:00:00.000Z" }]);
+    const secrets = createProjectSecretService(projectRoot, { getPasswordService: () => mac.passwords });
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "local", projectScope: SCOPE, deviceOnly: true });
 
-    service.set({ name: "MOVE_ME", value: "device-value", storage: "device" });
+    expect(await secrets.set({ name: "TOKEN", value: "local-2" })).toMatchObject({ name: "TOKEN", storage: "device" });
+    expect((await mac.passwords.allSecretEntries()).map((entry) => [entry.value, entry.deviceOnly])).toEqual([["local-2", true]]);
+    await mac.passwords.sync();
+    expect(relay.rows.size).toBe(0);
 
-    expect(vault.remove).toHaveBeenCalledWith(
-      "repo:github.com/acme/project",
-      "project_secret",
-      "MOVE_ME",
-    );
+    // Saved to the account on purpose: this computer's copy no longer wins over it.
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "account", projectScope: SCOPE, deviceOnly: false });
+    expect(secrets.get({ name: "TOKEN" }).value).toBe("account");
+    await mac.passwords.saveSecret({ name: "TOKEN", value: "local-3", projectScope: SCOPE, deviceOnly: true });
+    await expect(secrets.delete({ name: "TOKEN", confirmName: "OTHER" })).rejects.toThrow(/confirmName/);
+    expect(secrets.get({ name: "TOKEN" }).value).toBe("local-3");
+    expect(await secrets.delete({ name: "TOKEN", confirmName: "TOKEN" })).toEqual({ deleted: true, name: "TOKEN" });
+    expect(await mac.passwords.allSecretEntries()).toEqual([]);
+    // The old file's copy went too, so the name does not come back from it.
+    expect(() => secrets.get({ name: "TOKEN" })).toThrow(/No secret named TOKEN/);
   });
 
-  it("records account provenance for hydrated secrets and purges it on sign-out", async () => {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    vault.list.mockResolvedValue({
-      ok: true,
-      value: [{
-        scope: "repo:github.com/acme/project",
-        kind: "project_secret",
-        key: "FROM_ACCOUNT",
-        value: "account-value",
-        updatedAt: "2026-07-16T00:00:00.000Z",
-      }],
-    });
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
+  it("another process on this computer sees a this-computer-only save at once, and sign-in config with Passwords off", async () => {
+    const brain = computer();
+    const cli = computer({ adeDir: brain.adeDir, relay: brain.relay });
+    expect((await cli.passwords.secretsForProject(SCOPE)).size).toBe(0);
 
-    await service.hydrateFromVault();
-    expect(service.getSecretProvenance("FROM_ACCOUNT")).toEqual({
-      source: "account",
-      accountUserId: "account-a",
-    });
+    await brain.passwords.saveSecret({ name: "LOCAL", value: "one", projectScope: SCOPE, deviceOnly: true });
+    expect((await cli.passwords.secretsForProject(SCOPE)).get("LOCAL")?.value).toBe("one");
+    expect(cli.passwords.secretsSnapshot(SCOPE).get("LOCAL")?.value).toBe("one");
 
-    service.purgeAccountCredentials();
-    expect(service.list().secrets).toEqual([]);
-  });
-
-  it("requires delete confirmation to match the secret name", () => {
-    const service = createProjectSecretService(makeProjectRoot());
-    service.set({ name: "OPENAI_API_KEY", value: "sk-test" });
-
-    expect(() => service.delete({ name: "OPENAI_API_KEY" })).toThrow(/requires confirmName/);
-    expect(() => service.delete({ name: "OPENAI_API_KEY", confirmName: "OTHER" })).toThrow(/requires confirmName/);
-
-    expect(service.delete({ name: "OPENAI_API_KEY", confirmName: "OPENAI_API_KEY" })).toEqual({
-      deleted: true,
-      name: "OPENAI_API_KEY",
-    });
-    expect(service.list().secrets).toEqual([]);
-  });
-
-  it("does not create secret files for empty list or no-op delete", () => {
-    const projectRoot = makeProjectRoot();
-    const service = createProjectSecretService(projectRoot);
-    const encryptedPath = path.join(projectRoot, ".ade", "secrets", "project-secrets.v1.enc");
-
-    expect(service.list().secrets).toEqual([]);
-    expect(service.delete({ name: "MISSING_SECRET", confirmName: "MISSING_SECRET" })).toEqual({
-      deleted: false,
-      name: "MISSING_SECRET",
-    });
-    expect(fs.existsSync(encryptedPath)).toBe(false);
-  });
-
-  it("validates secret names", () => {
-    const service = createProjectSecretService(makeProjectRoot());
-
-    expect(() => service.set({ name: "1BAD", value: "value" })).toThrow(/Secret names must start/);
-    expect(() => service.set({ name: "BAD NAME", value: "value" })).toThrow(/Secret names must start/);
-  });
-
-  it("previews replacements and imports selected env values atomically", () => {
-    const service = createProjectSecretService(makeProjectRoot());
-    service.set({ name: "EXISTING", value: "old" });
-
-    expect(service.previewEnvImport({
-      fileName: "/Users/local/Downloads/.env.production",
-      content: "EXISTING=new\nNEW_SECRET='new value'\n",
-    })).toEqual({
-      fileName: ".env.production",
-      secrets: [
-        { name: "EXISTING", value: "new", exists: true },
-        { name: "NEW_SECRET", value: "new value", exists: false },
-      ],
-    });
-
-    expect(service.importEnv({
-      secrets: [
-        { name: "EXISTING", value: "new" },
-        { name: "NEW_SECRET", value: "new value" },
-      ],
-    })).toEqual({ imported: ["NEW_SECRET"], replaced: ["EXISTING"] });
-    expect(service.get({ name: "EXISTING" }).value).toBe("new");
-    expect(service.get({ name: "NEW_SECRET" }).value).toBe("new value");
-
-    expect(() => service.importEnv({
-      secrets: [
-        { name: "WILL_NOT_SAVE", value: "value" },
-        { name: "INVALID NAME", value: "value" },
-      ],
-    })).toThrow(/Secret names must start/);
-    expect(service.list().secrets.map((secret) => secret.name)).not.toContain("WILL_NOT_SAVE");
-  });
-
-  it("exports sorted dotenv files to a unique path in Downloads", () => {
-    const projectRoot = makeProjectRoot();
-    const downloadsDir = path.join(projectRoot, "Downloads");
-    const service = createProjectSecretService(projectRoot, { downloadsDir });
-    service.set({ name: "Z_LAST", value: "contains # hash" });
-    service.set({ name: "A_FIRST", value: "plain-value" });
-
-    const first = service.exportEnv();
-    const second = service.exportEnv();
-
-    expect(first).toEqual({ filePath: path.join(downloadsDir, "ade-secrets.env"), secretCount: 2 });
-    expect(second.filePath).toBe(path.join(downloadsDir, "ade-secrets (1).env"));
-    expect(fs.readFileSync(first.filePath, "utf8")).toBe("A_FIRST=plain-value\nZ_LAST='contains # hash'\n");
-    expect(fs.statSync(first.filePath).mode & 0o777).toBe(0o600);
+    await brain.passwords.saveSecret({ name: "CLERK_ISSUER", value: "https://clerk.example", projectScope: SCOPE });
+    const off = computer({ adeDir: brain.adeDir, relay: brain.relay, enabled: false });
+    const offSecrets = createProjectSecretService(makeProjectRoot(), { getPasswordService: () => off.passwords });
+    expect(offSecrets.getSignInConfig({ name: "CLERK_ISSUER" }).value).toBe("https://clerk.example");
+    expect(offSecrets.valuesForProcess()).toEqual({});
   });
 });
 
@@ -328,201 +388,88 @@ describe("project secret .env formatting", () => {
  * account is the authority for one. These cover what it takes from the vault,
  * what it must never take, and what it must never write back.
  */
-describe("pullFromAccount", () => {
-  const VAULT_SCOPE = "repo:github.com/acme/project";
+describe("createSecretTempFileStore", () => {
+  it("keeps a secret only as long as its chat and lifetime allow, even when a removal fails", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-secret-temp-files-"));
+    tempRoots.push(root);
+    let clock = Date.parse("2026-10-26T12:00:00.000Z");
+    const warn = vi.fn();
+    const store = createSecretTempFileStore({ dir: path.join(root, "temp-files"), now: () => clock, logger: { info: vi.fn(), warn } });
 
-  function stubVaultRows(
-    vault: ReturnType<typeof makeVaultMock>,
-    rows: Array<Record<string, unknown>>,
-  ): void {
-    vault.list.mockResolvedValue({ ok: true, value: rows });
-  }
+    const kept = store.write({ chatSessionId: "chat-2", name: "API_KEY", value: "two", ttlMs: 60 * 60_000 });
+    const held = store.write({ chatSessionId: "chat-1", name: "API_KEY", value: "one" });
+    expect(fs.readFileSync(held.path, "utf8")).toBe("one");
+    if (process.platform !== "win32") expect(fs.statSync(held.path).mode & 0o777).toBe(0o600);
 
-  it.each([
-    { storage: "account" as const, expected: 1, kept: false },
-    { storage: "device" as const, expected: 0, kept: true },
-  ])("applies a delete from another machine to a $storage copy", async ({ storage, expected, kept }) => {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
+    // Windows: something still has the file open when the chat ends.
+    const realRm = fs.rmSync;
+    const rm = vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target) === held.path) throw Object.assign(new Error("EBUSY: resource busy"), { code: "EBUSY" });
+      return realRm(target, options);
     });
-    service.set({ name: "SHARED", value: "value", storage });
+    expect(store.removeForChat("chat-1")).toBe(0);
+    expect(warn).toHaveBeenCalledWith("project_secret.temp_file_remove_failed", expect.anything());
 
-    stubVaultRows(vault, [{
-      scope: VAULT_SCOPE,
-      kind: "project_secret",
-      key: "SHARED",
-      value: null,
-      updatedAt: "2026-07-17T00:00:00.000Z",
-      deleted: true,
-    }]);
-    const result = await service.pullFromAccount();
+    // Once it is released, the next sweep takes it although it has not expired.
+    rm.mockRestore();
+    store.sweep();
+    expect(fs.existsSync(held.path)).toBe(false);
+    expect(fs.existsSync(kept.path)).toBe(true);
 
-    expect(result.state).toBe("pulled");
-    expect(result.state === "pulled" ? result.removed : -1).toBe(expected);
-    if (kept) {
-      expect(service.get({ name: "SHARED" }).value).toBe("value");
-    } else {
-      expect(service.list().secrets).toEqual([]);
-    }
-  });
-
-  it("takes the account's value even when this machine's clock ran ahead", async () => {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
-    service.set({ name: "SHARED", value: "typed-here", storage: "account" });
-    // A vault stamp behind this machine's clock used to look like an older edit.
-    stubVaultRows(vault, [{
-      scope: VAULT_SCOPE,
-      kind: "project_secret",
-      key: "SHARED",
-      value: "edited-elsewhere",
-      updatedAt: "2020-01-01T00:00:00.000Z",
-    }]);
-
-    const result = await service.pullFromAccount();
-
-    expect(service.get({ name: "SHARED" }).value).toBe("edited-elsewhere");
-    expect(result.state === "pulled" ? result.updated : -1).toBe(1);
-    expect(service.list().secrets[0]?.storage).toBe("account");
-  });
-
-  it("never writes to the vault, so a local value cannot out-stamp the account's", async () => {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
-    service.set({ name: "SHARED", value: "typed-here", storage: "account" });
-    vault.set.mockClear();
-    stubVaultRows(vault, [{
-      scope: VAULT_SCOPE,
-      kind: "project_secret",
-      key: "SHARED",
-      value: "edited-elsewhere",
-      updatedAt: "2020-01-01T00:00:00.000Z",
-    }]);
-
-    await service.pullFromAccount();
-
-    expect(vault.set).not.toHaveBeenCalled();
-    expect(vault.remove).not.toHaveBeenCalled();
-  });
-
-  it("reports a settled repository as unchanged on the next pull", async () => {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock();
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
-    });
-    stubVaultRows(vault, [{
-      scope: VAULT_SCOPE,
-      kind: "project_secret",
-      key: "FROM_ACCOUNT",
-      value: "account-value",
-      updatedAt: "2026-07-16T00:00:00.000Z",
-    }]);
-
-    const first = await service.pullFromAccount();
-    const second = await service.pullFromAccount();
-
-    expect(first).toEqual({ state: "pulled", added: 1, updated: 0, removed: 0 });
-    expect(second).toEqual({ state: "pulled", added: 0, updated: 0, removed: 0 });
-    expect(service.get({ name: "FROM_ACCOUNT" }).value).toBe("account-value");
+    clock += 60 * 60_000;
+    store.sweep();
+    expect(fs.existsSync(kept.path)).toBe(false);
+    store.dispose();
   });
 });
 
-/**
- * Reads by name, lists, and Pull ask the account before answering, so a secret
- * saved on another machine moments ago is found instead of "not found".
- */
-describe("fresh reads", () => {
-  const VAULT_SCOPE = "repo:github.com/acme/project";
-
-  function linkedService() {
-    const projectRoot = makeProjectRoot();
-    addOrigin(projectRoot);
-    const vault = makeVaultMock() as ReturnType<typeof makeVaultMock> & {
-      sync: ReturnType<typeof vi.fn>;
-      pendingKeys?: ReturnType<typeof vi.fn>;
-    };
-    const service = createProjectSecretService(projectRoot, {
-      getAccountVault: () => vault,
-      getAccountUserId: () => "account-a",
+describe("runWithSecrets", () => {
+  it("returns the output with every secret masked, and never puts a value in the result", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-secret-exec-"));
+    tempRoots.push(root);
+    const value = "dtk_9f8e7d6c5b4a3210";
+    const result = await runWithSecrets({
+      command: [process.execPath, "-e", 'const v = process.env.DEPLOY_TOKEN; console.log("token=" + v); console.log(Buffer.from(v).toString("base64")); console.error("len " + v.length);'],
+      cwd: root,
+      allowedRoots: [root],
+      secrets: { DEPLOY_TOKEN: value },
     });
-    return { vault, service };
-  }
-
-  it("finds a secret another machine saved once the account answers, and Pull always asks", async () => {
-    const { vault, service } = linkedService();
-    // The brain's cache only holds the row after the sync it was asked for.
-    vault.sync.mockImplementation(async () => {
-      vault.list.mockResolvedValue({
-        ok: true,
-        value: [{ scope: VAULT_SCOPE, kind: "project_secret", key: "NEW_KEY", value: "from-laptop", updatedAt: "2026-10-09T00:00:22.618Z" }],
-      });
-      return { ok: true, value: "ready" };
-    });
-
-    expect(() => service.get({ name: "NEW_KEY" })).toThrow();
-    const found = await service.getFresh({ name: "NEW_KEY" });
-
-    expect(found).toMatchObject({ name: "NEW_KEY", value: "from-laptop", storage: "account" });
-    expect(vault.sync).toHaveBeenLastCalledWith({ maxAgeMs: expect.any(Number) });
-    await service.pullFromAccount();
-    expect(vault.sync).toHaveBeenLastCalledWith(undefined);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("token=[secret]");
+    expect(JSON.stringify(result)).not.toContain(value);
+    expect(JSON.stringify(result)).not.toContain(Buffer.from(value).toString("base64"));
+    expect(result.stderr.trim()).toBe(`len ${value.length}`);
+    expect(result.injected).toEqual(["DEPLOY_TOKEN"]);
   });
 
-  it.each([
-    { label: "the account was checked", sync: async () => ({ ok: true, value: "ready" }), says: /in your account/ },
-    { label: "the account refused", sync: async () => ({ ok: true, value: "failed" }), says: /could not reach your account/ },
-    { label: "the account is slow", sync: () => new Promise(() => {}), says: /could not reach your account/ },
-  ])("says why a name is missing when $label", async ({ sync, says }) => {
-    vi.useFakeTimers();
-    try {
-      const { vault, service } = linkedService();
-      vault.sync.mockImplementation(sync);
-      const outcome = service.getFresh({ name: "MISSING" }).then(
-        () => null,
-        (error: unknown) => (error instanceof Error ? error.message : String(error)),
-      );
-      // A hung relay must not hold the read past the wait cap.
-      await vi.advanceTimersByTimeAsync(5_000);
-      const message = await outcome;
-      expect(message).toMatch(/MISSING/);
-      expect(message).toMatch(says);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("marks account secrets still waiting to upload, and only those", async () => {
-    const { vault, service } = linkedService();
-    vault.sync.mockResolvedValue({ ok: true, value: "ready" });
-    vault.pendingKeys = vi.fn(async () => ({ ok: true as const, value: ["QUEUED", "LOCAL_ONLY"] }));
-    service.set({ name: "QUEUED", value: "a", storage: "account" });
-    service.set({ name: "UPLOADED", value: "b", storage: "account" });
-    service.set({ name: "LOCAL_ONLY", value: "c", storage: "device" });
-
-    const listed = await service.listFresh();
-
-    expect(listed.secrets.map((secret) => [secret.name, secret.storage, secret.uploadPending === true])).toEqual([
-      ["LOCAL_ONLY", "device", false],
-      ["QUEUED", "account", true],
-      ["UPLOADED", "account", false],
-    ]);
-    expect(vault.pendingKeys).toHaveBeenCalledWith(VAULT_SCOPE, "project_secret");
+  // POSIX: the command's own process group. Windows uses `taskkill /T`
+  // (`terminateProcessTree`), which its own tests cover.
+  it.skipIf(process.platform === "win32")("on a timeout stops everything the command started, not only the command", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-secret-exec-"));
+    tempRoots.push(root);
+    // The background child prints its pid, then both it and the command wait.
+    const result = await runWithSecrets({
+      command: ["sh", "-c", "sleep 30 & echo $!; sleep 31"],
+      cwd: root,
+      allowedRoots: [root],
+      secrets: { DEPLOY_TOKEN: "dtk_9f8e7d6c5b4a3210" }, // gitleaks:allow (a made-up test value)
+      timeoutMs: 300,
+    });
+    expect(result.timedOut).toBe(true);
+    const backgroundPid = Number(result.stdout.trim());
+    expect(Number.isInteger(backgroundPid) && backgroundPid > 1, "the command printed its child's pid").toBe(true);
+    // Signalled with the command's whole group: gone, or exiting as a zombie
+    // of a parent that already died (then `ps` no longer lists it running).
+    const alive = (() => {
+      try {
+        process.kill(backgroundPid, 0);
+        // `ps` exits non-zero once the process is gone: not alive either.
+        const state = execFileSync("ps", ["-o", "stat=", "-p", String(backgroundPid)], { encoding: "utf8" }).trim();
+        return state !== "" && !state.startsWith("Z");
+      } catch {
+        return false;
+      }
+    })();
+    expect(alive).toBe(false);
   });
 });

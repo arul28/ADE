@@ -55,7 +55,7 @@ export function CloudFreeUpSpace({
       setBusy(false);
       const ok = await confirmDialog({
         title: risky.length === 1 ? `${risky[0]!.name} has work that isn't on GitHub` : `${risky.length} lanes have work that isn't on GitHub`,
-        message: `${risky.map((lane) => lane.name).join(", ")}: ADE found unpushed work, or couldn't check. Deleting loses it. To keep the work, pick "Keep the lane on a fresh computer" instead: ADE pushes it first. Their chats stay readable.`,
+        message: `${risky.map((lane) => lane.name).join(", ")}: ADE found unpushed work, or couldn't check. Deleting loses it. To keep the work, pick "Keep the lane, free its computer" instead: ADE pushes it first. Their chats stay readable.`,
         confirmLabel: "Delete anyway",
         destructive: true,
       });

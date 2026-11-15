@@ -1,4 +1,5 @@
 import "./lib/packagedRuntimeFlag";
+import type { PasswordService } from "./services/passwords/passwordService";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { registerProviderLoginRuntime } from "../../desktop/src/main/services/providerLogins/providerLoginHooks";
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
@@ -9,7 +10,9 @@ import {
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
+import { defaultCliShimsRoot } from "../../desktop/src/main/services/shared/cliShimsRoot";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -79,7 +82,7 @@ import {
   runDefaultLaneEnvironmentSetup,
   runLaneEnvironmentSetup,
 } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
-import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
+import { createChatLaunchService, type ChatLaunchService, type ChatLaunchServiceDeps } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
 import { fetchLaneStartBranch } from "../../desktop/src/main/services/chat/chatLaunchStartFetch";
 import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
@@ -317,6 +320,7 @@ import {
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import {
   brainLogPath,
+  installedAdeHomes,
   isAdoptableAdeHome,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
@@ -534,6 +538,8 @@ export type AdeRuntime = {
   accountSettingsStore?: AccountSettingsStore | null;
   /** Machine-scoped, so null on a `--no-sync` brain. */
   accountVaultStore?: AccountVaultStore | null;
+  /** Passwords: sealed logins and secrets for the signed-in account (null when signed out or sync is off). */
+  passwordService?: PasswordService | null;
   /** Shared by every project scope in the brain; the desktop owns the GUI prompt. */
   keepAwakeService?: BrainKeepAwakeService | null;
   /** Machine-level ADE MCP (MCP over ADE Relay); shared by every scope. */
@@ -723,7 +729,7 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain) {
     entryPath,
     execPath: process.execPath,
     brain,
-    shimsRoot: path.join(os.tmpdir(), "ade-cli-shims"),
+    shimsRoot: defaultCliShimsRoot(),
     resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
     nodeModulePaths: packagedCliNodeModulePaths(entryPath),
   });
@@ -1073,8 +1079,14 @@ export async function createAdeRuntime(args: {
   syncRuntime?: AdeRuntimeSyncOptions;
   /** The brain's way to another machine, for moving a chat there. */
   crossMachineHandoffTransport?: () => CrossMachineHandoffTransport | null;
+  /** The brain's way to let go of what a chat holds on other machines when its turn ends. */
+  releaseRemoteWorkDevices?: (event: RemoteWorkTurnRelease) => void;
+  /** The brain's way to remove what an archived or deleted chat added on other machines. */
+  releaseRemoteWorkOfEndedChat?: (event: RemoteWorkChatEnded) => void;
   /** Machine-scoped power service shared by every project runtime in a brain. */
   keepAwakeService?: BrainKeepAwakeService | null;
+  /** An ADE Cloud computer's way to grow its disk when a lane launch's setup fills it (`cloudDiskGrow.ts`). */
+  laneSetupDisk?: ChatLaunchServiceDeps["environmentDisk"];
   /**
    * The clock that times this open, when a caller times a larger open around
    * it (the brain's scope registry, which also tells the freeze guard each
@@ -1147,7 +1159,8 @@ export async function createAdeRuntime(args: {
     : paths.socketPath;
   const machineRuntimeLayout = resolveMachineAdeLayout();
   // On Windows a machine brain also answers on its endpoint's older pipe names.
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineEndpointNames().runtime);
+  const machineRuntimeEndpointNames = resolveMachineEndpointNames().runtime;
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeEndpointNames);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
@@ -1415,8 +1428,12 @@ export async function createAdeRuntime(args: {
         // them in every browser, and close none.
         if (event.type === "lane-deleted" && event.laneId) cloudChatUploaderRef.current?.noteLaneDeleted(event.laneId);
         // Lane sharing: an archived lane pauses its shares (guests are closed
-        // and refused until it is unarchived); a deleted lane ends them. A
-        // rename or a branch change needs nothing: shares key on the lane id.
+        // and refused until it is unarchived); a deleted lane ends them. Shares
+        // key on the lane id, so a rename or a branch change only tells the
+        // connected guests to read the lane's name again.
+        if ((event.type === "lane-renamed" || event.type === "lane-branch-updated") && event.laneId) {
+          syncService?.getLaneShareService().noteLaneChanged(event.laneId, true);
+        }
         if ((event.type === "lane-archived" || event.type === "lane-reclaimed") && event.laneId) {
           syncService?.getLaneShareService().pauseLane(event.laneId);
         }
@@ -1501,6 +1518,9 @@ export async function createAdeRuntime(args: {
     sessionService.onChanged((event) => {
       pushEvent("runtime", { type: "terminal_session_changed", event });
       const session = sessionService.get(event.sessionId);
+      // Lane sharing: guests of the lane see a new or removed session at once,
+      // other updates at most every few seconds; nothing runs with no guest.
+      syncService?.getLaneShareService().noteLaneChanged(session?.laneId ?? null, event.reason !== "meta-updated");
       const runtimeState = session
         ? ptyServiceForSessionChanges?.getRuntimeState(event.sessionId, session.status)
         ?? session.runtimeState
@@ -1531,6 +1551,9 @@ export async function createAdeRuntime(args: {
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),
         knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
+        // A crashed brain's rows close now, not after the 2-minute grace, so
+        // the restart sweep (3 s after start) continues its chats.
+        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -1633,6 +1656,7 @@ export async function createAdeRuntime(args: {
     const {
       accountSettingsStore,
       accountVaultStore,
+      passwordService,
     } = accountRuntimeLifecycle;
     // The registry's secret values for the tracked agent CLIs this brain
     // starts (`trackedCliUserMcp.ts`): one account vault per brain process.
@@ -1673,12 +1697,16 @@ export async function createAdeRuntime(args: {
           error: error instanceof Error ? error.name : "unknown",
         });
       });
+    // The project's view of Passwords & Secrets. Secrets saved by the old
+    // per-project store move in on their own (again on each account sync, a
+    // no-op once nothing old is left).
     const projectSecretService = createProjectSecretService(projectRoot, {
+      getPasswordService: () => passwordService ?? null,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
-      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
     projectSecretServiceForAccount = projectSecretService;
+    void projectSecretService.migrateLegacy();
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -2034,8 +2062,22 @@ export async function createAdeRuntime(args: {
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
     // A row still marked running after its PTY ended does not count: only a live PTY does.
-    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
-      ptyService.list({ chatSessionId: owner, status: "running", limit: null }).some((row) => ptyService.hasLivePty(row.id))));
+    teardown.push(registerRemoteWorkShellCheck(
+      projectRoot,
+      (owner, ignoring) =>
+        ptyService.list({ chatSessionId: owner, status: "running", limit: null })
+          .some((row) => !ignoring.has(row.id) && ptyService.hasLivePty(row.id)),
+      // Its chat was archived or deleted on its own machine: every shell it runs here stops.
+      (owner) => {
+        for (const row of ptyService.list({ chatSessionId: owner, status: "running", limit: null })) {
+          try {
+            if (row.ptyId) ptyService.dispose({ ptyId: row.ptyId, sessionId: row.id });
+          } catch (error) {
+            logger.warn("remote_work.ended_shell_stop_failed", { error: error instanceof Error ? error.message : String(error) });
+          }
+        }
+      },
+    ));
     ptyServiceForSessionChanges = ptyService;
     // The runtime is stopping (an update, a reboot, the brain quitting): its
     // open agent CLIs reopen when the project's next runtime starts.
@@ -2431,6 +2473,9 @@ export async function createAdeRuntime(args: {
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
+        // Linux: a launch with no display here runs on the lane's own screen.
+        laneScreenLaunchEnv: async (request) => await macDesktopService?.laneScreenLaunchEnv(request) ?? null,
+        noteLaneScreenUse: (laneId: string) => macDesktopService?.noteLaneScreenUse?.(laneId),
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
@@ -2442,6 +2487,9 @@ export async function createAdeRuntime(args: {
           const lane = await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null);
           return lane?.worktreePath ?? null;
         },
+        // A chat on another machine runs its app in this lane's terminal, in its work copy.
+        resolvePrimaryLaneId: () => laneService.getPrimaryLane()?.laneId ?? null,
+        archiveTerminal: (sessionId: string) => { sessionService.archiveSession(sessionId); },
         // No fallback lane: a session whose lane cannot be resolved is refused.
         resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
           laneId,
@@ -3047,6 +3095,10 @@ export async function createAdeRuntime(args: {
       cloudLaneNameSyncRef.current = createCloudLaneNameSync({
         instanceId: process.env.ADE_CLOUD_INSTANCE_ID.trim(),
         client: async () => laneNameClient,
+        // This computer's own machine, as the signed-in account (the directory scopes it to the account).
+        renameMachine: async (machineKey, name) => await new AccountMachineDirectoryService(accountAuthService, {
+          directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }) || null,
+        }).renameMachine(machineKey, name),
         logger,
       });
     }
@@ -3160,7 +3212,32 @@ export async function createAdeRuntime(args: {
             const beat = readBrainHeartbeat(machineRuntimeLayout.runtimeDir);
             return beat && Date.now() - beat.ts <= BRAIN_HEARTBEAT_STALE_MS ? beat.pid : null;
           },
-        } : {}),
+          // The installed brains' sockets, this home's and every installed
+          // home's: a lane brain on a scratch ADE_HOME that opened the same
+          // project still leaves the installed brain's chats to it. Each
+          // home's Windows pipe follows from the home, not from this
+          // process's channel variables.
+          isMachineBrainSocket: (() => {
+            const names = new Set(machineRuntimeEndpointNames);
+            const { ADE_PACKAGE_CHANNEL: _channel, ADE_RUNTIME_SERVICE_NAME: _service, ...baseEnv } = process.env;
+            for (const home of installedAdeHomes()) {
+              for (const name of resolveMachineEndpointNames({ ...baseEnv, ADE_HOME: home }).runtime) names.add(name);
+            }
+            const known = [...names];
+            return (socketPath: string) => servesMachineRuntimeEndpoint(socketPath, known);
+          })(),
+        } : {
+          // The machine brain takes its chats back from a lane's test brain
+          // instead of refusing a person's send (see takeChatRuntimeOrRefuse).
+          requestChatRuntimeRelease: async (request: { socketPath: string; sessionId: string }) => {
+            const { requestChatRuntimeReleaseFromBrain } = await import("./services/chat/chatRuntimeReleaseClient");
+            return await requestChatRuntimeReleaseFromBrain({
+              ...request,
+              projectRoot,
+              version: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+            });
+          },
+        }),
         projectConfigService,
         db,
         aiIntegrationService,
@@ -3275,6 +3352,12 @@ export async function createAdeRuntime(args: {
         }),
         // This brain forwards the chat's calls to the other machine, so it
         // records that the chat used one.
+        ...(typeof args !== "string" && args.releaseRemoteWorkDevices
+          ? { onRemoteWorkTurnSettled: args.releaseRemoteWorkDevices }
+          : {}),
+        ...(typeof args !== "string" && args.releaseRemoteWorkOfEndedChat
+          ? { onRemoteWorkChatEnded: args.releaseRemoteWorkOfEndedChat }
+          : {}),
         onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
           analytics: productAnalyticsService,
           projectId,
@@ -3327,7 +3410,11 @@ export async function createAdeRuntime(args: {
       restartProviderRuntimesWhenIdle: (provider, options) => {
         chatServiceForLogins?.restartProviderRuntimesWhenIdle(provider, options);
       },
-      notifyChanged: () => pushEvent("runtime", { type: "provider_logins_changed" }),
+      notifyChanged: () => {
+        pushEvent("runtime", { type: "provider_logins_changed" });
+        // The phone hears it too: an open sign-ins card reads again at once.
+        syncService?.notifyProviderLoginsChanged();
+      },
     }));
     if (resolvedArgs.chatRuntime === "agent" && agentChatService) {
       const settleNudgeSweep = createSettleNudgeSweep({
@@ -3335,6 +3422,7 @@ export async function createAdeRuntime(args: {
         agentChatService,
         jevService,
         isEnabled: () => jevEnabled(projectConfigService.get().effective.ai?.chat, "settle_nudge"),
+        logger,
       });
       settleNudgeSweep.start();
       teardown.push(() => settleNudgeSweep.dispose());
@@ -3395,6 +3483,7 @@ export async function createAdeRuntime(args: {
       laneTeardownDeps.agentChatService = {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
+        releaseRemoteWorkForLane: (laneId, ended) => agentChatService.releaseRemoteWorkForLane(laneId, ended),
       };
       lateSettle.bind(createSettleWiring({
         agentChatService,
@@ -3453,6 +3542,7 @@ export async function createAdeRuntime(args: {
         abortEnvironment: ({ laneId, worktreePath }) => {
           laneEnvironmentService.abortLaneEnvironment(laneId, worktreePath);
         },
+        ...(typeof args !== "string" && args.laneSetupDisk ? { environmentDisk: args.laneSetupDisk } : {}),
         emit: (event) => pushEvent("runtime", { type: "chat_launch_event", event }),
         onOutcome: ({ outcome, provider }) => captureNewLaneLaunchAnalytics({
           analytics: productAnalyticsService,
@@ -4556,6 +4646,7 @@ export async function createAdeRuntime(args: {
       projectSecretService,
       accountSettingsStore,
       accountVaultStore,
+      passwordService,
       keepAwakeService,
       remoteMcpService,
       conflictService,
@@ -4652,3 +4743,4 @@ export async function createAdeRuntime(args: {
     }
   }
 }
+

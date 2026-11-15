@@ -129,6 +129,30 @@ export function pruneStaleRouteConfigHomes(
 }
 
 /**
+ * Mark a route home as in use now. The prune above runs before every route
+ * launch, so a resume (or an Import) of a session in a home idle for 30 days
+ * would otherwise delete the very session it is about to open.
+ */
+export function touchRouteConfigHome(
+  adeHome: string,
+  routeHomeId: string,
+  logger?: HarnessCleanupLogger | null,
+): void {
+  if (!isSafeIdentifier(routeHomeId)) return;
+  const now = new Date();
+  try {
+    fs.utimesSync(routeConfigHome(adeHome, routeHomeId), now, now);
+  } catch (error) {
+    // A home that is gone has nothing left to keep.
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return;
+    logger?.warn("harness_preset.route_home_touch_failed", {
+      routeHomeId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Direct API-key launches live outside the preset namespace, one directory per
  * provider and credential.
  *

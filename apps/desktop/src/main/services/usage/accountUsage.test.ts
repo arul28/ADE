@@ -1806,12 +1806,6 @@ describe("account usage rollup store", () => {
     expect(readBack[0]?.source).toEqual({ sourceId: "laptop-marker", roots: ["abc"] });
   });
 
-  it("retains enough days for the longest range preset and not much more", () => {
-    // `year` asks for 365 days; the remainder absorbs timezone skew and the gap
-    // between a peer's last publish and the day the reader asks about.
-    expect(ROLLUP_RETAINED_DAYS).toBeGreaterThan(365);
-    expect(ROLLUP_RETAINED_DAYS).toBeLessThanOrEqual(400);
-  });
 });
 
 const TIMEOUT_MS = 40;

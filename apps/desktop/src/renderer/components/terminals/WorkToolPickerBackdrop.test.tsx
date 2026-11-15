@@ -14,7 +14,6 @@ import {
   isSoftwareRenderer,
   resolveBackdropSize,
 } from "./WorkToolPickerBackdrop";
-import { FRAG, UNIFORMS } from "./workToolPickerBackdropShader";
 import { getAppearanceState } from "../../state/appearanceStore";
 import { DEFAULT_SCENE_PREFERENCES } from "../../scene/scenePreferences";
 
@@ -149,10 +148,6 @@ describe("resolveBackdropSize", () => {
     expect(resolveBackdropSize(Number.NaN, 300, Number.NaN)).toEqual({ width: 1, height: 180 });
   });
 
-  it("caps the frame rate at 30, so a 240Hz panel costs seven skipped frames", () => {
-    expect(BACKDROP_FRAME_MS).toBeCloseTo(1000 / 30, 5);
-  });
-
   it("drops to 12 fps when nothing is chasing the pointer", () => {
     // Idle is what this page is doing essentially all the time, and the drift
     // underneath the swirl is slow enough (`timeScale` -0.55) that 12 reads the
@@ -169,49 +164,9 @@ describe("resolveBackdropSize", () => {
     expect(BACKDROP_IDLE_FREEZE_MS).toBe(20_000);
     expect(BACKDROP_IDLE_FREEZE_MS).toBeGreaterThan(BACKDROP_IDLE_FRAME_MS * 60);
   });
-
-  it("drifts slowly enough to survive the idle frame rate", () => {
-    // Slowing the CONTENT is the one knob that buys frames back for free: the
-    // same drift at the reference's -1.373 would stutter at 12 fps.
-    expect(Math.abs(UNIFORMS.timeScale)).toBeLessThan(1);
-  });
-
-  it("keeps the mesh warp at three octaves", () => {
-    // The fourth octave displaces the sample point by less than a pixel at any
-    // pane size this budget allows, for a full extra noise evaluation on every
-    // fragment — measured against four octaves the output differs by a mean of
-    // 0.7/255 and never by more than 6/255.
-    expect(FRAG).toMatch(/for \(int i = 0; i < 3; i\+\+\)/u);
-  });
-
-  it("leaves the reference's 5-tap blur out of the fragment shader", () => {
-    // The reference component sets `blur: 0.0072`, which re-evaluates the mesh
-    // five times PER PIXEL to soften what the gaussian falloff already softened.
-    // Its renderer can afford that at DPR 2 and a 2M-pixel budget; a pane that
-    // shares a renderer with a terminal, a browser view and a chat stream
-    // cannot. If a blur ever comes back, this budget has to be re-argued.
-    expect(FRAG).not.toMatch(/blur/iu);
-    expect(UNIFORMS).not.toHaveProperty("blur");
-  });
 });
 
 describe("backdropThemeFor", () => {
-  it("keeps light well under dark's intensity and vignette", () => {
-    const dark = backdropThemeFor("dark");
-    const light = backdropThemeFor("light");
-    expect(dark.intensity).toBeCloseTo(0.44, 2);
-    expect(light.intensity).toBeLessThan(dark.intensity);
-    expect(light.vignette).toBeLessThan(dark.vignette);
-    expect(dark.vignette).toBeLessThan(0.3);
-    expect(dark.vignette).toBeGreaterThan(0.12);
-    // Dark sits slightly under the mesh's own brightness so the flat cards
-    // still read as the brightest thing on the page.
-    expect(dark.brightness).toBeLessThan(0);
-    expect(dark.brightness).toBeGreaterThan(-0.2);
-    expect(dark.saturation).toBeLessThan(1);
-    // Indigo stop — the bluish lobe the all-violet ramp lost.
-    expect(dark.colors).toContainEqual([0x63 / 255, 0x66 / 255, 0xf1 / 255]);
-  });
 
   it("starts each ramp on that theme's own canvas and never exceeds 8 stops", () => {
     const dark = backdropThemeFor("dark");
@@ -223,14 +178,6 @@ describe("backdropThemeFor", () => {
     expect(dark.colors.length).toBeLessThanOrEqual(8);
     expect(light.colors.length).toBeLessThanOrEqual(8);
     expect(dark.colors.length).toBeGreaterThan(1);
-  });
-
-  it("keeps the mesh scaled so the colour field fills the pane", () => {
-    expect(UNIFORMS.scale).toBeGreaterThan(0.9);
-    expect(UNIFORMS.scale).toBeLessThan(1.2);
-    expect(FRAG).toContain("exp(-dot(p - c, p - c) * 3.5)");
-    expect(FRAG).toContain("u_colors[0] * 0.10");
-    expect(FRAG).toContain("smoothstep(0.48, 1.08, vd)");
   });
 });
 

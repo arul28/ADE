@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import { defineConfig, loadEnv, type Plugin } from "vite";
+import { defineConfig, loadEnv, searchForWorkspaceRoot, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
 
@@ -28,7 +28,13 @@ export default defineConfig(({ mode }) => {
   assertPublicPostHogToken(posthogProjectToken, "VITE_POSTHOG_PROJECT_TOKEN");
   return {
     plugins: [react(), inlineSmallSvgs()],
-    server: { port: 4180, allowedHosts: [".trycloudflare.com"] },
+    server: {
+      port: 4180,
+      allowedHosts: [".trycloudflare.com"],
+      // The pricing facts come from the account directory's plan files
+      // (`src/lib/cloudPricing.ts`), outside this app's folder.
+      fs: { allow: [searchForWorkspaceRoot(process.cwd()), "../account-directory/src/cloud"] },
+    },
     build: { sourcemap: true },
   };
 });

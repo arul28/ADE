@@ -345,9 +345,13 @@ create`, stores it in a secret manager, and exposes it to the machine brain as
 `ADE_ACCOUNT_TOKEN`. The envelope includes the public OAuth refresh context, so
 the consuming host needs no local Clerk configuration. The token never enters
 project files or operational logs, and account actions remain CTO-only.
-`account.deleteMachine` goes further: it refuses every agent, the CTO included,
-so an agent asks the user to remove a machine on the Account page or with
-`ade machines remove --confirm REMOVE` in their own terminal.
+`account.deleteMachine` goes further: no agent may remove a machine, the CTO
+included. An agent in a chat that runs `ade machines remove <name|key|id>`
+raises a card in that chat instead, and only the person can answer it (see
+"Removing a computer from a chat" in `docs/features/sync-and-multi-device/README.md`).
+An agent with no chat is refused, and the person removes the machine on the
+Account page or with `ade machines remove --confirm REMOVE` in their own
+terminal.
 
 ## Identity shape
 

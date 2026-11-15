@@ -35,7 +35,7 @@ import { useSettingsMachines } from "../machines/settingsMachinesContext";
  * A cloud computer updates itself, so its row shows that line instead.
  */
 export function MachineUpdateRows() {
-  const { machines, thisMachineName, openMachine } = useSettingsMachines();
+  const { machines, machineNames, openMachine } = useSettingsMachines();
   const snapshot = useAutoUpdateSnapshot();
   const facts = useMachineFacts(machines, snapshot.currentVersion || null);
   const updates = useMachineUpdates();
@@ -77,7 +77,7 @@ export function MachineUpdateRows() {
           <MachineUpdateRow
             key={machine.machineId}
             machine={machine}
-            name={machine.isThisMachine ? (thisMachineName ?? machine.machineName) : machine.machineName}
+            name={machineNames.get(machine.machineId) ?? machine.machineName}
             fact={facts.get(machine.machineId)}
             known={known}
             remoteUpdates={remoteUpdates}

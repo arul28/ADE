@@ -202,7 +202,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   cloud: {
     status: {
-      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | computers_full | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, computers, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake, max}, lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
+      description: "Read this first. The whole ADE Cloud account in one call, with no wake and no spend: canStartLane {ok, reason, code} (can a new lane start now; when not, reason is the one sentence to tell the person, code is out_of_hours | disk_full | signed_out | not_available | unreadable | unreachable | account_unknown), plan {id, label, rulesId, pastDue, includes {hours, diskGb, diskShared}}, hours {left, included, used, percentUsed, state, resetsAt, extraHours}, disk {usedGb, limitGb}, computers {inUse, awake} (no limit on how many), lanes [{instanceId, name, machineKey, lane {id, name, projectOrigin} | null, size {id, label}, sizeLabel, hoursRate, state, lastUsedAt, deletesAt, disk {sizeGb, full}, update {image, channel, target, state (auto = updates itself when idle | updating | failed), error} | null}], sizes [{id, label, kind, cpu, memoryGb, hoursRate, isDefault}], defaultSize (null when unreadable), agents {unattendedSpend, newComputersPerDay, newComputersToday, newComputersLeftToday, sizesAllowed, preset, setting}, message. Hours are plan hours (Small-computer hours). Never returns a key or token.",
       input: "no input",
       example: "ade cloud status --text",
     },
@@ -330,46 +330,29 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   },
   project_secret: {
     request: {
-      description: "Ask the person in this chat for a project secret through the private secret card, and save their answer to this project's encrypted secrets. Blocks until they save, keep the existing value, or decline. Returns {name, saved: true, replaced} | {name, saved: false, kept: true} | {name, saved: false, declined: true}; the value is never returned, logged, or written to the transcript. Use this instead of asking a person to paste a secret into chat.",
+      description: "Ask the person in this chat for a project secret through the private secret card, and save their answer to this project's secrets in Passwords & Secrets. Blocks until they save, keep the existing value, or decline. Returns {name, saved: true, replaced} | {name, saved: false, kept: true} | {name, saved: false, declined: true}; the value is never returned, logged, or written to the transcript. Use this instead of asking a person to paste a secret into chat.",
       input: "object { name: string, reason: string, generate?: boolean, timeoutMs?: number }",
       example: "ade secrets request GITHUB_WEBHOOK_SECRET --reason \"Signs GitHub deliveries to your triage webhook\" --generate",
     },
     list: {
-      description: "List ADE project secret names and metadata without revealing values.",
+      description: "List the secrets this project's commands get (Passwords & Secrets: those for every project, then this project's own) by name and metadata, never values.",
       input: "no input",
       example: "ade secrets list --text",
     },
     get: {
-      description: "Read one ADE project secret value when the user explicitly asked for that secret.",
+      description: "Read one ADE project secret value. The person only, in the desktop app; agents run a command with the secrets instead (`project_secret.exec`, `ade secrets exec -- <command>`).",
       input: "object { name: string }",
-      example: "ade secrets get STRIPE_API_KEY --text",
+      example: "ade secrets exec -- ./scripts/deploy.sh",
     },
     set: {
-      description: "Create or replace one ADE project secret.",
-      input: "object { name: string, value: string }",
+      description: "Create or replace one of this project's secrets in Passwords & Secrets. `storage: \"device\"` keeps it on this computer only.",
+      input: "object { name: string, value: string, storage?: \"account\" | \"device\" }",
       example: "ade secrets set STRIPE_API_KEY --value sk_test_...",
     },
-    pullFromAccount: {
-      description: "Take every account-stored secret this repository has in the account vault onto this machine, and drop the account-scoped copies the account reports deleted. Returns {state: \"pulled\", added, updated, removed}, or {state: \"unavailable\"} when the vault could not be read at all; values are never returned. A secret kept for this device only is never replaced or removed.",
-      input: "no input",
-      example: "ade secrets pull --text",
-    },
     delete: {
-      description: "Delete one ADE project secret.",
+      description: "Delete one of this project's own secrets (a secret for every project is left alone).",
       input: "object { name: string, confirmName: string }",
       example: "ade secrets delete STRIPE_API_KEY",
-    },
-    previewEnvImport: {
-      description: "Parse bounded .env file content and mark variables that will replace existing ADE secrets.",
-      input: "object { fileName: string, content: string }",
-    },
-    importEnv: {
-      description: "Atomically create or replace selected ADE secrets parsed from a .env file.",
-      input: "object { secrets: Array<{ name: string, value: string }> }",
-    },
-    exportEnv: {
-      description: "Export every ADE project secret to a new ade-secrets.env file in this machine's Downloads folder.",
-      input: "no input",
     },
   },
   analytics: {
@@ -728,7 +711,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     sendMessage: {
       description: "Send a user message to a chat session; provider dispatch continues asynchronously.",
-      input: "object { sessionId: string, text: string, attachments? }",
+      input: "object { sessionId: string, text: string, attachments?, clientSendId?: string (one per send; a retry with the same id is not sent twice) }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
     },
     getClaudePluginUi: {
@@ -763,7 +746,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     messageSession: {
       description: "Deliver a message to a chat using ADE-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
-      input: "object { sessionId: string, text: string, kind?: \"auto\" | \"queue\" | \"wake\" | \"interrupt-replace\", attachments?, contextAttachments?, metadata? }",
+      input: "object { sessionId: string, text: string, kind?: \"auto\" | \"queue\" | \"wake\" | \"interrupt-replace\", attachments?, contextAttachments?, metadata?, clientSendId?: string (one per send; a retry with the same id is not delivered twice) }",
       example: "ade actions run chat.messageSession --input-json '{\"sessionId\":\"chat-123\",\"kind\":\"auto\",\"text\":\"use this context\"}'",
     },
     modelCatalog: {
@@ -1621,7 +1604,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     import: {
       description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
-      input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
+      input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode?, accountId? }",
       example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
     },
     getDetail: {

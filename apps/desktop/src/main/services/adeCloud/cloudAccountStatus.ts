@@ -36,7 +36,6 @@ const milliToHours = (milli: number): number => Math.round(Math.max(0, milli)) /
 /** Why `cloud.status` says a new lane can't start: an account fact, or something ADE couldn't read. */
 export type CloudCanStartLaneCode =
   | "out_of_hours"
-  | "computers_full"
   | "disk_full"
   | "signed_out"
   | "not_available"
@@ -90,8 +89,9 @@ export type CloudAccountStatus = {
      * `diskShared` is always true now: every plan's disk is one total its
      * computers share. Kept in the agent-facing answer (`ade cloud status
      * --json`, the action contract) so a reader of the older shape still works.
+     * No plan limits how many computers an account has.
      */
-    includes: { hours: number; computers: number; diskGb: number; diskShared: true };
+    includes: { hours: number; diskGb: number; diskShared: true };
   } | null;
   hours: {
     left: number;
@@ -103,7 +103,8 @@ export type CloudAccountStatus = {
     extraHours: { available: boolean; enabled: boolean };
   } | null;
   disk: { usedGb: number; limitGb: number | null } | null;
-  computers: { inUse: number; awake: number; max: number } | null;
+  /** How many computers the account has and how many are awake: there is no limit on how many. */
+  computers: { inUse: number; awake: number } | null;
   /** Every computer of the account, lanes first. */
   lanes: CloudStatusComputer[];
   /** The lane sizes ADE Cloud offers now, Small first; rates are the catalog's. */
@@ -194,7 +195,7 @@ export function buildCloudAccountStatus(input: {
           rulesId: account.rules,
           pastDue: part.billing?.notice === "past_due",
           // Every plan's disk is one total its computers share at one time (server `plans.ts`).
-          includes: { hours: milliToHours(plan.includedMilli), computers: plan.computerLimit, diskGb: plan.diskGb, diskShared: true },
+          includes: { hours: milliToHours(plan.includedMilli), diskGb: plan.diskGb, diskShared: true },
         }
       : null,
     hours: account && part.hours && part.billing
@@ -209,7 +210,7 @@ export function buildCloudAccountStatus(input: {
         }
       : null,
     disk: part.disk ? { usedGb: part.disk.usedGb, limitGb: part.disk.limitGb } : null,
-    computers: part.computers ? { inUse: part.computers.total, awake: part.computers.awake, max: part.computers.limit } : null,
+    computers: part.computers ? { inUse: part.computers.total, awake: part.computers.awake } : null,
     lanes,
     sizes: tiers.map((tier) => ({
       id: tier.id,

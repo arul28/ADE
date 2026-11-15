@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
+import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import type { AccountAuthService } from "./accountAuthService";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
@@ -27,13 +27,22 @@ import { expectedErrorKind } from "../../../../desktop/src/shared/expectedError"
 const tempPaths: string[] = [];
 const activeServices: AccountAuthService[] = [];
 
+/** A project whose secrets are still in the old per-project store (read before the move). */
 function makeProjectRoot(secrets: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-shared-account-"));
   tempPaths.push(root);
-  const service = createProjectSecretService(root);
-  for (const [name, value] of Object.entries(secrets)) {
-    service.set({ name, value });
-  }
+  const dir = path.join(root, ".ade", "secrets");
+  fs.mkdirSync(dir, { recursive: true });
+  const credentialsPath = path.join(dir, "project-secrets.v1.enc");
+  const store = new EncryptedFileCredentialStore({ credentialsPath, machineKeyPath: path.join(dir, ".project-secrets-key"), lockPath: `${credentialsPath}.lock` });
+  store.updateSync((values) => {
+    const entries: Record<string, unknown> = {};
+    for (const [name, value] of Object.entries(secrets)) {
+      values[`secret:${name}`] = value;
+      entries[name] = { createdAt: "2026-11-01T00:00:00.000Z", updatedAt: "2026-11-01T00:00:00.000Z", valueLength: value.length, storage: "device" };
+    }
+    values.__ade_project_secrets_index_v1 = JSON.stringify({ version: 1, entries });
+  });
   return root;
 }
 

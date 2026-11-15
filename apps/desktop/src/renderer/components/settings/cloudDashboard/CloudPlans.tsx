@@ -1,18 +1,24 @@
-import { useState } from "react";
-import { ArrowSquareOut, CreditCard } from "@phosphor-icons/react";
+import { useRef, useState, type ReactNode } from "react";
+import { ArrowSquareOut, Clock, CreditCard, DeviceMobile, HardDrives, Info, Lightning, MoonStars, Sparkle } from "@phosphor-icons/react";
 import {
-  CLOUD_PLAN_CLEANUP_GRACE_DAYS,
+  CLOUD_FREE_GITHUB_MIN_AGE_DAYS,
   CLOUD_PLAN_LABELS,
   CLOUD_PLAN_RANK,
+  cloudCatalogHasMax,
   cloudCatalogHasPro,
   cloudCatalogOf,
+  cloudExtraHourCentsOf,
+  cloudFreePlanOf,
   cloudPlanIdOf,
   cloudPlanLabelOf,
   formatCloudCents,
+  formatCloudCentsPerHour,
   formatCloudDate,
   formatCloudHours,
   type CloudAccountState,
   type CloudPaidPlanId,
+  type CloudPlanCleanup,
+  type CloudPlanCleanupPick,
   type CloudPlanFacts,
   type CloudPlanId,
 } from "../../../../shared/adeCloud";
@@ -20,8 +26,12 @@ import { ipcErrorMessage } from "../../../lib/format";
 import { showToast } from "../../app/toast/toastStore";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
-import { PushAllWorkButton } from "../../remoteTargets/PushAllWorkButton";
 import { SettingsSelect, SettingsToggle } from "../primitives/SettingsControls";
+import { CloudPlanLimitsDialog, planCleanupPickSentence } from "./CloudPlanLimitsDialog";
+import { CloudFreeGithubNotice } from "./CloudFreeGithubNotice";
+import { useStillWhenHidden } from "./CloudSky";
+import { CLOUD_PLAN_MOMENT_TOAST_ID } from "./cloudPlanMoment";
+import "./cloudPlans.css";
 
 /** The monthly limits a person picks for extra disk, in dollars. */
 const EXTRA_DISK_LIMITS = ["5", "10", "20", "50"];
@@ -37,26 +47,71 @@ type Column = { id: CloudPlanId; facts: CloudPlanFacts };
  * Reads nothing of its own: the account comes from the page's computer list.
  * Account level, so no pin.
  */
-export function CloudPlans({ account, onChanged }: { account: CloudAccountState; onChanged: () => void }) {
+/**
+ * A plan card's one tag: "Your plan", "From Dec 1" for the plan that takes
+ * over at the period's end, or "5× the hours" on the plan right above yours
+ * (`moreHours`, counted from yours; 0 elsewhere, since "3× the hours" on a
+ * plan further up would read as 3× yours). Null when none applies.
+ */
+function planCardTag({ isCurrent, startsLater, until, moreHours }: { isCurrent: boolean; startsLater: boolean; until: string; moreHours: number }): ReactNode {
+  if (isCurrent) return <span className="adecd-plancard-tag" data-tone="current">Your plan</span>;
+  if (startsLater) return <span className="adecd-plancard-tag">From {until}</span>;
+  if (moreHours >= 2) return <span className="adecd-plancard-tag" data-tone="next">{moreHours}× the hours</span>;
+  return null;
+}
+
+export function CloudPlans({ account, onChanged, newPlanId = null }: {
+  account: CloudAccountState;
+  onChanged: () => void;
+  /** A plan that just landed ("You're on Plus"): its card is highlighted once. */
+  newPlanId?: CloudPlanId | null;
+}) {
   const bridge = window.ade.cloud;
+  const sectionRef = useRef<HTMLElement | null>(null);
+  useStillWhenHidden(sectionRef);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [diskLimit, setDiskLimit] = useState(DEFAULT_EXTRA_DISK_LIMIT);
+  // A downgrade over the cheaper plan's disk: the question first (CloudPlanLimitsDialog).
+  const [asking, setAsking] = useState<CloudPaidPlanId | null>(null);
 
   const catalog = cloudCatalogOf(account);
   const pro = cloudCatalogHasPro(catalog) ? catalog.plans.pro : null;
+  const max = cloudCatalogHasMax(catalog) ? catalog.plans.max : null;
   const current = cloudPlanIdOf(account);
   const paid = account.plan === "paid";
   const pastDue = account.billing.notice === "past_due";
   const { billing, extraHours } = account;
   const nextPlanId = pro ? billing.nextPlanId ?? null : null;
-  // Pro with a move to Plus waiting: the Pro column undoes the move (uncharged).
-  const canStayOnPro = paid && !pastDue && !billing.cancelAtPeriodEnd && current === "pro" && nextPlanId === "plus";
+  // A paid plan with a move down waiting: its own column undoes the move (uncharged).
+  const canStay = paid && !pastDue && !billing.cancelAtPeriodEnd && current !== "free" && nextPlanId != null && nextPlanId !== current;
   const columns: Column[] = [
     { id: "free", facts: catalog.plans.free },
     { id: "plus", facts: catalog.plans.plus ?? catalog.plans.paid },
     ...(pro ? [{ id: "pro" as const, facts: pro }] : []),
+    ...(max ? [{ id: "max" as const, facts: max }] : []),
   ];
+  // What a move down to each cheaper plan would go over (only plans it goes over are sent).
+  const previewFor = (plan: CloudPlanId): CloudPlanCleanup | null =>
+    (account.downgradePreviews as Partial<Record<CloudPlanId, CloudPlanCleanup>> | undefined)?.[plan] ?? null;
+  const showPhoneMinutes = columns.some((column) => column.facts.phoneMinutes != null);
+  const currentExtraCents = cloudExtraHourCentsOf(current, catalog);
+  // An account from before the new plans keeps its old hours and disk until its
+  // period ends; the table lists the new ones, so the plan's column says so.
+  const currentFacts = columns.find((column) => column.id === current)?.facts ?? null;
+  const oldTerms = paid && !pastDue && currentFacts
+    ? {
+        hoursMilli: account.hours.includedMilli > 0 && account.hours.includedMilli !== currentFacts.includedMilli ? account.hours.includedMilli : null,
+        diskGb: account.disk.limitGb != null && account.disk.limitGb !== currentFacts.diskGb ? account.disk.limitGb : null,
+      }
+    : null;
+  const keepsOldTerms = oldTerms != null && (oldTerms.hoursMilli != null || oldTerms.diskGb != null);
+  const until = formatCloudDate(billing.periodEnd);
+  // The plan after renewal: a waiting move, Free after a cancel, or the same plan on the new numbers.
+  const afterId = billing.cancelAtPeriodEnd ? "free" : nextPlanId != null && nextPlanId !== current ? nextPlanId : current;
+  const afterFacts = columns.find((column) => column.id === afterId)?.facts ?? null;
+  const githubState = account.rules === "free" ? cloudFreePlanOf(account).github?.state : undefined;
+  const githubHeld = githubState != null && githubState !== "ok";
 
   const run = async (work: (() => Promise<unknown>) | undefined) => {
     if (!work) return;
@@ -76,67 +131,90 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
     const result = await bridge?.openCheckout?.(plan);
     if (!plan || !result?.change) return;
     const label = CLOUD_PLAN_LABELS[plan];
-    if (result.change === "now") showToast({ title: `You're on ${label} now.`, tone: "success" });
+    // The same toast as the plan moment (cloudPlanMoment.ts): whichever lands second replaces the first.
+    if (result.change === "now") showToast({ id: CLOUD_PLAN_MOMENT_TOAST_ID, title: `You're on ${label} now.`, tone: "success" });
     else showToast({ title: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.` });
   });
 
   // Only an answer that the plan changed now says it worked; anything else shows the plan error.
-  const stayOnPro = () => run(async () => {
-    const result = await bridge?.openCheckout?.("pro");
-    if (result?.change !== "now") throw new Error("ADE Cloud didn't keep you on Pro. Try again in a moment, or use Manage billing.");
-    showToast({ title: "You stay on Pro.", tone: "success" });
+  const stay = (plan: CloudPaidPlanId) => run(async () => {
+    const label = CLOUD_PLAN_LABELS[plan];
+    const result = await bridge?.openCheckout?.(plan);
+    if (result?.change !== "now") throw new Error(`ADE Cloud didn't keep you on ${label}. Try again in a moment, or use Manage billing.`);
+    showToast({ title: `You stay on ${label}.`, tone: "success" });
   });
 
   const choose = async (target: Column) => {
     if (target.id === "free") return;
-    if (target.id === "pro" && canStayOnPro) {
-      await stayOnPro();
+    if (target.id === current && canStay) {
+      await stay(target.id);
       return;
     }
     if (!paid) {
       await checkout(pro ? target.id : undefined);
       return;
     }
-    if (target.id === "pro") {
+    const label = CLOUD_PLAN_LABELS[target.id];
+    if (CLOUD_PLAN_RANK[target.id] > CLOUD_PLAN_RANK[current]) {
       const ok = await confirmDialog({
-        title: "Move to Pro?",
-        message: `Pro is $${target.facts.priceUsd} a month with ${formatCloudHours(target.facts.includedMilli)} hours. You pay the difference for the rest of this month now. Hours you used stay used.`,
-        confirmLabel: "Move to Pro",
+        title: `Move to ${label}?`,
+        message: `${label} is $${target.facts.priceUsd} a month with ${formatCloudHours(target.facts.includedMilli)} hours. You pay the difference for the rest of this month now. Hours you used stay used.`,
+        confirmLabel: `Move to ${label}`,
       });
-      if (ok) await checkout("pro");
+      if (ok) await checkout(target.id);
       return;
     }
-    // Pro to Plus starts with the next month and is never refused. When the
-    // account is over Plus's limits, the server's sentence says what has to
-    // fit and what ADE removes otherwise (their work pushed first).
-    const preview = account.downgradePreviews?.plus ?? null;
-    const removalDate = formatCloudDate(billing.periodEnd + CLOUD_PLAN_CLEANUP_GRACE_DAYS * 86_400_000);
+    // A move down starts with the next month. Over the cheaper plan's disk, ADE
+    // asks first: clean up yourself (no move), or pick what ADE frees now.
+    if (previewFor(target.id)) {
+      setAsking(target.id);
+      return;
+    }
     const ok = await confirmDialog({
-      title: "Move to Plus?",
-      message: preview
-        ? `You move to Plus on ${formatCloudDate(billing.periodEnd)}. ${preview.sentence} This happens on ${removalDate}.`
-        : `You move to Plus on ${formatCloudDate(billing.periodEnd)}. Pro stays until then.`,
-      confirmLabel: "Move to Plus",
+      title: `Move to ${label}?`,
+      message: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}. ${cloudPlanLabelOf(account, catalog)} stays until then.`,
+      confirmLabel: `Move to ${label}`,
     });
     if (!ok) return;
+    const plan = target.id;
     await run(async () => {
-      const result = await bridge?.openCheckout?.("plus");
-      const cleanup = result?.cleanup;
-      showToast({
-        title: `You move to Plus on ${formatCloudDate(billing.periodEnd)}.`,
-        ...(cleanup?.sentence ? { message: cleanup.sentence } : {}),
-      });
+      await bridge?.openCheckout?.(plan);
+      showToast({ title: `You move to ${label} on ${formatCloudDate(billing.periodEnd)}.` });
     });
   };
 
+  // The dialog shows a refusal itself; only a move that went through reaches the toast.
+  const moveDownWith = async (plan: CloudPaidPlanId, pick: CloudPlanCleanupPick) => {
+    const result = await bridge?.openCheckout?.(plan, pick);
+    if (result?.change !== "next_period") throw new Error("ADE Cloud didn't change your plan. Nothing changed. Try again in a moment.");
+    const freeing = result.freeing?.length ?? 0;
+    if (pick.instanceIds.length > 0 && freeing === 0) {
+      // The plan changed but the pick wasn't queued (another pick was running): say so, never a quiet success.
+      showToast({
+        tone: "warning",
+        title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,
+        message: "ADE didn't start freeing the computers you picked. Choose them again from the notice on this page.",
+      });
+      onChanged();
+      return;
+    }
+    showToast({
+      tone: "success",
+      title: `You move to ${CLOUD_PLAN_LABELS[plan]} on ${formatCloudDate(billing.periodEnd)}.`,
+      ...(freeing ? { message: planCleanupPickSentence(pick.push, freeing) } : {}),
+    });
+    onChanged();
+  };
+
   const actionFor = (column: Column): { label: string; primary: boolean } | null => {
-    if (column.id === "pro" && canStayOnPro) return { label: "Stay on Pro", primary: true };
+    if (column.id === current && canStay && column.id !== "free") return { label: `Stay on ${CLOUD_PLAN_LABELS[column.id]}`, primary: true };
     if (column.id === current) return null;
     if (column.id === "free") return null;
     if (pastDue || billing.cancelAtPeriodEnd) return null;
     if (!paid) return { label: `Get ${CLOUD_PLAN_LABELS[column.id]}`, primary: column.id === "plus" };
     if (nextPlanId === column.id) return null;
-    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] > CLOUD_PLAN_RANK[current] };
+    // One filled button per card: the next plan up.
+    return { label: `Move to ${CLOUD_PLAN_LABELS[column.id]}`, primary: CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 };
   };
 
   // Extra disk (paid only, and only when the server sells it).
@@ -149,20 +227,38 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
   const diskLimitOptions = (EXTRA_DISK_LIMITS.includes(shownDiskLimit) ? EXTRA_DISK_LIMITS : [...EXTRA_DISK_LIMITS, shownDiskLimit].sort((a, b) => Number(a) - Number(b)))
     .map((value) => ({ value, label: `Up to $${value} a month` }));
 
-  const statusLine = billing.cancelAtPeriodEnd
-    ? `Your plan ends ${formatCloudDate(billing.periodEnd)}. You're on Free after that.`
-    : nextPlanId
-      ? `You move to ${CLOUD_PLAN_LABELS[nextPlanId]} on ${formatCloudDate(billing.periodEnd)}.`
-      : paid
-        ? `Renews ${formatCloudDate(billing.periodEnd)}.`
-        : "Free needs no card. Upgrade any time; you pay the difference for the rest of the month.";
+  const statusLine = pastDue
+    ? "Your last payment failed. Update your card in Manage billing."
+    : billing.cancelAtPeriodEnd
+      ? `Your plan ends ${until}, then you're on Free. To keep it, use Manage billing.`
+      : nextPlanId
+        ? `You move to ${CLOUD_PLAN_LABELS[nextPlanId]} on ${until}.`
+        : paid
+          ? `Renews ${until}.`
+          : "Upgrade any time; you pay the difference for the rest of the month.";
+
+  // The account's own notes (a cancel's what-if, old terms, the free plan's rule): said once, in the "how it works" panel.
+  const notes: string[] = [];
+  if (paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free) {
+    notes.push(`If you cancel: ${account.downgradePreviews.free.sentence} ADE deletes nothing on its own; once Free starts, new computers wait until you clean up or pick what ADE frees here.`);
+  }
+  if (keepsOldTerms && afterFacts) {
+    notes.push(`${CLOUD_PLAN_LABELS[current]} keeps your old ${[oldTerms?.hoursMilli != null ? `${formatCloudHours(oldTerms.hoursMilli)} hours` : null, oldTerms?.diskGb != null ? `${oldTerms.diskGb} GB` : null].filter(Boolean).join(" and ")} until ${until}. From then ${afterId === current ? "it has" : `you're on ${CLOUD_PLAN_LABELS[afterId]}, with`} ${formatCloudHours(afterFacts.includedMilli)} hours and ${afterFacts.diskGb} GB, as on its card.`);
+  }
+  // The rule, unless the GitHub notice above already says how it applies to you.
+  if (!paid && !githubHeld) {
+    notes.push(`Free needs a GitHub account at least ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old, or a card on file (no charge). One free plan per GitHub account and per computer.`);
+  }
 
   return (
-    <section id="cloud-plan" className="kit-card adecd-card" aria-label="Plans">
+    <section ref={sectionRef} id="cloud-plan" className="kit-card adecd-card adecd-plancard-section" aria-label="Plans">
       <header className="kit-card-head">
         <CreditCard size={14} />
         Plans
-        <span className="adecd-head-note">{statusLine}</span>
+        {/* "Renews Dec 13" is on the hero and the plan's card: the head says only what's different. */}
+        {statusLine && !(paid && !pastDue && !billing.cancelAtPeriodEnd && !nextPlanId) ? (
+          <span className="adecd-head-note" data-tone={pastDue ? "crit" : billing.cancelAtPeriodEnd ? "warn" : undefined}>{statusLine}</span>
+        ) : null}
         {paid || pastDue ? (
           <button type="button" className="kit-card-head-action" disabled={busy} onClick={() => void run(bridge?.openBillingPortal)}>
             Manage billing <ArrowSquareOut size={11} />
@@ -170,85 +266,145 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
         ) : null}
       </header>
       <div className="kit-card-body">
-        <div className="adecd-plans" style={{ ["--adecd-plan-cols" as string]: columns.length }}>
-          <div className="adecd-plan-col adecd-plan-keys" aria-hidden="true">
-            <span className="adecd-plan-top" />
-            <span>Price</span>
-            <span>Hours a month</span>
-            <span>Disk</span>
-            <span>Computers</span>
-            <span className="adecd-plan-wrap">Past your hours</span>
-            <span className="adecd-plan-foot" />
-          </div>
-          {columns.map((column) => {
+        <CloudFreeGithubNotice account={account} onChanged={onChanged} />
+        <div className="adecd-plancards" style={{ ["--adecd-plan-cols" as string]: columns.length }}>
+          {columns.map((column, index) => {
             const action = actionFor(column);
             const isCurrent = column.id === current;
             const label = CLOUD_PLAN_LABELS[column.id];
+            const cents = cloudExtraHourCentsOf(column.id, catalog);
+            // The plan right above the current one: the one to sell, with how much more it gives.
+            const isNext = !isCurrent && CLOUD_PLAN_RANK[column.id] === CLOUD_PLAN_RANK[current] + 1 && action != null;
+            const below = index > 0 ? columns[index - 1]! : null;
+            const more = below && below.facts.includedMilli > 0 ? Math.floor(column.facts.includedMilli / below.facts.includedMilli) : 0;
+            const tag = planCardTag({
+              isCurrent,
+              startsLater: nextPlanId === column.id || (billing.cancelAtPeriodEnd && column.id === "free"),
+              until,
+              moreHours: isNext ? more : 0,
+            });
             return (
-              <div key={column.id} className="adecd-plan-col" data-current={isCurrent || undefined} role="group" aria-label={`${label}${isCurrent ? ", your plan" : ""}`}>
-                <span className="adecd-plan-top">
+              <article
+                key={column.id}
+                className="kit-panel adecd-plancard"
+                data-current={isCurrent || undefined}
+                data-next={isNext || undefined}
+                data-new={column.id === newPlanId || undefined}
+                aria-label={`${label}${isCurrent ? ", your plan" : ""}`}
+              >
+                {isCurrent ? <span className="adecd-plancard-sky" aria-hidden="true" /> : null}
+                <header className="adecd-plancard-head">
                   <b>{label}</b>
-                  {isCurrent ? <span className="kit-tag" data-tone="accent">Your plan</span> : nextPlanId === column.id ? <span className="kit-tag">From {formatCloudDate(billing.periodEnd)}</span> : null}
-                </span>
-                <span><b className="kit-num" data-face="ui">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b><small>{column.facts.priceUsd ? " a month" : " forever"}</small></span>
-                <span><b className="kit-num" data-face="ui">{Number(formatCloudHours(column.facts.includedMilli)).toLocaleString()}</b><small> hours</small></span>
-                <span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b><small> in all</small></span>
-                <span><b className="kit-num" data-face="ui">{column.facts.computerLimit}</b><small> at one time</small></span>
-                <span className="adecd-plan-wrap">{column.id === "free" ? <small>Work stops until the next month</small> : <small>{catalog.extraHourCents}¢ an hour, if you turn it on</small>}</span>
-                <span className="adecd-plan-foot">
+                  {column.id === newPlanId ? <span className="adecd-plancard-tag" data-tone="new"><Sparkle size={10} weight="fill" />New</span> : null}
+                  {tag}
+                </header>
+                <div className="adecd-plancard-price">
+                  <b className="kit-num" data-face="ui">{column.facts.priceUsd ? `$${column.facts.priceUsd}` : "$0"}</b>
+                  <span>{column.facts.priceUsd ? "a month" : "forever"}</span>
+                </div>
+                <ul className="adecd-plancard-facts">
+                  {isCurrent && oldTerms?.hoursMilli != null ? (
+                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours from ${until}`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(oldTerms.hoursMilli)}</b> computer hours until {until}</span></li>
+                  ) : (
+                    <li title={`${formatCloudHours(column.facts.includedMilli)} hours a month on Linux computers in the cloud, as many computers as you like`}><Clock size={13} /><span><b className="kit-num" data-face="ui">{formatCloudHours(column.facts.includedMilli)}</b> computer hours</span></li>
+                  )}
+                  {isCurrent && oldTerms?.diskGb != null ? (
+                    <li title={`${column.facts.diskGb} GB from ${until}`}><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{oldTerms.diskGb} GB</b> disk until {until}</span></li>
+                  ) : (
+                    <li><HardDrives size={13} /><span><b className="kit-num" data-face="ui">{column.facts.diskGb} GB</b> disk</span></li>
+                  )}
+                  {showPhoneMinutes ? (
+                    <li title="Time on an iPhone simulator in the cloud, for agents to test your app. Coming soon."><DeviceMobile size={13} /><span><b className="kit-num" data-face="ui">{column.facts.phoneMinutes ?? "–"}</b> iOS Simulator <span className="adecd-nowrap">minutes <em>soon</em></span></span></li>
+                  ) : null}
+                  {cents == null ? (
+                    <li data-quiet="true" title="Work stops until your hours reset"><Lightning size={13} /><span>Work stops at the limit</span></li>
+                  ) : (
+                    <li title="Only if you turn extra hours on"><Lightning size={13} /><span><b className="kit-num" data-face="ui">{formatCloudCentsPerHour(cents)}</b> an extra hour</span></li>
+                  )}
+                </ul>
+                <footer className="adecd-plancard-foot">
                   {action ? (
                     <button
                       type="button"
-                      className={action.primary ? "kit-btn kit-btn-primary" : "kit-btn"}
-                      data-size="sm"
+                      className={action.primary ? "adecd-cta" : "adecd-planbtn"}
                       disabled={busy}
                       onClick={() => void choose(column)}
                     >
-                      {action.label}
+                      <span>{action.label}</span>
                     </button>
+                  ) : isCurrent ? (
+                    <span className="adecd-plancard-state" data-tone={pastDue ? "crit" : billing.cancelAtPeriodEnd ? "warn" : undefined}>
+                      {pastDue ? "Payment failed" : billing.cancelAtPeriodEnd ? `Ends ${until}` : paid ? `Renews ${until}` : `Resets ${until}`}
+                    </span>
                   ) : null}
-                </span>
-              </div>
+                </footer>
+              </article>
             );
           })}
         </div>
-        {paid && !billing.cancelAtPeriodEnd && account.downgradePreviews?.free ? (
-          <p className="adecd-plan-fine" data-tone="warn">
-            If you cancel in Manage billing: {account.downgradePreviews.free.sentence}
-          </p>
-        ) : null}
-        <p className="adecd-plan-fine">
-          An hour is one hour of a Small computer while it's awake; bigger sizes use hours faster (see Sizes). Disk and computers count what you have at one time, across all your computers.
-        </p>
+
+        <div className="kit-panel adecd-howto" aria-label="What every plan includes">
+          <div className="adecd-howto-items">
+            <div className="adecd-howto-item">
+              <span className="adecd-howto-icon"><Clock size={14} /></span>
+              <p>
+                <b>Hours run your cloud computers</b> and renew every month: Linux computers your agents work on, one per lane, as many as you like.
+                An hour is one hour of a Small computer; bigger sizes use hours faster (2× uses two).
+                {extraHours.available && currentExtraCents != null
+                  ? ` With extra hours on, an hour past your plan costs ${formatCloudCentsPerHour(currentExtraCents)} times the size's rate.`
+                  : null}
+              </p>
+            </div>
+            <div className="adecd-howto-item">
+              <span className="adecd-howto-icon"><MoonStars size={14} /></span>
+              <p><b>Computers sleep on their own</b> a few minutes after work stops, so your hours only go to real work.</p>
+            </div>
+            <div className="adecd-howto-item">
+              <span className="adecd-howto-icon"><HardDrives size={14} /></span>
+              <p><b>Disk</b> is what all your computers hold at one time, shared between them.</p>
+            </div>
+            {showPhoneMinutes ? (
+              <div className="adecd-howto-item">
+                <span className="adecd-howto-icon"><DeviceMobile size={14} /></span>
+                <p><b>iOS Simulator minutes</b> <em className="adecd-howto-soon">soon</em>: time on an iPhone simulator in the cloud, for agents to test your app.</p>
+              </div>
+            ) : null}
+          </div>
+          {notes.length ? (
+            <ul className="adecd-howto-notes">
+              {notes.map((note) => <li key={note}><Info size={12} />{note}</li>)}
+            </ul>
+          ) : null}
+        </div>
 
         {extraHours.available ? (
-          <div className="kit-panel adecd-billing">
-            <div className="adecd-billing-row">
-              <div>
+          <div className="adecd-addons">
+            <div className="kit-panel adecd-addon" data-on={extraHours.enabled || undefined}>
+              <div className="adecd-addon-top">
+                <span className="adecd-addon-icon"><Lightning size={15} weight="duotone" /></span>
                 <b>Extra hours</b>
-                <small>
-                  Keep working past your plan's hours at {catalog.extraHourCents}¢ a Small-hour, billed after use.
-                  {extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} h used this month.` : ""}
-                </small>
+                <SettingsToggle
+                  checked={extraHours.enabled}
+                  disabled={busy}
+                  label="Extra hours"
+                  onChange={(enabled) => void run(() => bridge?.setExtraHours?.(enabled) ?? Promise.resolve(null))}
+                />
               </div>
-              <SettingsToggle
-                checked={extraHours.enabled}
-                disabled={busy}
-                label="Extra hours"
-                onChange={(enabled) => void run(() => bridge?.setExtraHours?.(enabled) ?? Promise.resolve(null))}
-              />
+              <div className="adecd-addon-price">
+                <b className="kit-num" data-face="ui">{formatCloudCentsPerHour(currentExtraCents ?? catalog.extraHourCents)}</b>
+                <span>an hour past your plan, billed after use</span>
+              </div>
+              <small className="adecd-addon-state">
+                {extraHours.enabled
+                  ? `On.${extraHours.usedMilli > 0 ? ` ${formatCloudHours(extraHours.usedMilli)} hours used this month.` : " Work keeps going when your hours run out."}`
+                  : "Off. Work stops when your hours run out."}
+              </small>
             </div>
             {extraDisk ? (
-              <div className="adecd-billing-row">
-                <div>
+              <div className="kit-panel adecd-addon" data-on={extraDiskOn || undefined}>
+                <div className="adecd-addon-top">
+                  <span className="adecd-addon-icon"><HardDrives size={15} weight="duotone" /></span>
                   <b>Extra disk</b>
-                  <small>
-                    {extraDiskOn
-                      ? `Your computers may go past ${extraDisk.planGb} GB, up to ${formatCloudCents(extraDisk.monthlyLimitCents ?? 0)} a month. ${formatCloudCents(extraDisk.usedCents)} so far this month.`
-                      : `Let your computers go past ${extraDisk.planGb} GB for ${formatCloudCents(extraDisk.centsPer10Gb)} per 10 GB a month, counted by the day.`}
-                  </small>
-                </div>
-                <div className="adecd-billing-controls">
                   <SettingsSelect
                     value={shownDiskLimit}
                     disabled={busy}
@@ -269,22 +425,17 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
                     ) ?? Promise.resolve(null))}
                   />
                 </div>
+                <div className="adecd-addon-price">
+                  <b className="kit-num" data-face="ui">{formatCloudCents(extraDisk.centsPer10Gb)}</b>
+                  <span>per 10 GB a month past {extraDisk.planGb} GB, counted by the day</span>
+                </div>
+                <small className="adecd-addon-state">
+                  {extraDiskOn
+                    ? `On. ${formatCloudCents(extraDisk.usedCents)} so far this month.`
+                    : "Off. Computers stop growing at your plan's disk."}
+                </small>
               </div>
             ) : null}
-          </div>
-        ) : null}
-
-        {account.dueForDeletion.length ? (
-          <div className="kit-panel adecd-billing" aria-label="Computers due for deletion">
-            {account.dueForDeletion.map((computer) => (
-              <div key={computer.instanceId} className="adecd-billing-row">
-                <div>
-                  <b>{computer.name ?? computer.instanceId}</b>
-                  <small>Unused for 30 days. Deleted {formatCloudDate(computer.deletesAt)} unless it's used.</small>
-                </div>
-                <PushAllWorkButton instanceId={computer.instanceId} />
-              </div>
-            ))}
           </div>
         ) : null}
 
@@ -292,6 +443,15 @@ export function CloudPlans({ account, onChanged }: { account: CloudAccountState;
           <Banner layout="inline" model={{ id: "cloud-plan-error", tone: "error", title: "ADE Cloud couldn't change your plan", detail: error, dismiss: { onDismiss: () => setError(null) } }} />
         ) : null}
       </div>
+      {asking && previewFor(asking) ? (
+        <CloudPlanLimitsDialog
+          cleanup={previewFor(asking)!}
+          mode="downgrade"
+          currentPlanLabel={cloudPlanLabelOf(account, catalog)}
+          onClose={() => setAsking(null)}
+          onPick={(pick) => moveDownWith(asking, pick)}
+        />
+      ) : null}
     </section>
   );
 }

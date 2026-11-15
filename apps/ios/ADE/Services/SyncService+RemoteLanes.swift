@@ -33,7 +33,7 @@ private let syncLaneIdListKeys: Set<String> = ["laneIds"]
 /// machines: no host can serve that.
 func syncRemoteLaneTarget(args: [String: Any]) throws -> SyncRemoteLaneTarget? {
   var machineKey: String?
-  var stripped = args
+  var replacements: [String: Any] = [:]
   func take(_ value: String) throws -> String {
     guard let parsed = workParseRemoteLaneId(value) else { return value }
     if let machineKey, machineKey != parsed.machineKey {
@@ -42,14 +42,25 @@ func syncRemoteLaneTarget(args: [String: Any]) throws -> SyncRemoteLaneTarget? {
     machineKey = parsed.machineKey
     return parsed.laneId
   }
-  for (key, value) in args {
-    if syncLaneIdKeys.contains(key), let text = value as? String {
-      stripped[key] = try take(text)
-    } else if syncLaneIdListKeys.contains(key), let list = value as? [String] {
-      stripped[key] = try list.map(take)
+  // Looks up the few lane-id keys, never walks the args: every command passes
+  // through here on the main thread, and a command can carry a whole file or
+  // a long list. Walking and copying those held the main thread for seconds
+  // (ADE-IOS-2C). The args are copied only when a lane id loses its tag.
+  for key in syncLaneIdKeys {
+    if let text = args[key] as? String {
+      let plain = try take(text)
+      if plain != text { replacements[key] = plain }
+    }
+  }
+  for key in syncLaneIdListKeys {
+    if let list = args[key] as? [String] {
+      let plain = try list.map(take)
+      if plain != list { replacements[key] = plain }
     }
   }
   guard let machineKey else { return nil }
+  var stripped = args
+  for (key, value) in replacements { stripped[key] = value }
   return SyncRemoteLaneTarget(machineKey: machineKey, args: stripped)
 }
 
@@ -171,6 +182,67 @@ extension SyncService {
     let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
     if let snapshots = payload.snapshots { return snapshots }
     return payload.lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
+  }
+}
+
+// MARK: - A chat's work copies on other machines
+
+/// The project each work copy lane the phone has named lives in on its
+/// machine, keyed by the namespaced lane id (`registerRemoteWorkCopyLane`).
+///
+/// A work copy (`remote-work-…`) is not a lane of the focused repository's
+/// checkout there: it belongs to the project the chat's brain resolved for the
+/// call (`AgentChatRemoteWorkUse.projectId`). `routeOrStripFleetTarget` reads
+/// this so the copy's `apple.*`, `android.*` and `workTools.*` calls reach that
+/// project, never the checkout `requireRemoteLaneRepo` would pick.
+final class SyncRemoteWorkCopyProjects: @unchecked Sendable {
+  static let shared = SyncRemoteWorkCopyProjects()
+
+  struct Project: Equatable {
+    let projectId: String
+    let rootPath: String?
+  }
+
+  private let lock = NSLock()
+  private var projects: [String: Project] = [:]
+
+  func note(laneId: String, project: Project) {
+    lock.lock()
+    defer { lock.unlock() }
+    projects[laneId] = project
+  }
+
+  func project(laneId: String) -> Project? {
+    lock.lock()
+    defer { lock.unlock() }
+    return projects[laneId.trimmingCharacters(in: .whitespacesAndNewlines)]
+  }
+}
+
+extension SyncService {
+  /// The lane id this phone uses for a chat's work copy on another machine:
+  /// the copy's lane namespaced to that machine's fleet key, so every
+  /// lane-routed call (`apple.*`, `android.*`, `workTools.*`, `macDesktop.*`)
+  /// goes to that machine and its live sockets dial it. Also namespaced when
+  /// that machine is the focused one; the router strips it there.
+  ///
+  /// Nil when the phone cannot reach the machine: the account does not list it
+  /// (its `machineKey` is the account directory's), or it is not paired with
+  /// this phone. Nothing is sent then; the call never falls back to the
+  /// focused machine, where the same lane id means nothing.
+  func registerRemoteWorkCopyLane(_ device: WorkRemoteWorkDevice) -> String? {
+    guard let deviceId = AccountService.shared.machines
+      .first(where: { $0.machineKey == device.machineKey })?.deviceId
+      .flatMap(nonEmptyTrimmed)
+    else { return nil }
+    let fleetKey = HiddenMachineStore.fleetKey(deviceId: deviceId)
+    guard fleetKey == focusedMachineKey || machineFleet?.connection(for: fleetKey) != nil else { return nil }
+    let laneId = workRemoteLaneId(machineKey: fleetKey, laneId: device.workCopyLaneId)
+    SyncRemoteWorkCopyProjects.shared.note(
+      laneId: laneId,
+      project: .init(projectId: device.projectId, rootPath: device.projectRootPath)
+    )
+    return laneId
   }
 }
 

@@ -1796,11 +1796,12 @@ struct WorkRootListScreen: View, Equatable {
             !inputs.suppressHydrationNotices,
             let hydrationNotice = inputs.workStatus.inlineHydrationFailureNotice(for: .work)
           {
-            ADEInstructionErrorCard(
+            // One slim row, like Lanes and PRs: the cached chats stay in view.
+            ADEFlatInlineNotice(
               notice: hydrationNotice,
               retry: { Task { await reload(refreshRemote: true) } }
             )
-            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }

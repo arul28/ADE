@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { ArrowUpRight, Github, Star } from "lucide-react";
 import { LINKS } from "../../lib/links";
 import type { InstallPlatform } from "../../lib/installTargets";
@@ -66,6 +67,9 @@ export function SiteNav() {
         </a>
 
         <nav className="hidden items-center gap-6 md:flex">
+          <Link to="/pricing" data-ade-analytics-feature={MARKETING_FEATURES.VIEW_PRICING} className={linkClass}>
+            Pricing
+          </Link>
           <a
             href={LINKS.docs}
             target="_blank"

@@ -65,6 +65,11 @@ export type LaneEnvInitStep = {
   label: string;
   status: LaneEnvInitStepStatus;
   error?: string;
+  /**
+   * Failed because a signal ADE did not send stopped its command (SIGTERM to
+   * the brain's whole service on a restart, say), not because the command failed.
+   */
+  stoppedBySignal?: boolean;
   durationMs?: number;
 };
 

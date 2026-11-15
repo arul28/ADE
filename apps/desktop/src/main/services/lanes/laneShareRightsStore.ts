@@ -453,5 +453,23 @@ export function createLaneShareRightsStore(options: {
         return "missing";
       }
     },
+
+    /** The lane's name and branch now, read from this host's own lanes table: a guest sees renames and branch changes. */
+    laneInfo(laneId: string): { name: string; branch: string; type: string } | null {
+      try {
+        const lane = db.get<{ name: string | null; branch_ref: string | null; lane_type: string | null }>(
+          "select name, branch_ref, lane_type from lanes where id = ? limit 1",
+          [laneId],
+        );
+        if (!lane) return null;
+        return {
+          name: (lane.name ?? "").trim(),
+          branch: (lane.branch_ref ?? "").trim().replace(/^refs\/heads\//, ""),
+          type: lane.lane_type ?? "worktree",
+        };
+      } catch {
+        return null;
+      }
+    },
   };
 }

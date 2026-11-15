@@ -27,6 +27,7 @@ const SUBCOMMANDS = [
   "browser close|close close-tab",
   "browser click|click",
   "browser fill|fill",
+  "browser signin|signin",
   "browser clear|clear clear-field clear-input clear-value clear-selection",
   "browser zoom|zoom",
   "browser hover|hover",

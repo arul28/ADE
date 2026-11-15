@@ -112,7 +112,7 @@ import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "..
 import { composerDomPointAtSerializedOffset, serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   composerModelInfo,
-  composerModelSuggestion,
+  composerModelSuggestionsFor,
   createModelChipNode,
   initialModelMention,
   modelChipOptions,
@@ -202,7 +202,7 @@ import {
   type ComposerAtChipKind,
 } from "./mentionChipMark";
 import { ComposerMachineChipPopover } from "./MachineChipCard";
-import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
+import { ADE_CLOUD_NAME, CloudMark } from "../remoteTargets/cloudBrand";
 import { AdeCloudMachineChip, useComposerAdeCloudLane, type ComposerAdeCloudLane } from "./AdeCloudComposerParts";
 import { GitHubIssueSelectModal } from "../app/GitHubIssueSelectModal";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -225,7 +225,9 @@ import {
 } from "../../../shared/projectSecretRequest";
 import { IntegrationConnectComposer } from "./IntegrationConnectCard";
 import { McpServerRequestComposer } from "./McpServerCard";
+import { MachineRemovalComposer } from "./MachineRemovalCard";
 import { readNativeInputCard } from "../../../shared/nativeInputCards";
+import { PasswordLoginRequestComposer, passwordLoginSelfAnswers } from "./PasswordLoginCard";
 import {
   isAskQuestionRequest,
   isRedirectablePendingRequest,
@@ -984,6 +986,8 @@ function ComposerMachineChip({
   if (adeCloudLane) {
     return <AdeCloudMachineChip machineName={machineName} lane={adeCloudLane} wrapperClassName={MACHINE_CHIP_WRAPPER} />;
   }
+  // An ADE Cloud launch still being set up: no lane computer to name yet, but the cloud mark already.
+  const onAdeCloud = !cloud && machineName === ADE_CLOUD_NAME;
   if (action) {
     return (
       <>
@@ -1028,7 +1032,9 @@ function ComposerMachineChip({
         label: machineName,
         description: cloud
           ? "This chat is a live view of a Cursor Cloud agent. Replies run in cloud."
-          : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
+          : onAdeCloud
+            ? "This chat runs on its lane's own ADE Cloud computer, which is being set up."
+            : "This chat runs on the machine that owns its lane. To move it, open the session menu and choose Hand off… → Another machine.",
       }}
     >
       <span
@@ -1042,6 +1048,8 @@ function ComposerMachineChip({
       >
         {cloud ? (
           <CloudArrowUp size={11} weight="fill" className="shrink-0 text-violet-300/85" aria-hidden />
+        ) : onAdeCloud ? (
+          <CloudMark size={11} brand />
         ) : (
           <DesktopTower size={11} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
         )}
@@ -2391,6 +2399,7 @@ function AgentChatComposerImpl({
   onModelPickerOpenRequestHandled,
   onOpenModelPickerRequest,
   permissionModeLocked = false,
+  permissionModeLockReason = null,
   hideNativeControls = false,
   hideModelControls = false,
   messagePlaceholder,
@@ -2669,6 +2678,8 @@ function AgentChatComposerImpl({
   /** Open the model picker from outside the control (a quick slot). */
   onOpenModelPickerRequest?: () => void;
   permissionModeLocked?: boolean;
+  /** Why the mode cannot change, shown on the locked control (a shared lane's rights). */
+  permissionModeLockReason?: string | null;
   hideNativeControls?: boolean;
   /** Hide model, reasoning, and fast-mode controls when the host surface owns them. */
   hideModelControls?: boolean;
@@ -3263,16 +3274,7 @@ function AgentChatComposerImpl({
   const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);
-    const ids = mentionModelIds ?? availableModelIds ?? [];
-    const out = [];
-    const seen = new Set<string>();
-    for (const id of ids) {
-      const descriptor = resolveModelDescriptorWithRuntimeCatalog(id, modelCatalogScopeKey) ?? getModelById(id);
-      if (!descriptor || descriptor.deprecated || seen.has(descriptor.id)) continue;
-      seen.add(descriptor.id);
-      out.push(composerModelSuggestion(descriptor));
-    }
-    return out;
+    return composerModelSuggestionsFor(mentionModelIds ?? availableModelIds ?? [], modelCatalogScopeKey);
     // runtimeCatalogTick is not read here: it changes when the runtime catalog
     // loads, which the descriptor lookups above read from module state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3800,12 +3802,12 @@ function AgentChatComposerImpl({
   useEffect(() => {
     if (!sessionId) return;
     try {
-      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, chatPaneScope?.kind === "personal"));
+      const warmPin = requireChatPin(chatApiPin(chatRuntimePinRef.current, !projectChatPane));
       void agentChatApiRef.current?.fileSearch?.({ sessionId, query: "" }, warmPin)?.catch?.(() => {});
     } catch {
       // warming is best-effort
     }
-  }, [chatPaneScope?.kind, chatRuntimePinKey, sessionId]);
+  }, [projectChatPane, chatRuntimePinKey, sessionId]);
 
   const revokePreviewUrl = useCallback((url: string | null | undefined) => {
     if (!url || !objectPreviewUrlsRef.current.has(url)) return;
@@ -4041,7 +4043,7 @@ function AgentChatComposerImpl({
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
     // A personal pane's adapter knows its computer; it has no binding when no project is open.
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
@@ -4190,7 +4192,7 @@ function AgentChatComposerImpl({
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     const attachmentOwnerBinding = attachmentMachineBinding;
     const attachmentApi = agentChatApiRef.current;
-    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, chatPaneScope?.kind === "personal");
+    const attachmentApiPin = chatApiPin(attachmentOwnerBinding, !projectChatPane);
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -5989,6 +5991,8 @@ function AgentChatComposerImpl({
   );
 
   const nativeControlsDisabled = permissionModeLocked;
+  // A mode locked with a reason (a shared lane's rights) says why on the picker.
+  const nativeLockTitle = permissionModeLocked && permissionModeLockReason ? permissionModeLockReason : undefined;
   const slot = parallelControlSlot;
   const sp = slot?.sessionProvider ?? sessionProvider ?? "opencode";
   const im = slot?.interactionMode ?? interactionMode ?? "default";
@@ -6250,7 +6254,7 @@ function AgentChatComposerImpl({
             ariaLabel="Claude permission mode"
             selectedValue={selectedOption.value}
             options={withoutPlanning(CLAUDE_MODE_OPTIONS)}
-            disabled={nativeControlsDisabled}
+            title={nativeLockTitle} disabled={nativeControlsDisabled}
             onSelect={permissionAppliers.claude}
           />
         </div>
@@ -6279,7 +6283,7 @@ function AgentChatComposerImpl({
             if (preset === "custom") return;
             applyCodexPreset(preset);
           }}
-          title={pickerOptions.find((option) => option.value === codexPreset)?.detail ?? codexCustomSummary ?? "Codex permission mode"}
+          title={nativeLockTitle ?? pickerOptions.find((option) => option.value === codexPreset)?.detail ?? codexCustomSummary ?? "Codex permission mode"}
         />
       );
     }
@@ -6290,14 +6294,14 @@ function AgentChatComposerImpl({
           ariaLabel="Droid autonomy mode"
           selectedValue={dpmUse}
           options={withoutPlanning(DROID_PERMISSION_OPTIONS)}
-          disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
+          title={nativeLockTitle} disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
           onSelect={permissionAppliers.droid}
         />
       );
     }
 
     if (sp === "copilot") {
-      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={permissionAppliers.copilot} />;
+      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} title={nativeLockTitle} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={permissionAppliers.copilot} />;
     }
 
     if (sp === "muse") {
@@ -6306,7 +6310,7 @@ function AgentChatComposerImpl({
           ariaLabel="Muse approval mode"
           selectedValue={im === "plan" ? "plan" : mpmUse}
           options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
-          disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
+          title={nativeLockTitle} disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
           onSelect={permissionAppliers.muse}
         />
       );
@@ -6332,7 +6336,7 @@ function AgentChatComposerImpl({
           ariaLabel="Cursor mode"
           selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
           options={withoutPlanning(cursorModeOptions)}
-          disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+          title={nativeLockTitle} disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
           onSelect={permissionAppliers.cursor}
         />
       );
@@ -6343,7 +6347,7 @@ function AgentChatComposerImpl({
         ariaLabel="OpenCode permission mode"
         selectedValue={opmUse ?? "edit"}
         options={withoutPlanning(OPENCODE_PERMISSION_OPTIONS)}
-        disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
+        title={nativeLockTitle} disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
         onSelect={permissionAppliers.opencode}
       />
     );
@@ -6354,6 +6358,7 @@ function AgentChatComposerImpl({
     codexPresetOptions,
     codexCustomSummary,
     nativeControlsDisabled,
+    nativeLockTitle,
     hideNativeControls,
     onCursorModeChange,
     onDroidPermissionModeChange,
@@ -8207,6 +8212,8 @@ function AgentChatComposerImpl({
             reasoningTiers={reasoningTiers}
             harness={activeHarnessPreset?.harness}
             reasoningEffort={reasoningEffort}
+            // An open chat shows its own level: the family's memory is another chat's pick (B14-34).
+            showFamilyDefault={!sessionId}
             squeezed={modelHint.chip != null}
             onChange={handleReasoningEffortPickerChange}
             disabled={effortSelectionLocked ?? modelSelectionLocked}
@@ -8240,7 +8247,7 @@ function AgentChatComposerImpl({
         />
       ) : null}
     </div>
-  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  ), [activeHarnessPreset, activeHarnessPresetId, adeCloudLane, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, providerRuntimeMissing, reasoningEffort, reasoningModelId, reasoningTiers, runtimeCatalogTick, sessionId, turnActive, ultrathinkControl]);
   const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
 
       <ContextUsageDial
@@ -9592,6 +9599,26 @@ function AgentChatComposerImpl({
           );
         }
 
+        if (askQuestionRequest && nativeCard?.kind === "login") {
+          // The secure sign-in card. The username and password travel only as
+          // answers to `isSecret` questions; the host saves them to Passwords
+          // on the chat's machine, and a failed save comes back as
+          // `pendingInputError`.
+          return (
+            <PasswordLoginRequestComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onSave={(answers) => { void onApproval("accept", null, answers); }}
+              onSelf={() => { void onApproval("accept", null, passwordLoginSelfAnswers()); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
         if (askQuestionRequest && nativeCard?.kind === "mcp-server") {
           // The MCP server card. Values travel only as answers to the
           // request's `isSecret` questions; the host saves the server and its
@@ -9607,6 +9634,23 @@ function AgentChatComposerImpl({
               chatProvider={sessionProvider}
               onAdd={(answers) => { void onApproval("accept", null, answers); }}
               onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "machine-removal") {
+          // The computer removal card. The brain on the chat's machine removes
+          // the computer while it accepts Remove; a failure comes back as
+          // `pendingInputError` and keeps the card open.
+          return (
+            <MachineRemovalComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onAnswer={(answers) => { void onApproval("accept", null, answers); }}
             />
           );
         }

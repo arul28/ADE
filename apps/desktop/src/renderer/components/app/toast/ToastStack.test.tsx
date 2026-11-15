@@ -5,7 +5,6 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ToastStack } from "./ToastStack";
-import { ToastViewport } from "./ToastViewport";
 import { dismissToast, getToasts, showToast, updateToast } from "./toastStore";
 
 afterEach(() => {
@@ -15,36 +14,6 @@ afterEach(() => {
 });
 
 describe("ToastStack", () => {
-  it("renders the rich fields: badge, eyebrow, chips, message, error and pill actions", () => {
-    render(<ToastStack />);
-    act(() => {
-      showToast({
-        id: "rich",
-        tone: "error",
-        badge: "Checks failing",
-        eyebrow: "#1287",
-        title: "Fix the flaky suite",
-        chips: [{ label: "lane-a" }, { label: "feature -> main" }],
-        message: "2 checks failed.",
-        error: "Couldn't undo the link. Try again.",
-        actions: [
-          { label: "Open in ADE", variant: "secondary", onClick: () => {} },
-          { label: "Open on GitHub", variant: "solid", onClick: () => {} },
-        ],
-      });
-    });
-    expect(screen.getByText("Checks failing")).toBeTruthy();
-    expect(screen.getByText("#1287")).toBeTruthy();
-    expect(screen.getByText("Fix the flaky suite")).toBeTruthy();
-    expect(screen.getByText("lane-a")).toBeTruthy();
-    expect(screen.getByText("feature -> main")).toBeTruthy();
-    expect(screen.getByText("2 checks failed.")).toBeTruthy();
-    expect(screen.getByText("Couldn't undo the link. Try again.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open in ADE" }).getAttribute("data-variant")).toBe("secondary");
-    expect(screen.getByRole("button", { name: "Open on GitHub" }).getAttribute("data-variant")).toBe("solid");
-    // Failures announce as alerts.
-    expect(document.querySelector('[data-notice-tone="error"]')?.getAttribute("role")).toBe("alert");
-  });
 
   it("dismisses after an action unless the action keeps it open", () => {
     const run = vi.fn();
@@ -132,19 +101,4 @@ describe("ToastStack", () => {
     });
     expect((screen.getByRole("button", { name: "Retry undo" }) as HTMLButtonElement).disabled).toBe(true);
   });
-});
-
-describe("ToastViewport", () => {
-  it("stays mounted when empty and renders the slot below the stack", () => {
-    const { rerender } = render(<ToastViewport />);
-    expect(screen.getByTestId("toast-viewport")).toBeTruthy();
-    act(() => {
-      showToast({ id: "x", title: "Store toast", durationMs: 0 });
-    });
-    rerender(<ToastViewport slots={[{ key: "slot", node: <div data-testid="slot">Launches</div> }]} />);
-    const viewport = screen.getByTestId("toast-viewport");
-    const text = viewport.textContent ?? "";
-    expect(text.indexOf("Store toast")).toBeLessThan(text.indexOf("Launches"));
-  });
-
 });

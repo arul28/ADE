@@ -822,11 +822,18 @@ export function createSyncAccountDirectoryHealth(
 export type SyncRouteHealth = {
   listener: {
     listenerBound: boolean;
+    /** Some local route (the port itself, or a side door) answers as ADE. */
     loopbackAdeValidated: boolean;
     port: number | null;
     lastFailureAt: string | null;
     reason: string | null;
     lastSuccessAt: string | null;
+    /**
+     * Program name of another process holding 127.0.0.1:<port> (e.g.
+     * "workerd"); never a path or arguments. Also set while a side door
+     * answers in its place.
+     */
+    shadowedBy?: string | null;
   };
   tailscale: {
     enabled: boolean;
@@ -2933,6 +2940,8 @@ export const PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS: readonly ProviderAccountRe
 
 export type SyncRemoteCommandAction =
   | "analytics.capture"
+  | "announcements.getSeen"
+  | "announcements.markSeen"
   | "analytics.flush"
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
@@ -3118,6 +3127,7 @@ export type SyncRemoteCommandAction =
   | "chat.getChatEventHistory"
   | "chat.listSubagents"
   | "chat.listPendingInputs"
+  | "chat.getSessionCapabilities"
   | "chat.getSubagentTranscript"
   | "chat.getMainTranscript"
   | "chat.create"
@@ -3687,6 +3697,8 @@ export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", Sy
  */
 export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", SyncHostHealth>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
+/** Host to the person's devices: the provider sign-ins changed; read `providerLogins.status` again. Older clients ignore it. */
+export type SyncProviderLoginsChangedEnvelope = SyncEnvelopeWithPayload<"provider_logins_changed", { changedAt: string }>;
 /**
  * Host to a lane share guest only: its presence, rights or limits changed.
  * Only the grant id; the guest reads `laneShare.getGuestState` again.
@@ -3787,6 +3799,7 @@ export type SyncEnvelope =
   | SyncBrainStatusEnvelope
   | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
+  | SyncProviderLoginsChangedEnvelope
   | SyncLaneShareGuestChangedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope

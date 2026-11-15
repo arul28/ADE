@@ -151,6 +151,24 @@ jobs:
           [ -n "$PREVIEW_REF" ] && args+=(--preview-ref "$PREVIEW_REF")
           node scripts/beta/resolve.mjs "${args[@]}"
 
+      # A person who dispatched a beta must never read a green run as a beta
+      # that shipped: a skip says so in a warning and at the top of the summary.
+      # Not a failure: that would open the "Beta build failed" issue for a beta
+      # that was never due.
+      - name: Say loudly that nothing was built
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.resolve.outputs.skip == 'true' }}
+        env:
+          REASON: ${{ steps.resolve.outputs.reason }}
+        run: |
+          echo "::warning title=No beta was built::$REASON"
+          {
+            echo "## No beta was built by this run"
+            echo
+            echo "> $REASON"
+            echo
+            echo "Nothing was published and no machine is offered an update."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     needs: resolve
     if: ${{ needs.resolve.outputs.skip == 'false' }}
@@ -220,9 +238,16 @@ jobs:
           node-version: 24
 
       # Only for the pure-JS yaml package, as release-publish.yml's manifest
-      # merge does; --ignore-scripts skips Electron's postinstall.
+      # merge does: that one package at the version and integrity
+      # apps/desktop/package-lock.json pins. If that fails, the full npm ci
+      # (scripts skipped) installs it instead, with the same integrity check,
+      # and the warning shows that the fast path broke.
       - name: Install the yaml parser
-        run: cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund
+        run: |
+          node scripts/release-tools/install-locked-package.mjs apps/desktop/package-lock.json yaml || {
+            echo "::warning::install-locked-package.mjs failed; installing yaml with the full npm ci."
+            (cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund)
+          }
 
       - name: Build the feed from the published beta
         run: |
@@ -259,12 +284,15 @@ jobs:
           # A file being replaced is briefly missing; clients read a 404 as
           # "no beta right now" and check again later.
           manifests=("$out/latest-mac.yml")
+          # Read the names once, then test with a here-string: under pipefail,
+          # `gh | grep -q` can fail with SIGPIPE and skip the delete.
+          feed_assets="$(gh release view beta-feed --json assets --jq '.assets[].name')"
           # A beta without one platform's build must not leave that platform's
           # machines on an older beta's manifest that names a different version.
           for manifest in latest.yml latest-linux.yml latest-linux-arm64.yml; do
             if [ -f "$out/$manifest" ]; then
               manifests+=("$out/$manifest")
-            elif gh release view beta-feed --json assets --jq '.assets[].name' | grep -qx "$manifest"; then
+            elif grep -qxF "$manifest" <<< "$feed_assets"; then
               gh release delete-asset beta-feed "$manifest" --yes
             fi
           done
@@ -318,6 +346,8 @@ jobs:
     permissions:
       contents: write
       issues: write
+      # ios-testflight.yml's gate reads the newest ios-main.yml run.
+      actions: read
     uses: ./.github/workflows/ios-testflight.yml
     with:
       label: ${{ needs.resolve.outputs.tag }}

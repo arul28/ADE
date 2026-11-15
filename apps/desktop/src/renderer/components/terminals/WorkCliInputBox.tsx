@@ -24,7 +24,24 @@ import {
   replaceComposerTriggerSpan,
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
-import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
+import {
+  ChatCommandMenu,
+  handleCommandMenuKeyDown,
+  type ChatCommandMenuHandle,
+  type ChatCommandMenuItem,
+  type ComposerPrSuggestion,
+} from "../chat/ChatCommandMenu";
+import { composerModelSuggestionsFor, initialModelMention } from "../chat/composerModelChip";
+import { searchComposerPullRequests } from "../chat/composerPrSearch";
+import { ensureRuntimeCatalogDescriptors } from "../shared/ModelPicker/modelCatalog";
+import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
+import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
+import { rememberMentionSuggestionLabels } from "../chat/mentionChipLabels";
+import { formatChatMentionToken } from "../../../shared/chatMentions";
+import { formatModelMentionToken, type ComposerModelSuggestion } from "../../../shared/modelMentions";
+import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
+import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { useAppStore } from "../../state/appStore";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
@@ -54,6 +71,7 @@ import {
 type CommandMenuAnchor = { top: number; left: number; bottom: number };
 
 const DRAFT_SAVE_DELAY_MS = 400;
+const NO_MODELS: ComposerModelSuggestion[] = [];
 const MAX_BOX_HEIGHT_PX = 180;
 
 function menuAnchor(element: HTMLElement | null): CommandMenuAnchor | null {
@@ -100,7 +118,7 @@ export const CliInputModeToggle = memo(function CliInputModeToggle({ sessionId }
   const boxOn = mode === "box";
   const label = boxOn ? "Type in the terminal" : "Use the input box";
   return (
-    <SmartTooltip content={{ label, description: boxOn ? "Hide the input box and type straight into the CLI." : "Write in an ADE box with history, @files and a queue; the terminal stays usable." }}>
+    <SmartTooltip content={{ label, description: boxOn ? "Hide the input box and type straight into the CLI." : "Write in an ADE box with history, @ mentions (files, models, chats, PRs) and a queue; the terminal stays usable." }}>
       <button
         type="button"
         aria-label={label}
@@ -322,6 +340,66 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
     return hits.map((hit) => ({ path: hit.path, ...(hit.isDirectory ? { isDirectory: true as const } : {}) }));
   }, [laneId]);
 
+  // The chat's other @ kinds (chats, lanes, terminals, PRs, machines, MCP):
+  // a token here, expanded into a facts block when the CLI is sent the text.
+  const searchMentions = useCallback(async (query: string): Promise<ChatMentionSuggestion[]> => {
+    const currentPin = pinRef.current;
+    if (!currentPin) return [];
+    try {
+      const result = await window.ade.agentChat.listMentionSuggestions?.(
+        { query: query.trim(), excludeSessionId: sessionId },
+        currentPin,
+      );
+      const suggestions = result?.suggestions ?? [];
+      rememberMentionSuggestionLabels(suggestions);
+      return suggestions;
+    } catch {
+      return [];
+    }
+  }, [sessionId]);
+
+  const searchPullRequests = useCallback(async (query: string): Promise<ComposerPrSuggestion[]> => {
+    const currentPin = pinRef.current;
+    return currentPin ? await searchComposerPullRequests(currentPin, query) : [];
+  }, []);
+
+  // Models the CLI's machine can start, read once per machine when an @ menu
+  // first opens. Kept with the machine's key so another machine's list never shows.
+  const [loadedModels, setLoadedModels] = useState<{ key: string; options: ComposerModelSuggestion[] } | null>(null);
+  const modelsRequestedForRef = useRef<string | null>(null);
+  const atMenuOpen = commandMenuTrigger?.type === "at";
+  useEffect(() => {
+    const currentPin = pinRef.current;
+    if (!atMenuOpen || !currentPin || modelsRequestedForRef.current === currentPin.key) return;
+    const key = currentPin.key;
+    modelsRequestedForRef.current = key;
+    let cancelled = false;
+    let settled = false;
+    // Like the chat composer: load the machine's runtime catalog first, so a
+    // model's reasoning levels (and its default effort) are known.
+    const catalogReady = getSharedRuntimeCatalog(key)
+      ? Promise.resolve()
+      : fetchSharedRuntimeCatalog({ scopeKey: key, mode: "cached", pin: currentPin }).then(() => undefined, () => undefined);
+    void Promise.all([window.ade.ai.getStatus({}, currentPin), catalogReady])
+      .then(([status]) => {
+        settled = true;
+        if (cancelled) return;
+        ensureRuntimeCatalogDescriptors(key, true);
+        setLoadedModels({ key, options: composerModelSuggestionsFor(deriveConfiguredModelIds(status ?? null), key) });
+      })
+      .catch(() => {
+        settled = true;
+        if (modelsRequestedForRef.current === key) modelsRequestedForRef.current = null;
+      });
+    return () => {
+      cancelled = true;
+      // A read cut off before it answered is asked again on the next open.
+      if (!settled && modelsRequestedForRef.current === key) modelsRequestedForRef.current = null;
+    };
+  }, [atMenuOpen, pinKey]);
+  const modelOptions = loadedModels && loadedModels.key === pinKey ? loadedModels.options : NO_MODELS;
+  const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents({ hydrate: false });
+
   // Auto-grow from one line, capped so the terminal keeps the room.
   useEffect(() => {
     const el = textareaRef.current;
@@ -367,13 +445,20 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
       insertion = `/${item.name}${argumentHint} `;
     } else if (item.type === "file") {
       insertion = pathMention(item.path);
+    } else if (item.type === "mention") {
+      insertion = `${formatChatMentionToken(item.mention.kind, item.mention.id)} `;
+    } else if (item.type === "pr") {
+      insertion = `${item.pr.url} `;
+    } else if (item.type === "model") {
+      recordModelRecent(item.model.modelId);
+      insertion = `${formatModelMentionToken(initialModelMention(item.model))} `;
     }
     if (insertion == null) return;
     const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, insertion);
     setDraft(next.text);
     setCommandMenuTrigger(null);
     placeCaret(next.caret);
-  }, [commandMenuTrigger, draft, placeCaret, slashCommands]);
+  }, [commandMenuTrigger, draft, placeCaret, recordModelRecent, slashCommands]);
 
   const send = useCallback(() => {
     const text = draft.trim();
@@ -498,6 +583,10 @@ export const WorkCliInputBox = memo(function WorkCliInputBox({
             source: command.source,
           }))}
           onFileSearch={laneId ? searchFiles : undefined}
+          onMentionSearch={searchMentions}
+          onPrSearch={searchPullRequests}
+          modelOptions={modelOptions}
+          recentModelIds={modelRecents}
           anchor={commandMenuAnchor}
           onSelect={handleMenuSelect}
           onClose={() => setCommandMenuTrigger(null)}

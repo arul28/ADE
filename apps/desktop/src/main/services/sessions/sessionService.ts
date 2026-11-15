@@ -43,6 +43,7 @@ import {
 } from "../../../shared/types";
 import { isSettleTupleSettled, isWakingSessionError } from "../../../shared/sessionCanonicalState";
 import { stripAnsi } from "../../../shared/ansiStrip";
+import { isRouteHomeId } from "../../../shared/cliLaunch";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 import {
@@ -285,6 +286,11 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const instanceId = identityField("instanceId");
   const presetId = identityField("presetId");
   const credentialId = identityField("credentialId");
+  // Only the folder-name shape: the id becomes a path on resume.
+  const routeHomeId = !instanceId && !presetId && !credentialId
+    && isRouteHomeId(launchRecord.routeHomeId)
+    ? launchRecord.routeHomeId
+    : null;
   const importedFromRecord = record.importedFrom != null && typeof record.importedFrom === "object" && !Array.isArray(record.importedFrom)
     ? record.importedFrom as Record<string, unknown>
     : null;
@@ -325,6 +331,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(instanceId ? { instanceId } : {}),
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
+      ...(routeHomeId ? { routeHomeId } : {}),
     },
     ...(importedFromProvider && importedFromTargetId && importedFromMode
       ? {
@@ -1732,6 +1739,13 @@ export function createSessionService({
        * Overridable for tests; every caller wants the default.
        */
       freshActivityGraceMs = STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
+      /**
+       * Owners proven gone (`listDeadProcessIdentities`): known to this
+       * computer's registry and no longer running. Their rows skip the
+       * fresh-activity grace, which exists for owners this process cannot
+       * see yet; a dead process cannot still be streaming.
+       */
+      deadOwnerIdentities,
     }: {
       endedAt?: string;
       status?: TerminalSessionStatus;
@@ -1741,6 +1755,7 @@ export function createSessionService({
       knownOwnerPids?: Set<number>;
       knownOwnerIdentities?: Array<{ pid: number; startedAt: string }>;
       freshActivityGraceMs?: number;
+      deadOwnerIdentities?: Array<{ pid: number; startedAt: string }>;
     } = {}): number {
       const normalizedExcludedToolTypes = Array.isArray(excludeToolTypes)
         ? excludeToolTypes
@@ -1842,11 +1857,36 @@ export function createSessionService({
       const activityCutoff = graceMs > 0 && Number.isFinite(cutoffMs)
         ? new Date(cutoffMs).toISOString()
         : null;
-      const activityClause: SqlClause = activityCutoff
+      const deadOwners = (deadOwnerIdentities ?? [])
+        .map((identity) => ({
+          pid: normalizeOwnerPid(identity?.pid),
+          startedAt: normalizeOwnerProcessStartedAt(identity?.startedAt),
+        }))
+        .filter((identity): identity is { pid: number; startedAt: string } => (
+          identity.pid != null && identity.startedAt != null
+        ));
+      const deadOwnerClause: SqlClause = deadOwners.length
         ? {
-            sql: " and started_at < ? and (last_output_at is null or last_output_at < ?)",
-            params: [activityCutoff, activityCutoff],
+            sql: [
+              ...deadOwners.map(() => "(owner_pid = ? and owner_process_started_at = ?)"),
+              `(owner_process_started_at is null and owner_pid in (${deadOwners.map(() => "?").join(", ")}))`,
+            ].join(" or "),
+            params: [
+              ...deadOwners.flatMap((identity) => [identity.pid, identity.startedAt]),
+              ...deadOwners.map((identity) => identity.pid),
+            ],
           }
+        : { sql: "", params: [] };
+      const activityClause: SqlClause = activityCutoff
+        ? deadOwnerClause.sql
+          ? {
+              sql: ` and ((started_at < ? and (last_output_at is null or last_output_at < ?)) or ${deadOwnerClause.sql})`,
+              params: [activityCutoff, activityCutoff, ...deadOwnerClause.params],
+            }
+          : {
+              sql: " and started_at < ? and (last_output_at is null or last_output_at < ?)",
+              params: [activityCutoff, activityCutoff],
+            }
         : { sql: "", params: [] };
       const clauses = [exclusionClause, ownerGuardClause, activityClause];
       const whereSql = `status = 'running'${clauses.map((clause) => clause.sql).join("")}`;

@@ -11,7 +11,10 @@ import "./lib/packagedRuntimeFlag";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { AccountResetCreditSpender } from "../../desktop/src/main/services/usage/accountUsageLiveRefresh";
 import { DELETED_LANE_KEEP_DAYS } from "../../desktop/src/shared/laneCleanup";
+import { stripAnsiWithOptions } from "../../desktop/src/shared/ansiStrip";
+import type { RemoteWorkChatEnded, RemoteWorkMachineRef, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import {
   LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE,
   laneShareNextDayStart,
@@ -23,6 +26,7 @@ import { CLOUD_REFERRAL_ENTER_DAYS, CLOUD_REFERRAL_REWARD_LIMIT, CLOUD_REFERRAL_
 import type { AccountDomainRuntime } from "../../desktop/src/main/services/adeActions/registry";
 import {
   setSharedAccountLiveQuotaFetcher,
+  setSharedAccountResetCreditSpender,
   setSharedAccountRollupFetcher,
 } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { consumeCliViaCmdMarker } from "../../desktop/src/main/services/cli/windowsCliLauncher";
@@ -55,6 +59,7 @@ import {
   routedToLocation,
   type ChatLocateReport,
 } from "./cliChatLocate";
+import { isDevicesCommand, runDevicesCommand, withChatDeviceChoice } from "./cliDevices";
 import {
   isNoneValue,
   linearLookupNeeds,
@@ -71,6 +76,7 @@ import {
 import { buildGithubIssuePlan } from "./cliGithubIssue";
 import { buildJiraPlan } from "./cliJira";
 import { buildIssuePlan } from "./cliIssue";
+import { buildCodePlan, buildMessagesPlan, buildPasswordsPlan, formatPasswords, formatPasswordsCode, formatSecretsExec } from "./cliPasswords";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -106,7 +112,8 @@ import {
   buildCliDiagnosticReport,
   buildReportIssuePayload,
   describeDiagnosticUpload,
-  openDiagnosticIssue,
+  openPublicIssue,
+  publicIssueUrlForSend,
   saveDiagnosticReportCopy,
   sendDiagnosticReport,
 } from "./commands/reportIssue";
@@ -192,10 +199,6 @@ import { customNotificationProblem, describeCustomNotificationResult } from "../
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
-import {
-  isProjectSecretPullResult,
-  projectSecretPullSummary,
-} from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
@@ -577,13 +580,17 @@ import {
 } from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
+  appleElementMissExitCode,
   appleLeaseNotAcquired,
   formatAppleDeviceDelete,
+  formatAppleDeviceStart,
+  formatAppleDeviceStop,
   formatAppleInstall,
   formatAppleLease,
   formatAppleTests,
   formatAppleWindow,
   shapeAppleLeaseAnswer,
+  xcodeGenNote,
 } from "./cliAppleFormat";
 import { formatCloudStatus } from "./cliCloudStatus";
 import {
@@ -675,7 +682,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl, setAccountConfigRootSkip } from "./services/account/sharedAccountAuthService";
 import { createRemoteProviderSignIn } from "./services/account/remoteProviderSignIn";
 import { startCloudBootLaunch, takeCloudLaunchEnv } from "./services/account/cloudBootLaunch";
 import {
@@ -709,7 +716,30 @@ import { cloudDiskGuardOptions } from "./services/power/cloudDiskGuard";
 import { isAdeCloudComputer } from "../../desktop/src/main/services/adeCloud/cloudComputerRules";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
-import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import { brainStartIsInRestartLoop, markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
+import {
+  addBrainRunStopIntent,
+  brainRestartCause,
+  brainUnplannedRestart,
+  markBrainRunStoppedCleanly,
+  readBrainUpdateRequest,
+  recordBrainRunStart,
+  writeBrainUpdateRequest,
+} from "../../desktop/src/main/services/runtime/brainUnplannedRestart";
+import { restartCauseLogFields, type BrainStartFacts } from "../../desktop/src/main/services/runtime/brainRestartCause";
+import {
+  clearBrainStopIntent,
+  closeLiveTurnProjectsRecord,
+  dropLiveTurnProjectsAfterCrash,
+  enableLiveTurnProjectsRecord,
+  noteBrainStopIntent,
+  noteLiveTurnProjectOpening,
+  recordPlannedBrainStop,
+  settleLiveTurnProjectAfterCrash,
+  takeLiveTurnProjectsFromStoppedBrains,
+} from "../../desktop/src/main/services/runtime/liveTurnProjects";
+import { RESTART_RESUME_MAX_AGE_MS } from "../../desktop/src/shared/chatAutoResume";
+import type { UpdateRequestedBy } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -731,6 +761,7 @@ import { publishServedRuntimeSocket } from "./services/runtime/adeCliShim";
 import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverride } from "./lib/cliGlobalArgs";
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
+import { DEVICES_HELP } from "./help/devicesHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -1087,7 +1118,10 @@ export type FormatterId =
   | "models-sheet"
   | "update-status"
   | "notify"
-  | "remote-mcp";
+  | "remote-mcp"
+  | "passwords"
+  | "secrets-exec"
+  | "passwords-code";
 
 type ChatWaitTarget =
   | "idle"
@@ -1184,7 +1218,7 @@ export type CliPlan =
        * null `outPath` saves to a temp file in text mode and leaves `--json`
        * output untouched.
        */
-      saveScreenshot?: { outPath: string | null };
+      saveScreenshot?: { outPath: string | null; surface?: "browser" | "app-control" };
       syncWebOpen?: boolean;
       syncWebNoClipboard?: boolean;
       /**
@@ -1575,6 +1609,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
+    $ ade devices [--kind ios|android|screen|app] --text
+                                                    Every device this chat can use, on every machine
+    $ ade devices use <kind>@<machine|here> | current
+                                                    Pick the machine this chat's iPhone, Android, screen or app runs on
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
@@ -1595,7 +1633,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
-    $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
+    $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
+                                                    --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
     $ ade reset --all [--dry-run]                   Remove everything ADE put on this computer (hard reset)
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1651,7 +1690,10 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
+    $ ade passwords list | status                     Saved logins agents can use (never a value)
+    $ ade code --site <host>                          A site's current sign-in code
+    $ ade messages recent | send                      The person's texts, on their Mac
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear and Jira
     $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
@@ -1853,6 +1895,7 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   sessions: "session",
   project: "projects",
   machine: "machines",
+  device: "devices",
   quota: "usage",
   quotas: "usage",
   disk: "storage",
@@ -2031,6 +2074,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
+    $ ade machines remove <name|machine-key|device-id>   From a chat: asks the person (Remove / Keep card)
     $ ade machines reconnect
     $ ade machines connect <machine-key|device-id|unambiguous-name>
 
@@ -2057,6 +2101,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   confirms it on that computer (see \`reconnect\`); nothing this machine runs can
   bring it back.
 
+  Agents cannot remove a computer. Run from a chat, \`remove\` asks the person
+  instead: the chat shows a card with the computer's name, platform, last seen
+  time and online state, and Remove / Keep buttons (an online computer, or the
+  one the chat runs on, needs a second yes). The command waits for the answer
+  (--timeout 30m by default) and prints {status, removed, machine, next}:
+  status "removed" exits 0, "kept" or "timed_out" exits 2, and
+  "pending_approval" (another chat already asked about that computer) exits 3.
+  Only the person can answer the card; stopping the turn closes it.
+
   \`reconnect\` re-pairs THIS machine after it was removed from the account
   (takes no selector). Removal is terminal by design — heartbeats never
   re-register a removed machine — so this is the way back: it re-registers as a
@@ -2068,6 +2121,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   interactive sign-in, so \`reconnect\` prompts for one when it is needed and
   re-pairs as soon as it lands — no second command.
 `,
+  devices: DEVICES_HELP,
+
   search: `${ADE_BANNER}
   ADE Search
 
@@ -2770,14 +2825,21 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  On another machine (this chat's work copy there: a hidden worktree at your
-  commit, which must be on origin, with your uncommitted changes applied):
+  On another machine (in your code there: ADE keeps a copy of this chat's code
+  on that machine, at your commit, which must be pushed, with your uncommitted
+  changes applied):
     $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
-    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
-    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
-    $ ade shell clean --machine <name>               Delete this chat's work copy there
-  Each call opens a new shell there and syncs the copy again, so put all the
-  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+    $ ade shell start --machine <name> --code as-is -- git status   Use your code there as it is now
+    $ ade shell start --machine <name> --code fresh --wait -- npm test   Throw away changes made there first
+    $ ade shell clean --machine <name>               Delete your code there and everything it held
+    $ ade shell start --machine <name> --clone --wait -- npm test   Clone this repo there first if it is missing (GitHub)
+    $ ade shell start --machine <name> --no-code --wait -- nvidia-smi   No code needed: an empty folder there, removed after
+  --code synced (the default) makes your code there match this checkout before
+  the command runs. Each call opens a new shell there and syncs again, so put
+  all the steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  Files made there that git does not track (a generated .xcodeproj, a pushed
+  file) stay through a sync; edits there to the repo's files refuse it.
+  --no-code needs no commit or push, only a project open in ADE there.
   The shell runs in the background there; no list on that machine shows it.
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
@@ -2842,13 +2904,15 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \\ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+  On another machine (your code there, the one ade shell start --machine uses;
+  paths there are relative to its top, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (your code is put there at your commit if missing)
     $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
   Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
+  base64 in shell commands. A pushed file git does not track stays there
+  through the next sync (--code fresh drops it); one that replaces a file of
+  the repo is a change made there, so the next sync needs --code as-is or
+  --code fresh.
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -3016,7 +3080,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     declines inline and stages instead. Other providers
                                                     reject the flag outright and nothing is sent; omit
                                                     --dispatch to stage the message.
-    $ ade chat wait <session> --for idle --timeout-ms 600000
+    $ ade chat wait <session> --for idle --timeout 10m   (or --timeout-ms 600000)
     $ ade chat events <session> --since <cursor> --json   Turn starts and ends, input needed, errors since a cursor; answers at once
     $ ade chat notify <session> --url https://… --token-stdin   POST there each time it goes idle, needs input or fails (7 days)
     $ ade chat notify <session> --list | --cancel
@@ -3045,9 +3109,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Start a new chat with an extra handoff note
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --target-lane <lane-id>
                                                     Brief handoff into a different lane (same project)
-    $ ade chat handoff <session> --machine "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
+    $ ade chat handoff <session> --to "Mac mini" --model anthropic/claude-opus-5 --prompt "run the UI tests next"
                                                     Move the chat to another machine on your account (brief by
-                                                    default; --fork carries full history). --machine names the
+                                                    default; --fork carries full history). --to names the
                                                     DESTINATION; the chat moves from here. Without --model it
                                                     keeps the chat's own model. Add --effort,
                                                     --permissions, --include-changes (bring uncommitted and unpushed
@@ -3061,9 +3125,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat handoff <session> --options --json   Where the chat can go, and what blocks it (with fixes)
     $ ade chat handoff <session> --cancel           Keep a queued or awaiting move here, or dismiss an unknown one
     $ ade chat handoff <session> --retry            Retry a failed or unknown move with the same choices
-    $ ade chat move --machine "Mac Studio" <session> [<session>…]
+    $ ade chat move --to "Mac Studio" <session> [<session>…]
                                                     Move selected chats, their lanes, and descendants in tree order
-    $ ade chat move --machine "Mac Studio" --all    Move every active Work chat in this project and its lanes
+    $ ade chat move --to "Mac Studio" --all         Move every active Work chat in this project and its lanes
                                                     Defaults to fork; --brief sends a short context summary.
                                                     An agent batch with any unrelated chat waits for one approval
                                                     card on the caller's chat, listing the chats; deny cancels all.
@@ -3472,6 +3536,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple shutdown                End this chat's simulator session (the device stays on)
     $ ade apple shutdown --force        Force-release a session owned by another chat
     $ ade apple launch --force          Take the simulator over in one step
+    $ ade apple launch --foreground     Also open Simulator.app (stays closed by default; the device shows in ADE)
     $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -3491,8 +3556,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade apple open-device --text      Boot a simulator with no app
-    $ ade apple open-device --no-window Keep the device headless
+    $ ade apple open-device --text      Boot a simulator with no app (headless; shown in ADE)
+    $ ade apple open-device --window    Also open Simulator.app (every booted simulator gets a window)
     $ ade apple device-session --text   Report the tracked device session
     $ ade apple settings --text         Read appearance, text size, a11y
     $ ade apple close-device --text     Release the device session
@@ -3759,6 +3824,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade screen proof --caption "<what>" --text    Capture, re-observe, file proof
   --out must be inside the lane worktree or the OS temp dir (%TEMP%, $TMPDIR).
 
+  Another machine: --machine <name> drives that machine's screen (Mac,
+  Windows or Linux Desktop) with no lane there. The screen belongs to your
+  code there (ADE puts it there at your commit on the first start or open;
+  the commit must be pushed), and this chat owns it, as for a lane. status,
+  windows and stream status put nothing there. --lane is refused. screen
+  proof and a captioned recording are filed in this chat's proof drawer.
+  lease and start --shared ask in a chat on that machine, so they are
+  refused; use the default input instead. ade devices use screen@<name>
+  sends every screen command there with no flag (ade devices --text lists
+  the screens you can use). ade shell clean --machine <name> deletes your
+  code there and closes its screen.
+    $ ade screen start --machine "MacBook Pro" --text
+    $ ade screen open TextEdit --machine "MacBook Pro" --text
+    $ ade screen proof --caption "<what>" --machine "MacBook Pro" --text
+
   Errors (each prints its next step):
     WINDOWS_DESKTOP_SETUP_REQUIRED   ask the user to set up (pane card)
     WINDOWS_DESKTOP_HELD             the private screen is taken (another lane, or a session ADE did not start); ask
@@ -4012,14 +4092,21 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
-  no new lane. Without --lane, the emulator there works for this chat's work
-  copy (a hidden worktree at your commit, made on first use; the commit must
-  be on origin). Every view of this chat then shows it in the Android tool.
-  status and devices make no copy. --lane <id> uses a lane on that machine
+  no new lane. Without --lane, the emulator there runs your code there (ADE
+  puts it there at your commit on first use; the commit must be pushed).
+  Every view of this chat then shows it in the Android tool. status and
+  devices put nothing there. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk, and test, send your checkout and its uncommitted changes
-  first (an APK that git ignores does not travel: use --gradle).
+  --gradle or --apk, test and preview make your code there match this
+  checkout first, uncommitted changes included (--code as-is uses it as it
+  is, --code fresh throws away changes made there; an APK that git ignores
+  does not travel: use --gradle). A Gradle build or a boot there waits as
+  long as it would here and prints "still running" lines to stderr
+  meanwhile. --clone sets this repo up there first. The emulator's lease is
+  let go when this chat's turn ends (it stays on). ade devices use
+  android@<name> sends every android command there with no flag (ade
+  devices --text lists the emulators you can use).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -4111,7 +4198,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
     $ ade app-control select --x 120 --y 420       Add that element to the chat as context
@@ -4150,6 +4237,20 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
     $ ade app-control actions --text               List every callable app_control action
+
+  Another machine: --machine <name> runs the app on that machine with no lane
+  there. The app runs from your code there (at your commit; the commit must
+  be pushed), and this chat owns the session, as for a lane. launch makes
+  your code there match this checkout first, uncommitted changes included
+  (--code as-is uses it as it is, --code fresh throws away changes made
+  there) and runs in a terminal there; --cwd must be inside this checkout and
+  is the same folder there. status and drivers put nothing there. --lane is
+  refused. proof and a captioned recording are filed in this chat's proof
+  drawer. ade devices use app@<name> sends every app-control command there
+  with no flag. ade shell clean --machine <name> deletes your code there and
+  stops its app.
+    $ ade app-control launch --command "npm run dev" --cwd apps/desktop --machine windows --text
+    $ ade app-control observe --map --machine windows --text
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -4278,9 +4379,28 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   attached to this machine…" when nobody answered inside 5 seconds. All three
   exit 0: the approval one means "asked, not yet loaded" — the page opens when
   they click Allow, so do not re-issue the open to retry it. Page actions
-  (observe/click/fill/screenshot) are not forwarded and still fail here.
+  (observe/click/fill/signin/screenshot) are not forwarded and still fail here.
 
-  Login handoff (you cannot sign in; a person must):
+  Signing in with Passwords:
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --account me@example.com --text
+  Sign in to the open page's site with a login saved in Passwords. ADE types the
+  username and password into the page itself; you never see the password. With
+  no saved login for the site, the person is asked in this chat (the secure
+  sign-in card): they save one and ADE fills it, or they choose to type it into
+  the page themselves (then run \`ade browser handoff\` to wait for them).
+  Never ask for a password in chat. --site <host> is only a check that the tab
+  is on the site you expect; the site is always the tab's own page.
+
+    $ ade browser signup --tab <tab-id> --text
+    $ ade browser signup --tab <tab-id> --account me@example.com --text
+  Creating an account: fill the email/username yourself, then run signup on
+  the sign-up form. ADE makes a strong password, types it into the password
+  (and confirm) boxes, and saves the login once the form holds all of it.
+  You never see it. Submit the form yourself; later sign-ins use \`ade browser signin\`.
+  --account names the username when the form has none filled in.
+
+  Login handoff (when you cannot sign in; a person must):
     $ ade browser handoff --tab <id> --reason "sign in to staging" --text
     $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
     $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
@@ -4314,6 +4434,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
     $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
     $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser signin --tab <tab-id> --text
+    $ ade browser signin --tab <tab-id> --site example.com --text
+    $ ade browser signup --tab <tab-id> --text
     $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
     $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
     $ ade browser type --tab <tab-id> "hello"
@@ -4395,6 +4518,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --handle <ref>       Click/fill/press/wait via a saved observation element handle.
     --value <text>       Explicit value for browser fill, including an empty string,
                          or the text for browser clipboard write.
+    --site <host>        Browser signin: check that the open tab is on this host.
+    --account <username>
+                         Browser signin: which saved login to use.
     --html <markup>      HTML flavor for browser clipboard write.
     --image <path>       Image file for browser clipboard write. Absolute path.
     --map, --ui-map      Add a numbered visual element map image to observations.
@@ -4792,27 +4918,34 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade proxy logout <login-id> --text         Remove a separate proxy login (not a lent one)
 `,
   secrets: `${ADE_BANNER}
-  ADE project secrets
+  ADE secrets
 
-  Secrets are encrypted under the active project's .ade/secrets directory.
-  Account-linked projects default to account storage, but only when the account
-  vault is reachable: otherwise the secret is saved for this machine and the
-  list says so. List output never reveals values and shows where each secret
-  lives; use get only for the specific secret you need.
+  A project's secrets live in Passwords & Secrets, encrypted on the person's
+  account and synced to every computer they sign in to: the secrets for every
+  project, then this project's own over them. A secret saved with
+  --storage device stays on this computer only. List output never reveals
+  values and shows where each secret lives.
+
+  Agents use secrets, they never read them: \`ade secrets exec\` runs a command
+  with the project's secrets in its environment, on this computer, and prints
+  its output with every value masked (also in base64 and URL-encoded form;
+  values under 8 characters are not masked, and it says which). \`get\` is the
+  person's; export is in the ADE desktop app (Settings › Passwords & Secrets).
+  --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
-    $ ade secrets pull --text                       Take account secrets from the vault
-    $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
-    $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
-    $ ade secrets set TOKEN --value local --storage device
+    $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
+    $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save for this project, on every computer
+    $ ade secrets set TOKEN --value local --storage device   This computer only
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
 
   Asking the person for a secret (agents: use this, never ask them to paste a
   secret into chat). The chat shows a private card; the value is saved to this
-  project's secrets and only the outcome comes back — never the value:
+  project's secrets (Passwords & Secrets) and only the outcome comes back —
+  never the value:
 
     $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
       --generate offers a strong random value first; --timeout 30m (default)
@@ -4820,13 +4953,61 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
     $ ade secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
       For a token a shell CLI needs once, not kept in ADE. The person picks
-      "Temporary private file" or "Save to ADE secrets" (your --delivery is the
+      "Temporary private file" or "Save to Passwords & Secrets" (your --delivery is the
       default). A file answer prints {name, saved: true, delivery: "file",
       file, expiresAt}: an owner-only file on this chat's machine. Read it only
       inside a command: CLOUDFLARE_API_TOKEN="$(cat <file>)" wrangler deploy.
       Your commands can read it, so never print it. Deleted when the chat is
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
+`,
+  passwords: `${ADE_BANNER}
+  ADE Passwords
+
+  Saved logins and API keys, encrypted on the person's account. Agents use
+  them and never see them: nothing here prints a password or a secret value.
+
+    $ ade passwords list --text      Sites, usernames and kinds of saved items
+    $ ade passwords status --text    Whether Passwords & Secrets is on for this computer
+    $ ade passwords sync --text      Pull what other computers saved
+
+  To sign in to a site, open its sign-in page and run \`ade browser signin\`:
+  ADE types the saved login into the page. With no saved login, the person is
+  asked in your chat. To create an account, run \`ade browser signup\` on the
+  sign-up form: ADE makes the password, saves it, and types it in. Changing
+  and removing items is the person's, in Settings › Passwords & Secrets.
+`,
+  code: `${ADE_BANNER}
+  ADE sign-in codes
+
+    $ ade code --site github.com --text                The current authenticator code
+    $ ade code --site github.com --account me@x.com --text
+    $ ade code wait --site github.com --text           The authenticator, else the next texted code
+    $ ade code wait --from messages --timeout 3m --text
+
+  \`code wait\` returns the site's saved authenticator code at once when it has
+  one; otherwise it waits for the newest code texted to the person's Mac
+  (Messages must be connected there) after you ask, up to --timeout (2m).
+
+  The code comes from the authenticator saved with the site's login in
+  Passwords; you get the code (it lasts seconds), never the key. \`ade browser
+  signin\` also fills it by itself on a page that asks for one. A code sent by
+  email: open the mail in the ADE browser (already signed in) and read it.
+`,
+  messages: `${ADE_BANNER}
+  ADE Messages (the person's texts, on their Mac)
+
+    $ ade messages status --text
+    $ ade messages recent --limit 10 --text          Newest texts (yours and theirs)
+    $ ade messages recent --from +15551234567 --since 1h --text
+    $ ade messages chats --text                      Recent conversations
+    $ ade messages send --to +15551234567 --text "On my way"
+
+  Off until the person connects Messages in Settings › Integrations ›
+  Messages on a Mac (ADE needs Full Disk Access there to read). Reading
+  follows its Read Texts switch. Every text you send is shown to the person
+  on a card in your chat first, unless they turned on Send Without Asking.
+  From a cloud lane, these reach the Mac the person is using.
 `,
   integrations: `${ADE_BANNER}
   ADE integrations
@@ -4892,11 +5073,13 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   so do you once their first chat runs on ADE Cloud (${CLOUD_REFERRAL_REWARD_LIMIT} rewards at most).
   A friend's invite is entered in Settings › Account, within ${CLOUD_REFERRAL_ENTER_DAYS} days of signing up.
   Earned hours never expire; they are used after the plan's hours and before
-  extra hours. The free plan is given once per computer.
+  extra hours. The free plan is given once per computer and once per GitHub
+  account, which must be at least 30 days old (or add a card, no charge).
 
-  Plans: \`ade cloud hours\` shows yours, with its hours, disk and computers.
-  Change it in Settings › ADE Cloud › Plan and hours.
-  Disk and computers are what you have at one time, not a monthly amount.
+  Plans: Free, Plus, Pro and Max. \`ade cloud hours\` shows yours, with its hours and disk.
+  Change it in Settings › ADE Cloud › Plans.
+  Disk is what all your computers hold at one time, not a monthly amount.
+  No plan limits how many computers you have.
   On a paid plan, extra disk past the plan's is counted by the day, inside a
   monthly limit you set. A grow past it is refused with a sentence that says why.
 
@@ -5371,7 +5554,7 @@ const REMOVED_LAUNCH_FLAGS: Readonly<Record<string, string>> = {
 /** `chat handoff` / `chat fork` flag spellings that were removed. */
 const REMOVED_HANDOFF_FLAGS: Readonly<Record<string, string>> = {
   "--model-id": "--model",
-  "--to-machine": "--machine",
+  "--to-machine": "--to",
   "--where": "--options",
   "--handoff-note": "--note",
   "--from-turn": "--through-turn",
@@ -5415,6 +5598,47 @@ function rejectFlagOperands(args: readonly string[], names: readonly string[]): 
       throw new CliUsageError(`${args[index]} requires a value.`);
     }
   }
+}
+
+/**
+ * `chat handoff|move`: the machine the chat moves to, `--to <machine>` or
+ * `--machine`, its older spelling. Null when neither is given; both at once,
+ * twice, or with no machine is refused.
+ */
+function readMoveDestination(args: string[]): string | null {
+  const names = ["--to", "--machine"] as const;
+  const flags = flagNamesOutsideFreeText(args);
+  if (flags.has("--to") && flags.has("--machine")) {
+    throw new CliUsageError("--to and --machine name the same destination: use --to.");
+  }
+  // The first destination flag outside free text: `--note "--to"` is a note.
+  let at = -1;
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    const name = token.split("=")[0]!;
+    if ((names as readonly string[]).includes(name)) {
+      at = index;
+      break;
+    }
+    if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(name) || VALUE_CARRIER_FLAGS.has(name))) index += 1;
+  }
+  let value: string | null = null;
+  if (at >= 0) {
+    const token = args[at]!;
+    if (token.includes("=")) {
+      value = token.slice(token.indexOf("=") + 1);
+      args.splice(at, 1);
+    } else {
+      const next = args[at + 1];
+      value = next == null || next.startsWith("--") ? "" : next;
+      args.splice(at, next == null || next.startsWith("--") ? 1 : 2);
+    }
+  }
+  if (value !== null && !value.trim()) throw new CliUsageError("--to needs a machine name or key (see `ade machines list`).");
+  const left = flagNamesOutsideFreeText(args);
+  if (value !== null && names.some((name) => left.has(name))) throw new CliUsageError("Name one destination with --to.");
+  return value;
 }
 
 export function readValue(args: string[], names: readonly string[]): string | null {
@@ -5489,7 +5713,7 @@ function parseScheduledWorkDelaySeconds(value: string): number {
  * live in `sessionSnoozeDuration.ts`; this wrapper only turns its result union
  * into the `CliUsageError` the argv layer already knows how to report.
  */
-function parseSnoozeDurationMs(value: string): number {
+export function parseSnoozeDurationMs(value: string): number {
   const parsed = parseSnoozeDuration(value);
   if (!parsed.ok) throw new CliUsageError(parsed.message);
   return parsed.ms;
@@ -5759,7 +5983,7 @@ function envLaneIdForLaneCommand(): string | null {
   const laneId = process.env.ADE_LANE_ID?.trim() || null;
   if (isRemoteWorkLaneId(laneId)) {
     throw new CliUsageError(
-      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      "This shell runs in the code a chat on another machine keeps here, so it has no ADE lane. "
       + "Pass --lane <lane> to act on a lane of this machine.",
     );
   }
@@ -6158,10 +6382,32 @@ export function readIntOption(
 ): number | undefined {
   const value = readValue(args, names);
   if (value == null) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    throw new CliUsageError(`${names[0]} must be an integer.`);
+  // Whole digits only: `parseInt` read `--timeout 25m` as 25.
+  if (!/^-?\d+$/.test(value.trim())) {
+    throw new CliUsageError(`${names[0]} must be an integer (got "${value}").`);
   }
+  return Number.parseInt(value, 10);
+}
+
+const TIMEOUT_UNIT_MS: Record<string, number> = { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 };
+
+/**
+ * A wait's timeout in milliseconds: `--timeout-ms <ms>` (an integer), or
+ * `--timeout <duration>` (`25m`, `90s`, `1h`, `600000ms`; a bare number is
+ * milliseconds, as for `--timeout-ms`). Anything else is refused, never
+ * misread: `--timeout 25m` was once read as 25 ms.
+ */
+export function readTimeoutMsOption(args: string[], fallback: number): number {
+  const ms = readIntOption(args, ["--timeout-ms"]);
+  const value = readValue(args, ["--timeout"]);
+  if (ms != null) return ms;
+  if (value == null) return fallback;
+  const match = /^(\d+(?:\.\d+)?)\s*(ms|s|m|h)?$/i.exec(value.trim());
+  if (!match) {
+    throw new CliUsageError(`--timeout takes a duration such as 25m, 90s, 1h or 600000ms (got "${value}"); --timeout-ms takes milliseconds.`);
+  }
+  const parsed = Math.round(Number(match[1]) * TIMEOUT_UNIT_MS[(match[2] ?? "ms").toLowerCase()]!);
+  if (!Number.isSafeInteger(parsed)) throw new CliUsageError(`--timeout "${value}" is too long.`);
   return parsed;
 }
 
@@ -6637,7 +6883,7 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
 }
 
 /** Every spelling that reaches `buildMacDesktopPlan`, the `ade screen` family. */
-const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+export const SCREEN_COMMAND_NAMES: ReadonlySet<string> = new Set([
   "screen", "mac-desktop", "mac-desk", "desk", "windows-desktop", "windows-desk",
 ]);
 
@@ -10589,9 +10835,14 @@ function buildShellPlan(args: string[], inWorkCopy = false, remote: ShellRemoteT
       steps: [actionCallStep("result", "release_remote_work_copy", {})],
       formatText: (result: unknown) => {
         const value = unwrapActionEnvelope(result);
-        return isRecord(value) && value.released === true
-          ? "Deleted this chat's work copy on that machine."
-          : "This chat had no work copy on that machine.";
+        if (!isRecord(value) || value.released !== true) return "This chat had no code on that machine, so nothing was deleted.";
+        // A machine with two checkouts of the repository may have held a copy in each.
+        const removed = Array.isArray(value.removed)
+          ? value.removed.filter(isRecord).map((entry) => asString(entry.path)).filter((entry): entry is string => entry != null)
+          : [];
+        return removed.length
+          ? `Deleted your code on that machine, and everything it held:\n${removed.map((entry) => `  ${entry}`).join("\n")}`
+          : "Deleted your code on that machine, and everything it held.";
       },
     };
   }
@@ -11429,7 +11680,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
   const printConfig = readFlag(args, ["--print-config"]);
-  const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+  const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
@@ -11711,6 +11962,9 @@ export function formatChatLaunch(value: unknown): string {
   const machine = wrapper && isRecord(wrapper.machine) ? wrapper.machine : null;
   // A lane launch (`ade lanes create --machine cloud`) starts no chat.
   const noun = snapshot.kind === "lane" ? "lane" : "chat";
+  // What the running stage says now ("…running again after the disk grew (restart 2)").
+  const live = (Array.isArray(snapshot.stages) ? snapshot.stages.filter(isRecord) : []).find((stage) => stage.status === "running");
+  const liveDetail = live ? asString(live.detail) : null;
   return renderKeyValues(`ADE ${noun} launch ${asString(snapshot.launchId) ?? ""} · ${asString(snapshot.phase) ?? "unknown"}`, [
     ["lane", `${asString(snapshot.laneName) ?? ""} (${asString(snapshot.laneId) ?? ""})`],
     // A lane on ADE Cloud: the computer made for it.
@@ -11722,6 +11976,7 @@ export function formatChatLaunch(value: unknown): string {
     ["model", snapshot.modelId],
     ["template", snapshot.templateName],
     ["stages", formatChatLaunchStages(snapshot)],
+    ["now", liveDetail ? `${asString(live!.id) ?? "?"}: ${liveDetail}` : null],
     ["queued", queued > 0 ? `${queued} message${queued === 1 ? "" : "s"}` : null],
     ["error", snapshot.error],
     ["wait", wrapper?.error === "timed_out" ? `timed out after ${String(wrapper.elapsedMs)}ms` : null],
@@ -11971,7 +12226,7 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
-    rejectFlagOperands(args, ["--machine", "--note", "--status", "--retry"]);
+    rejectFlagOperands(args, ["--note", "--status", "--retry"]);
     const statusBatchId = readValue(args, ["--status"]);
     const retryBatchId = readValue(args, ["--retry"]);
     if (statusBatchId !== null && retryBatchId !== null) {
@@ -11992,9 +12247,9 @@ function buildChatPlan(args: string[]): CliPlan {
         steps: [actionStep("result", "chat", action, { batchId })],
       };
     }
-    const machine = readValue(args, ["--machine"]);
-    if (machine === null || !machine.trim()) {
-      throw new CliUsageError("chat move requires --machine <name> (see `ade machines list`).");
+    const machine = readMoveDestination(args);
+    if (machine === null) {
+      throw new CliUsageError("chat move requires --to <machine> (see `ade machines list`).");
     }
     const allWorkOnThisMachine = readFlag(args, ["--all"]);
     const includeDescendants = !readFlag(args, ["--no-descendants"]);
@@ -12749,6 +13004,8 @@ function buildChatPlan(args: string[]): CliPlan {
       text: sendText,
       kind: "auto",
       ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+      // One id per send: a retried call (a reconnect, an MCP client's retry) is not sent twice.
+      clientSendId: randomUUID(),
     }));
     return {
       kind: "execute",
@@ -12793,6 +13050,7 @@ function buildChatPlan(args: string[]): CliPlan {
             text: messageText,
             kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+            clientSendId: randomUUID(),
           })),
         ),
       ],
@@ -12935,7 +13193,10 @@ function buildChatPlan(args: string[]): CliPlan {
       const any = readFlag(args, ["--any"]);
       readFlag(args, ["--all"]);
       const waitForValue = readValue(args, ["--for", "--state", "--until"]);
-      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"], 24 * 60);
+      // `--timeout 2h` (or --timeout-ms) works here too, rounded up to minutes.
+      const timeoutDurationMs = readTimeoutMsOption(args, 0);
+      const timeoutMinutes = readIntOption(args, ["--timeout-minutes"])
+        ?? (timeoutDurationMs > 0 ? Math.ceil(timeoutDurationMs / 60_000) : 24 * 60);
       if (timeoutMinutes !== undefined && timeoutMinutes <= 0) {
         throw new CliUsageError("--timeout-minutes must be a positive number of minutes.");
       }
@@ -12956,7 +13217,7 @@ function buildChatPlan(args: string[]): CliPlan {
         })],
       };
     }
-    const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+    const timeoutMs = readTimeoutMsOption(args, 10 * 60 * 1000);
     const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
     if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
     if (pollIntervalMs <= 0) throw new CliUsageError("chat wait --poll-interval-ms must be greater than zero.");
@@ -13185,7 +13446,7 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "handoff" || sub === "fork") refuseRemovedFlags(args, REMOVED_HANDOFF_FLAGS);
   if (sub === "handoff") {
-    // The first control flag present wins. --machine with any of them is
+    // The first control flag present wins. --to (or --machine) with any of them is
     // refused earlier, by extractMachineTargeting.
     const controls = [
       { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
@@ -13194,10 +13455,7 @@ function buildChatPlan(args: string[]): CliPlan {
     ];
     const flagNames = flagNamesOutsideFreeText(args);
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
-    const handoffMachine = readValue(args, ["--machine"]);
-    if (handoffMachine !== null && !handoffMachine.trim()) {
-      throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
-    }
+    const handoffMachine = readMoveDestination(args);
     if (control) {
       return {
         kind: "execute",
@@ -13208,7 +13466,7 @@ function buildChatPlan(args: string[]): CliPlan {
     if (handoffMachine !== null) {
       // Move the chat to another machine on the account. The brain runs the
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
-      // Never forwarded: --machine names the destination (cliMachineTargeting).
+      // Never forwarded: --to names the destination (cliMachineTargeting).
       // Free text first: a prompt of "--fork" is text, not a flag.
       const continuationPrompt = readValue(args, ["--prompt", "--note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
@@ -14956,8 +15214,8 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
     // One file into or out of this chat's work copy on another machine
     // (cliRemoteWork.ts sends it in chunks); there is no local form.
     const usage = sub === "push"
-      ? "ade files push --machine <name> <local file> <path in the work copy there>"
-      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+      ? "ade files push --machine <name> <local file> <path in your code there>"
+      : "ade files pull --machine <name> <path in your code there> <local file or folder>";
     if (!machine) {
       throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
     }
@@ -15809,7 +16067,8 @@ function iosSimulatorRootArgs(
  * may simply live on another machine on the account. The runtime answers with
  * the same "not found" for both, and an agent handed a deep link to a chat on
  * the Windows box read that as "the chat does not exist". Every `chat`
- * subcommand except `handoff` takes `--machine`, so the hint can name the fix.
+ * subcommand except `handoff` and `move` takes `--machine` as its target, so
+ * the hint can name the fix.
  * Null when the command already targets a machine, or is not a `chat` command.
  */
 function chatOtherMachineHint(argv: string[]): string | null {
@@ -15819,7 +16078,8 @@ function chatOtherMachineHint(argv: string[]): string | null {
   } catch {
     return null;
   }
-  if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
+  const chatSub = command[1]?.toLowerCase();
+  if (command[0]?.toLowerCase() !== "chat" || chatSub === "handoff" || chatSub === "move") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
   // Through ADE MCP the app names a computer with `machine`, and ADE MCP
@@ -15898,12 +16158,7 @@ async function runChatHereThenElsewhere(
   if (match?.isThisMachine && match.scope.kind === "project" && match.scope.rootPath
     && !pathsEqual(path.resolve(match.scope.rootPath), path.resolve(resolveRoots(parsed.options).projectRoot))) {
     const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
-    const restoreShellScope = dropShellScopeForOtherProject(there.options);
-    try {
-      return await runParsedCli(there);
-    } finally {
-      restoreShellScope();
-    }
+    return await withShellScopeFor(there.options, () => runParsedCli(there));
   }
   if (!match) chatLookupMiss = report;
   if (!match && report.deleted) process.stderr.write(`${chatDeletedSentence(sessionId, report.deleted)}\n`);
@@ -16301,8 +16556,9 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "launch" || sub === "open") {
-    // Agent launches must not steal the user's screen, so the CLI parks
-    // Simulator.app in the background unless asked otherwise.
+    // Simulator.app stays closed (the device runs inside ADE) unless
+    // --foreground asks for it; sent either way, for an older brain that
+    // opened it unless told to keep it in the background.
     const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
     const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
     const follow = readFlag(args, ["--follow"]);
@@ -16403,6 +16659,9 @@ function buildIosSimulatorPlan(
         deviceUdid: readIosSimulatorDevice(args),
         ...rootArgs(),
         ...(noProof ? { proof: false } : {}),
+        // Read by a `--machine` call (cliMachineTargeting), which brings the
+        // shot back here into --out; taken off before the call leaves here.
+        ...(outPath ? { copyToCallerPath: outPath } : {}),
       }),
       ...(outPath ? { shapeResult: (values: JsonObject) => copyAppleScreenshotTo(outPath, values.result) } : {}),
     };
@@ -16756,13 +17015,16 @@ function buildIosSimulatorPlan(
     // Read once: the reader splices `--udid`/`--device` out of `args`, so a
     // second call in the value position returned null and dropped the target.
     const stopUdid = readIosSimulatorDevice(args);
-    return iosAction("Apple device stop", "deviceStop", {
-      chatSessionId: claimArgs.chatSessionId,
-      ...(stopUdid ? { udid: stopUdid } : {}),
-      ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-      ...rootArgs(),
-    });
+    return {
+      ...iosAction("Apple device stop", "deviceStop", {
+        chatSessionId: claimArgs.chatSessionId,
+        ...(stopUdid ? { udid: stopUdid } : {}),
+        ...(readFlag(args, ["--force", "-f"]) ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+        ...rootArgs(),
+      }),
+      formatText: formatAppleDeviceStop,
+    };
   }
   if (
     sub === "shutdown" ||
@@ -16805,7 +17067,12 @@ function buildIosSimulatorPlan(
     const device = readIosSimulatorDevice(args);
     // A device session is not an app session: it boots a simulator and makes
     // it streamable, with no build and no install.
+    // Headless by default (the device shows in ADE); Simulator.app opens only
+    // with --window. `--no-window` is the old spelling of the default; sent,
+    // so an older brain that opened the window unless told not to stays headless.
+    const window = readFlag(args, ["--window", "--open-simulator"]);
     const noWindow = readFlag(args, ["--no-window", "--headless"]);
+    if (window && noWindow) throw new CliUsageError("open-device takes --window or --no-window, not both.");
     const force = readFlag(args, ["--force", "-f"]);
     return iosAction("iOS simulator open device", "openDevice", {
       deviceUdid: device,
@@ -16813,7 +17080,7 @@ function buildIosSimulatorPlan(
       ...(claimArgs.chatSessionId
         ? { chatSessionId: claimArgs.chatSessionId }
         : {}),
-      ...(noWindow ? { openWindow: false } : {}),
+      openWindow: window,
       ...(force ? { force: true } : {}),
     });
   }
@@ -17140,14 +17407,22 @@ function buildIosSimulatorPlan(
     const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
     const gone = readFlag(args, ["--gone", "--hidden"]);
     const target = elementTargetArgs();
-    return iosAction("iOS simulator wait for element", "waitForElement", {
-      ...target,
-      ...(timeoutMs == null ? {} : { timeoutMs }),
-      ...(gone ? { state: "gone" } : {}),
-    });
+    // A miss (`ok: false`: it never appeared, or never went) exits 1, so
+    // `wait-for-element … && tap-element …` stops there.
+    return {
+      ...iosAction("iOS simulator wait for element", "waitForElement", {
+        ...target,
+        ...(timeoutMs == null ? {} : { timeoutMs }),
+        ...(gone ? { state: "gone" } : {}),
+      }),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "assert-visible" || sub === "assert") {
-    return iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs());
+    return {
+      ...iosAction("iOS simulator assert visible", "assertVisible", elementTargetArgs()),
+      exitCodeFromResult: appleElementMissExitCode,
+    };
   }
   if (sub === "proof-bundle") {
     const device = readIosSimulatorDevice(args);
@@ -17254,19 +17529,22 @@ function buildIosSimulatorPlan(
     if (udid && creating) {
       throw new CliUsageError("apple start takes --udid (attach) or --runtime/--device-type/--create (a new device), not both.");
     }
-    return iosAction("Apple device start", "deviceStart", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(creating
-        ? {
-          create: {
-            ...(sourceUdid ? { sourceUdid } : {}),
-            ...(runtime ? { runtime } : {}),
-            ...(deviceType ? { deviceType } : {}),
-          },
-        }
-        : {}),
-    });
+    return {
+      ...iosAction("Apple device start", "deviceStart", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(creating
+          ? {
+            create: {
+              ...(sourceUdid ? { sourceUdid } : {}),
+              ...(runtime ? { runtime } : {}),
+              ...(deviceType ? { deviceType } : {}),
+            },
+          }
+          : {}),
+      }),
+      formatText: formatAppleDeviceStart,
+    };
   }
   if (sub === "device-list") {
     const installed = readFlag(args, ["--installed"]);
@@ -17418,15 +17696,25 @@ function buildIosSimulatorPlan(
       "--id",
     );
     const force = readFlag(args, ["--force", "-f"]);
-    return iosAction("Apple device record delete", "recordDelete", {
-      id,
-      ...rootArgs(),
-      ...(laneId ? { laneId } : {}),
-      ...(claimArgs.chatSessionId
-        ? { chatSessionId: claimArgs.chatSessionId }
-        : {}),
-      ...(force ? { force: true } : {}),
-    });
+    // The proof `record-stop` filed from this recording stays: the brain's
+    // answer says so (`note`); an older brain answers nothing, and the text
+    // still says it.
+    return {
+      ...iosAction("Apple device record delete", "recordDelete", {
+        id,
+        ...rootArgs(),
+        ...(laneId ? { laneId } : {}),
+        ...(claimArgs.chatSessionId
+          ? { chatSessionId: claimArgs.chatSessionId }
+          : {}),
+        ...(force ? { force: true } : {}),
+      }),
+      formatText: (value: unknown) => {
+        const record = unwrapActionEnvelope(value);
+        return (isRecord(record) ? asString(record.note) : null)
+          ?? `Deleted recording ${id}. Any proof record-stop filed from it stays in the proof drawer: ade proof list names it, ade proof rm <id> removes it.`;
+      },
+    };
   }
   if (sub === "frame") {
     return iosAction("Apple device frame", "frame", {
@@ -18122,14 +18410,22 @@ function buildAppControlSubcommandPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "screenshot" || sub === "capture") {
+    // Written here, from the image the call returns: `--out` used to be passed
+    // on as an unknown argument, so the command exited 0 and wrote nothing.
+    const outPath = readValue(args, ["--out", "--output", "--path"]);
+    if (outPath != null && (!outPath.trim() || outPath.startsWith("-"))) {
+      throw new CliUsageError("app-control screenshot --out needs a file path.");
+    }
     return {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
+        // A file gets a fresh PNG capture, not the live view's JPEG frame.
         appControlStep("result", "screenshot",
-          collectGenericObjectArgs(args),
+          collectGenericObjectArgs(args, { format: "png" }),
         ),
       ],
+      saveScreenshot: { outPath, surface: "app-control" },
     };
   }
   if (sub === "snapshot" || sub === "screen" || sub === "elements") {
@@ -18485,6 +18781,8 @@ const BROWSER_SESSION_SUBCOMMANDS = {
   click: ["click"],
   type: ["type", "type-text"],
   fill: ["fill"],
+  signin: ["signin"],
+  signup: ["signup"],
   // `clear` is deliberately ambiguous at the CLI: with an element target it
   // clears a field, without one it clears the selection. `buildBrowserPlan`
   // keeps that branch written out because the disambiguation is a flag test,
@@ -18760,6 +19058,21 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
       ? undefined
       : `Handed the browser tab to the human: ${reason}. Waiting for Hand back…`,
   };
+}
+
+/**
+ * The host a `--site` value or a page URL names, lowercased. `--site` is only
+ * a check: signin always uses the tab's own page, so an unreadable value is
+ * refused before the browser is called rather than guessed at.
+ */
+function browserSiteHost(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -19333,6 +19646,31 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           }),
         ),
       ],
+    };
+  }
+  if (sub === "signin" || sub === "signup") {
+    // The site is always the tab's own top-frame page. `--site` only checks
+    // that the tab is where the caller thinks it is; the browser checks it on
+    // the exact tab it fills, before any login is typed. `signup` makes a new
+    // password, saves the login, and types it into the sign-up form.
+    const site = readValue(args, ["--site"])?.trim() || null;
+    const account = readValue(args, ["--account", "--username", "--email"])?.trim() || null;
+    const expectedSite = site ? browserSiteHost(site) : null;
+    if (site && !expectedSite) {
+      throw new CliUsageError(`browser ${sub} --site must be a host name like example.com, not "${site}".`);
+    }
+    const actionArgs = readBrowserAgentActionArgs(args);
+    const signinArgs: JsonObject = {
+      ...actionArgs,
+      ...(account ? { username: account } : {}),
+      ...(expectedSite ? { expectedSite } : {}),
+    };
+    return {
+      kind: "execute",
+      label: `browser ${sub}`,
+      // With no saved login, signin asks the person in the chat; wait for them.
+      ...(sub === "signin" ? { minTimeoutMs: CARD_REQUEST_DEFAULT_TIMEOUT_MS + 30_000 } : {}),
+      steps: [actionStep("result", "passwords", sub, collectGenericObjectArgs(args, signinArgs))],
     };
   }
   if (
@@ -21156,14 +21494,17 @@ function cloudStep(label: string, action: string, input: JsonObject, formatter: 
 /**
  * `ade cloud push-work --json`: every lane's work committed and pushed. With
  * ADE's 25 s to answer first, this fits inside the 3-minute exec that runs
- * it. `--check` is `work-state`.
+ * it. `--check` is `work-state`. `--message <text>` is the commit message for
+ * uncommitted work (the idle cleanup's "saved by ADE before cleanup"); an
+ * older brain ignores it and uses its own.
  */
 function buildCloudPushWorkPlan(args: string[]): CliPlan {
   if (args.includes("--check")) return buildCloudWorkStatePlan();
+  const message = readValue(args, ["--message"])?.trim();
   return {
     kind: "execute",
     label: "cloud push-work",
-    steps: [{ key: "result", method: "cloud.pushWork", params: {} }],
+    steps: [{ key: "result", method: "cloud.pushWork", params: message ? { message: message.slice(0, 200) } : {} }],
     machineOnly: true,
     minTimeoutMs: 150_000,
   };
@@ -21319,22 +21660,28 @@ function formatCloudAccount(value: unknown): string {
   const billing = isRecord(account.billing) ? account.billing : {};
   const resets = typeof billing.periodEnd === "number" ? new Date(billing.periodEnd).toISOString().slice(0, 10) : "—";
   const catalog = isRecord(account.catalog) && isRecord(account.catalog.plans) ? cloudCatalogOf({ catalog: account.catalog as CloudCatalog }) : cloudCatalogOf(null);
-  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" ? account.planId : undefined;
+  const planId = account.planId === "free" || account.planId === "plus" || account.planId === "pro" || account.planId === "max" ? account.planId : undefined;
   const plan = `${cloudPlanLabelOf({ plan: account.plan === "paid" ? "paid" : "free", planId }, catalog)} plan`;
   const left = `${hoursOf(hours.leftMilli)} of ${hoursOf(hours.includedMilli)} hours left, resets ${resets}`;
   const disk = isRecord(account.disk) && typeof account.disk.usedGb === "number"
     ? typeof account.disk.limitGb === "number" ? `${account.disk.usedGb} of ${account.disk.limitGb} GB disk` : `${account.disk.usedGb} GB disk`
     : null;
-  const computers = isRecord(account.computers) && typeof account.computers.total === "number" && typeof account.computers.limit === "number"
-    ? `${account.computers.total} of ${account.computers.limit} computers`
+  // No plan limits how many computers an account has: a count, never "of N".
+  const computers = isRecord(account.computers) && typeof account.computers.total === "number"
+    ? `${account.computers.total} ${account.computers.total === 1 ? "computer" : "computers"}`
     : null;
-  const atOneTime = disk || computers ? `\n${[disk, computers].filter(Boolean).join(", ")} at one time.` : "";
+  const atOneTime = disk || computers ? `\n${[disk && `${disk} in use`, computers].filter(Boolean).join(", ")}.` : "";
   // Earned hours (referrals), used after the plan's hours; and why a computer gets no free hours.
   const earned = cloudEarnedHoursOf(account as Pick<CloudAccountState, "earnedHours">);
   const earnedLine = earned.grantedMilli > 0 ? `\n${formatCloudHours(earned.leftMilli)} earned hours left (they never expire).` : "";
   const freePlan = cloudFreePlanOf(account as Pick<CloudAccountState, "freePlan">);
   const freeLine = freePlan.sentence ? `\n${freePlan.sentence}` : "";
-  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine;
+  // The free plan's GitHub rules: why the free hours wait, and where to act (connect GitHub, or a card with no charge, in the app).
+  const github = freePlan.github;
+  const githubLine = github && github.state !== "ok" && github.sentence
+    ? `\n${github.sentence}${github.state === "no_github" ? " Connect it in Settings › Integrations › GitHub." : github.state === "too_new" && github.canUnlockWithCard ? " Add the card in Settings › ADE Cloud." : ""}`
+    : "";
+  return (hours.state === "zero" ? `${plan}: out of hours. ${left}` : `${plan}: ${left}`) + atOneTime + earnedLine + freeLine + githubLine;
 }
 
 /** Where the person enters a friend's invite: the app only, never a terminal. */
@@ -21463,24 +21810,38 @@ function buildMcpServersPlan(args: string[]): CliPlan {
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
+  // The command after `--` first: its own flags (`--help` included) are its own.
+  const execTail = args[0] === "exec" || args[0] === "run" ? takeArgsAfterTerminator(args) : null;
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
   }
   const sub = firstPositional(args) ?? "list";
+  if (sub === "exec" || sub === "run") {
+    if (!execTail?.length) {
+      throw new CliUsageError("secrets exec needs the command after `--`: ade secrets exec [--env NAME] -- npm run deploy");
+    }
+    const names = readRepeatedValues(args, ["--env", "--name"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : 10 * 60_000;
+    return {
+      kind: "execute",
+      label: "secrets exec",
+      formatter: "secrets-exec",
+      steps: [actionStep("result", "project_secret", "exec", {
+        command: execTail,
+        cwd: process.cwd(),
+        ...(names.length ? { names } : {}),
+        timeoutMs,
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+    };
+  }
   if (sub === "list" || sub === "ls") {
     return {
       kind: "execute",
       label: "secrets list",
       formatter: "project-secrets",
       steps: [actionStep("result", "project_secret", "list", {})],
-    };
-  }
-  if (sub === "pull" || sub === "sync") {
-    return {
-      kind: "execute",
-      label: "secrets pull",
-      formatter: "project-secrets",
-      steps: [actionStep("result", "project_secret", "pullFromAccount", {})],
     };
   }
   if (sub === "get" || sub === "show" || sub === "view" || sub === "read") {
@@ -23310,6 +23671,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
  * is a boolean `readFlag` anywhere, so this table can never widen the CLI.
  */
 const BROWSER_VALUE_FLAGS: readonly string[] = [
+  "--account",
   "--action",
   // `collectGenericObjectArgs` is called straight out of the browser plan and
   // consumes these, so they carry a value here like any other browser flag —
@@ -23407,6 +23769,7 @@ const BROWSER_VALUE_FLAGS: readonly string[] = [
   "--session",
   "--session-id",
   "--settle-ms",
+  "--site",
   "--state",
   "--steps",
   "--tab",
@@ -23466,6 +23829,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--option",
   "--choice",
   "--answer",
+  // `--code synced|as-is|fresh` on a command bound for another machine.
+  "--code",
   "--answers-json",
   "--schedule-id",
   "--job-id",
@@ -23473,10 +23838,11 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "-m",
   "-q",
   "-t",
-  // `chat handoff` keeps --machine (it names the move's destination, so it
-  // is not extracted for forwarding); a session given after it must not be
-  // read as the machine's value.
+  // `chat handoff|move` keep --to and its alias --machine (they name the
+  // move's destination, so they are not extracted for forwarding); a session
+  // given after one must not be read as the machine's value.
   "--machine",
+  "--to",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -23763,7 +24129,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
  * terminator, so scanning `browser upload --selector input --upload -- --help`
  * with the global set stopped at the `--` and hid a real `--help`.
  */
-function hasHelpFlag(
+export function hasHelpFlag(
   args: string[],
   carriers: ValueCarrierFlags = VALUE_CARRIER_FLAGS,
 ): boolean {
@@ -24232,6 +24598,12 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "passwords" || primary === "password")
+    return buildPasswordsPlan(args);
+  if (primary === "code" || primary === "codes")
+    return buildCodePlan(args);
+  if (primary === "messages" || primary === "texts" || primary === "imessage")
+    return buildMessagesPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
   if (primary === "cloud") {
@@ -25286,7 +25658,8 @@ class SocketJsonRpcClient {
     );
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  /** `requestOptions.timeoutMs` overrides the connection's wait for this one call. */
+  request(method: string, params?: unknown, requestOptions?: { timeoutMs?: number }): Promise<unknown> {
     if (this.closedError) return Promise.reject(this.closedError);
     const id = this.nextId;
     this.nextId += 1;
@@ -25303,7 +25676,7 @@ class SocketJsonRpcClient {
       const timer = setTimeout(() => {
         this.pending.delete(pendingKey);
         reject(new Error(`Timed out waiting for ${method}.`));
-      }, this.timeoutMs);
+      }, requestOptions?.timeoutMs ?? this.timeoutMs);
       this.pending.set(pendingKey, { resolve, reject, timer });
       this.socket.write(body, "utf8", (error) => {
         if (!error) return;
@@ -26134,12 +26507,17 @@ function buildMachinesPlan(args: string[]): CliPlan {
     // `machines rm --confirm REMOVE` would otherwise take REMOVE as the
     // machine key and complain that --confirm has no value.
     const confirmation = readValue(args, ["--confirm", "--confirmation"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
+    // From a chat, an agent cannot remove a computer: the brain asks the
+    // person in that chat (a Remove / Keep card) and waits for them. The card
+    // is the confirmation, so --confirm is not needed there.
+    const fromChat = Boolean(process.env.ADE_CHAT_SESSION_ID?.trim());
     if (!machine?.trim()) {
-      throw new CliUsageError(`machines ${sub} requires a stable machine key.`);
+      throw new CliUsageError(`machines ${sub} requires ${fromChat ? "a machine key, device id or name" : "a stable machine key"}.`);
     }
-    if (confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
+    if (!fromChat && confirmation !== ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION) {
       throw new CliUsageError(
         `machines ${sub} requires --confirm REMOVE. Run "ade machines list" first, and note the machine can only rejoin when someone confirms it on that computer.`,
       );
@@ -26147,6 +26525,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
     if (firstStandalonePositional(args)) {
       throw new CliUsageError(`machines ${sub} accepts one machine key.`);
     }
+    const timeoutMs = fromChat
+      ? (timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS)
+      : null;
     return {
       kind: "execute",
       label: "account machine remove",
@@ -26158,8 +26539,23 @@ function buildMachinesPlan(args: string[]): CliPlan {
         machine: machine.trim(),
         // The action checks the same token again: an RPC caller that skips
         // this command must still say it.
-        confirmation,
+        ...(confirmation ? { confirmation } : {}),
+        ...(timeoutMs != null ? { timeoutMs } : {}),
       })],
+      ...(timeoutMs != null
+        ? {
+            // The wait for the person is the point of the command; the
+            // transport must outlive it.
+            minTimeoutMs: timeoutMs + 30_000,
+            progressNotice: `Pending approval: removing ${machine.trim()} from the ADE account needs the person's yes. Waiting for their Remove or Keep…`,
+            exitCodeFromResult: (result: unknown) => {
+              const answer = unwrapActionEnvelope(result);
+              const status = isRecord(answer) ? answer.status : undefined;
+              if (status === undefined || status === "removed") return 0;
+              return status === "pending_approval" ? 3 : 2;
+            },
+          }
+        : {}),
     };
   }
   if (sub === "reconnect" || sub === "repair") {
@@ -28134,6 +28530,12 @@ async function runRuntimeCommand(
             };
           }
         }
+        // A person stopped it: the next start continues nothing it had at work.
+        noteBrainStopIntent("stop_for_good", {
+          runtimeDir: path.dirname(lastFailurePathForMachine()),
+          socketPath,
+          pid: runtimeInfo?.pid ?? null,
+        });
         await shutdownMachineRuntimeDaemon(client);
       } finally {
         client.close();
@@ -28145,6 +28547,8 @@ async function runRuntimeCommand(
         message: "ADE runtime endpoint stopped.",
       };
     } catch (error) {
+      // The stop did not happen: a later stop must not read it as one for good.
+      clearBrainStopIntent({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath });
       return {
         ok: false,
         running: false,
@@ -28160,7 +28564,12 @@ async function runRuntimeCommand(
   }
   if (sub === "uninstall-service") {
     const { uninstallRuntimeService } = await import("./serviceManager");
-    return uninstallRuntimeService();
+    // A person removed the service: its brain's work is not continued later.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
+    const removed = await uninstallRuntimeService();
+    if (!removed.ok) clearBrainStopIntent(intentTarget);
+    return removed;
   }
   if (sub === "service-status") {
     const { getRuntimeServiceStatus } = await import("./serviceManager");
@@ -28708,7 +29117,11 @@ async function runBrainCommand(
 
   if (sub === "stop") {
     const { uninstallRuntimeService } = await import("./serviceManager");
+    // A person stopped the brain: the next start continues nothing it had at work.
+    const intentTarget = { runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: resolveMachineAdeLayout().socketPath };
+    noteBrainStopIntent("stop_for_good", intentTarget);
     const stopped = await uninstallRuntimeService();
+    if (!stopped.ok) clearBrainStopIntent(intentTarget);
     // An open ADE app needs its brain: it puts the service back within about
     // a minute (`tryRepairServiceConnection`). Say so, so the stop does not
     // seem to have failed.
@@ -29307,6 +29720,7 @@ async function runServe(
       readMachineNextScheduledWakeAt,
     },
     { createSharedSyncListener },
+    { createLaneShareGuestRouter },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler, BOOTSTRAP_TOKEN_KEY },
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
@@ -29322,6 +29736,7 @@ async function runServe(
     import("./services/projects/projectScope"),
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
+    import("./services/sync/laneShareGuestRouter"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
     import("./services/sync/brainProjectActionsSyncHandler"),
     import("./services/sync/rosterBuilder"),
@@ -29410,6 +29825,8 @@ async function runServe(
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   // Started below for the machine brain only; the watchdog's five-minute sample drives it.
   let resourcePressureMonitor: { tick: () => Promise<void> } | null = null;
+  // The open projects the simulators' low-memory pass reaches; set once the scope registry exists.
+  let simulatorReclaimScopes: (() => import("./services/runtime/simulatorMemoryReclaimer").SimulatorReclaimScope[]) | null = null;
   // Freeze kills counted against the project that was opening, read once from
   // this machine's runtime folder; the scope registry refuses a project with
   // enough of them (`projectOpenStrikes.ts`).
@@ -29420,6 +29837,18 @@ async function runServe(
   });
   // Read once: the watchdog kills at it, and the scope registry's open queue waits no longer.
   const freezeThresholdMs = resolveBrainLoopWatchdogThresholdMs(process.env.ADE_LOOP_WATCHDOG_MS);
+  // What the previous brain left, read before the watchdog, the heartbeat and
+  // the pressure monitor below rewrite it: the facts that name why it ended
+  // (`brainRestartCause.ts`, used at `recordBrainRunStart`).
+  const restartCauseFacts: BrainStartFacts = {
+    currentVersion: VERSION,
+    lastHeartbeat: readBrainHeartbeat(layout.runtimeDir),
+    wedge: null,
+    memoryPressure: null,
+    updateRequest: readBrainUpdateRequest(layout.runtimeDir),
+  };
+  const { memoryBreachForRestartCause, readResourcePressureRecord } = await import("./services/runtime/resourcePressureMonitor");
+  restartCauseFacts.memoryPressure = memoryBreachForRestartCause(readResourcePressureRecord(layout.runtimeDir));
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     thresholdMs: freezeThresholdMs,
@@ -29431,6 +29860,10 @@ async function runServe(
     info: (event, meta) => headlessProjectLogger.info(event, meta),
     onStall: ({ observedLagMs }) => recordHostStall({ durationMs: observedLagMs }),
     onRecovered: (breadcrumb) => {
+      const wedgeAtMs = Date.parse(breadcrumb.ts);
+      if (Number.isFinite(wedgeAtMs)) {
+        restartCauseFacts.wedge = { atMs: wedgeAtMs, freezeCause: breadcrumb.freezeCause ?? null };
+      }
       // The kill landed while projects were opening: count it against them.
       const struck = projectOpenStrikes.recordFreezeKill(breadcrumb);
       if (struck.length > 0) {
@@ -29519,10 +29952,23 @@ async function runServe(
     // One machine, one sampler: the machine brain watches this computer's
     // memory, swap, database logs and its own CPU (`resourcePressureMonitor.ts`).
     const { createResourcePressureMonitor } = await import("./services/runtime/resourcePressureMonitor");
+    // The iOS simulators give memory back when this computer is short of it
+    // (`simulatorMemoryReclaimer.ts`): on the monitor's samples. The pass
+    // itself does nothing off macOS.
+    const { createSimulatorMemoryReclaimer } = await import("./services/runtime/simulatorMemoryReclaimer");
+    const simulatorReclaimer = createSimulatorMemoryReclaimer({
+      logger: headlessProjectLogger,
+      readSimulatorMb: async () => {
+        const { readProcessGroups, simulatorGroupMb } = await import("../../desktop/src/main/services/machineStats/processGroups");
+        return simulatorGroupMb(await readProcessGroups({ platform: process.platform }));
+      },
+      listScopes: () => simulatorReclaimScopes?.() ?? [],
+    });
     resourcePressureMonitor = createResourcePressureMonitor({
       runtimeDir: layout.runtimeDir,
       logger: headlessProjectLogger,
       capture: (input) => brainProductAnalytics.captureInternal(input),
+      onOpenEpisodeSample: (sample) => simulatorReclaimer.onSample(sample),
     });
   } else {
     headlessProjectLogger.info("brain.heartbeat_skipped_non_machine_socket", {
@@ -29729,6 +30175,10 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // No swap here: when memory runs out the provider restarts the whole computer. The biggest process goes instead.
+  const cloudMemoryGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudMemoryGuard")).startCloudMemoryGuard({ logger: headlessProjectLogger })
+    : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
   const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
@@ -29737,9 +30187,10 @@ async function runServe(
         scopeRegistry: () => scopeRegistry,
         getCloudBrainAccess,
         version: VERSION,
+        logger: headlessProjectLogger,
       })
     : null;
-  // What uses this computer's disk, and its last work: sent at the idle step for the dashboard.
+  // What uses this computer's disk, its last work and the files git ignores: sent at the idle step for the dashboard.
   const cloudDiskUsageReporter = cloudComputerReports
     ? (await import("../../desktop/src/main/services/adeCloud/cloudDiskUsage")).createCloudDiskUsageReporter({
         instanceId: cloudInstanceId,
@@ -29747,6 +30198,7 @@ async function runServe(
         stateFile: path.join(layout.adeDir, "cloud", "disk-usage.json"),
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath).filter((root) => !refusedRoot(root)),
         readWork: cloudComputerReports.readWork,
+        readIgnored: cloudComputerReports.readIgnored,
         send: cloudComputerReports.send,
         logger: headlessProjectLogger,
       })
@@ -29764,24 +30216,54 @@ async function runServe(
     }, 60_000);
     cleanup.unref?.();
   }
-  const cloudKeepAwake = cloudKeepAwakeModule && isAdeCloudComputer()
+  // Hours near full CPU with no chat turn or agent working: reported for the owner's daily report.
+  const cloudCpuWatch = cloudComputerReports
+    ? (await import("./services/power/cloudSustainedCpu")).createSustainedCpuWatch({
+        report: cloudComputerReports.reportSustainedCpu,
+        logger: headlessProjectLogger,
+      })
+    : null;
+  const readCloudBusy = cloudKeepAwakeModule && isAdeCloudComputer()
+    ? async () => {
+        const sources = { projectRegistry, scopeRegistry };
+        const [facts, nextWakeAt] = await Promise.all([
+          readMachineBusyFacts({ ...sources, personalChatScope }),
+          readMachineNextScheduledWakeAt(sources),
+        ]);
+        const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
+          ...facts,
+          setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
+          holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
+        }, Date.now());
+        // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+        // one goes to the account server, which wakes the machine for it.
+        return { busy, reasons, nextWakeAt, waitingOnPerson, laneSetups: facts.laneSetups ?? 0 };
+      }
+    : null;
+  // A lane launch's setup filled the disk: grow it now, while nothing else
+  // runs, and the launch's setup runs again after the restart. The launch
+  // itself still reads as `lane_setup` while it waits, so that one setup
+  // doesn't hold the grow back; a second one running does (the restart
+  // would cut it off).
+  const laneSetupDisk = cloudDiskGrower && readCloudBusy
+    ? cloudDiskGrower.setupDisk(async () => {
+        const busy = await readCloudBusy();
+        const others = busy.reasons.filter((reason) => reason !== "lane_setup");
+        if (others.length || busy.waitingOnPerson || busy.laneSetups > 1) {
+          headlessProjectLogger.info("cloud.disk_grow_for_setup_busy", {
+            reasons: others,
+            laneSetups: busy.laneSetups,
+            waitingOnPerson: Boolean(busy.waitingOnPerson),
+          });
+          return false;
+        }
+        return true;
+      })
+    : null;
+  const cloudKeepAwake = cloudKeepAwakeModule && readCloudBusy
     ? cloudKeepAwakeModule.createCloudKeepAwake({
         adeHome: layout.adeDir,
-        readBusy: async () => {
-          const sources = { projectRegistry, scopeRegistry };
-          const [facts, nextWakeAt] = await Promise.all([
-            readMachineBusyFacts({ ...sources, personalChatScope }),
-            readMachineNextScheduledWakeAt(sources),
-          ]);
-          const { busy, reasons, waitingOnPerson } = cloudKeepAwakeModule.decideCloudBusy({
-            ...facts,
-            setupRunning: cloudKeepAwakeModule.cloudReadySetupRunning(layout.adeDir),
-            holds: cloudKeepAwakeModule.cloudBusyHolds(layout.adeDir),
-          }, Date.now());
-          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
-          // one goes to the account server, which wakes the machine for it.
-          return { busy, reasons, nextWakeAt, waitingOnPerson };
-        },
+        readBusy: readCloudBusy,
         requestIdleSleep: async (instanceId) => {
           const client = await (await getCloudBrainAccess()).client();
           if (!client) throw new Error("no ADE Cloud access");
@@ -29793,6 +30275,7 @@ async function runServe(
         // Idle and behind its channel's checked image: update now (it restarts), not sleep.
         updateIfBehind: async (stillIdle) => await cloudComputerReports?.updateIfBehind(stillIdle) ?? false,
         reportBooted: async () => await cloudComputerReports?.reportBooted() ?? { sleepWhenIdle: false },
+        sampleCpu: cloudCpuWatch ? (at, reasons) => cloudCpuWatch.sample(at, reasons) : undefined,
         sendTimedWake: async (wake) => {
           const auth = brainAccountAuthService;
           if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
@@ -30254,6 +30737,16 @@ async function runServe(
   // scope's sync service owns its own lease). Machine-exclusive subsystems
   // gate on holding one or the other.
   let brainSyncHostLease: SyncHostSingletonLease | null = null;
+  // A brain hosting phone sync with no project scope follows the shared
+  // listener's port moves itself (a scope's sync service does this when one
+  // hosts): the lease records the port and the account directory re-publishes.
+  sharedSyncListener?.onPortChanged((change) => {
+    brainSyncHostLease?.updatePort(change.to);
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
+  sharedSyncListener?.onLoopbackStatusChanged(() => {
+    accountMachinePublisher?.requestPublishAfterCurrentAttempt();
+  });
   /** Set below; a project scope took sync hosting over from the projectless brain. */
   let releaseProjectlessHostLease: () => void = () => {};
   /** Set below; starts hosting the newest project, with no repair override. */
@@ -30470,6 +30963,8 @@ async function runServe(
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
+      // A lane share guest goes to its project's host (the router set below).
+      routeLaneShareGuest: async (handoff) => (await sharedSyncListener?.routeLaneShareGuest(handoff)) ?? false,
       projectCatalogProvider: machineProjectCatalogProvider,
       bootstrapCredentialStore: machineCredentialStore,
       legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
@@ -30565,6 +31060,10 @@ async function runServe(
   // Bound once the agents' machine bridge exists (below); a move asked for
   // before then is refused as "can't reach other machines".
   let crossMachineHandoffTransport: CrossMachineHandoffTransport | null = null;
+  /** Bound with the bridge (below): lets go of what a chat holds on other machines when its turn ends. */
+  let releaseRemoteWorkDevices: ((event: RemoteWorkTurnRelease) => void) | null = null;
+  /** Bound with the bridge (below): removes what an archived or deleted chat added on other machines. */
+  let releaseRemoteWorkOfEndedChat: ((event: RemoteWorkChatEnded) => void) | null = null;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     openStrikes: projectOpenStrikes,
@@ -30572,6 +31071,7 @@ async function runServe(
     logger: headlessProjectLogger,
     terminalInputDedupeLedger: brainTerminalInputDedupeLedger,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    ...(laneSetupDisk ? { laneSetupDisk } : {}),
     // Older clones saved the GitHub sign-in header in .git/config: take it out
     // once per project, off the open path (one file read when there is none).
     onProjectOpened: createSavedGithubHeaderSweep({ logger: headlessProjectLogger }),
@@ -30584,6 +31084,8 @@ async function runServe(
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),
+    ...(embedded ? {} : { releaseRemoteWorkDevices: (event: RemoteWorkTurnRelease) => releaseRemoteWorkDevices?.(event) }),
+    ...(embedded ? {} : { releaseRemoteWorkOfEndedChat: (event: RemoteWorkChatEnded) => releaseRemoteWorkOfEndedChat?.(event) }),
     syncRuntime: {
       enabled: syncEnabled,
       sharedSyncListener,
@@ -30620,6 +31122,24 @@ async function runServe(
       onRemoteFileWrite: () => { void cloudKeepAwake?.noteUse(); },
     },
   });
+  simulatorReclaimScopes = () => scopeRegistry.listReady().map((scope) => ({
+    simulator: scope.runtime.iosSimulatorService ?? null,
+    chat: scope.runtime.agentChatService ?? null,
+    pty: scope.runtime.ptyService,
+    sessions: scope.runtime.sessionService,
+  }));
+  // Lane sharing: a guest of any project of this machine reaches its lane,
+  // whatever project the shared listener serves now (`laneShareGuestRouter.ts`).
+  sharedSyncListener?.setLaneShareGuestRouter(createLaneShareGuestRouter({
+    listProjects: () => projectRegistry.list(),
+    isOpenBlocked: (projectId) => scopeRegistry.isOpenBlocked(projectId),
+    bootedSync: (projectId) => {
+      const booted = scopeRegistry.getIfBooted(projectId);
+      return booted ? booted.then((scope) => scope.runtime.syncService ?? null) : null;
+    },
+    openSync: async (projectId) => (await scopeRegistry.get(projectId)).runtime.syncService ?? null,
+    logger: headlessProjectLogger,
+  }));
   keepAwakeService?.start();
   cloudKeepAwake?.start();
   // What a brain report needs to explain a missing project or a lost scope
@@ -30646,12 +31166,34 @@ async function runServe(
   /** Set before `finish()` when the brain stops because something failed. */
   let stoppingOnFailure = false;
 
-  const finish = () => {
+  /**
+   * `requested`: someone asked this brain to stop (a signal from the service
+   * manager, an installer, a logout or reboot, or a `shutdown` request). The
+   * brain is a kept-alive service, so a start follows: the chats and CLIs at
+   * work are kept for it (`recordPlannedBrainStop`), first, before the slow
+   * teardown, unless the stop was announced as one for good. Every other stop
+   * (idle, socket lost, parent gone) has nothing at work to keep, or belongs
+   * to a brain the record does not cover.
+   */
+  const finish = (options: { requested?: boolean } = {}) => {
     if (done) return;
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
-    if (!stoppingOnFailure) markBrainStoppedCleanly();
+    if (!stoppingOnFailure) {
+      markBrainStoppedCleanly();
+      // The clean stop first: a kill during the project writes below still
+      // leaves a stopped run record.
+      markBrainRunStoppedCleanly();
+      const kept = options.requested && !embedded
+        ? recordPlannedBrainStop({ runtimeDir: path.dirname(lastFailurePathForMachine()), socketPath: serveSocketPath })
+        : null;
+      // The intent the planned-stop record took, so the next start can say an
+      // update ended this brain.
+      addBrainRunStopIntent(kept?.intent ?? null);
+      if (kept) headlessProjectLogger.info("brain.planned_stop_recorded", { ...kept });
+      else closeLiveTurnProjectsRecord();
+    }
     resolveDone?.();
   };
 
@@ -30681,29 +31223,37 @@ async function runServe(
   // install its own update: an app that owns the brain puts its own runtime
   // back over a standalone one. On a Mac or Windows PC whose app runs the
   // brain but is closed, the app is opened to do it (`requestUpdateThroughClosedApp`).
-  const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
+  const requestDesktopAppUpdateFromServe = async (
+    targetVersion: string | null,
+    requestedBy: UpdateRequestedBy | null = null,
+  ) => {
     const { hostAppPath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
       "./services/runtime/desktopAppUpdateBridge"
     );
     const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
       || resolveReachableMachineDesktopBridgeSocketPath();
-    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion });
+    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion, requestedBy });
     const closedAppPath = routing.attached ? null : hostAppPath();
     if (closedAppPath && !routing.attached) {
       headlessProjectLogger.info("brain.remote_update_opening_app", {
         appPath: closedAppPath,
         detail: routing.detail,
       });
-      routing = await requestUpdateThroughClosedApp({ appPath: closedAppPath, socketPath, targetVersion });
+      routing = await requestUpdateThroughClosedApp({ appPath: closedAppPath, socketPath, targetVersion, requestedBy });
     }
+    const requester = {
+      requestedByKind: requestedBy?.clientKind ?? "unknown",
+      requestedByName: requestedBy?.machineName ?? null,
+    };
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
       ? {
         route: "desktop_app",
         outcome: routing.result.outcome,
         version: routing.result.version,
         openedClosedApp: closedAppPath != null,
+        ...requester,
       }
-      : { route: "standalone", detail: routing.detail });
+      : { route: "standalone", detail: routing.detail, ...requester });
     return routing;
   };
 
@@ -30777,11 +31327,11 @@ async function runServe(
         callMachineMethod: async <T,>(
           machineKey: string,
           method: string,
-          _params?: Record<string, unknown>,
+          params?: Record<string, unknown>,
           callOptions?: { timeoutMs?: number },
         ): Promise<T> => {
           if (!isAgentUsageMethod(method)) throw new Error(`${method} can't run on another machine from here.`);
-          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000) as T;
+          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000, params ?? {}) as T;
         },
         localMachineKey: () => bridge.localMachineKey() ?? "",
         logger: headlessProjectLogger,
@@ -30803,10 +31353,92 @@ async function runServe(
     };
     setSharedAccountRollupFetcher(lazyFetcher((factories, deps) => factories.createAccountRollupFetcher(deps)));
     setSharedAccountLiveQuotaFetcher(lazyFetcher((factories, deps) => factories.createAccountLiveQuotaFetcher(deps)));
+    // The spend rides the same connection, built on its first use.
+    let resetSpender: Promise<AccountResetCreditSpender> | null = null;
+    setSharedAccountResetCreditSpender(async (args) => {
+      resetSpender ??= Promise.all([import("../../desktop/src/main/services/usage/accountUsageLiveRefresh"), fetcherDeps()])
+        .then(([factories, deps]) => factories.createAccountResetCreditSpender(deps))
+        .catch((error) => { resetSpender = null; throw error; });
+      try {
+        return await (await resetSpender)(args);
+      } catch (error) {
+        return { ok: false, status: "failure", message: `Could not reach ${args.label} to spend the reset: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    });
   }
+
+  /**
+   * One `ade/actions/call` to each machine a chat used, as that chat, sent
+   * and never awaited: each machine by its own key, never woken, a failure
+   * there logged and skipped. `logKey` names the logs (`<logKey>_skipped`,
+   * `<logKey>_bridge_failed`, and `<logKey>d` with `logAnswered` when set).
+   */
+  const callRemoteWorkMachines = (
+    uses: readonly RemoteWorkMachineRef[],
+    sessionId: string,
+    call: { name: string; arguments: Record<string, unknown>; timeoutMs: number; logKey: string; logAnswered?: Record<string, unknown> },
+  ): void => {
+    void getAgentMachineBridge().then((bridge) => Promise.all(uses.map((use) => bridge.call({
+      machine: use.machineKey,
+      scope: use.projectId ? { kind: "project", selector: use.projectId } : { kind: "anyProject", originUrl: null },
+      method: "ade/actions/call",
+      params: { name: call.name, arguments: call.arguments },
+      caller: { chatSessionId: sessionId, permissionLevel: null },
+      timeoutMs: call.timeoutMs,
+      wake: false,
+    }).then(() => {
+      if (call.logAnswered) headlessProjectLogger.info(`${call.logKey}d`, { machineKey: use.machineKey, ...call.logAnswered });
+    }).catch((error: unknown) => {
+      headlessProjectLogger.info(`${call.logKey}_skipped`, {
+        machineKey: use.machineKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })))).catch((error: unknown) => {
+      headlessProjectLogger.warn(`${call.logKey}_bridge_failed`, {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
 
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
+  // A chat that drove a simulator, emulator or screen on another machine
+  // through its work copy lets go of it there when its turn ends (that
+  // machine never sees the chat end). `release_remote_work_devices` there
+  // frees only this chat's own claims and powers nothing off. Best effort:
+  // a machine that is offline or asleep is skipped (never woken), and the
+  // device leases there still time out by themselves.
+  if (!embedded) {
+    releaseRemoteWorkDevices = ({ sessionId, turnId, uses }) => {
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_devices",
+        // The ended turn goes in the arguments, not the caller claim: there
+        // it would count as the chat's latest turn, after its next one.
+        arguments: turnId ? { turnId } : {},
+        timeoutMs: 30_000,
+        logKey: "remote_work.turn_release",
+      });
+    };
+  }
+
+  // A chat archived or deleted (on its own or with its lane) has what it
+  // added on each machine it used removed there at once: its work copy in
+  // every checkout, and with it the devices and App Control app it drove.
+  // A copy holding unpushed work stays (`keepUnsynced`). Never awaited by
+  // the archive or delete; a machine that is offline is cleaned by its
+  // hourly sweep instead.
+  if (!embedded) {
+    releaseRemoteWorkOfEndedChat = ({ sessionId, keepUnsynced, uses }) => {
+      callRemoteWorkMachines(uses, sessionId, {
+        name: "release_remote_work_copy",
+        arguments: { keepUnsynced, ended: true },
+        timeoutMs: 120_000,
+        logKey: "remote_work.chat_end_release",
+        logAnswered: { keepUnsynced },
+      });
+    };
+  }
+
   if (!embedded) {
     crossMachineHandoffTransport = {
       listMachines: async (options) => {
@@ -30874,10 +31506,13 @@ async function runServe(
     // start and then hourly deletes copies unused for a week and copies whose
     // chat its own machine says is deleted or archived.
     const sweepWorkCopies = async (): Promise<void> => {
-      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+      const [{ sweepMachineRemoteWork }, { sweepRemoteWorkScratch }, { parseForeignCallerSessionId }] = await Promise.all([
         import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/main/services/remoteWork/remoteWorkScratch"),
         import("../../desktop/src/shared/runtimeClientNames"),
       ]);
+      // `--scratch` folders a restart left behind.
+      sweepRemoteWorkScratch(undefined, headlessProjectLogger);
       await sweepMachineRemoteWork({
         logger: headlessProjectLogger,
         ownerGone: async (owner) => {
@@ -30904,6 +31539,10 @@ async function runServe(
   // a brain with sync off (a test brain) never opens the account's vault. One
   // runtime object, so a background make keeps its maker.
   let machineAccountRuntime: Promise<AccountDomainRuntime> | null = null;
+  const startedPasswords = <T extends { startPeriodicSync(): void }>(service: T): T => {
+    service.startPeriodicSync();
+    return service;
+  };
   const machineAccountDomains = async () => {
     const { buildMachineAccountDomainServices } = await import("../../desktop/src/main/services/adeActions/registry");
     return buildMachineAccountDomainServices(await getMachineAccountRuntime());
@@ -30947,6 +31586,7 @@ async function runServe(
         accountVaultStore: vault,
         // Read from its local copy only (cloud.status reads the default lane size).
         accountSettingsStore: stores?.settings ?? null,
+        passwordService: stores ? startedPasswords(stores.passwords) : null,
         productAnalyticsService: brainProductAnalytics,
       };
     })();
@@ -30958,11 +31598,33 @@ async function runServe(
   // bridge. Set off the boot path; a launch a quit left behind goes on once
   // the brain is up.
   if (!embedded) {
-    void import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost").then(({ setCloudLaneLaunchTransport }) => {
+    void Promise.all([
+      import("../../desktop/src/main/services/adeCloud/cloudLaneLaunchBrainHost"),
+      import("../../desktop/src/main/services/adeCloud/cloudBrainMaker"),
+    ]).then(([{ setCloudLaneLaunchTransport }, { setCloudJoinApprovalPush }]) => {
       setCloudLaneLaunchTransport({
         call: async (input) => await (await getAgentMachineBridge()).call(input),
-        setUpRepository: async (input) => await (await getAgentMachineBridge()).setUpRepository(input),
-        chatLaunchKinds: async (machine) => await (await getAgentMachineBridge()).chatLaunchKinds(machine),
+      });
+      // A machine this brain makes (`ade cloud create`, copy, move with no
+      // desktop) waits for the person's approval: the push reaches their phones.
+      setCloudJoinApprovalPush((notice) => {
+        void import("./services/push/pushPublisherService").then(({ peekSharedPushPublisherService, resolvePushRelayStateFile }) => {
+          // Peek, never create: the publisher is the one the project scopes made.
+          const publisher = peekSharedPushPublisherService(resolvePushRelayStateFile(layout.secretsDir));
+          if (!publisher) {
+            headlessProjectLogger.info("cloud.join_approval_push_skipped", { reason: "no_publisher" });
+            return;
+          }
+          publisher.handleSessionNotice({
+            sessionId: notice.chatSessionId,
+            dedupeKey: notice.dedupeKey,
+            title: notice.title,
+            body: notice.body,
+            deepLink: notice.deepLink,
+          });
+        }).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.join_approval_push_failed", { error: error instanceof Error ? error.message : String(error) });
+        });
       });
       const resumeTimer = setTimeout(() => {
         void (async () => {
@@ -30997,6 +31659,27 @@ async function runServe(
     },
   });
 
+  // A lane launch's setup that filled the disk waits through the grow's
+  // restart (`roomMark`): its project opens now, so the launch goes on
+  // (and reads as busy, so the computer stays awake) with nobody watching.
+  if (!embedded && cloudInstanceId) {
+    void (async () => {
+      const [{ hasChatLaunchAwaitingRoom }, { resolveAdeLayout }] = await Promise.all([
+        import("../../desktop/src/main/services/chat/chatLaunchRecords"),
+        import("../../desktop/src/shared/adeLayout"),
+      ]);
+      for (const project of projectRegistry.list()) {
+        if (!hasChatLaunchAwaitingRoom(path.join(resolveAdeLayout(project.rootPath).cacheDir, "chat-launches"))) continue;
+        headlessProjectLogger.info("cloud.lane_setup_resume_open", { projectId: project.projectId });
+        await scopeRegistry.get(project.projectId).catch((error: unknown) => {
+          headlessProjectLogger.warn("cloud.lane_setup_resume_open_failed", { projectId: project.projectId, error: error instanceof Error ? error.message : String(error) });
+        });
+      }
+    })().catch((error: unknown) => {
+      headlessProjectLogger.warn("cloud.lane_setup_resume_scan_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+
   // A server launch (C6): ADE's server made this computer for a caller with
   // no computer and named the launch in its env. The computer signs itself
   // in with its join code and runs the launch here. The code leaves this
@@ -31010,6 +31693,7 @@ async function runServe(
       logger: headlessProjectLogger,
       account: brainAccountAuthService,
       directoryBaseUrl: getSharedAccountDirectoryBaseUrl,
+      clerkIssuer: () => getSharedAccountAttestationConfig().issuer,
       projectRegistry,
       chatLaunchService: async (projectId) => (await scopeRegistry.get(projectId)).runtime.chatLaunchService,
       cloudClient: async () => await (await getCloudBrainAccess()).client(),
@@ -31086,15 +31770,16 @@ async function runServe(
       return await handler(request);
     }, handler);
   };
-  const createHandler = (context?: { peerDeviceId: string | null }) =>
+  const createHandler = (context?: { peerDeviceId: string | null; peerDeviceName?: string | null }) =>
     withRemoteUseNoted(context?.peerDeviceId ?? null, createMultiProjectRpcRequestHandler({
       holdCloudWork,
       remoteProviderSignIn,
       pushCloudWork: holdCloudWork
-        ? async ({ check }: { check: boolean }) => {
+        ? async ({ check, message }: { check: boolean; message?: string | null }) => {
             const { pushCloudComputerWork } = await import("./services/power/cloudPushWork");
             return await holdCloudWork("push_work", 10 * 60_000, () => pushCloudComputerWork({
               check,
+              message,
               projects: projectRegistry.list().map((record) => async () => (await scopeRegistry.get(record.projectId)).runtime),
               logger: headlessProjectLogger,
             }));
@@ -31112,6 +31797,7 @@ async function runServe(
         : null,
       serverVersion: VERSION,
       peerDeviceId: context?.peerDeviceId ?? null,
+      peerDeviceName: context?.peerDeviceName ?? null,
       agentMachineBridge: agentMachineBridgeProxy,
       crossScopeChats,
       projectRegistry,
@@ -31122,6 +31808,26 @@ async function runServe(
       providerStatus,
       keepAwakeService,
       machineAccountDomains,
+      // The machine route's account stores, as a project runtime of this
+      // brain has them: only with sync on. Passwords keeps in step with the
+      // account while it is lent, as `accountVault.call`'s copy does.
+      machineScopeAccountStores: syncEnabled
+        ? () => {
+            const stores = machineAccountStoresForRecords();
+            stores.passwords.startPeriodicSync();
+            return { settings: stores.settings, passwords: stores.passwords };
+          }
+        : null,
+      // Settings › Android devices with no project: the same machine settings
+      // file every project's emulator service reads.
+      machineScopeAndroid: embedded ? null : async () => {
+        const { createAndroidMachineSettingsService } = await import("../../desktop/src/main/services/android/androidMachineSettingsService");
+        return (onEvent) => createAndroidMachineSettingsService({
+          sdkSettingsFile: path.join(layout.adeDir, "android", "settings.json"),
+          logger: headlessProjectLogger,
+          onEvent,
+        });
+      },
       projectRecords,
       productAnalyticsService: brainProductAnalytics,
       accountAuthService: brainAccountAuthService,
@@ -31156,6 +31862,8 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
+            // Kept for the next start, which names who asked (`brainRestartCause.ts`).
+            noteAcceptedUpdate: (request) => writeBrainUpdateRequest(path.dirname(lastFailurePathForMachine()), request),
             updateInstallMode: () => readDesktopUpdateInstallMode(),
             // The app this brain reports as `desktopAppVersion`, on every platform.
             installedApp: async () => {
@@ -31179,10 +31887,11 @@ async function runServe(
             lastHttpReason: publishHealth.lastHttpReason,
           },
           lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+          lastUnplannedRestart: brainUnplannedRestart(),
         };
       },
       disposeScopesOnDispose: false,
-      onShutdown: finish,
+      onShutdown: () => finish({ requested: true }),
     }));
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   // An embedded runtime belongs to the process that spawned it. On POSIX an
@@ -31385,11 +32094,16 @@ async function runServe(
   startSyncHostOnDemand = () => startSyncHost();
   // Stops the account project sync of the brain (set where that sync is built).
   let stopAccountProjectSync: (() => void) | null = null;
+  // Set first thing in shutdown: the projects-after-crash opens stop, so no
+  // project opens after `disposeAll` took its list of open scopes.
+  let serveShutdownStarted = false;
   const disposeServeResources = async () => {
+    serveShutdownStarted = true;
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     cloudKeepAwake?.dispose();
+    cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
@@ -31775,6 +32489,35 @@ async function runServe(
     } catch {}
   }
 
+  /**
+   * Whether this brain came back after an unplanned stop (the window's
+   * restart banner), and the record of projects with a running turn that the
+   * next brain opens after a crash. Only now, with the endpoint bound: a brain
+   * that loses the race for the socket must not replace the record of the
+   * brain that crashed.
+   *
+   * Every brain reads and takes what the brain before it left, including a
+   * brain an app started because the service brain was gone. Only a brain no
+   * other process owns (the service on any platform, a hand-run `ade serve`)
+   * writes its own record: an app can end the brain it started with a kill
+   * when the app quits, which is not a crash.
+   */
+  const writesBrainRun = !embedded && readRuntimeParentPid() == null;
+  if (!embedded) {
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    recordBrainRunStart({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+      writeOwnRecord: writesBrainRun,
+      causeFacts: restartCauseFacts,
+    });
+    const restartCause = brainRestartCause();
+    if (restartCause) headlessProjectLogger.info("brain.restart_cause", restartCauseLogFields(restartCause));
+    if (writesBrainRun) enableLiveTurnProjectsRecord({ runtimeDir, socketPath: serveSocketPath });
+  }
+
   let tcpUrl: string | null = null;
   if (port != null) {
     const tcpState = createHeadlessRpcServer(createHandler);
@@ -32145,6 +32888,67 @@ async function runServe(
     platform: process.platform,
     arch: process.arch,
   });
+  if (!embedded) {
+    /**
+     * Open, one at a time, the projects in which the brain before this one
+     * had a chat or CLI turn running when it stopped: unplanned (a crash), or
+     * planned (a restart, an update, a reboot) no more than 6 h ago. Opening a
+     * project is what runs its CLI reopen and chat continue, so they
+     * continue within seconds instead of when a window or phone next opens
+     * the project. Only those projects: no other project database is opened.
+     * Nothing opens in a restart loop or with "Continue chats after restarts"
+     * off; the files are claimed either way.
+     */
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    const roots = takeLiveTurnProjectsFromStoppedBrains({
+      runtimeDir,
+      socketPath: serveSocketPath,
+      maxStoppedAgeMs: RESTART_RESUME_MAX_AGE_MS,
+      onStoppedRecord: ({ projects, stale }) => {
+        // A stale stop's projects stay closed; each one says which chats and
+        // CLIs it drops when it next opens (`reopenCliSessionsAfterRestart`).
+        headlessProjectLogger.info("brain.planned_stop_record_taken", { projects, stale });
+      },
+    });
+    if (roots.length > 0) {
+      const hold = brainStartIsInRestartLoop() ? "restart_loop" : !resolveContinueAfterRestart() ? "disabled" : null;
+      if (hold) {
+        headlessProjectLogger.info("brain.projects_after_crash_skipped", { reason: hold, projects: roots.length });
+        dropLiveTurnProjectsAfterCrash();
+      } else {
+        void (async () => {
+          const startedMs = Date.now();
+          let opened = 0;
+          for (const root of roots) {
+            if (serveShutdownStarted) break;
+            const record = projectRegistry.list().find((entry) => pathsEqual(entry.rootPath, root));
+            if (!record) {
+              settleLiveTurnProjectAfterCrash(root);
+              continue;
+            }
+            noteLiveTurnProjectOpening(root);
+            try {
+              await scopeRegistry.get(record.projectId);
+              opened += 1;
+              settleLiveTurnProjectAfterCrash(root);
+            } catch (error) {
+              // Kept on disk: if this brain crashes too, the next one tries it again.
+              noteLiveTurnProjectOpening(null);
+              headlessProjectLogger.warn("brain.project_after_crash_open_failed", {
+                projectId: record.projectId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          headlessProjectLogger.info("brain.projects_opened_after_crash", {
+            projects: roots.length,
+            opened,
+            durationMs: Date.now() - startedMs,
+          });
+        })();
+      }
+    }
+  }
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
   scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
@@ -32410,7 +33214,7 @@ async function runServe(
       // outlives its service registration and squats on the channel socket and
       // sync singleton, so force the exit if disposal does not finish in time.
       const finishFromSignal = () => {
-        finish();
+        finish({ requested: true });
         const timer = setTimeout(() => process.exit(0), 10_000);
         timer.unref();
       };
@@ -32488,7 +33292,11 @@ async function runServe(
             : "unknown";
     // A live brain already holds the endpoint (an update's handover, a second
     // start): this one leaving is not a crash for the restart-loop report.
-    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
+    if (code === "socket_owned_by_other") {
+      markBrainStoppedCleanly();
+      markBrainRunStoppedCleanly();
+      closeLiveTurnProjectsRecord();
+    }
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
@@ -36033,6 +36841,19 @@ function formatIosSimStatus(value: unknown): string {
   const activeSession = isRecord(status.activeSession)
     ? status.activeSession
     : {};
+  // The device a lane drives is its own (`laneDevice`). With no session and
+  // no lane device, `activeDevice` is only a simulator booted on that Mac,
+  // which this lane does not drive: it is named as that, not as "active".
+  const laneDevice = isRecord(status.laneDevice) ? status.laneDevice : null;
+  const claimed = isRecord(status.activeSession) || isRecord(status.deviceSession);
+  const activeIsLanes = Boolean(laneDevice && asString(laneDevice.udid) && asString(laneDevice.udid) === asString(activeDevice.udid));
+  let laneDeviceText: string | null = null;
+  if (laneDevice) {
+    const laneState = activeIsLanes && activeDevice.state ? ` (${String(activeDevice.state)})` : "";
+    laneDeviceText = `${asString(laneDevice.name) ?? asString(laneDevice.udid) ?? "its own"}${laneState}`;
+  } else if (status.supported !== false) {
+    laneDeviceText = "none yet (ade apple start gives this lane its own)";
+  }
   // The device half and the live view, because `status` is the one command an
   // agent is told to poll. Leaving them to `--json` only meant a reader saw no
   // stream block and concluded the live view was off while it was running.
@@ -36046,9 +36867,10 @@ function formatIosSimStatus(value: unknown): string {
     renderKeyValues("ADE iOS simulator", [
       ["supported", status.supported],
       ["platform", status.platform],
+      ["lane device", laneDeviceText],
       [
-        "active device",
-        activeDevice.name
+        claimed || activeIsLanes ? "active device" : "booted, not this lane's",
+        activeDevice.name && !(activeIsLanes && !claimed)
           ? `${activeDevice.name} (${activeDevice.state})`
           : null,
       ],
@@ -36160,6 +36982,8 @@ function formatIosSimLaunch(value: unknown): string {
       "warning: launched a prebuilt binary — current changes not included.",
     );
   }
+  const generated = xcodeGenNote(session.generatedXcodeProjects);
+  if (generated) lines.push(generated);
   return lines.join("\n");
 }
 
@@ -36723,6 +37547,7 @@ function nextTempScreenshotPath(): string {
 function saveScreenshotResult(
   result: unknown,
   outPath: string | null,
+  surface: "browser" | "app-control" = "browser",
 ): { savedPath: string; width: number | null; height: number | null; bytes: number } {
   const unwrapped = unwrapActionEnvelope(result);
   const shot = isRecord(unwrapped) ? unwrapped : {};
@@ -36733,12 +37558,16 @@ function saveScreenshotResult(
     // reach the fallback and print a stack trace instead of one clear line.
     const reason = asString(shot.reason);
     throw new CliToolError(
-      `browser screenshot failed — the browser returned no screenshot image${reason ? ` (${reason})` : ""}.`,
+      `${surface} screenshot failed — ${surface === "browser" ? "the browser" : "the app"} returned no screenshot image${reason ? ` (${reason})` : ""}.`,
       undefined,
     );
   }
   const bytes = Buffer.from(match[1]!, "base64");
-  const savedPath = path.resolve(outPath ?? nextTempScreenshotPath());
+  // Named for what the bytes are: a JPEG (a live frame) never lands under a
+  // .png name, which PNG-only readers refuse.
+  const jpeg = /^data:image\/jpe?g;/.test(dataUrl!);
+  const requested = path.resolve(outPath ?? nextTempScreenshotPath());
+  const savedPath = jpeg && /\.png$/i.test(requested) ? requested.replace(/\.png$/i, ".jpg") : requested;
   fs.mkdirSync(path.dirname(savedPath), { recursive: true });
   // A temp screenshot stays private: exclusive create, owner-only. An explicit
   // `--out` is the caller's own path and keeps the default mode.
@@ -37307,8 +38136,28 @@ function domElementTable(elements: JsonObject[]): string {
 function formatBrowserAction(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const trace = firstRecord(result, ["trace"]);
+  const signin = firstRecord(result, ["signin"]);
+  const signinFilled = Array.isArray(signin?.filled)
+    ? signin.filled.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  // The result names the site, the account and which fields were filled —
+  // never a value. The password stays inside the page.
+  const signinSite = asString(signin?.site) ?? "the page";
+  const signinLine = !signin
+    ? null
+    : signin.created === true
+      ? `signed up: a new password for ${signinSite}${asString(signin.username) ? ` (${asString(signin.username)})` : ""} is saved in Passwords and typed into the form (filled: ${signinFilled.join(", ") || "nothing"}). Submit the form; \`ade browser signin\` uses it from now on.`
+      : signin.signInYourself === true
+        ? `not signed in: the person chose to sign in to ${signinSite} themselves. Run \`ade browser handoff --tab <id> --reason "sign in to ${signinSite}"\` to wait for them.`
+        : `signed in: ${signinSite} as ${asString(signin.username) ?? "(saved login)"} (filled: ${signinFilled.join(", ") || "nothing"})`;
   return [
-    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    ...(signinLine ? [signinLine] : []),
+    ...formatActionAnswerLines(result, {
+      action: asString(trace?.action),
+      // signin targets no single element: it types into whichever login fields
+      // the page presented, and the `signed in` line already says which.
+      ...(signin ? { noElement: "the page's login fields" } : {}),
+    }),
     "",
     formatBrowserObservation(value),
   ].join("\n");
@@ -37791,9 +38640,6 @@ function formatMcpServerRemove(value: unknown): string {
 
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  if (isProjectSecretPullResult(value)) {
-    return projectSecretPullSummary(value);
-  }
   if (typeof record.value === "string") {
     return record.value;
   }
@@ -37817,32 +38663,26 @@ function formatProjectSecrets(value: unknown): string {
   }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
-      ? `Deleted ADE secret ${record.name}.`
-      : `No ADE secret named ${record.name} was found.`;
+      ? `Deleted ${record.name}.`
+      : `This project has no secret of its own named ${record.name}.`;
   }
+  // Where a secret lives, as the person reads it in Passwords & Secrets.
+  const where = (storage: unknown) => (storage === "device" ? "this computer" : "every computer");
   if (typeof record.name === "string") {
-    const storage = typeof record.storage === "string" ? ` in ${record.storage} storage` : "";
-    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars${storage}).`;
+    return `Saved ${record.name} (${cell(record.valueLength)} chars) for this project, on ${where(record.storage)}.`;
   }
   const secrets = Array.isArray(record.secrets)
     ? record.secrets.filter(isRecord)
     : Array.isArray(value)
       ? value.filter(isRecord)
       : [];
-  const rows = secrets.map((secret) => [
-    secret.name,
-    secret.valueLength,
-    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
-    secret.updatedAt,
-  ]);
-  const storage = isRecord(record.storage) ? record.storage : {};
+  const rows = secrets.map((secret) => [secret.name, secret.valueLength, where(secret.storage), secret.updatedAt]);
   const header = renderTable(
-    ["name", "chars", "where", "updated"],
+    ["name", "chars", "on", "updated"],
     rows,
-    "ADE project secrets\n(no secrets found)",
+    "This project's secrets\n(none yet: add one in Settings › Passwords & Secrets, or ade secrets request)",
   );
-  const pathLine = typeof storage.path === "string" ? `\n\nLocal cache: ${storage.path}` : "";
-  return `${header}${pathLine}`;
+  return `${header}\n\nIn Passwords & Secrets: those for every project, then this project's own.`;
 }
 
 /**
@@ -38462,7 +39302,7 @@ function formatTextOutput(
         // `ade report-issue` exists for: it reads local files only, so it still
         // works on the machine where the brain will not come up.
         if (!doctorRows.some((row) => row.status === "fail")) return table;
-        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue\` and file the printed report.`;
+        return `${table}\n\nIf a failure above is unexplained, run \`ade report-issue --send\` to send the report to the ADE team privately.`;
       }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
@@ -38605,6 +39445,17 @@ function formatTextOutput(
       return describeReconnectOutcome(result).message;
     }
     case "account-machine-remove": {
+      // From a chat: the person's answer to the Remove / Keep card.
+      const answer = unwrapActionEnvelope(value);
+      if (isRecord(answer) && typeof answer.status === "string" && typeof answer.next === "string") {
+        const machine = isRecord(answer.machine) ? asString(answer.machine.name) ?? asString(answer.machine.machineKey) : null;
+        const head = answer.status === "removed"
+          ? `Removed ${machine ?? "the computer"} from the ADE account.`
+          : answer.status === "pending_approval"
+            ? `Pending approval: ${machine ?? "the computer"} was not removed.`
+            : `Not removed: ${machine ?? "the computer"} stays on the ADE account.`;
+        return `${head}\n${answer.next}`;
+      }
       const removed = isRecord(value) ? asString(value.machineKey) : null;
       // The directory purges the removed machine's Activity as part of the same
       // request, so a plain success here means both landed; a partial removal
@@ -38915,6 +39766,12 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "passwords":
+      return formatPasswords(value);
+    case "secrets-exec":
+      return formatSecretsExec(value);
+    case "passwords-code":
+      return formatPasswordsCode(value);
     case "integrations":
       return formatIntegrations(value);
     case "cloud-status":
@@ -39178,6 +40035,8 @@ function inferFormatter(
     label === "browser key" ||
     label === "browser scroll" ||
     label === "browser fill" ||
+    label === "browser signin" ||
+    label === "browser signup" ||
     label === "browser clear" ||
     label === "browser wait" ||
     label === "browser hover" ||
@@ -40529,6 +41388,9 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
 const FOLLOW_SHELL_POLL_MS = 1_000;
 /** The most output `shell start --wait --json` keeps (the end of it). */
 const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+/** A screen code cut off at the end of a read: a lone ESC, a CSI with no final byte, an unterminated OSC. */
+// eslint-disable-next-line no-control-regex
+const FOLLOW_SHELL_PARTIAL_CODE = /\x1b(?:\[[0-?]*[ -/]*|\][^\x07\x1b]*\x1b?|[ -/]*)$/;
 
 /**
  * Follow a shell `shell start` just started until it ends: print its output as
@@ -40548,14 +41410,36 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
-  const readMore = async (): Promise<JsonObject | null> => {
-    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
-    if (!isRecord(read)) return null;
-    const data = typeof read.data === "string" ? read.data : "";
-    if (data) {
-      if (options.text) process.stdout.write(data);
-      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+  // A read can end inside a screen code; its start waits for the next read
+  // so the pipe never gets half a code the stripper could not match.
+  let heldCode = "";
+  const writeText = (data: string, last: boolean): void => {
+    if (!options.text) return;
+    if (process.stdout.isTTY) {
+      if (data) process.stdout.write(data);
+      return;
     }
+    let text = `${heldCode}${data}`;
+    heldCode = "";
+    const partial = last ? null : FOLLOW_SHELL_PARTIAL_CODE.exec(text);
+    if (partial && text.length - partial.index <= 256) {
+      heldCode = text.slice(partial.index);
+      text = text.slice(0, partial.index);
+    }
+    if (text) process.stdout.write(stripAnsiWithOptions(text, { preserveCarriageReturns: true }));
+  };
+  const readMore = async (last = false): Promise<JsonObject | null> => {
+    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
+    if (!isRecord(read)) {
+      if (last) writeText("", true);
+      return null;
+    }
+    const data = typeof read.data === "string" ? read.data : "";
+    // To a pipe (an agent reading it), without the screen codes a terminal
+    // adds (Windows' console sends a title, clear screen and mode switches
+    // around the first line of output).
+    if (data || last) writeText(data, last);
+    if (data) output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     if (typeof read.nextSince === "number") since = read.nextSince;
     return read;
   };
@@ -40569,7 +41453,7 @@ async function followShellToExit(
         : null));
     if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
-      await readMore();
+      await readMore(true);
       const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
       return {
         ...created,
@@ -41252,19 +42136,19 @@ function isChatLocateCommand(command: string[]): boolean {
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
-  const parsed = extractMachineTargeting(parseCliArgs(argv));
+  // A device command with no --machine and no --lane follows the chat's
+  // device choice (`ade devices use`), exactly as --machine would.
+  const parsed = extractMachineTargeting(await withChatDeviceChoice(parseCliArgs(argv)));
   await applyAccountProjectSelector(parsed.options);
-  const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
-  try {
+  return await withShellScopeFor(parsed.options, async () => {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
+    if (isDevicesCommand(parsed.command)) return await runDevicesCommand(parsed);
     if (!parsed.options.machine) {
       const sessionId = chatIdForLookup(parsed);
       return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);
     }
     return await runOnMachine(parsed);
-  } finally {
-    restoreShellScope();
-  }
+  });
 }
 
 /**
@@ -41357,47 +42241,79 @@ async function applyAccountProjectSelector(options: GlobalOptions): Promise<void
  * names another project with `--project-root` must not pick that lane or
  * worktree up as its default: the lane is not in the named project, and a
  * worktree there would route the call back to the shell's project. For this
- * run only, the shell's lane and worktree are dropped (an explicit
- * `--workspace-root` still wins). Returns the undo.
+ * run only, the shell's lane and worktree are dropped. An explicit
+ * `--workspace-root` wins, and stands in for the shell's `ADE_WORKSPACE_ROOT`
+ * for the run: plan builders (`proof`'s `callerRoot`) read only the env.
  */
-function dropShellScopeForOtherProject(options: GlobalOptions): () => void {
+function withShellScopeFor<T>(options: GlobalOptions, fn: () => Promise<T>): Promise<T> {
+  const workspaceRoot = options.workspaceRoot;
+  const run = workspaceRoot ? () => withShellEnv({ ADE_WORKSPACE_ROOT: path.resolve(workspaceRoot) }, fn) : fn;
   const explicitRoot = options.projectRoot;
   const shellRoot = process.env.ADE_PROJECT_ROOT?.trim();
-  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return () => {};
-  const saved: Array<[string, string | undefined]> = [];
-  for (const name of ["ADE_PROJECT_ROOT", "ADE_WORKSPACE_ROOT", "ADE_LANE_ID"] as const) {
-    if (name === "ADE_WORKSPACE_ROOT" && options.workspaceRoot) continue;
-    saved.push([name, process.env[name]]);
-    delete process.env[name];
-  }
-  if (saved.some(([name, value]) => name !== "ADE_PROJECT_ROOT" && value?.trim())) {
+  if (!explicitRoot || !shellRoot || pathsEqual(path.resolve(shellRoot), path.resolve(explicitRoot))) return run();
+  const names = ["ADE_PROJECT_ROOT", "ADE_LANE_ID", ...(workspaceRoot ? [] : ["ADE_WORKSPACE_ROOT"])];
+  if (names.some((name) => name !== "ADE_PROJECT_ROOT" && process.env[name]?.trim())) {
     process.stderr.write(
       `ade: --project-root ${explicitRoot} is not this shell's project (${shellRoot}); `
       + "ignoring the shell's ADE_LANE_ID and ADE_WORKSPACE_ROOT for this command.\n",
     );
   }
-  return () => {
+  return withoutShellEnv(names, run);
+}
+
+/**
+ * Runs `fn` with the named variables of this shell out of the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withoutShellEnv<T>(names: readonly string[], fn: () => T): T {
+  return withShellEnv(Object.fromEntries(names.map((name) => [name, undefined])), fn);
+}
+
+/**
+ * Runs `fn` with these variables set (undefined: removed) in the environment,
+ * and puts them back when it ends (when its promise settles, for an async one).
+ */
+function withShellEnv<T>(values: Readonly<Record<string, string | undefined>>, fn: () => T): T {
+  const names = Object.keys(values);
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  for (const name of names) {
+    const value = values[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  const restore = () => {
     for (const [name, value] of saved) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   };
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  if (result instanceof Promise) return result.finally(restore) as T;
+  restore();
+  return result;
+}
+
+/**
+ * Runs `fn` without this shell's lane. That lane is a lane on THIS machine:
+ * a plan for another machine that defaulted to it would name a lane that
+ * machine has never heard of. There the caller says `--lane <id>` (from
+ * `ade lanes list --machine …`) or lets the target pick, as `ade chat launch`
+ * does with a new lane.
+ */
+export function withoutShellLane<T>(fn: () => T): T {
+  return withoutShellEnv(["ADE_LANE_ID"], fn);
 }
 
 async function runOnMachine(
   parsed: ReturnType<typeof extractMachineTargeting>,
 ): Promise<{ output: string; exitCode: number }> {
-  // This shell's lane is a lane on THIS machine. Plan builders that default
-  // to it would name a lane the other machine has never heard of; there the
-  // caller says `--lane <id>` (from `ade lanes list --machine …`) or lets the
-  // target pick, as `ade chat launch` does with a new lane. Only for this run.
-  const laneId = process.env.ADE_LANE_ID;
-  delete process.env.ADE_LANE_ID;
-  try {
-    return await runParsedCli(parsed);
-  } finally {
-    if (laneId !== undefined) process.env.ADE_LANE_ID = laneId;
-  }
+  return await withoutShellLane(() => runParsedCli(parsed));
 }
 
 /**
@@ -41686,29 +42602,38 @@ async function runParsedCli(
         projectRoot: fs.existsSync(path.join(projectRoot, ".ade")) ? projectRoot : null,
         cliVersion: VERSION,
       });
-      // Copy-then-open, the same order the desktop button uses: the issue
-      // template asks the user to paste the report from their clipboard, so
-      // opening it without copying first sends them to a form with nothing to
-      // paste. Both steps are best effort and the report is printed regardless.
-      const openedIssue = plan.open ? await openDiagnosticIssue(built) : null;
       // Saved BEFORE the upload is attempted, so the path printed under a
       // failure is a file that already exists rather than one written after we
       // knew we needed it.
       const savedPath = plan.send ? saveDiagnosticReportCopy(built, { surface: "cli" }) : null;
       // Sending is opt-in and never blocks the printed report: a failed upload
-      // still leaves the user holding everything they need to file by hand.
+      // still leaves the user holding everything they need.
       const sent = plan.send ? await sendDiagnosticReport(built) : null;
+      // The full report goes to ADE privately, never to a public page. The
+      // public GitHub issue exists only after a send, and holds only the
+      // reference, the version and the OS family.
+      const publicUrl = publicIssueUrlForSend(built, sent);
+      const opened = publicUrl && plan.open ? await openPublicIssue(publicUrl) : false;
       if (parsed.options.text) {
-        const clipboardNote = openedIssue?.copied ? "\n(the report is on your clipboard)" : "";
         const sendNote = sent ? `\n${describeDiagnosticUpload(sent, savedPath)}` : "";
+        const nextStep = !plan.send
+          ? "\nTo send this report to the ADE team privately, run `ade report-issue --send`. Do not post it on a public page."
+          : publicUrl
+            ? opened
+              ? `\nOpened a public GitHub issue that holds only the reference, ADE version and OS:\n${publicUrl}`
+              : `\nTo also open a public GitHub issue (it holds only the reference, ADE version and OS), use:\n${publicUrl}`
+            : "";
+        const openNote = plan.open && !publicUrl
+          ? "\nNothing opened: a public GitHub issue needs a report sent with --send."
+          : "";
         return {
-          output: `${built.report}\nFile the issue at:\n${built.issueUrl}${clipboardNote}${sendNote}\n`,
+          output: `${built.report}${sendNote}${nextStep}${openNote}\n`,
           exitCode: 0,
         };
       }
       return {
         output: formatOutput(
-          buildReportIssuePayload(built, openedIssue, sent, savedPath),
+          buildReportIssuePayload(built, sent, savedPath, publicUrl ? { url: publicUrl, opened } : null),
           parsed.options,
           undefined,
         ),
@@ -41877,10 +42802,11 @@ async function runParsedCli(
       };
     }
     if (plan.saveScreenshot && (plan.saveScreenshot.outPath || parsed.options.text)) {
-      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath);
+      const surface = plan.saveScreenshot.surface ?? "browser";
+      const saved = saveScreenshotResult(result, plan.saveScreenshot.outPath, surface);
       return {
         output: parsed.options.text
-          ? `${browserTargetLine(unwrapActionEnvelope(result))}${renderKeyValues("ADE browser screenshot", [
+          ? `${surface === "browser" ? browserTargetLine(unwrapActionEnvelope(result)) : ""}${renderKeyValues(surface === "browser" ? "ADE browser screenshot" : "ADE App Control screenshot", [
             ["saved", saved.savedPath],
             ["size", saved.width && saved.height ? `${saved.width}x${saved.height}` : null],
             ["bytes", saved.bytes],
@@ -42058,7 +42984,10 @@ async function main(): Promise<void> {
         iosSimulatorSubcommandFromArgv(process.argv.slice(2)),
       );
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
-      const desktopHint = macDesktopErrorHint(error.message);
+      // A refusal from another machine (`--machine`) is about that machine,
+      // not this one.
+      const refusedOnOtherMachine = isRecord(error.details) && typeof error.details.machine === "string";
+      const desktopHint = macDesktopErrorHint(error.message, refusedOnOtherMachine ? null : process.platform);
       if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
       const androidHint = androidEmulatorErrorHint(error.message);
       if (androidHint) await writeProcessOutput(process.stderr, `${androidHint}\n`);
@@ -42134,7 +43063,6 @@ export {
   MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
-  parseSnoozeDurationMs,
   resolveSnoozeUntilIso,
   checkLinearReadiness,
   findProjectRoots,

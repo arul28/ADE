@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,6 +22,7 @@ import {
   trackBrainMemoryPressure,
   startBrainLoopWatchdog,
 } from "./brainLoopWatchdog";
+import { brainLoopFreezeCause } from "./brainLoopWatchdogWorker";
 
 describe("brainLoopWatchdog", () => {
   it("allows a 30 second event-loop stall before the watchdog terminates the brain", () => {
@@ -29,6 +31,26 @@ describe("brainLoopWatchdog", () => {
 
   it("builds a valid worker program from the tested watchdog evaluator", () => {
     expect(() => new Function(buildBrainLoopWatchdogWorkerSource())).not.toThrow();
+  });
+
+  // A restart cannot give a paged-out brain its memory back or make a drive
+  // answer, and it ends every terminal and agent session the brain holds.
+  it.each([
+    { name: "a busy loop of its own", major: 3, minor: 900, cpuMs: 30_000, fsMs: null, cause: "self" },
+    { name: "a busy loop that allocates as it spins", major: 3, minor: 120_000, cpuMs: 29_000, fsMs: null, cause: "self" },
+    { name: "memory read back from swap", major: 400, minor: 2_000, cpuMs: 3_000, fsMs: null, cause: "memory" },
+    { name: "compressed memory being unpacked", major: 0, minor: 120_000, cpuMs: 8_000, fsMs: null, cause: "memory" },
+    { name: "Windows, where every fault reads as major", major: null, minor: null, cpuMs: 1_000, fsMs: null, cause: "self" },
+    { name: "a file call the drive never answers", major: 0, minor: 500, cpuMs: 100, fsMs: 25_000, cause: "drive" },
+    { name: "a file call still inside a healthy disk's time", major: 0, minor: 500, cpuMs: 100, fsMs: 2_000, cause: "self" },
+  ])("blames $name on the right party", ({ major, minor, cpuMs, fsMs, cause }) => {
+    expect(brainLoopFreezeCause({
+      majorFaults: major,
+      minorFaults: minor,
+      cpuMs,
+      windowMs: 30_000,
+      syncFsCallBlockedMs: fsMs,
+    })).toBe(cause);
   });
 
   it("detects a main-thread heartbeat gap while the worker check cadence stays healthy", () => {
@@ -397,6 +419,33 @@ describe("brainLoopWatchdog", () => {
         fs.readFileSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE), "utf8"),
       )).toEqual(breadcrumb);
       expect(readBrainLoopWatchdogLastWedge(runtimeDir)).toEqual(breadcrumb);
+    } finally {
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  // A brain starting beside one that is waiting out a machine-caused freeze
+  // (two brains on one home) must not count that live wait as a crash.
+  it.each([
+    ["leaves a fresh breadcrumb whose writer is still running", () => process.ppid, 0, false],
+    ["recovers a fresh breadcrumb whose writer has exited", () => spawnSync(process.execPath, ["-e", ""]).pid, 0, true],
+    ["recovers a live pid's breadcrumb once it is too old to be that writer's", () => process.ppid, 10 * 60_000, true],
+  ])("%s", (_name, writerPid, ageMs, recovers) => {
+    const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-loop-watchdog-writer-"));
+    const breadcrumb = {
+      pid: writerPid(),
+      lastCommand: "projects.open",
+      blockedMs: 45_000,
+      ts: new Date(Date.now() - ageMs).toISOString(),
+      freezeCause: "memory",
+    };
+    const breadcrumbPath = path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE);
+    fs.writeFileSync(breadcrumbPath, JSON.stringify(breadcrumb), "utf8");
+    try {
+      const recovered = recoverBrainLoopWatchdogBreadcrumb({ runtimeDir, warn: vi.fn() });
+      expect(recovered?.freezeCause ?? null).toBe(recovers ? "memory" : null);
+      expect(fs.existsSync(breadcrumbPath)).toBe(!recovers);
+      expect(readBrainLoopWatchdogLastWedge(runtimeDir)?.lastCommand ?? null).toBe(recovers ? "projects.open" : null);
     } finally {
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }

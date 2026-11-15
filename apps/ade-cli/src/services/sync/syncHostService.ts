@@ -246,7 +246,7 @@ import {
 import type { LaneShareGuestRole } from "./laneShareGuestPolicy";
 import { type LaneShareRightsStore } from "../../../../desktop/src/main/services/lanes/laneShareRightsStore";
 import type { LaneShareMoveService } from "./laneShareMoveService";
-import { createLaneShareGuestHost } from "./laneShareGuestHost";
+import { createLaneShareGuestHost, type LaneShareGuestHandoff } from "./laneShareGuestHost";
 import type { LaneShareGrantSource } from "./laneShareGrantService";
 import {
   createRelayAuthorizationLifecycle,
@@ -310,7 +310,8 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { adeLoopbackForwardPort, createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { enqueueTailscaleServe } from "./tailscaleServeCommand";
 import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
@@ -357,6 +358,7 @@ import {
   type SyncPeerCursorResolution,
 } from "./syncPeerCursorResolution";
 import {
+  detachSocketForHandoff,
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
@@ -553,10 +555,11 @@ function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boo
  * Ports still advertised through `tailscale serve` that ADE published on an
  * earlier run and never tore down.
  *
- * Only ADE's exact signature is reclaimed: a port inside ADE's own sync range
- * forwarding to 127.0.0.1 on the SAME port. A hand-rolled `tailscale serve`
- * that happens to sit in that range — anything forwarding elsewhere — is left
- * strictly alone.
+ * Only ADE's shape is reclaimed: a port inside ADE's own sync range
+ * forwarding to 127.0.0.1 on the same port, or to the side door a few ports
+ * above it (`adeLoopbackForwardPort`). A hand-rolled `tailscale serve` of any
+ * other shape is left alone; one of exactly this shape is removed only while
+ * nothing serves at either end (the caller probes both).
  */
 export function staleAdeTailnetServePorts(
   serveStatusJson: string,
@@ -576,11 +579,33 @@ export function staleAdeTailnetServePorts(
     if (!Number.isInteger(port)) continue;
     if (port < DEFAULT_SYNC_HOST_PORT || port > SYNC_HOST_MAX_PORT) continue;
     if (port === currentPort) continue;
-    const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
-    if (forward !== `127.0.0.1:${port}`) continue;
+    // ADE forwards a sync port to itself, or to the side door the listener
+    // opened while another program held 127.0.0.1:<port>.
+    if (adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward) == null) continue;
     stale.push(port);
   }
   return stale.sort((left, right) => left - right);
+}
+
+/** Sync port → the loopback port its `tailscale serve --tcp` entry forwards to. */
+export function adeTailnetServeTargets(serveStatusJson: string): Map<number, number> {
+  const targets = new Map<number, number>();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return targets;
+  }
+  const tcp = (parsed as { TCP?: unknown } | null)?.TCP;
+  if (!tcp || typeof tcp !== "object") return targets;
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    const target = Number.isInteger(port)
+      ? adeLoopbackForwardPort(port, (value as { TCPForward?: unknown } | null)?.TCPForward)
+      : null;
+    if (Number.isInteger(port) && target != null) targets.set(port, target);
+  }
+  return targets;
 }
 
 export function isRuntimeHostPairingRecord(
@@ -799,7 +824,7 @@ export function buildSyncProjectCatalogMessages(args: {
  * `read*`, `search*`). Everything else — including verbs that only look
  * harmless, like `git.fetch` — is treated as a write.
  */
-const MAX_CONCURRENT_PEER_READS = 4;
+export const MAX_CONCURRENT_PEER_READS = 4;
 
 const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileRequest["action"]>([
   "listWorkspaces",
@@ -834,8 +859,16 @@ export function isConcurrentReadCommandAction(action: string): boolean {
  * lanes) and writes only the host's own lane-status cache; `prs.refresh`
  * asks GitHub (1-1.5 s a call) and writes only the host's PR cache. As
  * barriers they held a connecting phone's chat open behind them.
+ * `ai.cursorCloudFleet` is the older name of `ai.getCursorCloudFleet` (the
+ * same `getFleet` read, which writes only its own cache). It asks Cursor's
+ * API and took 49 s on a brain that had just started; as a barrier it held a
+ * browser's chat link behind it for all of that time.
  */
-const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set(["lanes.refreshSnapshots", "prs.refresh"]);
+const CONCURRENT_READ_COMMAND_ACTIONS: ReadonlySet<string> = new Set([
+  "lanes.refreshSnapshots",
+  "prs.refresh",
+  "ai.cursorCloudFleet",
+]);
 
 export function isConcurrentReadEnvelope(envelope: ParsedSyncEnvelope): boolean {
   // Opening a chat reads its transcript and records the subscription on this
@@ -1323,6 +1356,14 @@ type SyncHostServiceArgs = {
    * to the listener instead of closing them.
    */
   sharedListener?: SharedSyncListener | null;
+  /**
+   * Lane sharing: a host that serves only guests of this project's shared
+   * lanes, beside the brain's served project (`syncService.adoptLaneShareGuest`).
+   * It never attaches to the shared listener (guests are handed to it), never
+   * publishes discovery or a Tailscale route, runs no changeset pump and no
+   * brain status broadcast, and on dispose closes its guests (they reconnect).
+   */
+  laneShareGuestsOnly?: boolean;
   discoveryEnabled?: boolean;
   runtimeKind?: SyncRuntimeKind;
   runtimeVersion?: string;
@@ -2934,8 +2975,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     lifecycle.initialize(initial);
     peer.relayAuthorization = lifecycle;
   };
-  // Lane sharing: guests. `laneShareGuestHost.ts` owns the guest hello, the
-  // grants and rights of connected guests, and the grant refresh;
+  // The listener that routes a guest on to another project (none for a host without one).
+  const routingListener = args.sharedListener ?? null;
+  // Lane sharing: guests. `laneShareGuestHost.ts` owns the grants and rights
+  // of connected guests and the grant refresh; `laneShareGuestHello.ts` the
+  // guest hello and hand-off;
   // `laneShareGuestGates.ts` owns the gates, all default refuse:
   //   - inbound: `admitLaneShareGuestEnvelope` (queued) and
   //     `admitLaneShareGuestImmediateEnvelope` (top of
@@ -2966,10 +3010,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     requestedProjectChatScope,
     normalizeTerminalInputId,
     buildSyncHostHelloOkPayload,
+    releasePeerForHandoff: (peer) => releasePeerForHandoff(peer as PeerState),
+    ...(routingListener
+      ? { routeLaneShareGuest: (handoff: LaneShareGuestHandoff) => routingListener.routeLaneShareGuest(handoff) }
+      : {}),
   });
   const {
     trackLaneShareTurns,
     handleLaneShareGuestHello,
+    acceptHandedOffLaneShareGuest,
+    laneShareHasPendingGuestWork,
     admitLaneShareGuestEnvelope,
     admitLaneShareGuestImmediateEnvelope,
     laneShareGuestTypedLineStillAllowed,
@@ -2981,6 +3031,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
   } = laneShareGuestHost;
 
@@ -3330,6 +3381,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   const sharedListener = args.sharedListener ?? null;
+  // A guests-only host (`syncService.adoptLaneShareGuest`) serves only lane
+  // share guests handed to it. It changes five things, all gated here:
+  // no poll pump wake, no brain status timer, no shared-listener attach, no
+  // tailnet route, and dispose closes its guests ("Sync host changed projects").
+  const guestsOnly = args.laneShareGuestsOnly === true;
   const expectedLoopbackNonce = sharedListener?.getExpectedLoopbackNonce()
     ?? generateLoopbackNonce();
   // Self-owned listener (desktop-embedded / standalone): only created when no
@@ -3643,7 +3699,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
    * active interval — the same bound the free-running interval gave.
    */
   function wakePollPump(): void {
-    if (disposed) return;
+    // Guests never get changesets: a guests-only host has nothing to pump.
+    if (disposed || guestsOnly) return;
     const intervalMs = pollPumpHasReceivableWork() ? pollIntervalMs : pollIdleIntervalMs;
     if (pollTimer && pollTimerIntervalMs === intervalMs) return;
     if (pollTimer) clearTimeout(pollTimer);
@@ -3734,7 +3791,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     if (dbVersionError) throw dbVersionError;
   }
-  const brainStatusTimer = setInterval(() => {
+  // Brain status never reaches a guest, so a guests-only host has none to send.
+  const brainStatusTimer = guestsOnly ? null : setInterval(() => {
     broadcastBrainStatus({ periodic: true });
   }, brainStatusIntervalMs);
   const accountLeaseTimer = setInterval(() => {
@@ -3775,6 +3833,46 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!peer.authTimeout) return;
     clearTimeout(peer.authTimeout);
     peer.authTimeout = null;
+  }
+
+  /**
+   * A guest socket moves to another project's host (`LaneShareGuestHandoff`):
+   * this host drops the peer without closing the socket and removes every
+   * listener it put on it, so nothing here acts on the socket again. Only a
+   * peer still in its hello is released; it has no subscription or presence.
+   */
+  function releasePeerForHandoff(peer: PeerState): void {
+    peer.lifecycleGeneration += 1;
+    abortPeerOperations(peer, "Sync peer moved to another project.");
+    clearPeerAuthTimeout(peer);
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
+    peer.envelopeChunks.reset();
+    detachSocketForHandoff(peer.ws);
+    peers.delete(peer);
+    laneShareGuestSocketClosed(peer);
+  }
+
+  /**
+   * A guest socket handed to this host by the brain's router. False when it
+   * closed on the way. The hello runs in the peer's queue, as a frame would.
+   */
+  function adoptLaneShareGuest(handoff: LaneShareGuestHandoff): boolean {
+    if (disposed || handoff.ws.readyState !== WebSocket.OPEN) return false;
+    const peer = registerPeer(handoff.ws, handoff.remoteAddress, handoff.remotePort, handoff.transportOrigin);
+    const negotiatedCompression = negotiateSyncApplicationCompression(handoff.hello.compression);
+    const generation = peer.lifecycleGeneration;
+    peer.messageQueue = peer.messageQueue
+      .then(() => acceptHandedOffLaneShareGuest(peer, handoff, generation, negotiatedCompression))
+      .catch((error) => {
+        args.logger.warn("sync_host.lane_share_guest_adopt_failed", { error: error instanceof Error ? error.message : String(error) });
+        try {
+          peer.ws.close(4003, "Authentication failed");
+        } catch {
+          // ignore close failures
+        }
+      });
+    return true;
   }
 
   function abortPeerOperations(peer: PeerState, reason: string): void {
@@ -4097,9 +4195,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // The previous owner (host service or listener parking) must leave no
       // listeners behind — this host attaches its own message/close/error
       // handlers via registerPeer.
-      ws.removeAllListeners("message");
-      ws.removeAllListeners("close");
-      ws.removeAllListeners("error");
+      detachSocketForHandoff(ws);
       const peer = registerPeer(
         ws,
         sanitizeRemoteAddress(snapshot.remoteAddress),
@@ -4276,7 +4372,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   let detachSharedListener: (() => void) | null = null;
-  if (sharedListener) {
+  let detachSharedListenerStatus: (() => void) | null = null;
+  if (sharedListener && !guestsOnly) {
+    // The listener re-checks loopback on its own (and moves off a shadowed
+    // port). Mirror its verdict so route health and Tailscale publication
+    // follow it instead of the last check this host happened to run.
+    detachSharedListenerStatus = sharedListener.onLoopbackStatusChanged(() => {
+      if (disposed) return;
+      loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      const port = sharedListener.getPort();
+      if (port == null) return;
+      void publishValidatedDiscovery(port).catch((error) => {
+        args.logger.warn("sync_host.discovery_refresh_failed", {
+          port,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
     detachSharedListener = sharedListener.setConnectionHandler((connection) => {
       const peer = registerPeer(
         connection.ws,
@@ -4575,14 +4687,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // and it also pinned the listener to a constant port (8787) that never
     // matched the live socket. Per-node serve works on any node and targets the
     // actual port phones must connect to.
-    const signature = `serve:${port}`;
+    // Tailscale Serve forwards to 127.0.0.1: the listener's own port, or its
+    // local side door while another program holds 127.0.0.1:<port>. The
+    // tailnet-facing port stays the sync port either way.
+    const targetPort = sharedListener?.getLoopbackPort() ?? port;
+    const signature = `serve:${port}->${targetPort}`;
     if (tailnetServeSignature === signature && !options?.force) return;
     if (tailnetServeLastFailureSignature === signature && !options?.force) return;
     const publishToken = ++tailnetServePublishSequence;
     tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
     tailnetServePort = port;
-    const target = `tcp://127.0.0.1:${port}`;
+    const target = `tcp://127.0.0.1:${targetPort}`;
     updateTailnetDiscoveryStatus({
       state: "publishing",
       serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4598,7 +4714,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" })
+    void enqueueTailscaleServe(() => execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" }))
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4625,7 +4741,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // must never delay or endanger advertising the live port.
         if (tailnetServeActivePublishToken === publishToken) {
           void reclaimStaleTailnetServes(port).catch(() => {});
-          if (discoveryEnabled) void tailnetHttps.publish(port);
+          if (discoveryEnabled) void tailnetHttps.publish(port, { targetPort });
         }
       })
       .catch((error: unknown) => {
@@ -4693,12 +4809,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const reclaimStaleTailnetServes = async (currentPort: number): Promise<void> => {
     const cli = resolveTailscaleCliPath();
     let stale: number[];
+    let serveStatusJson: string;
     try {
       const { stdout } = await execFileAsync(
         cli,
         ["serve", "status", "--json"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
       );
+      serveStatusJson = stdout;
       stale = staleAdeTailnetServePorts(stdout, currentPort);
       // The same read answers for ADE's stale HTTPS entries.
       void tailnetHttps.reclaimStale(stdout);
@@ -4708,6 +4826,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (stale.length === 0) return;
+    // Where each entry forwards: the sync port itself, or a side door.
+    const staleTargets = adeTailnetServeTargets(serveStatusJson);
     let reclaimed = 0;
     for (const port of stale) {
       // The snapshot is stale the moment reclaiming starts: turning off a low
@@ -4726,12 +4846,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // into nothing. Probe immediately before each teardown, so the window
       // between the snapshot and this `off` is closed too.
       if (await isLocalPortServing(port)) continue;
+      const target = staleTargets.get(port);
+      if (target != null && target !== port && await isLocalPortServing(target)) continue;
       try {
-        await execFileAsync(
+        await enqueueTailscaleServe(() => execFileAsync(
           cli,
           ["serve", `--tcp=${port}`, "off"],
           { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-        );
+        ));
         reclaimed += 1;
       } catch {
         // A single stubborn entry must not stop the rest.
@@ -4758,7 +4880,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
   });
 
-  const unregisterTailnetRoute = registerMachineTailnetRoute({
+  const unregisterTailnetRoute = guestsOnly ? () => {} : registerMachineTailnetRoute({
     tcp: () => ({
       published: tailnetDiscoveryStatus.state === "published",
       error: tailnetDiscoveryStatus.state === "published" ? null : tailnetDiscoveryStatus.error,
@@ -4766,7 +4888,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     https: () => tailnetHttps.route(),
     recheckHttps: async () => {
       if (tailnetServePort == null || tailnetDiscoveryStatus.state !== "published") return;
-      await tailnetHttps.publish(tailnetServePort, { force: true });
+      await tailnetHttps.publish(tailnetServePort, {
+        force: true,
+        targetPort: sharedListener?.getLoopbackPort() ?? tailnetServePort,
+      });
     },
   });
 
@@ -4794,11 +4919,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCliPath();
     try {
       // Plain per-node teardown matching the `serve --bg --tcp=<port>` form.
-      await execFileAsync(
+      await enqueueTailscaleServe(() => execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
         { timeout: 10_000, windowsHide: true, killSignal: "SIGKILL" },
-      );
+      ));
       updateTailnetDiscoveryStatus({
         state: "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
@@ -4837,6 +4962,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     port: number,
     options?: { force?: boolean },
   ): Promise<void> => {
+    if (sharedListener) {
+      // The shared listener owns the local route: its own port, or a side
+      // door while another program holds 127.0.0.1:<port>. Probing the port
+      // here would call a working side door a failure.
+      try {
+        await sharedListener.revalidateLoopback();
+      } finally {
+        loopbackValidationStatus = sharedListener.getLoopbackValidationStatus();
+      }
+      return;
+    }
     // Re-publish paths pass force:true so a shadow that arose AFTER startup is
     // caught before we (re)advertise the port; the startup path keeps the cheap
     // short-circuit once a port is validated.
@@ -4872,17 +5008,50 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
-  const publishValidatedDiscovery = async (
+  // One publication at a time: two overlapping ones (a port move and a
+  // loopback verdict change) could each tear down the other's Tailscale route.
+  let discoveryChain: Promise<unknown> = Promise.resolve();
+  const publishValidatedDiscovery = (
     port: number,
     options?: { forceLan?: boolean; forceTailnet?: boolean },
   ): Promise<void> => {
+    const run = discoveryChain.then(
+      () => publishValidatedDiscoveryNow(port, options),
+      () => publishValidatedDiscoveryNow(port, options),
+    );
+    discoveryChain = run.catch(() => undefined);
+    return run;
+  };
+
+  const publishValidatedDiscoveryNow = async (
+    port: number,
+    options?: { forceLan?: boolean; forceTailnet?: boolean },
+  ): Promise<void> => {
+    // A publication for a port the shared listener has already left is stale:
+    // the move's own refresh publishes the live port. Checked again after the
+    // await below, which runs an external `tailscale serve`.
+    const isStale = (): boolean => sharedListener != null && sharedListener.getPort() !== port;
+    if (isStale()) return;
     const lanPortChanged = bonjourPort != null && bonjourPort !== port;
     const tailnetPortChanged = tailnetServePort != null && tailnetServePort !== port;
     if (lanPortChanged) unpublishLanDiscovery();
     if (tailnetPortChanged) await unpublishTailnetDiscovery();
-    if (disposed) return;
+    if (disposed || isStale()) return;
+    // LAN peers reach the wildcard bind, not loopback, so a program holding
+    // 127.0.0.1:<port> does not stop LAN. Tailscale Serve forwards to
+    // 127.0.0.1:<port>, so only that route waits for loopback to answer as
+    // this listener (the shared listener moves off a shadowed port by itself).
     publishLanDiscovery(port, { force: options?.forceLan });
-    publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    // Read the shared listener's live verdict, not a copy: a check that
+    // finished for an older port must not unpublish the current one.
+    const localRouteReady = sharedListener
+      ? sharedListener.getLoopbackPort() != null
+      : loopbackValidationStatus.port === port && loopbackValidationStatus.loopbackAdeValidated;
+    if (localRouteReady) {
+      publishTailnetDiscovery(port, { force: options?.forceTailnet });
+    } else if (tailnetServePort != null) {
+      await unpublishTailnetDiscovery();
+    }
   };
 
   function peerForSocket(ws: WebSocket): PeerState | null {
@@ -7862,7 +8031,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Lane sharing: its own path end to end. It shares no state with the
       // owner's auth kinds below (no pairing record, no arbitration).
       if (hello.auth?.kind === "guest") {
-        await handleLaneShareGuestHello(peer, envelope, hello, hello.auth, lifecycleGeneration, negotiatedCompression);
+        await handleLaneShareGuestHello(peer, envelope.requestId, hello, hello.auth, lifecycleGeneration, negotiatedCompression);
         return;
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
@@ -8427,7 +8596,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // peers; paired phones/browsers get the channel closed with a clear
         // reason instead of reaching the full runtime action registry.
         isRecordBackedSyncAuthKind(peer.authKind) && isRuntimeHostPairingRecord(peer.pairingRecord),
-        { peerDeviceId: isRecordBackedSyncAuthKind(peer.authKind) ? peer.pairedDeviceId : null },
+        isRecordBackedSyncAuthKind(peer.authKind)
+          ? { peerDeviceId: peer.pairedDeviceId, peerDeviceName: peer.pairingRecord?.peerName ?? null }
+          : { peerDeviceId: null },
       );
       return;
     }
@@ -9334,16 +9505,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         try {
           // A project-host handoff may happen long after the listener's bind
           // probe. Force a fresh identity check before this host republishes
-          // LAN/Tailscale discovery for the shared port.
+          // discovery for the shared port.
           await sharedListener!.revalidateLoopback();
+        } catch (error) {
+          // A shadowed loopback is a degraded route, not a failed host: relay
+          // pipes arrive in process and LAN on the wildcard bind. Refusing to
+          // host here is what used to take every route down at once. The
+          // listener's self-heal moves off the port; Tailscale waits for it.
+          if (!isLoopbackShadowedError(error)) throw error;
+          args.logger.warn("sync_host.loopback_shadowed_hosting_degraded", {
+            port,
+            error: error.message,
+          });
+          void sharedListener!.healNow();
         } finally {
           loopbackValidationStatus = sharedListener!.getLoopbackValidationStatus();
         }
-        if (!loopbackValidationStatus.loopbackAdeValidated || loopbackValidationStatus.port !== port) {
-          throw new Error(`The shared sync listener on 127.0.0.1:${port} was not ADE-validated.`);
-        }
-        await publishValidatedDiscovery(port);
-        return port;
+        await publishValidatedDiscovery(sharedListener!.getPort() ?? port);
+        return sharedListener!.getPort() ?? port;
       }
       if (startupError) {
         throw startupError;
@@ -9427,11 +9606,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const port = getListeningPort();
       if (port != null) {
         // Re-validate the loopback listener before republishing so a post-startup
-        // shadow cannot re-advertise a stale port. On failure validateListeningPort
-        // marks the route unvalidated and throws, so we skip the publish.
+        // shadow cannot re-advertise Tailscale onto another program. A shadow
+        // only withholds Tailscale (see publishValidatedDiscovery); any other
+        // failure skips the publish.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          await publishValidatedDiscovery(port, options);
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, options);
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9463,9 +9648,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Re-enabling discovery must also re-validate the loopback listener so a
         // shadow that appeared while discovery was off cannot be published.
         void (async () => {
-          await validateListeningPort(port, { force: true });
-          publishLanDiscovery(port, { force: true });
-          publishTailnetDiscovery(port, { force: true });
+          try {
+            await validateListeningPort(port, { force: true });
+          } catch (error) {
+            // A shadow withholds only Tailscale (publishValidatedDiscovery).
+            if (!sharedListener || !isLoopbackShadowedError(error)) throw error;
+            void sharedListener.healNow();
+          }
+          await publishValidatedDiscovery(getListeningPort() ?? port, { forceLan: true, forceTailnet: true });
         })().catch((error) => {
           args.logger.warn("sync_host.discovery_refresh_failed", {
             port,
@@ -9525,7 +9715,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
-      return { ...loopbackValidationStatus };
+      // The shared listener owns the verdict; read it live, not a copy.
+      return sharedListener?.getLoopbackValidationStatus() ?? { ...loopbackValidationStatus };
     },
 
     getLanePresenceSnapshot(): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> {
@@ -9577,6 +9768,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     },
 
+    /**
+     * Tell the person's connected devices that the provider sign-ins changed
+     * (a pass or key saved, a sign-in applied here). Only a tiny signal: an
+     * open sign-ins card reads `providerLogins.status` once. Never to a lane
+     * share guest, whose sign-ins these are not. Sent as required: nothing
+     * re-derives it, so a backlogged peer is closed instead and reads again
+     * when it reconnects.
+     */
+    broadcastProviderLoginsChanged(): void {
+      const payload = { changedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.laneShareGuest || peer.ws.readyState !== WebSocket.OPEN) continue;
+        sendRequired(peer, "provider_logins_changed", payload, null, { action: "provider_logins_changed" });
+      }
+    },
+
     async broadcastProjectCatalog(): Promise<void> {
       const payload = await buildProjectCatalogPayload();
       if (bonjourPort != null) {
@@ -9601,7 +9808,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     applyLaneShareRights,
     closeLaneShareGrant,
     closeLaneShareLane,
+    notifyLaneShareLaneChanged,
     laneShareConnectedDevices,
+    /** A guest socket the brain's router hands to this project (`LaneShareGuestHandoff`). */
+    adoptLaneShareGuest,
+    /**
+     * Whether a guests-only host must stay: an open socket, a guest message
+     * queued behind a turn (its start is checked here), or a move it runs.
+     */
+    laneShareGuestsBusy(): boolean {
+      return peers.size > 0 || laneShareHasPendingGuestWork();
+    },
     /** A move of this grant changed: its guests read their state again. */
     notifyLaneShareGuestState(grantId: string): void {
       notifyLaneShareGuests((role) => role.grantId === grantId);
@@ -9629,7 +9846,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (pollTimer) clearTimeout(pollTimer);
       pollTimer = null;
       clearInterval(heartbeatTimer);
-      clearInterval(brainStatusTimer);
+      if (brainStatusTimer) clearInterval(brainStatusTimer);
       if (ackBrainStatusTimer) clearTimeout(ackBrainStatusTimer);
       ackBrainStatusTimer = null;
       clearInterval(accountLeaseTimer);
@@ -9641,7 +9858,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } catch {
         // Never throw from dispose.
       }
-      if (!server) {
+      if (guestsOnly) {
+        // Only guests, handed to this host: close them with the code a guest
+        // reads as "reconnect", so each lands on its project's host again.
+        for (const peer of peers) {
+          abortPeerOperations(peer, "Sync host stopped.");
+          clearPeerAuthTimeout(peer);
+          try {
+            peer.ws.close(4002, "Sync host changed projects");
+          } catch {
+            // ignore close failures
+          }
+        }
+        peers.clear();
+      } else if (!server) {
         // Shared listener: do NOT close the server or the peer sockets this
         // host does not own. Detach the connection handler and hand every
         // open, authenticated socket back to the listener so the next hosted
@@ -9650,6 +9880,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // was disabled), the listener closes them after a grace period.
         detachSharedListener?.();
         detachSharedListener = null;
+        detachSharedListenerStatus?.();
+        detachSharedListenerStatus = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
           abortPeerOperations(peer, "Sync host changed.");
@@ -9659,9 +9891,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.relayAuthorization?.dispose();
           peer.relayAuthorization = null;
           peer.envelopeChunks.reset();
-          peer.ws.removeAllListeners("message");
-          peer.ws.removeAllListeners("close");
-          peer.ws.removeAllListeners("error");
+          detachSocketForHandoff(peer.ws);
           // No new terminal input can enter after listener detachment. Drain
           // the dedicated synchronous-input queue before exporting receipts so
           // a write and its dedupe record move to the next host atomically.

@@ -160,3 +160,33 @@ describe("WorkManageLaneDialogHost delete on another machine", () => {
     expect(studioDeleteState()).toBeUndefined();
   });
 });
+
+describe("WorkManageLaneDialogHost delete on this computer", () => {
+  const localPin: OpenProjectBinding = {
+    kind: "local",
+    key: "local:/Users/me/ADE",
+    rootPath: "/Users/me/ADE",
+    displayName: "ADE",
+  };
+  const localLane: LaneSummary = { ...studioLane, worktreePath: "/Users/me/ADE/.ade/worktrees/feature" };
+
+  afterEach(() => {
+    cleanup();
+    useAppStore.setState({ laneDeleteProgressByLaneId: {}, lanes: [], projectBinding: null });
+    Reflect.deleteProperty(window, "ade");
+  });
+
+  it("deletes a lane of the tab's copy on that copy when the menu passes no machine", async () => {
+    useAppStore.setState({ projectBinding: localPin, lanes: [localLane] });
+    const deleteMock = vi.fn(async () => {});
+    Object.defineProperty(window, "ade", { configurable: true, value: { lanes: { delete: deleteMock } } });
+    render(<WorkManageLaneDialogHost laneId={localLane.id} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Select worktree" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Delete lane" }));
+    });
+
+    expect(deleteMock).toHaveBeenCalledWith(expect.objectContaining({ laneId: localLane.id }), localPin);
+  });
+});

@@ -5,9 +5,12 @@ import { Worker } from "node:worker_threads";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
 import {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
+  type BrainLoopFreezeCause,
   buildBrainLoopWatchdogWorkerSource,
 } from "./brainLoopWatchdogWorker";
 import { SYNC_FS_TRACKED_METHODS, syncFsCallBuffer } from "./syncFsCallTracker";
+import { BRAIN_HEARTBEAT_FILE, BRAIN_HEARTBEAT_INTERVAL_MS } from "./brainHeartbeat";
+import { processIsAlive } from "./parentDeathWatchdog";
 
 export {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
@@ -89,6 +92,11 @@ export type BrainLoopWatchdogBreadcrumb = {
   diagnosticReportPath?: string | null;
   /** The macOS `sample` of the wedged brain, taken before the kill. */
   nativeSamplePath?: string | null;
+  /**
+   * Who froze the loop: the brain itself, or the machine (memory, a drive)
+   * past the wait ceiling. Absent on breadcrumbs written before it existed.
+   */
+  freezeCause?: BrainLoopFreezeCause;
 };
 
 export type BrainLoopWatchdogEvaluation = {
@@ -463,6 +471,9 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
     if (typeof parsed.nativeSamplePath === "string" || parsed.nativeSamplePath === null) {
       breadcrumb.nativeSamplePath = parsed.nativeSamplePath;
     }
+    if (parsed.freezeCause === "self" || parsed.freezeCause === "memory" || parsed.freezeCause === "drive") {
+      breadcrumb.freezeCause = parsed.freezeCause;
+    }
     const fsCall = parsed.blockedFsCall;
     if (fsCall && typeof fsCall === "object" && typeof fsCall.path === "string" && typeof fsCall.method === "string") {
       breadcrumb.blockedFsCall = {
@@ -505,12 +516,38 @@ function rotateLatestArtifact(latestPath: string, lastPath: string): string | nu
   }
 }
 
+/**
+ * How fresh a breadcrumb must be for its live writer to count as still
+ * running. A waiting or dying brain rewrites it at least every heartbeat
+ * interval (15 s); a pid alive past this age is a reused one.
+ */
+const BREADCRUMB_LIVE_WRITER_MAX_AGE_MS = 2 * 60_000;
+
+/**
+ * Whether another brain on this home is still writing the breadcrumb: one
+ * waiting out a machine-caused freeze, or inside its kill grace. Its file is
+ * evidence in progress, not a crash, so a brain starting beside it leaves it.
+ */
+function breadcrumbWriterStillRunning(breadcrumbPath: string): boolean {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(breadcrumbPath, "utf8")) as { pid?: unknown; ts?: unknown };
+    const pid = parsed.pid;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+    const writtenAtMs = typeof parsed.ts === "string" ? Date.parse(parsed.ts) : Number.NaN;
+    if (!Number.isFinite(writtenAtMs) || Date.now() - writtenAtMs > BREADCRUMB_LIVE_WRITER_MAX_AGE_MS) return false;
+    return processIsAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
 export function recoverBrainLoopWatchdogBreadcrumb(args: {
   runtimeDir: string;
   warn?: (event: string, meta: Record<string, unknown>) => void;
 }): BrainLoopWatchdogBreadcrumb | null {
   const breadcrumbPath = path.join(args.runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE);
   if (!fs.existsSync(breadcrumbPath)) return null;
+  if (breadcrumbWriterStillRunning(breadcrumbPath)) return null;
   const breadcrumb = readBreadcrumb(breadcrumbPath) ?? {
     lastCommand: "unknown",
     blockedMs: 0,
@@ -738,6 +775,9 @@ export function startBrainLoopWatchdog(args: {
         thresholdMs,
         checkIntervalMs: BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
         breadcrumbFile: BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
+        // The machine heartbeat a wait on the machine keeps fresh (see the worker).
+        heartbeatFile: BRAIN_HEARTBEAT_FILE,
+        heartbeatRefreshMs: BRAIN_HEARTBEAT_INTERVAL_MS,
         reportEnabled,
         reportPath,
         reportSignal,

@@ -14,6 +14,7 @@ import { droidProjectSlugForCwd } from "./discoverDroid";
 import { createExternalSessionsService } from "./externalSessionsService";
 import { createImportedSessionStore, importedSessionsPath } from "./importedSessionStore";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
+import { resetSharedProviderInstanceStoresForTests } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
 import { qwenProjectSlugForCwd } from "./discoverQwen";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../../shared/types/externalSessions";
@@ -2187,5 +2188,108 @@ describe("externalSessionsService ACP provider imports", () => {
         provider === "kimi" ? `kimi -S ${id}` : `copilot --resume=${id}`,
       );
     });
+  });
+});
+
+describe("account-aware import", () => {
+  const lane = (laneCwd: string) => ({
+    id: "lane-1",
+    name: "Cloud 6",
+    branchRef: "refs/heads/ade/cloud-6",
+    color: null,
+    laneType: "worktree" as const,
+    worktreePath: laneCwd,
+  });
+
+  function makeAccountService(
+    create: (args: PtyCreateArgs) => Promise<{ sessionId: string; ptyId: string; pid: number }>,
+    laneCwd: string,
+  ) {
+    const homeDir = path.join(root, "home");
+    const adeHome = path.join(root, "ade-home");
+    const acctA = path.join(adeHome, "provider-homes", "claude", "acct-a");
+    const acctB = path.join(adeHome, "provider-homes", "claude", "acct-b");
+    fs.mkdirSync(adeHome, { recursive: true });
+    fs.writeFileSync(path.join(adeHome, "provider-instances.json"), JSON.stringify({
+      version: 1,
+      instances: [
+        { id: "claude", provider: "claude", label: "Default", configHome: path.join(homeDir, ".claude"), createdAt: "1970-01-01T00:00:00.000Z" },
+        { id: "acct-a", provider: "claude", label: "a@example.com", configHome: acctA, createdAt: "2026-01-01T00:00:00.000Z" },
+        { id: "acct-b", provider: "claude", label: "b@example.com", configHome: acctB, createdAt: "2026-01-01T00:00:00.000Z" },
+      ],
+      defaults: {},
+      settings: {},
+    }), "utf8");
+    resetSharedProviderInstanceStoresForTests();
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot: path.join(root, "repo"),
+      homeDir,
+      env: { HOME: homeDir, ADE_HOME: adeHome },
+      laneService: { list: () => [lane(laneCwd)], getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create },
+      logger: makeLogger(),
+    });
+    return { service, acctA, acctB };
+  }
+
+  function writeClaudeSession(configHome: string, cwd: string, id: string): void {
+    writeJsonl(path.join(configHome, "projects", claudeProjectSlugForCwd(cwd), `${id}.jsonl`), [
+      { type: "user", entrypoint: "cli", sessionId: id, cwd, timestamp: "2026-11-13T05:00:00.000Z", message: { role: "user", content: "hello" } },
+      { type: "assistant", entrypoint: "cli", sessionId: id, cwd, timestamp: "2026-11-13T05:01:00.000Z", message: { role: "assistant", model: "claude-fable-5-2", content: [{ type: "text", text: "hi" }] } },
+    ]);
+  }
+
+  it("resumes a session on the account the user picked, and keeps the original copy", async () => {
+    const laneCwd = path.join(root, "repo", ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-1", ptyId: "pty-1", pid: 1 }));
+    const { service, acctA, acctB } = makeAccountService(create, laneCwd);
+    const id = "eeeeeeee-5555-4555-8555-555555555555";
+    writeClaudeSession(acctA, laneCwd, id);
+
+    const rows = await service.list({ providers: ["claude"], scope: "project", laneId: "lane-1", limit: 50 });
+    expect(rows.find((row) => row.id === id)?.accountId).toBe("acct-a");
+
+    await service.importExternalSession({
+      provider: "claude",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      accountId: "acct-b",
+    });
+
+    const movedPath = path.join(acctB, "projects", claudeProjectSlugForCwd(laneCwd), `${id}.jsonl`);
+    expect(fs.existsSync(movedPath)).toBe(true);
+    expect(fs.existsSync(path.join(acctA, "projects", claudeProjectSlugForCwd(laneCwd), `${id}.jsonl`))).toBe(true);
+    const ptyArgs = create.mock.calls[0]![0];
+    expect(ptyArgs.env?.CLAUDE_CONFIG_DIR).toBe(acctB);
+    expect(ptyArgs.resumeMetadata?.launch.instanceId).toBe("acct-b");
+  });
+
+  it("leaves the chosen account untouched when the import is refused", async () => {
+    const laneCwd = path.join(root, "repo", ".ade", "worktrees", "lane-1");
+    const otherCwd = path.join(root, "repo", ".ade", "worktrees", "lane-2");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    fs.mkdirSync(otherCwd, { recursive: true });
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-2", ptyId: "pty-2", pid: 2 }));
+    const { service, acctA, acctB } = makeAccountService(create, laneCwd);
+    const id = "ffffffff-6666-4666-8666-666666666666";
+    writeClaudeSession(acctA, otherCwd, id);
+
+    await expect(service.importExternalSession({
+      provider: "claude",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      accountId: "acct-b",
+      enforceLaneScopeCwd: laneCwd,
+    })).rejects.toThrow(/not permitted/);
+
+    expect(fs.existsSync(path.join(acctB, "projects"))).toBe(false);
+    expect(create).not.toHaveBeenCalled();
   });
 });

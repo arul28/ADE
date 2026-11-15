@@ -173,8 +173,9 @@ Main process:
   accepts it.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
-  receipt-backed sign-in migration and hydration for provider API keys, Linear
-  OAuth refresh credentials, and repository-scoped project secrets. A source is
+  receipt-backed sign-in migration and hydration for provider API keys and
+  Linear OAuth refresh credentials; its `project_secrets` source moves a
+  project's old secrets into Passwords & Secrets. A source is
   marked complete only after the account confirms the write; crashes and
   unavailable contexts leave it pending, and a later vault-ready tick retries
   those pending sources.
@@ -293,7 +294,7 @@ Main process:
   account, preset or credential id cannot escape the directory ADE owns.
 - `apps/desktop/src/shared/providerColors.ts` — the one provider colour table
   (usage light/dark pairs, picker badge tokens), so a second hex map cannot
-  drift from the iOS mirror.
+  drift from it.
 - `apps/desktop/src/main/services/account/accountMachineInventoryLiveRefresh.ts`
   — live detail for one account-directory machine row. Asks only machines
   already online and already connected in the paired pool, so expanding a row
@@ -454,18 +455,19 @@ Main process:
 - `apps/desktop/src/main/services/config/laneOverlayMatcher.ts` —
   matches lanes against `LaneOverlayPolicy[]` to produce the effective
   overlay.
-- `apps/desktop/src/main/services/secrets/projectSecretService.ts` and
-  `projectSecretEnv.ts` — encrypted project-secret CRUD plus bounded dotenv
-  parsing, selected batch import, and mode-`0600` export to the runtime
-  machine's Downloads folder.
+- `apps/desktop/src/main/services/secrets/projectSecretService.ts` — one
+  project's view of Passwords & Secrets (`ade secrets`, process env, webhook
+  checks) and the one-time move of the old per-project store;
+  `projectSecretEnv.ts` — bounded dotenv parsing and the mode-`0600` export
+  file.
 
 Shared types and IPC:
 
 - `apps/desktop/src/shared/types/config.ts` — central type module for
   the configuration schema (tests, overlays, automations, lane
   templates, port allocation, proxy, OAuth, integrations, AI).
-- `apps/desktop/src/shared/types/projectSecrets.ts` — project-secret list,
-  value, dotenv preview/import, and export request/result contracts.
+- `apps/desktop/src/shared/types/projectSecrets.ts` — the project view's
+  list, value, set and delete contracts.
 - `apps/desktop/src/shared/types/core.ts` — `AutoUpdatePreferences` and
   `DEFAULT_AUTO_UPDATE_PREFERENCES` (`automaticInstall: false`,
   `onlyWhenIdle: true`) plus the renderer-visible update snapshot contract.
@@ -491,8 +493,7 @@ Shared types and IPC:
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
     getSnapshot, initializeOrRepair, runIntegrityCheck, inspectRemoval,
     removeCopy)
-  - `ade.projectSecrets.*` (list, get, set, delete, chooseEnvFile,
-    previewEnvImport, importEnv, exportEnv)
+  - `ade.passwords.*` (call, reveal, chooseEnvFile, projects)
   - `ade.ai.*` and settings-specific channels per integration
   - `ade.agentChat.setScheduledWorkPaused` for the per-chat scheduler control;
     the global pause is written through `ade.ai.updateConfig`
@@ -505,7 +506,9 @@ Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.onboarding`,
   `window.ade.projectConfig`, `window.ade.project`,
-  `window.ade.projectSecrets`, `window.ade.updateGetPreferences`,
+  `window.ade.passwords`, `window.ade.projectSecrets` (a project's list and
+  set on the pinned machine, for chat and webhook cards),
+  `window.ade.updateGetPreferences`,
   `window.ade.updateSetPreferences`, plus the integration-specific surfaces
   (`window.ade.github`, etc.).
 
@@ -517,9 +520,19 @@ Renderer — onboarding:
   greeting, the date, a one-line headline (`home/homeHeadline.ts`) and running /
   needs-you counts, over a row of actions (**Add project**, **Chat without a
   project**, **Browser**, and the recents side panel), above the widget grid.
-  Recents list recent local and remote projects, open or forget entries, and
-  launch project creation, clone, or folder selection before a project-bound
-  route is available. Each row carries the same right-click project menu as a
+  The Projects card lists the account's projects, one row per project, and
+  its count is the account's count (`ade projects list --account`), on every
+  client, with or without a computer connected (`homeProjectRows.ts`,
+  `useHomeAccountProjects.ts`). Folders on no account project follow under
+  "Only on <computer>" and do not count: this computer's from its brain's
+  catalog (`project.listThisComputer`, a this-computer IPC with no pin; it
+  reads again when the local brain connects), each connected computer's from
+  its connection catalog. An account row's computers chip opens the copies
+  menu. Its X opens the remove window with **From this list** first: Home on
+  this computer hides the row (`homeHiddenProjects.ts`, localStorage, by
+  account project id), it still counts, and "N hidden" shows it again; opening
+  the project lists it again. A local folder's X forgets it with Undo. The
+  card renders at most 40 rows inline; "N more" shows every row. Each row carries the same right-click project menu as a
   project tab — change icon, pin or unpin, and copy path — and a project with
   no checkout on this machine offers **Add a copy on this computer…**, which
   opens the Add project form with this computer ticked.
@@ -528,8 +541,10 @@ Renderer — onboarding:
   `/settings`, so a person with no project can still reach the settings that
   need none (see "Settings with no project" below).
 - `apps/desktop/src/renderer/components/projects/AddProjectForm.tsx` — **Add
-  project** from GitHub (the palette's clone flow and the start page). The
-  repository comes first, then one row per machine: this computer (not on
+  project** from GitHub (the palette's clone flow and the start page). Add
+  project opens on this form; **Open a folder…** and **New empty project…** sit
+  under it (`AddProjectMoreActions.tsx`), with a computer picker when other
+  computers are connected. The repository comes first, then one row per machine: this computer (not on
   hosted web) and every saved machine. An offline machine cannot be ticked, and
   the form never connects to or wakes one. A machine that already has a copy
   says "already here". Each ticked machine clones on its own
@@ -539,10 +554,13 @@ Renderer — onboarding:
   <machine>" offers **Open** instead, and a failure shows a toast that names
   the machine.
 - `apps/desktop/src/renderer/components/projects/ProjectCopiesMenu.tsx` — the
-  copies menu of a project tab, opened from the machine mark on a tab whose
-  work is on another machine, or from **Copies…** in the tab's right-click
-  menu. One row per machine: the copy in use, another copy (picking it moves
-  the tab there), "not here" with **Add a copy**, or offline. A project with no
+  copies menu of a project, opened from a Home row's computers chip or the
+  project sidebar's computers tag; the tab's right-click menu has a **Copies**
+  submenu with the same rows. One row per machine: the copy in use, another
+  copy (picking it moves the tab there with that copy's own binding), "not
+  here" with **Add a copy**, "Not connected" for a computer known only from the
+  account list, or offline. Every surface counts computers with one rule
+  (`copyComputers`). A project with no
   git origin says "This machine only" and offers Publish.
   `useProjectCopiesMenu.ts` owns the menu, the remove dialog's target and their
   models for the top bar; `projectCopies.ts` holds the pure rules every copy
@@ -1440,42 +1458,30 @@ Renderer — settings:
   `OpenCodeProviderDetailModal.tsx` latches the open row and snapshots the
   sign-in target when the dialog opens, so a catalog refresh can neither
   unmount the dialog nor retarget a running flow.
-- `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
-  — Settings > Secrets. Lists project-scoped ADE secrets without values,
-  adds/replaces secrets, reveals values on demand, copies them to the
-  clipboard, and deletes with inline confirmation. The section can also open a
-  local Finder picker for a bounded dotenv file, show the extracted names and
-  values in a select-all/individual-selection review modal, atomically import
-  the selected rows, and export all secrets as a mode-`0600`
-  `ade-secrets.env` file in Downloads. Values are backed by
-  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`. New
-  secrets default to the account and can be saved to the current repository's
-  account scope or this device only; an account choice falls back to this
-  device when the repository has no Git remote, when nobody is signed in, or
-  when no account vault is wired, and the save message says which of those
-  happened. A "Pull from account" control in the section header asks the
-  account and takes every account secret the repository has in the vault onto
-  this machine without touching a device-only row. Opening the list and
-  revealing a value also check the account first (bounded to a few seconds), so
-  a secret added on another machine shows up without a manual pull. The list
-  shows the effective destination for every secret; an account secret this
-  machine has not finished uploading shows "Uploading" until it lands. When the active project is remote, only the
-  Finder read happens on the controller Mac:
-  the bounded file content is parsed/imported by the active runtime and export
-  writes to Downloads on the remote project host.
+- `apps/desktop/src/renderer/components/settings/passwords/PasswordsSection.tsx`
+  — Settings › Passwords & Secrets (it replaced Settings › Secrets; old
+  `?tab=secrets` links open its Secrets view). One account vault, read on this
+  computer, so the page has no machine picker: a slim status bar (counts, Import,
+  New, and a ⋯ menu holding the ADE Cloud switch, "Turn off on this computer"
+  and Reset), then Logins · Secrets · Activity, each with a page-sized empty
+  state. Secrets are grouped by project (for every project first), each group
+  with **Export .env**; a secret kept on this computer only wears a "This
+  computer" tag. Action results are toasts. See
+  [Passwords & Secrets](../passwords/README.md).
 - Chats can also add project secrets without the value entering the
   transcript: an agent's `ade secrets request NAME --reason "…"` raises the
   private secret card, and the composer's "Add secret…" item opens the same
-  form. Both save through `projectSecretService`; see
+  form. Both save to Passwords & Secrets through `projectSecretService`; see
   [Private secret card](../chat/composer-and-ui.md#private-secret-card).
 - Chats can connect GitHub, Linear and Jira the same way: an agent's
   `ade integrations connect <provider> --reason "…"` raises the connect card,
   which saves through each integration's own service on the chat's machine;
   see [Connect card](../chat/composer-and-ui.md#connect-card).
-- `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
-  — dotenv import review dialog. Displays extracted names and plaintext values,
-  marks replacements, supports select all or individual selection, and saves
-  only the selected secrets.
+- `apps/desktop/src/renderer/components/settings/passwords/PasswordDialogs.tsx`
+  — its dialogs: new login, new secret (project picker, and under "More
+  options" the rarely wanted "Keep on this computer only"), the `.env` import
+  (pick names and a project; values shown only as lengths), change value, and
+  Reset.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies. The template editor is written for someone who has
@@ -1682,8 +1688,9 @@ Renderer — settings:
   provider limits link), edge-anchored so it cannot overhang the 420px popover.
   A row carrying a banked reset credit also offers **Use reset**
   (`ade.usage.consumeResetCredit`, sent to the machine that produced the row).
-  A login read on another machine carries a `via <machine>` tag, and one signed
-  in only elsewhere reads **Not signed in here**. Full behaviour in
+  A login signed in only elsewhere reads **Not signed in here**. When only
+  another machine can read a login's banked resets, the row shows them and
+  **Use reset** spends one on that machine. Full behaviour in
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
   balance selector for new Claude/Codex chats. It picks the signed-in account
@@ -2287,10 +2294,17 @@ Free-form announcements the owner writes as features land
 modal (`AnnouncementsHost`) adds only a close button and, when several are
 due, a pager.
 
-- **Once per page per computer**, keyed by `id` + `revision` in this
-  renderer's localStorage (`ade.announcements.seen.v1`). A new entry shows on
-  every computer that has not seen it; bump `revision` to show an edited page
-  again; remove the entry to retire it. Not tied to releases.
+- **Once per page per account**, keyed by `id` + `revision`. This renderer
+  keeps a copy in localStorage (`ade.announcements.seen.v1`), and the account
+  setting `announcements.seen` (scope all) holds the union across the account's
+  devices and ADE Web (`announcementSeenSync.ts`; the merge is
+  `shared/announcementsSeen.ts`: a page never becomes unseen, the earlier time
+  wins, at most 500 pages). ADE Web reads and grows the setting through the
+  connected computer with `announcements.getSeen` / `announcements.markSeen`,
+  which a lane-share guest cannot run. Pages seen here before a different
+  account signed in stay local and do not go to that account. Bump `revision`
+  to show an edited page again; remove the entry to retire it. Not tied to
+  releases.
 - **When:** inside a project (never on Home), a few seconds after it opens,
   with no dialog, setup screen or tour up, and only once onboarding finished
   or was skipped before this launch, so a new user meets them on a later
@@ -2405,7 +2419,7 @@ first read.
 | --- | --- | --- |
 | Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's usage snapshot); once per provider per reset window | Settings › AI accounts |
 | `@` sends work to another machine | Another machine of the project is online, and no sent message has ever had an `@machine` mention | A new chat in the primary lane |
-| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Secrets |
+| ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Passwords & Secrets |
 | Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Integrations › that tracker |
 | The Work grid | Activity shows three or more chats working and the grid is off | Turns on Focus with the grid in the open project, opens Work |
 | Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
@@ -2704,11 +2718,11 @@ The pages themselves:
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. Smart decisions (OpenCode Jev) and the composer's model hint sit beside Next prompt: they act on chats and the composer, and save to the project's `.ade/local.yaml` like it. With no OpenCode Zen sign-in the Smart decisions row offers **Sign in to OpenCode** instead of its switch. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `NewLaneSettingsSection.tsx` | **Your lanes** manages lanes; **New lanes** contains Where new lanes start and Lane templates. |
-| Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | Lane sharing at the account level. **Lanes shared by me**: every share the account gave, on any machine, grouped by project, one row per person; rows of the machine and project this window is bound to show rights and usage and can be edited, and a share on another computer can be stopped from here. **Lanes shared with me**: shares given to this account, with Accept, Open and Leave (an account call, no project needed). **My default rights**: the start value of the share sheet for a new person, one value per account (account settings key `laneShare.defaultRights`, scope `all`). It is in `ACCOUNT_ONLY_TAB_IDS` and hidden on the web client, which has no channel for the owner's `lane_share` actions. See [lane sharing](../lanes/lane-sharing.md). |
+| Sharing (You, desktop only) | `laneShare/SharingSettingsPage.tsx`, `laneShare/laneShareDefaults.tsx` | Lane sharing at the account level, three sections on one page (each with its own anchor: `#sharing-by-me`, `#sharing-with-me`, `#sharing-defaults`). **Lanes you shared**: every share the account gave, on any machine, grouped by project, one row per person; rows of the machine and project this window is bound to show rights and usage and can be changed, and a share on another computer can be stopped from here. **Lanes shared with you**: shares given to this account, with Accept, Open, Decline and Leave (an account call, no project needed). **Default access**: the start value of the share sheet for a new person, one value per account (account settings key `laneShare.defaultRights`, scope `all`). It is in `ACCOUNT_ONLY_TAB_IDS` and hidden on the web client, which has no channel for the owner's `lane_share` actions. See [lane sharing](../lanes/lane-sharing.md). |
 | Agents (Project) | `PrChatTranscriptsSection.tsx` | What agents keep about the project: PR transcript gists. The PR transcripts entry keeps its `lanes-git.pr-chat-transcripts` id. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
-| Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
+| Passwords & Secrets (This computer) | `passwords/PasswordsSection.tsx`, `passwords/PasswordDialogs.tsx`, `passwords/passwordsFormat.ts` | One end-to-end encrypted vault for logins, passkeys and secrets, on by default on every computer. Secrets for every project or one project, saved to the account or to this computer only, with `.env` import and export. Legacy `?tab=secrets` and `?tab=secret` open its Secrets view. See [Passwords & Secrets](../passwords/README.md). |
 | Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk-usage and lane-storage dashboard, cleanup history, the archive, rules for archiving idle lanes, session lifecycle, and project files. Rule fields show the value actually in force with an explicit "Inherited" marker. Legacy `?tab=storage`, `?tab=disk`, `?tab=space`, `?tab=archive` and `?tab=session-lifecycle` land here; `?tab=diagnostics` opens System → Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `UsagePooledLimits.tsx`, `UsageCostSplit.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageProviderNames.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: headline totals with trends, this machine's Rate limits as radial gauges, the layered daily chart, Week over week, per-provider split, breakdown, Activity, contributing machines, and (account scope) pooled Live limits. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
@@ -2843,7 +2857,7 @@ proxy fabricates callable namespaces for missing properties, so
 | Account vault cache | `~/.ade/account-vault.json.enc` | Encrypted with the machine credential-store key, written atomically with `0600`; legacy plaintext is removed after a successful encrypted write |
 | AI provider API keys | Machine credential store plus account vault | Every local value records device/account provenance; account-hydrated keys are purged on sign-out or account switch, while device-origin keys remain |
 | Linear credentials | Encrypted machine credential store or active project's `.ade/secrets`, plus account vault | The OAuth refresh token is the `linear_refresh_token` account item, stamped with a `refreshOwner` device id. Only that owner hydrates or refreshes the grant; provenance purges account-origin values on sign-out or account switch, while device-origin API keys and custom OAuth-client settings remain local |
-| Repository account secrets | Encrypted project-secret store plus account vault | Repository-scoped `project_secret` values follow the account and are keyed by normalized Git origin; device-only secrets remain local |
+| Secrets | Passwords & Secrets (sealed items on the relay, a machine-key-encrypted cache per computer) | A secret is for every project or for one repository (keyed by normalized Git origin, or the folder with no remote) and follows the account; a "this computer only" secret never leaves the computer |
 | Capture-gesture switch | `localStorage` under `ade:capture-gesture:enabled` | machine-local, defaults on; pushed to the main process by `GlobalCaptureGestureHost` on mount |
 
 ## AI mode and provider behavior
@@ -3030,8 +3044,11 @@ under the status chip instead.
   own machine under another machine's accounts.
 - **Replaced login**: when a config home's email changes to another email — a
   `claude /login` in a shell for the default account — the store records the old
-  one as `replacedAccount`. The card says it was replaced outside ADE, with
-  **Sign it back in** (into a `Copy` slot when there is one, so the accounts
+  one as `replacedAccount`. The card says "<old email> is signed out on this
+  computer": a sign-in to the new email took its place, for example `/login` in
+  a terminal, and a running CLI changes account from its actions pane. A login
+  that several cards lost shows one notice, on the card that lost it last, and
+  **Dismiss** forgets it on every card. The notice offers **Sign it back in** (into a `Copy` slot when there is one, so the accounts
   shift instead of doubling; otherwise, or when the only copy is the machine's
   own login, a new account named after the email) and
   **Dismiss** (`provider_instances.dismissReplaced`). It disappears on its own

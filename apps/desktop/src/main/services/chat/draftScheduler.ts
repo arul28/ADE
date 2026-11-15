@@ -67,7 +67,19 @@ export function createDraftScheduler(options: DraftSchedulerOptions): DraftSched
     clearTimer();
     if (stopped) return;
     const nowMs = now();
-    const nextFireAt = options.nextFireAt(nowMs);
+    let nextFireAt: number | null;
+    try {
+      nextFireAt = options.nextFireAt(nowMs);
+    } catch (error) {
+      // A database read: a project folder that stops answering throws here,
+      // and `arm` runs from a timer and from `tick`'s finally, where nothing
+      // catches. Wait one retry and read again.
+      options.logger.warn("draft.scheduler_next_fire_read_failed", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      handle = timers.setTimeout(() => { void tick(); }, retryDelayMs);
+      return;
+    }
     let delayMs: number;
     if (nextFireAt == null) {
       // Nothing is armed anywhere near this machine; wake up periodically so a
@@ -88,7 +100,17 @@ export function createDraftScheduler(options: DraftSchedulerOptions): DraftSched
     ticking = true;
     try {
       const nowMs = now();
-      for (const draft of options.dueNow(nowMs)) {
+      let due: ReturnType<typeof options.dueNow>;
+      try {
+        due = options.dueNow(nowMs);
+      } catch (error) {
+        // The same database read as `nextFireAt`; the finally re-arms.
+        options.logger.warn("draft.scheduler_due_read_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return;
+      }
+      for (const draft of due) {
         if (stopped) break;
         let outcome: DraftDeliveryOutcome;
         try {

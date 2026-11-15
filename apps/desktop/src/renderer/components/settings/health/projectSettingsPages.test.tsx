@@ -4,7 +4,6 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { expectNoJargon } from "../../../../test/jargonGuard";
 import { LanesSettingsPage, StorageSettingsPage } from "../lanes/LanesSettingsPage";
 import { LocationPage } from "../location/LocationPage";
 import { ServiceStatusSection } from "./HealthService";
@@ -651,26 +650,6 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(await screen.findByText(/Compressed 12 files, saved 300 MB/)).toBeTruthy();
   });
 
-  it("uses plain language with no internal jargon on every page", async () => {
-    installAdeMock({ withExtras: true });
-    const lanes = renderStorage();
-    await openView("Space");
-    await openDetails();
-    expectNoJargon(lanes.container.textContent ?? "");
-    cleanup();
-
-    installAdeMock({ withExtras: true });
-    const location = renderPage(<LocationPage />, "/settings?tab=location");
-    await screen.findByText("2 things need attention");
-    expectNoJargon(location.container.textContent ?? "");
-    cleanup();
-
-    installAdeMock({ withExtras: true });
-    const service = renderPage(<ServiceStatusSection />, "/settings?tab=service");
-    await screen.findAllByText("280 MB");
-    expectNoJargon(service.container.textContent ?? "");
-  });
-
   it("offers safe cleanup for an obsolete backup even when the cache estimate is zero", async () => {
     installAdeMock({ extras: { ...makeExtras(), safeReclaimableBytes: 0 } });
     renderStorage();
@@ -729,39 +708,6 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
     expect(await within(dialog).findByText(/some cleanup steps couldn't finish/i)).toBeTruthy();
     expect(getToasts().find((toast) => toast.title === "Some cleanup steps couldn't finish")?.tone).toBe("warning");
     expect(within(dialog).queryByText("Storage is already tidy.")).toBeNull();
-  });
-
-  it("shows the database breakdown in plain words", async () => {
-    installAdeMock({ withExtras: true });
-    renderStorage();
-    await openView("Space");
-    await openDetails();
-    expect(await screen.findByText("Webhook history")).toBeTruthy();
-    expect(screen.getByText("Sync bookkeeping")).toBeTruthy();
-    expect(screen.getByText("Core data")).toBeTruthy();
-    expect(screen.getByText(/Waiting to compact/)).toBeTruthy();
-  });
-
-  it("lists cleanups with what each freed, by kind", async () => {
-    installAdeMock({ withExtras: true });
-    renderStorage();
-    await openView("Space");
-    expect(await screen.findByText(/database 480 MB/)).toBeTruthy();
-    expect(screen.getByText(/2 cleanups freed 480 MB/)).toBeTruthy();
-  });
-
-  it("shows the background service: slow and failed apart, p95, memory and load", async () => {
-    installAdeMock({ withExtras: true });
-    renderPage(<ServiceStatusSection />, "/settings?tab=service");
-
-    expect((await screen.findAllByText("280 MB")).length).toBeGreaterThan(0);
-    expect(await screen.findByText(/Load: Light/)).toBeTruthy();
-    expect(screen.getByText(/95% of slow ones finished within 5\.2 s/)).toBeTruthy();
-    const responses = screen.getByRole("list", { name: /slow and failed responses/i });
-    const failed = within(responses).getByText("Failed").closest("li") as HTMLElement;
-    expect(within(failed).getByText("1")).toBeTruthy();
-    const slow = within(responses).getByText(/^Slow/).closest("li") as HTMLElement;
-    expect(within(slow).getByText("3")).toBeTruthy();
   });
 
   it("does not show a load reading when resource pressure is unavailable", async () => {

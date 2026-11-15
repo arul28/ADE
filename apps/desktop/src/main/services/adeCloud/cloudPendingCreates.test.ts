@@ -264,3 +264,50 @@ describe("which machines are cloud computers", () => {
     expect(reads).toBe(5);
   });
 });
+
+describe("a computer made or deleted from another device", () => {
+  it("is reported only when a newer good read for the same account leaves it out", async () => {
+    let nowMs = 1_000_000;
+    let account: string | null = "user-1";
+    let boxes: Array<{ id: string; status: string; metadata: Record<string, string> }> = [
+      { id: "box0", status: "running", metadata: { ade_machine_key: "key-0" } },
+      { id: "box1", status: "asleep", metadata: { ade_machine_key: "key-1" } },
+    ];
+    const changes: Array<Array<{ instanceId: string; machineKey: string | null }>> = [];
+    const machines = createCloudMachines({
+      client: async () => ({ listInstances: async () => boxes.map((box) => ({ ...box })), getAccount: async () => null }) as never,
+      removeAccountMachine: async () => {},
+      accountId: () => account,
+      onMachinesChanged: ({ gone }) => changes.push(gone),
+      logger: quiet,
+      sleep: noWait,
+      now: () => ++nowMs,
+    });
+
+    // The first good read is only the baseline.
+    await machines.list();
+    expect(changes).toEqual([]);
+
+    // Deleted from another device: the next read ADE makes anyway (the sleep watch) says which one, with its key.
+    const sleepWatchRead = machines.startRead();
+    boxes = boxes.filter((box) => box.id !== "box1");
+    machines.noteInstances(boxes as never, sleepWatchRead);
+    expect(changes).toEqual([[{ instanceId: "box1", machineKey: "key-1" }]]);
+
+    // A read that started before a computer was made, and answers after a read that lists it, is older news.
+    const slowRead = machines.startRead();
+    const before = boxes.map((box) => ({ ...box }));
+    boxes = [...boxes, { id: "box2", status: "starting", metadata: {} }];
+    await machines.list();
+    expect(changes).toHaveLength(2);
+    expect(changes[1]).toEqual([]);
+    machines.noteInstances(before as never, slowRead);
+    expect(changes).toHaveLength(2);
+
+    // Signed in as someone else: their computers are not this account's computers going away.
+    account = "user-2";
+    boxes = [{ id: "box9", status: "running", metadata: { ade_machine_key: "key-9" } }];
+    await machines.list();
+    expect(changes).toHaveLength(2);
+  });
+});

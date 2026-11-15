@@ -3006,7 +3006,7 @@ action `project_secret.request`), and the chat shows the private secret card in
 the composer's place: the secret name, the agent's reason, a password field
 with show/hide and copy, a "Generate a strong one" button (32 random bytes as
 hex; the agent's `--generate` marks it as suggested), and one line of copy —
-"Saved encrypted to this project's secrets. The agent only sees the name." Enter
+"Saved to Passwords & Secrets for this project. The agent only sees the name." Enter
 saves, Esc declines. When the name already exists the card opens on "Keep
 existing" (Enter) with "Replace" one click away.
 
@@ -3031,7 +3031,7 @@ The card is an ordinary pending-input request (`requestChatInput`, kind
 the answer to the request's `isSecret` question `secret_value`, so the
 transcript writer drops it, and the brain's `requestProjectSecretFromUser`
 (`main/services/secrets/projectSecretRequest.ts`) passes it straight to
-`projectSecretService.set` **before the card resolves**: `requestChatInput`'s
+`projectSecretService.set` (Passwords & Secrets, for the chat's project) **before the card resolves**: `requestChatInput`'s
 `beforeAccept` hook runs inside the user's `respondToInput` call, so a save that
 fails keeps the card open with the error and never produces a "saved" receipt;
 the retry from the same card clears that error. The value is stored exactly as

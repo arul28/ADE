@@ -243,7 +243,7 @@ export type WorkBoardBuckets = Record<WorkBoardColumn, TerminalSessionSummary[]>
 import type { WorkBoardWaitingReason } from "../../../shared/types/chat";
 import { lanePrWaitingReason } from "../../../shared/sessionCanonicalState";
 import { useTabCopyPin } from "../../state/repositoryScope";
-import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
+import { noChatMachineError } from "../chat/chatMachinePin";
 
 export type { WorkBoardWaitingReason };
 export { lanePrWaitingReason };
@@ -2621,7 +2621,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       try {
         const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
         // No machine for the session: the stop cannot reach it.
-        if (!pin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+        if (!pin) throw noChatMachineError();
         const result = await window.ade.pty.dispose(disposeArgs, pin);
         if (result?.disposed === false) {
           if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
@@ -2732,7 +2732,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // The lane's machine starts the shell. A lane with no known machine has
       // nowhere to start it.
       const createPin = args.pin ?? machineRouter.pinForSession({ laneId: args.laneId });
-      if (!createPin) throw new Error(NO_CHAT_MACHINE_MESSAGE);
+      if (!createPin) throw noChatMachineError();
       await ensureHarnessPresetOnBrain(args.runtimeCliLaunch?.presetId, {
         targetsAnotherMachine: createPin.kind === "remote",
       });

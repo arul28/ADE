@@ -199,13 +199,7 @@ export const PRELOAD_PASS_PINNED_MEMBERS: Record<string, Record<string, number>>
     validate: 1,
   },
   projectSecrets: {
-    chooseEnvFile: 0,
-    delete: 1,
-    exportEnv: 0,
-    get: 1,
-    importEnv: 1,
     list: 0,
-    pullFromAccount: 0,
     set: 1,
   },
   providerLogins: {

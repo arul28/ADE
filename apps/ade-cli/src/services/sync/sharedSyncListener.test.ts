@@ -148,13 +148,18 @@ describe("shared sync listener upgrade policy", () => {
     }
   });
 
-  it("migrates onto a free port and closes the previous bind", async () => {
+  it("migrates onto a free port, closes the previous bind, and keeps connected sockets", async () => {
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",
       logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
     });
+    listener.setConnectionHandler(({ ws }) => {
+      ws.on("message", (raw) => ws.send(`echo:${raw.toString()}`));
+    });
     try {
       const originalPort = await listener.ensureListening([0]);
+      // A phone already connected must not be dropped by a port move.
+      const connectedBefore = await connect(originalPort, "/");
       const probePorts = [8994, 8993, 8992, 8991].filter((port) => port !== originalPort);
       let target: http.Server | null = null;
       let targetPort: number | null = null;
@@ -193,6 +198,267 @@ describe("shared sync listener upgrade policy", () => {
       const stale = new WebSocket(`ws://127.0.0.1:${originalPort}/`);
       stale.on("error", () => {});
       await once(stale, "error");
+      expect(connectedBefore.readyState).toBe(WebSocket.OPEN);
+      connectedBefore.send("still-here");
+      const [echo] = await once(connectedBefore, "message");
+      expect(String(echo)).toBe("echo:still-here");
+      connectedBefore.close();
+    } finally {
+      await listener.close();
+    }
+  });
+
+  // Another program can take 127.0.0.1:<port> after ADE bound the wildcard
+  // (macOS and Windows allow the more specific bind). The listener must notice
+  // and move by itself, keep every connected socket, and say where it went.
+  // On the usual wildcard bind, another program on 127.0.0.1:<port> must not
+  // change the port phones know: LAN peers and relay pipes keep it, and a
+  // local-only side door on another port takes 127.0.0.1 traffic (Tailscale
+  // Serve) until the other program leaves. A phone that sees its machine's
+  // port change redials, so the port stays put.
+  it("keeps its port and opens a local side door while another program holds its loopback", async () => {
+    let shadowedPort: number | null = null;
+    const listener = createSharedSyncListener({
+      bindHost: "0.0.0.0",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      localAddresses: () => [],
+      inspectPort: (port) => ({
+        port,
+        holders: [{ pid: 999_995, command: "/opt/homebrew/bin/workerd serve", startTime: null }],
+      }),
+      loopbackProbe: async (port, expectedNonce) => {
+        const shadowed = port === shadowedPort;
+        return {
+          ok: !shadowed,
+          port,
+          statusCode: shadowed ? 404 : 426,
+          statusMessage: shadowed ? "Not Found" : "Upgrade Required",
+          markerValue: shadowed ? null : expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: shadowed ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.` : null,
+        };
+      },
+    });
+    listener.setConnectionHandler(({ ws }) => {
+      ws.on("message", (raw) => ws.send(`echo:${raw.toString()}`));
+    });
+    const moves: unknown[] = [];
+    listener.onPortChanged((change) => moves.push(change));
+    // The first port above is taken: the side door must skip it, not crash.
+    let blocker: http.Server | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      const connectedBefore = await connect(port, "/");
+      // Hold port + 1. Another program already holding it is just as good:
+      // either way the first port above is taken.
+      const candidateBlocker = http.createServer();
+      const held = await new Promise<boolean>((resolve) => {
+        candidateBlocker.once("error", () => resolve(false));
+        candidateBlocker.listen(port + 1, "127.0.0.1", () => resolve(true));
+      });
+      blocker = held ? candidateBlocker : null;
+      shadowedPort = port;
+
+      await listener.healNow();
+
+      expect(listener.getPort()).toBe(port);
+      expect(moves).toEqual([]);
+      const loopbackPort = listener.getLoopbackPort();
+      expect(loopbackPort).not.toBeNull();
+      expect(loopbackPort).not.toBe(port);
+      expect(loopbackPort).not.toBe(port + 1);
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port,
+        loopbackAdeValidated: true,
+        loopbackPort,
+        shadowedBy: "workerd",
+      });
+      const viaSideDoor = await connect(loopbackPort!, "/");
+      viaSideDoor.send("side-door");
+      const [sideEcho] = await once(viaSideDoor, "message");
+      expect(String(sideEcho)).toBe("echo:side-door");
+      viaSideDoor.close();
+      connectedBefore.send("still-here");
+      const [echo] = await once(connectedBefore, "message");
+      expect(String(echo)).toBe("echo:still-here");
+
+      // The other program leaves: loopback is the port itself again.
+      shadowedPort = null;
+      await listener.healNow();
+      expect(listener.getLoopbackPort()).toBe(port);
+      connectedBefore.close();
+    } finally {
+      await listener.close();
+      if (blocker?.listening) await new Promise<void>((resolve) => blocker!.close(() => resolve()));
+    }
+  });
+
+  it("moves a loopback-only bind off a port whose loopback another program took, keeping connected sockets", async () => {
+    const shadowedPorts = new Set<number>();
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({
+        port,
+        holders: [{ pid: 999_997, command: "/opt/homebrew/bin/workerd serve --socket-addr=entry=127.0.0.1:8787", startTime: null }],
+      }),
+      loopbackProbe: async (port, expectedNonce) => {
+        const shadowed = shadowedPorts.has(port);
+        return {
+          ok: !shadowed,
+          port,
+          statusCode: shadowed ? 404 : 426,
+          statusMessage: shadowed ? "Not Found" : "Upgrade Required",
+          markerValue: shadowed ? null : expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: shadowed ? `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.` : null,
+        };
+      },
+    });
+    listener.setConnectionHandler(({ ws }) => {
+      ws.on("message", (raw) => ws.send(`echo:${raw.toString()}`));
+    });
+    const moves: Array<{ from: number; to: number; reason: string }> = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const originalPort = await listener.ensureListening([0]);
+      const connectedBefore = await connect(originalPort, "/");
+      shadowedPorts.add(originalPort);
+
+      await listener.healNow();
+
+      const newPort = listener.getPort();
+      expect(newPort).not.toBeNull();
+      expect(newPort).not.toBe(originalPort);
+      expect(moves).toEqual([{ from: originalPort, to: newPort, reason: "loopback-shadowed" }]);
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port: newPort,
+        loopbackAdeValidated: true,
+      });
+      const connectedAfter = await connect(newPort!, "/");
+      connectedAfter.close();
+      connectedBefore.send("still-here");
+      const [echo] = await once(connectedBefore, "message");
+      expect(String(echo)).toBe("echo:still-here");
+      connectedBefore.close();
+    } finally {
+      await listener.close();
+    }
+  });
+
+  // The same trick works on the machine's LAN address: a program bound to
+  // <lan-ip>:<port> answers LAN peers there instead of ADE. Only a foreign
+  // answer counts; an address that times out or refuses never moves the port.
+  it("moves when another program answers on one of this machine's LAN addresses", async () => {
+    const answers = new Map<string, "ade" | "foreign" | "silent">([
+      ["10.9.8.7", "silent"],
+      ["192.0.2.10", "ade"],
+    ]);
+    let shadowedPort: number | null = null;
+    const listener = createSharedSyncListener({
+      bindHost: "0.0.0.0",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({ port, holders: [] }),
+      localAddresses: () => [...answers.keys()],
+      addressProbe: async (host, port, expectedNonce) => {
+        const answer = port === shadowedPort ? answers.get(host) : "ade";
+        return {
+          ok: answer === "ade",
+          port,
+          statusCode: answer === "silent" ? null : answer === "ade" ? 426 : 200,
+          statusMessage: null,
+          markerValue: answer === "ade" ? expectedNonce : null,
+          checkedAt: new Date().toISOString(),
+          reason: answer === "ade" ? null : `not ADE on ${host}`,
+          ...(answer === "silent" ? { timedOut: true } : {}),
+        };
+      },
+    });
+    const moves: Array<{ from: number; to: number; reason: string }> = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const originalPort = await listener.ensureListening([0]);
+      shadowedPort = originalPort;
+      // A silent interface alone is not evidence: no move.
+      await listener.healNow();
+      expect(listener.getPort()).toBe(originalPort);
+
+      answers.set("192.0.2.10", "foreign");
+      await listener.healNow();
+      expect(listener.getPort()).not.toBe(originalPort);
+      expect(moves).toEqual([{ from: originalPort, to: listener.getPort(), reason: "loopback-shadowed" }]);
+    } finally {
+      await listener.close();
+    }
+  });
+
+  // After a move, the port comes back to the preferred one once it frees, even
+  // with no project host attached to do it.
+  it("returns to its preferred port once that port frees", async () => {
+    const blocker = http.createServer();
+    blocker.listen(0, "127.0.0.1");
+    await once(blocker, "listening");
+    const address = blocker.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP blocker.");
+    const preferredPort = address.port;
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({ port, holders: [{ pid: 999_996, command: "/usr/bin/python3", startTime: null }] }),
+    });
+    const moves: Array<{ from: number; to: number; reason: string }> = [];
+    listener.onPortChanged((change) => moves.push(change));
+    try {
+      const fallbackPort = await listener.ensureListening([preferredPort, 0]);
+      expect(fallbackPort).not.toBe(preferredPort);
+      await listener.healNow();
+      expect(listener.getPort()).toBe(fallbackPort);
+
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+      await listener.healNow();
+      expect(listener.getPort()).toBe(preferredPort);
+      expect(moves).toEqual([{ from: fallbackPort, to: preferredPort, reason: "canonical" }]);
+    } finally {
+      await listener.close();
+      if (blocker.listening) await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+
+  it("names the program holding a shadowed port while it cannot move", async () => {
+    const listener = createSharedSyncListener({
+      bindHost: "0.0.0.0",
+      localAddresses: () => [],
+      logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
+      inspectPort: (port) => ({
+        port,
+        holders: [
+          { pid: process.pid, command: process.execPath, startTime: null },
+          { pid: 999_997, command: "/opt/homebrew/bin/workerd serve", startTime: null },
+        ],
+      }),
+      // Every port is shadowed, so the move finds nowhere to go.
+      loopbackProbe: async (port) => ({
+        ok: false,
+        port,
+        statusCode: 404,
+        statusMessage: "Not Found",
+        markerValue: null,
+        checkedAt: new Date().toISOString(),
+        reason: `Expected ADE 426 Upgrade Required on 127.0.0.1:${port}, received 404 Not Found.`,
+      }),
+    });
+    try {
+      // Every port is shadowed on loopback: the wildcard bind still serves
+      // LAN and relay on its port rather than not at all.
+      const port = await listener.ensureListening([0]);
+      await listener.healNow();
+      expect(listener.getPort()).toBe(port);
+      expect(listener.getLoopbackValidationStatus()).toMatchObject({
+        port,
+        loopbackAdeValidated: false,
+        shadowedBy: "workerd",
+      });
+      expect(listener.canAcceptRelayPipes()).toBe(true);
     } finally {
       await listener.close();
     }

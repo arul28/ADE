@@ -22,6 +22,7 @@ import type {
 } from "../../../shared/types/account";
 import {
   BrowserAccountSessionStore,
+  usablePersistedAccessToken,
   type BrowserAccountSessionPersistence,
   type PersistedBrowserAccountSession,
 } from "./sessionStore";
@@ -517,13 +518,17 @@ export class BrowserAccountClient {
     } catch {
       return this.getSnapshot();
     }
-    const result = await fetchAccountMachines({
+    const result = await this.readMachinesWith(config, accessToken);
+    await this.applyDirectoryResult(result);
+    return this.getSnapshot();
+  }
+
+  private async readMachinesWith(config: BrowserAccountConfig, accessToken: string): Promise<AdeAccountMachinesResult> {
+    return await fetchAccountMachines({
       baseUrl: config.directoryBaseUrl,
       accessToken,
       fetchImpl: this.options.fetchImpl,
     });
-    await this.applyDirectoryResult(result);
-    return this.getSnapshot();
   }
 
   async getAccessToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
@@ -707,6 +712,8 @@ export class BrowserAccountClient {
         issuer: config.issuer,
         clientId: config.clientId,
         ...profile,
+        accessToken: token.accessToken,
+        accessTokenExpiresAtMs: expiresAtMs,
       });
     } else {
       await this.sessionStore.clear();
@@ -763,10 +770,13 @@ export class BrowserAccountClient {
       return this.getSnapshot();
     }
 
+    // A reload within the stored access token's life skips the refresh and the
+    // profile read: the directory read below is the only round trip.
+    const stored = usablePersistedAccessToken(persisted, this.options.now?.() ?? Date.now(), REFRESH_SKEW_MS);
     this.session = {
-      accessToken: "",
+      accessToken: stored?.accessToken ?? "",
       refreshToken: persisted.refreshToken,
-      expiresAtMs: 0,
+      expiresAtMs: stored?.expiresAtMs ?? 0,
       userId: persisted.userId,
       email: persisted.email,
       name: persisted.name,
@@ -785,6 +795,16 @@ export class BrowserAccountClient {
       message: null,
     };
     try {
+      if (stored) {
+        const result = await this.readMachinesWith(config, stored.accessToken);
+        // The directory turned the stored token down (revoked, or a clock
+        // that disagrees): refresh once, as a reload without one would.
+        if (result.state !== "auth_expired") {
+          await this.applyDirectoryResult(result);
+          return this.getSnapshot();
+        }
+        if (this.session) this.session = { ...this.session, accessToken: "", expiresAtMs: 0 };
+      }
       await this.getAccessToken();
       return await this.loadMachines();
     } catch {

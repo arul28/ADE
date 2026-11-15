@@ -286,26 +286,20 @@ export function UsageAccountRow({
             Last reading
           </span>
         ) : pace ? <PacePill pace={pace} /> : null}
-        {account?.readingFrom && row.cells.length > 0 ? (
-          // Quota is the login's: another machine read it more recently than
-          // this one could, so these bars are that machine's reading.
-          <span
-            className="kit-tag"
-            title={`Read on ${readingFromName}, the freshest reading of this account across your machines.`}
-          >
-            <span className="usage-account-tag-text">via {readingFromName}</span>
-          </span>
-        ) : null}
         {hasCredit ? (
           <button
             type="button"
             onClick={() => void spendResetCredit()}
             disabled={spending}
-            title={
+            title={[
+              "Clears this account's windows now.",
+              account?.resetCreditsOn
+                ? `The credit is banked on ${machineName(account.resetCreditsOn.machineKey, account.resetCreditsOn.label)}, so ADE spends it there.`
+                : null,
               account?.resetCredits?.nextExpiresAt
-                ? `Clears this account's windows now. Next credit expires ${formatResetClock(account.resetCredits.nextExpiresAt) ?? "later"}.`
-                : "Clears this account's windows now."
-            }
+                ? `Next credit expires ${formatResetClock(account.resetCredits.nextExpiresAt) ?? "later"}.`
+                : null,
+            ].filter(Boolean).join(" ")}
             className="kit-card-head-action"
             style={{ marginLeft: 0, marginRight: 0, height: 20, fontSize: 11 }}
           >

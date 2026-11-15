@@ -68,6 +68,13 @@ const PUSH_RELAY_BACKGROUND_DEADLINE_MS = 60_000;
 export const PUSH_RELAY_FOREGROUND_DEADLINE_MS = 20_000;
 
 /** Per-call options `getAttentionSnapshot` accepts. */
+/** Passwords: one sealed item as the relay stores it. */
+export type PasswordRelayItem = { id: string; ciphertext: string | null; revision: string; deleted: boolean };
+export type PasswordRelayPage = { items: PasswordRelayItem[]; cursor: string | null; truncated: boolean; epoch: number | null };
+export type PasswordRelayWrite = { id: string; ciphertext?: string; ifRevision?: string; deleted?: boolean };
+export type PasswordRelayWriteResult = { id: string; status: "ok" | "stale" | "invalid" | "stale_key"; revision: string | null };
+export type PasswordMachineKind = "desktop" | "phone" | "cloud" | "web" | "cli";
+
 export type PushRelayCallOptions = {
   /** Aborts the request early; the client's own deadline still applies. */
   signal?: AbortSignal;
@@ -1194,6 +1201,93 @@ export function createPushRelayClient(args: {
         updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
         ...(results ? { results } : {}),
       };
+    },
+
+    /**
+     * Passwords: one page of sealed items (opaque here, as on the relay).
+     * `null` means this machine could not ask (signed out, relay unavailable).
+     */
+    async getPasswordItems(options?: { since?: string | null }): Promise<PasswordRelayPage | null> {
+      const result = await accountRequest("getPasswordItems", "GET", "/attention/account/passwords/items", {
+        query: { since: options?.since },
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      const body = result.body;
+      const items: PasswordRelayItem[] = [];
+      for (const raw of Array.isArray(body.items) ? body.items : []) {
+        const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+        if (!row || typeof row.id !== "string" || typeof row.revision !== "string") continue;
+        items.push({
+          id: row.id,
+          ciphertext: typeof row.ciphertext === "string" ? row.ciphertext : null,
+          revision: row.revision,
+          deleted: row.deleted === true,
+        });
+      }
+      return {
+        items,
+        cursor: typeof body.cursor === "string" ? body.cursor : null,
+        truncated: body.truncated === true,
+        epoch: typeof body.epoch === "number" ? body.epoch : null,
+      };
+    },
+
+    /** Passwords: write sealed items; each answer is ok, stale (with the stored revision) or invalid. */
+    async putPasswordItems(
+      items: PasswordRelayWrite[],
+      deviceId: string | null,
+    ): Promise<PasswordRelayWriteResult[] | null> {
+      if (!items.length) return [];
+      const result = await accountRequest("putPasswordItems", "PUT", "/attention/account/passwords/items", {
+        body: { items, ...(deviceId ? { deviceId } : {}) },
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      const out: PasswordRelayWriteResult[] = [];
+      for (const raw of Array.isArray(result.body.results) ? result.body.results : []) {
+        const row = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+        if (!row || typeof row.id !== "string") continue;
+        const status = row.status === "ok" || row.status === "stale" || row.status === "stale_key" ? row.status : "invalid";
+        out.push({ id: row.id, status, revision: typeof row.revision === "string" ? row.revision : null });
+      }
+      return out;
+    },
+
+    /**
+     * Passwords: this account's vault key (made on first use), or a fresh one
+     * after a reset. The key never goes to a log; callers keep it in memory
+     * or in this machine's own encrypted store.
+     */
+    async requestPasswordKey(
+      args2: { deviceId: string; machineKind: PasswordMachineKind; reset?: boolean },
+    ): Promise<{ dek: string; epoch: number } | null> {
+      const result = await accountRequest(
+        args2.reset ? "resetPasswordKey" : "requestPasswordKey",
+        "POST",
+        args2.reset ? "/attention/account/passwords/reset" : "/attention/account/passwords/key",
+        {
+          body: { deviceId: args2.deviceId, machineKind: args2.machineKind, ...(args2.reset ? { confirm: "reset" } : {}) },
+          couldNotAsk: [503],
+        },
+      );
+      if (!result.asked) return null;
+      const dek = result.body.dek;
+      const epoch = result.body.epoch;
+      return typeof dek === "string" && typeof epoch === "number" ? { dek, epoch } : null;
+    },
+
+    /** Passwords: the last times this account's vault key was handed out. */
+    async getPasswordKeyReleases(): Promise<Array<{ deviceId: string; machineKind: string; at: string }> | null> {
+      const result = await accountRequest("getPasswordKeyReleases", "GET", "/attention/account/passwords/releases", {
+        couldNotAsk: [503],
+      });
+      if (!result.asked) return null;
+      return (Array.isArray(result.body.releases) ? result.body.releases : [])
+        .filter((row): row is { deviceId: string; machineKind: string; at: string } =>
+          Boolean(row) && typeof (row as Record<string, unknown>).deviceId === "string"
+          && typeof (row as Record<string, unknown>).at === "string")
+        .map((row) => ({ deviceId: row.deviceId, machineKind: String(row.machineKind), at: row.at }));
     },
 
     /**

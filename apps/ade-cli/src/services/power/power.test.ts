@@ -36,6 +36,9 @@ import {
 } from "./suspendGapDetector";
 import { createBrainKeepAwakeService } from "./brainKeepAwakeService";
 import { cloudKeepAwakePaths, createCloudKeepAwake } from "./cloudKeepAwake";
+import { createCloudDiskGrower } from "./cloudDiskGrow";
+import { CloudProviderError } from "../../../../desktop/src/main/services/adeCloud/cloudProvider";
+import { cloudDiskGrowStatePath } from "./cloudDiskGuard";
 
 // The brain's power surface as one contract: reading what the hardware says
 // (machinePowerReader), noticing a suspend nobody announced (suspendGapDetector),
@@ -906,6 +909,109 @@ describe("cloud keep awake", () => {
       expect(pinged).toHaveLength(4);
     } finally {
       keepAwake.dispose();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("cloud disk grow for a lane setup", () => {
+  const GB = 1024 ** 3;
+  const ENOSPC = "Setup ran out of disk space (no space left on device). Last error: npm error nospc ENOSPC: no space left on device, write";
+  /** The disk as statfs reads it: `free` of `total`, in GB. */
+  const disk = (free: number, total: number) => ({ bsize: 4096, blocks: (total * GB) / 4096, bavail: (free * GB) / 4096 }) as fs.StatsFs;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  // Each run: the free space it started with, the lowest it read while it ran, what the disk read when setup said ENOSPC,
+  // the disk's size, and whether the server grows it when asked (default) or refuses (the plan's disk).
+  it.each([
+    ["a disk with room left (a tool's own limit, not the disk)", [[3.5, 3, 3, 8]], [false]],
+    ["a disk that really ran short", [[3.5, 0.2, 0.2, 8]], [true]],
+    ["a disk that ran short, then read roomy again once the failed install cleaned up", [[3.5, 0.1, 3.4, 8]], [true]],
+    ["a second fill that peaked no higher than the first (the disk didn't grow)", [[3.5, 0.2, 0.2, 8], [3.5, 0.3, 3.2, 8]], [true, false]],
+    // Leaves its files behind on failure and frees them in the next run: each run adds about the same, and fills a bigger disk.
+    ["an installer that doesn't clean up, filling 4 GB, then 8, then 12", [[3.5, 0.1, 0.1, 4], [4.1, 0.1, 0.1, 8], [4.1, 0.1, 0.1, 12]], [true, true, true]],
+    // The plan's disk refused the grow; the person made room and pressed Retry: the same fill asks again.
+    ["a grow the server refused, then a Retry that fills the same disk", [[3.5, 0.2, 0.2, 8, "refuses"], [3.5, 0.2, 0.2, 8]], [true, true]],
+    // The rollback itself can't be written on the disk that just filled: it still holds for the Retry.
+    ["a refused grow whose rollback couldn't be saved, then a Retry", [[3.5, 0.2, 0.2, 8, "refuses, disk full"], [3.5, 0.2, 0.2, 8]], [true, true]],
+    // Taking a refused grow back keeps the grow before it: a later fill no higher than that one's peak doesn't grow.
+    ["a grow, a refused grow, then a fill no higher than the first", [[3.5, 0.2, 0.2, 8], [4.1, 0.1, 0.1, 12, "refuses"], [3.5, 0.3, 0.3, 8]], [true, true, false]],
+  ] as Array<[string, Array<[number, number, number, number, ("refuses" | "refuses, disk full" | undefined)?]>, boolean[]]>)("%s", async (_label, runs, grows) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-grow-"));
+    try {
+      vi.useFakeTimers();
+      // The reserve's 4 MB never reaches the test machine's disk.
+      vi.spyOn(fs.promises, "mkdir").mockResolvedValue(undefined);
+      vi.spyOn(fs.promises, "writeFile").mockResolvedValue(undefined);
+      const statfs = vi.spyOn(fs, "statfsSync");
+      let diskGb = 0;
+      let refuse: "refuses" | "refuses, disk full" | undefined;
+      let historyDiskFull = false;
+      const writeFileSync = fs.writeFileSync;
+      vi.spyOn(fs, "writeFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (historyDiskFull && String(file).includes("setup-disk-grows")) throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        return (writeFileSync as (...args: unknown[]) => void)(file, ...rest);
+      }) as typeof fs.writeFileSync);
+      // The account server: this computer's size, and a grow it starts or refuses. Anything else answers empty.
+      const server = new Proxy({
+        getInstance: async () => ({ resources: { cpu: 2, memory: 4, disk: diskGb }, metadata: {} }),
+        getAccount: async () => { throw new Error("no catalog here"); },
+        resizeInstance: async () => {
+          if (refuse) historyDiskFull = refuse === "refuses, disk full";
+          if (refuse) throw new CloudProviderError("The plan's disk is full.", "disk_limit", 403, { reason: "account_limit" });
+          return "updating";
+        },
+      } as Record<string, unknown>, { get: (target, key) => (key === "then" ? undefined : target[key as string] ?? (async () => ({}))) });
+      const setup = createCloudDiskGrower({ instanceId: "i-1", client: async () => server as never, path: home, adeHome: home }).setupDisk(() => true);
+      const answers: boolean[] = [];
+      for (const [startFree, lowFree, fullFree, total, answerOfServer] of runs) {
+        diskGb = total;
+        refuse = answerOfServer;
+        // The person freed disk before this run: writes land again.
+        historyDiskFull = false;
+        statfs.mockReturnValue(disk(startFree!, total!));
+        setup.setupStarting({ launchId: "launch-1" });
+        // The install runs: the disk reads its low point, then whatever it reads when setup says ENOSPC.
+        statfs.mockReturnValue(disk(lowFree!, total!));
+        vi.advanceTimersByTime(5_000);
+        statfs.mockReturnValue(disk(fullFree!, total!));
+        const answer = setup.diskFull({ launchId: "launch-1", error: ENOSPC });
+        // The launch saved its mark: a grow the server started counts; a refused one doesn't.
+        if (answer.grow) {
+          const room = await setup.makeRoom({ launchId: "launch-1", laneId: "lane-1", signal: new AbortController().signal });
+          // A Retry after a refusal really reaches the server and starts its grow.
+          expect(room?.state).toBe(refuse ? "refused" : "growing");
+        }
+        setup.setupEnded({ launchId: "launch-1" });
+        answers.push(answer.grow);
+      }
+      expect(answers).toEqual(grows);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a setup that fills the disk after a restart waits on the grow an earlier boot asked for, never asking twice", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cloud-disk-grow-"));
+    const controller = new AbortController();
+    try {
+      vi.spyOn(fs, "statfsSync").mockReturnValue(disk(0.2, 4));
+      // The last boot asked for 8 GB a minute ago; the disk still reads 4.
+      fs.mkdirSync(path.dirname(cloudDiskGrowStatePath(home)), { recursive: true });
+      fs.writeFileSync(cloudDiskGrowStatePath(home), JSON.stringify({ v: 1, state: "growing", toGb: 8, at: Date.now() - 60_000, instanceId: "i-1", fromBytes: 4 * GB }));
+      const client = vi.fn(async () => null);
+      const grower = createCloudDiskGrower({ instanceId: "i-1", client, path: home, adeHome: home });
+
+      const room = await grower.makeRoomForSetup({ stillIdle: () => true, signal: controller.signal });
+
+      expect(room).toMatchObject({ state: "growing", detail: expect.stringContaining("8 GB") });
+      expect(client).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
       fs.rmSync(home, { recursive: true, force: true });
     }
   });

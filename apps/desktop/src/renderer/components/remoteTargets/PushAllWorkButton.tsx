@@ -2,8 +2,7 @@ import { useCallback, useState } from "react";
 import { showToast } from "../app/toast/toastStore";
 
 /**
- * The Push all work to GitHub button. Used on the 0-hours states and the 30-day
- * warnings. Account-level: it names the computer.
+ * The Push all work to GitHub button. Used on the 0-hours states. Account-level: it names the computer.
  */
 export function PushAllWorkButton({ instanceId }: { instanceId: string }) {
   const [pushing, setPushing] = useState(false);

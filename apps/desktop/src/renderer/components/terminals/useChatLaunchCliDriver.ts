@@ -9,7 +9,7 @@ import {
 } from "../../state/chatLaunchStore";
 import { extractError } from "../../lib/format";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
-import { NO_CHAT_MACHINE_MESSAGE } from "../chat/chatMachinePin";
+import { noChatMachineError } from "../chat/chatMachinePin";
 
 /**
  * Starts the PTY for this window's new-lane CLI launches.
@@ -68,7 +68,7 @@ export function useChatLaunchCliDriver(
       const pin = entry.binding;
       const record = getChatLaunchLocalRecord(launchId);
       const report = (args: { sessionId?: string; error?: string }) => {
-        if (!pin) return Promise.reject(new Error(NO_CHAT_MACHINE_MESSAGE));
+        if (!pin) return Promise.reject(noChatMachineError());
         const request = window.ade.chatLaunch.completeClient({ launchId, ...args }, pin);
         return Promise.resolve(request).then((snapshot: ChatLaunchSnapshot | null) => {
           if (snapshot) applyChatLaunchSnapshot(pin, snapshot);

@@ -200,6 +200,8 @@ function makeService(options: {
     | Promise<{ token: string | null; ghCliPath: string | null; ghAuthError: string | null }>;
   githubRelaySecretReader?: (ref: string) => string | null;
   getAccountAccessToken?: () => Promise<string | null>;
+  getAccountUserId?: () => string | null;
+  getAccountDirectoryBaseUrl?: () => string | null;
   onAppUserAuthChanged?: () => void;
 } = {}) {
   return createGithubService({
@@ -210,6 +212,8 @@ function makeService(options: {
     ghAuthTokenProvider: options.ghAuthTokenProvider,
     githubRelaySecretReader: options.githubRelaySecretReader,
     getAccountAccessToken: options.getAccountAccessToken,
+    getAccountUserId: options.getAccountUserId,
+    getAccountDirectoryBaseUrl: options.getAccountDirectoryBaseUrl,
     onAppUserAuthChanged: options.onAppUserAuthChanged,
   });
 }
@@ -3179,6 +3183,57 @@ describe("githubService.getAppInstallationStatus", () => {
         }),
       }),
     );
+  });
+
+  // GitHub refused this computer's own App token (deleted after a Disconnect
+  // and a new Connect elsewhere), and the account had another. The own record
+  // still looks valid until it expires, so each later check must send the
+  // account's token, not the refused one again. A refreshed own token is new
+  // and goes first again.
+  it("sends the account's token after GitHub refused this computer's own token, until the own token changes", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const ownRecord = (accessToken: string) => makeStoredAppUserToken({
+      accessToken,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    credentialStore.setSync("github.appUserToken.v1", ownRecord("ghu_own_refused"));
+    const relayAccepts = new Set(["ghu_account_current", "ghu_own_refreshed"]);
+    mockFetch.mockImplementation(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/github/app/token")) {
+        return new Response(JSON.stringify({ accessToken: "ghu_account_current", useForSec: 3_600, githubLogin: "octocat" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/github/repos/acme/repo/status")) {
+        const bearer = String((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /, "");
+        return relayAccepts.has(bearer)
+          ? jsonResponse(200, { installed: true, state: "configured", installationId: 123 })
+          : jsonResponse(401, { error: "GitHub auth token is required" });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    });
+    const service = makeService({
+      credentialStore,
+      getAccountAccessToken: async () => "clerk-account-token",
+      getAccountUserId: () => "user_1",
+      getAccountDirectoryBaseUrl: () => null,
+    });
+    const relayBearers = () => mockFetch.mock.calls
+      .filter(([input]) => String(input).endsWith("/status"))
+      .map(([, init]) => String((init?.headers as Record<string, string> | undefined)?.authorization ?? "").replace(/^Bearer /, ""));
+    const check = async () => {
+      mockFetch.mockClear();
+      const status = await service.getAppInstallationStatus({ owner: "acme", name: "repo" });
+      return { state: status.state, bearers: relayBearers() };
+    };
+
+    await expect(check()).resolves.toEqual({ state: "configured", bearers: ["ghu_own_refused", "ghu_account_current"] });
+    await expect(check()).resolves.toEqual({ state: "configured", bearers: ["ghu_account_current"] });
+
+    credentialStore.setSync("github.appUserToken.v1", ownRecord("ghu_own_refreshed"));
+    await expect(check()).resolves.toEqual({ state: "configured", bearers: ["ghu_own_refreshed"] });
   });
 
   it("keeps supporting legacy project-token relay installation checks", async () => {

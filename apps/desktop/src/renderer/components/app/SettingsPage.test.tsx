@@ -58,7 +58,6 @@ vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSectio
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));
 vi.mock("../settings/NotificationsSection", () => ({ NotificationsSection: stubSection(["notification-events"]) }));
-vi.mock("../settings/SecretsSection", () => ({ SecretsSection: stubSection(["secrets"]) }));
 vi.mock("../settings/lanes/LanesSettingsPage", () => ({
   LanesSettingsPage: stubSection(["lane-list", "new-lane-start", "lane-templates"]),
   StorageSettingsPage: stubSection(["storage", "archive"]),
@@ -200,17 +199,6 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("lists General, then the You group starting with Account, and renders the account page in place", async () => {
-    renderSettings("/settings?tab=account");
-
-    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
-    expect(screen.getByText("account embedded")).toBeTruthy();
-    const nav = screen.getByRole("navigation", { name: "Settings sections" });
-    const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    // General sits alone at the top, then the You group opens on Account.
-    expect(rows.slice(0, 2)).toEqual(["General", "Account"]);
-  });
-
   it("carries help, zoom, and the identity row above the sections", async () => {
     renderSettings("/settings?tab=appearance");
     await screen.findByRole("heading", { name: "Appearance" });
@@ -228,8 +216,8 @@ describe("SettingsPage", () => {
   });
 
   it("says so when nothing on the current tab matches", async () => {
-    renderSettings("/settings?tab=secrets");
-    await screen.findByRole("heading", { name: "Secrets" });
+    renderSettings("/settings?tab=appearance");
+    await screen.findByRole("heading", { name: "Appearance" });
 
     fireEvent.change(searchBox(), { target: { value: "zzzznotasetting" } });
 

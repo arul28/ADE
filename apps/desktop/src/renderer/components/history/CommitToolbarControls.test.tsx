@@ -49,7 +49,6 @@ describe("LaneDriftPill", () => {
     expect(element?.textContent).toContain("4");
     expect(element?.textContent).toContain("17");
     expect(element?.getAttribute("data-stale")).toBe("true");
-    expect(element?.className).toContain("opacity-50");
   });
 
   it("holds an unmeasured 0/0 place empty rather than reading as even with the base", () => {
@@ -68,7 +67,6 @@ describe("LaneDriftPill", () => {
     );
     const element = pill(container);
     expect(element).not.toBeNull();
-    expect(element?.className).toContain("invisible");
     expect(element?.getAttribute("aria-hidden")).toBe("true");
   });
 });

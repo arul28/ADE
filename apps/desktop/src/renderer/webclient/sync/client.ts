@@ -176,6 +176,7 @@ type ClientEvents = {
   appControlStreamFrame: SyncAppControlStreamFramePayload;
   appControlStreamEnded: SyncAppControlStreamEndedPayload;
   chatLaunchEvent: ChatLaunchEvent;
+  providerLoginsChanged: null;
   projectCatalog: SyncProjectCatalogPayload;
   activeProjectChanged: AdeSyncActiveProjectChange;
 };
@@ -223,6 +224,12 @@ const DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS = 4;
 const DEFAULT_TERMINAL_INPUT_RETRY_WINDOW_MS = 30_000;
 const MAX_QUEUED_TERMINAL_INPUTS = 128;
 const MAX_QUEUED_TERMINAL_INPUT_BYTES = 512 * 1024;
+/**
+ * The most keystrokes that ride one terminal_input frame. Input waits for each
+ * frame's ACK, so without joining, every key typed while one frame is in
+ * flight waits a full round trip of its own and typing falls behind.
+ */
+const MAX_COALESCED_TERMINAL_INPUT_BYTES = 16 * 1024;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -320,6 +327,7 @@ export class AdeSyncClient {
     appControlStreamFrame: new Set(),
     appControlStreamEnded: new Set(),
     chatLaunchEvent: new Set(),
+    providerLoginsChanged: new Set(),
     projectCatalog: new Set(),
     activeProjectChanged: new Set(),
   };
@@ -783,6 +791,15 @@ export class AdeSyncClient {
     };
   }
 
+  /**
+   * True while the transport reads "error" only because one dial round failed
+   * on every route, and it will dial again on its own. A refusal (a host or
+   * relay that turned this browser down) stops the dialing, so it reads false.
+   */
+  isRetryingDial(): boolean {
+    return this.connection.getStatus().state === "error" && this.connection.willReconnect();
+  }
+
   subscribe(listener: (status: AdeSyncClientStatus) => void): () => void {
     return this.on("status", listener);
   }
@@ -1154,6 +1171,11 @@ export class AdeSyncClient {
     return this.on("chatLaunchEvent", listener);
   }
 
+  /** The host's provider sign-ins changed (`provider_logins_changed`): read `providerLogins.status` again. */
+  onProviderLoginsChanged(listener: () => void): () => void {
+    return this.on("providerLoginsChanged", () => listener());
+  }
+
   onProjectCatalog(listener: (payload: SyncProjectCatalogPayload) => void): () => void {
     return this.on("projectCatalog", listener);
   }
@@ -1310,6 +1332,10 @@ export class AdeSyncClient {
         if (event) this.emit("chatLaunchEvent", event);
         break;
       }
+      case "provider_logins_changed":
+        // Only a signal: the payload is never read.
+        this.emit("providerLoginsChanged", null);
+        break;
       default:
         break;
     }
@@ -1640,6 +1666,7 @@ export class AdeSyncClient {
       return;
     }
 
+    if (operation.firstSentAtMs == null) this.coalesceUnsentTerminalInput(operation);
     operation.attempts += 1;
     if (operation.firstSentAtMs == null) {
       operation.firstSentAtMs = Date.now();
@@ -1679,6 +1706,41 @@ export class AdeSyncClient {
       // A concurrent close will pause the queue. If the socket has not emitted
       // close yet, the bounded ACK timer below retries with the same dedupe id.
     }
+  }
+
+  /**
+   * Join the keys queued behind a frame that has never been sent into that
+   * frame: same session, in order, none of them sent either. A sent frame is
+   * never changed, because a retry must resend its id with the same bytes.
+   * Every caller's promise settles with the joined frame's ACK.
+   */
+  private coalesceUnsentTerminalInput(head: TerminalInputOperation): void {
+    let merged = 0;
+    for (let index = 1; index < this.terminalInputQueue.length; index += 1) {
+      const next = this.terminalInputQueue[index]!;
+      if (
+        next.sessionId !== head.sessionId
+        || next.firstSentAtMs != null
+        || head.byteLength + next.byteLength > MAX_COALESCED_TERMINAL_INPUT_BYTES
+      ) {
+        break;
+      }
+      head.data += next.data;
+      head.byteLength += next.byteLength;
+      const resolveHead = head.resolve;
+      const rejectHead = head.reject;
+      head.resolve = () => {
+        resolveHead();
+        next.resolve();
+      };
+      head.reject = (error) => {
+        rejectHead(error);
+        next.reject(error);
+      };
+      merged += 1;
+    }
+    // The joined keys' bytes stay counted, now on the head.
+    if (merged > 0) this.terminalInputQueue.splice(1, merged);
   }
 
   private pauseTerminalInputQueue(): void {

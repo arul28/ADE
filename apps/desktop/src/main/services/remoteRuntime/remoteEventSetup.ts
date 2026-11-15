@@ -1,6 +1,7 @@
 import { armDeadline } from "../../../shared/deadlineTimer";
 import { captureError } from "../../../shared/sentry/capture";
 import { createPhaseClock, type PhaseClock } from "../../../shared/phaseClock";
+import { markExpected } from "../../../shared/expectedError";
 
 /**
  * The steps an event read or subscription on another machine waits on, in the
@@ -68,6 +69,9 @@ export class RemoteEventSetupTimeoutError extends Error {
       `Could not reach ${machineName}: ${PHASE_WORDS[phase]} within ${Math.round(timeoutMs / 1000)}s. ADE will try again.`,
     );
     this.name = "RemoteEventSetupTimeoutError";
+    // A paired machine that is asleep, busy or offline; the message names the
+    // step and ADE retries on its own. The step stays in the Sentry Log.
+    markExpected(this, "network");
   }
 }
 

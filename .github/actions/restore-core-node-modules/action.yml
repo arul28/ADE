@@ -1,0 +1,48 @@
+name: Restore core node_modules
+description: >-
+  The one definition of the cache entry for the node_modules of apps/desktop
+  and apps/ade-cli (one group, because each imports the other's source).
+  ci.yml's install job saves it; every job that needs those node_modules
+  restores it here. A job that saves the entry itself passes the `key` and
+  `paths` outputs to actions/cache/save, so the key and the paths cannot
+  drift apart. Run it after actions/checkout.
+
+inputs:
+  lookup-only:
+    description: '"true" checks for the entry without downloading it'
+    required: false
+    default: "false"
+
+outputs:
+  cache-hit:
+    description: the cache-hit output of actions/cache/restore
+    value: ${{ steps.restore.outputs.cache-hit }}
+  key:
+    description: the cache key
+    value: ${{ steps.entry.outputs.key }}
+  paths:
+    description: the cached directories, one per line
+    value: ${{ steps.entry.outputs.paths }}
+
+runs:
+  using: composite
+  steps:
+    - id: entry
+      shell: bash
+      env:
+        KEY: nm-core-v2-${{ runner.os }}-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json') }}
+      run: |
+        echo "key=$KEY" >> "$GITHUB_OUTPUT"
+        {
+          echo "paths<<EOF"
+          echo "apps/desktop/node_modules"
+          echo "apps/ade-cli/node_modules"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      uses: actions/cache/restore@v4
+      with:
+        lookup-only: ${{ inputs.lookup-only }}
+        path: ${{ steps.entry.outputs.paths }}
+        key: ${{ steps.entry.outputs.key }}

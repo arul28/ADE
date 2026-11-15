@@ -1,10 +1,12 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { MessagesIntegrationSettings, MessagesIntegrationStatus } from "../shared/types/messagesIntegration";
+import type { BuiltInBrowserSaveLoginOffer } from "../shared/types/builtInBrowserLoginCapture";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
-import type { NoticeLayerRect } from "../shared/noticeLayer";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
 import type { LaneComputer, LaneFollowResult, LaneMovedEvent } from "../shared/laneComputer";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type {
   LaneShareAcceptResult,
   LaneShareConnectTicket,
@@ -16,13 +18,27 @@ import type {
   LaneShareMoveAction,
   LaneShareListArgs,
   LaneShareListResult,
+  LaneShareGivenEntry,
   LaneShareReceivedResult,
   LaneShareResendResult,
   LaneShareRevokeResult,
+  LaneShareRevokeGivenResult,
   LaneShareUpdateRightsArgs,
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
+import type {
+  PasswordImportResult,
+  PasswordItemSummary,
+  PasswordLoginSaveInput,
+  PasswordSecretSaveInput,
+  PasswordEnvFile,
+  PasswordSecretsExportResult,
+  PasswordSecretsImportInput,
+  PasswordSecretsImportResult,
+  PasswordsProject,
+  PasswordsStatus, PasswordUseRecord,
+} from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
@@ -103,6 +119,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import { THIS_MACHINE_SCOPE_KEY } from "../shared/machineScope";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -113,7 +130,7 @@ import type {
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import type { CloudLaneJobSnapshot, CloudLaneLifeCallRequest, CloudLaneLifeMethod, CloudLaneLifeResults } from "../shared/cloudLaneLife";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
@@ -196,11 +213,11 @@ import type { SessionInputOrigin } from "../shared/sessionInputOrigin";
 import type { ProjectDataProblem, ProjectDataRestoreResult, ProjectDataStatus, ProjectRecoveryDiagnosis, ProjectRepairReport, RepairStepResult } from "../shared/types/recovery";
 import type { MachineResetOptions, MachineResetPlan } from "../shared/types/machineReset";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
 import type {
@@ -245,18 +262,9 @@ import type {
   ProjectDetail,
   ProjectPathInspection,
   ProjectIcon,
-  ProjectSecretDeleteArgs,
-  ProjectSecretEnvFile,
-  ProjectSecretGetArgs,
-  ProjectSecretPullResult,
-  ProjectSecretsExportResult,
-  ProjectSecretsImportArgs,
-  ProjectSecretsImportPreview,
-  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
-  ProjectSecretValueResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -1487,23 +1495,38 @@ const projectConfigSnapshotCache = createShortIpcCache<ProjectConfigSnapshot>(
   1_000,
 );
 
+/**
+ * `ai.getStatus`, one read per 10 s per slot: the bound copy (no pin, or a
+ * pin that names it) and This computer's machine route, which Settings ›
+ * Providers reads for This computer instead of the bound copy. Every clear
+ * empties both: a write through either changes what both show.
+ */
 const aiStatusCache = (() => {
-  let value: AiSettingsStatus | undefined;
-  let promise: Promise<AiSettingsStatus> | null = null;
-  let expiresAt = 0;
-  let includesOpenCodeInventory = false;
-  let promiseIncludesOpenCodeInventory = false;
+  type Slot = {
+    value: AiSettingsStatus | undefined;
+    promise: Promise<AiSettingsStatus> | null;
+    expiresAt: number;
+    includesOpenCodeInventory: boolean;
+    promiseIncludesOpenCodeInventory: boolean;
+  };
+  const slots = new Map<string, Slot>();
 
   const clear = () => {
-    value = undefined;
-    promise = null;
-    expiresAt = 0;
-    includesOpenCodeInventory = false;
-    promiseIncludesOpenCodeInventory = false;
+    slots.clear();
   };
 
-  /** `pin`: set only for a pin that names the bound copy, which shares this cache. */
+  /**
+   * `pin`: set only for a pin that names the bound copy, which shares the
+   * bound slot, or for This computer's machine pin, which has its own.
+   */
   const get = async (key: string, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
+    const slotKey = pin?.key === THIS_MACHINE_SCOPE_KEY ? THIS_MACHINE_SCOPE_KEY : "bound";
+    let slot = slots.get(slotKey);
+    if (!slot) {
+      slot = { value: undefined, promise: null, expiresAt: 0, includesOpenCodeInventory: false, promiseIncludesOpenCodeInventory: false };
+      slots.set(slotKey, slot);
+    }
+    const current = slot;
     const args = parseIpcCacheArgs<{ refreshOpenCodeInventory?: boolean }>(
       key,
       {},
@@ -1511,40 +1534,41 @@ const aiStatusCache = (() => {
     const wantsOpenCodeInventory = args.refreshOpenCodeInventory === true;
     const now = Date.now();
     if (
-      value !== undefined &&
-      expiresAt > now &&
-      (!wantsOpenCodeInventory || includesOpenCodeInventory)
+      current.value !== undefined &&
+      current.expiresAt > now &&
+      (!wantsOpenCodeInventory || current.includesOpenCodeInventory)
     ) {
-      return value;
+      return current.value;
     }
     if (
-      promise &&
-      (!wantsOpenCodeInventory || promiseIncludesOpenCodeInventory)
+      current.promise &&
+      (!wantsOpenCodeInventory || current.promiseIncludesOpenCodeInventory)
     ) {
-      return promise;
+      return current.promise;
     }
 
-    promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
+    current.promiseIncludesOpenCodeInventory = wantsOpenCodeInventory;
     const statusArgs = { refreshOpenCodeInventory: wantsOpenCodeInventory };
     const request = (pin
       ? callPinnedRuntimeAction<AiSettingsStatus>(pin, "ai", "getStatus", { args: statusArgs })
       : callProjectRuntimeActionOr<AiSettingsStatus>("ai", "getStatus", { args: statusArgs }, () =>
         ipcRenderer.invoke(IPC.aiGetStatus, statusArgs)))
       .then((status: AiSettingsStatus) => {
-        if (promise === request) {
-          value = status;
-          expiresAt = Date.now() + 10_000;
-          includesOpenCodeInventory = wantsOpenCodeInventory;
+        // A clear since the read started dropped this slot: keep the answer out of the new one.
+        if (current.promise === request && slots.get(slotKey) === current) {
+          current.value = status;
+          current.expiresAt = Date.now() + 10_000;
+          current.includesOpenCodeInventory = wantsOpenCodeInventory;
         }
         return status;
       })
       .finally(() => {
-        if (promise === request) {
-          promise = null;
-          promiseIncludesOpenCodeInventory = false;
+        if (current.promise === request) {
+          current.promise = null;
+          current.promiseIncludesOpenCodeInventory = false;
         }
       });
-    promise = request;
+    current.promise = request;
     return request;
   };
 
@@ -2599,6 +2623,18 @@ function callLaneShareAction<T>(
 function callProviderLogins<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "provider_logins", action, { args: { ...args } }, () =>
     ipcRenderer.invoke(IPC.providerLoginsCall, { action, args: { ...args } }));
+}
+
+/**
+ * Passwords & Secrets is the account's vault, read and written on this
+ * computer's own brain through main (`passwords.call`), whatever project tab
+ * the window is on: it syncs to every other computer from here, and a secret
+ * kept on this computer only lives here. Only summaries and person-only
+ * writes cross this boundary: no method here returns a saved value, and
+ * `resolveForFill` is never wired (the browser fills pages in main).
+ */
+function callPasswords<T>(action: string, args: Record<string, unknown> = {}): Promise<T> {
+  return ipcRenderer.invoke(IPC.passwordsCall, { action, args: { ...args } }) as Promise<T>;
 }
 
 /**
@@ -5612,6 +5648,10 @@ const adeBridge = {
       ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
+    // This computer's folders as its brain registers them (Home's "Only on
+    // this computer"). Machine-local: no pin.
+    listThisComputer: async (): Promise<RecentProjectSummary[] | null> =>
+      ipcRenderer.invoke(IPC.projectListThisComputer),
     // The account's project list as this computer's brain last read it, or
     // as a connected machine read it (a remote pin). A file read on that
     // machine: no server call.
@@ -5729,17 +5769,17 @@ const adeBridge = {
     },
   },
   diagnostics: {
-    openIssue: (
-      context: DiagnosticReportRequestPayload,
-    ): Promise<DiagnosticReportPayload> =>
-      ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
     autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
-    sendManual: (
-      context?: DiagnosticReportRequestPayload,
+    prepareReport: (context?: DiagnosticReportRequestPayload): Promise<DiagnosticsPrepareResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsPrepareReport, context),
+    sendReport: (
+      id: string,
       options?: DiagnosticsManualSendOptions,
     ): Promise<DiagnosticsManualSendResult> =>
-      ipcRenderer.invoke(IPC.diagnosticsSendManual, context, options),
+      ipcRenderer.invoke(IPC.diagnosticsSendReport, id, options),
+    discardReport: (id: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.diagnosticsDiscardReport, id),
     /** Whether a note sent with a report reaches anyone: main's Sentry client is running. */
     userFeedbackAvailable: process.argv.includes(SENTRY_ENABLED_ARGV),
     getSharing: (): Promise<DiagnosticsSharingStatus> =>
@@ -6064,42 +6104,14 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
       ),
   },
+  // One project's secrets (Passwords & Secrets, seen from that project), on
+  // the machine the pin names: a chat's secret card, a webhook's signing
+  // secret, Cursor Cloud's env. Settings › Passwords & Secrets uses `passwords`.
   projectSecrets: {
-    list: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretsListResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "list", {}, () =>
-        ipcRenderer.invoke(IPC.projectSecretsList),
-      ),
-    get: async (args: ProjectSecretGetArgs, pin?: OpenProjectBinding | null): Promise<ProjectSecretValueResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "get", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsGet, args),
-      ),
-    set: async (args: ProjectSecretSetArgs, pin?: OpenProjectBinding | null): Promise<ProjectSecretSummary> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "set", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsSet, args),
-      ),
-    delete: async (args: ProjectSecretDeleteArgs, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean; name: string }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "delete", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsDelete, args),
-      ),
-    pullFromAccount: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretPullResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "pullFromAccount", {}, () =>
-        ipcRenderer.invoke(IPC.projectSecretsPullFromAccount),
-      ),
-    chooseEnvFile: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretsImportPreview | null> => {
-      const file = await ipcRenderer.invoke(IPC.projectSecretsChooseEnvFile) as ProjectSecretEnvFile | null;
-      if (!file) return null;
-      return callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "previewEnvImport", { args: file }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsPreviewEnvImport, file),
-      );
-    },
-    importEnv: async (args: ProjectSecretsImportArgs, pin?: OpenProjectBinding | null): Promise<ProjectSecretsImportResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "importEnv", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsImportEnv, args),
-      ),
-    exportEnv: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretsExportResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "exportEnv", {}, () =>
-        ipcRenderer.invoke(IPC.projectSecretsExportEnv),
-      ),
+    list: (pin: OpenProjectBinding): Promise<ProjectSecretsListResult> =>
+      callPinnedRuntimeAction<ProjectSecretsListResult>(pin, "project_secret", "list", {}),
+    set: (args: ProjectSecretSetArgs, pin: OpenProjectBinding): Promise<ProjectSecretSummary> =>
+      callPinnedRuntimeAction<ProjectSecretSummary>(pin, "project_secret", "set", { args }),
   },
   ai: {
     // The shared Jev helper on the machine `pin` names. `null` is the normal
@@ -6134,8 +6146,9 @@ const adeBridge = {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AiSettingsStatus> => {
-      // A pin that names the bound copy shares the bound cache (one read per 10 s).
-      if (pin && !isBoundCopyPin(pin)) {
+      // A pin that names the bound copy shares the bound cache (one read per
+      // 10 s); This computer's machine pin has a slot of its own.
+      if (pin && pin.key !== THIS_MACHINE_SCOPE_KEY && !isBoundCopyPin(pin)) {
         return callPinnedRuntimeAction<AiSettingsStatus>(
           pin,
           "ai",
@@ -8929,6 +8942,25 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "endSideChat", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatEndSideChat, args),
       ),
+    // The chat's device choice per kind (`ade devices use`), kept by the
+    // chat's own brain: every call takes that chat's pin. Runtime-only: a
+    // window with no runtime has no chat that keeps one.
+    getDeviceSources: async (
+      args: { sessionId: string },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "getDeviceSources", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
+    setDeviceSource: async (
+      args: ChatSetDeviceSourceArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatDeviceSourcesResult> => {
+      const answer = await callPinnedOrBoundRuntimeActionIfBound<ChatDeviceSourcesResult>(pin, "chat", "setDeviceSource", { args });
+      if (!answer.handled) throw new Error("This window has no ADE brain that keeps this chat's device choice.");
+      return answer.result;
+    },
     prepareCrossMachineHandoff: async (
       args: AgentChatPrepareCrossMachineHandoffArgs,
       pin?: OpenProjectBinding | null,
@@ -11507,6 +11539,22 @@ const adeBridge = {
         () => builtInBrowserStatusCache.clear(),
         () => ipcRenderer.invoke(IPC.builtInBrowserCloseTab, args),
       ),
+    // The Messages integration on this Mac (never another machine's).
+    messagesIntegrationStatus: (): Promise<MessagesIntegrationStatus> =>
+      ipcRenderer.invoke(IPC.messagesIntegrationStatus, {}),
+    messagesIntegrationSet: (next: Partial<MessagesIntegrationSettings>): Promise<MessagesIntegrationStatus> =>
+      ipcRenderer.invoke(IPC.messagesIntegrationSet, next),
+    // Passwords for the person: the tab is always on this computer.
+    savedLoginsForTab: (args: { tabId: string }): Promise<Array<{ id: string; username: string | null; sites: string[] }>> =>
+      ipcRenderer.invoke(IPC.builtInBrowserSavedLogins, args),
+    fillSavedLogin: (args: { tabId: string; itemId: string }): Promise<{ filled: string[] }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserFillSavedLogin, args),
+    loginOfferForTab: (args: { tabId: string }): Promise<BuiltInBrowserSaveLoginOffer | null> =>
+      ipcRenderer.invoke(IPC.builtInBrowserLoginOffer, args),
+    acceptLoginOffer: (args: { offerId: string }): Promise<{ saved: boolean }> =>
+      ipcRenderer.invoke(IPC.builtInBrowserAcceptLoginOffer, args),
+    dismissLoginOffer: (args: { offerId: string }): Promise<null> =>
+      ipcRenderer.invoke(IPC.builtInBrowserDismissLoginOffer, args),
     reload: async (
       args: BuiltInBrowserTabTargetArgs = {},
       _pin?: OpenProjectBinding | null,
@@ -11753,8 +11801,11 @@ const adeBridge = {
   remoteWork: {
     list: async (pin?: OpenProjectBinding | null): Promise<RemoteWorkCopyListing[]> =>
       callPinnedOrBoundRuntimeActionOr<RemoteWorkCopyListing[]>(pin, "remote_work", "list", {}, async () => []),
-    delete: async (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
-      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
+    delete: async (
+      args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ deleted: boolean; keptReason?: string }> =>
+      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean; keptReason?: string }>(pin, "remote_work", "delete", { args }, async () => {
         throw new Error("This window has no runtime to delete the work copy on.");
       }),
   },
@@ -12110,6 +12161,58 @@ const adeBridge = {
     onChanged: (cb: () => void, pin?: OpenProjectBinding | null): (() => void) =>
       subscribePinnedFanoutEvents(pin, remoteProviderLoginsChangedFanout, () => cb(), "providerLogins.onChanged")
         ?? remoteProviderLoginsChangedFanout.subscribe(() => cb()),
+  },
+  /**
+   * Settings › Passwords & Secrets: the account's saved logins and secrets as
+   * this computer holds them. No method takes a pin: the account's vault is
+   * the same on every computer, so the page always asks the computer in front
+   * of the person, whichever machine the tab is bound to. Nothing here returns a saved value:
+   * `list` and `save*` answer with the same summaries agents may see, and the
+   * value-reading `resolveForFill` is deliberately absent (only a browser
+   * fill in main may read one).
+   */
+  passwords: {
+    status: (args: Record<string, never> = {}): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("status", args),
+    setEnabled: (args: { enabled: boolean }): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setEnabled", args),
+    setCloudEnabled: (args: { enabled: boolean }): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setCloudEnabled", args),
+    reset: (args: { confirm: "reset" }): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("reset", args),
+    list: (args: Record<string, never> = {}): Promise<PasswordItemSummary[]> =>
+      callPasswords<PasswordItemSummary[]>("list", args),
+    /** The machine's recorded uses (site, who, chat, when), newest first. Never a value. */
+    activity: (args: Record<string, never> = {}): Promise<PasswordUseRecord[]> =>
+      callPasswords<PasswordUseRecord[]>("activity", args),
+    /**
+     * Show or copy one saved value, after Touch ID / Windows Hello on this
+     * computer. A copy goes to the clipboard in main and returns no value.
+     */
+    reveal: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }): Promise<{ value?: string; copied?: true }> =>
+      ipcRenderer.invoke(IPC.passwordsReveal, args),
+    /** A login's current authenticator code (never its key), and its seconds left. */
+    code: (args: { itemId: string }): Promise<{ code: string; secondsLeft: number } | null> =>
+      callPasswords<{ code: string; secondsLeft: number } | null>("code", args),
+    saveLogin: (args: PasswordLoginSaveInput): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveLogin", args),
+    saveSecret: (args: PasswordSecretSaveInput): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveSecret", args),
+    remove: (args: { id: string }): Promise<boolean> =>
+      callPasswords<boolean>("remove", args),
+    importCsv: (args: { text: string }): Promise<PasswordImportResult> =>
+      callPasswords<PasswordImportResult>("importCsv", args),
+    sync: (args: Record<string, never> = {}): Promise<void> =>
+      callPasswords<void>("sync", args),
+    importSecrets: (args: PasswordSecretsImportInput): Promise<PasswordSecretsImportResult> =>
+      callPasswords<PasswordSecretsImportResult>("importSecrets", args),
+    /** Writes to this computer's Downloads, after Touch ID / Windows Hello. */
+    exportSecrets: (args: { projectScope: string | null }): Promise<PasswordSecretsExportResult> =>
+      callPasswords<PasswordSecretsExportResult>("exportSecrets", args),
+    chooseEnvFile: (): Promise<PasswordEnvFile | null> =>
+      ipcRenderer.invoke(IPC.passwordsChooseEnvFile),
+    projects: (): Promise<PasswordsProject[]> =>
+      ipcRenderer.invoke(IPC.passwordsProjects),
   },
   providerInstances: {
     list: async (
@@ -13609,9 +13712,16 @@ const adeBridge = {
       owner?: string;
       name?: string;
       forceRefresh?: boolean;
+      /** A person pressed Refresh: implies `forceRefresh`. */
+      userRequested?: boolean;
     } = {}, pin?: OpenProjectBinding | null): Promise<GitHubAppInstallationStatus> => {
       const cacheArgs = { owner: args.owner, name: args.name };
-      const requestArgs = args.forceRefresh ? { ...cacheArgs, forceRefresh: true } : cacheArgs;
+      const forceRefresh = args.forceRefresh === true || args.userRequested === true;
+      const requestArgs = {
+        ...cacheArgs,
+        ...(forceRefresh ? { forceRefresh: true } : {}),
+        ...(args.userRequested ? { userRequested: true } : {}),
+      };
       // Pinned reads skip the installation cache, which is keyed by repo only
       // and holds the unpinned path's answer.
       if (pin) {
@@ -13623,7 +13733,7 @@ const adeBridge = {
         );
       }
       const cacheKey = serializeIpcCacheArgs(cacheArgs);
-      if (args.forceRefresh) {
+      if (forceRefresh) {
         githubAppInstallationStatusCache.clear(cacheKey);
         return callProjectRuntimeActionOr(
           "github",
@@ -13909,6 +14019,9 @@ const adeBridge = {
     /** Wakes a computer (free once a day at 0 hours) and pushes its lanes' work to GitHub. */
     pushAllWork: (instanceId: string): Promise<CloudMachineActionResult> =>
       ipcRenderer.invoke(IPC.cloudPushAllWork, { instanceId }),
+    /** "Keep it" on an idle cleanup warning: restarts the computer's idle clock, no wake. Account level, by its ADE Cloud id. */
+    keepIdleComputer: (instanceId: string): Promise<{ ok: boolean; message?: string }> =>
+      ipcRenderer.invoke(IPC.cloudKeepIdleComputer, { instanceId }),
     /** The life of a lane's computer (`CloudLaneLifeCallRequest`): account level, so no pin. */
     laneLife: <M extends CloudLaneLifeMethod>(request: CloudLaneLifeCallRequest<M>): Promise<CloudLaneLifeResults[M]> =>
       ipcRenderer.invoke(IPC.cloudLaneLifeCall, request),
@@ -13935,10 +14048,14 @@ const adeBridge = {
     setAgentLimits: (limits: Partial<CloudAgentLimits>): Promise<CloudAgentLimits | null> =>
       ipcRenderer.invoke(IPC.cloudSetAgentLimits, { limits }),
     setExtraHours: (enabled: boolean): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraHours, { enabled }),
-    openCheckout: (plan?: CloudPaidPlanId): Promise<CloudOpenCheckoutResult> => ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan } : undefined),
+    openCheckout: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick): Promise<CloudOpenCheckoutResult> =>
+      ipcRenderer.invoke(IPC.cloudOpenCheckout, plan ? { plan, ...(cleanup ? { cleanup } : {}) } : undefined),
+    pickPlanCleanup: (input: { planId: CloudPlanId } & CloudPlanCleanupPick): Promise<CloudAccountState | null> =>
+      ipcRenderer.invoke(IPC.cloudPickPlanCleanup, input),
     setExtraDisk: (choice: { enabled: true; monthlyLimitUsd: number } | { enabled: false }): Promise<CloudAccountState | null> => ipcRenderer.invoke(IPC.cloudSetExtraDisk, choice),
     redeemInvite: (code: string): Promise<CloudInviteRedeemOutcome> => ipcRenderer.invoke(IPC.cloudRedeemInvite, { code }),
     openBillingPortal: (): Promise<{ opened: boolean }> => ipcRenderer.invoke(IPC.cloudOpenBillingPortal),
+    openFreeUnlock: (): Promise<{ opened: boolean; unlocked: boolean }> => ipcRenderer.invoke(IPC.cloudOpenFreeUnlock),
     copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudCopyMachine, args),
     moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>
@@ -14990,14 +15107,6 @@ const adeBridge = {
     onCommand: (cb: (command: AppZoomCommand) => void) =>
       subscribeAppCommand("zoom", cb),
   },
-  /** The bottom-right cards' own window over a live browser page (`shared/noticeLayer`). */
-  noticeLayer: {
-    // See-through windows depend on the Linux compositor; there the cards
-    // stay in the corner and the page pauses behind them, as before.
-    available: process.platform !== "linux",
-    place: async (rect: NoticeLayerRect | null): Promise<boolean> =>
-      ipcRenderer.invoke(IPC.appPlaceNoticeLayer, { rect }),
-  },
   cto: {
     getState: async (
       args: CtoGetStateArgs = {},
@@ -15375,6 +15484,9 @@ const adeBridge = {
   // connection with the one-use ticket `connect` answers.
   laneShareGuest: {
     listReceived: (): Promise<LaneShareReceivedResult> => ipcRenderer.invoke(IPC.laneShareGuestListReceived),
+    listGiven: (): Promise<LaneShareGivenEntry[]> => ipcRenderer.invoke(IPC.laneShareGuestListGiven),
+    revokeGiven: (args: { grantId: string }): Promise<LaneShareRevokeGivenResult> =>
+      ipcRenderer.invoke(IPC.laneShareGuestRevokeGiven, { grantId: args.grantId }),
     open: (args: { grantId: string }): Promise<LaneShareOpenResult> =>
       ipcRenderer.invoke(IPC.laneShareGuestOpen, { grantId: args.grantId }),
     accept: (args: { grantId: string }): Promise<LaneShareAcceptResult> =>

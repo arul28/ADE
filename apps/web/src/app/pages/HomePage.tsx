@@ -6,6 +6,7 @@ import { Hero } from "../../components/home/Hero";
 import { StorySection } from "../../components/home/StorySection";
 import { ToolsSection } from "../../components/home/ToolsSection";
 import { FeatureWall } from "../../components/home/FeatureWall";
+import { CloudPricingTeaser } from "../../components/home/CloudPricingTeaser";
 import { DownloadSection } from "../../components/home/DownloadSection";
 
 export function HomePage() {
@@ -19,6 +20,7 @@ export function HomePage() {
         <StorySection />
         <ToolsSection />
         <FeatureWall />
+        <CloudPricingTeaser />
         <DownloadSection />
       </div>
     </Page>

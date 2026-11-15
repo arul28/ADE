@@ -77,6 +77,7 @@ package-lock.json
 !/apps/push-relay/package-lock.json
 !/apps/tunnel-relay/package-lock.json
 !/apps/account-directory/package-lock.json
+!/apps/password-key-service/package-lock.json
 !/packages/sdk/package-lock.json
 !/packages/chat-ui/package-lock.json
 !/packages/demo/package-lock.json
@@ -136,3 +137,6 @@ AuthKey_*.p8
 
 # Vercel CLI link for deploying the website by hand.
 .vercel
+
+# Local Cloudflare Worker state (wrangler dev)
+.wrangler/

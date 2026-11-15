@@ -1,7 +1,8 @@
 import { stripInheritedProviderHomeEnv, stripParentClaudeSessionEnv } from "../shared/parentAgentEnv";
+import { createLocalPasswordsAccess, registerBrowserTabPasswordsIpc } from "./services/passwords/localPasswordsBridge";
+import { createMessagesIntegrationService } from "./services/messagesIntegration/messagesIntegrationService";
+import { readMessagesInWorker, sendMessage, terminateMessagesReadWorkers } from "./services/messages";
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerSaveBlocker, protocol, safeStorage, screen, type WebContents } from "electron";
-import { installNoticeLayer, placeNoticeLayer } from "./services/noticeLayer/noticeLayerWindow";
-import type { NoticeLayerRect } from "../shared/noticeLayer";
 import { initMainSentry, isMainSentryStarted } from "./sentry/initMain";
 import { reportsAsPackagedRelease } from "./sentry/releaseBuild";
 import {
@@ -12,7 +13,8 @@ import {
 } from "./services/shared/outboundNetwork";
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { coerceSavedWindowRepositoryTabs, type SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
-import { flushSentry } from "../shared/sentry/capture";
+import { captureProblem, flushSentry } from "../shared/sentry/capture";
+import { scrubFreeTextThenCut } from "../shared/sentry/scrub";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
 import { setSentryEventMirror, setSentryMachineIdResolver, setSentryUserResolver } from "../shared/sentry/eventFilter";
 import { loadMachineTelemetryId, machineTelemetryIdReader, peekMachineTelemetryId } from "./services/analytics/machineTelemetryId";
@@ -322,7 +324,9 @@ import type {
   OpenProjectBinding,
   RemoteOpenProjectBinding,
   AppNavigationRequest,
+  AgentChatArmUpdateResumeResult,
   AgentChatInterruptedChatRef,
+  AgentChatUpdateResumeSettledReason,
   AttentionItem,
   AttentionPreferences,
   AppMenuCommand,
@@ -557,6 +561,7 @@ import {
 import { createQuitPrompt } from "./services/runtime/quitPrompt";
 import { createUpdateImpactProbe, settledWithin } from "./services/runtime/updateImpactProbe";
 import { registerBackgroundServiceControls } from "./services/runtime/backgroundServiceControls";
+import { clearBrainStopIntent, noteBrainStopIntent } from "./services/runtime/liveTurnProjects";
 import { createOpenProjectDataWatch } from "./services/runtime/openProjectDataWatch";
 import { createAutoDiagnosticsService } from "./services/diagnostics/autoDiagnosticsService";
 import { resolveAutoDiagnosticsStateFile } from "./services/diagnostics/autoDiagnosticsStore";
@@ -1259,15 +1264,16 @@ async function createWindow(args: {
   win.webContents.on("did-navigate", () => noteRendererPageStarted(webContentsId));
   win.webContents.on("render-process-gone", (_event, details) => {
     // `killed` is the renderer ended from outside (SIGTERM on macOS, Windows
-    // ending it at sign-out or shutdown, 0xC000013A): logged, recovered, not
-    // an issue. A crash, an OOM or a failed launch stays one.
-    const level = details.reason === "killed" ? "warn" : "error";
+    // ending it at sign-out or shutdown, 0xC000013A) and `clean-exit` is a
+    // normal end: logged, recovered, not an issue. A crash, an OOM or a failed
+    // launch stays one, grouped by reason and exit code.
+    const reportable = details.reason !== "killed" && details.reason !== "clean-exit";
     // What the renderer last said it held (every 30 s while visible), with
     // the snapshot's age. The line goes to Sentry with these numbers;
     // analytics gets only buckets, and none from a stale snapshot.
     const crashState = takeRendererCrashState(webContentsId);
     const memory = crashState.record;
-    args.logger?.[level]("window.render_process_gone", {
+    const goneFields = {
       windowId: win.id,
       reason: details.reason,
       exitCode: details.exitCode,
@@ -1284,7 +1290,19 @@ async function createWindow(args: {
         : { memorySnapshot: crashState.snapshotAgeSec == null ? "none" : "stale" }),
       openForSec: crashState.openForSec,
       snapshotAgeSec: crashState.snapshotAgeSec,
-    });
+    };
+    args.logger?.warn("window.render_process_gone", goneFields);
+    if (reportable) {
+      captureProblem("window.render_process_gone", {
+        tags: {
+          "log.event": "window.render_process_gone",
+          "render.reason": details.reason,
+          "render.exit_code": String(details.exitCode),
+        },
+        fingerprint: ["window.render_process_gone", details.reason, String(details.exitCode)],
+        extra: goneFields,
+      });
+    }
     const memoryBuckets = rendererMemoryAnalytics(crashState);
 
     // Monotonic on purpose: the budget is a rolling time window, and a wall-clock
@@ -1303,11 +1321,17 @@ async function createWindow(args: {
     };
     if (!decision.recover) {
       if (decision.cause === "budget-exhausted") {
-        args.logger?.error("window.render_process_recovery_abandoned", {
+        const abandonedFields = {
           windowId: win.id,
           reason: details.reason,
           attempts: decision.attempts,
           windowMs: RENDERER_RECOVERY_WINDOW_MS,
+        };
+        args.logger?.warn("window.render_process_recovery_abandoned", abandonedFields);
+        captureProblem("window.render_process_recovery_abandoned", {
+          tags: { "log.event": "window.render_process_recovery_abandoned", "render.reason": details.reason },
+          fingerprint: ["window.render_process_recovery_abandoned", details.reason],
+          extra: abandonedFields,
         });
         reportRecovery(false);
         args.onRendererGaveUp?.("window_crashed", `${details.reason} (exit ${details.exitCode}), ${decision.attempts} times`);
@@ -1463,9 +1487,8 @@ async function createWindow(args: {
     }
   }
 
-  // Block unexpected external navigation/window creation. The one window the
-  // renderer may open is its own notice layer (`installNoticeLayer`).
-  installNoticeLayer(win);
+  // Block unexpected external navigation/window creation.
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.webContents.on("will-navigate", (event, url) => {
     const allowed = getRendererUrl();
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -2165,14 +2188,6 @@ app.whenReady().then(async () => {
     },
   );
 
-  // The bottom-right cards' own window over a live browser page (`noticeLayer`).
-  ipcMain.handle(IPC.appPlaceNoticeLayer, (event, arg: { rect?: NoticeLayerRect | null } = {}): boolean => {
-    if (!isTrustedAdeRendererSender(event)) return false;
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return false;
-    return placeNoticeLayer(win, arg?.rect ?? null);
-  });
-
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
     if (!isTrustedAdeRendererSender(event)) throw new Error("Terminal output is only available to the ADE window.");
     setPtyDataSubscriptionsForSender(
@@ -2208,9 +2223,25 @@ app.whenReady().then(async () => {
   // desktop, shared by the built-in browser's recorder, App Control and the
   // runtime daemon (over the bridge below), so jobs queue on one hidden renderer.
   const chromiumDemoEngine = createChromiumDemoEngine({ logger: builtInBrowserBridgeLogger });
+  // Passwords live in this computer's brain, account-wide (`passwords.call`,
+  // no project needed). Values come back only for a fill, into main.
+  const localPasswords = createLocalPasswordsAccess(async (action, args) =>
+    (await localRuntimePool.callSync<{ result?: unknown }>("passwords.call", { action, args }))?.result);
+  // Messages on this Mac: its database through a worker (Full Disk Access is
+  // ADE's), sending through the Messages app. No reader off macOS: the
+  // service then says Messages is Mac-only.
+  const messagesIntegration = createMessagesIntegrationService({
+    userDataDir: app.getPath("userData"),
+    reader: process.platform === "darwin"
+      ? { read: (request) => readMessagesInWorker(request), send: (input) => sendMessage(input) }
+      : null,
+    logger: { info: (event, data) => localRuntimeLogger.info(event, data), warn: (event, data) => localRuntimeLogger.warn(event, data) },
+  });
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
     demoEngine: chromiumDemoEngine,
+    messages: messagesIntegration,
+    passwords: localPasswords,
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
@@ -2353,6 +2384,11 @@ app.whenReady().then(async () => {
         return { sessionService: null, agentChatService: null };
       },
     }),
+  });
+  registerBrowserTabPasswordsIpc({
+    passwords: localPasswords,
+    isBrowserTab: (contents) => builtInBrowserService.locateWebContents(contents) !== null,
+    onLoginSubmitted: (contents, mainFrame, submission) => builtInBrowserService.handleLoginSubmission(contents, mainFrame, submission),
   });
 
   // Side-channel JSON-RPC server that lets the runtime daemon proxy
@@ -3591,8 +3627,13 @@ app.whenReady().then(async () => {
       });
       return interruptedChats;
     }
+    // The brain this uninstall stops keeps its chats and CLIs at work for the
+    // next start, with the continue cap starting again: the update was accepted.
+    const brainIntentTarget = { runtimeDir: machineAdeLayout.runtimeDir, socketPath: machineAdeLayout.socketPath };
+    noteBrainStopIntent("accepted_update", brainIntentTarget);
     const result = await uninstallRuntimeService();
     if (!result.ok) {
+      clearBrainStopIntent(brainIntentTarget);
       // Nothing was removed and the install will not proceed, so recovery must
       // get its normal freedom back immediately.
       localRuntimePool.endUpdateWindow("uninstall_before_install_failed");
@@ -4113,11 +4154,16 @@ app.whenReady().then(async () => {
           });
           return;
         }
-        const failedStep = result.steps.find((step) => step.status === "failed")?.id ?? null;
+        const failed = result.steps.find((step) => step.status === "failed") ?? null;
+        const failedStep = failed?.id ?? null;
         updateLogger.error("autoUpdate.transaction_failed", {
           version: result.version,
           failedStep,
           failureMessage: result.failureMessage,
+          // The failed step's own reason at the top level: Sentry keeps three
+          // levels of `extra`, so inside `steps` it arrived as "[Object]".
+          // Scrubbed of paths, emails and secrets, and cut short.
+          failedReason: failed?.detail ? scrubFreeTextThenCut(failed.detail, 300) : null,
           steps: result.steps,
         });
         // The new brain did not come up: when it also recorded a crash during
@@ -4490,6 +4536,7 @@ app.whenReady().then(async () => {
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),
         knownOwnerIdentities: processRegistry.listKnownProcessIdentities(),
+        deadOwnerIdentities: processRegistry.listDeadProcessIdentities(),
       });
       if (reconciledSessions > 0) {
         logger.warn("sessions.reconciled_stale_running", {
@@ -4516,7 +4563,6 @@ app.whenReady().then(async () => {
     });
     const projectSecretService = createProjectSecretService(projectRoot, {
       getAccountVault: () => accountVaultBridge,
-      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
 
@@ -5258,8 +5304,8 @@ app.whenReady().then(async () => {
       getAutomationPlannerService: () => automationPlannerService,
       getUsageService: () => usageTrackingService,
       getBudgetService: () => budgetCapService,
-      // Names and metadata only. `projectSecretService.get`/`exportEnv` are
-      // deliberately NOT reachable from any CTO tool.
+      // Names and metadata only. `projectSecretService.get` and every other
+      // value read are deliberately NOT reachable from any CTO tool.
       getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
@@ -6131,6 +6177,9 @@ app.whenReady().then(async () => {
       },
       resolveLaneWorktreePath: async (laneId) =>
         (await laneService.getSummary(laneId, { includeStatus: false }).catch(() => null))?.worktreePath ?? null,
+      // A chat on another machine runs its app in this lane's terminal, in its work copy.
+      resolvePrimaryLaneId: () => laneService.getPrimaryLane()?.laneId ?? null,
+      archiveTerminal: (sessionId: string) => { sessionService.archiveSession(sessionId); },
       onEvent: (payload) => {
         if (payload.type === "session-started") {
           captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
@@ -6153,6 +6202,9 @@ app.whenReady().then(async () => {
       getChromiumDemoEngine: () => chromiumDemoEngine,
       // A lane may not attach to an app another lane's Mac Desktop holds.
       macDesktopLaneForProcess: (pid: number) => macDesktopService?.laneForProcess(pid) ?? null,
+      // Linux: a launch with no display here runs on the lane's own screen.
+      laneScreenLaunchEnv: async (request) => await macDesktopService?.laneScreenLaunchEnv(request) ?? null,
+      noteLaneScreenUse: (laneId: string) => macDesktopService?.noteLaneScreenUse?.(laneId),
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
@@ -8784,6 +8836,13 @@ app.whenReady().then(async () => {
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
+  /** The next try of the update resume (`armOwedResumes`); cleared when quit starts. */
+  let updateResumeRetryTimer: NodeJS.Timeout | null = null;
+  const clearUpdateResumeRetry = (): void => {
+    if (!updateResumeRetryTimer) return;
+    clearTimeout(updateResumeRetryTimer);
+    updateResumeRetryTimer = null;
+  };
   /**
    * The bookend to `desktop.main_started`, in the same machine log. A launch
    * line with no exit line for the previous pid is a crash or a kill; without
@@ -8839,6 +8898,12 @@ app.whenReady().then(async () => {
       terminateLoginImportReadWorkers();
     } catch {
       // ignore if module not loaded
+    }
+    // A Messages read has its own 20 s limit; quitting cuts it short too.
+    try {
+      terminateMessagesReadWorkers();
+    } catch {
+      // nothing running
     }
   };
 
@@ -9042,6 +9107,8 @@ app.whenReady().then(async () => {
     if (shutdownFinalized || shutdownPromise) return;
     shutdownRequested = true;
     shutdownReason = args.reason;
+    // A retry during teardown would call a runtime pool that is shutting down.
+    clearUpdateResumeRetry();
     quitWarningAcknowledged = true;
 
     const exitCode = args.exitCode ?? 0;
@@ -9053,10 +9120,26 @@ app.whenReady().then(async () => {
     }
 
     const forceAfterMs = args.forceAfterMs ?? 8_000;
+    // The shutdown step that is running, so a force exit names what held quit
+    // (ADE-DESKTOP-B3 said only that the timer fired). Fixed step names only.
+    const shutdownStartedAt = Date.now();
+    let shutdownStep = "start";
+    let shutdownStepStartedAt = shutdownStartedAt;
+    const enterShutdownStep = (step: string): void => {
+      shutdownStep = step;
+      shutdownStepStartedAt = Date.now();
+    };
+    // The parts of the last flush that have not answered yet.
+    const pendingFinalParts = new Set<string>();
     shutdownForceTimer = setTimeout(() => {
+      const now = Date.now();
       shutdownLogger.error("app.shutdown_force_exit", {
         reason: args.reason,
         forceAfterMs,
+        step: shutdownStep,
+        stepElapsedMs: now - shutdownStepStartedAt,
+        elapsedMs: now - shutdownStartedAt,
+        ...(pendingFinalParts.size > 0 ? { pendingParts: [...pendingFinalParts].join(",") } : {}),
       });
       localRuntimePool.killOwnedRuntimeNow();
       runImmediateProcessCleanup(`forced:${args.reason}`);
@@ -9078,6 +9161,7 @@ app.whenReady().then(async () => {
       // sits first so a slow browser-storage flush cannot eat its budget; the
       // force timer still bounds the whole sequence.
       try {
+        enterShutdownStep("staged_board_moves");
         await flushStagedBoardMoves();
       } catch (error) {
         shutdownLogger.error("app.staged_board_move_flush_failed", {
@@ -9101,6 +9185,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       try {
+        enterShutdownStep("browser_storage_flush");
         await builtInBrowserService.flushStorage();
       } catch (error) {
         shutdownLogger.error("app.browser_storage_flush_failed", {
@@ -9133,6 +9218,7 @@ app.whenReady().then(async () => {
       replaceDormantContext(previousRoot);
 
       try {
+        enterShutdownStep("close_project_contexts");
         await closeAllProjectContexts();
       } catch (error) {
         shutdownLogger.error("app.shutdown_cleanup_failed", {
@@ -9153,17 +9239,25 @@ app.whenReady().then(async () => {
         // with "the pool is disposed", an internal invariant reported to Sentry
         // as a defect. Bounded, so a brain that never answers still cannot hold
         // quit past the force timer.
+        enterShutdownStep("destroy_windows");
         destroyWindowsForExit();
+        enterShutdownStep("runtime_drain");
         await localRuntimePool.drain({ timeoutMs: 2_000 });
         // Sentry flushes alongside analytics: a crash that triggered this
         // shutdown is the report that must not be lost to the exit. On Windows the
         // brain this desktop spawned is asked to shut down in the same window, and
         // force-killed if it is still up after 3 s.
+        enterShutdownStep("final_flush");
+        const finalPart = <T,>(name: string, run: () => Promise<T>): Promise<T> => {
+          pendingFinalParts.add(name);
+          return run().finally(() => pendingFinalParts.delete(name));
+        };
         await Promise.all([
-          productAnalyticsService.shutdown(),
-          flushSentry(2_000),
-          localRuntimePool.stopOwnedRuntimeCooperatively(),
+          finalPart("analytics", () => productAnalyticsService.shutdown()),
+          finalPart("sentry", () => flushSentry(2_000)),
+          finalPart("owned_runtime_stop", () => localRuntimePool.stopOwnedRuntimeCooperatively()),
         ]);
+        enterShutdownStep("process_cleanup");
         runImmediateProcessCleanup(`complete:${args.reason}`);
       }
     })().finally(() => {
@@ -9333,25 +9427,32 @@ app.whenReady().then(async () => {
   // launch that lands an install, with the ids the previous process persisted
   // (a freshly started brain has no live turns to discover), and after a
   // quit-prompt Repair.
-  const armResumeForChats = async (
+  const armResumeForChatsDetailed = async (
     chats: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
-  ): Promise<UpdateInterruptedChat[]> => {
-    if (chats.length === 0) return [];
+  ): Promise<{ armed: UpdateInterruptedChat[]; settled: Map<string, AgentChatUpdateResumeSettledReason> }> => {
+    const settled = new Map<string, AgentChatUpdateResumeSettledReason>();
+    if (chats.length === 0) return { armed: [], settled };
     const sessionIds = chats.map((chat) => chat.sessionId);
     const armed: UpdateInterruptedChat[] = [];
     // A chat's project may have no tab open; its root is how the arm reaches it.
     const chatRoots = chats.flatMap((chat) => (chat.projectRoot ? [chat.projectRoot] : []));
     const projectsAsked = await forEachProjectRuntime(async ({ projectName, projectRoot, inProcessService }) => {
       try {
-        const refs = inProcessService
-          ? runtimeChatRefs(await inProcessService.armUpdateResume({ sessionIds }))
-          : runtimeChatRefs((await localRuntimePool.callActionForRoot(projectRoot, {
+        const result: unknown = inProcessService
+          ? await inProcessService.armUpdateResume({ sessionIds })
+          : (await localRuntimePool.callActionForRoot(projectRoot, {
               domain: "chat",
               action: "armUpdateResume",
               args: { sessionIds },
-            })).result);
-        for (const chat of refs) {
+            })).result;
+        for (const chat of runtimeChatRefs(result)) {
           armed.push({ sessionId: chat.sessionId, title: chat.title, projectName });
+        }
+        // Only the project that has the chat can settle it; the others answer
+        // nothing for it. An older brain sends no `settled`: all stays owed.
+        const settledRefs = (result as Partial<AgentChatArmUpdateResumeResult> | undefined)?.settled;
+        for (const entry of Array.isArray(settledRefs) ? settledRefs : []) {
+          if (typeof entry?.sessionId === "string") settled.set(entry.sessionId, entry.reason);
         }
       } catch (error) {
         localRuntimeLogger.warn("update_resume.arm_failed", {
@@ -9368,8 +9469,11 @@ app.whenReady().then(async () => {
     if (projectsAsked === 0) {
       localRuntimeLogger.warn("update_resume.arm_no_project", { chats: sessionIds.length });
     }
-    return armed;
+    return { armed, settled };
   };
+  const armResumeForChats = async (
+    chats: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
+  ): Promise<UpdateInterruptedChat[]> => (await armResumeForChatsDetailed(chats)).armed;
 
   /**
    * Drops the sessions that actually armed from the persisted resume list, so
@@ -9406,17 +9510,57 @@ app.whenReady().then(async () => {
   };
 
   /**
-   * Arms one continue row per chat it is handed, and drops the ones that armed
-   * from the record. Its contract is one call per launch: a chat armed twice
-   * gets its row re-scheduled, and a row that has already fired tells the chat
-   * to continue a second time. The single call site is in the launch, on the
-   * far side of the update transaction that would refuse the runtime.
+   * Arms one continue row per chat it is handed, and drops from the record the
+   * ones that armed or that their brain settled for good (held by the continue
+   * rule, paused, already continued). Its contract is one arm per chat per
+   * launch: a chat armed twice gets its row re-scheduled, and a row that has
+   * already fired tells the chat to continue a second time. So only chats no
+   * project armed or settled are asked again, a few times over the next
+   * minutes (a project that opens late, a brain still starting), and every one
+   * of them leaves a log line. What is still owed after the last try stays on
+   * the record for the next launch. The single call site is in the launch, on
+   * the far side of the update transaction that would refuse the runtime.
    */
+  const UPDATE_RESUME_RETRY_DELAYS_MS = [15_000, 60_000, 180_000, 600_000] as const;
   const armOwedResumes = async (
     owed: readonly Pick<UpdateInterruptedChat, "sessionId" | "projectRoot">[],
+    attempt = 0,
   ): Promise<void> => {
-    const armed = await armResumeForChats(owed);
-    consumeArmedResumeChats(armed.map((chat) => chat.sessionId));
+    const { armed, settled } = await armResumeForChatsDetailed(owed);
+    const armedIds = new Set(armed.map((chat) => chat.sessionId));
+    const settledIds = [...settled.keys()].filter((sessionId) => !armedIds.has(sessionId));
+    for (const sessionId of settledIds) {
+      localRuntimeLogger.info("update_resume.settled", { sessionId, reason: settled.get(sessionId) ?? null, attempt });
+    }
+    consumeArmedResumeChats([...armedIds, ...settledIds]);
+    const remaining = owed.filter((chat) => !armedIds.has(chat.sessionId) && !settled.has(chat.sessionId));
+    if (remaining.length === 0) return;
+    const delayMs = UPDATE_RESUME_RETRY_DELAYS_MS[attempt];
+    for (const chat of remaining) {
+      localRuntimeLogger.warn("update_resume.not_armed", {
+        sessionId: chat.sessionId,
+        attempt,
+        retryInMs: delayMs ?? null,
+      });
+    }
+    if (delayMs === undefined) {
+      // Still owed: the next launch asks again.
+      localRuntimeLogger.warn("update_resume.retries_exhausted", { chats: remaining.length, attempts: attempt + 1 });
+      return;
+    }
+    if (shutdownRequested || shutdownFinalized) return;
+    clearUpdateResumeRetry();
+    updateResumeRetryTimer = setTimeout(() => {
+      updateResumeRetryTimer = null;
+      if (shutdownRequested || shutdownFinalized) return;
+      void armOwedResumes(remaining, attempt + 1).catch((error: unknown) => {
+        localRuntimeLogger.warn("update_resume.arm_chain_failed", {
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, delayMs);
+    updateResumeRetryTimer.unref?.();
   };
 
   // Phones connected through ADE phone sync, which drop while ADE restarts.
@@ -9524,6 +9668,9 @@ app.whenReady().then(async () => {
     isRepairing: () => quitPrompt.isRepairing() || machineRecoveryService.isRecovering(),
     isShuttingDown: () => shutdownRequested,
     shutdown: (reason) => requestAppShutdown({ reason, exitCode: 0 }),
+    noteStopForGood: (stopping) => (stopping
+      ? noteBrainStopIntent("stop_for_good", { runtimeDir: machineAdeLayout.runtimeDir, socketPath: machineAdeLayout.socketPath })
+      : clearBrainStopIntent({ runtimeDir: machineAdeLayout.runtimeDir, socketPath: machineAdeLayout.socketPath })),
   });
 
   const confirmQuitWarning = async (
@@ -10845,14 +10992,6 @@ app.whenReady().then(async () => {
         if (projectContexts.has(normalizedRoot)) continue;
         const adeDir = resolveAdeLayout(normalizedRoot).adeDir;
         try {
-          createProjectSecretService(normalizedRoot).purgeAccountCredentials();
-        } catch (error) {
-          getActiveContext().logger.warn("account.closed_project_secrets_purge_failed", {
-            projectRoot: normalizedRoot,
-            error: error instanceof Error ? error.message : String(error ?? ""),
-          });
-        }
-        try {
           createLinearCredentialService({
             adeDir,
             credentialStore: createDesktopCredentialStore(path.join(adeDir, "secrets")),
@@ -11033,9 +11172,10 @@ app.whenReady().then(async () => {
       }
     }
     if (armsResume) {
-      // Armed once, when the pool can answer: with no update transaction running
+      // Armed when the pool can answer: with no update transaction running
       // that is now, and otherwise it is the moment that transaction lets go —
       // the same instant everything above needed, however long the install took.
+      // Chats no project armed or settled are asked again a few times.
       void (postUpdateTransactionDone ?? Promise.resolve())
         .then(() => armOwedResumes(resumedAfterUpdate))
         .catch((error: unknown) => {
@@ -11183,6 +11323,9 @@ app.whenReady().then(async () => {
   app.on("before-quit", (event) => {
     if (shutdownFinalized) return;
     if (autoUpdateService.isInstallQuitArmed()) {
+      // This quit goes ahead with no shutdown flow; a quit the user can still
+      // cancel clears the retry in `requestAppShutdown` instead.
+      clearUpdateResumeRetry();
       quitWarningAcknowledged = true;
       return;
     }

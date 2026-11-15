@@ -40,12 +40,6 @@ describe("AppBannerHost", () => {
     resetAppBannersForTests();
   });
 
-  it("renders nothing when no banner is registered", () => {
-    render(<AppBannerHost />);
-    expect(screen.queryByTestId("app-banner-dock")).toBeNull();
-    expect(screen.queryByTestId("app-banner-floating")).toBeNull();
-  });
-
   it("orders docked banners by priority band, then tone, then registration", () => {
     render(
       <>

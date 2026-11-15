@@ -1,0 +1,41 @@
+name: Publish a release build
+description: >-
+  Uploads one native release build as a workflow artifact named by its cache
+  key, for scripts/fetch-warm-release-build.sh to fetch when the cache has
+  dropped the entry. The files go in one ustar archive, so file modes and
+  paths survive. ustar and COPYFILE_DISABLE keep macOS metadata entries out:
+  the fetch script accepts an archive only when it lists exactly the expected
+  files. tar reads and writes through stdin and stdout, because GNU tar on
+  Windows reads "D:" in a file name as a remote host. Run it after
+  actions/checkout.
+
+inputs:
+  key:
+    description: the cache key, which is also the artifact name (from release-cache-keys)
+    required: true
+  paths:
+    description: the files, one per line, relative to the checkout root; no path holds a space
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Pack the build
+      shell: bash
+      env:
+        KEY: ${{ inputs.key }}
+        BUILD_PATHS: ${{ inputs.paths }}
+      run: |
+        set -euo pipefail
+        mkdir -p .warm-release-build
+        # shellcheck disable=SC2086
+        COPYFILE_DISABLE=1 tar --format=ustar -cf - $BUILD_PATHS > ".warm-release-build/$KEY.tar"
+        tar -tvf - < ".warm-release-build/$KEY.tar"
+
+    - name: Upload the build
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.key }}
+        path: .warm-release-build/${{ inputs.key }}.tar
+        retention-days: 90
+        if-no-files-found: error

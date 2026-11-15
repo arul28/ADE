@@ -30,6 +30,11 @@ import { LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE } from "../shared/runtimeError
  *   …?adeBrainDown=updating            an update is still replacing the service
  *   …?adeBrainDown=service&adeRecoveryRepair=fail&adePlatform=win32
  *
+ *   …?adeReport=ok                     an error toast whose "Report…" opens the report dialog
+ *   …?adeReport=fail | limit | expired | nosend | slow
+ *                                      Send fails, hits the daily limit, finds its report
+ *                                      out of date once, cannot send at all, or builds slowly
+ *
  * `adeRecovery` is any recovery state (the full-screen recovery flow).
  * `adeBrainDown` is `service`, `restart`, `health`, `background_blocked` or
  * `updating` (the app banner). `adeRecoveryRepair=fail` makes Fix it fail in
@@ -210,25 +215,12 @@ export function createBrowserMockRecoveryBridges(): Record<string, unknown> {
     return { ok: true, steps, dbHealthy: true, chatsTotal: 6, chatsNeedingAttention: 1, filesRemoved: 0 };
   };
 
-  // Report issue on the recovery surfaces. Only while a scenario is up: the
-  // preview has no other diagnostics bridge, so this one carries the whole
-  // group (the app shell and the crash boundary read the rest of it).
-  const diagnostics = scenario || BRAIN_DOWN
-    ? {
-        diagnostics: {
-          autoReport: async () => undefined,
-          getSharing: async () => ({ enabled: true, sendsInWindow: 0, limit: 3 }),
-          setSharing: async (enabled: boolean) => ({ enabled, sendsInWindow: 0, limit: 3 }),
-          revealReport: async () => undefined,
-          onAutoSent: () => () => {},
-          ackAutoSent: async () => undefined,
-          openIssue: async () => ({ report: "mock report", filePath: "", issueUrl: "", installId: "mock", copied: true, opened: true }),
-          sendManual: async () => {
-            await new Promise((resolve) => setTimeout(resolve, 900));
-            return { ok: true as const, reference: "ADE-7Q4K-2M", reportPath: "", report: "mock report" };
-          },
-        },
-      }
+  // The report dialog on the recovery surfaces and on the `?adeReport=`
+  // notice. Only while a scenario is up: the preview has no other diagnostics
+  // bridge, so this one carries the whole group (the app shell and the crash
+  // boundary read the rest of it).
+  const diagnostics = scenario || BRAIN_DOWN || REPORT_SCENARIO
+    ? { diagnostics: createBrowserMockReportBridge() }
     : {};
 
   return {
@@ -700,4 +692,97 @@ export function showBrowserMockBrainDownPending(
 ): void {
   if (BRAIN_DOWN !== "updating") return;
   setError({ message: LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE, retryRootPath: rootPath });
+}
+
+type ReportScenario = "ok" | "fail" | "limit" | "expired" | "nosend" | "slow";
+const REPORT_SCENARIOS: readonly ReportScenario[] = ["ok", "fail", "limit", "expired", "nosend", "slow"];
+const REPORT_SCENARIO: ReportScenario | null = (() => {
+  const raw = urlParam("adeReport");
+  return raw && (REPORT_SCENARIOS as readonly string[]).includes(raw) ? raw as ReportScenario : null;
+})();
+
+export function browserMockReportScenario(): ReportScenario | null {
+  return REPORT_SCENARIO;
+}
+
+const MOCK_REPORT_TEXT = [
+  "# ADE diagnostic report",
+  "",
+  "- Generated: 2026-11-13T18:42:07.311Z",
+  "- Surface: toast",
+  "- What went wrong: Couldn't push the lane",
+  "- ADE version: 1.2.130-beta.21 (beta)",
+  "- Platform: darwin arm64 (macOS 26.1)",
+  "- Install id: 6f3c…e21a",
+  "",
+  "## Technical detail",
+  "",
+  "```",
+  "fatal: unable to access 'https://github.com/<owner>/<repo>.git/': Could not resolve host: github.com",
+  "```",
+  "",
+  "## Local runtime",
+  "",
+  "- State: running (pid <pid>)",
+  "- Socket: <home>/.ade/runtime/ade.sock",
+  "- Last health check: ok, 41 ms",
+  "",
+  "## Logs",
+  "",
+  ...Array.from({ length: 40 }, (_, index) =>
+    `2026-11-13T18:41:${String(index).padStart(2, "0")}.102Z info git.push lane=<lane> step=${index % 4 === 0 ? "fetch" : "push"} durationMs=${120 + index * 7}`),
+  "",
+].join("\n");
+
+/** The preview's report bridge: no upload, a fixed redacted-looking report, the scenario's answer to Send. */
+function createBrowserMockReportBridge(): Record<string, unknown> {
+  const prepared = new Set<string>();
+  let expiredOnce = REPORT_SCENARIO === "expired";
+  let nextId = 1;
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  return {
+    autoReport: async () => undefined,
+    getSharing: async () => ({ enabled: true, sendsInWindow: 0, limit: 3 }),
+    setSharing: async (enabled: boolean) => ({ enabled, sendsInWindow: 0, limit: 3 }),
+    revealReport: async () => undefined,
+    onAutoSent: () => () => {},
+    ackAutoSent: async () => undefined,
+    userFeedbackAvailable: true,
+    prepareReport: async () => {
+      await wait(REPORT_SCENARIO === "slow" ? 60_000 : 900);
+      const id = `mock-${nextId++}`;
+      prepared.add(id);
+      return {
+        ok: true as const,
+        id,
+        report: MOCK_REPORT_TEXT,
+        bytes: new TextEncoder().encode(MOCK_REPORT_TEXT).byteLength,
+        expiresAtMs: Date.now() + 10 * 60_000,
+        noteMaxChars: 2_000,
+      };
+    },
+    ...(REPORT_SCENARIO === "nosend"
+      ? {}
+      : {
+          sendReport: async (id: string) => {
+            await wait(900);
+            if (expiredOnce || !prepared.has(id)) {
+              expiredOnce = false;
+              return { ok: false as const, reason: "expired" as const };
+            }
+            if (REPORT_SCENARIO === "fail") return { ok: false as const, reason: "failed" as const };
+            if (REPORT_SCENARIO === "limit") return { ok: false as const, reason: "local_limit" as const, limit: 5 };
+            prepared.delete(id);
+            return {
+              ok: true as const,
+              reference: "7q4k2m9a",
+              reportPath: "",
+              publicIssueUrl: "https://github.com/arul28/ADE/issues/new?title=Report%207q4k2m9a",
+            };
+          },
+        }),
+    discardReport: async (id: string) => {
+      prepared.delete(id);
+    },
+  };
 }

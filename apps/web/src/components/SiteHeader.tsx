@@ -60,8 +60,9 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
-      // Same order as the home page masthead: reference links first, then the
-      // web client, then the single download entry point.
+      // Same order as the home page masthead: pricing and reference links
+      // first, then the web client, then the single download entry point.
+      { label: "Pricing", to: "/pricing", kind: "internal", analyticsFeature: MARKETING_FEATURES.VIEW_PRICING },
       { label: "Docs", to: LINKS.docs, kind: "external", analyticsFeature: MARKETING_FEATURES.VIEW_DOCS },
       {
         label: "Web client",
@@ -116,8 +117,13 @@ export function SiteHeader() {
               ) : (
                 <Link
                   key={item.label}
-                  className="focus-ring rounded-md px-3 py-2 text-sm font-medium text-muted-fg transition-colors hover:text-fg"
+                  className={cn(
+                    "focus-ring rounded-md px-3 py-2 text-sm font-medium transition-colors hover:text-fg",
+                    location.pathname === item.to ? "text-fg" : "text-muted-fg"
+                  )}
                   to={item.to}
+                  aria-current={location.pathname === item.to ? "page" : undefined}
+                  data-ade-analytics-feature={item.analyticsFeature}
                 >
                   {item.label}
                 </Link>
@@ -227,6 +233,8 @@ export function SiteHeader() {
                           "transition-colors duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card/60"
                         )}
                         to={item.to}
+                        aria-current={location.pathname === item.to ? "page" : undefined}
+                        data-ade-analytics-feature={item.analyticsFeature}
                       >
                         {item.label}
                       </Link>

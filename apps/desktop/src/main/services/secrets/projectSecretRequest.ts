@@ -17,8 +17,8 @@ import { cardTimeoutMs, cardWasDeclined, joinInFlight, readCardArgs, type CardRe
 export type ProjectSecretRequestDeps = {
   requestChatInput: CardRequestChatInput;
   projectSecrets: {
-    list(): ProjectSecretsListResult;
-    set(args: ProjectSecretSetArgs): ProjectSecretSummary;
+    listFresh(): Promise<ProjectSecretsListResult>;
+    set(args: ProjectSecretSetArgs): Promise<ProjectSecretSummary>;
   };
   /**
    * Temporary private files (`secretTempFiles.ts`) on the machine that runs the
@@ -107,7 +107,7 @@ async function askProjectSecret(
   const delivery: ProjectSecretDelivery = askedDelivery;
   const ttlMs = typeof args.ttlMs === "number" && Number.isFinite(args.ttlMs) ? Math.floor(args.ttlMs) : null;
 
-  const exists = deps.projectSecrets.list().secrets.some((secret) => secret.name === name);
+  const exists = (await deps.projectSecrets.listFresh()).secrets.some((secret) => secret.name === name);
   const card: ProjectSecretRequestCard = { name, reason, generate, exists, delivery };
 
   // A client that draws the native card reads the metadata; any other client
@@ -158,7 +158,7 @@ async function askProjectSecret(
   let saved = false;
   let replaced = false;
   let fileResult: { path: string; expiresAt: string } | null = null;
-  const beforeAccept = (answers: Record<string, string[]>): void => {
+  const beforeAccept = async (answers: Record<string, string[]>): Promise<void> => {
     const action = answers[PROJECT_SECRET_ACTION_QUESTION_ID]?.[0] ?? null;
     const value = answers[PROJECT_SECRET_VALUE_QUESTION_ID]?.[0] ?? "";
     // A client that sends no pick (an older desktop's native card) gets what
@@ -180,7 +180,7 @@ async function askProjectSecret(
     // that skips the pick keeps it.
     if (!value || (exists && action !== "replace")) return;
     try {
-      deps.projectSecrets.set({ name, value });
+      await deps.projectSecrets.set({ name, value });
     } catch (error) {
       // The service's own messages never carry the value.
       const detail = error instanceof Error ? error.message : "unknown error";

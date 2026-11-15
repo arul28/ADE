@@ -15,7 +15,9 @@ import {
   MCP_MACHINE_OFF_DESCRIPTION,
   MCP_MAX_REQUEST_BYTES,
   MCP_MOUNT_HEADER,
+  MCP_LOST_HEADER,
   MCP_UNDELIVERED_HEADER,
+  isReplaySafeMcpBody,
   mcpAccountObjectName,
   mcpEndpointObjectName,
   mcpErrorResponse,
@@ -145,6 +147,14 @@ const MCP_ACCOUNT_UNKNOWN_DESCRIPTION =
 const MCP_ACCOUNT_OFFLINE_DESCRIPTION =
   "None of your computers with ADE MCP on are online. Open ADE on one of them, or try again shortly.";
 
+/** A machine object's answer as a client gets it: without the relay's own lost-request marker. */
+function withoutLostHeader(response: Response): Response {
+  if (!response.headers.has(MCP_LOST_HEADER)) return response;
+  const headers = new Headers(response.headers);
+  headers.delete(MCP_LOST_HEADER);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 /**
  * An account request. Each computer on the account is tried in turn (the one
  * that last answered first, then the newest), and the next is tried only when
@@ -186,6 +196,10 @@ async function handleAccountMcp(
   headers.set(MCP_MOUNT_HEADER, `a/${accountKey}`);
   let sawOffline = false;
   let sawOff = false;
+  // A read-only message (initialize, tools/list…) that a computer's link took
+  // with it as it went down may go to the next one; anything else may have
+  // run there, so its answer stays final.
+  const replaySafe = isReplaySafeMcpBody(body);
   for (const machineKey of candidates) {
     if (!validKey(machineKey)) continue;
     const id = env.TUNNEL.idFromName(machineKey);
@@ -196,16 +210,22 @@ async function handleAccountMcp(
     // May reach a brain: never sent twice, whatever its method.
     const response = await fetchDurableObject(() => env.TUNNEL.get(id), forwarded, { retry: "never" });
     const undelivered = response.headers.get(MCP_UNDELIVERED_HEADER);
+    const lostReadOnly = response.status === 503 && replaySafe && response.headers.get(MCP_LOST_HEADER) === "1";
     if (
       (response.status === 503 && undelivered === "offline")
+      || lostReadOnly
       || (response.status === 404 && (undelivered === "ade_mcp_off" || undelivered === "not_member"))
     ) {
+      if (lostReadOnly) sawOffline = true;
       if (undelivered === "offline") sawOffline = true;
       if (undelivered === "ade_mcp_off") sawOff = true;
       await response.body?.cancel().catch(() => undefined);
       continue;
     }
-    if (machineKey !== state.front) {
+    // A computer that lost the request (its link went down) is not the one to
+    // try first next time.
+    const lost = response.headers.get(MCP_LOST_HEADER) === "1";
+    if (machineKey !== state.front && !lost) {
       const recordFront = fetchDurableObject(
         () => env.TUNNEL.get(accountId),
         new Request(`https://relay.internal${MCP_ACCOUNT_FRONT_PATH}`, {
@@ -228,7 +248,7 @@ async function handleAccountMcp(
       );
       if (ctx) ctx.waitUntil(recordFront);
     }
-    return response;
+    return withoutLostHeader(response);
   }
   if (sawOffline) return mcpErrorResponse(503, "offline", MCP_ACCOUNT_OFFLINE_DESCRIPTION, { "retry-after": "30" });
   // Both stay `404 ade_mcp_off` for clients that read the code; `reason` says
@@ -302,7 +322,7 @@ async function routeRequest(request: Request, env: TunnelRelayEnv, ctx?: WaitUnt
     // An MCP call is forwarded to the brain and may run a tool or open a
     // stream, whatever its method: never sent twice.
     const id = env.TUNNEL.idFromName(machineKey);
-    return await fetchDurableObject(() => env.TUNNEL.get(id), request, { retry: "never" });
+    return withoutLostHeader(await fetchDurableObject(() => env.TUNNEL.get(id), request, { retry: "never" }));
   }
 
   // Every route is scoped to a single machine → a single Durable Object

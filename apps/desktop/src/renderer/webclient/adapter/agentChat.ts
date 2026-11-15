@@ -53,6 +53,7 @@ import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import type { CommandCallOptions } from "./infra/commandCaller";
 import { requestFileBlob } from "./infra/fileBlob";
+import { noteChatHistorySettled, noteChatHistoryStarted } from "./infra/bootPriority";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -408,7 +409,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     send: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("send", pin);
-      await call("chat.send", args, undefined, false);
+      // One id per send (`AgentChatSendArgs.clientSendId`): a retry of a message
+      // the host already wrote is not sent twice.
+      const record = asRecord(args);
+      const stamped = record && typeof record.clientSendId !== "string"
+        ? { ...record, clientSendId: crypto.randomUUID() }
+        : args;
+      await call("chat.send", stamped, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
     },
     // The Work input box on the web: same contract as the desktop's runtime
@@ -759,6 +766,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       // reads such as list/getSummary are also used for background rows, so this
       // is the adapter's authoritative selected-session signal.
       ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
+      // The heavy startup reads wait for this read, and go once its answer
+      // has painted (bootPriority.ts).
+      noteChatHistoryStarted();
       return await call(
         "chat.getChatEventHistory",
         {
@@ -784,7 +794,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
           sessionFound: false,
           unavailable: true,
         }
-      );
+      ).finally(noteChatHistorySettled);
     },
     getEventHistoryPage: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("getEventHistoryPage", pin);

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNoticeCornerHeld } from "./toast/cornerNoticeDock";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { CaretRight, ChatCircleText, Check, GitBranch, TerminalWindow, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
@@ -87,7 +88,7 @@ export function cliFetchDismissCancels(launch: ChatLaunchSnapshot): boolean {
   return !active || active.id === "fetch";
 }
 
-export function slideOutHeadline(launches: ChatLaunchSnapshot[]): string {
+function slideOutHeadline(launches: ChatLaunchSnapshot[]): string {
   const running = launches.filter((launch) => !isChatLaunchSucceeded(launch) && launch.phase !== "failed").length;
   if (running > 0) return `Setting up ${running} lane${running === 1 ? "" : "s"}…`;
   const ready = launches.filter(isChatLaunchSucceeded).length;
@@ -231,14 +232,16 @@ export function ChatLaunchesSlideOut() {
 
   // Once nothing it shows is still setting up, successful rows leave after a
   // short beat; failures stay until handled.
+  // Not while the notice corner is held: the row has not been seen yet.
+  const cornerHeld = useNoticeCornerHeld();
   useEffect(() => {
-    if (anyRunning || succeededIds.length === 0) return undefined;
+    if (cornerHeld || anyRunning || succeededIds.length === 0) return undefined;
     const ids = [...succeededIds];
     const timer = window.setTimeout(() => dismissChatLaunches(ids), CHAT_LAUNCH_SLIDE_OUT_AUTO_DISMISS_MS);
     return () => window.clearTimeout(timer);
     // `succeededKey` stands in for the id list.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyRunning, succeededKey]);
+  }, [anyRunning, cornerHeld, succeededKey]);
 
   if (launches.length === 0) return null;
   const hasFailure = launches.some((launch) => launch.phase === "failed");

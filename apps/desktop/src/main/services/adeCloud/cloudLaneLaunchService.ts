@@ -3,7 +3,6 @@ import {
   CHAT_LAUNCH_CLOUD_STAGE_IDS,
   chatLaunchAlreadyStartedMessage,
   chatLaunchKindOf,
-  chatLaunchKindUnknownToBrain,
   createChatLaunchSnapshot,
   isChatLaunchCloudStageId,
   isChatLaunchTerminal,
@@ -15,7 +14,6 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import { deriveDeterministicLaneNameFromPrompt, deriveDeterministicLaneTitleFromPrompt } from "../../../shared/laneNameFallback";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import type {
-  ChatLaunchArgs,
   ChatLaunchCloudStageId,
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
@@ -33,7 +31,6 @@ import { CloudCreateCancelled, normalizeCloudMachineName } from "./cloudMachineC
 import { createCloudLaneComputerStages } from "./cloudLaneComputerStages";
 import { createCloudLaneLaunchRecordStore, type CloudLaneLaunchRecord } from "./cloudLaneLaunchRecords";
 import {
-  BRAIN_TOO_OLD,
   CANCEL_PIPELINE_WAIT_MS,
   CANCELLED_CREATE_FOLLOW_MS,
   CANCELLED_CREATE_FOLLOW_POLL_MS,
@@ -47,7 +44,6 @@ import {
   RESUBSCRIBE_ATTEMPTS,
   RESUBSCRIBE_MS,
   clip,
-  cloudLaneConfig,
   cloudLaneLaunchFailureSentence,
   githubClone,
   hasLocalAttachments,
@@ -63,17 +59,20 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  * "ADE Cloud" picked where a machine goes, then Send: one new cloud computer
  * for one new lane, and the chat starts there.
  *
- * One launch, two owners, one id. The launch id is the chat's session id and
- * the computer's create request id (`ade_request_id`).
+ * One launch, two owners, one id. The launch id is the chat's session id,
+ * the server launch's id and the computer's create request id
+ * (`ade_request_id`).
  *
- * - Before the hand-off this service owns the launch. It runs `computer`
- *   (make the computer and wait for its ADE), `join` (sign it in to this
- *   account through the approval window and wait for its account row) and
- *   `clone` (pair, connect, and make the project exist there).
- * - The hand-off starts the same launch on the computer's brain
- *   (`chat.startLaunch`, same `launchId` and `laneId`, lane start forced to
- *   `on: "remote"`, the three finished stages as `priorStages`), then hands it
- *   the messages typed meanwhile, in order. From then on that brain owns the
+ * - Before the hand-off this service owns the launch here, and ADE's server
+ *   launcher (`/cloud/launches`) runs it there (`cloudLaneComputerStages.ts`):
+ *   the server makes the computer with a one-time join key, and the computer
+ *   signs itself in (no device approval), clones the repository and starts
+ *   the same launch on its own brain from this app's args (same `launchId`
+ *   and `laneId`, lane start forced to `on: "remote"`). The `computer`,
+ *   `join` and `clone` rows show the server's stages.
+ * - The hand-off: once the computer is in the account, this app pairs with
+ *   it, finds the brain's launch there and follows it, and hands it the
+ *   messages typed meanwhile, in order. From then on that brain owns the
  *   launch, and it finishes with this app closed.
  *
  * Routing: the renderer keeps one contract, `window.ade.chatLaunch.*`. A start
@@ -91,10 +90,10 @@ export type { CloudLaneLaunchDeps, CloudLaneLaunchStartInput } from "./cloudLane
  * `ade chat create --machine cloud` and agents. Each keeps its own records.
  *
  * Not tied to a window: closing the window that pressed Send stops nothing.
- * Each stage is safe to run again (Retry, or ADE opening after a quit): a
- * create finds the computer by its request id first, pairing and connecting
- * repeat, a clone finds the project already there, and the brain's start
- * replays a known launch id. Nothing runs while no cloud launch is live.
+ * Each step is safe to run again (Retry, or ADE opening after a quit): the
+ * same launch id answers the same server launch (a Retry of one whose
+ * computer failed begins again on a new computer), and pairing and
+ * connecting repeat. Nothing runs while no cloud launch is live.
  */
 
 export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
@@ -186,7 +185,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (!stage) return;
     const at = nowIso();
     if (status === "running") {
-      stage.startedAt = at;
+      // A step resumed after ADE restarted keeps the start it had (`resume`
+      // left it on the pending row); a new or retried step starts now.
+      stage.startedAt = stage.status === "pending" && stage.startedAt ? stage.startedAt : at;
       stage.endedAt = null;
       stage.error = null;
       stage.percent = null;
@@ -233,11 +234,26 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     isChatLaunchTerminal(record.snapshot.phase) || record.snapshot.phase === "failed";
 
   /**
+   * Whether the brain's event stream is followed: a launch still running, or
+   * a finished one whose AI lane name has not landed yet (the name can arrive
+   * after the chat started). Following stops once the record expires.
+   */
+  const followed = (record: CloudLaneLaunchRecord): boolean =>
+    !isSettled(record) || (record.snapshot.laneNaming && isChatLaunchTerminal(record.snapshot.phase));
+
+  /**
    * The brain's snapshot, served as this launch: its sequence above the local
    * one, the `cloud` block on it, and any message still waiting here behind
    * the ones the brain already holds.
    */
+  /** The brain's sequence each launch last took (an event, a read or an action's answer). */
+  const brainSequences = new Map<string, number>();
+  /** A read the brain answered before an event this app already took: it would put an older state back. */
+  const isStaleRead = (launchId: string, brain: ChatLaunchSnapshot): boolean =>
+    brain.sequence < (brainSequences.get(launchId) ?? Number.NEGATIVE_INFINITY);
+
   const adoptBrainSnapshot = (record: CloudLaneLaunchRecord, brain: ChatLaunchSnapshot): void => {
+    brainSequences.set(record.snapshot.launchId, brain.sequence);
     const local = record.snapshot;
     const pending = local.queuedMessages.filter((message) => record.pendingMessageIds.includes(message.id));
     const next = clone(brain);
@@ -254,27 +270,40 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       queuedMessages: [...clone(brain.queuedMessages), ...pending],
       cloud: { ...local.cloud, handedOff: true },
     };
+    // The computer's brain renames its computer with the lane (cloudLaneNameSync.ts):
+    // this launch's sentences name it the same, never the placeholder it started on.
+    const laneName = next.laneName?.trim();
+    if (laneName) record.computerName = normalizeCloudMachineName(laneName);
   };
 
   /**
    * Writes the lane's branch into its computer's metadata once the brain
    * named it, so a lane that outlives its computer (the 30-day rule) knows
-   * where to start again. Metadata writes replace, so it merges first.
+   * where to start again. Metadata writes replace, so it merges first. One
+   * write at a time per launch, and a write a newer name replaced is skipped,
+   * so a slow placeholder write can never land after the AI-named branch.
    */
+  const branchWrites = new Map<string, Promise<void>>();
   const recordBranch = (record: CloudLaneLaunchRecord): void => {
     const branchRef = record.snapshot.branchRef?.trim() || null;
     const instanceId = record.snapshot.cloud.instanceId;
     if (!branchRef || !instanceId || record.branchRecorded === branchRef || record.snapshot.phase === "cancelled") return;
     record.branchRecorded = branchRef;
-    void (async () => {
+    const launchId = record.snapshot.launchId;
+    const write = (branchWrites.get(launchId) ?? Promise.resolve()).then(async () => {
+      if (record.branchRecorded !== branchRef) return;
       const client = await providerClient();
       const instance = await client.getInstance(instanceId);
       if (instance.metadata[CLOUD_LANE_BRANCH_METADATA] === branchRef) return;
       await client.setInstanceMetadata(instanceId, { ...instance.metadata, [CLOUD_LANE_BRANCH_METADATA]: branchRef });
-    })().catch((error: unknown) => {
+    }).catch((error: unknown) => {
       // Tried again on the next snapshot that names it.
       if (record.branchRecorded === branchRef) record.branchRecorded = null;
-      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      logger.warn("cloud_lane_launch.branch_metadata_failed", { launchId, error: getErrorMessage(error) });
+    });
+    branchWrites.set(launchId, write);
+    void write.finally(() => {
+      if (branchWrites.get(launchId) === write) branchWrites.delete(launchId);
     });
   };
 
@@ -282,10 +311,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const served = (record: CloudLaneLaunchRecord): ChatLaunchSnapshot => clone(record.snapshot);
 
   // ---------------------------------------------------------------------------
-  // The computer (cloudLaneComputerStages.ts)
+  // The computer, through the server launcher (cloudLaneComputerStages.ts)
   // ---------------------------------------------------------------------------
 
-  const { providerClient, runComputerStage, runJoinStage, runCloneStage, releaseHold, deleteOwnComputers } = createCloudLaneComputerStages(
+  const { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers } = createCloudLaneComputerStages(
     deps,
     { stageOf, setStage, finishStage, publish, persist: (record) => store.persist(record), assertActive },
     { logger, sleep },
@@ -316,7 +345,10 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // Progress ticks are many; only settled changes are written down.
     const settled = !event.launch.stages.some((stage) => stage.status === "running") || isChatLaunchTerminal(event.launch.phase);
     publish(record, { persist: settled });
-    if (isSettled(record)) stopFollowing(launchId);
+    // A finished launch is followed until its AI name lands (`followed`), so
+    // the lane's name and renamed branch reach the card and the computer's
+    // metadata.
+    if (!followed(record)) stopFollowing(launchId);
   };
 
   const stopFollowing = (launchId: string): void => {
@@ -333,7 +365,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const launchId = record.snapshot.launchId;
     const binding = record.snapshot.cloud.binding;
     const runtime = runtimeFor(launchId);
-    if (disposed || !binding || runtime.unsubscribe || runtime.subscribing || isSettled(record)) return;
+    if (disposed || !binding || runtime.unsubscribe || runtime.subscribing || !followed(record)) return;
     runtime.subscribing = true;
     try {
       const unsubscribe = await deps.subscribeChatLaunchEvents(
@@ -344,12 +376,15 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
           scheduleFollowAgain(launchId);
         },
       );
-      if (records.get(launchId) !== record || disposed || isSettled(record)) {
+      if (records.get(launchId) !== record || disposed || !followed(record)) {
         unsubscribe();
         return;
       }
       runtime.unsubscribe = unsubscribe;
       runtime.resubscribeAttempts = 0;
+      // One read once subscribed: a change between the hand-off's read (or
+      // the last stream) and this subscribe never comes as an event.
+      void refreshFromBrain(record);
     } catch (error) {
       logger.warn("cloud_lane_launch.follow_failed", { launchId, error: getErrorMessage(error) });
       scheduleFollowAgain(launchId);
@@ -361,7 +396,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const scheduleFollowAgain = (launchId: string): void => {
     const record = records.get(launchId);
     const runtime = runtimes.get(launchId);
-    if (disposed || !record || !runtime || runtime.timer || isSettled(record)) return;
+    if (disposed || !record || !runtime || runtime.timer || !followed(record)) return;
     if (runtime.resubscribeAttempts >= RESUBSCRIBE_ATTEMPTS) {
       // `get` still reads the brain on demand.
       logger.warn("cloud_lane_launch.follow_gave_up", { launchId });
@@ -370,7 +405,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     runtime.resubscribeAttempts += 1;
     runtime.timer = setTimeout(() => {
       runtime.timer = null;
-      if (isSettled(record)) return;
+      if (!followed(record)) return;
       void refreshFromBrain(record).finally(() => void follow(record));
     }, RESUBSCRIBE_MS);
     runtime.timer.unref?.();
@@ -390,6 +425,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         markRemoved(launchId);
         return;
       }
+      if (isStaleRead(launchId, brain)) return;
       adoptBrainSnapshot(record, brain);
       recordBranch(record);
       publish(record);
@@ -463,6 +499,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
               text: next.text,
               ...(next.displayText ? { displayText: next.displayText } : {}),
               ...(attachments?.length ? { attachments } : {}),
+              // A retried hand-off (the reply was lost) is queued and sent once.
+              clientSendId: next.id,
             },
           }) as ChatLaunchSnapshot;
           record.pendingMessageIds = record.pendingMessageIds.filter((id) => id !== next.id);
@@ -486,79 +524,25 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     return run;
   };
 
-  const handOff = async (record: CloudLaneLaunchRecord, signal: AbortSignal): Promise<void> => {
-    const launchId = record.snapshot.launchId;
-    const binding = record.snapshot.cloud.binding;
-    if (!binding || !record.targetId) throw new LaunchStepError("ADE lost track of the project on the new computer. Retry to set it up again.");
-    await deps.connect(record.targetId);
-    assertActive(record, signal);
-    // An older brain reads a CLI or lane launch as a chat and fails for "no
-    // chat". Refused here with what to do; Retry runs this step again.
-    if (record.snapshot.kind !== "chat" && deps.brainLaunchKinds) {
-      const kinds = await deps.brainLaunchKinds(record.targetId).catch((error: unknown) => {
-        logger.warn("cloud_lane_launch.brain_kinds_failed", { launchId, error: getErrorMessage(error) });
-        return null;
-      });
-      assertActive(record, signal);
-      if (chatLaunchKindUnknownToBrain(record.snapshot.kind, kinds)) {
-        logger.warn("cloud_lane_launch.brain_too_old", { launchId, kind: record.snapshot.kind, kinds });
-        throw new LaunchStepError(BRAIN_TOO_OLD);
-      }
-    }
-    // Files picked on this computer go to the clone there before the start
-    // names them. The bubble keeps showing the names picked here.
-    const attachments = await carryAttachments(record, record.launch.attachments);
-    const chat = record.launch.chat
-      ? { ...record.launch.chat, message: { ...record.launch.chat.message, attachments: await carryAttachments(record, record.launch.chat.message.attachments) } }
-      : record.launch.chat;
-    assertActive(record, signal);
-    const priorStages = record.snapshot.stages.filter((stage) => isChatLaunchCloudStageId(stage.id)).map((stage) => ({ ...stage }));
-    const args: ChatLaunchArgs = {
-      ...record.launch,
-      ...(attachments ? { attachments } : {}),
-      ...(chat ? { chat } : {}),
-      launchId,
-      laneId: record.snapshot.laneId,
-      laneName: record.snapshot.laneName,
-      laneConfig: cloudLaneConfig(record.launch.laneConfig),
-      priorStages,
-      // This app's clock for the attempt (reset by its Retry): the card's total counts the steps above.
-      setupStartedAt: record.snapshot.startedAt,
-    };
-    // Subscribed first, so no event between the start and the stream is missed.
-    void follow(record);
-    const brain = await deps.callChatAction(binding, "startLaunch", { args }) as ChatLaunchSnapshot;
-    if (!brain || brain.launchId !== launchId) throw new Error("The computer's ADE answered the start with another launch.");
+  /** The computer's brain holds the launch: from here on it is followed, and the messages typed meanwhile go to it. */
+  const handOff = async (record: CloudLaneLaunchRecord, brain: ChatLaunchSnapshot): Promise<void> => {
     record.sequenceBase = record.snapshot.sequence;
+    delete record.snapshot.cloud.approvalUrl;
     // Queued here and not yet sent stay ahead of nothing: the brain's queue is empty at its start.
     adoptBrainSnapshot(record, brain);
     publish(record);
     logger.info("cloud_lane_launch.handed_off", {
-      launchId,
+      launchId: record.snapshot.launchId,
       instanceId: record.snapshot.cloud.instanceId,
       queued: record.pendingMessageIds.length,
     });
-    void releaseHold(record);
-    await deliverQueued(record);
     void follow(record);
+    await deliverQueued(record);
   };
 
   // ---------------------------------------------------------------------------
   // The pipeline
   // ---------------------------------------------------------------------------
-
-  /** A computer that failed before it joined has no sleep of its own yet: sleep it while the launch waits. */
-  const restWhileFailed = async (record: CloudLaneLaunchRecord, stage: ChatLaunchStageId): Promise<void> => {
-    const instanceId = record.snapshot.cloud.instanceId;
-    if (!instanceId) return;
-    try {
-      const client = await providerClient();
-      if (stage === "computer" || stage === "join") await client.sleepInstance(instanceId);
-      else await releaseHold(record);
-    } catch (error) {
-      logger.warn("cloud_lane_launch.rest_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
-    }
-  };
 
   const fail = (record: CloudLaneLaunchRecord, stageId: ChatLaunchStageId, error: unknown): void => {
     const sentence = cloudLaneLaunchFailureSentence(stageId, error);
@@ -575,30 +559,48 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     // Nothing is followed until Retry: a start the brain never took has nothing
     // there, and a failed one only waits (each read could wake the computer).
     stopFollowing(record.snapshot.launchId);
-    void restWhileFailed(record, stageId);
   };
+
+  /**
+   * A launch from an ADE before the server launcher: its computer was made
+   * here and never joins by itself. That computer is deleted, and the launch
+   * starts again on the server, under the same id.
+   */
+  const startOverOnServer = async (record: CloudLaneLaunchRecord): Promise<void> => {
+    const launchId = record.snapshot.launchId;
+    if (record.snapshot.cloud.instanceId || record.snapshot.stages.some((stage) => stage.id === "computer" && stage.startedAt)) {
+      const { found, deleted } = await deleteOwnComputers(record);
+      if (found > deleted) throw new LaunchStepError(cantDeleteComputer(record.computerName));
+    }
+    record.snapshot.cloud.instanceId = null;
+    record.snapshot.cloud.machineKey = null;
+    record.snapshot.cloud.binding = null;
+    record.targetId = null;
+    for (const id of CHAT_LAUNCH_CLOUD_STAGE_IDS) setStage(record, id, "pending");
+    record.via = "server";
+    store.persist(record);
+    logger.info("cloud_lane_launch.moved_to_server", { launchId });
+  };
+
+  /** The row a failure lands on: the first cloud step not done, else the brain's first step. */
+  const failingStage = (record: CloudLaneLaunchRecord): ChatLaunchStageId =>
+    record.snapshot.stages.find((stage) => isChatLaunchCloudStageId(stage.id) && !isFinished(stage))?.id
+    ?? record.snapshot.stages.find((stage) => !isChatLaunchCloudStageId(stage.id))?.id
+    ?? "agent";
 
   const runPipelineOnce = async (record: CloudLaneLaunchRecord): Promise<void> => {
     const signal = runtimeFor(record.snapshot.launchId).abort.signal;
-    let active: ChatLaunchStageId = "computer";
     try {
       record.snapshot.phase = "running";
       record.snapshot.error = null;
-      for (const id of CHAT_LAUNCH_CLOUD_STAGE_IDS) {
-        if (isFinished(stageOf(record, id))) continue;
-        active = id;
-        assertActive(record, signal);
-        if (id === "computer") await runComputerStage(record, signal);
-        else if (id === "join") await runJoinStage(record, signal);
-        else await runCloneStage(record, signal);
-      }
+      if (record.via !== "server") await startOverOnServer(record);
       assertActive(record, signal);
-      // The next row: the brain's first stage, which is what fails if it can't start.
-      active = record.snapshot.stages.find((stage) => !isChatLaunchCloudStageId(stage.id))?.id ?? "agent";
-      await handOff(record, signal);
+      const brain = await runServerLaunch(record, signal);
+      assertActive(record, signal);
+      await handOff(record, brain);
     } catch (error) {
       if (error instanceof LaunchCancelled || error instanceof CloudCreateCancelled || record.snapshot.phase === "cancelled" || disposed) return;
-      fail(record, active, error);
+      fail(record, failingStage(record), error);
     }
   };
 
@@ -617,12 +619,39 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   // ---------------------------------------------------------------------------
 
   /** Cancel's cleanup; a create still in flight is followed until its computer shows up and is deleted. */
-  const cleanUp = async (record: CloudLaneLaunchRecord): Promise<void> => {
+  const cleanUp = async (record: CloudLaneLaunchRecord, options: { serverCancelled?: boolean } = {}): Promise<void> => {
     const launchId = record.snapshot.launchId;
     try {
-      const { found, deleted } = await deleteOwnComputers(record);
+      // The server's cancel first: it deletes the computer, also one its create
+      // is still making. `cancel` already asked (`serverCancelled`); this is ADE
+      // opening again on a cancel whose delete didn't finish, which the server
+      // tries once more.
+      if (!options.serverCancelled && !isHandedOff(record) && record.via === "server") {
+        const answer = await cancelOnServer(record);
+        if (answer === "started") {
+          // Its agent runs there (a cancel from before the server was asked first): that computer stays.
+          logger.warn("cloud_lane_launch.cancelled_launch_running", { launchId });
+          record.cleanupDone = true;
+          publish(record);
+          return;
+        }
+        if (answer === "unreached") {
+          // Nobody knows yet whether its agent started: nothing is deleted, and ADE opening again asks again.
+          logger.warn("cloud_lane_launch.cleanup_waits_for_server", { launchId });
+          publish(record);
+          return;
+        }
+      }
+      const { found, deleted, accountRowLeft } = await deleteOwnComputers(record);
       if (found > deleted) {
         record.snapshot.error = cantDeleteComputer(record.computerName);
+        publish(record);
+        return;
+      }
+      if (accountRowLeft) {
+        // The computers are gone; its account row is tried again when ADE opens again.
+        record.snapshot.error = null;
+        record.snapshot.cloud.instanceId = null;
         publish(record);
         return;
       }
@@ -689,7 +718,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const existing = records.get(launchId);
     if (existing) return served(existing);
     const problem = cloudLaneLaunchStartRefusal(input)?.message;
-    if (problem) throw new Error(problem);
+    // The launch the person asked for can't run on ADE Cloud (no GitHub
+    // origin, no size, uncommitted start): the sentence says why.
+    if (problem) throw new AdeExpectedError(problem, "user");
     if (!deps.uploadAttachment && (hasLocalAttachments(args.attachments) || hasLocalAttachments(args.chat?.message?.attachments))) {
       throw new Error(CANT_CARRY_FILES);
     }
@@ -753,7 +784,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       tier: null,
       computerName: normalizeCloudMachineName(laneName),
       targetId: null,
-      joinAttempts: 0,
+      via: "server",
       sequenceBase: 0,
       pendingMessageIds: [],
       cleanupDone: false,
@@ -769,10 +800,17 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
 
   const owns = (launchId: unknown): boolean => typeof launchId === "string" && records.has(launchId.trim().toLowerCase());
 
-  /** What the record knows beyond the snapshot: the computer's name and the agent's chat that started it. */
-  const facts = (launchId: string): { computerName: string; madeByChat: string | null; madeByAgent: CloudAgentMaker | null } | null => {
+  /** What the record knows beyond the snapshot: the computer's name, the agent's chat that started it, a page waiting for the person. */
+  const facts = (launchId: string): CloudLaneLaunchFacts | null => {
     const record = records.get(launchId.trim().toLowerCase());
-    return record ? { computerName: record.computerName, madeByChat: record.madeByChat ?? null, madeByAgent: record.madeByAgent ?? null } : null;
+    return record
+      ? {
+        computerName: record.computerName,
+        madeByChat: record.madeByChat ?? null,
+        madeByAgent: record.madeByAgent ?? null,
+        approvalUrl: isHandedOff(record) || record.snapshot.phase !== "running" ? null : record.snapshot.cloud.approvalUrl ?? null,
+      }
+      : null;
   };
 
   const recordFor = (args: ChatLaunchIdArgs | ChatLaunchQueueMessageArgs): CloudLaneLaunchRecord | null =>
@@ -781,7 +819,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const get = async (args: ChatLaunchIdArgs): Promise<ChatLaunchSnapshot | null> => {
     const record = recordFor(args);
     if (!record) return null;
-    if (isHandedOff(record) && !isSettled(record)) await refreshFromBrain(record);
+    // Followed launches only: a finished one still naming its lane is read too, so the final name lands.
+    if (isHandedOff(record) && followed(record)) await refreshFromBrain(record);
     const current = records.get(record.snapshot.launchId);
     return current ? served(current) : null;
   };
@@ -807,6 +846,12 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       const brain = await deps.callChatAction(binding, "cancelLaunch", { args: { launchId } }) as ChatLaunchSnapshot | null;
       if (!brain) throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
       adoptBrainSnapshot(record, brain);
+    } else if (record.via === "server") {
+      // The server's word first: the computer can start its agent before this
+      // app has paired and read it, and then its work is never deleted here.
+      const answer = await cancelOnServer(record);
+      if (answer === "started") throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
+      if (answer === "unreached") throw new Error("ADE can't reach ADE Cloud to cancel this launch. Try again in a moment.");
     }
     const runtime = runtimeFor(launchId);
     const pipeline = runtime.pipeline;
@@ -828,7 +873,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (pipeline) {
       await Promise.race([pipeline, sleep(CANCEL_PIPELINE_WAIT_MS)]);
     }
-    await cleanUp(record);
+    await cleanUp(record, { serverCancelled: !isHandedOff(record) && record.via === "server" });
     return served(record);
   };
 
@@ -848,6 +893,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (record.snapshot.phase !== "failed") return served(record);
     const runtime = runtimeFor(record.snapshot.launchId);
     if (runtime.abort.signal.aborted) runtime.abort = new AbortController();
+    // A computer that failed on its own side begins again on a new one; the server leaves any other launch as it is.
+    record.retryOnServer = true;
     for (const stage of record.snapshot.stages) {
       if (stage.status === "failed") setStage(record, stage.id, "pending");
     }
@@ -951,7 +998,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (isHandedOff(record)) {
         if (isChatLaunchTerminal(record.snapshot.phase) && record.pendingMessageIds.length === 0) {
           scheduleExpiry(record);
-          continue;
+          // A finished launch still waiting on its AI lane name is followed again.
+          if (!followed(record)) continue;
         }
         // A failed launch waits for Retry, which reads and follows the brain again.
         if (record.snapshot.phase === "failed") continue;
@@ -970,7 +1018,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       if (record.snapshot.phase !== "running") continue;
       // The step that was running when ADE quit runs again; each one checks what it already did.
       for (const stage of record.snapshot.stages) {
-        if (stage.status === "running") setStage(record, stage.id, "pending");
+        if (stage.status === "running") setStage(record, stage.id, "pending", { startedAt: stage.startedAt });
       }
       logger.info("cloud_lane_launch.resumed", { launchId });
       publish(record);
@@ -1001,3 +1049,11 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
 }
 
 export type CloudLaneLaunchService = ReturnType<typeof createCloudLaneLaunchService>;
+
+export type CloudLaneLaunchFacts = {
+  computerName: string;
+  madeByChat: string | null;
+  madeByAgent: CloudAgentMaker | null;
+  /** While the computer's sign-in waits on a page a person must confirm (rare): that page. */
+  approvalUrl: string | null;
+};

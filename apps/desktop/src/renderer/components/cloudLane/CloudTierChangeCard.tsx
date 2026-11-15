@@ -145,7 +145,6 @@ export function CloudTierChangeCard({
             picked={picked}
             onPick={setPicked}
             leftMilli={leftMilli}
-            extraHourCents={account?.extraHours?.available ? cloudCatalogOf(account).extraHourCents : null}
             markId={facts.fromSizeId}
             markLabel="Now"
             ariaLabel="New size"

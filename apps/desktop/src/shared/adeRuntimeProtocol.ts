@@ -99,6 +99,25 @@ export function parseRuntimeLastWedge(raw: unknown): RuntimeLastWedge | null {
   };
 }
 
+/** The brain started after the one before it stopped unplanned (`brainUnplannedRestart.ts`). */
+export type RuntimeUnplannedRestart = {
+  /** When this brain started, which is when the background service came back. */
+  ts: string;
+  /** Chats it told to continue. */
+  chats: number;
+  /** Agent CLI sessions it reopened. */
+  cliSessions: number;
+};
+
+export function parseRuntimeUnplannedRestart(raw: unknown): RuntimeUnplannedRestart | null {
+  if (!isRecord(raw)) return null;
+  const ts = asTrimmedString(raw.ts);
+  if (!ts || !Number.isFinite(Date.parse(ts))) return null;
+  const count = (value: unknown): number =>
+    typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  return { ts, chats: count(raw.chats), cliSessions: count(raw.cliSessions) };
+}
+
 export function isRuntimeProtocolCompatible(runtimeInfo: {
   minCompatibleProtocol: number | null;
   protocolVersion: number | null;

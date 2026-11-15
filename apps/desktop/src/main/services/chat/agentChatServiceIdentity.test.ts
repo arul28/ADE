@@ -14,7 +14,6 @@ import {
   mapPermissionToClaude,
   mapPermissionToCodex,
   mockState,
-  openKvDb,
   path,
   readPersistedChatState,
   runGit,
@@ -26,6 +25,7 @@ import {
   waitForCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { openFreshKvDb } from "../../../test/freshKvDb";
 import { afterEach, beforeEach, describe, expect, it, test, vi } from "vitest";
 
 const originalCodexExecutable = process.env.CODEX_EXECUTABLE;
@@ -557,11 +557,6 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("listSessions", () => {
-    it("returns empty array when no sessions exist", async () => {
-      const { service } = createService();
-      const sessions = await service.listSessions();
-      expect(sessions).toEqual([]);
-    });
 
     it("returns created sessions", async () => {
       const { service } = createService();
@@ -968,7 +963,7 @@ describe("createAgentChatService", () => {
     async function createCtoServices({ seedIntro = false }: { seedIntro?: boolean } = {}) {
       const adeDir = path.join(tmpRoot, ".ade");
       fs.mkdirSync(adeDir, { recursive: true });
-      const db = await openKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
+      const db = await openFreshKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
       const ctoMemoryService = createCtoMemoryService({ adeDir });
       const ctoStateService = createCtoStateService({
         db,

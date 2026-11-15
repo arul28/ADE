@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import type { CloudMachine } from "../../shared/adeCloud";
 import type { CloudLaneMachine } from "../../shared/cloudLaneLaunch";
 import { laneComputersOf, parseSavedLaneComputers, savedLaneComputerRows, type LaneComputer } from "../../shared/laneComputer";
+import { machineNameForBinding } from "../../shared/machineIdentity";
 import type { OpenProjectBinding } from "../../shared/types/core";
 import { chatLaunchStore } from "./chatLaunchStore";
 
@@ -13,7 +14,7 @@ import { chatLaunchStore } from "./chatLaunchStore";
  * Two readers need it without a read of their own:
  * - the composer's Run on menu, which opens with the last list in hand while
  *   the account's list is read again;
- * - a chat's machine chip, which says "ADE Cloud" for a chat on a lane
+ * - a chat's machine chip, which says "Cloud · <lane>" for a chat on a lane
  *   computer instead of the computer's own name.
  *
  * `useCloudMachines` fills it on every good read. Nothing here reads the
@@ -160,7 +161,66 @@ export function adeCloudLaneComputerForMachine(
   return computers.find((computer) => (host && computer.instanceId.toLowerCase() === host) || (key && computer.machineKey === key)) ?? null;
 }
 
-/** "ADE Cloud · fix-login": how a switcher names a chat's ADE Cloud lane. */
+/**
+ * What a person sees for an ADE Cloud computer: "Cloud", never its generated
+ * name (an instance id as its host name, a lane-derived computer name). The
+ * generated names stay in logs, support views and tooltips.
+ */
+export const ADE_CLOUD_MACHINE_LABEL = "Cloud";
+
+/** "Cloud · fix-login": a lane's cloud computer, with its lane to tell two apart. */
 export function adeCloudLaneLabel(laneName: string): string {
-  return `ADE Cloud · ${laneName}`;
+  return `${ADE_CLOUD_MACHINE_LABEL} · ${laneName}`;
+}
+
+/**
+ * The name a person sees for the machine a binding targets: "Cloud · <lane>"
+ * for an ADE Cloud lane computer, else the machine's own (device) name or
+ * "This computer" (`machineNameForBinding`). A label only: routing keeps the
+ * binding itself.
+ *
+ * For code outside React and for event-time reads (a callback, a toast),
+ * which read the index as it is then. A component that renders the label
+ * uses `useMachineLabelForBinding`, or the label goes stale when the lane
+ * computers are read after it rendered. The machine-row sibling is
+ * `useMachineLabelForMachine` (`components/cloudLane`, apart from here
+ * because it reads the app store, which imports this module).
+ */
+export function machineLabelForBinding(
+  binding: OpenProjectBinding | null | undefined,
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string {
+  const lane = adeCloudLaneForBinding(binding, computers);
+  return lane ? adeCloudLaneLabel(lane.laneName) : machineNameForBinding(binding);
+}
+
+/** `machineLabelForBinding` for a component: it follows the index as reads arrive. */
+export function useMachineLabelForBinding(binding: OpenProjectBinding | null | undefined): string {
+  const { computers } = useAdeCloudLaneComputers();
+  return machineLabelForBinding(binding, computers);
+}
+
+/**
+ * The name a person sees for a machine listed by host name or machine key
+ * (account machine rows, machine pickers): "Cloud · <lane>" for an ADE Cloud
+ * lane computer, else `name`.
+ */
+export function machineLabelForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null; name: string },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string {
+  return adeCloudLaneLabelForMachine(machine, computers) ?? machine.name;
+}
+
+/**
+ * "Cloud · <lane>" when the machine is an ADE Cloud lane computer, else null:
+ * for a row that shows the machine's own name too (as the tooltip) only when
+ * the label replaced it.
+ */
+export function adeCloudLaneLabelForMachine(
+  machine: { hostname?: string | null; machineKey?: string | null },
+  computers: readonly AdeCloudLaneComputer[] = state.computers,
+): string | null {
+  const computer = adeCloudLaneComputerForMachine(machine, computers);
+  return computer ? adeCloudLaneLabel(computer.laneName) : null;
 }

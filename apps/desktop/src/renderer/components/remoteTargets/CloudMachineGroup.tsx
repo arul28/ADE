@@ -115,7 +115,7 @@ export function CloudGroupBanners({
 
 /** What a failed action blocks on, as the buttons that clear it. */
 function errorActions(error: CloudBoxActionError, onOpenSettings?: (() => void) | null): NoticeAction[] | undefined {
-  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_disk";
+  const needsPlan = error.blocker === "out_of_hours" || error.blocker === "over_plan_disk" || error.blocker === "over_plan_limits";
   return needsPlan && onOpenSettings ? [{ label: "Plans and hours", onClick: onOpenSettings }] : undefined;
 }
 
@@ -272,7 +272,7 @@ export function CloudBoxOnlyRow({
         : `Not in ADE. Delete it if you don't need it.`;
   return (
     <div style={machineRowStyle} data-cloud-box-only={box.instanceId}>
-      <div style={{ display: "grid", gridTemplateColumns: "auto minmax(0,1fr) auto", gap: 12, alignItems: "center" }}>
+      <div className="ade-cx-row-grid">
         <span className="ade-cx-cloud-avatar" aria-hidden>
           <CloudMark size={18} bold />
         </span>

@@ -282,6 +282,9 @@ function(inputArg) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE || typeof node.getBoundingClientRect !== "function") return false;
     const rect = rectFor(node, ctx);
     if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    // Inert content takes no input: a click aimed at it lands on whatever is
+    // drawn over it (a panel kept mounted behind the one on screen).
+    if (typeof node.closest === "function" && node.closest("[inert]")) return false;
     const style = (ctx.win || window).getComputedStyle(node);
     if (!style || style.display === "none" || style.visibility === "hidden") return false;
     if (style.pointerEvents === "none") return false;
@@ -348,6 +351,11 @@ function(inputArg) {
     const tag = node && node.tagName ? node.tagName.toLowerCase() : "";
     if (tag !== "input" && tag !== "textarea" && tag !== "select") return null;
     if (tag === "input" && String(node.type || "").toLowerCase() === "password") return null;
+    // Never a value ADE filled from Passwords (even once a "show password"
+    // toggle makes it a text field), a one-time code or a card number.
+    if (node.hasAttribute && node.hasAttribute("data-ade-vault-filled")) return null;
+    const autocomplete = String(node.getAttribute && node.getAttribute("autocomplete") || "").toLowerCase();
+    if (/(^|\s)(current-password|new-password|one-time-code|cc-number|cc-csc)(\s|$)/.test(autocomplete)) return null;
     return String(node.value || "").slice(0, 300) || null;
   };
   const disabledFor = (node) => "disabled" in node ? Boolean(node.disabled) : null;
@@ -530,6 +538,50 @@ function(inputArg) {
     }
     return null;
   };
+  // The text a node shows, without what sits in an inert subtree inside it.
+  // innerText and textContent both include inert text, so a container holding
+  // a hidden panel would otherwise "contain" that panel's labels.
+  const hasInertInside = (node) => typeof node.querySelector === "function" && Boolean(node.querySelector("[inert]"));
+  const textOutsideInert = (node) => {
+    const doc = node.ownerDocument || document;
+    const walker = doc.createTreeWalker(node, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+      acceptNode: (current) => current.nodeType === Node.ELEMENT_NODE && current.hasAttribute("inert")
+        ? NodeFilter.FILTER_REJECT
+        : NodeFilter.FILTER_ACCEPT,
+    });
+    const view = doc.defaultView || window;
+    const parts = [];
+    for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+      if (current.nodeType === Node.TEXT_NODE) {
+        parts.push(current.textContent || "");
+      } else if (current.tagName === "BR") {
+        parts.push(" ");
+      } else if (!String(view.getComputedStyle(current).display || "inline").startsWith("inline")) {
+        // A block starts a new line where it renders, as innerText reads it.
+        parts.push(" ");
+      }
+    }
+    // Inline pieces join with nothing between them, as they render: a word
+    // split by inline markup ("Re<b>start</b>") stays one word, while a <br>
+    // or a block break still separates words.
+    return parts.join("");
+  };
+  // What a control declares as its name, not the text of what it contains.
+  const declaredText = (node) => {
+    const id = node.getAttribute("id");
+    const doc = node.ownerDocument || document;
+    return lowerText([
+      node.getAttribute("aria-label"),
+      labelledByText(node),
+      id ? doc.querySelector("label[for=\"" + quoteAttr(id) + "\"]")?.textContent : null,
+      node.closest("label")?.textContent,
+      node.getAttribute("placeholder"),
+      node.getAttribute("title"),
+      node.getAttribute("alt"),
+      node.getAttribute("name"),
+      valueFor(node)
+    ].filter(Boolean).join(" "));
+  };
   const searchableText = (node) => lowerText([
     labelFor(node),
     node.getAttribute("placeholder"),
@@ -540,6 +592,15 @@ function(inputArg) {
     node.textContent,
     valueFor(node)
   ].filter(Boolean).join(" "));
+  // Text matched by the cheap read above, confirmed without inert content.
+  // Checked only after a match, so a wait loop's scan stays one pass.
+  // Same shape as searchableText (name, then the text twice), so an exact
+  // match means the same thing on both paths.
+  const searchableTextShown = (node) => {
+    if (!hasInertInside(node)) return searchableText(node);
+    const shown = textOutsideInert(node);
+    return lowerText([declaredText(node) || shown, shown, shown].join(" "));
+  };
   // Interactive controls plus the clickable roles a text match must reach when
   // the text sits inside a row rather than a form control. A listbox option is
   // clickable but is not in interactiveSelector (its tabindex is -1), so
@@ -549,6 +610,7 @@ function(inputArg) {
   const clickableSelector = interactiveSelector
     + ",[role='option'],[role='row'],[role='treeitem'],[role='gridcell'],[role='menuitemcheckbox'],[role='menuitemradio']";
   const ownText = (node) => lowerText(node.innerText || node.textContent || "");
+  const ownTextShown = (node) => hasInertInside(node) ? lowerText(textOutsideInert(node)) : ownText(node);
   const elementDepth = (node) => {
     let depth = 0;
     let current = node;
@@ -606,7 +668,8 @@ function(inputArg) {
     let exactBest = null;
     let includesBest = null;
     for (const entry of candidates) {
-      const hay = searchableText(entry.node);
+      if (!searchableText(entry.node).includes(needle)) continue;
+      const hay = searchableTextShown(entry.node);
       if (!hay.includes(needle)) continue;
       const score = {
         exact: hay === needle,
@@ -627,30 +690,49 @@ function(inputArg) {
     // every 250 ms and must not re-walk the whole document each time. The row
     // case lands here — the lane name sits in a span inside a clickable
     // role=option row within the list container.
-    let textBest = null;
-    const roots = includesBest
-      ? [{ node: includesBest.entry.node, ctx: includesBest.entry.ctx }]
-      : contexts.map((ctx) => ({ node: ctx.root, ctx }));
-    for (const root of roots) {
-      const scoped = root.node instanceof Document
-        ? root.node.querySelectorAll("body *")
-        : root.node.querySelectorAll("*");
-      const nodes = [root.node, ...Array.from(scoped)];
-      for (const node of nodes) {
-        if (!(node instanceof Element) || !isDisplayed(node, root.ctx)) continue;
-        const value = ownText(node);
-        if (!value.includes(needle)) continue;
-        const depth = elementDepth(node);
-        if (!textBest || value.length < textBest.length || (value.length === textBest.length && depth > textBest.depth)) {
-          textBest = { node, ctx: root.ctx, length: value.length, depth };
+    const smallestShownText = (roots) => {
+      let best = null;
+      for (const root of roots) {
+        const scoped = root.node instanceof Document
+          ? root.node.querySelectorAll("body *")
+          : root.node.querySelectorAll("*");
+        const nodes = [root.node, ...Array.from(scoped)];
+        for (const node of nodes) {
+          if (!(node instanceof Element) || !isDisplayed(node, root.ctx)) continue;
+          if (!ownText(node).includes(needle)) continue;
+          const value = ownTextShown(node);
+          if (!value.includes(needle)) continue;
+          const depth = elementDepth(node);
+          if (!best || value.length < best.length || (value.length === best.length && depth > best.depth)) {
+            best = { node, ctx: root.ctx, length: value.length, depth };
+          }
         }
       }
-    }
+      return best;
+    };
+    const wholePage = () => contexts.map((ctx) => ({ node: ctx.root, ctx }));
+    let textBest = smallestShownText(includesBest
+      ? [{ node: includesBest.entry.node, ctx: includesBest.entry.ctx }]
+      : wholePage());
     if (textBest) {
       const clickable = closestClickable(textBest.node, textBest.ctx);
       if (clickable) return { node: clickable, ctx: textBest.ctx };
     }
-    if (includesBest) return includesBest.entry;
+    if (includesBest && !textBest) {
+      // No shown text in the control carries the needle: it matched on text
+      // nobody can see (display:none content). Its own declared name (an icon
+      // button's aria-label) still counts. Anything else would put a click at
+      // its center, on whatever happens to be there; look for the text where
+      // it is shown instead.
+      if (declaredText(includesBest.entry.node).includes(needle)) return includesBest.entry;
+      textBest = smallestShownText(wholePage());
+      if (textBest) {
+        const clickable = closestClickable(textBest.node, textBest.ctx);
+        if (clickable) return { node: clickable, ctx: textBest.ctx };
+      }
+    } else if (includesBest) {
+      return includesBest.entry;
+    }
     // A heading or status line ("Count: 3") that a wait or an assert must find.
     return textBest ? { node: textBest.node, ctx: textBest.ctx } : null;
   };

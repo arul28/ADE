@@ -49,7 +49,7 @@ describe("provider login capture: stable reads", () => {
     return abs;
   }
 
-  async function makeSync(seed: Array<{ key: string; value: string | null }> = [], now?: () => number) {
+  async function makeSync(seed: Array<{ key: string; value: string | null }> = [], now?: () => number, settingSeed: Record<string, unknown> = {}) {
     const items = seed.map((item) => ({
       scope: "all", kind: "provider_login", key: item.key, value: item.value,
       updatedAt: new Date(Date.now() - 60_000).toISOString(), writerDeviceId: "device-a", refreshOwner: null,
@@ -67,7 +67,7 @@ describe("provider login capture: stable reads", () => {
     });
     await vault.sync();
     const env: NodeJS.ProcessEnv = { HOME: home };
-    const settingValues = new Map<string, unknown>();
+    const settingValues = new Map<string, unknown>(Object.entries(settingSeed));
     const sync = createProviderLoginSync({
       adeDir,
       staticOff: null,
@@ -90,7 +90,7 @@ describe("provider login capture: stable reads", () => {
       const payload = JSON.parse(vault.get("all", "provider_login", row.key)!) as { files: Array<{ rel: string; enc: string; data: string }> };
       return Object.fromEntries(payload.files.map((file) => [file.rel, file.enc === "base64" ? Buffer.from(file.data, "base64").toString("hex") : file.data]));
     };
-    return { sync, carried, vault, items };
+    return { sync, carried, vault, items, settingValues };
   }
 
   const grokLogin = (key: string) => JSON.stringify({ "https://auth.x.ai": { key, expires_at: "2099-01-01T00:00:00.000Z", email: "a@example.test" } });
@@ -165,6 +165,44 @@ describe("provider login capture: stable reads", () => {
     await sync.remove({ key });
     await sync.pass();
     expect(carried("grok")).toEqual({ "auth.json": grokLogin("key-local") });
+  });
+
+  // Another computer's copy of a Grok sign-in, as its capture wrote it.
+  const otherCopy = (machine: string, email: string, capturedAt: number) => ({
+    key: `grok/${originId(machine)}.base`,
+    value: JSON.stringify({
+      v: 1, provider: "grok", slot: "base", class: "renewing",
+      origin: { machineKey: machine, deviceId: `device-${machine}`, label: machine, platform: "linux" },
+      account: { email, id: null }, capturedAt, renewedAt: null, renewedBy: null, expiresAt: null,
+      familyHash: crypto.createHash("sha256").update(`${machine}-family`).digest("hex").slice(0, 16),
+      contentHash: crypto.createHash("sha256").update(`${machine}-content`).digest("hex").slice(0, 16),
+      files: [{ root: "grokHome", rel: "auth.json", enc: "utf8", data: grokLogin(`key-${machine}`) }],
+    }),
+  });
+
+  // The origin signs out of the sign-in ADE Cloud was told to use (for some
+  // providers that revokes the token its copy holds). ADE Cloud must stay on
+  // the picked account through another computer's copy of it, never fall to
+  // the newest copy of another account.
+  it("moves the pick to another copy of the same account when the origin signs out of the picked one", async () => {
+    let clock = Date.now();
+    const ownKey = `grok/${originId("machine-a")}.base`;
+    const sameAccount = otherCopy("machine-b", "a@example.test", clock - 3_600_000);
+    const otherAccount = otherCopy("machine-c", "b@example.test", clock - 60_000);
+    const { sync, carried, settingValues } = await makeSync([sameAccount, otherAccount], () => clock);
+    writeFile(".grok/auth.json", grokLogin("key-a"), 10_000);
+    await sync.pass();
+    expect(carried("grok")).not.toBeNull();
+    settingValues.set("providerLogins.cloud", { v: 1, enabled: true, inUse: { grok: ownKey }, off: [] });
+
+    fs.rmSync(path.join(home, ".grok", "auth.json"));
+    for (let pass = 0; pass < 2; pass += 1) {
+      clock += 61_000;
+      await sync.pass();
+    }
+    const status = await sync.status("grok");
+    expect(status.signIns.some((signIn) => signIn.key === ownKey)).toBe(false);
+    expect(status.signIns.find((signIn) => signIn.inUseOnCloud)?.key).toBe(sameAccount.key);
   });
 
   // A lock or a permission change is not a sign-out: only a login file that
@@ -247,6 +285,9 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-login-renew-"));
+    readsInFlight = 0;
+    readsIdle = [];
+    countDiskReads();
   });
 
   const started: Array<{ sync: { stop(): void } }> = [];
@@ -476,12 +517,42 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
   type Computer = Awaited<ReturnType<typeof makeComputer>>;
   const FAKE = { toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] as const };
 
-  /** One step of fake time, after the real I/O in flight (a file read, a stat) has had its turn. */
-  async function step(ms: number): Promise<void> {
-    for (let turn = 0; turn < 2; turn += 1) {
-      await fs.promises.access(root);
-      await new Promise((resolve) => setImmediate(resolve));
+  /**
+   * The real disk reads the code under test has in flight. Capture reads the
+   * login files with `fs.promises.stat` and `readFile`; those are the only
+   * async disk calls on this path, so they are counted here (the file system
+   * is a process boundary).
+   */
+  let readsInFlight = 0;
+  let readsIdle: Array<() => void> = [];
+  function countDiskReads(): void {
+    for (const name of ["stat", "readFile"] as const) {
+      const real = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (...args: unknown[]) => {
+        readsInFlight += 1;
+        try {
+          return await real(...args);
+        } finally {
+          readsInFlight -= 1;
+          if (readsInFlight === 0) for (const wake of readsIdle.splice(0)) wake();
+        }
+      }) as never);
     }
+  }
+
+  /**
+   * One step of fake time, once no disk read is in flight. A step taken while
+   * a read waits on the disk would move the fake clock by an amount that
+   * depends on how slow the disk is. Reads that took 1 ms were enough for the
+   * gate's 45 s budget to run out in fake time while capture waited on them.
+   */
+  async function step(ms: number): Promise<void> {
+    do {
+      await new Promise((resolve) => setImmediate(resolve));
+      if (readsInFlight > 0) await new Promise<void>((resolve) => { readsIdle.push(resolve); });
+      // The code that awaited the read runs now, and may start the next one.
+      await new Promise((resolve) => setImmediate(resolve));
+    } while (readsInFlight > 0);
     await vi.advanceTimersByTimeAsync(ms);
   }
 

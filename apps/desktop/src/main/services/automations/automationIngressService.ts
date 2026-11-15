@@ -74,6 +74,12 @@ type AutomationIngressServiceArgs = {
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
     getAppUserTokenForRelay: () => Promise<string>;
+    /**
+     * The relay answered 401 to this App user token. The account client asks
+     * for the account's current token, so the next poll reads the new one
+     * instead of the token a Disconnect deleted at GitHub.
+     */
+    reportAppUserTokenRejected?: (token: string) => Promise<unknown>;
   } | null;
   getAccountAccessToken?: () => Promise<string | null>;
   /**
@@ -513,6 +519,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
   let relayPollUnauthorizedCount = 0;
+  /** The App user token the current poll sent, for `reportAppUserTokenRejected` on a 401. */
+  let relayPollAppUserToken: string | null = null;
   let unsubscribeSignIn: (() => void) | null = null;
   /** A poll failing on the same cause as the last one logs at info. */
   const relayPollFailures = createRepeatedFailureGate();
@@ -897,7 +905,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     if (pollTimer) clearInterval(pollTimer);
     pollTimerIntervalMs = intervalMs;
     pollTimer = setInterval(() => {
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, intervalMs);
     pollTimer.unref?.();
   };
@@ -923,7 +931,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     const delayMs = Math.max(0, relayPollCooldownUntilMs - Date.now());
     relayPollRetryTimer = setTimeout(() => {
       relayPollRetryTimer = null;
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, delayMs);
     relayPollRetryTimer.unref?.();
   };
@@ -997,7 +1005,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectTimer = null;
       // A poll re-resolves config, repository, and fresh auth before opening the
       // next socket. Opening the socket then triggers a second catch-up drain.
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     }, delayMs);
     subscriptionReconnectTimer.unref?.();
   };
@@ -1050,7 +1058,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       subscriptionReconnectAttempt = 0;
       setSubscriptionConnected(true);
       // The durable cursor may have advanced while the socket was unavailable.
-      void pollGithubRelayOnce();
+      pollGithubRelayInBackground();
     });
     socket.on("message", (raw: RawData) => {
       if (subscriptionSocket !== socket) return;
@@ -1058,7 +1066,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         const frame = JSON.parse(rawDataToText(raw)) as unknown;
         if (isRecord(frame) && frame.t === "github_delivery") {
           noteRelayActivity();
-          void pollGithubRelayOnce();
+          pollGithubRelayInBackground();
         }
       } catch {
         // Wake-up frames are hints only; malformed/unknown frames are ignored.
@@ -1231,6 +1239,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         : hostedAuth?.ok
           ? hostedAuth.token
           : null;
+      relayPollAppUserToken = hostedAuth?.ok ? hostedAuth.token : null;
       if (!authToken && (!accountAccessToken || useLegacyProjectRoute)) {
         throw new Error("GitHub auth is required for relay polling.");
       }
@@ -1495,6 +1504,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       // and each reconnect was another refused upgrade beside the refused poll.
       const unauthorized = relayError?.status === 401;
       relayPollUnauthorizedCount = unauthorized ? relayPollUnauthorizedCount + 1 : 0;
+      // The retry reads the token again, but a cached account token stays the
+      // same until the account client hears GitHub refused it.
+      if (unauthorized && relayPollAppUserToken) {
+        const rejected = relayPollAppUserToken;
+        relayPollAppUserToken = null;
+        void Promise.resolve(args.githubService?.reportAppUserTokenRejected?.(rejected)).catch(() => undefined);
+      }
       const authRefused = relayPollUnauthorizedCount >= 2;
       if (unauthorized) disableRelaySubscription();
       if (authRefused) {
@@ -1519,6 +1535,20 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           : error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  /**
+   * A poll nobody awaits (a timer, a wake-up). Its config and status reads
+   * run before the poll's own catch, and a project database that stops
+   * answering throws there; unhandled, that rejection reaches the brain's
+   * crash handler. The next timer tick polls again.
+   */
+  const pollGithubRelayInBackground = (): void => {
+    void pollGithubRelayOnce().catch((error: unknown) => {
+      args.logger.warn("automations.github_relay_background_poll_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const pollGithubRelayOnce = async () => {

@@ -75,6 +75,8 @@ export type AddProjectFormProps = {
   onClose: () => void;
   /** Opens the project on the machine "Opens on" names, once its copy is there. */
   onOpenProject: (target: CopyOpenTarget) => Promise<void>;
+  /** The other ways to add a project (open a folder, a new empty project), under the form. */
+  moreActions?: React.ReactNode;
 };
 
 
@@ -138,6 +140,7 @@ export function AddProjectForm({
   onCancel,
   onClose,
   onOpenProject,
+  moreActions = null,
 }: AddProjectFormProps) {
   const webMode = isWebClientMode();
   const { snapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(true);
@@ -604,6 +607,7 @@ export function AddProjectForm({
           {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : "Add to account") : "Add project"}
         </button>
       </div>
+      {moreActions}
     </div>
   );
 }

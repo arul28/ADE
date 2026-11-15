@@ -10,6 +10,19 @@ import type {
 
 export type AppControlAppKind = "electron";
 
+/** The broker's backend name for everything App Control files. */
+export const APP_CONTROL_PROOF_BACKEND_NAME = "ade-app-control";
+
+/**
+ * `app_control` reads about the machine: status and the driver list. With
+ * `--machine` they send no commit and make no work copy, and name the chat's
+ * session only when its copy is there already.
+ */
+export const APP_CONTROL_LANE_FREE_ACTIONS = ["getStatus", "listDrivers"] as const;
+
+/** `app_control` verbs that run the chat's code: with `--machine` the work copy is synced to the caller's checkout first. */
+export const APP_CONTROL_CODE_SYNC_ACTIONS = ["launch", "launchInTerminal"] as const;
+
 /**
  * Where a piece of information about the app came FROM — the provenance of an
  * element, a snapshot, or a selection.
@@ -623,7 +636,10 @@ export type AppControlRecordStartArgs = AppControlLaneArgs & {
   fps?: number | null;
 };
 
-export type AppControlRecordStopArgs = AppControlLaneArgs;
+export type AppControlRecordStopArgs = AppControlLaneArgs & {
+  /** False files nothing where it ran: a caller on another machine files the video in its own drawer. */
+  proof?: boolean | null;
+};
 
 export type AppControlRecordingStatusArgs = AppControlLaneArgs;
 

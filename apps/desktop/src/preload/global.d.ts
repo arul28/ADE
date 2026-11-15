@@ -1,4 +1,5 @@
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
+import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
@@ -9,7 +10,7 @@ import type {
   ProjectRemovalRequest,
   RemoteProjectRemovalInspection,
 } from "../shared/projectRemoval";
-import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudStatus } from "../shared/adeCloud";
+import type { CloudAccountState, CloudAgentLimits, CloudCreateProgress, CloudInviteRedeemOutcome, CloudMachineActionArgs, CloudMachineActionResult, CloudMachinesResult, CloudOpenCheckoutResult, CloudPaidPlanId, CloudPlanCleanupPick, CloudPlanId, CloudStatus } from "../shared/adeCloud";
 import type { CloudSignInEnd, CloudSignInClaudeStartArgs, CloudSignInId, CloudSignInStatus } from "../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../shared/cloudGitCredential";
 import type { CloudSavedChatDeleteArgs, CloudSavedChatList, CloudSavedChatPage, CloudSavedChatReadArgs, CloudSavedChatsListArgs } from "../shared/cloudSavedChats";
@@ -30,6 +31,18 @@ import type {
   LaneShareUpdateRightsResult,
 } from "../shared/types/laneShare";
 import type { ProviderLoginProvider, ProviderLoginStatus as ProviderLoginSyncStatus } from "../shared/types/providerLogins";
+import type {
+  PasswordImportResult,
+  PasswordItemSummary,
+  PasswordLoginSaveInput,
+  PasswordSecretSaveInput,
+  PasswordEnvFile,
+  PasswordSecretsExportResult,
+  PasswordSecretsImportInput,
+  PasswordSecretsImportResult,
+  PasswordsProject,
+  PasswordsStatus,
+} from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
@@ -198,18 +211,9 @@ import type {
   ProjectDetail,
   ProjectPathInspection,
   ProjectIcon,
-  ProjectSecretDeleteArgs,
-  ProjectSecretEnvFile,
-  ProjectSecretGetArgs,
-  ProjectSecretPullResult,
-  ProjectSecretsExportResult,
-  ProjectSecretsImportArgs,
-  ProjectSecretsImportPreview,
-  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
-  ProjectSecretValueResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -1216,11 +1220,11 @@ import type {
 } from "../shared/types/workTools";
 import type { WorkToolShowAck, WorkToolShowRequest } from "../shared/types/workToolShow";
 import type {
-  DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
   DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
+  DiagnosticsPrepareResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
 import type { AppPackageChannel } from "../shared/packageChannel";
@@ -1500,6 +1504,8 @@ declare global {
           pin: OpenProjectBinding,
         ) => Promise<ClearLocalAdeDataResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
+        /** This computer's folders as its brain registers them; `null` when the catalog cannot be read (no connected brain, or a failed read). Optional: the hosted web client has none. */
+        listThisComputer?: () => Promise<RecentProjectSummary[] | null>;
         /** The account's project list as this computer (or the pinned machine) last read it. Optional: the hosted web client has none yet. */
         accountList?: (pin?: OpenProjectBinding | null) => Promise<AccountProjectListResult>;
         /** Adds a GitHub repository (URL or origin) to the account's project list, with no copy anywhere (S13). Desktop only. */
@@ -1546,13 +1552,11 @@ declare global {
       /**
        * Optional as a GROUP, because an older preload has no `diagnostics` at
        * all: every call site must tolerate `undefined` and simply not offer the
-       * button. The members inside are not optional — they all shipped
-       * together, so a build that exposes the group exposes all of them, and
-       * marking them individually optional would only teach call sites to write
-       * `?.()` chains that can never fire.
+       * button. The members that shipped with the group are not optional; the
+       * report members are, because the group shipped before them (and the
+       * web client offers `sendReport` only while its Sentry runs).
        */
       diagnostics?: {
-        openIssue: (context: DiagnosticReportRequestPayload) => Promise<DiagnosticReportPayload>;
         /**
          * Ask main to consider ONE automatic send for a failure the renderer
          * detected. Main owns the setting and the budget, so this is a request,
@@ -1560,17 +1564,21 @@ declare global {
          */
         autoReport: (context: DiagnosticReportRequestPayload) => Promise<void>;
         /**
-         * The one member here that IS individually optional, and the exception
-         * proves the group's rule: `diagnostics` shipped before this existed,
-         * so a preload that exposes the group need not expose this. The
-         * settings control checks for it and hides itself rather than offering
-         * a button that cannot work, and "Report issue" falls back to
-         * `openIssue`. Pass an error screen's context to report about it.
+         * Builds and redacts a report for the person to read first (the
+         * report dialog; Settings' "Send a report" passes no context). Sends
+         * nothing and spends no budget. Optional: an older preload lacks it,
+         * and the report controls hide themselves then.
          */
-        sendManual?: (
-          context?: DiagnosticReportRequestPayload,
-          options?: DiagnosticsManualSendOptions,
-        ) => Promise<DiagnosticsManualSendResult>;
+        prepareReport?: (context?: DiagnosticReportRequestPayload) => Promise<DiagnosticsPrepareResult>;
+        /**
+         * Sends a prepared report by its id, exactly as it was shown. Absent
+         * where sending is impossible (the web client with Sentry off): the
+         * dialog then offers only "Copy report". `expired` means nothing was
+         * sent; prepare again and show the new text.
+         */
+        sendReport?: (id: string, options?: DiagnosticsManualSendOptions) => Promise<DiagnosticsManualSendResult>;
+        /** Drops a prepared report (Cancel, Esc). */
+        discardReport?: (id: string) => Promise<void>;
         /**
          * True when a `userMessage` sent with a report reaches ADE (as Sentry
          * User Feedback). Absent on older preloads and false where Sentry is off.
@@ -1769,15 +1777,10 @@ declare global {
         get: (pin?: OpenProjectBinding | null) => Promise<KeybindingsSnapshot>;
         set: (overrides: KeybindingOverride[], pin?: OpenProjectBinding | null) => Promise<KeybindingsSnapshot>;
       };
+      /** One project's secrets on the pinned machine (names and metadata; `set` saves a value). */
       projectSecrets: {
         list: (pin: OpenProjectBinding) => Promise<ProjectSecretsListResult>;
-        get: (args: ProjectSecretGetArgs, pin: OpenProjectBinding) => Promise<ProjectSecretValueResult>;
         set: (args: ProjectSecretSetArgs, pin: OpenProjectBinding) => Promise<ProjectSecretSummary>;
-        delete: (args: ProjectSecretDeleteArgs, pin: OpenProjectBinding) => Promise<{ deleted: boolean; name: string }>;
-        pullFromAccount: (pin: OpenProjectBinding) => Promise<ProjectSecretPullResult>;
-        chooseEnvFile: (pin: OpenProjectBinding) => Promise<ProjectSecretsImportPreview | null>;
-        importEnv: (args: ProjectSecretsImportArgs, pin: OpenProjectBinding) => Promise<ProjectSecretsImportResult>;
-        exportEnv: (pin: OpenProjectBinding) => Promise<ProjectSecretsExportResult>;
       };
       ai: {
         /**
@@ -2754,6 +2757,19 @@ declare global {
           args: AgentChatEndSideChatArgs,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatEndSideChatResult>;
+        /**
+         * The chat's device choice per kind (`ade devices use`), on the chat's
+         * machine. Absent where no brain keeps choices (the hosted web client).
+         */
+        getDeviceSources?: (
+          args: { sessionId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatDeviceSourcesResult>;
+        /** Sets one kind's choice: the same setting as `ade devices use`. */
+        setDeviceSource?: (
+          args: ChatSetDeviceSourceArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatDeviceSourcesResult>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
           pin: OpenProjectBinding,
@@ -4075,6 +4091,15 @@ declare global {
           args: BuiltInBrowserTabArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<BuiltInBrowserStatus>;
+        /** Passwords for the person (the key button, "Save to Passwords?"). Optional for older preloads. Never a value. */
+        savedLoginsForTab?: (args: { tabId: string }) => Promise<Array<{ id: string; username: string | null; sites: string[] }>>;
+        /** The Messages integration on this Mac. Optional for older preloads. */
+        messagesIntegrationStatus?: () => Promise<import("../shared/types/messagesIntegration").MessagesIntegrationStatus>;
+        messagesIntegrationSet?: (next: Partial<import("../shared/types/messagesIntegration").MessagesIntegrationSettings>) => Promise<import("../shared/types/messagesIntegration").MessagesIntegrationStatus>;
+        fillSavedLogin?: (args: { tabId: string; itemId: string }) => Promise<{ filled: string[] }>;
+        loginOfferForTab?: (args: { tabId: string }) => Promise<import("../shared/types/builtInBrowserLoginCapture").BuiltInBrowserSaveLoginOffer | null>;
+        acceptLoginOffer?: (args: { offerId: string }) => Promise<{ saved: boolean }>;
+        dismissLoginOffer?: (args: { offerId: string }) => Promise<null>;
         reload: (
           args?: BuiltInBrowserTabTargetArgs,
           pin?: OpenProjectBinding | null,
@@ -4219,7 +4244,11 @@ declare global {
       /** Work copies on a machine for chats on other machines (Settings › Machines). */
       remoteWork: {
         list: (pin?: OpenProjectBinding | null) => Promise<RemoteWorkCopyListing[]>;
-        delete: (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
+        /** `keepUnsynced`: a copy holding work nobody pushed stays; `keptReason` says why. */
+        delete: (
+          args: { owner: string; projectId?: string | null; keepUnsynced?: boolean },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ deleted: boolean; keptReason?: string }>;
       };
       /** A machine's load and capabilities, read by its own brain (Settings › Machines, "Least loaded"). */
       machineStats?: {
@@ -4342,6 +4371,35 @@ declare global {
         remove: (args: { key: string }, pin?: OpenProjectBinding | null) => Promise<ProviderLoginSyncStatus>;
         /** A capture, an apply or a setting change on the bound or pinned brain. */
         onChanged: (cb: () => void, pin?: OpenProjectBinding | null) => () => void;
+      };
+      /**
+       * Settings › Passwords & Secrets: the account's saved logins and secrets.
+       *
+       * No method takes a pin: the vault is the account's, so every call goes
+       * to this computer's brain through its machine route
+       * (`passwords.call`). Only summaries cross this boundary, except Reveal
+       * after Touch ID / Windows Hello, and `resolveForFill` is not exposed
+       * to a renderer.
+       */
+      passwords: {
+        status: (args?: Record<string, never>) => Promise<PasswordsStatus>;
+        setEnabled: (args: { enabled: boolean }) => Promise<PasswordsStatus>;
+        setCloudEnabled: (args: { enabled: boolean }) => Promise<PasswordsStatus>;
+        /** Wipes every saved item on every computer. The person types `reset` first. */
+        reset: (args: { confirm: "reset" }) => Promise<PasswordsStatus>;
+        list: (args?: Record<string, never>) => Promise<PasswordItemSummary[]>;
+        activity: (args?: Record<string, never>) => Promise<import("../shared/types/passwords").PasswordUseRecord[]>;
+        code: (args: { itemId: string }) => Promise<{ code: string; secondsLeft: number } | null>;
+        reveal: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }) => Promise<{ value?: string; copied?: true }>;
+        saveLogin: (args: PasswordLoginSaveInput) => Promise<PasswordItemSummary>;
+        saveSecret: (args: PasswordSecretSaveInput) => Promise<PasswordItemSummary>;
+        remove: (args: { id: string }) => Promise<boolean>;
+        importCsv: (args: { text: string }) => Promise<PasswordImportResult>;
+        sync: (args?: Record<string, never>) => Promise<void>;
+        importSecrets: (args: PasswordSecretsImportInput) => Promise<PasswordSecretsImportResult>;
+        exportSecrets: (args: { projectScope: string | null }) => Promise<PasswordSecretsExportResult>;
+        chooseEnvFile: () => Promise<PasswordEnvFile | null>;
+        projects: () => Promise<PasswordsProject[]>;
       };
       providerInstances: {
         list: (
@@ -4826,6 +4884,8 @@ declare global {
           owner?: string;
           name?: string;
           forceRefresh?: boolean;
+          /** A person pressed Refresh: implies `forceRefresh`. */
+          userRequested?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<GitHubAppInstallationStatus>;
         createRepoAutolink: (args: {
           owner?: string;
@@ -5011,10 +5071,20 @@ declare global {
         /**
          * Checkout for Plus (the default) or Pro. A paid account asking for its
          * other plan changes it in place: nothing opens and `change` says when
-         * it applies (`now` for Pro, `next_period` for Plus).
+         * it applies (`now` for Pro, `next_period` for Plus). A downgrade over
+         * Plus's limits carries the person's pick (`cleanup`): the server
+         * frees exactly those computers once the plan changed.
          */
-        openCheckout?: (plan?: CloudPaidPlanId) => Promise<CloudOpenCheckoutResult>;
+        openCheckout?: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick) => Promise<CloudOpenCheckoutResult>;
+        /**
+         * The person's pick for an account already over a cheaper plan (a
+         * cancel in the billing portal, a plan that ended). Account level: the
+         * server frees the account's computers itself, so no pin.
+         */
+        pickPlanCleanup?: (input: { planId: CloudPlanId } & CloudPlanCleanupPick) => Promise<CloudAccountState | null>;
         openBillingPortal?: () => Promise<{ opened: boolean }>;
+        /** Save a card with no charge so a too-new GitHub account gets the free hours now (`unlocked`: a card on file did it). Account level: no pin. */
+        openFreeUnlock?: () => Promise<{ opened: boolean; unlocked: boolean }>;
         /**
          * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
          * report through `onCreateProgress` with this request id. Account
@@ -5026,6 +5096,8 @@ declare global {
         reconnectMachine?: (args: { requestId: string; instanceId: string }) => Promise<{ started: boolean }>;
         personIsHere?: () => Promise<boolean>;
         pushAllWork?: (instanceId: string) => Promise<CloudMachineActionResult>;
+        /** "Keep it" on an idle cleanup warning: the server restarts the computer's idle clock with no wake. Account level, no pin. */
+        keepIdleComputer?: (instanceId: string) => Promise<{ ok: boolean; message?: string }>;
         /**
          * The life of a lane's computer: work check, delete lane, keep the
          * lane on a fresh computer, lanes without a computer, tier changes
@@ -5408,11 +5480,6 @@ declare global {
           zoomFactor?: number;
         }) => Promise<{ applied: boolean }>;
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
-      };
-      /** The bottom-right cards' own window over a live browser page. Absent or unavailable on the web build. */
-      noticeLayer?: {
-        available: boolean;
-        place: (rect: import("../shared/noticeLayer").NoticeLayerRect | null) => Promise<boolean>;
       };
       cto?: {
         // CTO calls take the CTO home machine's pin; null = the tab's binding.

@@ -24,14 +24,6 @@ func providerAccountDetailLine(_ account: ProviderAccount) -> String? {
   return account.plan.map { $0.capitalized }
 }
 
-/// The other machine whose fresher reading this account's bars are, when the
-/// host borrowed one (`UsageAccount.readingFrom`). Nil for the host's own.
-func providerAccountReadingFrom(_ account: ProviderAccount, snapshot: MobileUsageQuotaSnapshot?) -> String? {
-  let usage = snapshot?.accounts?.first { $0.provider == account.provider && $0.instanceId == account.id }
-  let label = usage?.readingFrom?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  return label.isEmpty ? nil : label
-}
-
 /// How many distinct logins the accounts hold: a copy (`sameLoginAs`) adds no
 /// quota, so it is not another account. Desktop `countProviderLogins`.
 func providerAccountLoginCount(_ accounts: [ProviderAccount]) -> Int {
@@ -285,7 +277,6 @@ struct ProviderAccountsScreen: View {
               account: account,
               ownerLabel: ownerLabel(account),
               windows: providerAccountWindows(account, snapshot: machine.quota),
-              readingFrom: providerAccountReadingFrom(account, snapshot: machine.quota),
               routingBadge: routingBadge(account),
               busy: store.busyAccountId == account.id
             )
@@ -524,8 +515,6 @@ struct ProviderAccountRow: View {
   let account: ProviderAccount
   var ownerLabel: String?
   var windows: [MobileUsageQuotaWindow] = []
-  /// The machine whose fresher reading `windows` are; nil for the host's own.
-  var readingFrom: String? = nil
   /// "New chats" or "Next chat"; see `providerAccountRoutingBadge`.
   var routingBadge: String? = nil
   var busy = false
@@ -561,11 +550,6 @@ struct ProviderAccountRow: View {
         HStack(spacing: 14) {
           ForEach(windows.prefix(2)) { window in
             ProviderAccountQuotaMeter(window: window, tint: ADEColor.providerBrand(for: account.provider))
-          }
-          if let readingFrom {
-            // These bars are another machine's fresher reading of this login.
-            ADEKitTag(text: "via \(readingFrom)", keepsCase: true)
-              .accessibilityLabel("Read on \(readingFrom)")
           }
         }
         .padding(.top, 4)

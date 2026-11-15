@@ -18,8 +18,35 @@ function itemScope(it: InboxItem, scope: Scope): Scope {
   const projectId = str(p?.id);
   return projectId ? { ...scope, projectId, projectName: str(p?.name), projectPath: null } : scope;
 }
+/**
+ * The secure sign-in card, as the outside chat app shows it: the site and a
+ * way into ADE. There is no field: the login is typed in ADE only, so it never
+ * passes through this app.
+ */
+function signInCard(it: InboxItem, site: string, origin: string, showProject: boolean, target: Scope): HTMLElement {
+  const title = str(it.title) || "Chat";
+  const link = safeLink(it.link);
+  const wrap = h("div", { cls: "ask", role: "group", "aria-label": "Sign in to " + site });
+  wrap.appendChild(h("div", { cls: "wl" }, h("span", { cls: "dot", "data-s": "warn" }),
+    h("span", { style: "color:var(--warn);font-weight:500" }, "Sign-in needed"),
+    str(it.lane) ? h("span", { cls: "lane", style: "margin-left:4px" }, String(it.lane)) : null,
+    showProject && target.projectName ? h("span", { cls: "chip", title: "Project" }, target.projectName) : null,
+    h("span", { cls: "status dim" }, rel(it.since))));
+  wrap.appendChild(h("div", { cls: "wt trunc" }, title));
+  wrap.appendChild(h("div", { cls: "q" }, "Sign in to " + site));
+  wrap.appendChild(h("div", { cls: "dim", style: "margin:0 0 8px" },
+    "Answer in ADE: the login is saved to Passwords and filled into " + origin.replace(/^https:\/\//, "") + ". It never passes through this chat."));
+  if (link) {
+    wrap.appendChild(h("div", { cls: "free" },
+      h("button", { cls: "btn primary", type: "button", "data-label": "Sign in in ADE", onclick: () => openLink(link) }, "Sign in in ADE ↗")));
+  }
+  return wrap;
+}
+
 function inboxCard(it: InboxItem, scope: Scope, showProject: boolean): HTMLElement {
   const target = itemScope(it, scope);
+  const signIn = isObj(it.signIn) ? it.signIn : null;
+  if (signIn && str(signIn.site) && str(signIn.origin)) return signInCard(it, String(signIn.site), String(signIn.origin), showProject, target);
   const kind = it.kind;
   const approval = kind === "approval" || kind === "plan";
   const ask = kind === "ask";

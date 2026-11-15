@@ -857,6 +857,7 @@ export function selectAccountMachine(
 ): AdeAccountMachine {
   const needle = query.trim().toLowerCase();
   if (!needle) throw new Error("Machine selection is required.");
+  const nameNeedle = exactMachineName(query);
   // One machine, or none; more than one is the caller's to choose between.
   const unique = (hits: AdeAccountMachine[], what: string): AdeAccountMachine | null => {
     if (hits.length > 1) {
@@ -872,9 +873,17 @@ export function selectAccountMachine(
     || machine.deviceId?.toLowerCase() === needle
   ), "identifier");
   if (byStableId) return byStableId;
+  // The name people see wins over the host name under it: a second install on
+  // one Mac ("Arul’s Mac Studio (dev tabs)") keeps the host name "Arul’s Mac
+  // Studio", so a match on raw names alone would call the plain name
+  // ambiguous. Only two machines that show the same name are.
+  const byDisplayName = unique(machines.filter((machine) =>
+    exactMachineName(accountMachineDisplayName(machine) ?? "") === nameNeedle
+  ), "name");
+  if (byDisplayName) return byDisplayName;
   const byName = unique(machines.filter((machine) =>
-    machine.customName?.trim().toLowerCase() === needle
-    || machine.name?.trim().toLowerCase() === needle
+    exactMachineName(machine.customName ?? "") === nameNeedle
+    || exactMachineName(machine.name ?? "") === nameNeedle
   ), "name");
   if (byName) return byName;
 
@@ -886,10 +895,21 @@ export function selectAccountMachine(
   // too many machines to route a command on. `exactOnly` stops before this,
   // for a caller that tries a fresh list before a loose match.
   if (!options.exactOnly) {
-    const hit = unique(looseMachineNameMatches(machines, query, (machine) => [machine.customName, machine.name]), "name");
+    // Whole names before words inside a name; the shown name before raw names at each step.
+    const shown = (machine: AdeAccountMachine) => [accountMachineDisplayName(machine)];
+    const raw = (machine: AdeAccountMachine) => [machine.customName, machine.name];
+    const hit = unique(looseMachineNameMatches(machines, query, shown, { wholeNameOnly: true }), "name")
+      ?? unique(looseMachineNameMatches(machines, query, raw, { wholeNameOnly: true }), "name")
+      ?? unique(looseMachineNameMatches(machines, query, shown), "name")
+      ?? unique(looseMachineNameMatches(machines, query, raw), "name");
     if (hit) return hit;
   }
   throw new Error(`Account machine not found: ${query}`);
+}
+
+/** A name compared whole: trimmed, lowercase, every apostrophe the straight one. */
+function exactMachineName(value: string): string {
+  return value.trim().replace(/[‘’ʼ`´＇]/g, "'").toLowerCase();
 }
 
 /**
@@ -901,12 +921,13 @@ export function looseMachineNameMatches<T>(
   items: readonly T[],
   query: string,
   namesOf: (item: T) => ReadonlyArray<string | null | undefined>,
+  options: { wholeNameOnly?: boolean } = {},
 ): T[] {
   const folded = foldMachineName(query);
   if (!folded) return [];
   const names = (item: T) => namesOf(item).map((name) => foldMachineName(name ?? "")).filter(Boolean);
   const passes = [(name: string) => name === folded];
-  if (folded.includes(" ")) passes.push((name: string) => ` ${name} `.includes(` ${folded} `));
+  if (folded.includes(" ") && !options.wholeNameOnly) passes.push((name: string) => ` ${name} `.includes(` ${folded} `));
   for (const matches of passes) {
     const hits = items.filter((item) => names(item).some(matches));
     if (hits.length) return hits;

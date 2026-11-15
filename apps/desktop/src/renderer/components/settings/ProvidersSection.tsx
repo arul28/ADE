@@ -53,7 +53,8 @@ import type { CursorSignInOutcome } from "./providers/ProviderSignInSheet";
 import { CliSignInSheet, agentCliSignInSupported } from "./providers/CliSignInSheet";
 import { TerminalSignInSheet } from "./providers/TerminalSignInSheet";
 import { useProvidersPlace, useSettingsMachineScope } from "./SettingsMachineScope";
-import { useSettingsReadPin } from "./ProjectCopyScope";
+import { useSettingsProjectPin, withProjectSettingsBound } from "./ProjectCopyScope";
+import { PROJECT_AI_CONFIG_ACTION, isMachineScopePin, machineScopeActionAllowed } from "../../../shared/machineScope";
 import { AdeCloudProvidersView } from "./providers/cloud/AdeCloudProvidersView";
 import { acpLoginCommand } from "./providers/acpProviders";
 import { isAgentCliLoginProvider, type AgentCliLoginProvider } from "../../../shared/types";
@@ -343,6 +344,10 @@ type ProvidersSectionProps = {
   harnessesParam?: boolean;
 };
 
+function toastActionError(title: string, err: unknown): void {
+  showToast({ tone: "error", title, message: err instanceof Error ? err.message : String(err) });
+}
+
 /**
  * Settings › Providers for the place the title picker names: one machine, or
  * ADE Cloud. Two components, so switching place never changes a component's
@@ -365,9 +370,20 @@ function MachineProvidersSection({
   // carries `pin` (null = the tab's binding); the page is
   // remounted per machine, so a pin never changes under a live closure.
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
-  // The project settings read names this page's machine, This computer included.
-  const readPin = useSettingsReadPin();
-  const readPinKey = readPin?.key ?? null;
+  // The project's AI config on this machine (disabled providers, local model
+  // servers, custom slugs) is the one part of the page that is the project's:
+  // it goes to this repository's copy there, never the machine route (which
+  // does not answer `PROJECT_AI_CONFIG_ACTION`). Everything else is the
+  // computer's, on `pin`. Null with no copy there: nothing to edit.
+  const projectPin = useSettingsProjectPin();
+  const projectPinKey = projectPin?.key ?? null;
+  const projectConfigEditable = projectPin != null
+    && (!isMachineScopePin(projectPin)
+      || machineScopeActionAllowed(PROJECT_AI_CONFIG_ACTION.domain, PROJECT_AI_CONFIG_ACTION.action));
+  // The project's copy is read and written under a bound: its folder can sit
+  // on a drive that stops answering, and the rest of the page must not wait.
+  const projectCall = useCallback(<T,>(call: Promise<T>): Promise<T> =>
+    withProjectSettingsBound(call, machineName, isThisMachine), [isThisMachine, machineName]);
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -380,7 +396,6 @@ function MachineProvidersSection({
   const [localProviderDrafts, setLocalProviderDrafts] = useState<Record<LocalProviderFamily, LocalProviderDraft>>(() =>
     buildLocalProviderDrafts(null, null),
   );
-  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dismissedApiKeyStoreWarning, setDismissedApiKeyStoreWarning] = useState<string | null>(null);
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
@@ -467,7 +482,9 @@ function MachineProvidersSection({
     ).finally(() => {
       if (!options?.silent) setLoading(false);
     });
-    const configRead = Promise.resolve().then(() => window.ade.projectConfig.get(requirePin(readPin))).then(
+    const configRead = Promise.resolve().then(() => (
+      projectConfigEditable ? projectCall(window.ade.projectConfig.get(requirePin(projectPin))) : null
+    )).then(
       (next) => {
         setProjectConfigSnapshot(next);
         return next;
@@ -497,7 +514,7 @@ function MachineProvidersSection({
       setLocalProviderDrafts(buildLocalProviderDrafts(nextProjectConfig, nextStatus));
     }
     return nextStatus;
-  }, [editingLocalProvider, pin, readPin, savingLocalProvider]);
+  }, [editingLocalProvider, pin, projectCall, projectConfigEditable, projectPin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
@@ -522,12 +539,15 @@ function MachineProvidersSection({
 
   useEffect(() => {
     if (slugsSeededRef.current) return;
-    const persisted = status?.customModelSlugs;
+    // The project's own list, which is what a save writes; the machine
+    // route's status carries no project's.
+    const persisted = projectConfigSnapshot?.effective.ai?.customModelSlugs
+      ?? (projectConfigEditable ? undefined : status?.customModelSlugs);
     if (!persisted) return;
     slugsSeededRef.current = true;
     // Never clobber text the user typed while the initial probe was loading.
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
-  }, [status?.customModelSlugs]);
+  }, [projectConfigEditable, projectConfigSnapshot?.effective.ai?.customModelSlugs, status?.customModelSlugs]);
 
   // The Cursor status feed re-subscribes only when the machine changes.
   // Re-subscribing when `refreshStatus` changes identity would re-anchor a
@@ -547,9 +567,9 @@ function MachineProvidersSection({
         // reads the saved logins again and leaves OpenCode's server alone.
         void refreshStatusRef.current({ force: true, silent: true });
       }
-      if (event.state === "error" && event.error) setError(event.error);
+      if (event.state === "error" && event.error) showToast({ tone: "error", title: "Cursor sign-in failed", message: event.error });
       if (event.state === "success") {
-        setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
+        showToast({ tone: "success", title: event.email ? `Signed in as ${event.email}` : "Signed in with Cursor" });
       }
     }, pin);
     return unsubscribe;
@@ -560,8 +580,8 @@ function MachineProvidersSection({
     // Another machine's chat feed is not subscribed here; its status refreshes
     // on open and on every action instead.
     // This computer's own chats, through its copy of the project.
-    const chatPin = readPin;
-    if (pin || !chatPin) return undefined;
+    const chatPin = isThisMachine && projectPin?.kind === "local" ? projectPin : null;
+    if (!chatPin) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
@@ -577,9 +597,9 @@ function MachineProvidersSection({
         pendingRefreshTimerRef.current = null;
       }
     };
-    // `readPinKey` carries the copy's identity.
+    // `projectPinKey` carries the copy's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin, readPinKey, refreshStatus]);
+  }, [isThisMachine, projectPinKey, refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   // Keep provider tiles neutral while the status payload is unavailable. A
@@ -779,8 +799,6 @@ function MachineProvidersSection({
   }, []);
 
   const deleteApiKey = useCallback(async (provider: string, options?: { alsoOpenCode?: boolean }) => {
-    setError(null);
-    setNotice(null);
     try {
       if (options?.alsoOpenCode) {
         const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider }, pin);
@@ -793,7 +811,7 @@ function MachineProvidersSection({
       const label =
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
         ?? (provider === KIMI_PROVIDER_ID ? "Kimi for Coding" : prettifyProviderId(provider));
-      setNotice(`${label} disconnected.`);
+      showToast({ tone: "success", title: `${label} disconnected` });
       setVerificationByProvider((prev) => {
         const next = { ...prev };
         delete next[provider];
@@ -801,15 +819,13 @@ function MachineProvidersSection({
       });
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't disconnect", err);
       // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
       throw err instanceof Error ? err : new Error(String(err));
     }
   }, [pin, refreshStatus]);
 
   const verifyApiKey = useCallback(async (provider: string) => {
-    setError(null);
-    setNotice(null);
     setVerifyingProvider(provider);
     setVerificationByProvider((prev) => {
       const next = { ...prev };
@@ -823,25 +839,23 @@ function MachineProvidersSection({
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
       if (result.ok) {
-        setNotice(`${provider} connection verified.`);
+        showToast({ tone: "success", title: `${provider} connection verified` });
       } else {
-        setError(result.message || `${provider} verification failed.`);
+        showToast({ tone: "error", title: `${provider} verification failed`, message: result.message || undefined });
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't verify the key", err);
     } finally {
       setVerifyingProvider(null);
     }
   }, [pin, refreshStatus]);
 
   const loginWithCursor = useCallback(async (): Promise<CursorSignInOutcome> => {
-    setError(null);
-    setNotice(null);
     setCursorLoginBusy(true);
     try {
       const result = await window.ade.ai.cursorAuthLogin(pin);
       if (!result.ok) {
-        setError(result.error || "Cursor sign-in failed.");
+        showToast({ tone: "error", title: "Cursor sign-in failed", message: result.error || undefined });
         return { ok: false, error: result.error || "Cursor sign-in failed." };
       }
       setVerifyingProvider("cursor");
@@ -862,15 +876,15 @@ function MachineProvidersSection({
         },
       }));
       if (verification.ok) {
-        setNotice(result.email ? `Signed in as ${result.email}.` : "Cursor connection verified.");
+        showToast({ tone: "success", title: result.email ? `Signed in as ${result.email}` : "Cursor connection verified" });
         setCursorLoginUrl(null);
         return { ok: true, email: result.email ?? null };
       }
-      setError(verification.message || "Cursor verification failed.");
+      showToast({ tone: "error", title: "Cursor verification failed", message: verification.message || undefined });
       return { ok: false, error: verification.message || "Cursor verification failed." };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      showToast({ tone: "error", title: "Cursor sign-in failed", message });
       return { ok: false, error: message };
     } finally {
       setCursorLoginBusy(false);
@@ -879,12 +893,10 @@ function MachineProvidersSection({
   }, [pin, refreshStatus]);
 
   const logoutCursor = useCallback(async () => {
-    setError(null);
-    setNotice(null);
     try {
       const result = await window.ade.ai.cursorAuthLogout(pin);
       if (!result.ok) {
-        setError(result.error || "Cursor sign-out failed.");
+        showToast({ tone: "error", title: "Cursor sign-out failed", message: result.error || undefined });
         return;
       }
       invalidateAiDiscoveryCache();
@@ -899,9 +911,9 @@ function MachineProvidersSection({
         delete next.cursor;
         return next;
       });
-      setNotice("Signed out of Cursor.");
+      showToast({ tone: "success", title: "Signed out of Cursor" });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't sign out of Cursor", err);
     }
   }, [pin, refreshStatus]);
 
@@ -909,7 +921,7 @@ function MachineProvidersSection({
     try {
       await window.ade.ai.cursorAuthCancel(pin);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't cancel Cursor sign-in", err);
     } finally {
       setCursorLoginBusy(false);
     }
@@ -921,7 +933,7 @@ function MachineProvidersSection({
       await window.ade.ai.refreshModelsDev(pin);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't refresh the model catalog", err);
     } finally {
       setRefreshingCatalog(false);
     }
@@ -950,21 +962,19 @@ function MachineProvidersSection({
   const saveCustomModelSlugs = useCallback(async () => {
     const slugs = customModelSlugs.split(",").map((s) => s.trim()).filter(Boolean);
     setSavingAdvanced(true);
-    setError(null);
-    setNotice(null);
     try {
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         customModelSlugs: slugs,
-      }, pin);
+      }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice("Custom model slugs saved.");
+      showToast({ tone: "success", title: "Custom model slugs saved" });
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't save custom model slugs", err);
     } finally {
       setSavingAdvanced(false);
     }
-  }, [pin, customModelSlugs, refreshStatus]);
+  }, [projectCall, projectPin, customModelSlugs, refreshStatus]);
 
   const updateLocalProviderDraft = useCallback((
     provider: LocalProviderFamily,
@@ -981,8 +991,6 @@ function MachineProvidersSection({
 
   const beginEditingLocalRuntime = useCallback((provider: LocalProviderFamily) => {
     setEditingLocalProvider(provider);
-    setError(null);
-    setNotice(null);
   }, []);
 
   const cancelEditingLocalRuntime = useCallback(() => {
@@ -994,10 +1002,8 @@ function MachineProvidersSection({
     const draft = localProviderDrafts[provider];
     if (!draft) return;
     setSavingLocalProvider(provider);
-    setError(null);
-    setNotice(null);
     try {
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         localProviders: {
           [provider]: {
             enabled: draft.enabled,
@@ -1006,17 +1012,17 @@ function MachineProvidersSection({
             preferredModelId: draft.preferredModelId.trim() || null,
           },
         } as AiConfig["localProviders"],
-      }, pin);
+      }, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
+      showToast({ tone: "success", title: `${LOCAL_PROVIDER_LABELS[provider]} settings saved` });
       setEditingLocalProvider(null);
       await refreshStatus({ force: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't save settings", err);
     } finally {
       setSavingLocalProvider(null);
     }
-  }, [pin, localProviderDrafts, refreshStatus]);
+  }, [projectCall, projectPin, localProviderDrafts, refreshStatus]);
 
   const disabledProviders = useMemo(
     () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
@@ -1029,28 +1035,26 @@ function MachineProvidersSection({
   ) => {
     const descriptor = providerDescriptor(provider);
     setSavingDisabledFor(provider);
-    setError(null);
-    setNotice(null);
     try {
       // The whole authoritative list, not a delta: `mergeAiConfig` replaces
       // this field, so a patch carrying only the change could never re-enable
       // anything.
-      await window.ade.ai.updateConfig({
+      await projectCall(window.ade.ai.updateConfig({
         disabledProviders: toggleDisabledProvider(
           projectConfigSnapshot?.effective.ai ?? null,
           provider,
           disabled,
         ),
-      } as Partial<AiConfig>, pin);
+      } as Partial<AiConfig>, requirePin(projectPin)));
       invalidateAiDiscoveryCache();
-      setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
+      showToast({ tone: "success", title: `${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}` });
       await refreshStatus({ force: false, silent: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      toastActionError("Couldn't update the provider", err);
     } finally {
       setSavingDisabledFor(null);
     }
-  }, [pin, projectConfigSnapshot, refreshStatus]);
+  }, [projectCall, projectPin, projectConfigSnapshot, refreshStatus]);
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
@@ -1138,9 +1142,21 @@ function MachineProvidersSection({
     void refreshStatus({ refreshOpenCodeInventory: true, silent: true }).then(() => loadAuthMethods());
   }, [loadAuthMethods, openCodeCatalogCold, openCodePageOpen, refreshStatus]);
 
+  // What the project's copy saves is read from it: the machine route's status
+  // carries the machine scope's own (empty) lists, and a write is a whole
+  // list, so it may only be built from the project's.
+  const projectConfigLoaded = projectConfigEditable && projectConfigSnapshot != null;
+  const viewStatus = useMemo((): AiSettingsStatus | null => {
+    if (!status || !projectConfigLoaded || !isMachineScopePin(pin)) return status;
+    const ai = projectConfigSnapshot?.effective.ai;
+    return { ...status, customProviders: ai?.customProviders ?? [], customModelSlugs: ai?.customModelSlugs ?? [] };
+  }, [pin, projectConfigLoaded, projectConfigSnapshot, status]);
   const ctx = useMemo((): ProvidersViewContext => ({
-    status,
+    status: viewStatus,
     projectConfigSnapshot,
+    projectConfigEditable: projectConfigLoaded,
+    projectPin,
+    machineName,
     loading,
     statusLoadError,
     isInitialCheckInFlight,
@@ -1177,8 +1193,7 @@ function MachineProvidersSection({
     actions: {
       refreshStatus,
       loadAuthMethods,
-      setError,
-      setNotice,
+      setError: (message) => { if (message) showToast({ tone: "error", title: "Something went wrong", message }); },
       deleteApiKey,
       verifyApiKey,
       loginWithCursor,
@@ -1200,6 +1215,7 @@ function MachineProvidersSection({
       verifySignIn,
     },
   }), [
+    projectConfigLoaded, projectPin, machineName,
     apiKeySources, authMethods, authMethodsError, beginEditingLocalRuntime, cancelCursorLogin,
     cancelEditingLocalRuntime, connectedOpenCodeProviders, cursorAuth, cursorLoginBusy,
     cursorLoginUrl, customModelSlugs, deleteApiKey,
@@ -1209,7 +1225,7 @@ function MachineProvidersSection({
     projectConfigSnapshot, providerSearch, refreshStatus, refreshingCatalog,
     saveCustomModelSlugs, saveLocalProvider, savingAdvanced,
     savingLocalProvider, searchableOpenCodeProviders,
-    status, statusLoadError, storedProviders, updateLocalProviderDraft,
+    viewStatus, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
     acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignIn,
@@ -1238,10 +1254,6 @@ function MachineProvidersSection({
     // The `ai-providers` anchor lives on the section below. This wrapper is
     // layout only — giving it the id too would put the anchor in the DOM twice.
     <div className={selectedDescriptor ? "ade-pv-detail" : "ade-pv-page"}>
-      {notice && (
-        <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
-      )}
-
       {error && (
         <AlertBanner tone="error" message={error} onDismiss={() => setError(null)} />
       )}
@@ -1319,7 +1331,7 @@ function MachineProvidersSection({
             void refreshStatus({ force: true, silent: true });
           }}
           onSignedIn={() => {
-            setNotice(`Signed in to ${terminalSignIn.label}.`);
+            showToast({ tone: "success", title: `Signed in to ${terminalSignIn.label}` });
             // The "login changed" path, then the provider's own check.
             void verifySignIn(signInRequest.provider);
           }}
@@ -1355,7 +1367,7 @@ function MachineProvidersSection({
               delete next[detailProvider.id];
               return next;
             });
-            setNotice(`${detailProvider.name} key saved.`);
+            showToast({ tone: "success", title: `${detailProvider.name} key saved` });
             await refreshStatus({ force: true, refreshOpenCodeInventory: true });
           }}
           onDeleteKey={async () => {

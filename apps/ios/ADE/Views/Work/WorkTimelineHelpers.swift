@@ -1528,8 +1528,12 @@ func workChatInfoScheduleItems(
   _ snapshots: [WorkScheduledWorkSnapshot]
 ) -> [WorkScheduledWorkSnapshot] {
   let scheduleKinds: Set<String> = ["wakeup", "cron", "loop", "remote_trigger"]
+  // A restart resume is no scheduled work the user set up: the desktop
+  // leaves it out of every schedule listing and the next-wake time, and the
+  // restart notice already says the agent continues.
   return snapshots.filter {
     scheduleKinds.contains($0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+      && !workIsRestartResumeScheduleId($0.id)
   }
 }
 
@@ -1921,8 +1925,12 @@ func assembleWorkTimeline(
     WorkTimelineEntry(id: row.id, timestamp: row.timestamp, rank: 1_450 + index, payload: .subagent(row), turnId: row.snapshot.turnId)
   })
 
+  // A restart resume draws no schedule row: the restart notice says the
+  // agent continues (desktop `isRestartResumeScheduleId`). One ADE could not
+  // send keeps its row, so the chat says why the agent did not continue.
   let scheduleSnapshots = scheduledSnapshots.filter {
     $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "background_task"
+      && !(workIsRestartResumeScheduleId($0.id) && !workIsUndeliveredSchedule(summary: $0.summary, error: $0.error))
   }
   entries.append(contentsOf: scheduleSnapshots.enumerated().map { index, snapshot in
     WorkTimelineEntry(
@@ -2465,6 +2473,9 @@ private let workTurnFoldTrivialEventKinds: Set<String> = [
 private func workTurnFoldNoticeRole(_ card: WorkEventCardModel) -> WorkTurnFoldRole {
   if card.spawnCompletionChildId != nil { return .history }
   if card.tint == .danger { return .keep }
+  // The restart line is the one place the chat says ADE restarted and the
+  // agent continued (the resume message and its wake line draw nothing).
+  if card.kind == "notice", workIsRestartInterruptedNotice(card.title) { return .keep }
   // The card carries the host's raw kind; the metadata label is only the
   // fallback for a card built before it did.
   let kind = card.noticeKind?.lowercased()
@@ -4941,7 +4952,11 @@ func eventCard(
       // composer badge, and Chat Info. Rendering every lifecycle envelope as a
       // normal event card makes mobile chats look much longer than desktop.
       return nil
-    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
+    case .scheduledWorkUpdate(let id, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, _, let turnId, let error):
+      // A restart resume's "Woke at" line: the restart notice already says
+      // the agent continues (desktop `isRestartResumeScheduleId`). One ADE
+      // could not send still shows, with its reason.
+      guard !workIsRestartResumeScheduleId(id) || workIsUndeliveredSchedule(summary: summary, error: error) else { return nil }
       // Background shell commands are owned by the Chat Info pane's Background
       // section (and a compact timeline finish chip).
       //
@@ -5131,6 +5146,23 @@ func eventCard(
         )
       }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
+      // "ADE restarted while this response was running. …": one quiet line
+      // with its clock time, as on the desktop (`isRestartInterruptedNotice`).
+      // The turn fold keeps it in view (`workTurnFoldNoticeRole`).
+      if workIsRestartInterruptedNotice(message) {
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "notice",
+          title: message.trimmingCharacters(in: .whitespacesAndNewlines),
+          icon: "arrow.clockwise",
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: [],
+          noticeKind: kind
+        )
+      }
       // A spawn notice whose subagent card is inline draws nothing: the card
       // is the announcement (desktop `isInlineCardSpawnNotice`).
       guard !workNoticeHasInlineSubagentCard(detail) else { return nil }
@@ -5396,6 +5428,25 @@ func eventCard(
 func isLowSignalWorkReasoning(_ text: String) -> Bool {
   let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return normalized.isEmpty || normalized == "thinking through the answer"
+}
+
+/// The resume ADE arms after any restart (an update, a crash) has the fixed
+/// id `update-resume:<session>`. Same as desktop `isRestartResumeScheduleId`.
+func workIsRestartResumeScheduleId(_ scheduleId: String?) -> Bool {
+  scheduleId?.hasPrefix("update-resume:") == true
+}
+
+/// A scheduled message ADE could not send: the host closes it with
+/// "Not delivered: <reason>" in its summary, or with an error.
+func workIsUndeliveredSchedule(summary: String?, error: String?) -> Bool {
+  if let error, !error.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+  return summary?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("not delivered") == true
+}
+
+/// A notice the host's `restartInterruptedNotice` wrote. Same as desktop
+/// `isRestartInterruptedNotice`.
+func workIsRestartInterruptedNotice(_ message: String?) -> Bool {
+  message?.hasPrefix("ADE restarted while ") == true
 }
 
 func isLowSignalWorkSystemNotice(kind: String, message: String, detail: String?) -> Bool {

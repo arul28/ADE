@@ -267,6 +267,8 @@ private let workUserSegmentsCache: NSCache<NSString, WorkUserSegmentsCacheBox> =
 /// Splits only at blank lines, so no paragraph (and no fenced block written
 /// without blank lines) is cut. A message with no usable break stays whole.
 func workUserMessageSegments(_ message: WorkChatMessage) -> [WorkUserBubbleSegment]? {
+  // ADE's own message is one folded row, never pieces of a bubble.
+  guard message.adeReason == nil else { return nil }
   let text = message.markdown
   guard text.utf8.count >= workUserSplitCharacterThreshold else { return nil }
   // A comment card or a quote is drawn whole: cutting at a blank line would

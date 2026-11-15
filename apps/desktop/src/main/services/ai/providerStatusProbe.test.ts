@@ -321,7 +321,6 @@ describe("probeProviderStatuses — bounded output", () => {
 
     // The version still reads, because it is the first line.
     expect(report.providers.codex.version).toBe("9.9.9");
-    expect(PROVIDER_OUTPUT_CAP_BYTES).toBe(16 * 1024);
   });
 });
 

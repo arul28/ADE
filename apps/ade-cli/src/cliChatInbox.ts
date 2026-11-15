@@ -1,4 +1,5 @@
 import type { PendingInputRequest } from "../../desktop/src/shared/types/chat";
+import { readPasswordLoginRequestCard } from "../../desktop/src/shared/passwordLoginRequest";
 import { optionsForQuestion } from "../../desktop/src/shared/pendingInputAnswers";
 import { pendingInputIsAnswerable, pendingInputItemId } from "../../desktop/src/shared/pendingInputCommand";
 import { isChatToolType } from "../../desktop/src/shared/sessionSpawnNesting";
@@ -68,6 +69,11 @@ export type ChatInboxItem = {
   since: string | null;
   /** The exact commands that answer it; `<…>` marks a value to fill in. */
   respond: string[];
+  /**
+   * The secure sign-in card: only the person answers it, in ADE (the login
+   * goes straight into Passwords). The site and the page it fills; never a value.
+   */
+  signIn?: { site: string; origin: string };
   link: string;
 };
 
@@ -226,6 +232,21 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
       const requestId = pendingInputItemId(request);
       const kind = inboxKind(request);
       const questions = questionsOf(request);
+      const signIn = readPasswordLoginRequestCard(request);
+      if (signIn) {
+        items.push({
+          ...chat,
+          kind,
+          requestId,
+          text: `Sign in to ${signIn.site}`,
+          detail: `${signIn.reason} The person answers this in ADE; the login is saved to Passwords and never passes through chat.`,
+          since,
+          respond: [],
+          signIn: { site: signIn.site, origin: signIn.origin },
+          link,
+        });
+        continue;
+      }
       const heading = request.title?.trim() || request.description?.trim()
         || questions[0]?.question || "Input requested";
       const description = request.description?.trim();

@@ -4,10 +4,12 @@
  * only what the page needs: the code's shape, the app link, and the public
  * lookup that answers the inviter's first name.
  *
- * The website doesn't import the account directory's code, so each value
- * below is a copy of one in `apps/account-directory/src/cloud/contract.ts` or
- * `plans.ts`, named next to it. Change both together.
+ * The hours and days come from the account directory's own plan facts
+ * (`cloudPricing.ts`). The code's shape below is a copy of the one in
+ * `apps/account-directory/src/cloud/contract.ts`, named next to it. Change
+ * both together.
  */
+import { FREE_PLAN, INVITE_RULES } from "./cloudPricing";
 
 /** `CLOUD_INVITE_CODE_LENGTH` (8) characters of `CLOUD_INVITE_ALPHABET` (no 0/O/1/I/L); `parseCloudInviteCode` reads a code the same way. */
 const INVITE_CODE = /^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/;
@@ -25,12 +27,12 @@ export function inviteCodeFrom(raw: string | undefined): string | null {
 /** What "Open in ADE" opens (`CLOUD_INVITE_DEEPLINK_BASE`): the app fills the code in Settings › Account. */
 export const inviteAppLink = (code: string): string => `ade://invite/${code}`;
 
-/** Free hours every month: `CLOUD_PLANS.free.includedMilli` / 1000 (`plans.ts`). */
-export const FREE_MONTHLY_HOURS = 50;
-/** What an invite adds for both people: `CLOUD_REFERRAL_REWARD_MILLI` / 1000. */
-export const INVITE_REWARD_HOURS = 20;
-/** Days after signing up that a code can be entered: `CLOUD_REFERRAL_ENTER_DAYS`. */
-export const INVITE_ENTER_DAYS = 30;
+/** Free hours every month. */
+export const FREE_MONTHLY_HOURS = FREE_PLAN.hours;
+/** What an invite adds for both people. */
+export const INVITE_REWARD_HOURS = INVITE_RULES.rewardHours;
+/** Days after signing up that a friend's code can still be entered. */
+export const INVITE_ENTER_DAYS = INVITE_RULES.enterDays;
 
 export type InviteLookup =
   | { state: "found"; firstName: string | null }

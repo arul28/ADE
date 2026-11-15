@@ -20,11 +20,6 @@ vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
   confirmDialog: vi.fn(async () => false),
 }));
 import {
-  ProjectSidebarSlotProvider,
-  useProjectSidebarSlotTarget,
-} from "../app/projectSidebar/ProjectSidebarSlot";
-import { setProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
-import {
   forgetWorkPtyLaunchPin,
   workPtyLaunchPinFor,
 } from "./cliLaunch";
@@ -671,90 +666,12 @@ describe("TerminalsPage chat session activation", () => {
     vi.clearAllMocks();
   });
 
-  /* ────────────────────────────────────────────────────────────────────────
-     The session list lives in the project sidebar. The board needs the full
-     width, so it draws in the main area: beside the list while the sidebar
-     shows, and as the whole pane when there is no sidebar on screen. Board
-     mode never drives `workSidebarWidthPct`, the user's LIST-mode layout.
-     ──────────────────────────────────────────────────────────────────────── */
-
-  function SidebarBody() {
-    const setTarget = useProjectSidebarSlotTarget();
-    return <div data-testid="sidebar-body" ref={setTarget} />;
-  }
-
-  function renderWithProjectSidebar() {
-    return render(
-      <ProjectSidebarSlotProvider>
-        <SidebarBody />
-        <TerminalsPage />
-      </ProjectSidebarSlotProvider>,
-    );
-  }
-
   function mockBrowserEvents() {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
   }
-
-  it("renders the session list in the project sidebar and only the view in the main area", async () => {
-    mockBrowserEvents();
-
-    renderWithProjectSidebar();
-
-    const sidebar = screen.getByTestId("sidebar-body");
-    const list = await screen.findByTestId("session-list-pane");
-    expect(sidebar.contains(list)).toBe(true);
-    expect(sidebar.contains(screen.getByTestId("work-view-area"))).toBe(false);
-    expect(screen.queryByTestId("work-board-surface")).toBeNull();
-    expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
-  });
-
-  it("keeps the list in the sidebar and portals the board into the main area", async () => {
-    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
-    mockBrowserEvents();
-
-    renderWithProjectSidebar();
-
-    const sidebar = screen.getByTestId("sidebar-body");
-    const board = await screen.findByTestId("work-board-surface");
-    expect(sidebar.contains(screen.getByTestId("session-list-pane"))).toBe(true);
-    expect(sidebar.contains(board)).toBe(false);
-    await waitFor(() => expect(sessionListPaneProps.latest?.boardHost).toBe(board));
-    // No chat beside the board, and the list-mode tools width is never written.
-    expect(screen.queryByTestId("work-view-area")).toBeNull();
-    expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
-  });
-
-  it("gives the board the whole pane while the project sidebar is hidden", async () => {
-    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
-    mockBrowserEvents();
-    setProjectSidebarHidden(true);
-    try {
-      renderWithProjectSidebar();
-
-      const board = await screen.findByTestId("work-board-surface");
-      // The pane is the board, toolbar and all, so the List/Board toggle is
-      // still reachable without the sidebar.
-      expect(board.contains(screen.getByTestId("session-list-pane"))).toBe(true);
-      expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
-    } finally {
-      setProjectSidebarHidden(false);
-    }
-  });
-
-  it("keeps a plain list column when there is no project sidebar", async () => {
-    mockBrowserEvents();
-
-    render(<TerminalsPage />);
-
-    const column = await screen.findByTestId("work-sessions-column");
-    expect(column.contains(screen.getByTestId("session-list-pane"))).toBe(true);
-    expect(screen.getByTestId("work-view-area")).toBeTruthy();
-    expect(screen.queryByTestId("work-board-surface")).toBeNull();
-  });
 
   it("opening a card from the board selects the session and returns to list mode", async () => {
     const session = workMocks.makeTerminalSession("chat-on-board", "lane-primary", "codex-chat");

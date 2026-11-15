@@ -1,4 +1,5 @@
 import { mergeReasoningTextFragments } from "../../../shared/chatActivityPhase";
+import { isRestartResumeScheduleId } from "../../../shared/chatAutoResume";
 import { isInlineCardSpawnNotice } from "../../../shared/chatSubagents";
 import { CLAUDE_SESSION_QUOTA_CARD_VARIANT } from "../../../shared/claudeSessionQuota";
 import { isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
@@ -58,6 +59,9 @@ export function transcriptEventDrawsNothing(
     case "user_message": {
       // Queued steers live in the composer's staging area only.
       if (event.deliveryState === "queued" && event.steerId) return true;
+      // The resume after a restart: the restart notice already says the agent
+      // continues. The agent still reads the message.
+      if (isRestartResumeScheduleId(event.metadata?.scheduledWake?.scheduleId)) return true;
       // A subagent's or peer's report: the spawn_wake_divider row above it
       // already says who came back and what it said. Same test as the
       // divider's (chatTranscriptRows), so a report never loses both.

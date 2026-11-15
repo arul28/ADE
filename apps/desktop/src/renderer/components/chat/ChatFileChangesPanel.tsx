@@ -17,7 +17,7 @@ import type {
 const AdeDiffViewer = lazy(() => import("../shared/AdeDiffViewer")
   .then((module) => ({ default: module.AdeDiffViewer })));
 import { cn } from "../ui/cn";
-import { useAgentChatApi } from "./agentChatApi";
+import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatWorkspacePathOpener } from "./chatWorkspacePaths";
@@ -27,7 +27,7 @@ import {
   ChatCardRow,
   ChatCardTitle,
 } from "./chatCardPrimitives";
-import { withChatPin } from "./chatMachinePin";
+import { chatApiPin, withChatPin } from "./chatMachinePin";
 
 /* ── Helpers ── */
 
@@ -205,6 +205,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
   maxHeight = 400,
 }: FileChangesBrowserProps) {
   const scope = useChatRuntimeScope();
+  const boundPane = useChatPaneScope() != null;
   const openWorkspacePath = useChatWorkspacePathOpener();
   // The pane's chat API. A scope without turn diffs (a personal chat) lists
   // the changed files but offers no diff.
@@ -258,7 +259,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
       setActiveDiffLoadState("loading");
 
       try {
-        const diff = await withChatPin(scope.pin, (chatPin) => getTurnFileDiff(args, chatPin));
+        const diff = await withChatPin(chatApiPin(scope.pin, boundPane), (chatPin) => getTurnFileDiff(args, chatPin));
         if (latestDiffRequestKey.current !== cacheKey) return;
         if (!diff) {
           setActiveDiff(null);
@@ -278,7 +279,7 @@ const FileChangesBrowser = React.memo(function FileChangesBrowser({
         }
       }
     },
-    [files, getTurnFileDiff, scope.pin, sessionId],
+    [boundPane, files, getTurnFileDiff, scope.pin, sessionId],
   );
 
   if (!files.length) return null;

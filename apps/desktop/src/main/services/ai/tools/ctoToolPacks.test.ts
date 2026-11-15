@@ -5,7 +5,7 @@ import {
   type CtoOperatorToolDeps,
   type CtoOperatorToolMap,
 } from "./ctoOperatorTools";
-import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
+import { CTO_TOOL_PACK_NAMES, type CtoToolPack } from "./ctoToolPacks";
 
 /**
  * The MINIMUM dep set — what `previewSessionToolNames` builds when it only
@@ -72,21 +72,6 @@ function runtimeShapedDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOpe
 describe("CTO tool packs", () => {
   // ── Pack membership is total and derived ──────────────────────────────────
 
-  it("gives every tool a known pack, and derives alwaysLoad from it", () => {
-    const tools = createCtoOperatorTools(runtimeShapedDeps());
-    const entries = Object.entries(tools);
-    expect(entries.length).toBeGreaterThan(50);
-
-    for (const [name, definition] of entries) {
-      expect(CTO_TOOL_PACK_NAMES, `${name} has an unknown pack '${definition.pack}'`)
-        .toContain(definition.pack);
-      // The core pack is loaded BY CONSTRUCTION: `alwaysLoad` is never hand-set,
-      // so it can only ever equal "this tool is in core".
-      expect(definition.alwaysLoad, `${name} alwaysLoad must follow its pack`)
-        .toBe(definition.pack === "core");
-    }
-  });
-
   it("keeps the core pack non-empty and covering the CTO's standing surface", () => {
     const tools = createCtoOperatorTools(runtimeShapedDeps());
     const core = Object.entries(tools)
@@ -107,12 +92,6 @@ describe("CTO tool packs", () => {
       "loadCtoTools",
     ]) {
       expect(core, `${expected} must be in the always-loaded core pack`).toContain(expected);
-    }
-  });
-
-  it("declares a scope line for every pack", () => {
-    for (const pack of CTO_TOOL_PACK_NAMES) {
-      expect(CTO_TOOL_PACK_SCOPES[pack]?.length ?? 0).toBeGreaterThan(10);
     }
   });
 

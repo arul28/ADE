@@ -4,7 +4,8 @@
  * the brain bridge, then the same parse and state as the pass card
  * (`summarizeClaudePass`). No network, no token leaves this file.
  *
- * Two kinds of sign-in can be named:
+ * It names the saved sign-ins ADE can't renew on its own, the ones that need
+ * the person before they stop working. Two kinds:
  * - A Claude pass. Due: Claude ended the pass, its expected end has passed, or
  *   its notice is due (`noticeDueAt`, 7 days before the expected end).
  * - A key ADE Cloud carries whose end date the provider itself wrote (a

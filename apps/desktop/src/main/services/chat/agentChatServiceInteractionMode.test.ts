@@ -15,6 +15,7 @@ import {
   query,
   readPersistedChatState,
   replaceDynamicOpenCodeModelDescriptors,
+  spawn,
   tmpRoot,
   waitFor,
   waitForEvent,
@@ -646,13 +647,28 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
     });
 
-    it("stops a Codex chat whose only pending card is a plan approval from the completed turn", async () => {
+    /** The app-server behind the chat exits (its input closes) before the user presses Stop. */
+    const killLatestCodexAppServer = (): void => {
+      const calls = vi.mocked(spawn).mock.calls;
+      for (let index = calls.length - 1; index >= 0; index -= 1) {
+        const args = calls[index]?.[1] as unknown;
+        if (!Array.isArray(args) || !args.includes("app-server")) continue;
+        const proc = vi.mocked(spawn).mock.results[index]?.value as { stdin: { writable: boolean } };
+        proc.stdin.writable = false;
+        return;
+      }
+      throw new Error("no Codex app-server was started");
+    };
+
+    it.each(["live", "dead"] as const)("stops a Codex chat whose only pending card is a plan approval from the completed turn (%s app-server)", async (appServer) => {
       // A Codex plan approval is raised after `turn/completed` has already
       // nulled `activeTurnId`, so Stop takes the no-active-turn path. That path
       // used to return without settling anything, leaving the card rendered and
-      // every later send refused by the pending-input guard.
+      // every later send refused by the pending-input guard. A dead app-server
+      // takes its own path, and the card goes there too.
       const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
       expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      if (appServer === "dead") killLatestCodexAppServer();
 
       await service.interrupt({ sessionId: session.id });
 
@@ -679,18 +695,21 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("leaves a Codex plan approval alone when settle teardown stops the session", async () => {
+    it.each(["live", "dead"] as const)("leaves a Codex plan approval alone when settle teardown stops the session (%s app-server)", async (appServer) => {
       // `stop_only` stops the work without discarding what the user still owns.
       // A card nobody has answered is the user's to answer, so an automatic
       // settle teardown must not cancel it out from under them.
       const { service, session, events, approvalEvent } = await stageCompletedCodexPlanApproval();
+      if (appServer === "dead") killLatestCodexAppServer();
 
       await service.interrupt({ sessionId: session.id, mode: "stop_only" });
 
       expect(events.filter((envelope) =>
         envelope.event.type === "pending_input_resolved"
         && envelope.event.itemId === approvalEvent.event.itemId)).toHaveLength(0);
-      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      // A dead app-server's teardown keeps the card in the transcript, where
+      // answering rebuilds it; only a live one still holds its waiter.
+      if (appServer === "live") expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
     });
 
     it("writes one receipt when stopping a plan approval whose response is already staged", async () => {

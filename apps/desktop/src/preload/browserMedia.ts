@@ -1,4 +1,6 @@
-import { contextBridge } from "electron";
+import { contextBridge, ipcRenderer } from "electron";
+import { BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, type BuiltInBrowserLoginSubmission } from "../shared/types/builtInBrowserLoginCapture";
+import { BUILT_IN_BROWSER_WEBAUTHN_CANCEL_CHANNEL, BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, type WebAuthnPageAnswer, type WebAuthnPageRequest } from "../shared/types/builtInBrowserPasskeys";
 
 /**
  * The built-in browser's media hook, a session preload for every browser tab.
@@ -141,4 +143,272 @@ try {
   contextBridge.executeInMainWorld({ func: installChromeBrandHook });
 } catch {
   // Main world unreachable: the request headers still carry Chrome's identity.
+}
+
+/**
+ * "Save to Passwords?" after the person signs in by hand.
+ *
+ * This preload runs in the isolated world, which shares the page's DOM but
+ * not its scripts, so a page can't see or fake these listeners' reads. When a
+ * login form is sent (a submit, a click on its button, or Enter in its
+ * password field), it reads the username and password and hands them to the
+ * main process, which checks the tab's own URL and frame before offering to
+ * save. A username-only step (the first page of a two-step sign-in) sends the
+ * username alone. Fields ADE filled from Passwords are skipped: there is
+ * nothing new to save.
+ */
+function installLoginCapture(): void {
+  const MAX = 1024;
+  const USERNAME_HINT = /user|email|login|account|identifier/i;
+  let lastSentAt = 0;
+  const filled = (input: HTMLInputElement) => input.hasAttribute("data-ade-vault-filled");
+  const isTextual = (input: HTMLInputElement) => ["text", "email", "tel", ""].includes(input.type.toLowerCase());
+  const visible = (input: HTMLInputElement) => !input.disabled && input.getClientRects().length > 0;
+  const scopeFor = (node: Element | null): ParentNode => node?.closest("form") ?? document;
+  const usernameIn = (scope: ParentNode, before: Element | null, hintedOnly = false): string | null => {
+    const inputs = Array.from(scope.querySelectorAll("input")).filter((input) => isTextual(input) && visible(input) && input.value.trim());
+    const preceding = before
+      ? inputs.filter((input) => input.compareDocumentPosition(before) & Node.DOCUMENT_POSITION_FOLLOWING)
+      : inputs;
+    const hinted = preceding.find((input) => {
+      const autocomplete = (input.getAttribute("autocomplete") ?? "").toLowerCase();
+      return autocomplete.includes("username") || autocomplete.includes("email") || input.type === "email"
+        || USERNAME_HINT.test(`${input.name} ${input.id} ${input.getAttribute("aria-label") ?? ""}`);
+    });
+    const pick = hinted ?? (hintedOnly ? null : preceding[preceding.length - 1] ?? null);
+    return pick ? pick.value.trim().slice(0, MAX) : null;
+  };
+  const capture = (origin: Element | null) => {
+    const now = Date.now();
+    if (now - lastSentAt < 1500) return;
+    const scope = scopeFor(origin);
+    const passwords = Array.from(scope.querySelectorAll<HTMLInputElement>("input[type=password]"))
+      .filter((input) => visible(input) && input.value);
+    let submission: BuiltInBrowserLoginSubmission | null = null;
+    if (passwords.length > 0) {
+      if (passwords.every(filled)) return;
+      // Two different values: a change-password form; the new one is last.
+      const distinct = new Set(passwords.map((input) => input.value));
+      const chosen = distinct.size > 1 ? passwords[passwords.length - 1]! : passwords[0]!;
+      submission = { username: usernameIn(scope, chosen), password: chosen.value.slice(0, MAX) };
+    } else if (scope !== document) {
+      // Only a real username or email field: never a search box's text.
+      const username = usernameIn(scope, null, true);
+      if (username) submission = { username, password: null };
+    }
+    if (!submission) return;
+    lastSentAt = now;
+    ipcRenderer.send(BUILT_IN_BROWSER_LOGIN_SUBMITTED_CHANNEL, submission);
+  };
+  window.addEventListener("submit", (event) => {
+    if (event.target instanceof HTMLFormElement) capture(event.target);
+  }, true);
+  window.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("button, input[type=submit], [role=button]") : null;
+    if (!target) return;
+    const scope = scopeFor(target);
+    // Only a button next to a filled password field (or in a login form) counts.
+    if (scope.querySelector("input[type=password]") || target.closest("form")) capture(target);
+  }, true);
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || !(event.target instanceof HTMLInputElement)) return;
+    if (event.target.type === "password" || event.target.closest("form")) capture(event.target);
+  }, true);
+}
+
+try {
+  installLoginCapture();
+} catch {
+  // No DOM to watch (a blank frame); nothing to offer.
+}
+
+/**
+ * Passkeys saved in ADE Passwords, in the page's main world.
+ *
+ * Wraps `navigator.credentials.create/get` for `publicKey` requests. The
+ * request goes (as JSON over two window events) to this preload's isolated
+ * world and on to desktop main, which decides; the page gets back a real
+ * `PublicKeyCredential`-shaped object, or the browser's own WebAuthn runs
+ * when ADE has nothing for the site (`fallback`). Nothing here decides
+ * anything: main takes the origin from the frame, checks the RP ID and asks
+ * the person.
+ */
+function installAdePasskeyHook(): void {
+  const credentials = navigator.credentials as CredentialsContainer | undefined;
+  if (!credentials || typeof window.PublicKeyCredential !== "function") return;
+  const originalCreate = credentials.create.bind(credentials);
+  const originalGet = credentials.get.bind(credentials);
+  const toBytes = (source: unknown): Uint8Array | null => {
+    if (source instanceof ArrayBuffer) return new Uint8Array(source);
+    if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+    return null;
+  };
+  const b64u = (source: unknown): string => {
+    const bytes = toBytes(source);
+    if (!bytes) return "";
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+  const fromB64u = (value: string): ArrayBuffer => {
+    const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
+    const binary = atob(padded);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  };
+  let sequence = 0;
+  // Type imports are erased, so this function still runs alone in the page.
+  // The page's AbortSignal and timeout end the wait (the browser's limits:
+  // 10 s to 10 min, 5 min when none is given), and tell ADE to stop: nothing
+  // is signed or saved for a request the page gave up on.
+  const ask = (request: WebAuthnPageRequest, signal: AbortSignal | null | undefined, timeoutMs: number | undefined): Promise<WebAuthnPageAnswer> => new Promise((resolve, reject) => {
+    const aborted = () => (signal?.reason instanceof Error ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
+    if (signal?.aborted) {
+      reject(aborted());
+      return;
+    }
+    const id = `${Date.now()}-${(sequence += 1)}-${Math.random().toString(36).slice(2)}`;
+    let done = false;
+    const end = (settle: () => void) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("__ade_webauthn_answer", onAnswer);
+      signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
+      settle();
+    };
+    const giveUp = (error: Error) => end(() => {
+      window.dispatchEvent(new CustomEvent("__ade_webauthn_cancel", { detail: JSON.stringify({ id }) }));
+      reject(error);
+    });
+    const onAbort = () => giveUp(aborted());
+    const onAnswer = (event: Event) => {
+      let detail: { id?: unknown; answer?: WebAuthnPageAnswer };
+      try {
+        detail = JSON.parse(String((event as CustomEvent).detail)) as { id?: unknown; answer?: WebAuthnPageAnswer };
+      } catch {
+        return;
+      }
+      if (detail.id !== id) return;
+      end(() => resolve(detail.answer ?? { fallback: true }));
+    };
+    const limit = typeof timeoutMs === "number" && timeoutMs > 0 ? Math.min(Math.max(timeoutMs, 10_000), 600_000) : 300_000;
+    const timer = setTimeout(() => giveUp(new DOMException("The operation either timed out or was not allowed.", "NotAllowedError")), limit);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    window.addEventListener("__ade_webauthn_answer", onAnswer);
+    window.dispatchEvent(new CustomEvent("__ade_webauthn_ask", { detail: JSON.stringify({ id, request }) }));
+  });
+  const notAllowed = () => new DOMException("The operation was not allowed.", "NotAllowedError");
+  const credential = (fields: Record<string, PropertyDescriptor>, responseProto: object, responseFields: Record<string, PropertyDescriptor>) => {
+    const response = Object.create(responseProto) as object;
+    Object.defineProperties(response, responseFields);
+    const made = Object.create(window.PublicKeyCredential.prototype) as object;
+    Object.defineProperties(made, { ...fields, response: { value: response, enumerable: true }, type: { value: "public-key", enumerable: true }, authenticatorAttachment: { value: "platform", enumerable: true } });
+    return made as Credential;
+  };
+  credentials.create = async function create(options?: CredentialCreationOptions): Promise<Credential | null> {
+    const publicKey = options?.publicKey;
+    if (!publicKey) return originalCreate(options);
+    const answer = await ask({
+      kind: "create",
+      rpId: publicKey.rp?.id ?? null,
+      rpName: publicKey.rp?.name ?? null,
+      userId: b64u(publicKey.user?.id),
+      userName: String(publicKey.user?.name ?? ""),
+      userDisplayName: String(publicKey.user?.displayName ?? ""),
+      challenge: b64u(publicKey.challenge),
+      excludeCredentialIds: (publicKey.excludeCredentials ?? []).map((entry) => b64u(entry.id)),
+      algorithms: (publicKey.pubKeyCredParams ?? []).map((entry) => entry.alg),
+      userVerification: publicKey.authenticatorSelection?.userVerification ?? "preferred",
+      wantsCredProps: Boolean((publicKey.extensions as { credProps?: unknown } | undefined)?.credProps),
+    }, options?.signal, publicKey.timeout);
+    if ("fallback" in answer) return originalCreate(options);
+    if ("error" in answer) throw new DOMException(answer.message, answer.error);
+    if (answer.kind !== "create") throw notAllowed();
+    const rawId = fromB64u(answer.credentialId);
+    const transports = answer.transports;
+    return credential(
+      {
+        id: { value: answer.credentialId, enumerable: true },
+        rawId: { value: rawId, enumerable: true },
+        getClientExtensionResults: { value: () => (answer.credProps ? { credProps: { rk: true } } : {}) },
+        toJSON: { value: () => ({ id: answer.credentialId, rawId: answer.credentialId, type: "public-key", authenticatorAttachment: "platform", response: { clientDataJSON: answer.clientDataJSON, attestationObject: answer.attestationObject, authenticatorData: answer.authenticatorData, publicKey: answer.publicKey, publicKeyAlgorithm: answer.publicKeyAlgorithm, transports }, clientExtensionResults: answer.credProps ? { credProps: { rk: true } } : {} }) },
+      },
+      window.AuthenticatorAttestationResponse.prototype,
+      {
+        clientDataJSON: { value: fromB64u(answer.clientDataJSON), enumerable: true },
+        attestationObject: { value: fromB64u(answer.attestationObject), enumerable: true },
+        getTransports: { value: () => transports.slice() },
+        getAuthenticatorData: { value: () => fromB64u(answer.authenticatorData) },
+        getPublicKey: { value: () => fromB64u(answer.publicKey) },
+        getPublicKeyAlgorithm: { value: () => answer.publicKeyAlgorithm },
+      },
+    );
+  };
+  credentials.get = async function get(options?: CredentialRequestOptions): Promise<Credential | null> {
+    const publicKey = options?.publicKey;
+    if (!publicKey) return originalGet(options);
+    const answer = await ask({
+      kind: "get",
+      rpId: publicKey.rpId ?? null,
+      challenge: b64u(publicKey.challenge),
+      allowCredentialIds: (publicKey.allowCredentials ?? []).map((entry) => b64u(entry.id)),
+      userVerification: publicKey.userVerification ?? "preferred",
+      mediation: typeof options?.mediation === "string" ? options.mediation : null,
+    }, options?.signal, publicKey.timeout);
+    if ("fallback" in answer) return originalGet(options);
+    if ("error" in answer) throw new DOMException(answer.message, answer.error);
+    if (answer.kind !== "get") throw notAllowed();
+    const rawId = fromB64u(answer.credentialId);
+    return credential(
+      {
+        id: { value: answer.credentialId, enumerable: true },
+        rawId: { value: rawId, enumerable: true },
+        getClientExtensionResults: { value: () => ({}) },
+        toJSON: { value: () => ({ id: answer.credentialId, rawId: answer.credentialId, type: "public-key", authenticatorAttachment: "platform", response: { clientDataJSON: answer.clientDataJSON, authenticatorData: answer.authenticatorData, signature: answer.signature, userHandle: answer.userHandle }, clientExtensionResults: {} }) },
+      },
+      window.AuthenticatorAssertionResponse.prototype,
+      {
+        clientDataJSON: { value: fromB64u(answer.clientDataJSON), enumerable: true },
+        authenticatorData: { value: fromB64u(answer.authenticatorData), enumerable: true },
+        signature: { value: fromB64u(answer.signature), enumerable: true },
+        userHandle: { value: answer.userHandle ? fromB64u(answer.userHandle) : null, enumerable: true },
+      },
+    );
+  };
+}
+
+/** The isolated-world half: carries the page's request to desktop main and the answer back. */
+function installPasskeyBridge(): void {
+  window.addEventListener("__ade_webauthn_ask", (event) => {
+    let parsed: { id?: unknown; request?: unknown };
+    try {
+      parsed = JSON.parse(String((event as CustomEvent).detail)) as { id?: unknown; request?: unknown };
+    } catch {
+      return;
+    }
+    if (typeof parsed.id !== "string") return;
+    const reply = (answer: unknown) => window.dispatchEvent(new CustomEvent("__ade_webauthn_answer", { detail: JSON.stringify({ id: parsed.id, answer }) }));
+    ipcRenderer.invoke(BUILT_IN_BROWSER_WEBAUTHN_CHANNEL, parsed.request, parsed.id)
+      .then(reply)
+      // ADE could not answer: the browser's own WebAuthn takes the request.
+      .catch(() => reply({ fallback: true }));
+  });
+  window.addEventListener("__ade_webauthn_cancel", (event) => {
+    let parsed: { id?: unknown };
+    try {
+      parsed = JSON.parse(String((event as CustomEvent).detail)) as { id?: unknown };
+    } catch {
+      return;
+    }
+    if (typeof parsed.id === "string") ipcRenderer.send(BUILT_IN_BROWSER_WEBAUTHN_CANCEL_CHANNEL, parsed.id);
+  });
+}
+
+try {
+  installPasskeyBridge();
+  contextBridge.executeInMainWorld({ func: installAdePasskeyHook });
+} catch {
+  // Main world unreachable: the page keeps the browser's own WebAuthn.
 }

@@ -235,6 +235,13 @@ export async function fetchGitHubAppInstallationStatus(args: {
   appUserAuthFailure?: GitHubAppUserAuthUnavailable | null;
   accountAccessToken?: string | null;
   auditLog?: GitHubRelayAuthAuditLog | null;
+  /**
+   * GitHub refused the App user token (401). Answers the account's current
+   * token when it is a different one, or null. The check then asks once more
+   * with it: after a Disconnect and a new Connect on another computer, this
+   * computer still holds the old token until it asks (`onRejected`).
+   */
+  onAppUserTokenRejected?: ((token: string) => Promise<string | null>) | null;
 }): Promise<GitHubAppInstallationStatus> {
   const config = readGitHubRelayConfig(args.secretReader);
   if (!args.repo) {
@@ -306,6 +313,17 @@ export async function fetchGitHubAppInstallationStatus(args: {
       },
     });
     const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && hostedAuth?.ok && args.onAppUserTokenRejected) {
+      const replacement = (await args.onAppUserTokenRejected(hostedAuth.token).catch(() => null))?.trim();
+      if (replacement && replacement !== hostedAuth.token) {
+        return await fetchGitHubAppInstallationStatus({
+          ...args,
+          githubAppUserToken: replacement,
+          appUserAuthFailure: null,
+          onAppUserTokenRejected: null,
+        });
+      }
+    }
     if (!response.ok) {
       const relayMessage = payload && typeof payload === "object" && "error" in payload
         ? String((payload as { error?: unknown }).error)
@@ -351,7 +369,9 @@ export async function fetchGitHubAppInstallationStatus(args: {
 export async function fetchAppInstallationStatusForRepo(args: {
   repo: GitHubRepoRef | null;
   appUserAuth: {
-    getValidTokenForRelay(): Promise<string>;
+    getValidTokenForRelay(opts?: { userRequested?: boolean }): Promise<string>;
+    /** GitHub refused this token: the account's current one, or null (`relayAppUserAuth`). */
+    onTokenRejected?(token: string, opts?: { userRequested?: boolean }): Promise<string | null>;
     auditLog: GitHubRelayAuthAuditLog;
   };
   logger: {
@@ -360,12 +380,22 @@ export async function fetchAppInstallationStatusForRepo(args: {
   };
   secretReader?: GitHubRelaySecretReader | null;
   forceRefresh?: boolean;
+  /**
+   * A person pressed Refresh. The token read asks the account again even when
+   * its last answer was "not connected", and a refused token is asked about
+   * again inside the one-minute window: one account request per press.
+   */
+  userRequested?: boolean;
   /** Resolved lazily: a signed-in machine can carry the check without the App. */
   getAccountAccessToken?: (() => Promise<string | null>) | null;
   fetchImpl?: typeof fetch;
 }): Promise<GitHubAppInstallationStatus> {
+  const pressOpts = args.userRequested === true ? { userRequested: true } : undefined;
+  const onTokenRejected = args.appUserAuth.onTokenRejected?.bind(args.appUserAuth);
   const appUserToken = await resolveAppUserTokenForRelay({
-    appUserAuth: args.appUserAuth,
+    appUserAuth: {
+      getValidTokenForRelay: () => args.appUserAuth.getValidTokenForRelay(pressOpts),
+    },
     logger: args.logger,
     event: "github.app_installation_status_auth_unavailable",
   });
@@ -381,5 +411,6 @@ export async function fetchAppInstallationStatusForRepo(args: {
     appUserAuthFailure: describeAppUserAuthUnavailable(appUserToken.failure),
     accountAccessToken,
     auditLog: args.appUserAuth.auditLog,
+    onAppUserTokenRejected: onTokenRejected ? (token) => onTokenRejected(token, pressOpts) : null,
   });
 }

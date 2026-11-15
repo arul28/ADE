@@ -1,14 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AppleInstalledSimulator } from "../../../shared/types/iosSimulator";
-import {
-  APPLE_DEVICE_FAMILY_ORDER,
-  appleDeviceFamilyFromIdentifier,
-  appleDeviceFamilyLabel,
-  appleDeviceIdentity,
-  appleDeviceModelLabel,
-  appleDeviceModelLine,
-  groupAppleSimulatorsByFamily,
-} from "./appleDeviceFamily";
+import { appleDeviceFamilyFromIdentifier, appleDeviceIdentity, appleDeviceModelLabel, appleDeviceModelLine, groupAppleSimulatorsByFamily } from "./appleDeviceFamily";
 
 const T = "com.apple.CoreSimulator.SimDeviceType.";
 
@@ -123,12 +115,5 @@ describe("groupAppleSimulatorsByFamily", () => {
       sim({ udid: "boot", name: "Yankee", state: "Booted" }),
     ]);
     expect(groups[0]?.devices.map((device) => device.name)).toEqual(["Yankee", "Alpha", "Zulu"]);
-  });
-
-  it("labels every family in the order constant", () => {
-    for (const family of APPLE_DEVICE_FAMILY_ORDER) {
-      expect(appleDeviceFamilyLabel(family).length).toBeGreaterThan(0);
-    }
-    expect(appleDeviceFamilyLabel("other")).toBe("Other devices");
   });
 });

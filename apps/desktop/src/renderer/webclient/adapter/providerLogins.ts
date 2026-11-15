@@ -20,9 +20,12 @@ const DESKTOP_ONLY = "Do this in the ADE desktop app on that computer: only that
  *
  * The writes are the person's own, so they ask the host every time and never
  * resolve a fallback. The two that only that computer's own desktop may run
- * (`allowKeychain`, `allowGitHubCli`) refuse with a plain sentence. There is no
- * push event for a change here, so `onChanged` fires when this tab's
- * connection comes back, and each write returns the new status itself.
+ * (`allowKeychain`, `allowGitHubCli`) refuse with a plain sentence.
+ * `onChanged` listens to its pin's machine: the federated proxy hands a pinned
+ * call to that machine's adapter, and a pin this adapter cannot serve is
+ * refused like every pinned member. It fires on the host's
+ * `provider_logins_changed` push and when this connection comes back; each
+ * write returns the new status itself.
  */
 export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "client" | "commands" | "state">): ProviderLoginsBridge {
   const { client, commands } = infra;
@@ -57,13 +60,19 @@ export function createWebProviderLoginsNamespace(infra: Pick<AdapterInfra, "clie
     setCloudAll: (args, pin) => write("setCloudAll", args, pin),
     setCloudBalance: (args, pin) => write("setCloudBalance", args, pin),
     remove: (args, pin) => write("remove", args, pin),
-    onChanged: (cb) => {
+    onChanged: (cb, pin) => {
+      assertWebRuntimePinRoutable("providerLogins.onChanged", pin, infra);
       let readiness = client.getStatus().readiness;
-      return client.subscribe((status) => {
+      const offStatus = client.subscribe((status) => {
         if (status.readiness === readiness) return;
         readiness = status.readiness;
         if (status.readiness === "ready") cb();
       });
+      const offPush = client.onProviderLoginsChanged(cb);
+      return () => {
+        offStatus();
+        offPush();
+      };
     },
   };
 }

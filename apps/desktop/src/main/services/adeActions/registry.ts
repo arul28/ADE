@@ -276,6 +276,7 @@ import {
   captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
+  capturePasswordsAnalytics,
   captureGhAccountSharingAnalytics,
   captureAutomationTestAnalytics,
   captureProviderAccountSettingsChange,
@@ -311,6 +312,9 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { runWithSecrets } from "../secrets/secretExec";
+import { buildPasswordsDomainService } from "../passwords/passwordsDomain";
+import { buildMessagesDomain, type MessagesBridge } from "../messagesIntegration/messagesDomain";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { buildProviderLoginsDomainService } from "../providerLogins/providerLoginActions";
 import { noteCloudComputerMade, observeCloudComputerLists, observeCloudComputerMakes } from "../providerLogins/providerLoginCloudComputers";
@@ -330,11 +334,11 @@ import {
   type CloudLaneLaunchBrainHost,
 } from "../adeCloud/cloudLaneLaunchBrainHost";
 import { cloudGitPreflight } from "../adeCloud/cloudGitCredential";
-import { approveInHeadlessChromium, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
+import { approveSignInLink, findHeadlessChromium } from "../../../../../ade-cli/src/services/account/cloudHeadlessApproval";
 import { createCloudMachines } from "../adeCloud/cloudMachines";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY, createCloudAgentLimitsStore } from "../adeCloud/cloudSleep";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
-import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { getSharedAccountAttestationConfig, getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -647,7 +651,7 @@ type OpaqueService = Record<string, unknown>;
  * (buildMachineAccountDomainServices).
  */
 export type AccountDomainRuntime = Pick<AdeRuntime, "logger">
-  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService">>
+  & Partial<Pick<AdeRuntime, "accountAuthService" | "accountVaultStore" | "accountSettingsStore" | "agentChatService" | "getCloudDesktop" | "productAnalyticsService" | "passwordService">>
   & { projectRoot?: string | null };
 
 function toService(value: unknown): OpaqueService | null {
@@ -764,7 +768,8 @@ async function withLaneShareErrorCode<T>(call: () => Promise<T>): Promise<T> {
     return await call();
   } catch (error) {
     if (error instanceof LaneShareError) {
-      throw codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode);
+      // Keeps the "expected" mark of an unreachable account directory.
+      throw carryExpected(error, codedError(encodeCodedErrorMessage(error.wireCode, error.message), error.wireCode));
     }
     throw error;
   }
@@ -1044,8 +1049,15 @@ function requireCallerSessionId(value: unknown): string {
   return sessionId;
 }
 
+/**
+ * A send or steer may carry attachments with no words (the composer allows it,
+ * and the chat service routes it), so only a send with nothing at all needs
+ * text.
+ */
 function readSendText(record: Record<string, unknown>): string {
-  if (record.includeThreadComments === true) return typeof record.text === "string" ? record.text : "";
+  const hasAttachments = (Array.isArray(record.attachments) && record.attachments.length > 0)
+    || (Array.isArray(record.contextAttachments) && record.contextAttachments.length > 0);
+  if (record.includeThreadComments === true || hasAttachments) return typeof record.text === "string" ? record.text : "";
   return requireNonEmptyString(record.text, "text");
 }
 
@@ -3467,6 +3479,7 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
         owner: typeof actionArgs.owner === "string" ? actionArgs.owner : undefined,
         name: typeof actionArgs.name === "string" ? actionArgs.name : undefined,
         forceRefresh: actionArgs.forceRefresh === true,
+        userRequested: actionArgs.userRequested === true,
       });
     },
     async listRepoCollaborators(args?: unknown) {
@@ -4012,17 +4025,28 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
         lastUsedAt: copy.lastUsedAt,
         running: isRemoteWorkCopyInUse(copy.projectRoot, copy.owner),
         sizeBytes: await measureRemoteWorkCopy(copy.path),
+        keepsUnsynced: true,
       })));
     },
-    async delete(args: unknown): Promise<{ deleted: boolean }> {
+    /**
+     * `keepUnsynced` (the tools pane's Clean up): a copy holding work nobody
+     * pushed stays, and `keptReason` says why. Settings › Machines deletes
+     * without it, after its own confirm.
+     */
+    async delete(args: unknown): Promise<{ deleted: boolean; keptReason?: string }> {
       const owner = isRecord(args) && typeof args.owner === "string" ? args.owner.trim() : "";
       if (!owner) throw new Error("remote_work.delete requires owner.");
       const projectId = isRecord(args) && typeof args.projectId === "string" ? args.projectId.trim() : "";
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
-        throw new Error("That work copy belongs to another project here; delete it through that project.");
+        throw new Error("That copy of a chat's code belongs to another project here; delete it through that project.");
       }
+      const keepUnsynced = isRecord(args) && args.keepUnsynced === true;
+      const kept: { reason?: string } = {};
       // Refused while a command runs in it (RemoteWorkError "copy_busy").
-      return { deleted: await here().release(owner) };
+      const deleted = await here().release(owner, keepUnsynced
+        ? { keepUnsynced: true, onKeptUnsynced: (reason) => { kept.reason = reason; } }
+        : {});
+      return kept.reason ? { deleted, keptReason: kept.reason } : { deleted };
     },
   };
 }
@@ -4257,16 +4281,59 @@ export function buildProviderInstancesDomainService(
  * secret through the private secret card. `request` needs the chat service,
  * so it is absent on a runtime without one.
  */
+
 function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | null {
   const projectSecretService = runtime.projectSecretService;
   if (!projectSecretService) return null;
   const agentChatService = runtime.agentChatService;
   return {
     ...(projectSecretService as unknown as OpaqueService),
-    // Callers by name (agents, `ade secrets`, the Secrets page) get the copy
-    // the account holds now, not whatever the last heartbeat brought in.
+    // Callers by name (agents, `ade secrets`) get the copy the account holds
+    // now, not whatever the last heartbeat brought in.
     get: (args?: unknown) => projectSecretService.getFresh(args as Parameters<typeof projectSecretService.getFresh>[0]),
     list: () => projectSecretService.listFresh(),
+    // `ade secrets exec -- <command>`: this runtime runs the command with the
+    // project's secrets in its environment, and returns its output masked.
+    // No value is ever returned.
+    exec: async (args?: unknown) => {
+      const input = args && typeof args === "object" ? args as Record<string, unknown> : {};
+      const command = Array.isArray(input.command) ? input.command.filter((part): part is string => typeof part === "string") : [];
+      const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : runtime.projectRoot;
+      const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch((error: unknown) => {
+        runtime.logger.warn("project_secret.exec_lanes_failed", { error: getErrorMessage(error) });
+        return [];
+      });
+      const secrets = await projectSecretService.valuesForProcessFresh();
+      const only = Array.isArray(input.names) ? input.names.filter((name): name is string => typeof name === "string") : null;
+      const chosen = only?.length ? Object.fromEntries(Object.entries(secrets).filter(([name]) => only.includes(name))) : secrets;
+      const missing = only?.filter((name) => !(name in secrets)) ?? [];
+      if (missing.length) throw new AdeExpectedError(`No secret named ${missing.join(", ")} in this project. \`ade secrets list\` shows the names.`, "user");
+      const result = await runWithSecrets({
+        command,
+        cwd,
+        allowedRoots: [runtime.projectRoot, ...lanes.map((lane) => lane.worktreePath).filter(Boolean)],
+        secrets: chosen,
+        timeoutMs: typeof input.timeoutMs === "number" ? input.timeoutMs : undefined,
+      }).catch((error: unknown) => {
+        capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: "failed" });
+        throw error;
+      });
+      // The command ran: its own exit code is the caller's business, not a failure of exec.
+      capturePasswordsAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", action: "secrets_exec", outcome: result.timedOut ? "failed" : "completed" });
+      const chatSessionId = typeof input.chatSessionId === "string" ? input.chatSessionId : null;
+      // One Activity row per run: which names, and the command they went to.
+      // Who ran it is stamped by the RPC server, never taken from the caller.
+      if (result.injected.length) {
+        void runtime.passwordService?.recordUse({
+          itemId: result.injected.join(", "),
+          kind: "secret",
+          target: command.join(" ").slice(0, 200),
+          by: input.calledBy === "person" ? "person" : "agent",
+          chatSessionId,
+        }).catch((error: unknown) => runtime.logger.warn("project_secret.exec_activity_failed", { error: getErrorMessage(error) }));
+      }
+      return result;
+    },
     ...(agentChatService
       ? {
           request: async (args?: unknown) => {
@@ -4365,6 +4432,8 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
     // A lane's computer is made here, not by the maker: the sign-in renewal learns of it the same way.
     onComputerCreated: noteCloudComputerMade,
     analytics: runtime.productAnalyticsService ?? null,
+    // The launch's computer follows this machine's update track.
+    updateChannel: () => cloudAccessDeps(runtime).updateChannel?.() ?? null,
     // C4: a private repository with no GitHub sign-in in the account is refused before a computer is made.
     gitPreflight: (originUrl) => cloudGitPreflight({
       vault: (key) => (runtime.accountVaultStore && runtime.accountAuthService?.getStatus().signedIn === true
@@ -4405,7 +4474,8 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
   });
   // Only a brain on a cloud machine approves the machines it makes; anywhere
   // else a person has a browser, and the sign-in link goes to them.
-  const chromium = process.env.ADE_CLOUD_INSTANCE_ID?.trim() ? findHeadlessChromium() : null;
+  const onCloudMachine = Boolean(process.env.ADE_CLOUD_INSTANCE_ID?.trim());
+  const chromium = onCloudMachine ? findHeadlessChromium() : null;
   return {
     client: () => requireCloudProvider(credentials),
     getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
@@ -4418,9 +4488,20 @@ function cloudBrainMakerBase(runtime: AccountDomainRuntime, machines: ReturnType
     account: () => machines.account(),
     removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
     // No window here: the sign-in of a machine this brain made with an
-    // unattended yes opens in a headless Chromium (the template ships one).
-    ...(chromium ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
-      approveInHeadlessChromium({ url, signal, binary: chromium, logger: runtime.logger }) } : {}),
+    // unattended yes is approved without a browser, a headless Chromium (the
+    // template ships one) as the fallback.
+    ...(onCloudMachine ? { approveHeadless: ({ url, signal }: { url: string; signal: AbortSignal }) =>
+      approveSignInLink({
+        url,
+        signal,
+        binary: chromium,
+        // The link must be on this brain's own Clerk hosts and account directory.
+        trust: () => ({
+          clerkIssuer: getSharedAccountAttestationConfig({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }).issuer,
+          directoryBaseUrl: directoryBaseUrl(),
+        }),
+        logger: runtime.logger,
+      }) } : {}),
     logger: runtime.logger,
   };
 }
@@ -4525,12 +4606,15 @@ export function buildMachineAccountDomainServices(runtime: AccountDomainRuntime)
   cloud: OpaqueService;
   account_vault: OpaqueService | null;
   provider_logins: OpaqueService | null;
+  passwords: OpaqueService | null;
 } {
   return {
     cloud: buildCloudDomainService(runtime),
     account_vault: cloudOnlyVaultService(buildAccountVaultDomainService(runtime)),
     // The brain's one sign-in sync, the same service a project runtime serves.
     provider_logins: toService(buildProviderLoginsDomainService()),
+    // Settings › Passwords & Secrets and the browser's fill with no project open.
+    passwords: buildPasswordsDomainService(runtime),
   };
 }
 
@@ -4751,6 +4835,16 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
+    passwords: toService(buildPasswordsDomainService(runtime)),
+    messages: runtime.builtInBrowserService
+      ? toService(buildMessagesDomain({
+          bridge: runtime.builtInBrowserService,
+          requestChatInput: runtime.agentChatService ? (input) => runtime.agentChatService!.requestChatInput(input) : null,
+          authenticatorCode: runtime.passwordService
+            ? async (site, username) => await runtime.passwordService!.currentCode({ site, username })
+            : undefined,
+        }))
+      : null,
     integration_connect: buildIntegrationConnectDomainService(runtime),
     cloud: buildCloudDomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),

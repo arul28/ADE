@@ -21,6 +21,8 @@
  *   GET    /cloud/instances/:id/update-check   CloudUpdateCheck   (from the computer)
  *   POST   /cloud/instances/:id/booted         CloudBootReportResult   (from the computer)
  *   POST   /cloud/instances/:id/disk-usage     { ok: true }   (from the computer: CloudDiskUsageReport)
+ *   POST   /cloud/instances/:id/cpu-report     { ok: true }   (from the computer: CloudSustainedCpuReport)
+ *   POST   /cloud/instances/:id/keep           { ok: true }   "Keep it": restarts the idle cleanup clock with no wake
  *   POST   /cloud/instances/:id/resize         { status }
  *   POST   /cloud/instances/:id/backups        { id, created, sizeBytes }
  *   PUT    /cloud/instances/:id/auto-sleep     { ok: true }
@@ -30,10 +32,12 @@
  *   PUT    /cloud/instances/:id/name           { ok: true }
  *   PUT    /cloud/instances/:id/metadata       { ok: true }
  *   POST   /cloud/instances/:id/exec           { exitCode, stdout, stderr }
- *   POST   /cloud/billing/checkout             CloudCheckoutResult   409 `already_paid`
+ *   POST   /cloud/billing/checkout             CloudCheckoutResult   409 `already_paid`, `cleanup_does_not_fit`, `cleanup_changed`, `cleanup_running`
+ *   POST   /cloud/billing/plan-cleanup         CloudAccountState   ({ planId, push, instanceIds }) 409 `nothing_to_free`, `cleanup_does_not_fit`, `cleanup_changed`, `cleanup_running`
  *   POST   /cloud/billing/portal               { url }   409 `no_billing`
  *   POST   /cloud/billing/extra-hours          CloudAccountState   403 `needs_paid_plan`
  *   POST   /cloud/billing/extra-disk           CloudAccountState   403 `needs_paid_plan`, 409 `disk_over_plan` (404 while extra disk isn't set up)
+ *   POST   /cloud/billing/free-unlock          CloudFreeUnlockResult   409 `nothing_to_unlock`
  *   GET    /cloud/chats?machine&project&limit&cursor   { chats: CloudChatRow[], nextCursor }
  *   GET    /cloud/chats/:machine/:chat?before&limit     CloudChatTranscriptPage
  *   PUT    /cloud/chats/:machine/:chat/parts/:seq       CloudChatPartResponse   (from the computer)
@@ -76,16 +80,31 @@
  * `POST /cloud/instances/:id/resize` needs `{ computerIdle: true }` to grow the
  * disk of a running computer (a disk grow restarts it).
  * `POST /cloud/billing/extra-hours` takes `{ enabled }`, on a paid plan only.
- * `POST /cloud/billing/checkout` takes `{ plan: "plus" | "pro" }` (Plus when
- * left out; any other value, or Pro while it isn't set up, is a 400) and
- * answers `{ url }` to open. On a paid account asking for the
- * other plan it changes the plan itself and answers `{ url: null, change }`:
+ * `POST /cloud/billing/checkout` takes `{ plan: "plus" | "pro" | "max" }`
+ * (Plus when left out; any other value, or Pro or Max while it isn't set up,
+ * is a 400) and answers `{ url }` to open. On a paid account asking for
+ * another plan it changes the plan itself and answers `{ url: null, change }`:
  * `now` for an upgrade (charged now for the rest of the period; 402
  * `payment_failed` when the card is declined), `next_period` for a downgrade
- * (Pro's hours and limits stay until the period ends). A downgrade is never
- * refused: over Plus's computers or disk, it answers `cleanup`, what Plus's
- * limits will free (`CloudPlanCleanup`). The billing portal can't switch plans
- * on a subscription with more than one item.
+ * (the higher plan's hours and disk stay until the period ends). Each paid
+ * plan bills extra hours at its own price. Over the cheaper plan's disk, ADE
+ * asks first: the request carries `cleanup`
+ * (`CloudPlanCleanupPick`, the computers ADE frees and whether their work is
+ * pushed first), checked to make the account fit before anything changes
+ * (409 `cleanup_does_not_fit` / `cleanup_changed`), and the server starts
+ * freeing exactly those once the plan changed. Without `cleanup` (an older
+ * build) the change goes through, nothing is deleted, and the answer carries
+ * what goes over (`cleanup`, a `CloudPlanCleanup`). The billing portal can't
+ * switch plans on a subscription with more than one item.
+ * `POST /cloud/billing/plan-cleanup` takes `{ planId, push, instanceIds }` for
+ * an account already over a cheaper plan (one made in the billing portal, or
+ * a plan that ended): the same check, then the same freeing. A create or copy
+ * while the account holds more disk than the plan in force allows (extra
+ * disk not covering it) is refused with 403 `over_plan_limits`; nothing is
+ * ever freed without a pick. There is no limit on how many computers an
+ * account has. A create, copy or wake past the hidden cap on computers awake
+ * at once is refused with 429 `too_many_awake` (a wake waits a few seconds
+ * for one to fall asleep first); its message never names a plan.
  * `POST /cloud/billing/extra-disk` takes `{ enabled, monthlyLimitUsd }`
  * (`monthlyLimitUsd` a whole number from 1 to 1000, needed to turn it on).
  * Turning it off while the computers hold more than the plan's disk is
@@ -130,6 +149,10 @@ export const CLOUD_PATHS = {
   billingPortal: "/cloud/billing/portal",
   billingExtraHours: "/cloud/billing/extra-hours",
   billingExtraDisk: "/cloud/billing/extra-disk",
+  /** `POST` `{ planId, push, instanceIds }`: free the picked computers to fit a cheaper plan (`CloudPlanCleanupPick`). */
+  billingPlanCleanup: "/cloud/billing/plan-cleanup",
+  /** `POST {}`: save a card with no charge to start the free hours of a GitHub account younger than 30 days (`CloudFreeUnlockResult`). */
+  billingFreeUnlock: "/cloud/billing/free-unlock",
   chats: "/cloud/chats",
   lanesWithoutComputer: "/cloud/lanes/without-computer",
   /** `GET`: this account's `CloudReferralSummary`. */
@@ -187,10 +210,13 @@ export type CloudLaneWithoutComputer = {
   branchRef: string | null;
   /**
    * `freed`: the person kept the lane on a fresh computer. `inactive`: the
-   * 30-day rule removed its computer. `plan_limit`: a cheaper plan's limits
-   * removed it, after its work was pushed (`planCleanup.ts`).
+   * old 30-day rule removed its computer. `idle_cleanup`: the idle cleanup
+   * removed it after its work was committed and pushed to the lane's branch
+   * (`idleCleanup.ts`). `plan_limit`: the person had ADE free it to fit a
+   * cheaper plan (`planCleanup.ts`), its work pushed first unless they said
+   * not to. An older ADE shows an unknown reason as a removed computer.
    */
-  reason: "freed" | "inactive" | "plan_limit";
+  reason: "freed" | "inactive" | "idle_cleanup" | "plan_limit";
   /** The size the old computer had. */
   type: "default" | "vm";
   cpu: number;
@@ -278,8 +304,52 @@ export type CloudDiskUsage = { measuredAt: number; totalGb: number; items: Cloud
  * when it last did work, and a new measure when it took one (at most every
  * few hours). Most `CLOUD_DISK_USAGE_MAX_ITEMS` items.
  */
-export type CloudDiskUsageReport = { lastActiveAt: number | null; usage: CloudDiskUsage | null; work?: CloudLaneWork | null };
+export type CloudDiskUsageReport = {
+  lastActiveAt: number | null;
+  usage: CloudDiskUsage | null;
+  work?: CloudLaneWork | null;
+  /** Files git ignores that a delete would lose; an older brain leaves it out. */
+  ignored?: CloudIgnoredFiles | null;
+};
 export const CLOUD_DISK_USAGE_MAX_ITEMS = 12;
+
+/**
+ * Files git ignores in the computer's lanes (`.env`, a local database): the
+ * idle cleanup's save never pushes them, so a delete loses them. The brain
+ * reads them at its idle step, while it is awake anyway. `paths` are the
+ * first `CLOUD_IGNORED_FILES_MAX_PATHS` (a folder ends in `/`), `more` counts
+ * the rest. Folders that come back with a build or an install
+ * (`node_modules`, `dist`) are left out and only counted in `rebuildable`.
+ * `incomplete`: some lane couldn't be read (a timeout, a broken worktree), so
+ * there may be more than listed; an older brain leaves it out.
+ */
+export type CloudIgnoredFiles = { checkedAt: number; paths: string[]; more: number; rebuildable: number; incomplete?: boolean };
+export const CLOUD_IGNORED_FILES_MAX_PATHS = 10;
+
+/**
+ * A computer the idle cleanup will delete (`idleCleanup.ts`): unused for 2
+ * days on the free plan (deleted at 3), 7 days on a paid one (deleted at 10).
+ * Before the delete ADE commits its work and pushes it to the lane's own
+ * branch. `held`: that save didn't go through, so ADE kept the computer and
+ * tries again at `deletesAt`. Older servers send only `instanceId`, `name`
+ * and `deletesAt`.
+ */
+export type CloudIdleCleanupEntry = {
+  instanceId: string;
+  name: string | null;
+  deletesAt: number;
+  laneName?: string | null;
+  /** The lane's branch the work goes to, when ADE knows it. */
+  branch?: string | null;
+  /** When the warning went out. */
+  warnedAt?: number | null;
+  /** The plan's rule: deleted after this many days unused. */
+  idleDays?: number;
+  /** Null before the computer first reported them. */
+  ignoredFiles?: CloudIgnoredFiles | null;
+  /** Kept because its save failed; ADE tries again at `retryAt` (an older server leaves it out: use `deletesAt`). */
+  held?: { at: number; reason: string; retryAt?: number } | null;
+};
 
 /** The update channel a computer follows. A client's `alpha` counts as `beta`. */
 export type CloudUpdateChannel = "stable" | "beta";
@@ -304,11 +374,11 @@ export type CloudPaidPlanId = Exclude<CloudPlanId, "free">;
 /** When a switch between Plus and Pro applies: an upgrade now, a downgrade at the period end. */
 export type CloudPlanChangeTiming = "now" | "next_period";
 /**
- * A switch between paid plans answers `url: null`. A downgrade over the
- * cheaper plan's limits is never refused: it answers what those limits will
- * free (`cleanup`), which ADE shows as the warning.
+ * A switch between paid plans answers `url: null`. A downgrade made with a
+ * pick answers `freeing`, the computers ADE now frees; one made without a
+ * pick over the cheaper plan's limits answers what goes over (`cleanup`).
  */
-export type CloudCheckoutResult = { url: string } | { url: null; change: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup | null };
+export type CloudCheckoutResult = { url: string } | { url: null; change: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup | null; freeing?: string[] };
 
 export type CloudExecResult = { exitCode: number; stdout: string; stderr: string };
 
@@ -318,16 +388,31 @@ export type CloudExecResult = { exitCode: number; stdout: string; stderr: string
  */
 export type CloudHoursState = "none" | "warn80" | "warn95" | "zero";
 
-export type CloudPlanId = "free" | "plus" | "pro";
+/** Older builds know only some of these: each reads an id it doesn't know as a paid plan (`plan: "paid"`). */
+export type CloudPlanId = "free" | "plus" | "pro" | "max";
 
 /** The four sizes of the main list. */
 export type CloudTierId = "small" | "medium" | "large" | "xlarge";
 
 /**
- * What a plan includes. `diskGb` and `computerLimit` are what the account may
- * have at one time, shared by all its computers; they are not monthly allowances.
+ * What a plan includes. `diskGb` is what the account may have at one time,
+ * shared by all its computers; hours and phone minutes are a month's. There
+ * is no limit on how many computers an account has.
  */
-export type CloudPlanFacts = { includedMilli: number; computerLimit: number; diskGb: number; priceUsd: number };
+export type CloudPlanFacts = {
+  includedMilli: number;
+  diskGb: number;
+  priceUsd: number;
+  /** Minutes of the phone simulator a month. Shown on the plan table; nothing meters them yet. Older servers leave it out. */
+  phoneMinutes?: number;
+  /** What one hour past the plan costs, in cents; null on the free plan, where work stops. Older servers leave it out (`CloudCatalog.extraHourCents`). */
+  extraHourCents?: number | null;
+  /**
+   * For older builds only, which showed a computer count: the hidden cap on
+   * computers awake at once. Not a plan limit; never show it.
+   */
+  computerLimit?: number;
+};
 
 /** The sizes and plans, so no client carries its own copy. A rate is `multiplierMilli / 1000` of a Small computer. */
 export type CloudCatalog = {
@@ -347,11 +432,15 @@ export type CloudCatalog = {
    * Pro send only `free` and `paid` (and no `priceUsd`): a client offers Pro
    * only when `pro` is here, because such a server sells Plus for any plan asked.
    */
-  plans: { free: CloudPlanFacts; paid: CloudPlanFacts; plus?: CloudPlanFacts; pro?: CloudPlanFacts };
+  plans: { free: CloudPlanFacts; paid: CloudPlanFacts; plus?: CloudPlanFacts; pro?: CloudPlanFacts; max?: CloudPlanFacts };
   diskStepGb: number;
   /** Plus's price, for builds that know only two plans. */
   paidPriceUsd: number;
-  /** What one extra Small-hour costs, before the volume price. */
+  /**
+   * What one extra Small-hour costs on the account's plan (Plus's on the free
+   * plan), for builds that know one price. Each plan's own is
+   * `CloudPlanFacts.extraHourCents`.
+   */
   extraHourCents: number;
   /** What 10 GB of extra disk costs for a month, counted by the day. Servers before extra disk leave it out. */
   extraDiskCentsPer10GbMonth?: number;
@@ -384,7 +473,7 @@ export type CloudAccountState = {
   plan: "free" | "paid";
   /** The rules in force: `past_due` is `free` until a paid invoice. */
   rules: "free" | "paid";
-  /** Which plan: `plus` or `pro` when `plan` is `paid` (a `past_due` one included). Older servers leave it out. */
+  /** Which plan: `plus`, `pro` or `max` when `plan` is `paid` (a `past_due` one included). Older servers leave it out. */
   planId?: CloudPlanId;
   hours: {
     /** All in integer thousandths of a Small-hour. */
@@ -402,14 +491,19 @@ export type CloudAccountState = {
    * only from servers before plans, where each free computer has its own.
    */
   disk: { usedGb: number; limitGb: number | null };
-  computers: { total: number; awake: number; limit: number };
+  /**
+   * How many computers the account has and how many are awake. There is no
+   * limit on how many: `limit` is for older builds only (the hidden awake
+   * cap, `AWAKE_COMPUTER_CAP`), never shown as a plan limit.
+   */
+  computers: { total: number; awake: number; limit?: number };
   /**
    * Hours the meter settled over the last `days` whole UTC days, for the
    * "your hours last until" estimate. Older servers leave it out.
    */
   recentUse?: { days: number; usedMilli: number };
-  /** Inactive computers, soonest first; each is deleted at `deletesAt` unless used. */
-  dueForDeletion: Array<{ instanceId: string; name: string | null; deletesAt: number }>;
+  /** Computers the idle cleanup warned about, soonest first; each is deleted at `deletesAt` unless used or kept. */
+  dueForDeletion: CloudIdleCleanupEntry[];
   /** Computers deleted in the last 90 days that had any use, whose ADE rows may still be on the account. */
   deletedInstanceIds: string[];
   catalog: CloudCatalog;
@@ -418,24 +512,25 @@ export type CloudAccountState = {
     periodEnd: number;
     stripeStatus: string | null;
     cancelAtPeriodEnd: boolean;
-    /** A plan that starts with the next period (a downgrade to Plus); older servers leave it out. */
+    /** A plan that starts with the next period (a downgrade); older servers leave it out. */
     nextPlanId?: CloudPlanId | null;
     /** Banner: a failed payment, or a plan a paid invoice just brought back. */
     notice: "past_due" | "restored" | null;
   };
   /**
-   * The computers a cheaper plan's limits will free (`planCleanup.ts`): while
-   * a downgrade or a cancel waits for the period end, and once the cheaper
-   * plan is on and the account is still over it. Null when nothing goes.
-   * Older servers leave it out.
+   * What goes over a cheaper plan's limits (`planCleanup.ts`): once the
+   * cheaper plan is in force and the account holds more (`startsAt` null; new
+   * computers are refused), or while a downgrade or a cancel waits for the
+   * period end. Null when the account fits. Nothing is freed until the person
+   * picks. Older servers leave it out.
    */
   planCleanup?: CloudPlanCleanup | null;
   /**
-   * What moving to a cheaper plan now would free, for the warning before the
-   * change ("Move to Plus", cancel). Only plans that would free something.
+   * What goes over each cheaper plan if the person moved to it now, for the
+   * question before the change ("Move to Plus", cancel). Only plans it goes over.
    */
-  downgradePreviews?: { plus?: CloudPlanCleanup; free?: CloudPlanCleanup };
-  /** The last time a cheaper plan's limits freed computers, kept 14 days for a notice. */
+  downgradePreviews?: { pro?: CloudPlanCleanup; plus?: CloudPlanCleanup; free?: CloudPlanCleanup };
+  /** The last pick ADE freed for a cheaper plan, kept 14 days for a notice. */
   planCleanupDone?: CloudPlanCleanupDone | null;
   /** Timed wake-ups this period deleted because computers may not wake (0 hours, or the free plan over its disk). */
   timedWakesCancelled?: CloudTimedWakesCancelled | null;
@@ -519,7 +614,67 @@ export type CloudFreePlan = {
   state: CloudFreePlanState;
   /** The one sentence for the dashboard while it matters (refused, on the free plan's rules); null otherwise. */
   sentence: string | null;
+  /** The GitHub rules of the free plan (`freePlanGithub.ts`). Older servers leave it out: read it as `ok`. */
+  github?: CloudFreePlanGithub;
 };
+
+/** Days a GitHub account must be old before its ADE account gets free hours (a card with no charge skips the wait). */
+export const CLOUD_FREE_GITHUB_MIN_AGE_DAYS = 30;
+
+/**
+ * The free plan's GitHub rules, on the free plan only (`ok` on a paid plan).
+ * - `ok`: nothing is held (the account claimed its GitHub account, or used ADE Cloud before the rules).
+ * - `no_github`: no GitHub account is connected (or the connection ended), so no free hours yet.
+ * - `too_new`: the GitHub account is younger than 30 days; free hours start at `oldEnoughAt`, or now with a card (no charge).
+ * - `used`: that GitHub account already gives another ADE account its free plan.
+ * - `checking`: GitHub couldn't be asked yet; ADE tries again in a few minutes.
+ * While not `ok`, the free plan's hours are 0. Paid plans, earned hours and extra hours still work.
+ */
+export type CloudFreePlanGithubState = "ok" | "no_github" | "too_new" | "used" | "checking";
+
+export type CloudFreePlanGithub = {
+  state: CloudFreePlanGithubState;
+  /** When a `too_new` GitHub account turns 30 days old (ms); null otherwise. */
+  oldEnoughAt: number | null;
+  /** A card saved with no charge starts the free hours now (`POST /cloud/billing/free-unlock`): only for `too_new`. */
+  canUnlockWithCard: boolean;
+  /** The connected GitHub login, for `too_new` and `used`; null otherwise. */
+  githubLogin: string | null;
+  /** The server's one sentence for the CLI and older screens; null when `ok`. */
+  sentence: string | null;
+};
+
+/** "December 13": the day a too-new GitHub account is old enough, in UTC so every client says the same day. */
+export const formatCloudFreeGithubDay = (at: number): string =>
+  new Date(at).toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+
+/** The server's sentence for each GitHub rule that holds the free hours; the server passes `CLOUD_PLANS.plus.includedMilli`. */
+export function cloudFreeGithubSentence(state: CloudFreePlanGithubState, facts: { oldEnoughAt: number | null; plusIncludedMilli: number }): string | null {
+  switch (state) {
+    case "no_github":
+      return "Free hours need a GitHub account. Connect GitHub to start; ADE Cloud uses it to get your code.";
+    case "too_new":
+      return facts.oldEnoughAt != null
+        ? `Your GitHub account is new, so free hours start on ${formatCloudFreeGithubDay(facts.oldEnoughAt)}. Add a card (no charge) to start now.`
+        : "Your GitHub account is new, so free hours start when it is 30 days old. Add a card (no charge) to start now.";
+    case "used":
+      return `This GitHub account already has a free plan on another ADE account. Plus gives you ${Math.round(facts.plusIncludedMilli / 1000).toLocaleString("en-US")} hours a month.`;
+    case "checking":
+      return "ADE couldn't check your GitHub account just now. It tries again in a few minutes.";
+    default:
+      return null;
+  }
+}
+
+/** `POST /cloud/billing/free-unlock`: open `url` to save a card (no charge), or `unlocked` when a card on file already did it. */
+export type CloudFreeUnlockResult = { url: string; unlocked: false } | { url: null; unlocked: true };
+
+/**
+ * `POST /cloud/instances/:id/cpu-report`, from the computer's brain: it has run
+ * at `cpuPercent` (all cores, averaged) or more since `since` (ms) for
+ * `minutes`, with no chat turn or agent working. For the owner's daily report.
+ */
+export type CloudSustainedCpuReport = { since: number; minutes: number; cpuPercent: number };
 
 /** The dashboard's sentence for a refused free plan; the server passes `CLOUD_PLANS.plus.includedMilli` (`plans.ts`). */
 export const cloudFreePlanRefusedSentence = (plusIncludedMilli: number): string =>
@@ -568,13 +723,7 @@ export type CloudInviteRedeemResult = {
 /** `GET /invites/<code>` (public, rate-limited): the inviter's first name, or null when Clerk has none. */
 export type CloudInviteLookup = { firstName: string | null };
 
-/**
- * Days between a cheaper plan starting and ADE freeing what is over its
- * limits: time to delete computers by choice instead.
- */
-export const CLOUD_PLAN_CLEANUP_GRACE_DAYS = 3;
-
-/** One computer a cheaper plan frees: its lane (when it holds one), the branch its work goes to, its disk. */
+/** One computer a cheaper plan's limits may free: its lane (when it holds one), the branch its work goes to, its disk. */
 export type CloudPlanCleanupComputer = {
   instanceId: string;
   /** The computer's own name. */
@@ -583,35 +732,57 @@ export type CloudPlanCleanupComputer = {
   laneName: string | null;
   branch: string | null;
   diskGb: number;
+  /** When it was made (ms). Older servers leave it out. */
+  createdAt?: number;
 };
 
 /**
- * What a cheaper plan's limits free. The oldest computers go first, until the
- * account fits the plan's computers and disk (disk extra disk covers counts as
- * fitting). Before each goes, its computer pushes every lane's work to its
- * branch on GitHub; a computer whose work can't all be pushed stays.
+ * What the person picked to free for a cheaper plan (`POST
+ * /cloud/billing/checkout` `cleanup`, or `POST /cloud/billing/plan-cleanup`).
+ * The server frees exactly these, and only when they make the account fit.
+ * `push` false: ADE deletes them without pushing their work to GitHub first.
+ */
+export type CloudPlanCleanupPick = { push: boolean; instanceIds: string[] };
+
+/**
+ * A cheaper plan's limits, when the account holds more than they allow (the
+ * owner's rules of 2026-11-13). ADE never frees a computer on its own: the
+ * person cleans up, or picks what ADE frees (`CloudPlanCleanupPick`). Disk
+ * that extra disk covers counts as fitting.
  */
 export type CloudPlanCleanup = {
   /** The cheaper plan whose limits apply. */
   planId: CloudPlanId;
-  /** Oldest first. */
+  /** The oldest computers that make the account fit: what a pick starts with. Oldest first. */
   computers: CloudPlanCleanupComputer[];
+  /** Every computer a pick may name, oldest first. Older servers leave it out (then only `computers`). */
+  choices?: CloudPlanCleanupComputer[];
   usedGb: number;
   limitGb: number;
-  computerCount: number;
-  computerLimit: number;
-  /** When ADE frees them (ms); null in a preview, where it is `CLOUD_PLAN_CLEANUP_GRACE_DAYS` after the plan starts. */
-  dueAt: number | null;
-  /** The plain warning: what to free first, and what ADE does otherwise. */
+  /**
+   * For older builds only, which checked a computer count too: how many
+   * computers the account has, and a limit never below it. Only disk counts.
+   */
+  computerCount?: number;
+  computerLimit?: number;
+  /**
+   * When the cheaper plan starts (ms): the period end while a downgrade or a
+   * cancel waits for it; null once it is the plan in force, when new
+   * computers are refused (`over_plan_limits`) until the account fits.
+   */
+  startsAt?: number | null;
+  /** What the person picked and ADE is freeing now; null when nothing is being freed. */
+  freeing?: (CloudPlanCleanupPick & { at: number }) | null;
+  /** The plain sentence: what goes over the plan's limits. */
   sentence: string;
 };
 
 export type CloudPlanCleanupDone = {
   at: number;
   planId: CloudPlanId;
-  /** Freed: the work is on `branch` on GitHub. `laneKept` when the lane stays without a computer. */
-  freed: Array<{ name: string; branch: string | null; laneKept: boolean }>;
-  /** Kept because its work couldn't all be pushed; tried again each day while the account is over. */
+  /** Freed: the work is on `branch` on GitHub (when pushed). `laneKept` when the lane stays without a computer. */
+  freed: Array<{ name: string; branch: string | null; laneKept: boolean; pushed?: boolean }>;
+  /** Kept because its work couldn't all be pushed; it stays until the person deletes it or picks again. */
   kept: Array<{ name: string; reason: string }>;
 };
 
@@ -626,45 +797,106 @@ export function timedWakesCancelledSentence(notice: Pick<CloudTimedWakesCancelle
 }
 
 /** Each plan's name inside a sentence ("To fit the free plan", "Plus allows ..."): the server's emails and ADE say the same. */
-export const CLOUD_PLAN_SENTENCE_NAMES: Readonly<Record<CloudPlanId, string>> = { free: "the free plan", plus: "Plus", pro: "Pro" };
+export const CLOUD_PLAN_SENTENCE_NAMES: Readonly<Record<CloudPlanId, string>> = { free: "the free plan", plus: "Plus", pro: "Pro", max: "Max" };
+
+/** ".env, data.db and 3 more": the ignored files a delete loses, or null when none were found. */
+export function ignoredFilesList(ignored: Pick<CloudIgnoredFiles, "paths" | "more">): string | null {
+  if (!ignored.paths.length) return ignored.more > 0 ? `${ignored.more} ${ignored.more === 1 ? "file" : "files"}` : null;
+  const shown = ignored.paths.join(", ");
+  return ignored.more > 0 ? `${shown} and ${ignored.more} more` : shown;
+}
+
+/**
+ * What the idle cleanup's warning says about files git ignores, the same in
+ * ADE and in the emails: which ones won't be kept, that there are none, or
+ * that the computer hasn't said yet.
+ */
+export function ignoredFilesSentence(ignored: CloudIgnoredFiles | null | undefined): string {
+  if (!ignored) return "ADE doesn't know yet which files git ignores on it (such as .env or a local database); those are never pushed, so they won't be kept.";
+  const list = ignoredFilesList(ignored);
+  const builds = ignored.rebuildable > 0 ? " Build and install folders such as node_modules aren't listed: they come back when you build." : "";
+  if (ignored.incomplete) {
+    if (!list) return `ADE couldn't read every lane on it to see which files git ignores (such as .env or a local database); those are never pushed, so they won't be kept.${builds}`;
+    return `Files git ignores are never pushed, so these won't be kept: ${list}. ADE couldn't read every lane on it, so there may be more.${builds}`;
+  }
+  if (!list) return `No files that git ignores were found on it.${builds}`;
+  return `Files git ignores are never pushed, so these won't be kept: ${list}.${builds}`;
+}
+
+/** "in 1 day", "in 5 hours", "within the hour": how far away a time is. */
+function inHowLong(at: number, now: number): string {
+  const left = Math.max(0, at - now);
+  const hours = Math.round(left / 3_600_000);
+  if (hours < 1) return "within the hour";
+  if (hours < 20) return `in ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  const days = Math.max(1, Math.round(left / 86_400_000));
+  return `in ${days} ${days === 1 ? "day" : "days"}`;
+}
+
+/** "deleted in 1 day", "deleted in 3 days", "deleted in 5 hours": how far away a delete is. */
+export function idleCleanupWhen(deletesAt: number, now: number): string {
+  return `deleted ${inHowLong(deletesAt, now)}`;
+}
+
+/**
+ * Days a computer may go unused before the idle cleanup deletes it (its work
+ * pushed first): the free plan's, and every paid plan's. The website's
+ * pricing page reads these too.
+ */
+export const CLOUD_IDLE_CLEANUP_DAYS: Readonly<Record<"free" | "paid", number>> = { free: 3, paid: 10 };
+
+/** What happens before the delete, in ADE and the emails. */
+export function idleCleanupSaveSentence(branch: string | null | undefined): string {
+  return `Before that, ADE commits its work and pushes it to ${branch ? `the lane's branch, ${branch},` : "the lane's branch"} on GitHub. The lane and its chats stay, and your next message makes a new computer from the branch.`;
+}
+
+/**
+ * What to do about a computer the idle cleanup kept because its work couldn't
+ * be saved, and when ADE tries again (each failed try waits longer: 1, 2, 4
+ * ... days, at most 14).
+ */
+export function idleCleanupHeldNext(retryAt: number, now: number): string {
+  return `Open the lane and push its work yourself, or delete the lane if you don't need it. ADE tries again ${inHowLong(retryAt, now)}.`;
+}
 
 /** What a cheaper plan's limits freed and kept, for ADE's notice after the run. */
 export function planCleanupDoneSentence(done: CloudPlanCleanupDone): string {
   const parts: string[] = [];
   if (done.freed.length) {
-    const list = done.freed.map((entry) => (entry.branch ? `${entry.name} (work on ${entry.branch})` : entry.name)).join(", ");
+    const list = done.freed.map((entry) => (entry.branch && entry.pushed !== false ? `${entry.name} (work on ${entry.branch})` : entry.name)).join(", ");
     const lanesKept = done.freed.filter((entry) => entry.laneKept).length;
     // Only a computer that held a lane keeps one: a computer made for no lane is simply gone.
     const kept = lanesKept === 0 ? ""
       : ` ${lanesKept === done.freed.length ? (lanesKept === 1 ? "Its lane and chats stay" : "Their lanes and chats stay") : (lanesKept === 1 ? "The lane among them and its chats stay" : "The lanes among them and their chats stay")}; the next message to a lane makes a new computer.`;
-    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE pushed each lane's work to GitHub and removed ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
+    const pushedAll = done.freed.every((entry) => entry.pushed !== false);
+    const how = pushedAll ? "pushed each lane's work to GitHub and removed" : "removed";
+    parts.push(`To fit ${CLOUD_PLAN_SENTENCE_NAMES[done.planId]}, ADE ${how} ${done.freed.length === 1 ? "this computer" : "these computers"}: ${list}.${kept}`);
   }
   if (done.kept.length) {
-    parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because its work couldn't all be pushed to GitHub. Push its work or delete it yourself; ADE tries again tomorrow.`);
+    parts.push(`ADE kept ${done.kept.map((entry) => entry.name).join(", ")}, because its work couldn't all be pushed to GitHub. Push its work or delete it yourself, or pick again in ADE.`);
   }
   return parts.join(" ");
 }
 
 
 /**
- * The warning for a cheaper plan's limits, said the same by the server, its
- * emails and ADE: "Free 23 GB first: Plus allows 40 GB and you use 63 GB. ..."
+ * What goes over a cheaper plan's limits, said the same by the server, its
+ * emails and ADE: "Plus allows 30 GB of disk at one time and your computers
+ * use 63 GB." Only disk counts: there is no limit on how many computers.
  */
-export function planCleanupSentence(cleanup: Omit<CloudPlanCleanup, "sentence" | "dueAt">): string {
+export function planCleanupSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "usedGb" | "limitGb">): string {
+  if (cleanup.usedGb <= cleanup.limitGb) return "";
   const plan = CLOUD_PLAN_SENTENCE_NAMES[cleanup.planId];
-  const parts: string[] = [];
-  const overGb = cleanup.usedGb - cleanup.limitGb;
-  const overComputers = cleanup.computerCount - cleanup.computerLimit;
-  if (overGb > 0) parts.push(`Free ${overGb} GB first: ${plan} allows ${cleanup.limitGb} GB and you use ${cleanup.usedGb} GB.`);
-  if (overComputers > 0) {
-    parts.push(`Delete ${overComputers} ${overComputers === 1 ? "computer" : "computers"} first: ${plan} allows ${cleanup.computerLimit} at one time and you have ${cleanup.computerCount}.`);
-  }
-  const names = cleanup.computers.map((computer) => computer.laneName ?? computer.name ?? computer.instanceId);
-  if (names.length) {
-    const one = names.length === 1;
-    parts.push(`Otherwise ADE pushes each lane's work to its branch on GitHub, then removes your oldest ${one ? "computer" : "computers"}: ${names.join(", ")}. ${one ? "Its lane and chats stay" : "Their lanes and chats stay"}, and the next message to a lane makes a new computer. A computer whose work can't be pushed stays.`);
-  }
-  return parts.join(" ");
+  const Plan = plan.charAt(0).toUpperCase() + plan.slice(1);
+  return `${Plan} allows ${cleanup.limitGb} GB of disk at one time and your computers use ${cleanup.usedGb} GB.`;
+}
+
+/**
+ * Why a create is refused while the account is over the plan in force
+ * (`over_plan_limits`): the server's refusal and ADE's notice say the same.
+ */
+export function overPlanLimitsSentence(cleanup: Pick<CloudPlanCleanup, "planId" | "usedGb" | "limitGb">): string {
+  return `${planCleanupSentence(cleanup)} ADE can't make a new computer until their disk fits. Delete computers yourself, or open Settings › ADE Cloud › Plans to pick the ones ADE frees.`;
 }
 
 /** Largest part of a chat the server accepts, in bytes of its text. */
@@ -734,7 +966,19 @@ export const CLOUD_LAUNCH_MAX_FILE_BYTES = 25 * 1024 * 1024;
 export const CLOUD_LAUNCH_MAX_FILES = 10;
 export const CLOUD_LAUNCH_MAX_PROMPT_CHARS = 100_000;
 
+/**
+ * A CLI launch (a tracked CLI session the launching ADE app starts in the
+ * lane once the computer's brain has it) is sent as `lane`, with `cli` in
+ * `launch.kind`: a server or computer that predates it runs the lane alone
+ * instead of refusing the launch.
+ */
 export type CloudLaunchKind = "chat" | "lane";
+/**
+ * The most an ADE app's full launch args (`CloudServerLaunchRequest.launch`)
+ * may weigh, as JSON. The whole start is one request body of at most 256 KB,
+ * so the first message itself travels once, in `chat.prompt`.
+ */
+export const CLOUD_LAUNCH_MAX_ARGS_BYTES = 96 * 1024;
 
 /** A file uploaded first (`PUT .../files/:fileId`), named in the start. */
 export type CloudLaunchAttachment = { fileId: string; name: string; contentType: string; sizeBytes: number };
@@ -746,8 +990,12 @@ export type CloudServerLaunchRequest = {
   sizeId: CloudTierId;
   /** A GitHub origin, `github.com/owner/repo` (any spelling a git remote has). */
   project: { origin: string };
-  /** `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead. */
-  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null };
+  /**
+   * `from` is the branch a new lane starts from (its pushed copy); `existingBranch` works on that branch instead.
+   * `autoName`: `name` is only the name from the prompt; the computer's brain renames the lane and its branch with
+   * the AI name, as a lane on the person's own computer is. Left out: `name` is the person's and is kept.
+   */
+  lane: { id: string; name: string; from?: string | null; existingBranch?: string | null; autoName?: boolean };
   chat?: {
     provider: string;
     modelId: string;
@@ -765,9 +1013,37 @@ export type CloudServerLaunchRequest = {
    * in the desktop's vault, which the server can't read), so an automation
    * checks its own limits before it calls.
    */
-  madeBy?: { kind: "person" } | { kind: "automation"; ruleId?: string | null };
+  madeBy?:
+    | { kind: "person" }
+    | { kind: "automation"; ruleId?: string | null }
+    /**
+     * An agent through an ADE app (`ade chat create --machine cloud`, ADE
+     * MCP): `agent` and `chatSessionId` land on the computer as
+     * `ade_made_by_agent` and `ade_made_by_chat`, so the app's own agent
+     * limits count it.
+     */
+    | { kind: "agent"; agent: "chat" | "automation" | "mcp"; chatSessionId?: string | null };
   /** The app's update track; left out is `stable`. */
   channel?: CloudUpdateChannel;
+  /**
+   * From an ADE app: the launch exactly as the person set it up there
+   * (`ChatLaunchArgs` minus its cloud target, its stages, its files from
+   * that computer and a chat's first message, which `chat.prompt` carries),
+   * kept as sent, at most `CLOUD_LAUNCH_MAX_ARGS_BYTES`. The
+   * computer starts from it, so what the facts above leave out (plan mode, a
+   * provider's own permission modes, a lane template, a branch name, linked
+   * issues) carries too. The facts above win where both say something: ids,
+   * names, kind, lane start and the first message's files. A computer too
+   * old to read it starts from the facts alone.
+   */
+  launch?: Record<string, unknown>;
+  /**
+   * Start only, never kept: a launch whose computer failed before its agent
+   * started (it couldn't join, clone or start) begins again on a new
+   * computer, under the same id. Left out, the same id answers the launch
+   * as it is.
+   */
+  retry?: boolean;
 };
 
 /**

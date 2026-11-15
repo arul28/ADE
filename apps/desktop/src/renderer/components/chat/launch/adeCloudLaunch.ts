@@ -71,18 +71,14 @@ export function adeCloudLaunchProblem(input: {
 }
 
 /**
- * Why `count` new lanes can't all start on ADE Cloud now, or null. A batch
+ * Why new lanes can't start on ADE Cloud now, or null. A batch
  * asks before it starts any, so it never makes some lanes and fails the rest.
- * Unknown (no account read yet) is never a block: main still refuses each.
+ * No plan limits how many computers an account has, so only hours and disk
+ * can stop it. Unknown (no account read yet) is never a block: main still
+ * refuses each.
  */
-export function adeCloudCapacityProblem(account: CloudAccountState | null, count: number): string | null {
-  const block = cloudLaneStartBlock(account, { newLane: true });
-  if (block) return block.message;
-  const computers = (account as Partial<CloudAccountState> | null)?.computers;
-  if (!computers || computers.limit <= 0 || count <= 1) return null;
-  const free = Math.max(0, computers.limit - computers.total);
-  if (count <= free) return null;
-  return `This needs ${count} ADE Cloud computers, and ${free === 1 ? "1 is" : `${free} are`} free. Pick fewer, or delete lanes you no longer use.`;
+export function adeCloudCapacityProblem(account: CloudAccountState | null): string | null {
+  return cloudLaneStartBlock(account, { newLane: true })?.message ?? null;
 }
 
 /**

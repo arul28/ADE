@@ -24,9 +24,15 @@ does and does not travel, and the layers that implement it. Deep-dives:
   remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- [`devices-and-machines.md`](./devices-and-machines.md) — the one model
+  agents learn for using a device on any machine: the words (machine, device,
+  source, lane, "your code there"), `ade devices`, `devices use|current`,
+  `--machine`, `--code synced|as-is|fresh`, `--clone`,
+  `--no-code`, `--to` on `chat handoff|move`, MCP, and the ADE Cloud iPhone.
 - `cross-machine-agents.md` — agents and the CLI on other machines:
   `--machine`, `--all-machines`, children that wake parents across machines and
-  projects, remote device drive with proof filed back.
+  projects, remote device drive with proof filed back (the implementation
+  under `devices-and-machines.md`).
 - `cross-machine-session-handoff.md` — moving a Work chat to another
   machine: the brain-owned move record and its states, agent and CLI control,
   approval, the source banner and send routing, the Git contract (clean and
@@ -310,8 +316,9 @@ project-published discovery to re-run), `sync.listDevices` returns an empty list
 runtime state that fills that list is a project's device registry), and
 `sync.getRuntimeName` returns `null` because a runtime name is a per-project
 setting. Mutating project-scoped methods (`sync.setRuntimeName`,
-`sync.updateLocalDevice`, transfer readiness, lane presence) keep failing with
-the register-a-project error, which is the truth for them. A
+`sync.updateLocalDevice`, transfer readiness) keep failing with the
+register-a-project error, which is the truth for them. Lane presence is the
+exception: the call is accepted, and the list waits for the sync host. A
 just-written PIN is echoed back on the returned snapshot by
 `machineSyncStatusWithPin`, because a store only reports a plaintext code it set
 itself and the snapshot builder may read through a different handle — without
@@ -705,6 +712,13 @@ Runtime support files outside `services/sync/`:
   [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
   builds what a `--machine` call sends for it, and moves `ade files push|pull`
   chunks; `remoteWork/remoteWorkFiles.ts` is the host side of those transfers.
+  `remoteWork/remoteWorkScratch.ts` makes and sweeps the empty folders a
+  `--no-code` command runs in (`<ADE_HOME>/remote-work/scratch/`).
+- `apps/ade-cli/src/cliDevices.ts` — `ade devices` (list, `use`, `current`)
+  and the device commands following a chat's choice; the ids, the choice's
+  shape and the subcommand parse ADE MCP's command check shares live in
+  `apps/desktop/src/shared/types/deviceSources.ts` (see
+  [devices and machines](devices-and-machines.md)).
 - `apps/desktop/src/shared/rpcLiveness.ts` — whether a connection that went
   quiet still answers (`probeRpcLiveness`), shared by the desktop's
   `remoteConnectionPool.ts` and the brains' machine link pool
@@ -803,7 +817,7 @@ Runtime support files outside `services/sync/`:
   and `workspace/webWorkspaceModel.ts` — hosted-browser directory/session
   projection. `mergeWebMachines` merges account rows with browser-saved
   environments and cached catalogs into one row per physical machine, rendered
-  by `WebConnectionsChip.tsx` (the top-bar popover that replaced the Hub page),
+  by the hosted mode of `ConnectionsPanel.tsx` (the top-bar panel that replaced the Hub page),
   while the manager serializes admission into a four-client pool, reports
   Live/Reconnecting/Parked/Offline, retains parked catalogs, and reconnects a
   parked machine when its project or Chats surface is selected.
@@ -1281,7 +1295,15 @@ Runtime support files outside `services/sync/`:
   Machines cache the access token in `github.accountAppToken.v1`
   (`shared/github/accountAppTokenClient.ts`, one request per renewal across
   processes) and use it as the `account_app` credential, after their own
-  sign-ins and before an adopted `gh` copy. A legacy device-flow sign-in on a
+  sign-ins and before an adopted `gh` copy. When GitHub refuses that token
+  (a Disconnect, or a new Connect on another computer), the install check and
+  the relay poll ask the account once for its current token and retry once,
+  only with a token that is different. A process asks about one refused token
+  at most once a minute; a press of "Check again" in Settings → GitHub asks
+  anyway, also over a cached "not connected" answer, so each press asks once.
+  The "Connected to your ADE account as @login" line reads the account again
+  when a page opens with an answer older than 30 seconds, and on each press. A
+  legacy device-flow sign-in on a
   machine is handed to the account (`POST /github/app/adopt`). Without
   `GITHUB_APP_CLIENT_SECRET` the routes answer 503 and machines behave as
   before.
@@ -1296,26 +1318,21 @@ Runtime support files outside `services/sync/`:
 - `apps/desktop/src/main/services/account/accountVaultBridge.ts` and
   `apps/desktop/src/main/services/account/accountMigrationRunner.ts` — the
   desktop-main bridge to the brain vault and the silent, receipt-backed sign-in
-  migration for provider API keys, Linear OAuth refresh credentials, and
-  repository-scoped project secrets. Migration is write-confirmed, per account
-  and per source, and hydrates local stores without replacing device-origin
-  values. A source that stays pending or fails clears the runtime latch so a
-  later vault-ready tick can retry it; completed sources stay protected by
-  their receipts.
-- `apps/ade-cli/src/services/account/accountRuntimeLifecycle.ts` — pulls
-  `project_secret` rows out of the vault on every vault-ready sync tick and on
-  the initial sync, deliberately outside the migration latch. A secret another
-  machine adds tomorrow still has to arrive, and the one-shot migration can
-  never see it. `project_secret.pullFromAccount` (`ade secrets pull`, Settings >
-  Secrets > Pull from account) forces a vault sync with the relay and then runs
-  the same pull. `project_secret.get` / `list` (agents, `ade secrets get|list`,
-  the Secrets page) refresh from the account first — at most one request per
-  10 s, and waiting at most 3 s before answering from this machine's copy — so
-  a secret added on another machine moments ago is found. A miss says whether
-  the account was checked or could not be reached. Rows this machine saved
-  that have not uploaded yet carry `uploadPending` (Settings shows
-  "Uploading", the CLI `account (uploading)`), read from the vault's
-  `pendingKeys(scope, kind)`.
+  migration for provider API keys and Linear OAuth refresh credentials (and
+  the move of a project's old secrets into Passwords & Secrets). Migration is
+  write-confirmed, per account and per source, and hydrates local stores
+  without replacing device-origin values. A source that stays pending or fails
+  clears the runtime latch so a later vault-ready tick can retry it; completed
+  sources stay protected by their receipts.
+- `apps/ade-cli/src/services/account/accountRuntimeLifecycle.ts` — on every
+  vault-ready sync tick, moves anything still in a project's old secret store
+  (the `.ade/secrets/project-secrets.v1.enc` file, and the account's old
+  `project_secret` vault rows from an older ADE) into Passwords & Secrets
+  (`projectSecretService.migrateLegacy`). A name already there with a newer
+  value is left alone; each old copy is removed only once its value is saved in
+  the new place; account rows wait until Passwords & Secrets is usable. Secrets
+  themselves sync as Passwords & Secrets items (see
+  [Passwords & Secrets](../passwords/README.md)).
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
   `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`,
   `pendingKeys`) — how
@@ -1397,7 +1414,7 @@ Runtime support files outside `services/sync/`:
   `wrangler d1 execute --env production` already reaches, so support recovery is
   a direct D1 statement after these logs identify the row.
 - `apps/account-directory/src/diagnostics.ts` — `POST /diagnostics/upload`, the
-  write-only R2 sink behind the desktop's **Report issue** button and
+  write-only R2 sink behind the desktop's report dialog and
   `ade report-issue --send`. It is matched in `index.ts` *before* the directory
   router, because it is the one route here that is not account-scoped and the
   directory's exact-origin CORS rule and 404-on-unknown-`OPTIONS` fit neither an
@@ -1418,7 +1435,7 @@ Runtime support files outside `services/sync/`:
   fleet-wide stop as its own quota would retry forever. Uploads also carry
   optional `auto` / `failureCode` metadata so automatic and hand-pressed
   reports stay separable in the bucket. See
-  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-report-issue)
+  [storage and recovery → Diagnostic reports](../storage-and-recovery/README.md#diagnostic-reports-the-report-dialog)
   for the client half, and `apps/account-directory/README.md` for the full
   contract and the R2 bucket + lifecycle setup the deploy does not do for you.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
@@ -2398,7 +2415,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   answered with a plain "pair with a code, or open a project" under
   `account_session_changed` rather than `auth_failed`, because the device's
   saved pairing is untouched by that refusal. `connectionAttempt` metadata is
-  now parsed rather than silently discarded. It
+  now parsed rather than silently discarded. Routed project commands run off
+  the message queue with the project host's peer-queue rule: up to
+  `MAX_CONCURRENT_PEER_READS` routed reads (`isConcurrentReadEnvelope`) overlap
+  behind the last routed write (`commandWriteBarrier`), a routed write waits
+  for all earlier routed work, and a freed read slot goes to the oldest waiting
+  read. One slow read no longer holds a browser's chat history behind it. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
   per-project host, applies the same failed-PIN cooldown, attributes its
   `auth_failed` rejections with the same `host: { deviceId, name }`
@@ -2529,6 +2551,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   tried to, is ready, it answers as it is and host activation is not re-entered.
   A blocked or backed-off activation therefore no longer turns the Phone tab
   into "Another ADE brain is already hosting mobile sync".
+  `sync.getStatus` is a read too. It answers from the ready scope of the project
+  it names, else the ready scope of the sync host, else any booted project
+  scope, else the machine's own state. A status read never starts a sync host.
+  Lane presence (`sync.setActiveLanePresence`) is kept for the host. The newest
+  list goes to the host's sync service only when that host's scope is ready.
+  It goes out again on each scope-ready or host-switch notice until the host
+  has it, and a failed send never brings back an older list.
 
   The loop also classifies what it caught rather than retrying everything the
   same way. Each failure goes through `classifyStorageFault`
@@ -2878,12 +2907,23 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   missing lease, account switch, or expiry closes the control socket and active
   pipes. The normal ADE sync
   hello/pairing then runs inside that pipe. TLS terminates at the relay, so the
-  relay can inspect the handshake and subsequent sync traffic. Bridge
-  validation is **proactive**: `validateCurrentBridge()` re-probes the
-  loopback sync listener (matching port + identity nonce) whenever the control
-  socket opens and whenever the shared listener reports a fresh loopback
-  validation, serializing probes through the same validation queue used by
-  inbound opens. The listener itself arrives through `attachHostListener()`,
+  relay can inspect the handshake and subsequent sync traffic. **The pipe is
+  handed to the sync host in process** (`openInProcessTunnel` →
+  `SharedSyncListener.acceptRelayPipe`): the pipe socket itself becomes the
+  peer's socket, with `relay-bridge` provenance set by code. The relay never
+  dials `127.0.0.1:<port>`, so another program holding that address (a
+  `wrangler dev` on 8787 cut a phone off this way twice) cannot intercept
+  relay traffic, a port move never drops a relay peer, and the bridge key
+  ignores the port. The pipe carries the host's own `maxPayload`, and the
+  host's backpressure limits apply to it directly. The legacy loopback bridge
+  (a second socket to the listener plus a private proof header, below) remains
+  only for a listener without `acceptRelayPipe`, which production never
+  attaches. Bridge validation is **proactive**: `validateCurrentBridge()`
+  confirms the attached listener is still open (in process; the legacy bridge
+  re-probes the loopback listener for matching port + identity nonce) whenever
+  the control socket opens and whenever the shared listener reports a fresh
+  loopback validation, serializing checks through the same validation queue
+  used by inbound opens. The listener itself arrives through `attachHostListener()`,
   which `relayTunnelAuthorityGate` calls on every start from the runtime that
   owns the shared listener — not from the construction factory. The client is shared one-per-machine
   (`getSharedSyncTunnelClientService`, keyed by `sync-cloud-relay.json`) and is
@@ -3655,6 +3695,32 @@ so this stops the ordinary agent path, not a process that strips its
 environment. The desktop Account page and the web client remove through the
 directory directly, behind their own dialogs.
 
+**Removing a computer from a chat.** A caller that names a chat
+(`ade machines remove <name|key|id>` from an agent's shell) does not get the
+refusal. The brain that holds the chat raises a card in it
+(`apps/ade-cli/src/services/account/machineRemovalRequest.ts`) and the command
+waits for the answer:
+
+- The card shows the computer's name, platform, install, last-seen time and
+  online state, and what removal does. The buttons are Keep and Remove.
+- An online computer, or the computer that runs the chat, needs a second
+  "Remove anyway". Remove without it keeps the card open.
+- The card is user-only (`MACHINE_REMOVAL_REQUEST_METADATA_KEY` in
+  `isUserOnlyConsentCard`): an agent, a peer chat, the CTO tools, a lane-share
+  guest and the subagent relay are refused, and the card takes no typed answer.
+- The removal runs inside the person's accepted answer, on the brain that holds
+  the chat, with the same directory call as the person's own removal. The
+  answer travels to that brain with the chat's pin, so "this computer" on the
+  card means the chat's computer, not the window's.
+- The command exits 0 for `removed`, 2 for `kept` or `timed_out`, and 3 for
+  `pending_approval` (another chat already has a card open for that computer;
+  the same chat asking again joins its card).
+- Stopping the turn, deleting the chat or archiving it closes the card, and the
+  agent gets `kept`. A removal that the person started before the card closed
+  still reports `removed`.
+- A brain that does not hold the chat refuses with a message that sends the
+  person to the Account page.
+
 A refusal must not read like an outage. When the directory reaches a decision it
 answers a `403` with a machine-readable code — `machine_revoked` or
 `pairing_authentication_required` — carried on the publisher health's
@@ -4115,8 +4181,9 @@ already constrained the path to the project root.
 Relay controllers negotiate bridge readiness before sending an ADE envelope.
 They first open `wss://…/connect/<machineKey>?ready=2`. A current Worker sends
 `{"t":"accepted","v":2}` immediately, then sends
-`{"t":"ready","v":2}` only after the runtime control pipe and validated
-loopback listener are both open. ADE `hello` is forbidden before `ready`.
+`{"t":"ready","v":2}` only after the runtime control pipe is open and the
+sync host owns it (handed over in process, in the same tick as the pipe's
+`open`). ADE `hello` is forbidden before `ready`.
 If no `accepted` arrives within the short negotiation window, the controller
 abandons that socket and retries the same route on a **fresh** URL without the
 `ready` parameter for an old Worker. It never sends a legacy hello on the
@@ -4337,12 +4404,14 @@ feature is merged or because a deliberately isolated-port host is running.
   device backups — a restored phone re-pairs with the PIN.
 - **Account bearer transport (plaintext `account`)**: every
   `hello.auth.kind = "account"` is
-  accepted only when the shared listener verified that the socket came from
-  ADE's in-process cloud-relay bridge. The tunnel client attaches a private,
-  per-process 256-bit proof to its loopback WebSocket upgrade; the listener
-  validates the decoded proof with a constant-time comparison and carries the
-  resulting `relay-bridge` provenance through parked-socket host handoffs.
-  Missing, forged, or stale proof fails closed as a direct connection. The
+  accepted only when the socket came from ADE's in-process cloud-relay
+  bridge. The tunnel client hands each relay pipe to the listener through
+  `acceptRelayPipe`, which only code in the brain process can call, so the
+  `relay-bridge` provenance cannot be claimed from the network. (The legacy
+  loopback bridge instead attaches a private, per-process 256-bit proof to its
+  WebSocket upgrade, which the listener checks with a constant-time
+  comparison.) The provenance survives parked-socket host handoffs. A direct
+  connection without it fails closed. The
   runtime rejects the plaintext `account` bearer on LAN, tailnet, loopback, and
   every other
   direct route before verifying the bearer, even when that device already has
@@ -4413,10 +4482,8 @@ feature is merged or because a deliberately isolated-port host is running.
   and device-only credentials remain per-machine. Account-scoped AI provider
   keys use the `provider_api_key` vault kind, Linear OAuth refresh tokens use
   `linear_refresh_token` with a per-device `refreshOwner` so only one machine
-  exchanges the rotating grant, and repository account secrets use `project_secret`
-  under the normalized repository scope. The vault is not write-only: a
-  vault-ready sync tick pulls repository account secrets back down, so a secret
-  added on one machine reaches the other. Local credential stores retain
+  exchanges the rotating grant. Secrets are Passwords & Secrets items, sealed
+  under the account's vault key; a "this computer only" secret never syncs. Local credential stores retain
   provenance and purge account-origin values on sign-out or account switch;
   access tokens, a machine's own GitHub App device-flow sign-in, environment
   GitHub tokens and vendor CLI refresh credentials stay on the machine that
@@ -4578,6 +4645,56 @@ cannot be changed until it is.
 | Work chat move to another machine (desktop, phone, CLI and agents; clean or with uncommitted work) | Implemented ([contract](./cross-machine-session-handoff.md)) |
 
 ## Gotchas
+
+### Another program on the sync port's loopback address
+
+macOS and Windows let a second program bind `127.0.0.1:<port>` while ADE holds
+`*:<port>`, and that program then gets all local traffic for the port. The
+usual offender is `wrangler dev`, whose default port is ADE's 8787. What each
+route needs from loopback:
+
+- **Relay:** nothing. Pipes are handed to the host in process.
+- **LAN:** nothing. Peers reach the wildcard bind, so the account directory
+  publishes LAN whenever the listener is bound (`listenerBound`), not only
+  when loopback validates.
+- **Tailscale:** everything. Serve forwards to 127.0.0.1, so Tailscale
+  publishes only while some local route answers as this listener.
+
+**The public port does not move for a loopback shadow.** A phone that sees its
+machine's port change redials (seen on a real iPhone: a Wi-Fi socket dropped
+110 ms after a move), so the listener keeps its port and opens a **side door**:
+a second server bound on exactly `127.0.0.1:<free port>` (one of the 24 ports
+above; never an OS-assigned one, so a stale Tailscale entry left by a crash is
+still recognized by its shape, `adeLoopbackForwardPort`), wired like the main
+one (`createServerPair`) and validated
+with the same identity probe. `getLoopbackPort()` returns it, the validation
+status records it as `loopbackPort` (with `shadowedBy`, program name only), and
+Tailscale Serve (`--tcp` and the HTTPS route) forwards there while the
+tailnet-facing port stays the sync port. The listener re-checks every
+`SYNC_LISTENER_SELF_HEAL_INTERVAL_MS` (30 s; one local HTTP request per
+address) and on `healNow()`; it records only the final verdict, so a working
+side door never flaps Tailscale. When loopback answers as ADE again the side
+door closes (its sockets kept until they close). Logs:
+`sync_listener.loopback_side_door_opened` / `_closed`. A startup bind on a
+wildcard accepts a loopback-shadowed candidate for the same reason.
+
+The port **does** move (`sync_listener.loopback_shadowed_at_runtime`, then
+`sync_listener.moved_off_shadowed_port` and `onPortChanged`) only when it has
+to: another program answers on one of this machine's own LAN addresses (the
+self-check probes each external IPv4 address; only a foreign answer counts,
+never a timeout or refusal), a loopback-only bind is shadowed, or the side door
+cannot open. Already-connected sockets stay up through any move: the old
+server stops accepting but its upgraded sockets are kept. The scope's sync
+service (or the projectless brain) updates the lease port, the device row,
+Bonjour, Tailscale Serve and the directory. The move back to the preferred
+port (normally 8787) once it frees is the hosting scope's sync service's job
+(every 15 s while it hosts); with no project host attached, the listener's own
+30 s self-check does it. The move back validates its
+candidate without touching the live port's status, so it cannot flap the route.
+A project host never refuses to start over a shadow
+(`sync_host.loopback_shadowed_hosting_degraded`). A loopback-only bind
+(`ADE_SYNC_BIND_HOST=127.0.0.1`) has nothing else to serve, so one whose every
+candidate is shadowed fails to bind and the startup loop retries.
 
 - **Phone-sync port 8787 is canonical.** Bind order always tries 8787 first,
   even when device-registry `lastPort` is 8788. Zombie reap may terminate a

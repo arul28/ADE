@@ -6,7 +6,7 @@ properties it may carry (beyond the common ones listed at the top of the file).
 `docs/logging.md` holds the privacy rules, consent, budgets and architecture;
 this folder is the catalog.
 
-`scripts/check-analytics-tracking-plan.mjs` runs in CI (the `validate-docs`
+`scripts/check-analytics-tracking-plan.mjs` runs in CI (the `docs`
 job) and fails when the code, the plan and the dashboards disagree: an event is
 sent but not in the plan, the plan lists an event nothing sends, a desktop or
 brain event is declared but never captured, or a dashboard in
@@ -208,7 +208,11 @@ them in PostHog and update this list in the same branch.
   iPhone "download" clicks.
 - **`error_kind` on a failed chat turn** says why it failed (`rate_limit`,
   `permission`, `budget`, `network`, `busy`, `cli_missing`) from the first
-  desktop release after 1.2.129-beta.8; earlier it is always `other`.
+  desktop release after 1.2.129-beta.8; earlier it is always `other`. From
+  the first release after 1.2.130-beta.25 it also says `plan` (signed in, but
+  the plan does not include this), and more sign-in, exit, network and
+  timeout failures leave `other` for `permission`, `process_exited`,
+  `network` and `timeout`, so `other` steps down at that release.
   `ade_brain_action_failed` carries `brain_action` and `expected_kind` from
   1.2.129-beta.6; on older builds most of its `error_code` values are
   `unknown`. Up to and including 1.2.130-beta.2, `expected_kind: unexpected`
