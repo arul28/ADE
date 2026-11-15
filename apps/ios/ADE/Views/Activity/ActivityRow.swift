@@ -163,7 +163,7 @@ struct ActivityRow: View {
             parts.append("step \(progress.completed) of \(progress.total)")
         }
         if let model = row.modelLabel { parts.append(model) }
-        parts.append(row.machineOnline ? "machine online" : "machine offline")
+        parts.append(row.machineOnline ? "computer online" : "computer offline")
         return parts.joined(separator: ", ")
     }
 

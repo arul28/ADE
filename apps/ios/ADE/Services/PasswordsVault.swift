@@ -306,7 +306,7 @@ struct PasswordsRelayClient {
     let epoch: Int
   }
 
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   /// Every row since the start, paged until the relay says it is done. A
   /// later page's row replaces an earlier one with the same id.

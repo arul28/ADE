@@ -160,7 +160,7 @@ struct SettingsGeneralPage: View {
       ADESettingsRows {
         ADESettingsPageLink(title: SettingsRoute.machines.title, destination: machinesPage) { _, pushes in
           SettingsGeneralLeadRow(
-            title: several ? "\(connectedMachines.count) machines" : (primary?.name ?? "No machine yet"),
+            title: several ? "\(connectedMachines.count) computers" : (primary?.name ?? "No computer yet"),
             subtitle: several ? connectedMachines.map(\.title).joined(separator: ", ") : machineSubtitle
           ) {
             ADESettingsIconTile(

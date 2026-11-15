@@ -218,6 +218,13 @@ final class ChatThreadRegistry {
     Task { await store.purgeAll() }
   }
 
+  /// `purgeAll()` that returns once the store has closed and deleted its
+  /// files: a sign-out waits for it before it clears its marker.
+  func purgeAllAndWait() async {
+    for key in Array(models.keys) { evict(key) }
+    await store?.purgeAll()
+  }
+
   // MARK: - Older history
 
   func loadOlder(_ key: ChatThreadKey) async -> WorkChatOlderHistoryLoadResult {

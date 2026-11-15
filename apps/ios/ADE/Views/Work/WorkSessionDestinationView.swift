@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 import AVKit
@@ -460,6 +461,9 @@ struct WorkSessionDestinationView: View {
   @State var duoColumnWidth: CGFloat = 0
   @State var chatSummary: AgentChatSessionSummary?
   @State var chatSummaryRefreshGeneration = 0
+  /// The last title another computer's roster gave this chat (see
+  /// `followRemoteRosterTitle`).
+  @State private var remoteRosterTitleSeen: String?
   // Last non-nil summary this mounted instance ever observed. The composer's
   // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
   // momentary nil summary would blank those controls mid-session. This latch
@@ -1956,6 +1960,10 @@ struct WorkSessionDestinationView: View {
       .onChange(of: chatChildRoster) { _, _ in
         refreshSubagentSnapshots()
       }
+      .onReceive(syncService.machineFleet?.$machines.eraseToAnyPublisher()
+        ?? Empty<[MachineFleet.Machine], Never>().eraseToAnyPublisher()) { machines in
+        followRemoteRosterTitle(in: machines)
+      }
       .onDisappear {
         chatDestinationVisible = false
         detachThreadModel()
@@ -2705,6 +2713,27 @@ struct WorkSessionDestinationView: View {
     if current != chatSummary {
       chatSummary = current
     }
+  }
+
+  /// A chat on another computer: no event reaches this screen when that
+  /// computer names the chat after its first turn, or renames it. Its roster
+  /// does carry the new title, so a new one reads the summary again.
+  @MainActor
+  private func followRemoteRosterTitle(in machines: [MachineFleet.Machine]) {
+    let focusedKey = syncService.focusedMachineKey
+    var rosterTitle: String?
+    search: for machine in machines where machine.machineKey != focusedKey {
+      for project in machine.projects {
+        if let chat = project.chats.first(where: { $0.id == sessionId }) {
+          rosterTitle = chat.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+          break search
+        }
+      }
+    }
+    guard let rosterTitle, !rosterTitle.isEmpty, rosterTitle != remoteRosterTitleSeen else { return }
+    remoteRosterTitleSeen = rosterTitle
+    guard rosterTitle != chatSummary?.title else { return }
+    Task { await refreshChatSummaryFromHost() }
   }
 
   @MainActor

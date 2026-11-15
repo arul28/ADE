@@ -157,9 +157,9 @@ extension LanesTabView {
         machineFilter = .all
       } label: {
         if machineFilter == .all {
-          Label("All machines", systemImage: "checkmark")
+          Label("All computers", systemImage: "checkmark")
         } else {
-          Text("All machines")
+          Text("All computers")
         }
       }
       Button {

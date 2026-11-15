@@ -301,7 +301,7 @@ func hubSendProjectIcon(
     }
   }
   for location in locations {
-    let name = fleet.machine(for: location.machineKey)?.name ?? "Another machine"
+    let name = fleet.machine(for: location.machineKey)?.name ?? "Another computer"
     guard let connection = fleet.connection(for: location.machineKey),
           connection.isLive, connection.supportsProjectIcon else {
       failures.append("\(name): can’t reach it, or its ADE is too old")

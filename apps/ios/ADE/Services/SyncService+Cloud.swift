@@ -715,7 +715,7 @@ struct CloudServerClient {
   var baseURL: URL
   var token: String
   var refreshToken: (() async -> String?)?
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   private struct InstanceList: Decodable { let data: [CloudServerInstance] }
   private struct ChatList: Decodable { let chats: [CloudSavedChatRow] }

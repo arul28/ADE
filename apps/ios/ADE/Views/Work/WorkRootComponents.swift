@@ -2303,7 +2303,7 @@ struct WorkFilterMenu: View {
             }
             if !selectedMachines.isEmpty {
               Divider()
-              Button("Show all machines") {
+              Button("Show all computers") {
                 withAnimation(.snappy(duration: 0.18)) { machineFilter = "" }
               }
             }

@@ -31,6 +31,24 @@ final class MobileUsageQuotaStore: ObservableObject {
 
   private init() {}
 
+  /// An account left this phone: every computer's saved limits (they name
+  /// the provider accounts signed in on it) and the ones on screen go. A
+  /// computer still paired by code loads its limits again when they show.
+  func purgeAll() {
+    loadGeneration += 1
+    statsGeneration += 1
+    loadedHostIdentity = nil
+    statsHostIdentity = nil
+    statsCache = [:]
+    snapshot = nil
+    stats = nil
+    errorMessage = nil
+    let defaults = UserDefaults.standard
+    for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("\(cacheKeyPrefix).") {
+      defaults.removeObject(forKey: key)
+    }
+  }
+
   #if DEBUG
   /// Fixture screens (`-adePreviewScreen new-chat`) pin a snapshot so the live
   /// loaders, which would clear it with no paired host, leave it alone.

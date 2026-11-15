@@ -768,10 +768,10 @@ struct HubScreen: View {
     let others = hubProjectLocations(project)
     let onFocused = fleetMerge.projectOwners[project.id] == nil
     let count = others.count + (onFocused ? 1 : 0)
-    if count > 1 { return "\(count) machines" }
+    if count > 1 { return "\(count) computers" }
     if onFocused { return syncService.focusedMachineDisplayName }
     guard let key = others.first?.machineKey else { return nil }
-    return machineFleet.machine(for: key)?.name ?? "Another machine"
+    return machineFleet.machine(for: key)?.name ?? "Another computer"
   }
 
   private func hubMachineCount(for project: MobileProjectSummary) -> Int {

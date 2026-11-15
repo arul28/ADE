@@ -157,6 +157,12 @@ final class MachineFleet: ObservableObject {
   /// When each machine stopped being live (or the app came back to the
   /// front): the start of its reconnect window.
   private var notLiveSince: [String: Date] = [:]
+  /// The computers whose work was listed when the app went to the background
+  /// (and whether the focused one's was). Only these get a new reconnect
+  /// window back in front: a computer that was already offline before that
+  /// stays out of the lists and the counts.
+  private var listedWhenBackgrounded: Set<String> = []
+  private var focusedListedWhenBackgrounded = true
   private var reconnectWindowTask: Task<Void, Never>?
   private var reconnectWindowEnd: Date?
   private var lastLiveKeys: Set<String> = []
@@ -308,6 +314,8 @@ final class MachineFleet: ObservableObject {
     guard appActive != active else { return }
     appActive = active
     if !active {
+      listedWhenBackgrounded = Set(machines.filter(\.listsWork).map(\.machineKey))
+      focusedListedWhenBackgrounded = syncService?.focusedMachineListsWork ?? true
       for connection in connections.values {
         connection.stop(reason: "App in background.")
       }
@@ -315,11 +323,14 @@ final class MachineFleet: ObservableObject {
       presenceRefreshTask = nil
       publish()
     } else {
-      // Back in front: every machine reconnects, and its rows stay listed
-      // while it does.
+      // Back in front: every machine reconnects, and the rows of one that was
+      // listed when the app left stay listed while it does. One that was
+      // offline before that keeps its old time, so it is not counted again.
       let now = Date()
-      for key in notLiveSince.keys { notLiveSince[key] = now }
-      syncService?.restartFocusedReconnectWindow()
+      for key in notLiveSince.keys where listedWhenBackgrounded.contains(key) { notLiveSince[key] = now }
+      listedWhenBackgrounded = []
+      syncService?.restartFocusedReconnectWindow(wasListed: focusedListedWhenBackgrounded)
+      focusedListedWhenBackgrounded = true
       resumeGivenUpConnections()
       reconcile()
       scheduleProjectMachinesUpdate()

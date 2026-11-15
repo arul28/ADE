@@ -336,6 +336,23 @@ enum HubLayoutStore {
 
   static func isAccountKey(_ key: String) -> Bool { key.hasPrefix(accountPrefix) }
 
+  private static let accountDefaultsKeyPrefix = "ade.hub.layout.v2|"
+
+  /// The account-wide orders (account project ids) of every account but
+  /// `keepingUserId`; nil removes all of them.
+  static func removeAccountLayouts(keepingUserId: String?) {
+    let kept = keepingUserId.map { accountDefaultsKeyPrefix + $0 }
+    for key in ADESharedContainer.defaults.dictionaryRepresentation().keys
+      where key.hasPrefix(accountDefaultsKeyPrefix) && key != kept
+    {
+      ADESharedContainer.defaults.removeObject(forKey: key)
+    }
+  }
+
+  static func removeAccountLayout(userId: String) {
+    ADESharedContainer.defaults.removeObject(forKey: accountDefaultsKeyPrefix + userId)
+  }
+
   private static func defaultsKey(_ connectionKey: String) -> String {
     if isAccountKey(connectionKey) {
       return "ade.hub.layout.v2|\(connectionKey.dropFirst(accountPrefix.count))"

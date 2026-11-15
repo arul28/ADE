@@ -751,7 +751,7 @@ private struct DuoHomeFixtureScreen: View {
 
   private var title: some View {
     HubConnectionMenu(
-      status: HubConnectionStatus(tone: .ok, label: "2 machines", spokenState: "connected", machineCount: 2),
+      status: HubConnectionStatus(tone: .ok, label: "2 computers", spokenState: "connected", machineCount: 2),
       machines: DuoHomeFixture.machines,
       onOpenSettings: {}
     )
@@ -804,7 +804,7 @@ private enum DuoHomeFixture {
   static func machineLabel(for project: MobileProjectSummary) -> String? {
     let index = Int(project.id.split(separator: "-").last ?? "") ?? 0
     switch index % 5 {
-    case 1: return "2 machines"
+    case 1: return "2 computers"
     case 3: return "Arul’s MacBook Pro"
     default: return "Arul’s Mac Studio"
     }

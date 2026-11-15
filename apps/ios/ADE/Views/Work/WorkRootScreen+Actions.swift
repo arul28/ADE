@@ -33,7 +33,7 @@ extension WorkRootListScreen {
       && loadedProjectionProjectId == activeProjectId
     let localSessions = localProjectionIsCurrent ? sessions : []
     let localLanes = localProjectionIsCurrent ? lanes : []
-    let chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
+    var chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
     let knownChatSummaries = syncService.chatSummaryCache.merging(chatSummariesSnapshot) { _, current in current }
     var identitySessionIds = Set<String>(knownChatSummaries.compactMap { sessionId, summary in
       guard let identityKey = summary.identityKey?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -76,6 +76,19 @@ extension WorkRootListScreen {
       focused: activeRoster
     )
     syncService.setWorkListRemoteChats(remoteMerge.remoteChats)
+    // A chat started here on another computer: once that computer's roster
+    // lists it, its roster row is the live one. The row and summary kept from
+    // its start go, because nothing refreshes them (summaries are read from
+    // the focused computer's lanes): the row kept the first title, such as
+    // "Claude Chat", for minutes after the chat was named.
+    let startedElsewhere = optimisticSessions.keys.filter { remoteMerge.remoteChats[$0] != nil }
+    if !startedElsewhere.isEmpty {
+      for sessionId in startedElsewhere {
+        optimisticSessions[sessionId] = nil
+        chatSummaries[sessionId] = nil
+        chatSummariesSnapshot[sessionId] = nil
+      }
+    }
     let rosterProjection = (sessions: remoteMerge.sessions, lanes: remoteMerge.lanes)
     // Chats launched into a lane that is still being set up: a row under the
     // launch's lane until the real session row lands, then only the status line.

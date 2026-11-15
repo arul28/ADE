@@ -142,7 +142,7 @@ struct HubQuickConnectSection: View {
               syncService.settingsPresented = true
             } label: {
               HStack(spacing: 5) {
-                Text("See all machines")
+                Text("See all computers")
                 Image(systemName: "chevron.right")
                   .font(.system(size: 10, weight: .semibold))
               }

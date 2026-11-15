@@ -182,7 +182,7 @@ struct ProviderAccountsMachinePicker: View {
           .font(.system(size: 15, weight: .medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-        Text(showsChevron ? "\(machines.count) machines" : "Connected")
+        Text(showsChevron ? "\(machines.count) computers" : "Connected")
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
       }

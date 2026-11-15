@@ -1623,7 +1623,6 @@ struct WorkRootListScreen: View, Equatable {
     }
     .padding(.horizontal, 16)
     .padding(.bottom, 6)
-    .background(ADEColor.pageBackground.opacity(0.94))
   }
 
   /// The chat awaits one constructor in both layouts; only the chrome and the
@@ -2182,6 +2181,26 @@ struct WorkRootListScreen: View, Equatable {
                 duoSessionsTitleRow
               }
               duoSessionsSearchRow
+            }
+            // One backing for both rows, up through the top edge (the title
+            // row's bar padding and the safe area): rows that scroll past the
+            // top go under the header, as under the phone's Work header,
+            // and never draw through the title or the search field. A short
+            // fade below it eases the rows in instead of a hard cut.
+            .background {
+              ADEColor.pageBackground
+                .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
+              LinearGradient(
+                colors: [ADEColor.pageBackground, ADEColor.pageBackground.opacity(0)],
+                startPoint: .top,
+                endPoint: .bottom
+              )
+              .frame(height: 10)
+              .offset(y: 10)
+              .allowsHitTesting(false)
             }
           }
         }

@@ -530,7 +530,7 @@ struct HubInlineComposer: View {
             HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
           }
           if syncService.projects.isEmpty {
-            emptyPickerRow("No projects on this machine")
+            emptyPickerRow("No projects on this computer")
           } else {
             ForEach(syncService.projects) { project in
               projectRow(project)
@@ -1345,7 +1345,7 @@ struct HubInlineComposer: View {
   /// when that machine cannot be reached or does not list the project.
   @MainActor
   private func focusPickedMachine(_ key: String) async -> Bool {
-    let machineName = pickedRemoteMachine?.name ?? "that machine"
+    let machineName = pickedRemoteMachine?.name ?? "that computer"
     let projectId = pickedProjectId
     let rootPath = syncNormalizedProjectRootScope(pickedRemoteProject?.rootPath)
     // The switch reconciles the destination against a roster that may not have

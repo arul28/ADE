@@ -364,7 +364,7 @@ struct ActivityDrawerSheet: View {
             return (
                 "antenna.radiowaves.left.and.right.slash",
                 ADEColor.textMuted,
-                "Can't reach your machines",
+                "Can't reach your computers",
                 "Sign in or reconnect to see what your agents are doing."
             )
         }

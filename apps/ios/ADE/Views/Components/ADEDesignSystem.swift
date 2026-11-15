@@ -619,6 +619,14 @@ final class ADEImageCache {
     return UIImage(data: data)
   }
 
+  /// An account left this phone: the pictures its screens loaded (people and
+  /// repositories of its pull requests) go from memory and disk.
+  func removeAll() {
+    memoryCache.removeAllObjects()
+    let files = (try? fileManager.contentsOfDirectory(at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
+    for file in files { try? fileManager.removeItem(at: file) }
+  }
+
   func store(_ data: Data, for key: String) {
     memoryCache.setObject(data as NSData, forKey: key as NSString)
     let url = cacheDirectory.appendingPathComponent(diskFilename(for: key))

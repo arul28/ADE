@@ -3513,11 +3513,12 @@ func syncOwningAccountMachineKey(
       return key
     }
   }
-  guard let workspaceSnapshot,
-        let key = workspaceSnapshot.machineId?
+  // A session of another connected computer names its computer; the others
+  // are on the snapshot's own computer.
+  guard let agent = workspaceSnapshot?.agents.first(where: { $0.sessionId == sessionId }),
+        let key = (agent.machineId ?? workspaceSnapshot?.machineId)?
           .trimmingCharacters(in: .whitespacesAndNewlines),
-        !key.isEmpty,
-        workspaceSnapshot.agents.contains(where: { $0.sessionId == sessionId }) else {
+        !key.isEmpty else {
     return nil
   }
   return key
@@ -4773,8 +4774,20 @@ final class SyncService: ObservableObject {
   @Published var projectOpenFailure: SyncProjectOpenFailure?
   /// The roster connections to every other live machine. Not owned here.
   weak var machineFleet: MachineFleet? {
-    didSet { machineFleet?.setCloudMachineKeys(cloudMachineFleetKeys) }
+    didSet {
+      machineFleet?.setCloudMachineKeys(cloudMachineFleetKeys)
+      observeFleetForActivity()
+    }
   }
+  /// Rebuilds Activity, the widgets and the Live Activity when another
+  /// computer's roster or listing changes.
+  private var fleetActivityCancellable: AnyCancellable?
+  /// The focused copy's session rows from the last Activity rebuild, read
+  /// from the database. A rebuild for another computer's change uses them
+  /// again instead of a database read on the main thread.
+  private var lastFocusedActivityRows: [TerminalSessionSummary]?
+  /// The other computers the last Activity rebuild covered, for the snapshot.
+  private var activityOtherMachines: [WorkspaceSnapshotMachine] = []
   /// When the focused machine's link dropped (or the app came back to the
   /// front): the start of its reconnect window. Nil while connected.
   private var focusedNotLiveSince: Date? = Date()
@@ -6832,6 +6845,8 @@ final class SyncService: ObservableObject {
       terminalStream.requestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
       resetLanePayloadSignatures()
+      // These rows are the old project's; the next Activity rebuild reads.
+      lastFocusedActivityRows = nil
       // A pane belongs to the old project. Callers that intentionally open a
       // chat after the switch record the new session once activation lands.
       UserDefaults.standard.removeObject(forKey: lastProjectRouteWorkSessionIdKey)
@@ -7299,6 +7314,9 @@ final class SyncService: ObservableObject {
       })
     }
 
+    // A sign-out an app kill stopped finishes before anything connects or
+    // shows the account's data (`AccountSignOutProgress`).
+    AccountService.shared.finishInterruptedSignOutIfNeeded()
     // A restored user pause means the focused computer lists no work; the
     // `connectionState` observer does not run for its first value.
     updateFocusedMachineListing()
@@ -10978,6 +10996,51 @@ final class SyncService: ObservableObject {
     enforceRelayAuthorization(currentOwnerId: allowedOwner)
   }
 
+  /// The data on this phone belongs to an account that is not the signed-in
+  /// one (`keepingOwnerId`; nil after a sign-out): its computers leave, and
+  /// the local copy and caches start again empty
+  /// (`resetLocalReplicaAfterAccountLeft`), also when none of its computers
+  /// are still saved. Computers paired by code stay.
+  func removeFormerAccountData(keepingOwnerId: String?) {
+    let keep = keepingOwnerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    removeAccountOwnedPairings(
+      matching: { owner in !owner.isEmpty && owner != keep },
+      resetWhenNoneOwned: true
+    )
+  }
+
+  /// The first sign-in on a phone whose earlier build never recorded which
+  /// account the data on disk belongs to (a sign-out of such a build may have
+  /// stopped half way). Other accounts' computers leave with the local copy;
+  /// the caches that hold chat titles, previews and account answers go in
+  /// every case, because they fill again from the computers. The local copy
+  /// stays when every saved computer is this account's or paired by code.
+  func removeCachesOfUnknownOwner(keepingOwnerId: String) {
+    let keep = keepingOwnerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !keep.isEmpty else { return }
+    removeAccountOwnedPairings(matching: { owner in !owner.isEmpty && owner != keep })
+    chatThreadRegistry.purgeAll()
+    workSessionsConditionalCache = nil
+    workSessionsCacheLoadedKeys = []
+    if let dir = Self.workSessionsCacheDirectory {
+      try? FileManager.default.removeItem(at: dir)
+    }
+    URLCache.shared.removeAllCachedResponses()
+    MobileUsageQuotaStore.shared.purgeAll()
+    removeSavedListMarks()
+  }
+
+  /// The session ids the user opened (`WorkSeenStore`) and the saved
+  /// lane-list signatures, whose keys name computers and projects.
+  private func removeSavedListMarks() {
+    UserDefaults.standard.removeObject(forKey: WorkSeenStore.key)
+    for key in UserDefaults.standard.dictionaryRepresentation().keys
+      where key.hasPrefix("ade.sync.conditional.")
+    {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+  }
+
   /// Any paired profile may have Relay metadata learned through an account.
   /// When that account signs out or changes, end an active Relay session
   /// immediately, keep the device credential, and try LAN/Tailscale instead.
@@ -11127,6 +11190,20 @@ final class SyncService: ObservableObject {
     {
       ADESharedContainer.defaults.removeObject(forKey: key)
     }
+    // The hidden and removed folders of every computer that is not paired any
+    // more: their entries hold folder paths.
+    var keptHostKeys = Set(profiles.keys)
+    for profile in profiles.values {
+      if let host = savedProfileHostStorageKey(profile) { keptHostKeys.insert(host) }
+    }
+    let visibilityPrefixes = ["\(hiddenProjectsKey).", "\(removedFromHostProjectsKey)."]
+    for key in UserDefaults.standard.dictionaryRepresentation().keys {
+      guard let prefix = visibilityPrefixes.first(where: key.hasPrefix),
+            !keptHostKeys.contains(String(key.dropFirst(prefix.count))) else { continue }
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+    UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+    loadProjectVisibilityKeys()
 
     // Queued offline work for the account's computers goes; work queued for a
     // remaining (code-paired) computer stays. The offline chat-creation rows
@@ -11142,10 +11219,27 @@ final class SyncService: ObservableObject {
     // folder goes too, so a save already on its way to the disk fails.
     workSessionsConditionalCache = nil
     workSessionsCacheLoadedKeys = []
+    lastFocusedActivityRows = nil
+    activityOtherMachines = []
     pullRequestListConditionalCache = nil
     if let dir = Self.workSessionsCacheDirectory {
       try? FileManager.default.removeItem(at: dir)
     }
+    // Answers the URL loading system kept on disk (`Cache.db`; account
+    // requests use `URLSession.adeAccount` and keep none, older builds did),
+    // and each computer's usage limits, which name its provider sign-ins.
+    URLCache.shared.removeAllCachedResponses()
+    MobileUsageQuotaStore.shared.purgeAll()
+    removeSavedListMarks()
+    HubLayoutStore.removeAccountLayouts(keepingUserId: nil)
+    // Unsent prompts and question answers: text typed into the account's chats.
+    WorkComposerDraftStore.removeAll()
+    WorkQuestionDraftStore.removeAll()
+    ADEImageCache.shared.removeAll()
+    // The saved chat transcripts: the files go now (a launch warms the most
+    // recent ones from them), and the store closes its connection after.
+    ChatLogStore.removeSharedStoreFiles()
+    chatThreadRegistry.purgeAll()
 
     // The in-memory and App Group copies of the old rows.
     chatSummaryCache = [:]
@@ -20642,6 +20736,21 @@ final class SyncService: ObservableObject {
             guard let payload = preprocessed.payload as? [String: Any] else {
               throw NSError(domain: "ADE", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid hello response."])
             }
+            // A port sweep can reach another ADE on the same address. Only the
+            // computer this pairing names may win: another one loses this
+            // candidate (not the pairing), and the race goes on with the rest.
+            if let expected = syncNonEmpty(profile.hostIdentity),
+               let responding = syncNonEmpty((payload["brain"] as? [String: Any])?["deviceId"] as? String),
+               responding != expected {
+              syncConnectLog.notice(
+                "ADE_SYNC_TRACE candidate answered by another machine host=\(candidate.endpoint.address, privacy: .public) port=\(candidate.endpoint.port)"
+              )
+              throw NSError(
+                domain: "ADE",
+                code: 37,
+                userInfo: [NSLocalizedDescriptionKey: "Another ADE answered at this address."]
+              )
+            }
             return AuthenticatedConnectionCandidate(
               scheduled: candidate,
               task: candidateTask,
@@ -26104,9 +26213,20 @@ extension SyncService {
     // "Dismiss & settle" still waits: `needs_you` outranks the settled tier and
     // the overlay does not touch the attention columns, which only the host
     // clears.)
-    let sessions = (rows.map { overlayLocalSessions($0) } ?? localSessions()).map { session in
-      rosterTurnStatusById[session.id]?.applyingTurnState(to: session) ?? session
-    }
+    let focusedRows = rows ?? database.fetchSessions()
+    lastFocusedActivityRows = focusedRows
+    // The focused computer's rows follow the lists too: past its reconnect
+    // window its work is not listed, as on the Hub and in Work.
+    let focusedSessions = focusedMachineListsWork
+      ? overlayLocalSessions(focusedRows).map { session in
+        rosterTurnStatusById[session.id]?.applyingTurnState(to: session) ?? session
+      }
+      : []
+    // Every computer at once: the Hub and Work list them all, so Activity, the
+    // widgets and the Live Activity must count the same rows.
+    let others = activitySessionsOutsideFocusedCopy(skipping: Set(focusedSessions.map(\.id)))
+    let sessions = focusedSessions + others.sessions
+    let focusedProject = activeProject
     let now = Date()
 
     // `activeSessions` holds every relevant session — running,
@@ -26211,7 +26331,11 @@ extension SyncService {
         pendingInputItemId: isAwaiting ? (session.pendingInputItemId ?? pendingInputItemIdForSnapshot(sessionId: session.id)) : nil,
         progress: nil,
         phase: nil,
-        toolCalls: 0
+        toolCalls: 0,
+        machineId: others.machineBySession[session.id]?.id,
+        machineName: others.machineBySession[session.id]?.name,
+        projectId: others.projectBySession[session.id]?.id ?? focusedProject?.id,
+        projectName: others.projectBySession[session.id]?.name ?? focusedProject?.displayName
       )
 
       allAgents.append(snap)
@@ -26232,12 +26356,18 @@ extension SyncService {
       }
     }
 
-    let nextSignature = activeSessionsSignature(
+    var nextSignature = activeSessionsSignature(
       agents: allAgents,
       awaitingInputCount: awaitingInputCount,
       runningChatCount: runningChatCount,
       idleCount: idleCount
     )
+    // A computer that joins or leaves the lists changes what the snapshot
+    // covers, also when it has no session to show.
+    if others.machines != activityOtherMachines {
+      activityOtherMachines = others.machines
+      nextSignature &+= 1
+    }
     // Before the roster early-return, not after: the CTO is excluded from
     // `allAgents` by design, so a turn where ONLY the CTO changed leaves the
     // signature identical. Hanging the probe below the guard would mean the
@@ -26298,6 +26428,85 @@ extension SyncService {
     }
   }
 
+  /// The sessions Activity, the widgets and the Live Activity show beside the
+  /// open project's copy, by the Hub's rules (`rebuildHubProjectPresentations`):
+  /// the focused computer's other projects, and every other computer whose
+  /// work the lists show (connected and live or inside its reconnect window,
+  /// or an ADE Cloud computer, also asleep). `machines` names every other
+  /// computer the fleet holds, listed or not: the drawer shows only this
+  /// phone's view of each of them.
+  private func activitySessionsOutsideFocusedCopy(
+    skipping focusedIds: Set<String>
+  ) -> (
+    sessions: [TerminalSessionSummary],
+    machineBySession: [String: (id: String, name: String)],
+    projectBySession: [String: (id: String, name: String)],
+    machines: [WorkspaceSnapshotMachine]
+  ) {
+    var seen = focusedIds
+    var sessions: [TerminalSessionSummary] = []
+    var machineBySession: [String: (id: String, name: String)] = [:]
+    var projectBySession: [String: (id: String, name: String)] = [:]
+    func add(_ project: RemoteRosterProject, machine: (id: String, name: String)?) {
+      let laneById = Dictionary(project.lanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+      for chat in project.chats where chat.archived != true && !chat.isIdentityChat {
+        // The Hub lists a chat under its lane; one without a known lane is
+        // not on it.
+        guard let lane = laneById[chat.laneId] else { continue }
+        // A focused row from the local copy gets its project name here when
+        // no project is open (the Hub).
+        if machine == nil, focusedIds.contains(chat.id) {
+          projectBySession[chat.id] = (project.projectId, project.displayName)
+        }
+        guard seen.insert(chat.id).inserted else { continue }
+        sessions.append(chat.asTerminalSessionSummary(laneName: lane.name))
+        if let machine { machineBySession[chat.id] = machine }
+        projectBySession[chat.id] = (project.projectId, project.displayName)
+      }
+    }
+    if focusedMachineListsWork {
+      for project in projects where !isActiveProject(project) {
+        if let roster = rosterProject(for: project) { add(roster, machine: nil) }
+      }
+    }
+    var machines: [WorkspaceSnapshotMachine] = []
+    if let fleet = machineFleet {
+      var seenMachines = Set<String>()
+      for machine in fleet.machines + fleet.restingCloudMachines
+      where seenMachines.insert(machine.machineKey).inserted {
+        let id = AccountService.shared.accountMachineKey(forFleetKey: machine.machineKey) ?? machine.machineKey
+        let listed = machine.listsWork && (machine.isWanted || machine.isCloud)
+        machines.append(WorkspaceSnapshotMachine(id: id, name: machine.name, listed: listed))
+        guard listed else { continue }
+        for project in machine.projects { add(project, machine: (id, machine.name)) }
+      }
+    }
+    return (sessions, machineBySession, projectBySession, machines)
+  }
+
+  /// Another computer's roster or listing changed: rebuild Activity with the
+  /// focused rows it already holds. Coalesced, because a busy shell on another
+  /// computer moves its roster each second.
+  private func observeFleetForActivity() {
+    guard let fleet = machineFleet else {
+      fleetActivityCancellable = nil
+      return
+    }
+    fleetActivityCancellable = fleet.$machines
+      .combineLatest(fleet.$restingCloudMachines)
+      .map { machines, resting in
+        (machines + resting).map { machine in
+          "\(machine.machineKey)|\(machine.rosterRevision)|\(machine.listsWork)|\(machine.isWanted)|\(machine.isCloud)|\(machine.projects.count)"
+        }
+      }
+      .removeDuplicates()
+      .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
+      .sink { [weak self] _ in
+        guard let self else { return }
+        self.refreshActiveSessionsAndSnapshot(rows: self.lastFocusedActivityRows)
+      }
+  }
+
   private func activeSessionsSignature(
     agents: [AgentSnapshot],
     awaitingInputCount: Int,
@@ -26324,6 +26533,8 @@ extension SyncService {
       hasher.combine(agent.progress)
       hasher.combine(agent.phase)
       hasher.combine(agent.toolCalls)
+      hasher.combine(agent.machineId)
+      hasher.combine(agent.projectName)
     }
     return hasher.finalize()
   }
@@ -26415,7 +26626,8 @@ extension SyncService {
       awaitingInputCount: awaitingInputSessionsCount,
       idleCount: idleSessionsCount,
       machineId: identity?.key,
-      machineName: identity?.name
+      machineName: identity?.name,
+      otherMachines: activityOtherMachines
     )
 
     let written = await withCheckedContinuation { continuation in
@@ -29486,7 +29698,11 @@ extension SyncService {
       now: now,
       window: MachineFleet.workListReconnectWindow
     )
-    if lists != focusedMachineListsWork { focusedMachineListsWork = lists }
+    if lists != focusedMachineListsWork {
+      focusedMachineListsWork = lists
+      // Activity, the widgets and the Live Activity follow the lists.
+      refreshActiveSessionsAndSnapshot(rows: lastFocusedActivityRows)
+    }
     focusedListWindowTask?.cancel()
     focusedListWindowTask = nil
     guard lists, !isLive, !isCloud, let since = focusedNotLiveSince else { return }
@@ -29500,8 +29716,10 @@ extension SyncService {
 
   /// Back in front: the focused machine reconnects, and its rows stay listed
   /// while it does.
-  func restartFocusedReconnectWindow() {
-    if focusedNotLiveSince != nil { focusedNotLiveSince = Date() }
+  /// `wasListed`: the focused computer's work was listed when the app went to
+  /// the background. One that was offline before that keeps its old time.
+  func restartFocusedReconnectWindow(wasListed: Bool = true) {
+    if wasListed, focusedNotLiveSince != nil { focusedNotLiveSince = Date() }
     updateFocusedMachineListing()
   }
 

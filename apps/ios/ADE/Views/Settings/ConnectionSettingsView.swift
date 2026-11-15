@@ -149,7 +149,7 @@ struct ConnectionSettingsView: View {
         }
         Button("Cancel", role: .cancel) {}
       } message: { _ in
-        Text("The phone keeps \(MachineFleet.liveMachineLimit) machines live at a time. Pick one to disconnect.")
+        Text("The phone keeps \(MachineFleet.liveMachineLimit) computers live at a time. Pick one to disconnect.")
       }
       // Ask again whether the account has ADE Cloud each time Settings opens
       // or the connection comes back: the phone may now be on a machine of

@@ -337,7 +337,7 @@ func hubConnectionStatus(
   let liveCount = (health.transport == .connected ? 1 : 0)
     + machineFleet.machines.filter { $0.state == .live }.count
   let label = health.transport == .connected && liveCount > 1
-    ? "\(liveCount) machines"
+    ? "\(liveCount) computers"
     : machineName ?? transportWord
   let switching = syncService.isProjectSwitching
     ? syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
@@ -1719,7 +1719,7 @@ struct HubEmptyProjectsCard: View {
       Image(systemName: "folder.badge.plus")
         .font(.system(size: 22, weight: .regular))
         .foregroundStyle(ADEColor.textMuted)
-      Text("No projects on \(syncService.hostName ?? "this machine")")
+      Text("No projects on \(syncService.hostName ?? "this computer")")
         .font(.system(size: 15, weight: .semibold))
         .foregroundStyle(ADEColor.textPrimary)
       Text("Add a project to start vibecoding from your phone.")
@@ -1891,12 +1891,12 @@ struct HubNoMachineState: View {
         attemptMachineName: syncService.connectAttemptTarget?.machineName,
         hostDisplayName: machineDisplayName
       )
-      return "Cannot reach \(subject ?? "machine")"
+      return "Cannot reach \(subject ?? "the computer")"
     }
     if hasSavedMachine {
-      return "Disconnected from \(machineDisplayName ?? "saved machine")"
+      return "Disconnected from \(machineDisplayName ?? "the saved computer")"
     }
-    return "No machine attached"
+    return "No computer connected"
   }
 }
 
