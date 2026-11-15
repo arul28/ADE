@@ -1274,6 +1274,8 @@ declare global {
         packageChannel: AppPackageChannel;
         /** The running build's update track (Stable or Beta). Synchronous, like `packageChannel`. */
         updateTrack: UpdateTrack;
+        /** The running build's version, or null when unknown (web client, tests). Synchronous, like `updateTrack`. */
+        appVersion?: string | null;
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         /** Swallow this window's menu accelerators while a takeover drives. */

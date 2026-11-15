@@ -379,6 +379,7 @@ import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/loc
 import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
 import {
   shippedVersionOrNull,
+  APP_VERSION_ARGV_PREFIX,
   UPDATE_TRACK_ARGV_PREFIX,
   updateTrackOfVersion,
   type UpdateTrack,
@@ -1148,6 +1149,8 @@ async function createWindow(args: {
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
         // Same reason: the "Beta" label next to the logo is drawn at first paint.
         `${UPDATE_TRACK_ARGV_PREFIX}${updateTrackOfVersion(app.getVersion())}`,
+        // The boot splash plays its full reveal once per version, decided at first paint.
+        `${APP_VERSION_ARGV_PREFIX}${app.getVersion()}`,
         ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },

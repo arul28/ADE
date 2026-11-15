@@ -25470,6 +25470,17 @@ export function createAgentChatService(args: {
       ...appendBufferedAssistantText(null, event),
       timer: null,
     };
+    // The first words of a message show at once; the rest coalesce every
+    // 100ms. The flush leaves an empty buffer with the message's identity, so
+    // the next delta joins it instead of flushing at once again. A Codex
+    // message without a phase waits: its phase can arrive at completion and
+    // must still label text in the buffer.
+    if (managed.session.provider !== "codex" || event.phase) {
+      const { text: _firstText, ...identity } = managed.bufferedText;
+      flushBufferedText(managed, "first");
+      managed.bufferedText = { ...identity, text: "", timer: null };
+      return;
+    }
     scheduleBufferedTextFlush(managed);
   };
 

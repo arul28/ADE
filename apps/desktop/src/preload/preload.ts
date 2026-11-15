@@ -43,7 +43,7 @@ import type { MachineStats } from "../shared/types/machineStats";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
-import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
+import { resolveAppVersionFromArgv, resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -5218,6 +5218,8 @@ const adeBridge = {
     }),
     // The running build's update track, synchronous for the header label.
     updateTrack: resolveUpdateTrackFromArgv(process.argv),
+    // The running build's version, synchronous for the boot splash's first paint.
+    appVersion: resolveAppVersionFromArgv(process.argv),
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
