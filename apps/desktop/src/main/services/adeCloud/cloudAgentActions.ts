@@ -774,10 +774,12 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         shape: shape?.id ?? null,
         personPlace: CLOUD_LANE_PERSON_PLACE,
       });
-      // An agent nobody watches stays within the agent limits: a default Small moves up only when they allow Medium.
-      if (mayMoveUp && yes.unattended && !saved) {
+      // An agent nobody watches stays within the agent limits as they are now: a default Small
+      // moves up only when they allow Medium. A retry too (they may have been lowered since the
+      // first start): its saved launch and the request the server keeps say "capped" then.
+      if (mayMoveUp && yes.unattended) {
         const limits = await deps.limits.read().catch(() => CLOUD_DEFAULT_AGENT_LIMITS);
-        if (!cloudShapeWithin(MEDIUM_SHAPE, limits.maxShape)) startArgs.args = { ...launch, cloud: { sizeId, sizeChoice: "capped" } };
+        if (!cloudShapeWithin(MEDIUM_SHAPE, limits.maxShape)) startArgs.args = { ...launch, cloud: { sizeId: startSize, sizeChoice: "capped" } };
       }
       try {
         const started = await host.start({ ...startArgs, madeByAgent: yes.maker });

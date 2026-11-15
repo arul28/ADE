@@ -1453,12 +1453,22 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
     the computer at Medium: the row says `auto_size = 'remembered'`, the
     record answers `sizeId: "medium"` and `autoSize`, and `request.sizeId`
     keeps what was asked. After 90 days Small is tried again (a setup that got
-    lighter stops paying 2×). The rows go with the account.
+    lighter stops paying 2×). The rows go with the account. A Retry that
+    deleted the failed computer (`restartFailedLaunch`) is a new start: it
+    chooses its size again (a repository that needed Medium since starts
+    there) and saves the request as sent then; only a create still in flight
+    keeps the size the first attempt chose. An unattended agent's retry is
+    checked against the agent limits as they are then: limits lowered below
+    Medium make the saved launch and the server's request `capped`.
   - Shown. The launching app adopts the record's size (`adoptServerSize` in
     `cloudLaneComputerStages.ts`): `snapshot.cloud.sizeId` and `sizeNote`
     ("Medium: this repo's setup needed more than 4 GB before."), on the
     computer row, in the CLI's progress line and as `size` in `ade chat
-    launch-status`. The in-launch move shows on the environment stage
+    launch-status`. After the hand-off the app no longer follows the server:
+    when the brain's environment stage says setup moved the computer up, it
+    reads the record once (`refreshServerSize`, at most once a minute) and
+    keeps the size and the computer row's words over the brain's copies.
+    The in-launch move shows on the environment stage
     ("…ADE is checking whether it can move it to Medium…", then "…moving this
     computer to Medium (2× hours)…"); the CLI's progress line prints an
     environment stage's sentence between steps. The agent approval card says a

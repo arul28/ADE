@@ -99,6 +99,9 @@ function contentTypeOf(file: AgentChatFileRef): string {
 const linksOnly = (list: AgentChatFileRef[] | undefined): AgentChatFileRef[] | undefined =>
   list ? list.filter((file) => file.type === "image-url") : list;
 
+/** After the hand-off, how often the size is read from the server while the brain says setup moved the computer up. */
+const SIZE_REFRESH_MIN_MS = 60_000;
+
 export function createCloudLaneComputerStages(
   deps: CloudLaneLaunchDeps,
   handle: CloudLaneStageHandle,
@@ -152,6 +155,29 @@ export function createCloudLaneComputerStages(
     record.tier = null;
     await resolveTier(record);
     persist(record);
+  };
+
+  /**
+   * After the hand-off this app no longer follows the server: when the
+   * computer's brain says setup moved the computer up, the record reads its
+   * size from the server once, so the card, a Retry and the status read say
+   * Medium, and why. At most one read a minute per launch (the brain sends
+   * many snapshots); a read that fails or still says Small changes nothing.
+   */
+  const sizeRefreshes = new Map<string, number>();
+  const refreshServerSize = async (record: CloudLaneLaunchRecord): Promise<boolean> => {
+    const launchId = record.snapshot.launchId;
+    const last = sizeRefreshes.get(launchId);
+    if (last !== undefined && Date.now() - last < SIZE_REFRESH_MIN_MS) return false;
+    sizeRefreshes.set(launchId, Date.now());
+    try {
+      const before = record.snapshot.cloud.sizeId;
+      await adoptServerSize(record, await launcher().launchStatus(launchId));
+      return record.snapshot.cloud.sizeId !== before;
+    } catch (error) {
+      logger.info("cloud_lane_launch.size_refresh_failed", { launchId, error: getErrorMessage(error) });
+      return false;
+    }
   };
 
   /**
@@ -542,7 +568,7 @@ export function createCloudLaneComputerStages(
     return { found: own.size, deleted, accountRowLeft };
   };
 
-  return { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers };
+  return { providerClient, runServerLaunch, cancelOnServer, deleteOwnComputers, refreshServerSize, computerWords };
 }
 
 export type CloudLaneComputerStages = ReturnType<typeof createCloudLaneComputerStages>;

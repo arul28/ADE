@@ -2201,6 +2201,24 @@ describe("ADE Cloud server launcher", () => {
       expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining({ cpu: 2, memory: 4 }));
     });
 
+    // A Retry deletes the failed computer and starts a new one: at the size chosen now (the repository
+    // needed Medium since), and with the choice sent now (an agent whose limits were lowered sends "capped").
+    it.each<[string, "default" | "capped", string, { cpu: number; memory: number }]>([
+      ["a retry of a default launch after the repository needed Medium starts there", "default", "medium", { cpu: 4, memory: 8 }],
+      ["a retry the agent limits now hold at Small starts Small, and keeps that choice for a setup move", "capped", "small", { cpu: 2, memory: 4 }],
+    ])("%s", async (_label, retryChoice, sizeId, resources) => {
+      await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeChoice: "default" });
+      harness.insert("cloud_repo_sizes", { user_id: OWNER, project_origin: "github.com/acme/widgets", setup_key: "", size_id: "medium", launch_id: LAUNCH_2, recorded_at: clock });
+      harness.exec("update cloud_launches set state = 'failed', error = 'The clone failed.' where launch_id = ?", LAUNCH);
+
+      expect((await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeChoice: retryChoice, retry: true })).status).toBe(201);
+
+      expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining(resources));
+      // What a setup move checks (`launchAutoSizeCheck`): the retry's own choice.
+      const row = harness.row("select size_id, request_json from cloud_launches where launch_id = ?", LAUNCH) as { size_id: string; request_json: string };
+      expect([row.size_id, JSON.parse(row.request_json).sizeChoice]).toEqual([sizeId, retryChoice]);
+    });
+
     it("moves only the launch's own computer", async () => {
       await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeChoice: "default" });
       seedComputer(harness);

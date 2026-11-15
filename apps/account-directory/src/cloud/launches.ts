@@ -462,11 +462,13 @@ async function handleStart(request: Request, env: CloudEnv, userId: string, deps
   if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
   const parsed = parseLaunchRequest(body);
   if (typeof parsed === "string") return badRequest(parsed);
+  let restarted = false;
   if (body.retry === true) {
-    const restarted = await restartFailedLaunch(env, userId, parsed.launchId, deps);
-    if (restarted) return restarted;
+    const answer = await restartFailedLaunch(env, userId, parsed.launchId, deps);
+    if (answer instanceof Response) return answer;
+    restarted = answer === "restarted";
   }
-  return await startServerLaunch(env, userId, parsed, deps);
+  return await startServerLaunch(env, userId, parsed, deps, { restarted });
 }
 
 /** Whether the computer reported its agent's stage: from then on the lane is the person's, never deleted for them. */
@@ -492,7 +494,7 @@ function agentStartedIn(row: LaunchRow): boolean {
  * refuses puts the launch back as failed with that computer, so a later
  * Retry deletes it instead of leaving it on the account.
  */
-async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: string, deps: LaunchRouteDeps): Promise<Response | null> {
+async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: string, deps: LaunchRouteDeps): Promise<Response | "restarted" | null> {
   const row = await ownLaunch(env, userId, launchId);
   if (!row) return null;
   const failed = row.state === "failed" || joinNeverFinished(row, deps.now)
@@ -518,11 +520,11 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
     }
   }
   // Released for the start below; a cancel that landed meanwhile keeps the launch cancelled.
-  await env.DB.prepare(`
+  const released = await env.DB.prepare(`
     update cloud_launches set state = 'making', instance_id = null, updated_at = ? where launch_id = ? and user_id = ? and state = 'retrying'
   `).bind(deps.now, launchId, userId).run();
   logCloud("cloud.launch_retried", { userId, launchId, instanceId: row.instance_id });
-  return null;
+  return (released.meta?.changes ?? 0) === 1 ? "restarted" : null;
 }
 
 /**
@@ -531,7 +533,14 @@ async function restartFailedLaunch(env: CloudEnv, userId: string, launchId: stri
  * create path; 201 for a computer this call made, 200 for a launch that was
  * already started, or the refusal.
  */
-export async function startServerLaunch(env: CloudEnv, userId: string, parsed: CloudServerLaunchRequest, deps: LaunchRouteDeps): Promise<Response> {
+export async function startServerLaunch(
+  env: CloudEnv,
+  userId: string,
+  parsed: CloudServerLaunchRequest,
+  deps: LaunchRouteDeps,
+  /** `restarted`: this start follows a Retry that deleted the launch's failed computer (`restartFailedLaunch`). */
+  options: { restarted?: boolean } = {},
+): Promise<Response> {
   const { now } = deps;
   const launchId = parsed.launchId;
 
@@ -601,8 +610,20 @@ export async function startServerLaunch(env: CloudEnv, userId: string, parsed: C
     }
     salt = row.join_salt;
     joinCode = (await joinCodeOf(env, launchId, salt))!;
-    // The size the first attempt chose: the computer it may have made is that size.
-    if (cloudSizeForTier(row.size_id)) sizeId = row.size_id as CloudTierId;
+    if (options.restarted) {
+      // A Retry deleted the failed computer: nothing of the first attempt is
+      // left to replay, so this start is a new one. It takes the size chosen
+      // now (a repository that since needed Medium starts there) and the
+      // request as sent now (its size choice is what a setup move checks:
+      // an agent whose limits were lowered sends "capped").
+      await env.DB.prepare(`
+        update cloud_launches set size_id = ?, auto_size = ?, request_json = ?, updated_at = ?
+        where launch_id = ? and user_id = ? and state = 'making' and instance_id is null
+      `).bind(start.sizeId, autoSize, requestJson, now, launchId, userId).run();
+    } else if (cloudSizeForTier(row.size_id)) {
+      // A create still in flight, or one whose answer was lost: the computer it may have made is the size it chose.
+      sizeId = row.size_id as CloudTierId;
+    }
   }
 
   const size = cloudSizeForTier(sizeId)!;
