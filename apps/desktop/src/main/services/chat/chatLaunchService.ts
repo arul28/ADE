@@ -169,8 +169,13 @@ export type ChatLaunchEnvironmentDisk = {
    * its reserve, so the launch's mark can be written.
    */
   diskFull(args: { launchId: string; error: string }): { grow: true } | { grow: false; error: string };
-  /** Grows, once the launch's mark is on disk. `signal` aborts on Cancel. */
-  makeRoom(args: { launchId: string; laneId: string; signal: AbortSignal }): Promise<ChatLaunchEnvironmentRoom | null>;
+  /**
+   * Grows, once the launch's mark is on disk. `signal` aborts on Cancel.
+   * `onAsking` gets the stage's sentence ("growing it to N GB") right before
+   * the grow is asked for, from what the host already read: the restart a
+   * grow brings often comes before its answer.
+   */
+  makeRoom(args: { launchId: string; laneId: string; signal: AbortSignal; onAsking?: (detail: string) => void }): Promise<ChatLaunchEnvironmentRoom | null>;
 };
 
 export type ChatLaunchServiceDeps = {
@@ -227,6 +232,8 @@ type LaunchRuntime = LaneSetupCardState & QueuedDeliveryState & {
   /** The in-flight environment setup, reused when the pipeline re-enters. */
   environment: Promise<EnvironmentOutcome> | null;
   startNow: (() => void) | null;
+  /** A disk grow is in flight for this launch's setup (its restart may come any moment): Start now waits. */
+  growInFlight: boolean;
   expiryTimer: ReturnType<typeof setTimeout> | null;
   lastProgressEmitAt: number;
   progressTimer: ReturnType<typeof setTimeout> | null;
@@ -375,6 +382,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     deliveryAttempts: 0,
     deliveryTimer: null,
     startNow: null,
+    growInFlight: false,
     cardEmitted: false,
     cardTimer: null,
     unsubscribeChat: null,
@@ -776,8 +784,15 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   /** One run of the lane's setup: its outcome, or the disk filling up (the stage is still running then). */
   const runEnvironmentOnce = async (record: LaunchRecord): Promise<EnvironmentOutcome | { diskFull: LaneEnvInitProgress["steps"]; error: string }> => {
     const laneId = record.snapshot.laneId;
-    setStage(record, "environment", "running", { detail: record.snapshot.templateName, steps: [] });
-    publish(record, { persist: false });
+    const resumes = record.roomMark?.resumes ?? 0;
+    setStage(record, "environment", "running", {
+      detail: resumes > 0
+        ? `${record.snapshot.templateName ?? "Setup"}: running again after the disk grew (restart ${resumes})`
+        : record.snapshot.templateName,
+      steps: [],
+    });
+    // Written down: a restart during this run reads this run, never the grow's "Making room…".
+    publish(record);
     const unsubscribe = deps.onEnvironmentEvent((event) => {
       if (event.progress.laneId !== laneId) return;
       const stage = stageOf(record, "environment");
@@ -839,18 +854,34 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const launchId = record.snapshot.launchId;
     const verdict = host.diskFull({ launchId, error: full.error });
     if (!verdict.grow) return verdict.error;
-    const signal = runtimeFor(launchId).abort.signal;
-    record.awaitingRoom = true;
+    const runtime = runtimeFor(launchId);
+    const signal = runtime.abort.signal;
+    // A new grow, a new mark: its own clock and restart count (a regrow during a
+    // rerun never spends the last grow's resumes; the grow cap bounds the grows).
+    const previousMark = record.roomMark ?? null;
+    record.roomMark = { at: nowIso(), resumes: 0 };
     setStage(record, "environment", "running", { detail: "The disk filled up during setup. Making room…", steps: full.diskFull });
     if (!store.persist(record)) {
-      record.awaitingRoom = false;
+      record.roomMark = previousMark;
       logger.warn("chat_launch.environment_room_mark_failed", { launchId });
       return LANE_SETUP_NO_ROOM_TO_SAVE_ERROR;
     }
     publish(record, { persist: false });
+    runtime.growInFlight = true;
     let room: ChatLaunchEnvironmentRoom | null = null;
     try {
-      room = await host.makeRoom({ launchId, laneId: record.snapshot.laneId, signal });
+      room = await host.makeRoom({
+        launchId,
+        laneId: record.snapshot.laneId,
+        signal,
+        // Said (and written down) as the grow is asked for: the restart often comes before its answer.
+        onAsking: (detail) => {
+          const stage = stageOf(record, "environment");
+          if (!stage || stage.status !== "running") return;
+          stage.detail = detail;
+          publish(record);
+        },
+      });
       if (room?.state === "growing") {
         const stage = stageOf(record, "environment");
         if (stage) stage.detail = room.detail;
@@ -862,13 +893,32 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     } catch (error) {
       logger.warn("chat_launch.environment_room_failed", { launchId, error: getErrorMessage(error) });
     } finally {
-      record.awaitingRoom = false;
+      runtime.growInFlight = false;
     }
     return room?.state === "refused" ? room.error : full.error;
   };
 
-  /** Resolves when the environment settles (ok or failed); never throws. */
+  /**
+   * The launch no longer resumes after a restart: its environment stage
+   * settled, or it was cancelled or retried. Written down at once; a write
+   * that fails is said in the log (the next publish writes it again).
+   */
+  const clearRoomMark = (record: LaunchRecord, why: string): void => {
+    if (!record.roomMark) return;
+    record.roomMark = null;
+    if (!store.persist(record)) logger.warn("chat_launch.room_mark_clear_failed", { launchId: record.snapshot.launchId, why });
+  };
+
+  /** Resolves when the environment settles (ok or failed); never throws. Its room mark goes then. */
   const runEnvironmentStage = async (record: LaunchRecord): Promise<EnvironmentOutcome> => {
+    try {
+      return await runEnvironmentRuns(record);
+    } finally {
+      clearRoomMark(record, "environment_settled");
+    }
+  };
+
+  const runEnvironmentRuns = async (record: LaunchRecord): Promise<EnvironmentOutcome> => {
     const launchId = record.snapshot.launchId;
     const host = deps.environmentDisk;
     for (;;) {
@@ -1158,7 +1208,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       messageSent: false,
       startNowRequested: false,
       checkoutAttempted: false,
-      awaitingRoom: false,
+      roomMark: null,
     };
     records.set(launchId, record);
     publish(record);
@@ -1246,6 +1296,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const pipeline = runtime.pipeline;
     record.snapshot.phase = "cancelled";
     record.snapshot.error = null;
+    // Nothing to resume after a restart (the publish below writes it down).
+    record.roomMark = null;
     // Messages queued for a chat that will never exist have nowhere to go.
     record.snapshot.queuedMessages = [];
     runtime.abort.abort();
@@ -1315,6 +1367,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (record.snapshot.phase !== "failed") return cloneSnapshot(record.snapshot);
     const runtime = runtimeFor(record.snapshot.launchId);
     if (runtime.abort.signal.aborted) runtime.abort = new AbortController();
+    // A new attempt: no mark from the last one (a grow during it starts its own count at 0).
+    record.roomMark = null;
     for (const stage of record.snapshot.stages) {
       if (stage.status === "failed") setStage(record, stage.id, "pending");
     }
@@ -1350,7 +1404,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (!record.snapshot.laneCreated || !environment) return cloneSnapshot(record.snapshot);
     record.startNowRequested = true;
     const runtime = runtimeFor(record.snapshot.launchId);
-    if (record.awaitingRoom && record.snapshot.phase === "running") {
+    if (runtime.growInFlight && record.snapshot.phase === "running") {
       // The disk is growing, and the grow restarts the computer: an agent
       // started now would die with it. Kept, so it starts the moment setup
       // runs again (here, or after the restart).
@@ -1457,7 +1511,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   const resumeAfterRoom: LaunchRecord[] = [];
   for (const record of store.loadAll(nowIso())) {
     records.set(record.snapshot.launchId, record);
-    if (record.awaitingRoom && record.snapshot.phase === "running") resumeAfterRoom.push(record);
+    if (record.roomMark && record.snapshot.phase === "running") resumeAfterRoom.push(record);
     // An outcome reached before the restart was already reported.
     const reloadedPhase = record.snapshot.phase;
     if (reloadedPhase === "completed" || reloadedPhase === "cancelled" || reloadedPhase === "failed") {
@@ -1484,9 +1538,11 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     setTimeout(() => {
       for (const record of resumeAfterRoom) {
         if (disposed || record.snapshot.phase !== "running") continue;
-        // Once: written down before setup runs again, so a restart during this
-        // run reads as interrupted (with Retry) instead of resuming in a loop.
-        record.awaitingRoom = false;
+        // Counted and written down before setup runs again: a grow can restart the
+        // computer more than once, so a restart during this run resumes again,
+        // CHAT_LAUNCH_ROOM_MAX_RESUMES times at most and within the mark's hour.
+        const mark = record.roomMark!;
+        record.roomMark = { at: mark.at, resumes: mark.resumes + 1 };
         if (!store.persist(record)) {
           // Not written down (the disk is still full): running setup now could repeat on
           // every restart, so it stops here with the free-space sentence and Retry.
@@ -1494,7 +1550,11 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
           failLaunch(record, "environment", LANE_SETUP_NO_ROOM_TO_SAVE_ERROR);
           continue;
         }
-        logger.info("chat_launch.environment_resumed_after_room", { launchId: record.snapshot.launchId });
+        logger.info("chat_launch.environment_resumed_after_room", {
+          launchId: record.snapshot.launchId,
+          resume: record.roomMark.resumes,
+          ageMs: Math.max(0, Date.now() - Date.parse(mark.at)),
+        });
         void runPipeline(record);
       }
     }, 0).unref?.();

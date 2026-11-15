@@ -521,9 +521,9 @@ describe("chatLaunchService", () => {
     reloaded.dispose();
   });
 
-  it("a setup that filled the disk waits through the grow's restart and runs setup again, never reading as interrupted", async () => {
+  /** A launch whose setup filled the disk, the grow asked for, and the brain gone before the disk read bigger. */
+  const launchWaitingForRoom = async () => {
     const h = harness({ hasEnvironment: true, templateName: "npm packages" });
-    // The grow is asked for, then the computer restarts before the disk reads bigger.
     const makeRoom = vi.fn(async () => ({ state: "growing" as const, detail: "Growing the disk to 8 GB", ready: new Promise<boolean>(() => {}) }));
     const environmentDisk = { setupStarting: vi.fn(), setupEnded: vi.fn(), diskFull: vi.fn(() => ({ grow: true as const })), makeRoom };
     const service = createChatLaunchService({ ...h.deps, environmentDisk });
@@ -538,21 +538,58 @@ describe("chatLaunchService", () => {
     expect(h.latest().phase).toBe("running");
     service.dispose();
     h.service.dispose();
+    return { h, environmentDisk, makeRoom };
+  };
+  const setupRunning = () => vi.fn(() => new Promise<never>(() => {}));
+  const setupPasses = () => vi.fn(async () => ({ laneId: LANE_ID, overallStatus: "completed", steps: [{ kind: "setup-script", label: "Setup script", status: "completed" }] } as never));
 
-    const events: ChatLaunchEvent[] = [];
+  it.each([
+    ["the grow's own restart", 0, 0, null],
+    ["two more restarts while setup runs again (restarts 2 and 3)", 2, 0, null],
+    ["a fourth restart (past the cap)", 3, 0, /kept being interrupted/],
+    ["a restart more than an hour after the grow (the computer slept)", 0, 61 * 60_000, /too much time went by/],
+  ])("a setup that filled the disk goes on after %s, or reads as interrupted past the bound", async (_label, restartsDuringRerun, laterMs, refused) => {
+    const { h, environmentDisk, makeRoom } = await launchWaitingForRoom();
+    // Each restart lands while the resumed setup is still running; the stage counts it.
+    for (let restart = 1; restart <= restartsDuringRerun; restart += 1) {
+      const runEnvironment = setupRunning();
+      const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment });
+      await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+      expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.detail).toMatch(new RegExp(`restart ${restart}\\)`));
+      resumed.dispose();
+    }
+
     const reloaded = createChatLaunchService({
       ...h.deps,
       environmentDisk,
-      runEnvironment: vi.fn(async () => ({ laneId: LANE_ID, overallStatus: "completed", steps: [{ kind: "setup-script", label: "Setup script", status: "completed" }] } as never)),
-      emit: (event) => events.push(event),
+      runEnvironment: setupPasses(),
+      ...(laterMs ? { now: () => new Date(Date.now() + laterMs) } : {}),
     });
-    expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("running");
-    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
-    const snapshot = reloaded.get({ launchId: LAUNCH_ID })!;
-    expect(snapshot.stages.find((stage) => stage.id === "environment")?.status).toBe("done");
-    expect(snapshot.agentStarted).toBe(true);
+    if (refused) {
+      expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("failed");
+      expect(reloaded.get({ launchId: LAUNCH_ID })?.error).toMatch(refused);
+    } else {
+      expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("running");
+      await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+      const snapshot = reloaded.get({ launchId: LAUNCH_ID })!;
+      expect(snapshot.stages.find((stage) => stage.id === "environment")?.status).toBe("done");
+      expect(snapshot.agentStarted).toBe(true);
+    }
     expect(makeRoom).toHaveBeenCalledTimes(1);
     reloaded.dispose();
+  });
+
+  it("Start now while setup runs again after the grow's restart starts the agent at once", async () => {
+    const { h, environmentDisk } = await launchWaitingForRoom();
+    const runEnvironment = setupRunning();
+    const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment });
+    await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+
+    await resumed.startNow({ launchId: LAUNCH_ID });
+
+    await vi.waitFor(() => expect(resumed.get({ launchId: LAUNCH_ID })?.agentStarted).toBe(true));
+    expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.status).toBe("running");
+    resumed.dispose();
   });
 
   it.each([

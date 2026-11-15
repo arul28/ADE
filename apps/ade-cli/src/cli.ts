@@ -31644,7 +31644,7 @@ async function runServe(
   });
 
   // A lane launch's setup that filled the disk waits through the grow's
-  // restart (`awaitingRoom`): its project opens now, so the launch goes on
+  // restart (`roomMark`): its project opens now, so the launch goes on
   // (and reads as busy, so the computer stays awake) with nobody watching.
   if (!embedded && cloudInstanceId) {
     void (async () => {
