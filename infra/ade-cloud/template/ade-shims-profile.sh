@@ -12,7 +12,12 @@ case ${GIT_CONFIG_COUNT:-0} in ''|*[!0-9]*) ade_n=0 ;; *) ade_n=${GIT_CONFIG_COU
 while [ "$ade_i" -lt "$ade_n" ]; do
   eval "ade_k=\${GIT_CONFIG_KEY_$ade_i:-}; ade_v=\${GIT_CONFIG_VALUE_$ade_i:-}"
   if [ "$ade_k" = "credential.https://github.com.helper" ]; then
-    case $ade_v in /*/git-credential-ade-github) ade_gh=${ade_v%/*} ;; esac
+    # ADE writes it as a shell command, !'<path>' (githubShellShim.ts).
+    case $ade_v in "!'/"*"/git-credential-ade-github'") ade_v=${ade_v#"!'"}; ade_v=${ade_v%"'"} ;; esac
+    case $ade_v in
+      *"'"*) ;;
+      /*/git-credential-ade-github) ade_gh=${ade_v%/*} ;;
+    esac
   fi
   ade_i=$((ade_i + 1))
 done
