@@ -8,6 +8,7 @@ import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemot
 import { appGrantAllowsCapability, gateAppCandidates } from "../../desktop/src/shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "../../desktop/src/main/services/github/githubAccountAppCredential";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "../../desktop/src/main/services/github/githubSessionEnv";
+import { peekGithubRepoOwnerFromGitConfig } from "../../desktop/src/main/services/github/gitConfigOrigin";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -1928,6 +1929,10 @@ export function createHeadlessGitHubService(
     peekAccountAppToken: () => accountApp.peekToken(),
     readGrant: readAppIssueGrant,
     readRepoOwner: async () => (await detectGitHubRepoAsync(projectRoot).catch(() => null))?.owner ?? null,
+    // A chat's environment is built synchronously. Without this, the first
+    // chat after the brain starts (on a cloud computer, usually its only one)
+    // gets no `gh` shim, because the owner is not known yet.
+    peekRepoOwner: () => peekGithubRepoOwnerFromGitConfig(projectRoot),
   });
 
   const getIssue: HeadlessGitHubService["getIssue"] = async (
