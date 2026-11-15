@@ -74,14 +74,15 @@ const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 
 
 /**
  * A request that cold-starts the daemon (the first `ade/initialize`) waits for
- * that start as well as its own answer. On Windows the start alone may take the
- * 30s production allows, so a fixed 15s request guard failed under load while
- * the daemon was still starting. Each test's own limit grows by the same
- * allowance. macOS and Linux keep their original limits.
+ * that start as well as its own answer. The start alone may take the time
+ * production allows (30s on Windows, 10s elsewhere), so a fixed 15s request
+ * guard failed on a slow or busy machine while the daemon was still starting.
+ * Each test's own limit grows by the same allowance. These are ceilings, not
+ * sleeps: a healthy daemon answers in a few seconds.
  */
-const WINDOWS_COLD_START_ALLOWANCE_MS = process.platform === "win32" ? RUNTIME_SOCKET_READY_TIMEOUT_MS : 0;
-const REQUEST_TIMEOUT_MS = 15_000 + WINDOWS_COLD_START_ALLOWANCE_MS;
-const DAEMON_TEST_TIMEOUT_MS = 45_000 + WINDOWS_COLD_START_ALLOWANCE_MS;
+const COLD_START_ALLOWANCE_MS = RUNTIME_SOCKET_READY_TIMEOUT_MS;
+const REQUEST_TIMEOUT_MS = 15_000 + COLD_START_ALLOWANCE_MS;
+const DAEMON_TEST_TIMEOUT_MS = 45_000 + COLD_START_ALLOWANCE_MS;
 
 async function getFreeTcpPort(): Promise<number> {
   const server = net.createServer();
