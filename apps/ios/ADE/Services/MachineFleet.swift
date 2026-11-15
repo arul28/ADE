@@ -1012,6 +1012,23 @@ final class MachineFleet: ObservableObject {
     Set(pinnedKeys).union(projectMachineKeys)
   }
 
+  /// An account left the phone: its computers leave the connected set and
+  /// the Disconnect list. Computers still paired by code (`keeping`) stay.
+  func forgetConnectionChoices(keeping: Set<String>) {
+    pinnedKeys = pinnedKeys.filter { keeping.contains($0) }
+    userDisconnectedKeys = userDisconnectedKeys.intersection(keeping)
+    if pinnedKeys.isEmpty {
+      UserDefaults.standard.removeObject(forKey: Self.pinnedKeysDefaultsKey)
+    } else {
+      persistPins()
+    }
+    if userDisconnectedKeys.isEmpty {
+      UserDefaults.standard.removeObject(forKey: Self.userDisconnectedKeysDefaultsKey)
+    } else {
+      persistUserDisconnected()
+    }
+  }
+
   private func persistPins() {
     UserDefaults.standard.set(pinnedKeys, forKey: Self.pinnedKeysDefaultsKey)
   }

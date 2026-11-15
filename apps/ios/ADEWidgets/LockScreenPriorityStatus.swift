@@ -97,9 +97,8 @@ struct LockScreenPriorityStatus {
         if onlineMachines.isEmpty, !machines.isEmpty {
             self = .init(
                 kind: .offline,
-                title: hideDetails
-                    ? "Computer offline"
-                    : (machines.count == 1 ? "\(focus.machine.name) offline" : "\(machines.count) computers offline"),
+                // A count, never a name (rule A).
+                title: machines.count == 1 ? "Computer offline" : "\(machines.count) computers offline",
                 detail: hideDetails ? "Open ADE for details" : "Last known work · \(focus.project.name)",
                 inlineText: "ADE · offline",
                 count: 0,
@@ -187,13 +186,12 @@ struct LockScreenPriorityStatus {
         )
 
         if isStale {
-            let machine = snapshot.machineName?.trimmingCharacters(in: .whitespacesAndNewlines)
             let minutes = max(1, Int(snapshotAge / 60))
             self = .init(
                 kind: .offline,
-                title: hideDetails
-                    ? "Computer offline"
-                    : "\((machine?.isEmpty == false ? machine : nil) ?? "Computer") offline",
+                // No computer name: the snapshot covers every listed computer,
+                // and widgets name none (rule A).
+                title: "Computer offline",
                 detail: minutes == 1 ? "Last update 1 minute ago" : "Last update \(minutes) minutes ago",
                 inlineText: "ADE · offline \(minutes)m",
                 count: 0,

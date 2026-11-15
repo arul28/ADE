@@ -1239,13 +1239,24 @@ struct HubScreen: View {
       hubProjectPresentations = nextPresentations
     }
     placeNewProjects(nextPresentations)
-    publishActivityHiddenChats(rosters: focusedRosters.compactMap(\.roster) + Array(merge.mergedRosters.values) + merge.extraProjects.map(\.roster))
+    publishActivityHiddenChats(
+      cards: focusedRosters.map { ($0.project.id, merge.mergedRosters[$0.project.id] ?? $0.roster, true) }
+        + merge.extraProjects.map { ($0.summary.id, Optional($0.roster), false) },
+      merge: merge
+    )
   }
 
   /// Activity counts what the Hub counts: a chat in a roster that no shown card
   /// lists (its project is hidden on this phone or removed from the account)
   /// leaves Activity, the widgets and the Live Activity too.
-  private func publishActivityHiddenChats(rosters: [RemoteRosterProject]) {
+  /// A card none of whose chats is listed, or with no chats and not shown, is
+  /// hidden: its projects on every computer go too
+  /// (`SyncService.activityProjectKey`), so a chat that starts there while the
+  /// Hub is not on screen stays out of Activity.
+  private func publishActivityHiddenChats(
+    cards: [(id: String, roster: RemoteRosterProject?, isFocused: Bool)],
+    merge: HubFleetMerge
+  ) {
     var listed = Set<String>()
     func collect(_ rows: [HubChatRowPresentation]) {
       for row in rows {
@@ -1256,11 +1267,26 @@ struct HubScreen: View {
     for presentation in hubProjectPresentations + shownDuplicateFolders + localSections.flatMap(\.presentations) {
       for lane in presentation.lanes { collect(lane.rows) }
     }
-    var hidden = Set<String>()
-    for roster in rosters {
-      for chat in roster.chats where !listed.contains(chat.id) { hidden.insert(chat.id) }
+    let shownCardIds = Set(
+      (hubProjectPresentations + shownDuplicateFolders + localSections.flatMap(\.presentations)).map(\.project.id)
+    )
+    var hiddenChats = Set<String>()
+    var hiddenProjects = Set<String>()
+    for card in cards {
+      let chats = card.roster?.chats ?? []
+      for chat in chats where !listed.contains(chat.id) { hiddenChats.insert(chat.id) }
+      let cardHidden = chats.isEmpty
+        ? !shownCardIds.contains(card.id)
+        : !chats.contains { listed.contains($0.id) }
+      guard cardHidden else { continue }
+      if card.isFocused {
+        hiddenProjects.insert(SyncService.activityProjectKey(machineKey: syncService.focusedMachineKey, projectId: card.id))
+      }
+      for location in merge.projectLocations[card.id] ?? [] {
+        hiddenProjects.insert(SyncService.activityProjectKey(machineKey: location.machineKey, projectId: location.project.id))
+      }
     }
-    syncService.setActivityHiddenChatIds(hidden)
+    syncService.setActivityHidden(chatIds: hiddenChats, projectKeys: hiddenProjects)
   }
 
   private func loadHubLayoutForConnection(_ connectionKey: String?) {

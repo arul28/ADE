@@ -1844,6 +1844,39 @@ func syncStalePortRecoveryEndpointAttempts(
   }
 }
 
+/// Splits a ranked plan into the attempts on ports this computer is known to
+/// use (its saved port, its live discovery ports, and every relay route) and
+/// the sweep of the other default ports. The hello carries the pairing secret,
+/// so the sweep runs only after the known ports failed.
+func syncSplitSweepAttempts(
+  _ attempts: [SyncConnectionEndpointAttempt],
+  namedPorts: Set<Int>
+) -> (named: [SyncConnectionEndpointAttempt], swept: [SyncConnectionEndpointAttempt]) {
+  var named: [SyncConnectionEndpointAttempt] = []
+  var swept: [SyncConnectionEndpointAttempt] = []
+  for attempt in attempts {
+    if syncIsFullWebSocketRoute(attempt.address) || namedPorts.contains(attempt.port) {
+      named.append(attempt)
+    } else {
+      swept.append(attempt)
+    }
+  }
+  return (named, swept)
+}
+
+/// True when the known ports failed in a way a port sweep can fix. A cancel,
+/// an account requirement, or a pairing rejection that the paired computer
+/// itself sent ends the connect instead.
+func syncSweepMayFollow(_ error: Error) -> Bool {
+  if error is CancellationError || error is SyncRelayAuthorizationRequirement { return false }
+  let nsError = error as NSError
+  if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String),
+     nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool != true {
+    return false
+  }
+  return true
+}
+
 /// True when a candidate carries a full `ws://`/`wss://` URL (the cloud relay
 /// candidate). Such candidates keep their path (e.g. `/connect/<machineKey>`)
 /// and must not be reconstructed as `scheme://host:port` or TCP-probed against
@@ -4800,6 +4833,9 @@ final class SyncService: ObservableObject {
   /// removed from the account). Activity, the widgets and the Live Activity
   /// leave them out too, so their counts match the Hub's.
   private var activityHiddenChatIds: Set<String> = []
+  /// The projects behind those chats, as `activityProjectKey`, so a chat that
+  /// starts in a hidden project while the Hub is not on screen stays out too.
+  private var activityHiddenProjectKeys: Set<String> = []
   /// When the focused machine's link dropped (or the app came back to the
   /// front): the start of its reconnect window. Nil while connected.
   private var focusedNotLiveSince: Date? = Date()
@@ -4841,7 +4877,7 @@ final class SyncService: ObservableObject {
   private var cloudWakeWaiters: [String: Int] = [:]
   /// The wake request still on its way, by fleet key. A second open of the
   /// same computer waits for its answer, a refusal too.
-  private var cloudWakeRequests: [String: Task<Bool, Never>] = [:]
+  private var cloudWakeRequests: [String: (id: UUID, task: Task<Bool, Never>)] = [:]
   /// Why the last wake of an ADE Cloud computer failed, by fleet key. The
   /// screen that opened its work says so; a new wake or a live link clears it.
   @Published private(set) var cloudWakeFailures: [String: String] = [:]
@@ -11127,6 +11163,40 @@ final class SyncService: ObservableObject {
     objectWillChange.send()
   }
 
+  /// The rest of what names the account's chats, computers and projects.
+  /// Device settings, this phone's keys, and the computers paired by code
+  /// (their tokens and their place in the connected set) stay.
+  private func removeAccountLeftovers() {
+    let shared = ADESharedContainer.defaults
+    // Widget and notification actions still queued: a session id, and maybe
+    // reply text. One of the last account must not run for the next.
+    shared.removeObject(forKey: ADEIntentCommandRegistry.pendingCommandsKey)
+    // Seen and dismissed Activity rows: their ids name computers and sessions.
+    attentionDrawer.forgetSeenAndDismissed()
+    // The connected set and the Disconnects of the account's computers.
+    machineFleet?.forgetConnectionChoices(keeping: Set(loadSavedProfilesRaw().keys))
+    cloudMachineFleetKeys = []
+    UserDefaults.standard.removeObject(forKey: Self.cloudMachineFleetKeysDefaultsKey)
+    // Per-project view state, archive marks, pinned lanes and the plan seen.
+    for key in ["ade.work.viewStateByScope.v1", "ade.work.newSessionModeByProject.v1"] {
+      shared.removeObject(forKey: key)
+    }
+    for key in ["ade.lanes.pinnedIds", "ade.work.archivedSessionIds", CloudPlanSeenStore.defaultsKey] {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+    Self.removeSessionExports()
+  }
+
+  /// The Markdown exports of selected sessions (titles and summaries) that
+  /// the share sheet was given (`performBulkExport`).
+  nonisolated static func removeSessionExports() {
+    let dir = FileManager.default.temporaryDirectory
+    let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+    for name in names where name.hasPrefix("ade-sessions-") && name.hasSuffix(".md") {
+      try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+    }
+  }
+
   /// An account left this phone (sign-out or a switch) and took its
   /// computers: nothing they synced may stay on any screen, widget or Live
   /// Activity. The replica database is shared by every machine and keyed by
@@ -11237,6 +11307,7 @@ final class SyncService: ObservableObject {
     lastFocusedActivityRows = nil
     activityOtherMachines = []
     activityHiddenChatIds = []
+    activityHiddenProjectKeys = []
     pullRequestListConditionalCache = nil
     if let dir = Self.workSessionsCacheDirectory {
       try? FileManager.default.removeItem(at: dir)
@@ -11256,6 +11327,7 @@ final class SyncService: ObservableObject {
     // recent ones from them), and the store closes its connection after.
     ChatLogStore.removeSharedStoreFiles()
     chatThreadRegistry.purgeAll()
+    removeAccountLeftovers()
 
     // The in-memory and App Group copies of the old rows.
     chatSummaryCache = [:]
@@ -20122,6 +20194,16 @@ final class SyncService: ObservableObject {
     var upgradeCeiling: SyncConnectionRouteKind?
   }
 
+  /// The ports this computer is known to use: its saved port and the ports
+  /// live discovery shows for it. Any other port is a sweep port.
+  func namedDirectPorts(for profile: HostConnectionProfile) -> Set<Int> {
+    let livePorts = discoveredHosts
+      .filter { matchesDiscoveredHost($0, profile: profile) }
+      .map(\.port)
+      .filter { $0 > 0 }
+    return Set(livePorts + [profile.port])
+  }
+
   /// The ranked endpoint attempts for a profile: live discovery ports, saved
   /// and live direct routes, relay routes, route memory for this network, and
   /// last-good stickiness. Pure of connection state, so the focused connect and
@@ -20149,7 +20231,10 @@ final class SyncService: ObservableObject {
     let portCandidates = syncConnectPortCandidates(
       primaryPort: primaryPort,
       addresses: addresses,
-      allowFallbackSweep: !preferLiveCandidatesOnly || livePorts.isEmpty
+      // A sweep can reach another ADE on the same address. Without the
+      // computer's identity the phone cannot tell it apart, so it never sweeps.
+      allowFallbackSweep: (!preferLiveCandidatesOnly || livePorts.isEmpty)
+        && syncNonEmpty(profile.hostIdentity) != nil
     )
     syncConnectLog.info(
       "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)] relay=[\(syncLogAddressList(usableRelayRoutes), privacy: .public)]"
@@ -20247,18 +20332,37 @@ final class SyncService: ObservableObject {
     }
     guard !orderedEndpointAttempts.isEmpty else { throw noConnectableAddressError() }
 
-    let racePlan = syncConnectionRaceCandidatePlan(rankedAttempts: orderedEndpointAttempts)
+    // The known ports first; the sweep of the other ports only after they
+    // failed (`syncSplitSweepAttempts`).
+    let phases = syncSplitSweepAttempts(orderedEndpointAttempts, namedPorts: namedDirectPorts(for: profile))
+    let firstPhase = phases.named.isEmpty ? phases.swept : phases.named
+    let sweepPhase = phases.named.isEmpty ? [] : phases.swept
+    let racePlan = syncConnectionRaceCandidatePlan(rankedAttempts: firstPhase)
     if publishConnecting, let first = racePlan.first {
       publishSocketConnecting(to: first.endpoint.address)
     }
     let connectedCandidate: AuthenticatedConnectionCandidate
     do {
-      connectedCandidate = try await raceAuthenticatedConnectionCandidates(
-        racePlan,
-        profile: profile,
-        pairedSecret: token,
-        connectAttemptGeneration: connectAttemptGeneration
-      )
+      do {
+        connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+          racePlan,
+          profile: profile,
+          pairedSecret: token,
+          connectAttemptGeneration: connectAttemptGeneration
+        )
+      } catch where !sweepPhase.isEmpty
+        && syncSweepMayFollow(error)
+        && isCurrentConnectAttempt(connectAttemptGeneration) {
+        syncConnectLog.notice(
+          "ADE_SYNC_TRACE known ports failed; sweeping ports=[\(Set(sweepPhase.map(\.port)).sorted().map(String.init).joined(separator: ","), privacy: .public)]"
+        )
+        connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+          syncConnectionRaceCandidatePlan(rankedAttempts: sweepPhase),
+          profile: profile,
+          pairedSecret: token,
+          connectAttemptGeneration: connectAttemptGeneration
+        )
+      }
     } catch {
       recordEndpointFailures(for: connectAttemptGeneration)
       if !shouldInvalidateSavedPairing(for: error),
@@ -20611,6 +20715,8 @@ final class SyncService: ObservableObject {
     defer {
       if let dialKey, let dialToken { relayDialRegistry.release(dialKey, token: dialToken) }
     }
+    // A port the pairing and live discovery do not name (`namedDirectPorts`).
+    let sweptPort = !isRelay && !namedDirectPorts(for: profile).contains(candidate.endpoint.port)
     // The hello below signs with the device key; read it off the main thread.
     await DpopKeyService.shared.warmKey()
     guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
@@ -20740,6 +20846,10 @@ final class SyncService: ObservableObject {
           requestId: requestId,
           payload: helloPayload
         )
+        // The auth kind only, never a credential.
+        syncConnectLog.notice(
+          "ADE_SYNC_TRACE candidate hello auth=\((auth["kind"] as? String) ?? "none", privacy: .public) host=\(candidate.endpoint.address, privacy: .public) port=\(candidate.endpoint.port) swept=\(sweptPort)"
+        )
         try await candidateTask.send(.string(helloText))
 
         while true {
@@ -20760,9 +20870,13 @@ final class SyncService: ObservableObject {
             // A port sweep can reach another ADE on the same address. Only the
             // computer this pairing names may win: another one loses this
             // candidate (not the pairing), and the race goes on with the rest.
-            if let expected = syncNonEmpty(profile.hostIdentity),
-               let responding = syncNonEmpty((payload["brain"] as? [String: Any])?["deviceId"] as? String),
-               responding != expected {
+            // On a swept port a missing identity on either side loses too.
+            let expected = syncNonEmpty(profile.hostIdentity)
+            let responding = syncNonEmpty((payload["brain"] as? [String: Any])?["deviceId"] as? String)
+            let answeredByAnother = sweptPort
+              ? (expected == nil || responding == nil || responding != expected)
+              : (expected != nil && responding != nil && responding != expected)
+            if answeredByAnother {
               syncConnectLog.notice(
                 "ADE_SYNC_TRACE candidate answered by another machine host=\(candidate.endpoint.address, privacy: .public) port=\(candidate.endpoint.port)"
               )
@@ -26238,7 +26352,10 @@ extension SyncService {
     lastFocusedActivityRows = focusedRows
     // The focused computer's rows follow the lists too: past its reconnect
     // window its work is not listed, as on the Hub and in Work.
-    let focusedSessions = focusedMachineListsWork
+    let focusedProjectHidden = normalizedProjectId(activeProjectId).map {
+      activityHiddenProjectKeys.contains(Self.activityProjectKey(machineKey: focusedMachineKey, projectId: $0))
+    } ?? false
+    let focusedSessions = focusedMachineListsWork && !focusedProjectHidden
       ? overlayLocalSessions(focusedRows).map { session in
         rosterTurnStatusById[session.id]?.applyingTurnState(to: session) ?? session
       }
@@ -26468,7 +26585,10 @@ extension SyncService {
     var sessions: [TerminalSessionSummary] = []
     var machineBySession: [String: (id: String, name: String)] = [:]
     var projectBySession: [String: (id: String, name: String)] = [:]
-    func add(_ project: RemoteRosterProject, machine: (id: String, name: String)?) {
+    let focusedKey = focusedMachineKey
+    func add(_ project: RemoteRosterProject, machine: (id: String, name: String)?, fleetKey: String?) {
+      // A project the Hub does not show: none of its chats count, also new ones.
+      guard !activityHiddenProjectKeys.contains(Self.activityProjectKey(machineKey: fleetKey, projectId: project.projectId)) else { return }
       let laneById = Dictionary(project.lanes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
       for chat in project.chats where chat.archived != true && !chat.isIdentityChat {
         // The Hub lists a chat under its lane; one without a known lane is
@@ -26487,7 +26607,7 @@ extension SyncService {
     }
     if focusedMachineListsWork {
       for project in projects where !isActiveProject(project) {
-        if let roster = rosterProject(for: project) { add(roster, machine: nil) }
+        if let roster = rosterProject(for: project) { add(roster, machine: nil, fleetKey: focusedKey) }
       }
     }
     var machines: [WorkspaceSnapshotMachine] = []
@@ -26499,17 +26619,23 @@ extension SyncService {
         let listed = machine.listsWork && (machine.isWanted || machine.isCloud)
         machines.append(WorkspaceSnapshotMachine(id: id, name: machine.name, listed: listed))
         guard listed else { continue }
-        for project in machine.projects { add(project, machine: (id, machine.name)) }
+        for project in machine.projects { add(project, machine: (id, machine.name), fleetKey: machine.machineKey) }
       }
     }
     return (sessions, machineBySession, projectBySession, machines)
   }
 
   /// The Hub names the chats of the projects it does not show.
-  func setActivityHiddenChatIds(_ ids: Set<String>) {
-    guard ids != activityHiddenChatIds else { return }
-    activityHiddenChatIds = ids
+  func setActivityHidden(chatIds: Set<String>, projectKeys: Set<String>) {
+    guard chatIds != activityHiddenChatIds || projectKeys != activityHiddenProjectKeys else { return }
+    activityHiddenChatIds = chatIds
+    activityHiddenProjectKeys = projectKeys
     refreshActiveSessionsAndSnapshot(rows: lastFocusedActivityRows)
+  }
+
+  /// One project on one computer, as the Hub and Activity name it.
+  nonisolated static func activityProjectKey(machineKey: String?, projectId: String) -> String {
+    "\(machineKey ?? "")|\(projectId)"
   }
 
   /// Another computer's roster or listing changed: rebuild Activity with the
@@ -28764,20 +28890,34 @@ extension SyncService {
     guard isCurrent() else { throw CancellationError() }
     let attempts = try endpointAttemptPlan(for: profile, preferLiveCandidatesOnly: false)
     guard !attempts.isEmpty else { throw noConnectableAddressError() }
-    let plan = syncConnectionRaceCandidatePlan(rankedAttempts: attempts)
+    // The known ports first, the sweep only after they failed (see connectUsingProfile).
+    let phases = syncSplitSweepAttempts(attempts, namedPorts: namedDirectPorts(for: profile))
+    let firstPhase = phases.named.isEmpty ? phases.swept : phases.named
+    let sweepPhase = phases.named.isEmpty ? [] : phases.swept
     let context = SyncFleetDialContext(
       isCurrent: isCurrent,
       peerMetadata: { [weak self] attempt in
         self?.fleetPeerMetadata(connectionAttempt: attempt) ?? [:]
       }
     )
-    let candidate = try await raceAuthenticatedConnectionCandidates(
-      plan,
-      profile: profile,
-      pairedSecret: token,
-      connectAttemptGeneration: 0,
-      fleetDial: context
-    )
+    let candidate: AuthenticatedConnectionCandidate
+    do {
+      candidate = try await raceAuthenticatedConnectionCandidates(
+        syncConnectionRaceCandidatePlan(rankedAttempts: firstPhase),
+        profile: profile,
+        pairedSecret: token,
+        connectAttemptGeneration: 0,
+        fleetDial: context
+      )
+    } catch where !sweepPhase.isEmpty && syncSweepMayFollow(error) && isCurrent() {
+      candidate = try await raceAuthenticatedConnectionCandidates(
+        syncConnectionRaceCandidatePlan(rankedAttempts: sweepPhase),
+        profile: profile,
+        pairedSecret: token,
+        connectAttemptGeneration: 0,
+        fleetDial: context
+      )
+    }
     guard isCurrent() else {
       candidate.task.cancel(with: .goingAway, reason: nil)
       throw CancellationError()
@@ -29774,7 +29914,7 @@ extension SyncService {
     // A wake of this computer is already on its way: this open waits for
     // the same one. A cloud wake costs money, so it is never sent twice.
     let request: Task<Bool, Never>
-    if let pending = cloudWakeRequests[fleetKey] {
+    if let pending = cloudWakeRequests[fleetKey]?.task {
       // Its answer is not in yet: wait for it, so a refusal ends this open
       // too.
       request = pending
@@ -29784,10 +29924,13 @@ extension SyncService {
       guard wakingCloudMachineKeys.insert(fleetKey).inserted else { return true }
       let name = cloudMachineName(fleetKey: fleetKey) ?? "The cloud computer"
       let accountEpoch = cloudWakeAccountEpoch
+      let requestId = UUID()
       request = Task { @MainActor [weak self] in
         guard let self else { return false }
         let result = await self.wakeCloudMachineIfNeeded(machineKey: accountKey, name: name)
-        self.cloudWakeRequests[fleetKey] = nil
+        // Only this request's own entry: an account change may have removed
+        // it, and a new account's wake may hold the key now.
+        if self.cloudWakeRequests[fleetKey]?.id == requestId { self.cloudWakeRequests[fleetKey] = nil }
         // The account changed while the request was out: its answer, a
         // failure too, belongs to the last account.
         guard accountEpoch == self.cloudWakeAccountEpoch else { return false }
@@ -29797,7 +29940,7 @@ extension SyncService {
         }
         return true
       }
-      cloudWakeRequests[fleetKey] = request
+      cloudWakeRequests[fleetKey] = (requestId, request)
     }
     let started = await request.value
     // Each open that waited ends its own wait.
@@ -29910,6 +30053,9 @@ extension SyncService {
   func clearCloudWakeFailures() {
     cloudWakeAccountEpoch &+= 1
     cloudWakeFailures = [:]
+    // A wake still on its way belongs to the last account: a new open does
+    // not wait on it. Its own opens still get its (dropped) answer.
+    cloudWakeRequests = [:]
   }
 
   /// One open that waited on a waking ADE Cloud computer is done.

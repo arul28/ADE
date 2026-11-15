@@ -350,6 +350,17 @@ public final class ActivityDrawerModel: ObservableObject {
         )
     }
 
+    /// An account left the phone: the rows it saw and dismissed go, in memory
+    /// and in the App Group.
+    public func forgetSeenAndDismissed() {
+        dismissedItemIDs = []
+        seenItemIDs = []
+        for key in [Self.lastSeenAtKey, Self.dismissedItemIDsKey, Self.seenItemIDsKey] {
+            defaults.removeObject(forKey: key)
+        }
+        recomputeUnreadCount()
+    }
+
     /// Clear everything — used when no snapshot of any kind is available, so an
     /// empty drawer reports "no source" rather than "all clear".
     public func clearAll() {

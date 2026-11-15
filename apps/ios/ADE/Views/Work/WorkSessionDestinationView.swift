@@ -1960,9 +1960,8 @@ struct WorkSessionDestinationView: View {
       .onChange(of: chatChildRoster) { _, _ in
         refreshSubagentSnapshots()
       }
-      .onReceive(syncService.machineFleet?.$machines.eraseToAnyPublisher()
-        ?? Empty<[MachineFleet.Machine], Never>().eraseToAnyPublisher()) { machines in
-        followRemoteRosterTitle(in: machines)
+      .onReceive(remoteRosterTitlePublisher) { title in
+        followRemoteRosterTitle(title)
       }
       .onDisappear {
         chatDestinationVisible = false
@@ -2718,18 +2717,29 @@ struct WorkSessionDestinationView: View {
   /// A chat on another computer: no event reaches this screen when that
   /// computer names the chat after its first turn, or renames it. Its roster
   /// does carry the new title, so a new one reads the summary again.
-  @MainActor
-  private func followRemoteRosterTitle(in machines: [MachineFleet.Machine]) {
+  /// This chat's title in another computer's roster. A busy computer
+  /// publishes its roster each second; only a new title reaches the view.
+  private var remoteRosterTitlePublisher: AnyPublisher<String?, Never> {
+    guard let fleet = syncService.machineFleet else { return Just(nil).eraseToAnyPublisher() }
+    let sessionId = sessionId
     let focusedKey = syncService.focusedMachineKey
-    var rosterTitle: String?
-    search: for machine in machines where machine.machineKey != focusedKey {
-      for project in machine.projects {
-        if let chat = project.chats.first(where: { $0.id == sessionId }) {
-          rosterTitle = chat.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-          break search
+    return fleet.$machines
+      .map { machines -> String? in
+        for machine in machines where machine.machineKey != focusedKey {
+          for project in machine.projects {
+            if let chat = project.chats.first(where: { $0.id == sessionId }) {
+              return chat.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+          }
         }
+        return nil
       }
-    }
+      .removeDuplicates()
+      .eraseToAnyPublisher()
+  }
+
+  @MainActor
+  private func followRemoteRosterTitle(_ rosterTitle: String?) {
     guard let rosterTitle, !rosterTitle.isEmpty, rosterTitle != remoteRosterTitleSeen else { return }
     remoteRosterTitleSeen = rosterTitle
     guard rosterTitle != chatSummary?.title else { return }
