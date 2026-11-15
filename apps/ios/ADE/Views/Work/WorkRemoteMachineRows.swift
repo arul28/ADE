@@ -99,6 +99,14 @@ func workRemoteLaneMachineName(_ laneId: String, options: [WorkMachineFilterOpti
   return options.first { $0.id == machineKey }?.name
 }
 
+/// The computer a Work row's session runs on, for the row's long-press menu.
+/// Rows never name it; the menu, the chat header and the prompt box do.
+func workSessionMachineName(laneId: String, options: [WorkMachineFilterOption]) -> String? {
+  if let remote = workRemoteLaneMachineName(laneId, options: options) { return remote }
+  guard workParseRemoteLaneId(laneId) == nil else { return nil }
+  return options.first { $0.id == workPrimaryMachineFilterId }?.name
+}
+
 /// The other machines' checkouts of the repository `identity`, one per machine.
 ///
 /// A machine can register the same repository more than once (a second clone,

@@ -164,6 +164,12 @@ final class MachineFleet: ObservableObject {
   private var hiddenCancellables: Set<AnyCancellable> = []
   /// Fleet keys of the machines the account showed online at its last load.
   private var accountOnlineKeys: Set<String> = []
+  /// Each computer's heartbeats across the account loads (see
+  /// `accountMachinesLoaded`).
+  private var presenceWatch = AccountPresenceWatch()
+  /// Reads the account's computer list while a wanted computer is away.
+  private var presenceRefreshTask: Task<Void, Never>?
+  static let presenceRefreshInterval: Duration = .seconds(30)
 
   init() {
     pinnedKeys = UserDefaults.standard.stringArray(forKey: Self.pinnedKeysDefaultsKey) ?? []
@@ -270,7 +276,7 @@ final class MachineFleet: ObservableObject {
           self.syncService?.refreshCloudServerIfStale()
           // Machine names come from the directory: a rename shows at once.
           self.schedulePublish()
-          self.machinesCameOnline(machineKeys: cameOnline)
+          self.accountMachinesLoaded(machines, cameOnline: cameOnline)
           self.hiddenMachines.reconcile(
             // Both keys a row can be hidden under: the device identity, and
             // `account:<machine key>` for a directory row without one.
@@ -305,6 +311,8 @@ final class MachineFleet: ObservableObject {
       for connection in connections.values {
         connection.stop(reason: "App in background.")
       }
+      presenceRefreshTask?.cancel()
+      presenceRefreshTask = nil
       publish()
     } else {
       // Back in front: every machine reconnects, and its rows stay listed
@@ -315,6 +323,8 @@ final class MachineFleet: ObservableObject {
       resumeGivenUpConnections()
       reconcile()
       scheduleProjectMachinesUpdate()
+      // Which computers came back or moved while the app was away.
+      Task { await AccountService.shared.loadMachines() }
     }
   }
 
@@ -369,6 +379,10 @@ final class MachineFleet: ObservableObject {
       connection.stop(reason: "Signed out.", clearAttention: true)
     }
     connections.removeAll()
+    presenceRefreshTask?.cancel()
+    presenceRefreshTask = nil
+    presenceWatch = AccountPresenceWatch()
+    accountOnlineKeys = []
     needsUpdateSince.removeAll()
     needsUpdateRetryTask?.cancel()
     needsUpdateRetryTask = nil
@@ -398,6 +412,13 @@ final class MachineFleet: ObservableObject {
     machine(for: machineKey)?.state == .live
   }
 
+  /// The machine answers now: a live roster link, or the phone's primary link.
+  private func isServing(_ machineKey: String) -> Bool {
+    if isLive(machineKey) { return true }
+    guard let syncService else { return false }
+    return syncService.focusedMachineKey == machineKey && syncService.connectionState == .connected
+  }
+
   /// Connects `machineKey` (adds it to the connected set and dials it) and
   /// waits up to `timeout` for a live link. False when it needs the user,
   /// runs out of retries, or is not live in time. A machine that this call
@@ -419,7 +440,7 @@ final class MachineFleet: ObservableObject {
     // it is up. The pairing can wait for minutes, so a Connect or Disconnect
     // the user chose meanwhile still wins.
     if connections[machineKey] == nil {
-      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name) ?? .skipped
+      let paired = await syncService?.pairRestingCloudMachine(fleetKey: machineKey, name: name, waking: waking) ?? .skipped
       guard choiceBeforeWake == keepLiveChoices else { return false }
       switch paired {
       case .started: break
@@ -436,14 +457,46 @@ final class MachineFleet: ObservableObject {
     let dropped = pinsBefore.filter { !pinnedKeys.contains($0) }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: waking ? max(timeout, SyncService.cloudWakeConnectTimeout) : timeout)
+    // A woken computer comes up with a new heartbeat and maybe a new address:
+    // the account is read every few seconds during the wake, and each change
+    // dials it at once with what it published (`accountMachinesLoaded`).
+    var nextAccountRead = clock.now.advanced(by: .seconds(4))
+    var nextFocusedDial = clock.now
     while clock.now < deadline, !Task.isCancelled {
-      guard let machine = machine(for: machineKey) else { break }
+      // A pairing on a phone with no primary makes this computer the primary.
+      // The fleet does not dial the primary: its own link does, so wait for it.
+      if let syncService, syncService.focusedMachineKey == machineKey {
+        if syncService.connectionState == .connected { return true }
+        if clock.now >= nextFocusedDial {
+          nextFocusedDial = clock.now.advanced(by: .seconds(5))
+          syncService.focusedMachineMayAnswer()
+        }
+        try? await Task.sleep(for: .milliseconds(250))
+        continue
+      }
+      guard let machine = machine(for: machineKey) else {
+        // `keepLive` added it; the list shows it from the next publish.
+        guard connections[machineKey] != nil else { break }
+        try? await Task.sleep(for: .milliseconds(250))
+        continue
+      }
       if machine.state == .live { return true }
-      if machine.gaveUp { break }
       if case .needsAttention = machine.state { break }
+      if machine.gaveUp {
+        // A computer that is still starting runs through the short retries
+        // quickly. While the wake lasts it is dialed again.
+        guard waking, let connection = connections[machineKey] else { break }
+        connection.resumeAfterGivingUp()
+        reconcile()
+      }
+      if waking, clock.now >= nextAccountRead {
+        nextAccountRead = clock.now.advanced(by: .seconds(4))
+        await AccountService.shared.loadMachines()
+        continue
+      }
       try? await Task.sleep(for: .milliseconds(250))
     }
-    if isLive(machineKey) { return true }
+    if isServing(machineKey) { return true }
     // A woken ADE Cloud computer that never answered: the screen says so.
     if waking, choice == keepLiveChoices, !Task.isCancelled {
       let message: String
@@ -544,6 +597,8 @@ final class MachineFleet: ObservableObject {
     persistPins()
     // The open project does not connect it again behind the user's back.
     if userDisconnectedKeys.insert(machineKey).inserted { persistUserDisconnected() }
+    // A failed wake of it asked for a retry the user no longer wants.
+    syncService?.clearCloudWakeFailure(fleetKey: machineKey)
     projectMachineKeys.removeAll { $0 == machineKey }
     reconcile()
   }
@@ -819,6 +874,7 @@ final class MachineFleet: ObservableObject {
       )
     }
     scheduleReconnectWindowEnd(machines: next, now: now)
+    updatePresenceRefresh(wanted: wanted)
     publishRestingCloudMachines(skip: Set(connections.keys))
     // A computer that answered has no failed wake to show any more.
     for machine in next where machine.state == .live && syncService?.cloudWakeFailure(fleetKey: machine.machineKey) != nil {
@@ -832,6 +888,59 @@ final class MachineFleet: ObservableObject {
       machines = next
       if rostersChanged { scheduleProjectMachinesUpdate() }
     }
+  }
+
+  /// While the app is in front and a computer the user wants is not
+  /// answering, the account's computer list is read every
+  /// `presenceRefreshInterval`: one small request, only then. It tells when
+  /// that computer is back (`accountMachinesLoaded`), so the phone dials it
+  /// although its own retries ran out and its rows are hidden.
+  private func updatePresenceRefresh(wanted: Set<String>) {
+    let waiting = appActive && (wanted.contains { key in
+      guard let connection = connections[key] else { return false }
+      if connection.gaveUp { return true }
+      if case .offline = connection.phase { return true }
+      return false
+    } || syncService?.activeProjectHasUnpairedCopies == true)
+    if !waiting {
+      presenceRefreshTask?.cancel()
+      presenceRefreshTask = nil
+      return
+    }
+    guard presenceRefreshTask == nil else { return }
+    presenceRefreshTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: Self.presenceRefreshInterval)
+        guard !Task.isCancelled, self != nil else { return }
+        await AccountService.shared.loadMachines()
+      }
+    }
+  }
+
+  /// The account's computer list loaded. A computer whose heartbeat started
+  /// again after a silence, whose published address changed, or (while the
+  /// phone wakes it) that sent any new heartbeat is dialed at once with the
+  /// address it published.
+  private func accountMachinesLoaded(_ machines: [AccountMachine], cameOnline: Set<String>) {
+    let learned = syncService?.learnAccountMachineRoutes(machines) ?? []
+    let observations = machines.compactMap { machine -> AccountPresenceObservation? in
+      guard let deviceId = nonEmptyTrimmed(machine.deviceId) else { return nil }
+      return AccountPresenceObservation(
+        key: HiddenMachineStore.fleetKey(deviceId: deviceId),
+        lastSeenAt: machine.lastSeenAt,
+        endpoints: machine.reachableEndpoints
+      )
+    }
+    let presence = presenceWatch.observe(observations, now: Date())
+    let waking = syncService?.wakingCloudMachineKeys ?? []
+    let back = cameOnline
+      .union(learned)
+      .union(presence.resumed)
+      .union(presence.advanced.intersection(waking))
+    if let focused = syncService?.focusedMachineKey, back.contains(focused) {
+      syncService?.focusedMachineMayAnswer()
+    }
+    machinesCameOnline(machineKeys: back)
   }
 
   private func publishRestingCloudMachines(skip: Set<String>) {
@@ -1038,4 +1147,72 @@ func fleetMachineListsWork(
   if isParked || !isWanted { return false }
   guard let notLiveSince else { return true }
   return now.timeIntervalSince(notLiveSince) < window
+}
+
+// MARK: - Account presence
+
+/// One computer in one load of the account's computer list.
+struct AccountPresenceObservation: Equatable {
+  let key: String
+  /// Epoch ms of its last heartbeat (the account server's clock).
+  let lastSeenAt: Double?
+  let endpoints: [AccountMachineEndpoint]
+}
+
+/// Pure: reads the account's heartbeats across loads, with no clock of the
+/// server's in the phone's comparisons. A computer sends a heartbeat each
+/// minute (and one when its ADE starts). The same heartbeat seen for longer
+/// than `silence` means it stopped sending; a newer one after that means it
+/// is back, even before the account's online window (150 s) runs out.
+struct AccountPresenceWatch {
+  struct Changes: Equatable {
+    /// Back after a silence, or published a new address.
+    var resumed: Set<String> = []
+    /// Any newer heartbeat.
+    var advanced: Set<String> = []
+  }
+
+  private struct Seen {
+    var lastSeenAt: Double?
+    var firstSeenAt: Date
+    var silent: Bool
+    var endpoints: [AccountMachineEndpoint]
+  }
+
+  /// Longer than one heartbeat period plus the time a heartbeat takes.
+  static let silence: TimeInterval = 90
+
+  private var seen: [String: Seen] = [:]
+
+  mutating func observe(_ observations: [AccountPresenceObservation], now: Date) -> Changes {
+    var changes = Changes()
+    var next: [String: Seen] = [:]
+    for observation in observations {
+      guard var entry = seen[observation.key] else {
+        next[observation.key] = Seen(
+          lastSeenAt: observation.lastSeenAt,
+          firstSeenAt: now,
+          silent: false,
+          endpoints: observation.endpoints
+        )
+        continue
+      }
+      if observation.endpoints != entry.endpoints {
+        changes.resumed.insert(observation.key)
+        entry.endpoints = observation.endpoints
+      }
+      if let latest = observation.lastSeenAt, latest > (entry.lastSeenAt ?? -.infinity) {
+        changes.advanced.insert(observation.key)
+        if entry.silent { changes.resumed.insert(observation.key) }
+        entry.lastSeenAt = latest
+        entry.firstSeenAt = now
+        entry.silent = false
+      } else if now.timeIntervalSince(entry.firstSeenAt) > Self.silence {
+        entry.silent = true
+      }
+      next[observation.key] = entry
+    }
+    seen = next
+    return changes
+  }
 }

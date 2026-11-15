@@ -130,7 +130,15 @@ struct HubInlineComposer: View {
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
     var restoredProjectId = ""
-    if let dest = HubInlineComposer.loadLastDestination() {
+    let live = HubComposerLiveSelection.shared
+    if let projectId = live.projectId {
+      // Built again for another pose: the pick made a moment ago stays.
+      restoredProjectId = projectId
+      _pickedProjectId = State(initialValue: projectId)
+      _selectedLaneId = State(initialValue: live.laneId)
+      _pickedMachineKey = State(initialValue: live.machineKey)
+      _destinationPickerPresented = State(initialValue: live.pickerOpen)
+    } else if let dest = HubInlineComposer.loadLastDestination() {
       restoredProjectId = dest.projectId
       _pickedProjectId = State(initialValue: dest.projectId)
       _selectedLaneId = State(initialValue: dest.laneId)
@@ -344,6 +352,12 @@ struct HubInlineComposer: View {
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
     }
+    // A pose change builds this composer again in another layout; these keep
+    // the destination and an open picker across it.
+    .onChange(of: pickedProjectId) { _, _ in rememberLiveSelection() }
+    .onChange(of: selectedLaneId) { _, _ in rememberLiveSelection() }
+    .onChange(of: pickedMachineKey) { _, _ in rememberLiveSelection() }
+    .onChange(of: destinationPickerPresented) { _, _ in rememberLiveSelection() }
     // Projects/lanes can appear or vanish while the hub sits open (reconnects,
     // roster refreshes) — keep the persisted destination honest against them.
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
@@ -1445,6 +1459,14 @@ struct HubInlineComposer: View {
     }
   }
 
+  private func rememberLiveSelection() {
+    let live = HubComposerLiveSelection.shared
+    live.projectId = pickedProjectId
+    live.laneId = selectedLaneId
+    live.machineKey = pickedMachineKey
+    live.pickerOpen = destinationPickerPresented
+  }
+
   // MARK: Last-destination persistence (App Group)
 
   private struct HubLastDestination: Codable, Equatable {
@@ -1520,4 +1542,19 @@ private func hubPrettyModelName(_ model: String) -> String {
     return pretty
   }
   return trimmed
+}
+
+/// The Hub composer's destination while the app runs. Each pose lays the Hub
+/// out in its own container, so the composer is built again on a fold or an
+/// unfold; it reads this, and the project, lane, computer and an open picker
+/// stay as the person left them. A send saves the lasting default
+/// (`HubLastDestination`) as before.
+@MainActor
+final class HubComposerLiveSelection {
+  static let shared = HubComposerLiveSelection()
+  /// Nil until the person (or a restore) picks a project in this run.
+  var projectId: String?
+  var laneId = ""
+  var machineKey: String?
+  var pickerOpen = false
 }

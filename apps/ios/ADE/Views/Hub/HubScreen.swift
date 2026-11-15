@@ -660,12 +660,36 @@ struct HubScreen: View {
     // The user chose a project: a chat open still waiting on its machine
     // must not move the phone to that machine later.
     pendingHubChatOpen = nil
-    guard let owner = fleetMerge.projectOwners[project.id] else {
+    guard let owner = preferredFleetOwner(project.id) else {
       syncService.selectProject(project)
       return
     }
     // Lives only on another machine: focus that machine, then open it there.
     openFleetCopy(owner.project, onMachine: owner.machineKey, cardId: project.id)
+  }
+
+  /// The copy a card opens on when the focused computer has none: a
+  /// connected computer first, then one that is connecting, then an ADE
+  /// Cloud computer (opening it wakes it, which costs money, so only when no
+  /// connected copy can serve), then the rest. Ties keep the card's own order.
+  private func preferredFleetOwner(_ cardId: String) -> HubRemoteOwner? {
+    guard let owner = fleetMerge.projectOwners[cardId] else { return nil }
+    let candidates = [owner] + (fleetMerge.projectLocations[cardId] ?? []).filter { $0.machineKey != owner.machineKey }
+    func rank(_ location: HubRemoteOwner) -> Int {
+      let state = machineFleet.machine(for: location.machineKey)?.state
+      let isCloud = syncService.cloudMachineFleetKeys.contains(location.machineKey)
+      if state == .live { return 0 }
+      if state == .connecting && !isCloud { return 1 }
+      if isCloud { return 2 }
+      return 3
+    }
+    var best = owner
+    var bestRank = rank(owner)
+    for location in candidates.dropFirst() where rank(location) < bestRank {
+      best = location
+      bestRank = rank(location)
+    }
+    return best
   }
 
   /// A local folder opens on its own computer, or on another reachable
@@ -764,7 +788,7 @@ struct HubScreen: View {
       return HubComputerChip(label: hubMachineLabel(for: project), total: hubMachineCount(for: project), live: nil)
     }
     func accountKey(_ fleetKey: String) -> String {
-      account.machine(forFleetKey: fleetKey)?.machineKey ?? fleetKey
+      account.accountMachineKey(forFleetKey: fleetKey) ?? fleetKey
     }
     var holders: [HubChipHolder] = []
     if fleetMerge.projectOwners[project.id] == nil, let focusedKey = syncService.focusedMachineKey {

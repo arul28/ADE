@@ -729,6 +729,8 @@ struct WorkSessionListRow: View {
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
+  /// The computer it runs on: named in the long-press menu, never on the row.
+  var machineName: String? = nil
   var compact: Bool = false
   /// The parent's one mark for its nested subagents (count + worst state).
   /// Nil when nothing nests under this row.
@@ -1420,6 +1422,13 @@ struct WorkSessionActionsMenuContent: View {
 
   var body: some View {
     let status = normalizedWorkChatSessionStatus(session: row.session, summary: row.chatSummary)
+    if let machineName = row.machineName {
+      // Not an action: where the session runs, at the top of its menu.
+      Section {
+        Label("On \(machineName)", systemImage: "desktopcomputer")
+          .accessibilityLabel("Runs on \(machineName)")
+      }
+    }
     row.nameMenuSection
     row.fileMenuSection(includesSelect: includesSelect)
     row.lifecycleMenuSection(status: status)

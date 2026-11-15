@@ -583,6 +583,19 @@ extension SyncService {
 // MARK: - ADE Cloud straight from the account server
 
 /// How a wake of an ADE Cloud computer went.
+/// What the account says about a computer that changes when it comes up: its
+/// last heartbeat and the addresses it published. A pairing that failed is
+/// worth another try once either one moves.
+struct CloudPairingSignal: Equatable {
+  let lastSeenAt: Double?
+  let endpoints: [AccountMachineEndpoint]
+
+  init(_ machine: AccountMachine) {
+    lastSeenAt = machine.lastSeenAt
+    endpoints = machine.reachableEndpoints
+  }
+}
+
 enum CloudWakeResult: Equatable {
   /// It is awake, coming up, or the start was sent.
   case started
@@ -1000,29 +1013,56 @@ extension SyncService {
   /// through the account server, waits for the account to list it online,
   /// then pairs it next to the primary (the primary is never touched).
   /// `.skipped` when it is not one or the account changed meanwhile.
-  func pairRestingCloudMachine(fleetKey: String, name: String) async -> CloudWakeResult {
+  ///
+  /// `waking` says the phone just asked the computer to start. Its last
+  /// heartbeat from before it slept can still read "online" for a while, and
+  /// its ADE answers only once it is up, so a failed pairing is tried again
+  /// (after a new heartbeat, a new address, or 15 s) until the wake time ends.
+  func pairRestingCloudMachine(fleetKey: String, name: String, waking: Bool = false) async -> CloudWakeResult {
     guard machineFleet?.connection(for: fleetKey) == nil,
           let accountKey = AccountService.shared.machine(forFleetKey: fleetKey)?.machineKey,
           cloudMachineFleetKeys.contains(fleetKey),
           let owner = AccountService.shared.currentPairingAuthorization
     else { return .skipped }
+    func current() -> AccountMachine? {
+      AccountService.shared.machines.first { $0.machineKey == accountKey }
+    }
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: Self.cloudWakeConnectTimeout)
-    var machine = AccountService.shared.machines.first { $0.machineKey == accountKey }
-    while machine?.online != true, clock.now < deadline, !Task.isCancelled {
+    var lastFailure: String?
+    var lastAttempt: (at: ContinuousClock.Instant, signal: CloudPairingSignal)?
+    while !Task.isCancelled {
+      guard AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
+      if let machine = current(), machine.online {
+        let signal = CloudPairingSignal(machine)
+        let due = lastAttempt.map { attempt in
+          attempt.signal != signal || clock.now >= attempt.at.advanced(by: .seconds(15))
+        } ?? true
+        if due {
+          lastAttempt = (clock.now, signal)
+          cloudServerLog.notice("ADE_SYNC_TRACE cloud_pair attempt waking=\(waking) endpoints=\(machine.reachableEndpoints.count)")
+          // The caller adds it to the connected set, after it checked that no
+          // newer choice was made during the wait.
+          switch await pairAccountMachineAlongsidePrimary(machine, authorization: owner, keepConnected: false) {
+          case .success: return .started
+          case .failure(let failure):
+            lastFailure = failure.message
+            cloudServerLog.notice("ADE_SYNC_TRACE cloud_pair failed reason=\(failure.message, privacy: .public)")
+          }
+          // Not woken by this open: the computer was up, so its answer stands.
+          if !waking { break }
+        }
+      }
+      guard clock.now < deadline, !Task.isCancelled else { break }
       try? await Task.sleep(for: .seconds(3))
       await AccountService.shared.loadMachines()
-      machine = AccountService.shared.machines.first { $0.machineKey == accountKey }
     }
     guard !Task.isCancelled, AccountService.shared.isPairingCommitAuthorized(owner) else { return .skipped }
-    guard let machine, machine.online else {
-      return .failed("\(name) did not come online within 2 minutes. Try again.")
+    // A computer that is still starting is not a network problem on the
+    // phone: say it did not answer, never the local-network advice.
+    if waking || lastFailure == nil {
+      return .failed("\(name) did not answer within 2 minutes. Try again.")
     }
-    // The caller adds it to the connected set, after it checked that no newer
-    // choice was made during the wait.
-    switch await pairAccountMachineAlongsidePrimary(machine, authorization: owner, keepConnected: false) {
-    case .success: return .started
-    case .failure(let failure): return .failed(failure.message)
-    }
+    return .failed(lastFailure ?? "\(name) did not answer. Try again.")
   }
 }

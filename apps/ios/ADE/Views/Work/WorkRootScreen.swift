@@ -2569,6 +2569,7 @@ struct WorkRootListScreen: View, Equatable {
       chatSummary: chatSummaries[session.id],
       isArchived: archivedSessionIds.contains(session.id),
       transitionNamespace: transitionNamespace,
+      machineName: workSessionMachineName(laneId: session.laneId, options: inputs.machineFilterOptions),
       compact: compact,
       subagentMark: sessionPresentation.subagentMarkByParentId[session.id],
       showsLaneIdentity: showsLaneIdentity,

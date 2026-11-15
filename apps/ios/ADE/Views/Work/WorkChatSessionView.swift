@@ -3368,6 +3368,7 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   @Environment(\.workChatAttachIssue) private var onAttachIssue
+  @Environment(\.workChatComposerMachineName) private var machineName
   @Environment(\.verticalSizeClass) private var verticalSizeClass
   let chatSummary: WorkChatSummaryRenderContext
   let contextMeter: WorkComposerContextMeterModel?
@@ -3842,6 +3843,10 @@ private struct WorkChatComposerDraftInput: View {
           }
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+
+          if !isDictating, let machineName {
+            WorkComposerMachineTag(name: machineName)
+          }
         },
         trailing: {
           if !isDictating, let contextMeter {
@@ -4780,5 +4785,42 @@ private struct WorkChatComposerSendButton: View {
         "role": "button"
       ]
     )
+  }
+}
+
+extension EnvironmentValues {
+  /// The computer the open chat runs on, for its prompt box. Nil elsewhere.
+  @Entry var workChatComposerMachineName: String? = nil
+}
+
+/// The open chat's computer, quiet in the prompt box's control row: where a
+/// message sent here runs. Not a control; the chat header names it too.
+struct WorkComposerMachineTag: View {
+  let name: String
+
+  var body: some View {
+    // The model chip keeps its room first. A narrow composer shows only the
+    // computer icon; its label still names the computer.
+    ViewThatFits(in: .horizontal) {
+      HStack(spacing: 4) {
+        icon
+        Text(name)
+          .font(.system(size: 12, weight: .medium))
+          .lineLimit(1)
+          .fixedSize()
+      }
+      icon
+    }
+    .foregroundStyle(ADEColor.textMuted)
+    .padding(.horizontal, 4)
+    .frame(minHeight: 28)
+    .layoutPriority(-1)
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Runs on \(name)")
+  }
+
+  private var icon: some View {
+    Image(systemName: "desktopcomputer")
+      .font(.system(size: 12, weight: .medium))
   }
 }

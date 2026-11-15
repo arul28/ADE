@@ -2126,6 +2126,8 @@ struct WorkSessionDestinationView: View {
       // Keyed on the engine too: a Hub activation moves the chat to another
       // scope's engine, and the transcript view's scroll state belongs to one.
       duoFixtureChatView(makeWorkChatSessionView(for: session, thread: threadModel))
+        // The prompt box names the computer the chat runs on.
+        .environment(\.workChatComposerMachineName, syncService.chatMachineName(sessionId: sessionId))
         .id("main-\(session.id)-\(threadModel.key.description)")
     } else {
       connectingFrame

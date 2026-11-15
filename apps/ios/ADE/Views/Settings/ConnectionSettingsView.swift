@@ -17,13 +17,25 @@ struct ConnectionSettingsView: View {
   @ObservedObject private var account = AccountService.shared
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @State private var signInPresented = false
+  /// The root row whose page is open (nil: the list), when the caller does
+  /// not keep it (`openPageStore`).
+  @State private var ownOpenPage: String?
+  /// The caller's copy of the open row. Held landscape on the Duo's inner
+  /// display Settings is a full-screen window, elsewhere a sheet; a pose
+  /// change between them builds this view again, so the caller keeps it.
+  private let openPageStore: Binding<String?>?
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
 
-  init(syncService: SyncService, pairingOnly: Bool = false) {
+  init(syncService: SyncService, pairingOnly: Bool = false, openPage: Binding<String?>? = nil) {
     self.syncService = syncService
     self.pairingOnly = pairingOnly
+    self.openPageStore = openPage
+  }
+
+  private var openPage: Binding<String?> {
+    openPageStore ?? $ownOpenPage
   }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -35,7 +47,7 @@ struct ConnectionSettingsView: View {
     // the left, the page a row opens on the right. It opens on the first row,
     // Machines. Everywhere else it is one pushed stack.
     if duo.isWide && !pairingOnly {
-      DuoSettingsSplit(onClose: { dismiss() }, landingTitle: SettingsRoute.machines.title) {
+      DuoSettingsSplit(onClose: { dismiss() }, landingTitle: SettingsRoute.machines.title, openPage: openPage) {
         settingsChrome(settingsList)
       } landing: {
         machinesPage
@@ -43,7 +55,10 @@ struct ConnectionSettingsView: View {
         page(SettingsRoute.allCases.first { $0.title == title } ?? .general)
       }
     } else {
-      NavigationStack {
+      NavigationStack(path: Binding(
+        get: { pairingOnly ? [] : (openPage.wrappedValue.map { [$0] } ?? []) },
+        set: { openPage.wrappedValue = $0.first }
+      )) {
         settingsChrome(
           Group {
             if pairingOnly {
@@ -56,9 +71,14 @@ struct ConnectionSettingsView: View {
               .background(ADEColor.pageBackground.ignoresSafeArea())
             } else {
               settingsList
+                .environment(\.settingsRootPush, SettingsRootPushAction { openPage.wrappedValue = $0 })
             }
           }
         )
+        .navigationDestination(for: String.self) { title in
+          page(SettingsRoute.allCases.first { $0.title == title } ?? .general)
+            .environment(\.settingsRootPush, nil)
+        }
       }
       .environment(\.settingsClose, { dismiss() })
       // On the Duo's outer display the bar stays across the top, as the

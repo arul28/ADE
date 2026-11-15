@@ -100,6 +100,19 @@ let syncRemoteLaneEmptyRuntime = LaneRuntimeSummary(
 
 /// Account computers the open project already tried to pair this app run.
 @MainActor private var syncAutoPairedAccountMachines = Set<String>()
+/// A computer whose pairing failed: the heartbeat (epoch ms) the account
+/// showed then, and how many times in a row it failed. It is tried again
+/// only once the account shows a heartbeat at least 1, 2, 4… (at most 15)
+/// minutes newer: a computer that came back is paired at its next
+/// heartbeat, and one that is up but unreachable costs a dial less and less
+/// often, never one per update.
+@MainActor private var syncAutoPairFailedHeartbeat: [String: (seen: Double, failures: Int)] = [:]
+
+func syncAutoPairRetryDue(lastSeenAt: Double?, failedAt: (seen: Double, failures: Int)?) -> Bool {
+  guard let failedAt else { return true }
+  let waitMs = min(15, Double(1 << min(max(failedAt.failures - 1, 0), 4))) * 60_000
+  return (lastSeenAt ?? 0) >= failedAt.seen + waitMs
+}
 @MainActor private var syncAutoPairRunning = false
 private let syncFleetAutoPairLog = Logger(subsystem: "com.ade.ios", category: "fleet")
 
@@ -197,6 +210,18 @@ extension SyncService {
   /// keeps it live with the other copies while the project is open; it does
   /// not join the user's connected set. A failure stays quiet: the
   /// computer is listed in Settings with its state.
+  /// The open project has a copy on an account computer this phone has no
+  /// pairing for yet: the account list tells when it can be paired.
+  var activeProjectHasUnpairedCopies: Bool {
+    guard let project = accountProjectForActiveProject() else { return false }
+    let machines = AccountService.shared.machines
+    return project.copies.contains { copy in
+      guard let machine = machines.first(where: { $0.machineKey == copy.machineKey }),
+            syncNonEmpty(machine.deviceId) != nil else { return false }
+      return startOnPhoneKey(for: machine) == nil
+    }
+  }
+
   func connectActiveProjectAccountCopies() {
     guard !syncAutoPairRunning,
           let project = accountProjectForActiveProject(),
@@ -211,6 +236,7 @@ extension SyncService {
             syncNonEmpty(machine.deviceId) != nil,
             startOnPhoneKey(for: machine) == nil,
             !syncAutoPairedAccountMachines.contains(machine.machineKey),
+            syncAutoPairRetryDue(lastSeenAt: machine.lastSeenAt, failedAt: syncAutoPairFailedHeartbeat[machine.machineKey]),
             seen.insert(machine.machineKey).inserted
       else { return nil }
       return machine
@@ -229,12 +255,18 @@ extension SyncService {
         syncAutoPairedAccountMachines.insert(machine.machineKey)
         switch await pairAccountMachineAlongsidePrimary(machine, authorization: authorization, keepConnected: false) {
         case .success:
+          syncAutoPairFailedHeartbeat[machine.machineKey] = nil
           // Only a pairing that worked takes a slot; a failed one leaves it.
           room -= 1
           // The new pairing is a copy's machine now: the project keeps it live.
           fleet.scheduleProjectMachinesUpdate()
         case .failure(let failure):
           syncFleetAutoPairLog.notice("auto pair of a project copy's computer failed: \(failure.message, privacy: .public)")
+          syncAutoPairedAccountMachines.remove(machine.machineKey)
+          syncAutoPairFailedHeartbeat[machine.machineKey] = (
+            seen: machine.lastSeenAt ?? 0,
+            failures: (syncAutoPairFailedHeartbeat[machine.machineKey]?.failures ?? 0) + 1
+          )
         }
       }
       // A project change during this batch found it running and did nothing.

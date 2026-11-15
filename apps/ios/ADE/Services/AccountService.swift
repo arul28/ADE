@@ -853,6 +853,34 @@ final class AccountService: ObservableObject {
     return machines.first { $0.deviceId?.caseInsensitiveCompare(identity) == .orderedSame }
   }
 
+  /// The account machine key of a fleet key: from the loaded list, else from
+  /// the last list this account loaded. A launch that cannot reach the
+  /// account still knows which saved project copy is which connected
+  /// computer, so no computer counts twice.
+  func accountMachineKey(forFleetKey fleetKey: String?) -> String? {
+    if let machine = machine(forFleetKey: fleetKey) { return machine.machineKey }
+    guard let fleetKey, let ownerId = identity?.userId else { return nil }
+    return rememberedFleetKeys(ownerId: ownerId)[fleetKey]
+  }
+
+  private static func fleetKeyMapDefaultsKey(ownerId: String) -> String {
+    "ade.account.fleetKeyMap.v1.\(ownerId)"
+  }
+
+  private func rememberedFleetKeys(ownerId: String) -> [String: String] {
+    UserDefaults.standard.dictionary(forKey: Self.fleetKeyMapDefaultsKey(ownerId: ownerId)) as? [String: String] ?? [:]
+  }
+
+  private func rememberFleetKeys(of machines: [AccountMachine], ownerId: String) {
+    var map: [String: String] = [:]
+    for machine in machines {
+      guard let deviceId = machine.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines), !deviceId.isEmpty else { continue }
+      map[HiddenMachineStore.fleetKey(deviceId: deviceId)] = machine.machineKey
+    }
+    guard map != rememberedFleetKeys(ownerId: ownerId) else { return }
+    UserDefaults.standard.set(map, forKey: Self.fleetKeyMapDefaultsKey(ownerId: ownerId))
+  }
+
   @Published private(set) var authenticationOutcome: AccountAuthenticationOutcome = .unknown
   /// Bumped after a new account Attention snapshot is committed to the App
   /// Group. The in-app model observes this alongside SyncService revisions.
@@ -1111,6 +1139,7 @@ final class AccountService: ObservableObject {
     accountPreferencesQueue.discardPending()
     if let previousOwnerId {
       attentionPendingAckStore.clear(for: previousOwnerId)
+      UserDefaults.standard.removeObject(forKey: Self.fleetKeyMapDefaultsKey(ownerId: previousOwnerId))
       // A signed-in owner is signing out: their cached chat logs go too
       // (edge case 19). Repeated signed-out publishes have no owner and keep
       // a LAN-only user's cache.
@@ -1321,7 +1350,15 @@ final class AccountService: ObservableObject {
     // that request fails, cached Clerk state and subsequent auth events still
     // cannot restore account machines or issue a session token.
     localSignOutState.suppress()
+    let signingOutOwner = identity?.userId ?? revocation?.pending.ownerId
     publishSignedOut()
+    // The person chose to sign out: the computers this phone connected
+    // through the account leave with it, at once. Only machines paired
+    // directly with a code stay, as the sign-out dialog says. A session that
+    // only expired keeps them (`publishSignedOut` alone).
+    if let signingOutOwner {
+      SyncService.shared?.removeAccountOwnedPairings(ownerId: signingOutOwner)
+    }
     if let revocation, let token = revocation.token {
       await attemptDeviceRevocation(revocation.pending, token: token)
     }
@@ -2234,6 +2271,7 @@ final class AccountService: ObservableObject {
       )
       guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machines = fetched
+      rememberFleetKeys(of: fetched, ownerId: requestedOwnerId)
       SyncService.shared?.adoptVerifiedAccountRelayMetadata(
         from: fetched,
         ownerId: requestedOwnerId

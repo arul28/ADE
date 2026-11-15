@@ -142,6 +142,23 @@ private func hubKeyWindowScene() -> UIWindowScene? {
   return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
 }
 
+extension View {
+  /// Sets `up` while the software keyboard covers the bottom of the screen:
+  /// the view's bottom safe area then runs far past what the window keeps
+  /// there (a home indicator, or the outer display's camera held sideways).
+  /// A hardware keyboard's short bar does not count. Read from the layout, so
+  /// a keyboard that a popover or a pose change hid never leaves it set.
+  func hubReadsSoftwareKeyboard(_ up: Binding<Bool>) -> some View {
+    onGeometryChange(for: Bool.self) { proxy in
+      let windowInset = hubKeyWindowScene()?.windows.first?.safeAreaInsets.bottom ?? 0
+      return proxy.safeAreaInsets.bottom > max(100, windowInset + 60)
+    } action: { value in
+      guard value != up.wrappedValue else { return }
+      withAnimation(.easeOut(duration: 0.2)) { up.wrappedValue = value }
+    }
+  }
+}
+
 private struct HubComposerScreenBottom: ViewModifier {
   /// What the display keeps at the bottom: a home indicator (the column runs
   /// past it), and on the Duo's outer display held landscape the camera in

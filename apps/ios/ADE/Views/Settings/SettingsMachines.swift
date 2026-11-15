@@ -44,6 +44,9 @@ struct SettingsMachine: Identifiable, Equatable {
   /// `~/.ade-dev`). Shown on its own line under the title.
   var install: String? = nil
 
+  /// An ADE Cloud computer the phone is waking for this row.
+  var isWaking = false
+
   /// The row and page title: the computer, with the install shown apart.
   var title: String { computerName ?? name }
 
@@ -86,6 +89,7 @@ struct SettingsMachine: Identifiable, Equatable {
 
   /// The row's second line.
   var subtitle: String {
+    if isWaking && !isLive { return "Waking up · a cloud computer can take a minute" }
     switch link {
     case .primary(let live, let connecting):
       if live { return detail ?? "Connected" }
@@ -108,6 +112,7 @@ struct SettingsMachine: Identifiable, Equatable {
   }
 
   var subtitleIsProblem: Bool {
+    if isWaking && !isLive { return false }
     switch link {
     case .primary(let live, let connecting): return !live && !connecting
     case .connected(let state, _):
@@ -238,7 +243,17 @@ func settingsMachines(
     ))
   }
 
-  return result.filter { $0.isConnectedSet || !hidden.isHidden(identity: $0.hiddenIdentity) }
+  let waking = syncService.wakingCloudMachineKeys
+  return result
+    .filter { $0.isConnectedSet || !hidden.isHidden(identity: $0.hiddenIdentity) }
+    .map { machine in
+      let key = machine.machineKey
+        ?? nonEmptyTrimmed(machine.account?.deviceId).map(HiddenMachineStore.fleetKey(deviceId:))
+      guard let key, waking.contains(key) else { return machine }
+      var copy = machine
+      copy.isWaking = true
+      return copy
+    }
 }
 
 /// Connected first (primary, then the rest by name), then available (online
@@ -366,6 +381,21 @@ final class SettingsMachineController: ObservableObject {
 
   private func performConnect(_ machine: SettingsMachine) {
     guard let syncService, let fleet else { return }
+    // An ADE Cloud computer may be asleep: Connect wakes it first and waits
+    // while it starts (the row reads "Waking up"), paired or not.
+    if let key = machine.machineKey ?? nonEmptyTrimmed(machine.account?.deviceId).map(HiddenMachineStore.fleetKey(deviceId:)),
+       syncService.cloudMachineFleetKeys.contains(key) {
+      if syncService.primaryIsAttached {
+        run(machine, success: "\(machine.name) connected") {
+          await fleet.connect(machineKey: key, timeout: .seconds(15))
+        }
+      } else {
+        run(machine, success: "\(machine.name) connected") {
+          await syncService.switchFocusKeepingPrevious(toMachineKey: key)
+        }
+      }
+      return
+    }
     if let key = machine.machineKey {
       // No primary attached (none yet, or the user disconnected it): this
       // machine becomes primary instead of a fleet machine beside nothing.
@@ -414,6 +444,9 @@ final class SettingsMachineController: ObservableObject {
 
   func disconnect(_ machine: SettingsMachine) {
     guard let syncService, let fleet, let key = machine.machineKey else { return }
+    // A failed wake or connect belongs to the attempt the user just stopped.
+    syncService.clearCloudWakeFailure(fleetKey: key)
+    errors[machine.id] = nil
     switch machine.link {
     case .primary:
       // The most recently connected live machine becomes primary.
@@ -439,6 +472,30 @@ final class SettingsMachineController: ObservableObject {
   func retry(_ machine: SettingsMachine) {
     guard let syncService, let fleet else { return }
     errors[machine.id] = nil
+    // An ADE Cloud computer that does not answer may be asleep: Retry wakes
+    // it and waits while it starts (the row reads "Waking up").
+    if let key = machine.machineKey, syncService.cloudMachineFleetKeys.contains(key) {
+      syncService.clearCloudWakeFailure(fleetKey: key)
+      run(machine, success: "\(machine.name) connected") {
+        let ok: Bool
+        if machine.isPrimary {
+          if await syncService.wakeFocusedCloudMachineIfAsleep() { return true }
+          // A wake that failed says why. A reconnect after it would only try
+          // the old routes and replace that reason with a vaguer one.
+          if syncService.cloudWakeFailure(fleetKey: key) == nil {
+            await syncService.reconnectForUserConnectionChange()
+          }
+          ok = syncService.connectionState == .connected
+        } else {
+          ok = await fleet.connect(machineKey: key, timeout: .seconds(15))
+        }
+        if !ok, let failure = syncService.cloudWakeFailure(fleetKey: key) {
+          self.errors[machine.id] = .connect(failure)
+        }
+        return ok
+      }
+      return
+    }
     if machine.isPrimary {
       Task { await syncService.reconnectForUserConnectionChange() }
     } else if let key = machine.machineKey {

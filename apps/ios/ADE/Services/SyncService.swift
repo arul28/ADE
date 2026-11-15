@@ -8929,6 +8929,54 @@ final class SyncService: ObservableObject {
     profile.updatedAt = syncDateFormatter.string(from: Date())
   }
 
+  /// The account lists where each online computer listens now. A saved
+  /// pairing still on an older port or address (the computer came back on
+  /// another one, e.g. after a wake) takes the published one, first in its
+  /// list. Relay routes and account ownership stay as they are. Returns the
+  /// fleet keys whose pairing changed; the fleet dials those again.
+  func learnAccountMachineRoutes(_ machines: [AccountMachine]) -> Set<String> {
+    var profiles = loadSavedProfilesRaw()
+    var changedKeys = Set<String>()
+    var changedStorageKeys = Set<String>()
+    for machine in machines where machine.online {
+      guard let identity = syncNonEmpty(machine.deviceId)?.lowercased() else { continue }
+      let routes = accountMachineRoutes(machine)
+      guard let port = routes.preferredDirectPort, !routes.direct.isEmpty else { continue }
+      for (key, profile) in profiles where profile.machineIdentity == identity {
+        let addresses = deduplicatedAddresses(routes.direct + profile.savedAddressCandidates)
+        guard profile.port != port || addresses != profile.savedAddressCandidates else { continue }
+        var updated = profile
+        updated.port = port
+        updated.savedAddressCandidates = addresses
+        profiles[key] = updated
+        changedStorageKeys.insert(key)
+        changedKeys.insert(HiddenMachineStore.fleetKey(deviceId: identity))
+      }
+    }
+    guard !changedStorageKeys.isEmpty else { return [] }
+    syncConnectLog.notice("ADE_SYNC_TRACE account routes learned machines=\(changedKeys.count)")
+    saveSavedProfiles(profiles)
+    if let active = activeHostProfile, let key = profileStorageKey(active),
+       changedStorageKeys.contains(key), let updated = profiles[key] {
+      saveProfile(updated)
+    }
+    machineFleet?.savedMachinesChanged()
+    // The focused computer came back on a new address: dial it there now
+    // instead of after the rest of a retry wait on the old one.
+    if let focused = focusedMachineKey, changedStorageKeys.contains(focused) {
+      focusedMachineMayAnswer()
+    }
+    return changedKeys
+  }
+
+  /// The account shows the primary computer back (or on a new address):
+  /// reconnect now instead of after the rest of a retry wait.
+  func focusedMachineMayAnswer() {
+    guard connectionState != .connected, connectionState != .connecting,
+          !autoReconnectPausedByUser else { return }
+    Task { @MainActor [weak self] in await self?.reconnectIfPossible() }
+  }
+
   /// The saved profile, with a usable credential, of the account machine with
   /// this device identity. `requiringDeviceBoundSecret` keeps only "paired"
   /// profiles, the only kind the fleet can dial.
@@ -28587,7 +28635,12 @@ extension SyncService {
   /// The machine name to show under a chat's title.
   func chatMachineName(sessionId: String) -> String? {
     if let connection = remoteChatConnection(for: sessionId) {
-      return connection.hostName ?? syncNonEmpty(connection.profile.hostName)
+      // The account's name for it, as every list shows it.
+      return machineFleet?.machine(for: connection.machineKey)?.name
+        ?? connection.hostName ?? syncNonEmpty(connection.profile.hostName)
+    }
+    if remoteChatMachineKey(sessionId: sessionId) == nil, let name = focusedMachineAccountName {
+      return name
     }
     // A computer this phone has no link to yet (an ADE Cloud computer it
     // never paired): the fleet's name for it, never the focused machine's.
@@ -28640,6 +28693,18 @@ extension SyncService {
     // next to the others, so the focus switch dials an awake computer. A
     // user's disconnect or newer pick during that wait wins over this
     // request; a background retry of the focused computer does not.
+    if cloudMachineFleetKeys.contains(machineKey), focusedMachineKey == machineKey,
+       connectionState != .connected {
+      // Still the focused computer (the user disconnected it). The fleet never
+      // dials the focused computer, so wake and reconnect it here. This
+      // Connect is the user's choice: it ends their earlier Disconnect.
+      setAutoReconnectPausedByUser(false)
+      allowAutoReconnect = true
+      if await wakeFocusedCloudMachineIfAsleep() { return true }
+      if cloudWakeFailure(fleetKey: machineKey) != nil { return false }
+      await reconnectForUserConnectionChange()
+      return connectionState == .connected
+    }
     if cloudMachineFleetKeys.contains(machineKey), !isFocusedAndLive(machineKey), let machineFleet {
       userConnectionChoiceGeneration &+= 1
       let choiceBefore = userConnectionChoiceGeneration
@@ -29209,7 +29274,9 @@ extension SyncService {
     else { return false }
     cloudWakeFailures[fleetKey] = nil
     cloudWakeWaiters[fleetKey, default: 0] += 1
-    wakingCloudMachineKeys.insert(fleetKey)
+    // A wake of this computer is already on its way: this open waits for
+    // the same one. A cloud wake costs money, so it is never sent twice.
+    guard wakingCloudMachineKeys.insert(fleetKey).inserted else { return true }
     let name = cloudMachineName(fleetKey: fleetKey) ?? "The cloud computer"
     let result = await wakeCloudMachineIfNeeded(machineKey: accountKey, name: name)
     guard case .started = result else {
@@ -29230,10 +29297,18 @@ extension SyncService {
   /// The name of an ADE Cloud computer: the fleet's (another machine), the
   /// account's, or the focused host's own. The fleet does not list the
   /// focused computer.
+  /// Never the computer's host name: a cloud computer's host name is no name
+  /// a person gave it.
   func cloudMachineName(fleetKey: String) -> String? {
-    machineFleet?.machine(for: fleetKey)?.name
-      ?? AccountService.shared.machine(forFleetKey: fleetKey).flatMap { syncNonEmpty($0.displayName) }
-      ?? (fleetKey == focusedMachineKey ? hostName : nil)
+    if let account = AccountService.shared.machine(forFleetKey: fleetKey) {
+      return account.presentedName
+    }
+    if fleetKey == focusedMachineKey,
+       let identity = activeHostProfile?.machineIdentity,
+       let account = AccountService.shared.machine(forFleetKey: HiddenMachineStore.fleetKey(deviceId: identity)) {
+      return account.presentedName
+    }
+    return machineFleet?.machine(for: fleetKey)?.name
   }
 
   /// A waking ADE Cloud computer, for a screen that belongs to no single
@@ -29266,9 +29341,18 @@ extension SyncService {
     await reconnectIfPossible()
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: Self.cloudWakeConnectTimeout)
+    var nextAccountRead = clock.now.advanced(by: .seconds(3))
     while clock.now < deadline, !Task.isCancelled {
       guard focusedMachineKey == key, !autoReconnectPausedByUser else { return false }
       if connectionState == .connected { return true }
+      if clock.now >= nextAccountRead {
+        // A started computer publishes its address to the account, maybe a
+        // new one. The read saves it and dials it there at once
+        // (`learnAccountMachineRoutes`). Same cadence as `pairRestingCloudMachine`.
+        nextAccountRead = clock.now.advanced(by: .seconds(3))
+        await AccountService.shared.loadMachines()
+        continue
+      }
       try? await Task.sleep(for: .milliseconds(500))
     }
     if focusedMachineKey == key, connectionState == .connected { return true }
