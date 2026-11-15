@@ -1529,9 +1529,23 @@ describe("ptyService", () => {
       }
     });
 
-    it("starts plain shell sessions as login shells with user startup files", async () => {
+    // macOS opens a login shell; Linux an interactive non-login one, because a
+    // login shell's /etc/profile resets PATH on Debian and drops ADE's shims.
+    // Either way the login shell's PATH reaches the terminal's environment.
+    it.each([
+      ["darwin", ["-l"]],
+      ["linux", []],
+    ] as const)("starts plain shell sessions with user startup files and the login PATH on %s", async (platform, expectedArgs) => {
       const previousShell = process.env.SHELL;
+      const previousPath = process.env.PATH;
       process.env.SHELL = "/bin/zsh";
+      process.env.PATH = "/usr/bin";
+      // Past the 30 s backoff earlier tests' failed probes of this shell left.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(Date.now() + 60_000);
+      mocks.execFileSync.mockImplementation((_file, args) =>
+        Array.isArray(args) && args[0] === "-lc" ? "__ADE_PATH_START__/login/bin:/usr/bin__ADE_PATH_END__" : "");
+      setPlatform(platform);
       try {
         const { service, loadPty } = createHarness();
         await service.create({
@@ -1545,16 +1559,23 @@ describe("ptyService", () => {
         const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
         expect(ptyLib.spawn).toHaveBeenCalledWith(
           "/bin/zsh",
-          ["-l"],
+          [...expectedArgs],
           expect.objectContaining({
             env: expect.not.objectContaining({
               ZDOTDIR: "/var/empty",
             }),
           }),
         );
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env?.PATH?.split(path.delimiter)).toContain("/login/bin");
       } finally {
+        setPlatform(originalPlatform);
         if (previousShell == null) delete process.env.SHELL;
         else process.env.SHELL = previousShell;
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        vi.useRealTimers();
+        mocks.execFileSync.mockImplementation(() => "");
       }
     });
 

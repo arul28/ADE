@@ -79,6 +79,20 @@ export const CODEX_APP_SERVER_STARTUP_ARGS: readonly string[] = [
   "features.plugin_discovery_prefetch=false",
 ];
 
+/**
+ * `-c allow_login_shell=false` for a Codex that runs commands on Linux, else
+ * nothing. Codex runs each command as `bash -lc`, and a login shell whose
+ * /etc/profile sets PATH from scratch (Debian) drops what ADE put on PATH:
+ * the `ade` and `gh` shims, ~/.local/bin, npm's global bin. ADE starts Codex
+ * with the person's login and interactive shell PATH already resolved
+ * (`augmentProcessPathWithShellAndKnownCliDirs`), so a plain `bash -c` keeps
+ * all of it. macOS keeps login shells (path_helper keeps existing entries);
+ * Windows runs PowerShell.
+ */
+export function codexLinuxShellArgs(platform: string): string[] {
+  return platform === "linux" ? ["-c", "allow_login_shell=false"] : [];
+}
+
 /** Grok's flag for the same, passed before its subcommand. */
 export const GROK_NO_AUTO_UPDATE_ARG = "--no-auto-update";
 

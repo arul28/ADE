@@ -71,7 +71,7 @@ import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   createComputerUseArtifactPath,
   createComputerUseScratchPath,
@@ -9846,7 +9846,7 @@ async function runTool(args: {
     const finalPrompt = promptSegments.join("\n").trim();
 
     // ADE's pinned Codex never checks for its own update; the preview stays short.
-    const commandArgs: string[] = provider === "codex" ? [...CODEX_NO_UPDATE_CHECK_ARGS] : [];
+    const commandArgs: string[] = provider === "codex" ? [...CODEX_NO_UPDATE_CHECK_ARGS, ...codexLinuxShellArgs(process.platform)] : [];
     const commandPreviewParts: string[] = [provider];
     if (model) {
       commandArgs.push("--model", model);

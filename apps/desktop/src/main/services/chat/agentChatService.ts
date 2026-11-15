@@ -555,7 +555,7 @@ import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
 import { resolveCodexExecutable, type CodexExecutableResolution } from "../ai/codexExecutable";
 import { codexFallForwardNotice, handleCodexVersionRejection } from "../ai/codexFallForward";
-import { CODEX_APP_SERVER_STARTUP_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_APP_SERVER_STARTUP_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { embeddedProviderLoginEnv } from "../../../shared/providerLoginIsolation";
 import {
   pinnedToolForProvider,
@@ -46972,6 +46972,8 @@ export function createAgentChatService(args: {
       // (its MCP servers, its writer lock) at once, as stopping a private
       // process did.
       "-c", `thread_unload_delay_secs=${CODEX_SHARED_THREAD_UNLOAD_DELAY_SECS}`,
+      // On Linux, commands run in a non-login shell that keeps ADE's PATH.
+      ...codexLinuxShellArgs(process.platform),
     ];
     const optOutNotificationMethods = managed.session.runtimeMode === "print"
       ? [

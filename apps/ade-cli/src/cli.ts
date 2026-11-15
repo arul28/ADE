@@ -32982,11 +32982,19 @@ async function runServe(
         try { process.kill(pid, 0); return true; } catch { return false; }
       },
     });
+    // Named by its release as analytics names it (`stable`, `beta`, `alpha`),
+    // `dev` for a development brain. ADE_PACKAGE_CHANNEL alone is set only for
+    // Alpha, so it named every Stable, Beta and ADE Cloud brain "dev".
+    const releaseChannel = resolveReleaseChannel({
+      env: process.env,
+      packaged: brainReportsAsRelease(process.env),
+      version: VERSION,
+    });
     const otherBrains = brainRegistry.join({
       pid: process.pid,
       endpoint: socketPath,
       startedAtMs: readProcessStartTimeMs(process.pid),
-      label: process.env.ADE_PACKAGE_CHANNEL?.trim() || "dev",
+      label: releaseChannel === "development" ? "dev" : releaseChannel,
     });
     const sharedHomeSentence = describeOtherBrains(otherBrains);
     if (sharedHomeSentence) {
