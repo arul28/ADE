@@ -34,10 +34,18 @@ const DURATIONS_FILE_NAME = "vitest.durations.json";
 // files count too.
 const LOG_LINE = /\s[✓❯×↓]\s+(?:\|[^|]+\|\s+)?(\S+\.test\.[cm]?[jt]sx?)\s+\([^)]*\)(?:\s+(\d+)ms)?/;
 
-/** The path of `file` from the package directory, with forward slashes. */
+/**
+ * The path of `file` from the package directory, with forward slashes. A
+ * report from another checkout (a CI runner) has another prefix, so the
+ * package's path from the repository root (`apps/desktop`) marks where the
+ * package path starts.
+ */
 function fromPackage(file, packageDir) {
-  const posix = file.split(path.sep).join("/");
-  const marker = `/${packageDir.replace(/^\.\/|\/$/g, "")}/`;
+  const toPosix = (p) => p.split(path.sep).join("/");
+  const posix = toPosix(file);
+  const local = `${toPosix(path.resolve(packageDir))}/`;
+  if (posix.startsWith(local)) return posix.slice(local.length);
+  const marker = `/${toPosix(path.relative(process.cwd(), path.resolve(packageDir)))}/`;
   const at = posix.lastIndexOf(marker);
   return at >= 0 ? posix.slice(at + marker.length) : posix;
 }
