@@ -3,6 +3,8 @@ import { findByUserCode, normalizeUserCode, resolveDeviceRequestOptions } from "
 import { sha256Hex } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import {
+  CLOUD_AUTO_SIZE,
+  CLOUD_AUTO_SIZE_MEMORY_MS,
   CLOUD_INSTANCE_HEADER,
   CLOUD_LANE_METADATA,
   CLOUD_LAUNCH_DRAFT_TTL_MS,
@@ -16,9 +18,12 @@ import {
   CLOUD_LAUNCH_METADATA,
   CLOUD_LAUNCH_RECORD_TTL_MS,
   CLOUD_PATHS,
+  type CloudAutoSizeRefusal,
   type CloudLaunchAttachment,
+  type CloudLaunchAutoSize,
   type CloudLaunchRecord,
   type CloudLaunchStage,
+  type CloudLaunchSizeChoice,
   type CloudLaunchStageStatus,
   type CloudLaunchState,
   type CloudServerLaunchRequest,
@@ -27,7 +32,7 @@ import {
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, fail, json, readJson } from "./http";
 import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
-import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, type CloudEnv } from "./store";
+import { deleteComputer, logCloud, ownedComputer, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 
 /**
@@ -69,6 +74,8 @@ type LaunchRow = {
   state: LaunchRowState;
   kind: string | null;
   size_id: string | null;
+  /** `CloudLaunchAutoSize["why"]` once the computer is bigger than the size asked for (migration 0036). */
+  auto_size: string | null;
   project_origin: string | null;
   lane_id: string | null;
   lane_name: string | null;
@@ -269,6 +276,9 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
       ? { kind: "agent", agent, chatSessionId: shortString(madeByRaw.chatSessionId, 200) }
       : { kind: "person" };
   const channel = body.channel === "beta" ? "beta" : "stable";
+  const sizeChoice: CloudLaunchSizeChoice | null = body.sizeChoice === "default" || body.sizeChoice === "capped" || body.sizeChoice === "picked"
+    ? body.sizeChoice
+    : null;
   // An ADE app's own launch args, kept as sent: the computer parses them as every entry's.
   let launch: Record<string, unknown> | null = null;
   if (body.launch != null) {
@@ -280,6 +290,7 @@ export function parseLaunchRequest(body: Record<string, unknown>): CloudServerLa
     launchId,
     kind,
     sizeId: body.sizeId as CloudTierId,
+    ...(sizeChoice ? { sizeChoice } : {}),
     project: { origin },
     lane: {
       id: laneId,
@@ -331,6 +342,7 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     state: neverJoined || retryStopped ? "failed" : retrying ? "making" : row.state as CloudLaunchState,
     kind: row.kind === "chat" || row.kind === "lane" ? row.kind : null,
     sizeId: (row.size_id as CloudTierId | null) ?? null,
+    autoSize: autoSizeOf(row),
     projectOrigin: row.project_origin,
     laneId: row.lane_id,
     laneName: row.lane_name,
@@ -345,6 +357,87 @@ export function recordOf(row: LaunchRow, now: number): CloudLaunchRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     expiresAt: row.expires_at,
+  };
+}
+
+function autoSizeOf(row: LaunchRow): CloudLaunchAutoSize | null {
+  if (row.auto_size !== "remembered" && row.auto_size !== "setup_memory") return null;
+  return { from: CLOUD_AUTO_SIZE.from, to: CLOUD_AUTO_SIZE.to, why: row.auto_size };
+}
+
+/* ---- Sizing itself (CLOUD_AUTO_SIZE) ---- */
+
+/** The setup a launch runs, as `cloud_repo_sizes.setup_key` keys it: its lane template's id, or '' for the project's default. */
+function setupKeyOf(request: CloudServerLaunchRequest | null): string {
+  const laneConfig = request?.launch?.laneConfig;
+  const templateId = laneConfig && typeof laneConfig === "object" ? (laneConfig as Record<string, unknown>).templateId : null;
+  return shortString(templateId, 120) ?? "";
+}
+
+/**
+ * The size a launch starts at: Medium for a default-size Small whose
+ * repository's setup (same account, origin and lane template) needed Medium
+ * within `CLOUD_AUTO_SIZE_MEMORY_MS`; otherwise the size it asked for. A
+ * remembered size that can't be read starts at the size asked for, and the
+ * launch's setup moves it up again if it needs to.
+ */
+async function startSizeOf(env: CloudEnv, userId: string, parsed: CloudServerLaunchRequest, now: number): Promise<{ sizeId: CloudTierId; remembered: boolean }> {
+  if (parsed.sizeChoice !== "default" || parsed.sizeId !== CLOUD_AUTO_SIZE.from) return { sizeId: parsed.sizeId, remembered: false };
+  try {
+    const row = await env.DB.prepare(`
+      select size_id from cloud_repo_sizes where user_id = ? and project_origin = ? and setup_key = ? and recorded_at > ?
+    `).bind(userId, parsed.project.origin, setupKeyOf(parsed), now - CLOUD_AUTO_SIZE_MEMORY_MS).first<{ size_id: string }>();
+    if (row?.size_id === CLOUD_AUTO_SIZE.to) return { sizeId: CLOUD_AUTO_SIZE.to, remembered: true };
+  } catch (error) {
+    reportCloudFailure("cloud.launch_repo_size_read_failed", { message: error instanceof Error ? error.message : "unknown" });
+  }
+  return { sizeId: parsed.sizeId, remembered: false };
+}
+
+/**
+ * Whether `computer` may move from Small to Medium for `launchId`'s setup
+ * (a resize with `{ origin: "auto", launchId }`): the launch is this
+ * account's, this computer is its computer, its size was ADE's default and
+ * it hasn't moved up yet. On yes, the statements that record the move with
+ * the resize's own batch (the launch's size, and the repository remembered),
+ * so a resize the provider refused records nothing.
+ */
+export async function launchAutoSizeCheck(
+  env: CloudEnv,
+  computer: ComputerRow,
+  launchId: string,
+  to: { tier: CloudTierId | null },
+  now: number,
+): Promise<{ ok: true; statements: D1PreparedStatement[] } | { ok: false; reason: CloudAutoSizeRefusal }> {
+  const row = UUID.test(launchId) ? await readLaunch(env, launchId) : null;
+  if (!row || row.user_id !== computer.user_id || row.instance_id !== computer.instance_id) return { ok: false, reason: "not_launch" };
+  if (row.state === "cancelled" || row.state === "retrying" || row.state === "draft") return { ok: false, reason: "not_launch" };
+  const request = parseJsonColumn<CloudServerLaunchRequest | null>(row.request_json, null, { launchId, column: "request_json" });
+  const choice = request?.sizeChoice ?? "picked";
+  if (choice !== "default") return { ok: false, reason: choice === "capped" ? "capped" : "picked" };
+  // One step, once: a launch already at Medium (moved, or started there from memory), or a computer that isn't a Small.
+  const small = cloudSizeForTier(CLOUD_AUTO_SIZE.from)!;
+  if (
+    row.size_id !== CLOUD_AUTO_SIZE.from
+    || to.tier !== CLOUD_AUTO_SIZE.to
+    || computer.type !== small.type || computer.cpu !== small.cpu || computer.memory_gb !== small.memoryGb
+  ) {
+    return { ok: false, reason: "moved" };
+  }
+  const origin = row.project_origin ?? request?.project.origin ?? null;
+  return {
+    ok: true,
+    statements: [
+      // Only the row this check read: a second move that raced this one finds it Medium already.
+      env.DB.prepare("update cloud_launches set size_id = ?, auto_size = 'setup_memory', updated_at = ? where launch_id = ? and size_id = ?")
+        .bind(CLOUD_AUTO_SIZE.to, now, launchId, CLOUD_AUTO_SIZE.from),
+      ...(origin
+        ? [env.DB.prepare(`
+            insert into cloud_repo_sizes (user_id, project_origin, setup_key, size_id, launch_id, recorded_at) values (?, ?, ?, ?, ?, ?)
+            on conflict (user_id, project_origin, setup_key) do update set size_id = excluded.size_id, launch_id = excluded.launch_id, recorded_at = excluded.recorded_at
+          `).bind(computer.user_id, origin, setupKeyOf(request), CLOUD_AUTO_SIZE.to, launchId, now)]
+        : []),
+    ],
   };
 }
 
@@ -475,6 +568,10 @@ export async function startServerLaunch(env: CloudEnv, userId: string, parsed: C
 
   const requestJson = JSON.stringify(parsed);
   const expiresAt = now + CLOUD_LAUNCH_RECORD_TTL_MS;
+  // A default-size Small of a repository whose setup needed Medium starts at Medium (the request keeps what was asked).
+  const start = await startSizeOf(env, userId, parsed, now);
+  const autoSize = start.remembered ? "remembered" : null;
+  let sizeId = start.sizeId;
   // The join code's salt and hash land with the claim, before the provider is
   // called, so a retry after a lost create answer works the same code out again.
   let salt = newJoinSalt();
@@ -483,14 +580,14 @@ export async function startServerLaunch(env: CloudEnv, userId: string, parsed: C
   // racing this one changes nothing here, goes on into the create, and is
   // answered by its replay (409 while the first create is in flight).
   const claimed = await env.DB.prepare(`
-    insert into cloud_launches (launch_id, user_id, state, kind, size_id, project_origin, lane_id, lane_name, request_json, join_salt, join_hash, created_at, updated_at, expires_at)
-    values (?, ?, 'making', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    on conflict (launch_id) do update set state = 'making', kind = excluded.kind, size_id = excluded.size_id,
+    insert into cloud_launches (launch_id, user_id, state, kind, size_id, auto_size, project_origin, lane_id, lane_name, request_json, join_salt, join_hash, created_at, updated_at, expires_at)
+    values (?, ?, 'making', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict (launch_id) do update set state = 'making', kind = excluded.kind, size_id = excluded.size_id, auto_size = excluded.auto_size,
       project_origin = excluded.project_origin, lane_id = excluded.lane_id, lane_name = excluded.lane_name,
       request_json = excluded.request_json, join_salt = excluded.join_salt, join_hash = excluded.join_hash,
       updated_at = excluded.updated_at, expires_at = excluded.expires_at
     where cloud_launches.user_id = excluded.user_id and cloud_launches.state = 'draft'
-  `).bind(launchId, userId, parsed.kind, parsed.sizeId, parsed.project.origin, parsed.lane.id, parsed.lane.name, requestJson, salt, await sha256Hex(joinCode), now, now, expiresAt).run();
+  `).bind(launchId, userId, parsed.kind, start.sizeId, autoSize, parsed.project.origin, parsed.lane.id, parsed.lane.name, requestJson, salt, await sha256Hex(joinCode), now, now, expiresAt).run();
   if ((claimed.meta?.changes ?? 0) !== 1) {
     const row = await readLaunch(env, launchId);
     if (!row || row.user_id !== userId) return badRequest("That launch id can't be used.");
@@ -504,9 +601,11 @@ export async function startServerLaunch(env: CloudEnv, userId: string, parsed: C
     }
     salt = row.join_salt;
     joinCode = (await joinCodeOf(env, launchId, salt))!;
+    // The size the first attempt chose: the computer it may have made is that size.
+    if (cloudSizeForTier(row.size_id)) sizeId = row.size_id as CloudTierId;
   }
 
-  const size = cloudSizeForTier(parsed.sizeId)!;
+  const size = cloudSizeForTier(sizeId)!;
   const metadata: Record<string, string> = {
     [CLOUD_LANE_METADATA.laneId]: parsed.lane.id,
     [CLOUD_LANE_METADATA.laneName]: parsed.lane.name,

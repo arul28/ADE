@@ -771,6 +771,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
         ...snapshot,
         cloud: {
           sizeId: cloud.sizeId,
+          ...(cloud.sizeChoice ? { sizeChoice: cloud.sizeChoice } : {}),
           projectOrigin: project.identity,
           instanceId: null,
           machineKey: null,

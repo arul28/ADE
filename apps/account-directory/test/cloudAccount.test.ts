@@ -2153,6 +2153,67 @@ describe("ADE Cloud server launcher", () => {
     expect(madeCalls()).toHaveLength(2);
   });
 
+  describe("a default-size launch whose setup runs out of memory", () => {
+    const LAUNCH_2 = "7a2e4c6b-1d3f-4a5b-8c9d-0e1f2a3b4c5d";
+    const LANE_2 = "3c5e7a9b-2d4f-4b6a-8c1d-9e0f1a2b3c4d";
+    const moveUp = (launchId = LAUNCH, instanceId = "madenew12345") =>
+      harness.send(OWNER, "POST", `/cloud/instances/${instanceId}/resize`, { cpu: 4, memory: 8, computerIdle: true, origin: "auto", launchId });
+    const remembered = () => harness.rows("select project_origin, setup_key, size_id from cloud_repo_sizes where user_id = ?", OWNER);
+
+    it("moves its own computer to Medium once, and the repository's next default launch starts there", async () => {
+      await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeChoice: "default" });
+
+      expect((await moveUp()).status).toBe(200);
+      expect(computer(harness, "madenew12345")).toEqual(expect.objectContaining({ cpu: 4, memory_gb: 8 }));
+      expect(remembered()).toEqual([{ project_origin: "github.com/acme/widgets", setup_key: "", size_id: "medium" }]);
+      expect(await (await harness.send(OWNER, "GET", `/cloud/launches/${LAUNCH}`)).json()).toEqual(expect.objectContaining({
+        sizeId: "medium",
+        autoSize: { from: "small", to: "medium", why: "setup_memory" },
+      }));
+      // One step: a second ask for the same launch (Medium ran out too) moves nothing.
+      const again = await moveUp();
+      expect([again.status, ((await again.json()) as { error: { code: string; reason: string } }).error]).toEqual([409, expect.objectContaining({ code: "size_kept", reason: "moved" })]);
+      expect(providerCalls(harness, /POST .*\/resize$/)).toHaveLength(1);
+
+      clock += HOUR;
+      const next = await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, launchId: LAUNCH_2, lane: { id: LANE_2, name: "Next" }, sizeChoice: "default" });
+      expect(await next.json()).toEqual(expect.objectContaining({ sizeId: "medium", autoSize: expect.objectContaining({ why: "remembered" }) }));
+      expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining({ cpu: 4, memory: 8 }));
+    });
+
+    it.each<[string, Record<string, unknown>, "picked" | "capped" | null]>([
+      ["a size picked for the launch", {}, "picked"],
+      ["a default Small the agent limits keep", { sizeChoice: "capped" }, "capped"],
+      ["a move the provider refuses", { sizeChoice: "default" }, null],
+    ])("%s stays Small and records nothing", async (_label, choice, reason) => {
+      await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, ...choice });
+      if (!reason) harness.net.once.push({ match: /POST .*\/resize$/, reply: harness.net.reply({ error: { code: "quota_exceeded" } }, 422) });
+
+      const response = await moveUp();
+
+      expect(response.ok).toBe(false);
+      if (reason) expect(((await response.json()) as { error: { reason: string } }).error.reason).toBe(reason);
+      expect(remembered()).toEqual([]);
+      expect(harness.row("select size_id, auto_size from cloud_launches where launch_id = ?", LAUNCH)).toEqual({ size_id: "small", auto_size: null });
+      expect(computer(harness, "madenew12345")).toEqual(expect.objectContaining({ cpu: 2, memory_gb: 4 }));
+      // The next default launch of the repository still starts at Small.
+      await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, launchId: LAUNCH_2, lane: { id: LANE_2, name: "Next" }, sizeChoice: "default" });
+      expect(madeCalls()[1]!.body!.resources).toEqual(expect.objectContaining({ cpu: 2, memory: 4 }));
+    });
+
+    it("moves only the launch's own computer", async () => {
+      await harness.send(OWNER, "POST", "/cloud/launches", { ...launchBody, sizeChoice: "default" });
+      seedComputer(harness);
+      provide(harness);
+
+      const response = await moveUp(LAUNCH, INSTANCE);
+
+      expect([response.status, ((await response.json()) as { error: { reason: string } }).error.reason]).toEqual([409, "not_launch"]);
+      expect(providerCalls(harness, /POST .*\/resize$/)).toHaveLength(0);
+      expect(remembered()).toEqual([]);
+    });
+  });
+
   it.each<[string, Record<string, string>, number, string | null]>([
     ["a preflight from the web client", { origin: WEB, "access-control-request-method": "POST", "access-control-request-headers": "authorization, content-type" }, 204, WEB],
     ["a preflight from another site", { origin: "https://evil.test", "access-control-request-method": "POST" }, 403, null],

@@ -92,6 +92,7 @@ override: set `ADE_ACCOUNT_DIRECTORY_URL` (for example to
 | The launch card in chat (its step rows share one parts module with the lane job card) | `apps/desktop/src/renderer/components/chat/launch/adeCloudLaunch.ts`, `apps/desktop/src/renderer/components/chat/launch/stepCardParts.tsx` |
 | The dashboard in Settings › ADE Cloud, and the lane pieces (cities, job card, tier change, lanes without a computer) | `apps/desktop/src/renderer/components/settings/cloudDashboard/*`, `apps/desktop/src/renderer/components/cloudLane/*` |
 | Server: automatic updates, lanes without a computer, the disk usage report (migrations `0020`, `0021`, `0022` in `apps/account-directory/migrations/`) | `apps/account-directory/src/cloud/updates.ts`, `lanesWithoutComputer.ts`, `diskUsage.ts` |
+| A default-size launch moving its computer from Small to Medium when setup runs out of memory, and the repository remembered (migration `0036`) | `apps/ade-cli/src/services/power/cloudSetupUpsize.ts`, `apps/account-directory/src/cloud/launches.ts` (`launchAutoSizeCheck`, `startSizeOf`) |
 
 Shared contracts are in `apps/desktop/src/shared/adeCloud.ts`,
 `cloudSignIns.ts`, `cloudTiers.ts` (the four lane sizes, read from the catalog)
@@ -712,7 +713,9 @@ no. `cloud.status` is a read for ADE MCP read access, the phone
 `ade chat create --machine cloud --size <small|medium|large|xlarge> --prompt "…"`
 makes one new computer for one new lane, gets the repository there, and starts
 the chat there. `--size` is optional: without it, the brain uses the size the
-person saved for new lanes (`CLOUD_DEFAULT_TIER_SETTING_KEY`), else Small.
+person saved for new lanes (`CLOUD_DEFAULT_TIER_SETTING_KEY`), else Small, and
+a Small whose setup runs out of memory moves to Medium once (see "A launch
+that needs more memory" below); a size passed stays.
 `ade chat launch --machine cloud`
 takes the same flags with `chat launch`'s lane flags (`--from`, `--lane-name`,
 `--existing-branch`). The lane starts from the pushed copy of its branch:
@@ -1407,6 +1410,64 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   computer under every chat. Measured on ADE's own repo: `npm ci` for
   `apps/desktop` peaks near 3.8 GB, so it sets up on a Medium (8 GB) and the
   setup guard stops it on a Small.
+- A launch that needs more memory (`CLOUD_AUTO_SIZE` in `contract.ts`): a lane
+  launch whose size was ADE's default moves its computer from Small to Medium
+  by itself when the setup guard stops its setup, and the repository starts at
+  Medium after that. Who chose the size travels with the launch as
+  `cloud.sizeChoice` (`CloudLaunchSizeChoice`): `default` when nobody picked
+  one (no `--size`; the composer or new-lane dialog still on the default size,
+  `pickedTier` null), `picked` for a size passed or picked, `capped` when an
+  unattended agent's limits (`maxShape`) don't allow Medium. Left out (an older
+  ADE, the other launch entry points) is `picked`: the size stays.
+  - In the launch. The step's error is the guard's sentence
+    (`isLaneSetupOutOfMemoryText`), and the computer's brain treats it like a
+    full disk (`chatLaunchService` `waitForRoom`, `SetupShort` `memory`): the
+    host (`ade-cli/src/services/power/cloudSetupUpsize.ts`, merged into the
+    same `environmentDisk` as the disk grower) answers `outOfMemory` with yes
+    only on a Small (memory under 6 GB) whose launch hasn't moved
+    (`$ADE_HOME/cloud/setup-memory-moves.json`). The launch writes a room mark
+    with `kind: "memory"`, then `moreMemory` reads the launch's record
+    (`GET /cloud/launches/:id`; 404 is not a server launch, no move) and stops
+    on a size that wasn't the default without asking (an account server too
+    old to keep the choice never sees the move), then asks `POST /resize` with
+    `{ cpu, memory, computerIdle: true, origin: "auto", launchId }` under the
+    disk grow's "nothing else runs" rule. The server (`launchAutoSizeCheck` in
+    `launches.ts`) moves it only for that launch's own computer, a request
+    with `sizeChoice: "default"`, a row still at `small` and Medium as the
+    target, and checks hours, the wake rules and the disk as for any resize;
+    else 409 `size_kept` with `error.reason` (`picked`, `capped`, `moved`,
+    `not_launch`) and a sentence (`cloudAutoSizeRefusalSentence`). The
+    launch row's `size_id` becomes `medium` (`auto_size = 'setup_memory'`) and
+    the repository is remembered in the same batch as the resize, so a refused
+    or failed resize records nothing; the computer takes its own history entry
+    back too. The move restarts the computer, and the reloaded marked launch
+    runs setup again on Medium ("Setup needed more than 4 GB, so ADE moved this
+    computer to Medium (2× hours).", kept on the stage once setup is done). If
+    Medium runs out too, setup fails with the guard's sentence: the launch has
+    moved once (history and row), so it never loops. A lost answer is held as
+    started, as for a disk grow. Start now and a start already pressed skip it.
+  - Remembered. `cloud_repo_sizes` (migration 0036) keys account, project
+    origin and lane template id (`setup_key`, '' for the project's default).
+    `POST /cloud/launches` with `sizeChoice: "default"` and `small` reads it
+    and, within 90 days of the last move (`CLOUD_AUTO_SIZE_MEMORY_MS`), makes
+    the computer at Medium: the row says `auto_size = 'remembered'`, the
+    record answers `sizeId: "medium"` and `autoSize`, and `request.sizeId`
+    keeps what was asked. After 90 days Small is tried again (a setup that got
+    lighter stops paying 2×). The rows go with the account.
+  - Shown. The launching app adopts the record's size (`adoptServerSize` in
+    `cloudLaneComputerStages.ts`): `snapshot.cloud.sizeId` and `sizeNote`
+    ("Medium: this repo's setup needed more than 4 GB before."), on the
+    computer row, in the CLI's progress line and as `size` in `ade chat
+    launch-status`. The in-launch move shows on the environment stage
+    ("…ADE is checking whether it can move it to Medium…", then "…moving this
+    computer to Medium (2× hours)…"); the CLI's progress line prints an
+    environment stage's sentence between steps. The agent approval card says a
+    default Small may use Medium when the repository's setup needs it.
+  - Refused. A picked Small: the guard's sentence, then "Small was picked for
+    this launch, so ADE didn't move it up. Start it again on Medium (2×
+    hours)." Agent limits, out of hours, busy and the like each add their own
+    reason. Agents still can't call `ade cloud resize`: this is the launch's own
+    machinery on the person's launch, as the disk grow is.
 - Build tools: the image has `build-essential` and `pkg-config`, so npm
   packages with native code and no prebuilt binary (node-pty, some sqlite and
   bcrypt builds) compile on install; before, every such setup failed with

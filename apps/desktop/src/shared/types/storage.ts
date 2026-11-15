@@ -49,6 +49,8 @@ export function diskFullLine(text: string | null | undefined): string | null {
   return null;
 }
 
+const LANE_SETUP_OUT_OF_MEMORY_LEAD = "Setup used nearly all of this computer's memory";
+
 /**
  * A lane's setup took nearly all of an ADE Cloud computer's memory and ADE
  * stopped it (`laneSetupMemoryGuard.ts`): with no swap, the provider would
@@ -57,7 +59,17 @@ export function diskFullLine(text: string | null | undefined): string | null {
  */
 export function laneSetupOutOfMemoryError(totalMb: number): string {
   const gb = Math.max(1, Math.round(totalMb / 1024));
-  return `Setup used nearly all of this computer's memory (${gb} GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.`;
+  return `${LANE_SETUP_OUT_OF_MEMORY_LEAD} (${gb} GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.`;
+}
+
+/**
+ * Whether a setup step's error is the memory guard's sentence
+ * (`laneSetupOutOfMemoryError`), alone or among an install's other failures.
+ * An ADE Cloud launch whose size was ADE's default moves its computer up a
+ * size on it (`cloudSetupUpsize.ts`).
+ */
+export function isLaneSetupOutOfMemoryText(text: string | null | undefined): boolean {
+  return Boolean(text?.includes(LANE_SETUP_OUT_OF_MEMORY_LEAD));
 }
 
 /** A setup filled the disk, and the note that a grow is under way couldn't be saved: no grow without it. */

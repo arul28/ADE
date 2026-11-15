@@ -76,6 +76,7 @@ import type { CloudLaneLaunchBrainHost } from "./cloudLaneLaunchBrainHost";
 import { CLOUD_TIER_IDS, cloudTier, cloudTierOfMachine, cloudTierRateLabel, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
 import { cloudLaneLaunchStartRefusal, cloudLaneStartBlock, type CloudLaneLaunchStatus, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
 import type { ChatLaunchArgs } from "../../../shared/types";
+import { CLOUD_AUTO_SIZE } from "../../../../../account-directory/src/cloud/contract";
 import type { AdeCardPayload } from "../../../shared/adeCard";
 import { buildCloudTierRequestCard, cloudJoinApprovalWaitText } from "../../../shared/cloudLaneLife";
 import { buildCloudAccountStatus, CLOUD_DAILY_LIMIT_SETTING, type CloudAccountStatus } from "./cloudAccountStatus";
@@ -101,6 +102,9 @@ export type CloudApproval =
 
 export { CLOUD_DAILY_LIMIT_SETTING } from "./cloudAccountStatus";
 export type { CloudAccountStatus, CloudCanStartLane, CloudCanStartLaneCode, CloudStatusComputer } from "./cloudAccountStatus";
+
+/** Medium's shape (`CLOUD_AUTO_SIZE.to`): the agent limits must allow it before an unattended agent's default Small may move up. */
+const MEDIUM_SHAPE: CloudShapeId = "4x8";
 
 /** What a desktop does for the brain over the bridge (cloudDesktopActions.ts). */
 type CloudMadeBy = { madeByChat?: string | null; madeByAgent?: CloudAgentMaker | null };
@@ -708,10 +712,13 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
         throw new Error("A CLI session on ADE Cloud starts from the ADE app. Here, start a chat (ade chat create --machine cloud) or the lane alone (ade lanes create --machine cloud).");
       }
       // No size asked for: the size the person saved for new lanes, then Small.
+      // That is ADE's default for this launch, so a Small may move to Medium
+      // when its setup needs more memory (`CLOUD_AUTO_SIZE`); a size asked for stays.
       const askedSize = record(asked.cloud).sizeId;
-      const sizeId = askedSize == null || askedSize === "" ? readDefaultTier() ?? "small" : askedSize;
+      const sizeDefaulted = askedSize == null || askedSize === "";
+      const sizeId = sizeDefaulted ? readDefaultTier() ?? "small" : askedSize;
       if (!isCloudTierId(sizeId)) throw new Error(`Pick a size: ${CLOUD_TIER_IDS.join(", ")}.`);
-      const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId } };
+      const launch: ChatLaunchArgs = { ...asked, cloud: { sizeId, sizeChoice: sizeDefaulted ? "default" : "picked" } };
       const laneOnly = launch.kind === "lane";
       const host = deps.laneLaunch?.() ?? null;
       if (!host) throw new Error("This ADE can't start a lane on ADE Cloud. Use the ADE app, or the ade command where ADE runs in the background.");
@@ -744,6 +751,9 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const saved = replaces ? existing!.launch : null;
       const savedSize = saved?.cloud?.sizeId;
       const startSize = isCloudTierId(savedSize) ? savedSize : sizeId;
+      const startChoice = saved ? saved.cloud?.sizeChoice ?? "picked" : launch.cloud!.sizeChoice!;
+      // The one step a default Small may take, said before the yes (it may also start there, for a repository that needed it).
+      const mayMoveUp = startChoice === "default" && startSize === CLOUD_AUTO_SIZE.from;
       const startsLaneOnly = saved ? saved.kind === "lane" : laneOnly;
       // Refused before the question, never after a yes: the launch itself,
       // then the account (hours, computers, disk), with the sentences
@@ -758,12 +768,17 @@ export function buildCloudAgentActions(deps: CloudAgentActionDeps) {
       const yes = await approve(approval, {
         action: "spend",
         title: "Start a lane on ADE Cloud",
-        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}`,
+        body: `ADE makes a new ${tier.label} computer (${tier.cpu} CPU, ${tier.memoryGb} GB) for this lane alone, gets the repository there and ${startsLaneOnly ? "sets up the lane" : "starts the chat on it"}.${shape ? ` It uses ${describeCloudHoursUse(kind, shape.id, cloudCatalogOf(account))}, and none while it sleeps.` : ""}${mayMoveUp ? ` If this repository's setup needs more than ${CLOUD_AUTO_SIZE.fromMemoryGb} GB, ADE uses ${CLOUD_AUTO_SIZE.toLabel} (${CLOUD_AUTO_SIZE.toHoursRate} hours) instead and remembers that.` : ""}`,
         confirm: "Start it",
         newMachine: true,
         shape: shape?.id ?? null,
         personPlace: CLOUD_LANE_PERSON_PLACE,
       });
+      // An agent nobody watches stays within the agent limits: a default Small moves up only when they allow Medium.
+      if (mayMoveUp && yes.unattended && !saved) {
+        const limits = await deps.limits.read().catch(() => CLOUD_DEFAULT_AGENT_LIMITS);
+        if (!cloudShapeWithin(MEDIUM_SHAPE, limits.maxShape)) startArgs.args = { ...launch, cloud: { sizeId, sizeChoice: "capped" } };
+      }
       try {
         const started = await host.start({ ...startArgs, madeByAgent: yes.maker });
         // A retry counts once it is on its way again, as a first start counts once made.

@@ -13,7 +13,7 @@ import type {
   ChatLaunchStageStatus,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import { CLOUD_LAUNCH_MAX_ARGS_BYTES } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_LAUNCH_MAX_ARGS_BYTES, cloudAutoSizeSentence } from "../../../../../account-directory/src/cloud/contract";
 import type {
   CloudLaunchAttachment,
   CloudLaunchRecord,
@@ -132,6 +132,27 @@ export function createCloudLaneComputerStages(
     return record.tier;
   };
   const tierWords = (tier: CloudTier | null): string | null => (tier ? `${tier.label} · ${tier.cpu} CPU, ${tier.memoryGb} GB` : null);
+  /** The computer row's words: its size, and why it is bigger than the size asked for. */
+  const computerWords = (record: CloudLaneLaunchRecord): string | null => {
+    const words = tierWords(record.tier);
+    const note = record.snapshot.cloud.sizeNote?.trim();
+    return note ? (words ? `${words}. ${note}` : note) : words;
+  };
+
+  /**
+   * The server started a default Small at Medium (this repository's setup
+   * needed it before) or moved it up since: the record takes the computer's
+   * real size, so the card, a Retry and the status read say Medium, and why.
+   */
+  const adoptServerSize = async (record: CloudLaneLaunchRecord, server: CloudLaunchRecord): Promise<void> => {
+    if (!server.sizeId || server.sizeId === record.snapshot.cloud.sizeId) return;
+    logger.info("cloud_lane_launch.size_changed_on_server", { launchId: record.snapshot.launchId, from: record.snapshot.cloud.sizeId, to: server.sizeId, why: server.autoSize?.why ?? null });
+    record.snapshot.cloud.sizeId = server.sizeId;
+    record.snapshot.cloud.sizeNote = server.autoSize ? cloudAutoSizeSentence(server.autoSize.why) : null;
+    record.tier = null;
+    await resolveTier(record);
+    persist(record);
+  };
 
   /**
    * Files from this computer named in the first message, sent to the server
@@ -201,6 +222,7 @@ export function createCloudLaneComputerStages(
       // A CLI launch goes as the lane (`cli` stays in `launch.kind`): a server or computer before it runs the lane alone.
       kind: kind === "cli" ? "lane" : kind,
       sizeId: snapshot.cloud.sizeId as CloudServerLaunchRequest["sizeId"],
+      ...(snapshot.cloud.sizeChoice ? { sizeChoice: snapshot.cloud.sizeChoice } : {}),
       project: { origin: record.project.identity },
       lane: {
         id: snapshot.laneId,
@@ -277,7 +299,7 @@ export function createCloudLaneComputerStages(
     const repository = record.project.identity.replace(/^github\.com\//i, "");
     const state = server.state;
     const computerMade = Boolean(server.instanceId) && state !== "making";
-    show("computer", computerMade ? "done" : "running", tierWords(record.tier));
+    show("computer", computerMade ? "done" : "running", computerWords(record));
     if (!computerMade) return;
     const joined = state === "joined" || state === "running" || state === "done" || reported.get("join")?.status === "done";
     if (!joined) {
@@ -338,6 +360,7 @@ export function createCloudLaneComputerStages(
     publish(record);
     await resolveTier(record);
     let server = await startOnServer(record, signal);
+    await adoptServerSize(record, server);
     let joinedAt: number | null = null;
     let lastProgress = Date.now();
     for (;;) {
@@ -395,6 +418,7 @@ export function createCloudLaneComputerStages(
         return server;
       });
       if (server.updatedAt !== before) lastProgress = Date.now();
+      await adoptServerSize(record, server);
     }
   };
 
