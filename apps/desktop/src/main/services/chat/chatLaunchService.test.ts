@@ -524,7 +524,12 @@ describe("chatLaunchService", () => {
   /** A launch whose setup filled the disk, the grow asked for, and the brain gone before the disk read bigger. */
   const launchWaitingForRoom = async () => {
     const h = harness({ hasEnvironment: true, templateName: "npm packages" });
-    const makeRoom = vi.fn(async () => ({ state: "growing" as const, detail: "Growing the disk to 8 GB", ready: new Promise<boolean>(() => {}) }));
+    // The grow settles (not grown) when the brain shuts down for the restart and aborts it.
+    const makeRoom = vi.fn(async ({ signal }: { signal: AbortSignal }) => ({
+      state: "growing" as const,
+      detail: "Growing the disk to 8 GB",
+      ready: new Promise<boolean>((resolve) => signal.addEventListener("abort", () => resolve(false), { once: true })),
+    }));
     const environmentDisk = { setupStarting: vi.fn(), setupEnded: vi.fn(), diskFull: vi.fn(() => ({ grow: true as const })), makeRoom };
     const service = createChatLaunchService({ ...h.deps, environmentDisk });
     await service.start(chatArgs());
@@ -538,6 +543,8 @@ describe("chatLaunchService", () => {
     expect(h.latest().phase).toBe("running");
     service.dispose();
     h.service.dispose();
+    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     return { h, environmentDisk, makeRoom };
   };
   const setupRunning = () => vi.fn(() => new Promise<never>(() => {}));

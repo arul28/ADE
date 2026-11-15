@@ -904,7 +904,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
    * that fails is said in the log (the next publish writes it again).
    */
   const clearRoomMark = (record: LaunchRecord, why: string): void => {
-    if (!record.roomMark) return;
+    // Shutting down (the grow's own restart aborts the run on the way out): the
+    // mark is what the next start resumes from, so it stays.
+    if (!record.roomMark || disposed) return;
     record.roomMark = null;
     if (!store.persist(record)) logger.warn("chat_launch.room_mark_clear_failed", { launchId: record.snapshot.launchId, why });
   };
