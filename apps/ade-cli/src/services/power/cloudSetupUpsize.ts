@@ -172,9 +172,6 @@ export function createCloudSetupUpsizer(deps: {
             takeBack(launchId);
             return { state: "refused", error: `${trimEnd(error)}. ${why}` };
           };
-          // Counted before the ask, so a restart that comes before the answer still counts it:
-          // the next run on this launch never asks again. Unsaved, memory itself says it moved.
-          writeHistory({ ...readHistory(), [launchId]: now() });
           /** Set once the move is asked for: an error before it never moved anything. */
           let moveAsked = false;
           try {
@@ -223,6 +220,10 @@ export function createCloudSetupUpsizer(deps: {
             } catch {
               // Only words on a card: never in the move's way.
             }
+            // Counted right before the ask, so a restart that comes before the answer still counts it
+            // (the next run on this launch never asks again), and a restart during the reads above
+            // never counts a move that wasn't asked for. Unsaved, memory itself says it moved.
+            writeHistory({ ...readHistory(), [launchId]: now() });
             moveAsked = true;
             await client.resizeInstance(deps.instanceId, { cpu: to.cpu, memory: to.memoryGb }, { computerIdle: true, origin: "auto", launchId });
             deps.logger?.info("cloud.setup_upsized", { launchId });
