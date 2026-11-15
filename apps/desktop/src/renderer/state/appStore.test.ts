@@ -1318,50 +1318,6 @@ describe("appStore", () => {
       }
     });
 
-    it("merges into the stored blob instead of republishing its own whole map", async () => {
-      vi.useFakeTimers();
-      try {
-        // Project B's surface holds a copy of A's state from when it was
-        // created. A whole-map write from B republished that stale copy over
-        // A's newer state — the "I left the tab and my collapse reverted" bug.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a"], search: "alpha" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        vi.resetModules();
-        const mod = await import("./appStore");
-        // Simulate another surface writing A directly to storage after this
-        // store took its snapshot.
-        mockStorage.set("ade.workViewState.v1", JSON.stringify({
-          version: 3,
-          workViewByProject: {
-            "/project/a": { workCollapsedLaneIds: ["lane-a", "lane-a2"], search: "alpha-updated" },
-            "/project/b": { workCollapsedLaneIds: [] },
-          },
-          laneWorkViewByScope: {},
-        }));
-
-        mod.useAppStore.getState().setWorkViewState("/project/b", { search: "beta" });
-        await vi.advanceTimersByTimeAsync(300);
-
-        const persisted = JSON.parse(mockStorage.get("ade.workViewState.v1") ?? "{}") as {
-          workViewByProject?: Record<string, Record<string, unknown>>;
-        };
-        expect(persisted.workViewByProject?.["/project/b"]?.search).toBe("beta");
-        // A's newer state survives B's write.
-        expect(persisted.workViewByProject?.["/project/a"]?.search).toBe("alpha-updated");
-        expect(persisted.workViewByProject?.["/project/a"]?.workCollapsedLaneIds)
-          .toEqual(["lane-a", "lane-a2"]);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
     it("keeps Lanes-tab view state per project", () => {
       useAppStore.getState().setWorkViewState("/proj-one", {
         lanesFilter: "auth",

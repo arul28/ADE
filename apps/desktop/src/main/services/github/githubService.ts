@@ -4,6 +4,7 @@ import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 import { appGrantAllowsCapability, gateAppCandidates } from "../../../shared/github/githubAppGrant";
 import { createGithubAccountAppCredential } from "./githubAccountAppCredential";
 import { createGithubSessionEnv, readOwnEnvironmentGithubToken } from "./githubSessionEnv";
+import { peekGithubRepoOwnerFromGitConfig, readOriginUrlFromGitConfig } from "./gitConfigOrigin";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
 import { safeStorage } from "electron";
@@ -595,67 +596,6 @@ function repoIdentityFromGitHubResponse(
     name,
     fullName: fullName || (owner ? `${owner}/${name}` : name),
   };
-}
-
-function readOriginUrlFromConfig(configPath: string): string | null {
-  try {
-    // Reading a FIFO here would freeze the whole process.
-    if (!fs.statSync(configPath, { throwIfNoEntry: false })?.isFile()) return null;
-    const raw = fs.readFileSync(configPath, "utf8");
-    let inOriginSection = false;
-    for (const line of raw.split(/\r?\n/)) {
-      const section = line.match(/^\s*\[([^\]]+)\]\s*$/);
-      if (section) {
-        inOriginSection = /^remote\s+"origin"$/i.test(section[1]?.trim() ?? "");
-        continue;
-      }
-      if (!inOriginSection) continue;
-      const url = line.match(/^\s*url\s*=\s*(.+?)\s*$/);
-      if (url?.[1]?.trim()) return url[1].trim();
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function resolveGitDir(projectRoot: string): string | null {
-  try {
-    const gitPath = path.join(projectRoot, ".git");
-    if (!fs.existsSync(gitPath)) return null;
-    const stat = fs.statSync(gitPath);
-    if (stat.isDirectory()) return gitPath;
-    if (!stat.isFile()) return null;
-    const raw = fs.readFileSync(gitPath, "utf8");
-    const match = raw.match(/^gitdir:\s*(.+)\s*$/im);
-    if (!match?.[1]) return null;
-    return path.resolve(projectRoot, match[1].trim());
-  } catch {
-    return null;
-  }
-}
-
-function resolveCommonGitDir(gitDir: string): string {
-  try {
-    const commonDirPath = path.join(gitDir, "commondir");
-    if (!fs.existsSync(commonDirPath)) return gitDir;
-    const raw = fs.readFileSync(commonDirPath, "utf8").trim();
-    if (!raw) return gitDir;
-    return path.resolve(gitDir, raw);
-  } catch {
-    return gitDir;
-  }
-}
-
-function readOriginUrlFromGitConfig(projectRoot: string): string | null {
-  const gitDir = resolveGitDir(projectRoot);
-  if (!gitDir) return null;
-  const commonGitDir = resolveCommonGitDir(gitDir);
-  return (
-    readOriginUrlFromConfig(path.join(gitDir, "config.worktree")) ??
-    readOriginUrlFromConfig(path.join(commonGitDir, "config")) ??
-    readOriginUrlFromConfig(path.join(gitDir, "config"))
-  );
 }
 
 export function parseNextLink(linkHeader: string | null): string | null {
@@ -2494,10 +2434,7 @@ export function createGithubService({
     peekAccountAppToken: () => accountApp.peekToken(),
     readGrant: readAppIssueGrant,
     readRepoOwner: async () => (await detectRepo().catch(() => null))?.owner ?? null,
-    peekRepoOwner: () => {
-      const configOriginUrl = readOriginUrlFromGitConfig(projectRoot);
-      return configOriginUrl ? parseGitHubRepoFromRemoteUrl(configOriginUrl)?.owner ?? null : null;
-    },
+    peekRepoOwner: () => peekGithubRepoOwnerFromGitConfig(projectRoot),
   });
 
   const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {

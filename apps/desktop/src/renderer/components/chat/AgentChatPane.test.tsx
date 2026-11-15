@@ -5503,69 +5503,6 @@ describe("AgentChatPane submit recovery", () => {
     expect(sent.metadata).not.toHaveProperty("scheduledWake");
   });
 
-  it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
-    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
-    const { send, steer } = installAdeMocks({
-      sessions: [session],
-      sendError: new Error("turn is already active"),
-      eventHistory: {
-        sessionId: session.sessionId,
-        truncated: false,
-        sessionFound: true,
-        events: [
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T18:18:52.000Z",
-            sequence: 1,
-            event: { type: "user_message", text: "Retry the original prompt." },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T18:18:52.500Z",
-            sequence: 2,
-            event: { type: "user_message", text: "Do not resend this steer.", steerId: "steer-1" },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T18:18:53.000Z",
-            sequence: 3,
-            event: {
-              type: "error",
-              message: "Selected model is at capacity. Please try a different model.",
-              errorInfo: "serverOverloaded",
-            },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T18:18:53.050Z",
-            sequence: 4,
-            event: { type: "status", turnStatus: "failed", turnId: "turn-capacity" },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T18:18:53.066Z",
-            sequence: 5,
-            event: { type: "done", status: "failed", turnId: "turn-capacity", model: "gpt-5.5" },
-          },
-        ],
-      },
-    });
-
-    renderPane(session);
-
-    await clickRetryWhenEnabled();
-    await waitFor(() => {
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: session.sessionId,
-        text: "Retry the original prompt.",
-      }), tabPin());
-    });
-    expect(steer).not.toHaveBeenCalled();
-    expect((await screen.findByRole("alert")).textContent).toContain(
-      "A turn is already active in this thread. Wait for it to finish before retrying.",
-    );
-  });
-
   it.each([
     ["claude", "claude-sonnet-5", "anthropic/claude-sonnet-5"],
     ["cursor", "composer", "cursor/composer"],

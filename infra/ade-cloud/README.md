@@ -7,7 +7,8 @@ the ADE brain.
 - `template/Dockerfile`: `node:24-bookworm-slim`, git/gawk/tini, build-essential
   and pkg-config (node-gyp compiles native npm packages on install), bubblewrap
   behind `template/bwrap-gvisor.sh` as `/usr/bin/bwrap` (Codex's sandbox without
-  the network namespace gVisor can't make), the Linux
+  the network namespace gVisor can't make), the GitHub CLI (`gh`, from
+  GitHub's apt repository; ADE's `gh` shim runs it with the account's token), `/etc/profile.d/ade-shims.sh` (a login shell keeps the PATH it was given; Codex runs commands as `bash -lc`), the Linux
   Desktop lane screen packages (xvfb, openbox, dbus, at-spi2-core, ffmpeg,
   chromium), one app for each of the lane screen's "Browser", "Terminal" and
   "Files" buttons (chromium, xterm, thunar), fonts for pages and emoji
