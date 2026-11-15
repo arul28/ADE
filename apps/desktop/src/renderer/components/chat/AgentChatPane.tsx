@@ -357,7 +357,7 @@ import { resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { deriveRuntimeState, userMessageVisibleText, type PendingSteerEntry } from "./chatRuntimeState";
 export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
 import { AskQuestionComposer } from "./AskQuestionComposer";
-import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
+import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive, rowSaysTurnEnded } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
@@ -5667,12 +5667,24 @@ export function AgentChatPane({
   const chatMachineEntry = useMachineEntryForBinding(chatRuntimePin);
   const { computers: chatCloudLaneComputers } = useAdeCloudLaneComputers();
   const chatComputerResting = chatMachineEntry != null && machineIsCloudResting(chatMachineEntry, chatCloudLaneComputers);
+  // The chat's own machine says, in its Work row, that no turn runs there: the
+  // pane takes the row's state (`rowSaysTurnEnded`), so a wake or a reconnect
+  // never leaves a dead turn reading "Thinking" beside a Done row.
+  const selectedChatRow = selectedSessionId
+    ? chatMachineEntry?.sessions.find((session) => session.id === selectedSessionId) ?? null
+    : null;
+  const rowEndedChatSessionId = selectedSessionId
+    && turnActiveBySessionState[selectedSessionId]
+    && rowSaysTurnEnded(eventsBySession[selectedSessionId], selectedChatRow)
+    ? selectedSessionId
+    : null;
   const restingChatSessionId = chatComputerResting ? selectedSessionId : null;
+  const idleChatSessionId = restingChatSessionId ?? rowEndedChatSessionId;
   const turnActiveBySession = useMemo(
-    () => (restingChatSessionId && turnActiveBySessionState[restingChatSessionId]
-      ? { ...turnActiveBySessionState, [restingChatSessionId]: false }
+    () => (idleChatSessionId && turnActiveBySessionState[idleChatSessionId]
+      ? { ...turnActiveBySessionState, [idleChatSessionId]: false }
       : turnActiveBySessionState),
-    [restingChatSessionId, turnActiveBySessionState],
+    [idleChatSessionId, turnActiveBySessionState],
   );
   // The tab's own copy, for the draft's branch picks (an ADE Cloud start).
   const tabCopyPin = useTabCopyPin();

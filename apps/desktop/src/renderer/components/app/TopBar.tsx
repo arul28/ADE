@@ -1249,6 +1249,12 @@ export function TopBar({
     const ownBefore = ownTabKeysOf(tabGroupsRef.current);
     // The copy in front may join the open list a render later.
     const gone = (key: string) => key !== activeTabBindingKey && !openKeys.has(key);
+    // Until the window session is back, the open lists are the empty first
+    // paint: the own tabs restored from it must not be dropped as gone.
+    if (!windowSessionRestored) {
+      lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
+      return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
+    }
     for (const [key, from] of moves) {
       if (gone(key)) {
         moves.delete(key);
@@ -1260,7 +1266,7 @@ export function TopBar({
     for (const key of inheritedOwn) if (gone(key)) inheritedOwn.delete(key);
     lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
     return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
-  }, [activeTabBindingKey, openProjectTabRoots, openRemoteProjectTabs, projectTabPageInFront, remoteBinding?.targetId]);
+  }, [activeTabBindingKey, openProjectTabRoots, openRemoteProjectTabs, projectTabPageInFront, remoteBinding?.targetId, windowSessionRestored]);
   const tabGroups = useMemo(
     () =>
       groupProjectTabs({
@@ -1353,6 +1359,12 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
+  // The open copies in a tab of their own, for the window's memory: a reload
+  // or a launch brings each back as its own tab.
+  const ownTabKeysNow = useMemo(() => {
+    const open = new Set([...openProjectTabRoots, ...openRemoteProjectTabs.map((entry) => entry.key)]);
+    return [...ownTabKeysOf(tabGroups)].filter((key) => open.has(key)).sort();
+  }, [openProjectTabRoots, openRemoteProjectTabs, tabGroups]);
   // One tab and one open copy per repository, kept across a reload and a launch.
   useRepositoryTabStrip({
     windowSessionRestored,
@@ -1371,6 +1383,7 @@ export function TopBar({
     activeNoMachineTabId,
     noTabInFront: showWelcome === true || isNewTabOpen === true,
     recordNameFor,
+    ownTabKeys: ownTabKeysNow,
   });
 
   useEffect(() => {
@@ -1392,6 +1405,9 @@ export function TopBar({
         const launchStrip = !strip && session.repositoryTabs && session.repositoryTabs.tabs.length > 0
           ? restoredStripFromSaved(session.repositoryTabs)
           : null;
+        // Each copy that had a tab of its own gets it back, before the
+        // grouping first sees both copies of its repository open.
+        for (const key of strip?.ownTabKeys ?? launchStrip?.ownTabKeys ?? []) inheritedOwnTabsRef.current.add(key);
         if (launchStrip) {
           setTabOrder((current) => (current.length > 0 ? current : launchStrip.tabOrder));
           for (const tab of launchStrip.noMachineTabs) {
@@ -2285,8 +2301,59 @@ export function TopBar({
         connectedTargetIds,
         excludeTargetId: "",
       });
+      // A second folder's own tab whose folder is gone: it joins the
+      // repository's tab, which comes to the front in its place.
+      const repositoryGroup = !fallback && remaining.length === 0 && group.origin
+        ? tabGroupsRef.current.find((entry) => entry.id !== group.id && entry.origin === group.origin) ?? null
+        : null;
+      const repositoryOpen = repositoryGroup?.machines.find((machine) => (
+        machine.isLocal ? openLocal.includes(machine.rootPath) : openRemote.some((entry) => entry.key === machine.bindingKey)
+      )) ?? null;
+      if (repositoryOpen) {
+        const store = useAppStore.getState();
+        const frontKey = store.projectBinding?.kind === "remote" ? store.projectBinding.key : store.project?.rootPath ?? null;
+        try {
+          if (frontKey && removed.has(frontKey)) {
+            if (repositoryOpen.isLocal) await store.switchProjectToPath(repositoryOpen.rootPath, { carryWorkView: true });
+            else if (repositoryOpen.binding?.kind === "remote") {
+              await store.switchRemoteProject(repositoryOpen.binding.targetId, repositoryOpen.binding.projectId, { carryWorkView: true });
+            }
+          }
+        } catch (error) {
+          captureError(error, { fingerprint: ["repository-tabs", "remove-join-open"], level: "warning", handled: true });
+        }
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs(nextRemote);
+        setOpenProjectTabRoots((prev) => prev.filter((root) => !removed.has(root)));
+        for (const key of removed) {
+          if (!key.startsWith("remote:")) continue;
+          useAppStore.getState().evictProjectState(key);
+          removeStoredProjectRoute(key);
+        }
+        return;
+      }
       if (!fallback) {
-        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+        // Other copies of the repository exist, on no computer that is online:
+        // the tab stays, with no computer, until one is (S4). Only a project
+        // with no copy left closes.
+        const removedRemote = openRemote.find((entry) => removedOpen.some((machine) => machine.bindingKey === entry.key)) ?? null;
+        const noMachine = remaining.length > 0 && removedRemote ? noMachineTabFor(removedRemote) : null;
+        if (!noMachine) {
+          await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+          return;
+        }
+        const store = useAppStore.getState();
+        const wasInFront = store.projectBinding?.kind === "remote" && removed.has(store.projectBinding.key);
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs(nextRemote);
+        for (const key of removed) {
+          if (!key.startsWith("remote:")) continue;
+          store.evictProjectState(key);
+          removeStoredProjectRoute(key);
+        }
+        store.showNoMachineTab(noMachine, { activate: wasInFront });
         return;
       }
       // The fallback copy takes the removed copy's place, in its own tab.
@@ -2323,7 +2390,7 @@ export function TopBar({
         removeStoredProjectRoute(key);
       }
     },
-    [closeTabGroups, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
+    [closeTabGroups, noMachineTabFor, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
   );
 
   const recentForMachine = useCallback(

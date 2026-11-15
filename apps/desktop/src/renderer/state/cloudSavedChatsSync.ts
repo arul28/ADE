@@ -500,9 +500,11 @@ export function savedChatAwareAgentChatApi(api: AgentChatApi): AgentChatApi {
   if (cached) return cached;
   // A saved chat's computer this window never connected to is reached by its
   // machine key (contract C2), and the window follows the chat there.
-  // The web client has no `machines` yet: its fallback proxy answers every
-  // missing member with a stand-in, so only `isAdeAvailable` can tell.
-  const reach: SavedChatReach | null = isAdeAvailable(window.ade?.machines) && isAdeAvailable(window.ade.machines.connect)
+  // Only the method is checked: ADE Web implements `machines.connect` (it
+  // wakes an asleep ADE Cloud computer through the account) while its
+  // `machines` namespace reads as a stand-in, and a window without it gets
+  // the fallback proxy's stand-in method, which `isAdeAvailable` rejects.
+  const reach: SavedChatReach | null = isAdeAvailable(window.ade?.machines?.connect)
     ? {
         pinFor: async (location) => {
           try {

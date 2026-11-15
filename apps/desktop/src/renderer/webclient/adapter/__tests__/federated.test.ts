@@ -224,7 +224,8 @@ function managerFixture() {
   };
 }
 
-const accountClient = {} as BrowserAccountClient;
+// The adapter reads the account machines (their keys) and follows changes.
+const accountClient = { getSnapshot: () => ({ machines: [] }), onMachinesChanged: () => () => {} } as unknown as BrowserAccountClient;
 
 afterEach(() => {
   localStorage.clear();
@@ -952,7 +953,7 @@ describe("createFederatedWebAdapter", () => {
     }));
     const federated = createFederatedWebAdapter({
       manager: fixture.manager,
-      accountClient: { getSnapshot: () => ({ machines: [machine] }) } as unknown as BrowserAccountClient,
+      accountClient: { getSnapshot: () => ({ machines: [machine] }), onMachinesChanged: () => () => {} } as unknown as BrowserAccountClient,
       accountKey: `wake-disconnect-${wake}-${disconnectDuringWake}`,
       fallbackClient: fixture.fallbackClient,
     });

@@ -30,6 +30,7 @@ import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import {
   MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
+  useCloudViewOnScreen,
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
@@ -37,6 +38,7 @@ import {
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
 import { LaneCloudMarker } from "./LaneMachineMarker";
+import { isCloudConnectionTarget, isSavedChatsMachineId } from "../../state/cloudSavedChats";
 import { laneCloudProvider } from "../../../shared/cloudLanes";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
@@ -1314,6 +1316,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     const gone = goneMachineIds ? new Set(goneMachineIds.split("\u0000").filter(Boolean)) : null;
     return unionForeignRows.filter((row) => rowShowsConnected(row) && !gone?.has(row.machineId));
   }, [goneMachineIds, unionForeignRows]);
+  // A listed ADE Cloud computer is watched for its sleep and its wake.
+  useCloudViewOnScreen(foreignRows.some((row) => isCloudConnectionTarget(row.machineId) || isSavedChatsMachineId(row.machineId)));
   // No copy of the repository online: the list reads nothing and says so.
   const tabCopyPin = useTabCopyPin();
   // Standalone callers can omit the hook's full-roster filing map, so keep the

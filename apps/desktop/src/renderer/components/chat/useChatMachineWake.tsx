@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../../shared/wokenMachine";
-import { savedChatComputerGone } from "../../state/cloudSavedChats";
+import { isCloudConnectionTarget, isSavedChatsMachineId, savedChatComputerGone } from "../../state/cloudSavedChats";
+import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
 import { cloudComputerResting, useCloudComputer } from "../remoteTargets/useCloudComputer";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { clearCloudMachineWakeFailure, useCloudMachineWakeFailure, useCloudMachineWakeInFlight } from "../../lib/cloudMachineWake";
@@ -81,6 +82,8 @@ export function ChatMachineWakeProvider({ children }: { children: ReactNode }) {
   // sync, which re-renders the chat anyway.
   const gone = offline && scope.sessionId != null && savedChatComputerGone(scope.pin, scope.sessionId);
   const targetId = scope.binding?.kind === "remote" ? scope.binding.targetId : null;
+  // An open chat on an ADE Cloud computer is watched for its sleep and its wake.
+  useCloudViewOnScreen(targetId != null && (isCloudConnectionTarget(targetId) || isSavedChatsMachineId(targetId)));
   // The target the list said is no cloud computer: not watched again.
   const [notCloudTargetId, setNotCloudTargetId] = useState<string | null>(null);
   const { box, known, refresh } = useCloudComputer(scope.binding, offline && !gone && targetId !== notCloudTargetId);

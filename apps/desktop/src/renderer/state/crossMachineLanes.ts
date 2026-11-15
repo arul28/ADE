@@ -26,7 +26,7 @@
  * the local list.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import type {
@@ -2285,8 +2285,39 @@ const restingCloud: {
 } = { machineIds: new Map(), probeTimer: null, probing: false, turnWatchTimer: null, turnWatchReading: false };
 /** How soon a dropped ADE Cloud computer is asked about again, while its floor runs. */
 const RESTING_CLOUD_PROBE_GAP_MS = 8_000;
-/** How often the account is asked about an ADE Cloud computer while a turn runs there. */
+/** How often the account is asked about an ADE Cloud computer while a turn runs there, or while it rests. */
 const CLOUD_TURN_WATCH_MS = 4_000;
+
+/**
+ * Views on screen that show an ADE Cloud computer's work: a Work list with a
+ * cloud row, an open chat on a cloud computer. The account is asked about a
+ * cloud computer every few seconds only while one shows.
+ */
+let cloudViewsOnScreen = 0;
+
+/**
+ * False under a page that stays mounted while another page is in front (the
+ * Work and Lanes pages): its cloud rows and chats are not on screen then.
+ */
+export const CloudViewsShownContext = createContext(true);
+
+/** While `active` and its page is in front, this view shows an ADE Cloud computer's work (see `cloudViewsOnScreen`). */
+export function useCloudViewOnScreen(active: boolean): void {
+  const shown = useContext(CloudViewsShownContext);
+  const onScreen = active && shown;
+  useEffect(() => {
+    if (!onScreen) return undefined;
+    cloudViewsOnScreen += 1;
+    syncCloudTurnWatch();
+    return () => {
+      cloudViewsOnScreen -= 1;
+      syncCloudTurnWatch();
+    };
+  }, [onScreen]);
+}
+
+/** Connects asked for by the resting watch, by connection target: one at a time per computer. */
+const backgroundWakeConnects = new Set<string>();
 
 /** The connection's `connectedAt`, as the mark of one connection. */
 function connectedAtOf(machineId: string): string {
@@ -2379,6 +2410,8 @@ function probeRestingCloudComputers(): void {
       if (changed) {
         applyReachability();
         scheduleRefresh("status");
+        // A computer that now rests is watched for a wake from another device.
+        syncCloudTurnWatch();
       }
     },
     () => undefined,
@@ -2410,13 +2443,29 @@ function cloudConnectionsWithLiveTurns(): RemoteRuntimeConnectionStatus[] {
 }
 
 /**
- * While a turn runs on an ADE Cloud computer, asks the account every few
- * seconds whether that computer went to sleep, so the turn stops reading as
- * running within seconds of the sleep. Runs only then, and only while the
- * window is visible; one read of the account's computers each time.
+ * Dropped ADE Cloud computers known to rest. Another device (or the phone)
+ * can wake one at any time, and this window learns of it only from the
+ * account: the saved connection redials a resting computer every few minutes.
+ */
+function restingDroppedCloudConnections(): RemoteRuntimeConnectionStatus[] {
+  return runtime.connections.filter((connection) =>
+    connection.state !== "connected"
+    && restingCloud.machineIds.get(connection.target.id) === null
+    && isCloudConnectionTarget(connection.target.id));
+}
+
+/**
+ * While a cloud row or chat shows, asks the account every few seconds about
+ * the ADE Cloud computers that matter: one with a turn running (did it go to
+ * sleep, so the turn stops reading as running within seconds), and one that
+ * rests (did another device wake it, so this window connects within seconds).
+ * Only while the window is visible; one read of the account's computers each time.
  */
 function syncCloudTurnWatch(): void {
-  const watching = runtime.refCount > 0 && isDocumentVisible() && cloudConnectionsWithLiveTurns().length > 0;
+  const watching = runtime.refCount > 0
+    && cloudViewsOnScreen > 0
+    && isDocumentVisible()
+    && (cloudConnectionsWithLiveTurns().length > 0 || restingDroppedCloudConnections().length > 0);
   if (!watching) {
     if (restingCloud.turnWatchTimer) {
       clearTimeout(restingCloud.turnWatchTimer);
@@ -2432,7 +2481,8 @@ function readCloudTurnComputers(): void {
   restingCloud.turnWatchTimer = null;
   const listMachines = window.ade?.cloud?.listMachines;
   const watched = cloudConnectionsWithLiveTurns();
-  if (!isAdeAvailable(listMachines) || watched.length === 0 || !isDocumentVisible()) return;
+  const resting = restingDroppedCloudConnections();
+  if (!isAdeAvailable(listMachines) || (watched.length === 0 && resting.length === 0) || !isDocumentVisible() || cloudViewsOnScreen === 0) return;
   restingCloud.turnWatchReading = true;
   const lifecycle = runtime.lifecycle;
   // A read that began before a connection did may describe the computer
@@ -2454,6 +2504,15 @@ function readCloudTurnComputers(): void {
         changed = true;
       }
       if (changed) applyReachability();
+      // Woken elsewhere: connect now, in the background (a background connect
+      // never wakes a computer). The rows and the chat read the computer as
+      // asleep until that connection lands; it ends the rest (`applySnapshot`).
+      for (const connection of restingDroppedCloudConnections()) {
+        const machineKey = cloudKeyOfConnection(connection);
+        const box = cloudBoxForMachine(result.machines, { machineKey, hostname: connection.target.hostname });
+        if (!machineKey || !box || box.state !== "running") continue;
+        connectWokenCloudComputer(connection.target.id, machineKey);
+      }
     },
     () => undefined,
   ).finally(() => {
@@ -2462,6 +2521,15 @@ function readCloudTurnComputers(): void {
     // A computer just named asleep is asked about again until it wakes.
     probeRestingCloudComputers();
   });
+}
+
+function connectWokenCloudComputer(targetId: string, machineKey: string): void {
+  const connect = window.ade?.machines?.connect;
+  if (!isAdeAvailable(connect) || backgroundWakeConnects.has(targetId)) return;
+  backgroundWakeConnects.add(targetId);
+  void connect(machineKey, { background: true })
+    .catch((error: unknown) => console.warn("[cloud] connecting a computer woken elsewhere failed", error))
+    .finally(() => backgroundWakeConnects.delete(targetId));
 }
 
 /** Forgets every per-machine record. Used by teardown and by scope changes. */

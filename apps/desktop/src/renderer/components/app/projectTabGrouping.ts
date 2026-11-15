@@ -138,6 +138,8 @@ function remoteMachine(binding: RemoteOpenProjectBinding): ProjectTabMachine {
  *   clone that already has its own tab) keeps that tab while it stays open,
  *   even after the copy it stood next to moved to another machine. Without
  *   this, the one-copy rule would close it as a duplicate of the moved tab.
+ *   When every open copy of the repository is such a copy, the first one is
+ *   the repository tab (with every known copy) and the rest keep their own.
  * - A move stays in the tab it was made in. A copy in `joinTabOf` (the copy a
  *   tab just moved to, keyed to the copy it moved from) joins the tab of that
  *   copy, whatever tab that is, as long as both are one repository. Without
@@ -238,13 +240,23 @@ export function groupProjectTabs(args: {
     if (!from || !origin || !openKeySet.has(from)) return false;
     return openEntries.some((entry) => entry.machine.bindingKey === from && entry.origin === origin);
   };
+  // The repositories with an open copy that has no tab of its own: that copy
+  // heads the repository tab. Without one, the first own copy heads it, so a
+  // tab of its own that is now the repository's only tab gets every copy.
+  const sharedOpen = new Set<string>();
+  for (const { machine, origin } of openEntries) {
+    if (origin && !ownTabKeys?.has(machine.bindingKey) && !movesIn(machine, origin)) sharedOpen.add(origin);
+  }
   const moved: { machine: ProjectTabMachine; origin: string }[] = [];
   for (const { machine, origin } of openEntries) {
     if (origin && movesIn(machine, origin)) {
       moved.push({ machine, origin });
       continue;
     }
-    if (!origin || ownTabKeys?.has(machine.bindingKey)) {
+    if (
+      !origin
+      || (ownTabKeys?.has(machine.bindingKey) && (sharedOpen.has(origin) || groupByOrigin.has(origin)))
+    ) {
       groups.push(standalone(machine, origin));
       continue;
     }

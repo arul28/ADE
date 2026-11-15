@@ -24,7 +24,9 @@ export function useCloudComputer(pin: OpenProjectBinding | null | undefined, ena
   const remote = enabled && cloudEnabled && binding?.kind === "remote";
   const { result, refresh } = useCloudMachines(remote);
   const hostname = binding?.kind === "remote" ? binding.hostname ?? null : null;
-  const { machineKey, resolved } = useTargetMachineKey(remote && binding?.kind === "remote" ? binding.targetId : null);
+  // A read of the computer list is also the moment to look for a key the
+  // first read did not find (ADE Web learns the account's machines after it starts).
+  const { machineKey, resolved } = useTargetMachineKey(remote && binding?.kind === "remote" ? binding.targetId : null, result);
   const box = useMemo(
     () => (result && (machineKey || hostname) ? cloudBoxForMachine(result.machines, { machineKey, hostname }) : null),
     [hostname, machineKey, result],
@@ -34,11 +36,15 @@ export function useCloudComputer(pin: OpenProjectBinding | null | undefined, ena
 }
 
 /** The computer's account key behind a paired machine: a relay connection's hostname is the relay's, not the computer's. */
-function useTargetMachineKey(targetId: string | null): { machineKey: string | null; resolved: boolean } {
+function useTargetMachineKey(targetId: string | null, retryOn: unknown): { machineKey: string | null; resolved: boolean } {
   const [answer, setAnswer] = useState<{ targetId: string; machineKey: string | null } | null>(null);
+  const keyless = answer != null && answer.targetId === targetId && answer.machineKey == null;
+  const retryToken = keyless ? retryOn : null;
   useEffect(() => {
-    setAnswer(null);
-    if (!targetId) return;
+    if (!targetId) {
+      setAnswer(null);
+      return;
+    }
     let cancelled = false;
     void window.ade.remoteRuntime?.listTargets?.().then(
       (targets) => {
@@ -49,7 +55,7 @@ function useTargetMachineKey(targetId: string | null): { machineKey: string | nu
     return () => {
       cancelled = true;
     };
-  }, [targetId]);
+  }, [retryToken, targetId]);
   const current = answer && answer.targetId === targetId ? answer : null;
   return { machineKey: current?.machineKey ?? null, resolved: current != null };
 }

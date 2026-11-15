@@ -253,8 +253,37 @@ export function createFederatedWebAdapter({
       for (const listener of connectionListeners) listener(connectionSnapshot);
     },
   );
+  // A pairing names its computer by host device id; the account names the
+  // same computer by machine key. Each target carries that key, as on the
+  // desktop, so every reader of `pairedMachine.machineKey` (the cloud
+  // computer behind a chat, its wake, the copies lists) finds the computer.
+  const readMachineKeyByDevice = (): ReadonlyMap<string, string> => new Map(
+    accountClient.getSnapshot().machines.flatMap((machine) => (
+      machine.deviceId?.trim() && machine.machineKey ? [[machine.deviceId.trim(), machine.machineKey] as const] : []
+    )),
+  );
+  let machineKeyByDevice = readMachineKeyByDevice();
+  const withAccountMachineKeys = (snapshot: RemoteRuntimeConnectionSnapshot): RemoteRuntimeConnectionSnapshot => {
+    if (machineKeyByDevice.size === 0) return snapshot;
+    let changed = false;
+    const connections = snapshot.connections.map((connection) => {
+      const paired = connection.target.pairedMachine;
+      const machineKey = paired && !paired.machineKey ? machineKeyByDevice.get(paired.hostIdentity.trim()) : undefined;
+      if (!paired || !machineKey) return connection;
+      changed = true;
+      return { ...connection, target: { ...connection.target, pairedMachine: { ...paired, machineKey } } };
+    });
+    return changed ? { ...snapshot, connections } : snapshot;
+  };
   const getConnectionSnapshot = () =>
-    reconnectHold.apply(manager.getConnectionSnapshot(extraProjectsByTarget()));
+    withAccountMachineKeys(reconnectHold.apply(manager.getConnectionSnapshot(extraProjectsByTarget())));
+  const accountMachinesDispose = accountClient.onMachinesChanged(() => {
+    const next = readMachineKeyByDevice();
+    if (next.size === machineKeyByDevice.size && [...next].every(([device, key]) => machineKeyByDevice.get(device) === key)) return;
+    machineKeyByDevice = next;
+    const connectionSnapshot = getConnectionSnapshot();
+    for (const listener of connectionListeners) listener(connectionSnapshot);
+  });
 
   let managerDispose = () => {};
 
@@ -1219,6 +1248,7 @@ export function createFederatedWebAdapter({
     dispose() {
       invalidationDispose();
       managerDispose();
+      accountMachinesDispose();
       reconnectHold.dispose();
       manager.setProtectedTargetId(null);
       for (const entry of durableSubscriptions) detachDurableSubscription(entry);
