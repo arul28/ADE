@@ -5419,7 +5419,7 @@ describe("adeRpcServer", () => {
     }
   });
 
-  it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
+  it("scopes PTY and terminal writes to the caller's lane or chat, and lets it read any terminal", async () => {
     const fixture = createRuntime();
     const clearAsk = vi.fn((sessionId: string) => ({ cleared: sessionId === "chat-2" }));
     (fixture.runtime.agentChatService as any).clearAsk = clearAsk;
@@ -5542,20 +5542,33 @@ describe("adeRpcServer", () => {
       chatSessionId: "chat-1",
     });
 
-    // A watch wakes the chat that armed it: an agent may arm one only for its
-    // own chat, on a terminal it may read, and always as the agent.
+    // Reading is open: any terminal, another lane's included.
+    const foreignTerminalRead = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "read",
+      args: { terminalId: "terminal-2" },
+    });
+    expect(foreignTerminalRead?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.readTerminal).toHaveBeenCalledWith(expect.objectContaining({ terminalId: "terminal-2" }));
+
+    // A watch wakes the chat that armed it: an agent arms one only for its own
+    // chat, always as the agent, on any terminal (watching is reading).
     const watch = vi.fn(async (args: unknown) => ({ watchId: "watch-1", ...(args as object) }));
     (fixture.runtime as any).terminalWatchService = { watch, unwatch: vi.fn(), listWatches: vi.fn(() => []) };
-    for (const args of [
-      { terminalId: "terminal-2", match: "error" },
-      { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
-      // An allowed pty id does not carry another chat's terminal id.
-      { ptyId: "pty-1", terminalId: "terminal-2", match: "error" },
-    ]) {
-      const deniedWatch = await callTool(handler, "run_ade_action", { domain: "terminal", action: "watch", args });
-      expect(deniedWatch.isError).toBe(true);
-    }
+    const deniedWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { chatSessionId: "chat-2", terminalId: "terminal-1", match: "error" },
+    });
+    expect(deniedWatch.isError).toBe(true);
     expect(watch).not.toHaveBeenCalled();
+    const foreignWatch = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "watch",
+      args: { terminalId: "terminal-2", match: "error" },
+    });
+    expect(foreignWatch?.isError).toBeUndefined();
+    expect(watch).toHaveBeenLastCalledWith(expect.objectContaining({ chatSessionId: "chat-1", terminalId: "terminal-2", armedBy: "agent" }));
     const ownWatch = await callTool(handler, "run_ade_action", {
       domain: "terminal",
       action: "watch",
