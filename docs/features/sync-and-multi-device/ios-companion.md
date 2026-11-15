@@ -60,7 +60,7 @@ removes the computers the phone reached through the account and resets the
 phone's local copy (`SyncService.resetLocalReplicaAfterAccountLeft`). The
 replica file and its site id go, as on a fresh install, so the reset writes no
 change rows that could sync back to a computer. The same reset empties the
-offline roster of each removed computer, the App Group workspace snapshot
+offline roster of every computer that is no longer paired, the App Group workspace snapshot
 (widgets, Live Activity data), the Activity drawer, the last project route, and
 offline work queued for a removed computer. A computer still paired by code
 stays paired and syncs again from the start. With none left, every tab shows its

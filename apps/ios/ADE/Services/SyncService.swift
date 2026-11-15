@@ -4450,6 +4450,12 @@ final class SyncService: ObservableObject {
   /// flight across the drop is not added to the new state.
   private var rosterOlderChatsGeneration = 0
   @Published private(set) var rosterRevision = 0
+  /// The focused computer's live turn state per session, from its roster.
+  /// The replica's `runtime_state` changes only on a full session refresh, so
+  /// Activity, widgets and Live Activities read a quiet chat or shell as
+  /// working for minutes while the brain (and the Hub) already say idle.
+  private var rosterTurnStatusById: [String: RemoteRosterChatStatus] = [:]
+
   /// Per-project roster stamps let an open Work tab ignore high-frequency
   /// roster activity from agents running in other projects. Values are local
   /// monotonic revisions, not protocol sequence numbers.
@@ -10929,12 +10935,14 @@ final class SyncService: ObservableObject {
 
   /// Explicitly revokes pairings created through one ADE account. Ordinary
   /// sign-out uses `removeAccountOwnedPairings(exceptOwnerId:)` and preserves
-  /// the host-issued device credential for direct routes.
+  /// the host-issued device credential for direct routes. The person chose to
+  /// sign out, so the local copy is reset even when none of the account's
+  /// computers is saved any more: rows it synced earlier may still be there.
   func removeAccountOwnedPairings(ownerId: String) {
     let owner = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !owner.isEmpty else { return }
 
-    removeAccountOwnedPairings(matching: { $0 == owner })
+    removeAccountOwnedPairings(matching: { $0 == owner }, resetWhenNoneOwned: true)
   }
 
   /// Reconcile saved account-adopted pairings with the current account.
@@ -10975,13 +10983,19 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func removeAccountOwnedPairings(matching shouldRemove: (String) -> Bool) {
+  private func removeAccountOwnedPairings(
+    matching shouldRemove: (String) -> Bool,
+    resetWhenNoneOwned: Bool = false
+  ) {
     let profiles = loadSavedProfilesRaw()
     let owned = profiles.filter { _, profile in
       guard let owner = profile.accountOwnerId else { return false }
       return shouldRemove(owner)
     }
-    guard !owned.isEmpty else { return }
+    guard !owned.isEmpty else {
+      if resetWhenNoneOwned { resetLocalReplicaAfterAccountLeft() }
+      return
+    }
 
     let active = activeHostProfile ?? loadProfile()
     let activeIsOwned = active?.accountOwnerId.map(shouldRemove) == true
@@ -11058,6 +11072,22 @@ final class SyncService: ObservableObject {
       active.lastRemoteDbVersion = 0
       active.remoteDbVersionBySite = nil
       saveProfile(active)
+    }
+
+    // Offline rosters (chat titles and previews) of every computer that is not
+    // paired any more, also ones removed before this sign-out.
+    var keptRosterKeys = Set<String>()
+    for (key, profile) in profiles {
+      keptRosterKeys.insert(syncRosterCacheKey(host: key))
+      if let host = savedProfileHostStorageKey(profile) {
+        keptRosterKeys.insert(syncRosterCacheKey(host: host))
+      }
+    }
+    let rosterPrefix = syncRosterCacheKey(host: "")
+    for key in ADESharedContainer.defaults.dictionaryRepresentation().keys
+      where key.hasPrefix(rosterPrefix) && !keptRosterKeys.contains(key)
+    {
+      ADESharedContainer.defaults.removeObject(forKey: key)
     }
 
     // Queued offline work for the account's computers goes; work queued for a
@@ -26004,7 +26034,9 @@ extension SyncService {
     // "Dismiss & settle" still waits: `needs_you` outranks the settled tier and
     // the overlay does not touch the attention columns, which only the host
     // clears.)
-    let sessions = rows.map { overlayLocalSessions($0) } ?? localSessions()
+    let sessions = (rows.map { overlayLocalSessions($0) } ?? localSessions()).map { session in
+      rosterTurnStatusById[session.id]?.applyingTurnState(to: session) ?? session
+    }
     let now = Date()
 
     // `activeSessions` holds every relevant chat session — running,
@@ -26039,8 +26071,9 @@ extension SyncService {
       let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
       let status = session.status.lowercased()
       let isFailedStatus = canonical.phase == .failed
-      let isAwaiting = canonical.phase == .needsYou
-      let isSettled = canonical.phase == .settled
+      // The roster carries the ask before this phone loads the chat's summary.
+      let isAwaiting = canonical.phase == .needsYou || rosterTurnStatusById[session.id] == .awaiting
+      let isSettled = canonical.phase == .settled && !isAwaiting
       guard !isSettled && canonical.phase != .stopped && canonical.phase != .ended else {
         continue
       }
@@ -27635,6 +27668,20 @@ extension SyncService {
     for projectId in projectIds where !projectId.isEmpty {
       rosterProjectRevisions[projectId] = rosterRevision
     }
+    refreshActiveSessionsIfRosterTurnStatesChanged()
+  }
+
+  private func refreshActiveSessionsIfRosterTurnStatesChanged() {
+    var next: [String: RemoteRosterChatStatus] = [:]
+    for project in rosterProjects {
+      for chat in project.chats where chat.archived != true && next[chat.id] == nil {
+        // A chat asking for input is Needs you, as the Hub counts it.
+        next[chat.id] = chat.awaitingInput == true ? .awaiting : chat.status
+      }
+    }
+    guard next != rosterTurnStatusById else { return }
+    rosterTurnStatusById = next
+    refreshActiveSessionsAndSnapshot()
   }
 
   private func mergedRosterProject(remote: RemoteRosterProject, local: RemoteRosterProject) -> RemoteRosterProject {
