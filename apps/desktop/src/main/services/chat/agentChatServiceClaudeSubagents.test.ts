@@ -556,6 +556,13 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(child.id)).toMatchObject({ spawnKind: "subagent" });
       await expect(service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
       await expect(createService().service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
+
+      // The child never ran: a parent agent polling `ade chat status` must not
+      // wait on it as running.
+      const status = await service.getTurnStatus(parent.id);
+      expect(status?.subagents).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
+      ]);
     });
 
     it.each<[string, (launcherId: string) => Record<string, unknown>, boolean]>([

@@ -147,6 +147,8 @@ type SavedMachineRowProps = {
   sessionLimit?: number | null;
   /** The account directory sees this computer online (true) or offline (false); null when it does not list it. */
   accountOnline?: boolean | null;
+  /** When the account directory last saw this computer online; null when it does not list it. */
+  accountLastSeenAt?: number | null;
 };
 
 export function SavedMachineRow({
@@ -189,6 +191,7 @@ export function SavedMachineRow({
   parked = null,
   sessionLimit = null,
   accountOnline = null,
+  accountLastSeenAt = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const { computers: cloudComputers } = useAdeCloudLaneComputers();
@@ -211,20 +214,27 @@ export function SavedMachineRow({
         status ?? null,
         connected?.target.id === target.id,
       );
+  const notConnected = statusLabel === "Not connected" && !row.connected && !targetConnecting;
   // Not connected only because this tab already holds its limit of
-  // connections: the same words as the account row in that state. A computer
-  // the account sees offline keeps its "Last seen" line, which is the truth.
-  const slotLine = sessionLimit != null && status?.waitingForSlot === true && !row.connected && !targetConnecting
-    && accountOnline !== false
-    ? accountOnline
-      ? `Online · this tab already has ${sessionLimit} computers connected`
-      : `This tab already has ${sessionLimit} computers connected`
+  // connections: the same words as the account row in that state.
+  const slotReason = sessionLimit != null && status?.waitingForSlot === true && notConnected
+    ? `This tab already has ${sessionLimit} computers connected`
     : null;
   // Says why a machine that is not connected will not come back on its own.
   const autoConnectOff = statusLabel === "Not connected" ? autoConnectOffReason(target) : null;
-  // When the computer was last seen: the end of the last connection when this
-  // run saw it end, else the start of the last connection.
-  const lastSeenAt = status?.disconnectedAt ?? target.lastConnectedAt;
+  // The account directory sees it online: it is up, only this app is not
+  // connected to it. Say so and why, never "Last seen".
+  const onlineLine = accountOnline === true && notConnected
+    ? ["Online", slotReason ?? autoConnectOff].filter(Boolean).join(" · ")
+    : null;
+  // A computer the account sees offline keeps its "Last seen" line.
+  const slotLine = slotReason && accountOnline !== false ? slotReason : null;
+  // When the computer was last online: the account directory's time when it
+  // lists the computer, else the end of this app's last connection to it, else
+  // the start of that connection.
+  const lastSeenAt = (accountOnline != null ? accountLastSeenAt : null)
+    ?? status?.disconnectedAt
+    ?? target.lastConnectedAt;
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
@@ -279,6 +289,8 @@ export function SavedMachineRow({
             ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
             : targetConnecting && !connectingStale
               ? "Connecting…"
+              : onlineLine
+                ? onlineLine
               : slotLine
                 ? slotLine
               : lastSeenAt || statusLabel !== "Not connected"

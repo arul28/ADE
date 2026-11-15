@@ -1,4 +1,4 @@
-import { computerCountLabel, copyComputers } from "../../../../shared/repositoryTab";
+import { computerReachLabel, copyComputers } from "../../../../shared/repositoryTab";
 import { useActiveRepositoryTab } from "../../../state/repositoryScope";
 import { useRepositoryCopies } from "../../../state/useRepositoryCopies";
 import { requestCopiesMenu } from "../../projects/removeProjectRequest";
@@ -14,16 +14,17 @@ export function ProjectComputersTag() {
   const tab = useActiveRepositoryTab();
   const copies = useRepositoryCopies(tab);
   if (!tab) return null;
-  const { count, reachable } = copyComputers(copies);
+  const computers = copyComputers(copies);
+  const { count, reachable } = computers;
   if (count === 0) return null;
-  const label = computerCountLabel(count);
+  const label = computerReachLabel(computers);
   return (
     <button
       type="button"
       className="ade-welcome-machines-chip"
       aria-haspopup="menu"
-      aria-label={`On ${label}${reachable ? ", reachable now" : ", none reachable now"}. Show computers with a copy`}
-      title={`On ${label}${reachable ? "" : ", none reachable now"}. Show computers with a copy`}
+      aria-label={`${label}. Show computers with a copy`}
+      title={`${label}. Show computers with a copy`}
       onClick={(event) => {
         const rect = event.currentTarget.getBoundingClientRect();
         requestCopiesMenu({ x: rect.left, y: rect.bottom + 4 });

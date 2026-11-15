@@ -136,7 +136,7 @@ function accountMachineStatusLabel(
     return "Can't reach this computer right now — make sure it's online and up to date.";
   }
   if (presence === "online" && sessionLimit != null) {
-    return `Online · this tab already has ${sessionLimit} computers connected`;
+    return `Online · This tab already has ${sessionLimit} computers connected`;
   }
   if (presence === "online") {
     return machineStatusLine(machine, { presence }) ?? "Ready to connect";

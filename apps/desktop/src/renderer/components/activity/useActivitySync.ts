@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   type AttentionPresence,
@@ -31,6 +31,11 @@ const PRESENCE_FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
 const ACTIVITY_SNAPSHOT_TIMEOUT_MS = 35_000;
 const PREFERENCES_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
+// While a page that lists running chats is on screen, Activity is re-read at
+// this pace. The backstop poll above can sit at two minutes after a quiet
+// spell, and nothing pushes a turn start to it, so a short turn would come and
+// go without ever showing as working.
+const LIVE_ACTIVITY_REFRESH_MS = 5_000;
 type ActivityAccountScope = {
   generation: number;
   ownerId: string | null;
@@ -153,6 +158,37 @@ export async function refreshActivitySnapshot(): Promise<void> {
     });
   refreshPromise = { generation, promise };
   return promise;
+}
+
+/**
+ * Keeps Activity current while the calling page is on screen: one read when it
+ * opens, then one every few seconds while the window is visible. For pages that
+ * say what is running right now (New Tab's "Working now" and its headline).
+ */
+export function useLiveActivityRefresh(): void {
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    void refreshActivitySnapshot();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refreshActivitySnapshot();
+    }, LIVE_ACTIVITY_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+}
+
+/**
+ * Whether the last finished Activity read failed. A read in flight keeps the
+ * previous answer, so a page that re-reads every few seconds does not flip
+ * between "failed" and "fine" while the outage lasts.
+ */
+export function useActivityReadFailed(): boolean {
+  const syncStatus = useActivityStore((state) => state.syncStatus);
+  const [failed, setFailed] = useState(syncStatus === "error");
+  useEffect(() => {
+    if (syncStatus !== "syncing") setFailed(syncStatus === "error");
+  }, [syncStatus]);
+  return failed;
 }
 
 /**

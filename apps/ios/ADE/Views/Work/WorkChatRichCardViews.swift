@@ -3508,7 +3508,7 @@ struct WorkChatInfoDetailsSheet: View {
   }
 
   private func sectionHint(active: Int, earlier: Int, hidden: Int, running: Int, failed: Int) -> String {
-    // Every row the section lists (live plus the "Completed (n)" group): a
+    // Every row the section lists (live plus the "Done (n)" group): a
     // bare active count read "0" above two completed subagents.
     running > 0 && failed > 0 ? "\(running) running · \(failed) failed" : "\(active + earlier)"
   }
@@ -3792,7 +3792,7 @@ struct WorkChatInfoDetailsSheet: View {
     visible: (visible: [Item], hiddenCount: Int),
     @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
   ) -> some View {
-    // A folded section's header is its toggle: no second "Completed (n)" line.
+    // A folded section's header is its toggle: no second "Done (n)" line.
     let onlyEarlier = workChatInfoFoldedCount(partition) != nil
     VStack(alignment: .leading, spacing: spacing) {
       if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
@@ -3972,7 +3972,7 @@ struct WorkChatInfoDetailsSheet: View {
       } label: {
         HStack(spacing: 5) {
           chevron(open: expanded)
-          Text("Completed (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")")
+          Text("Done (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")")
           Spacer(minLength: 0)
         }
         .contentShape(.rect)

@@ -19,6 +19,7 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { activitySections } from "../activity/activityPriority";
+import { useActivityReadFailed } from "../activity/useActivitySync";
 import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import {
   ACTIVITY_COLUMN_PRESENTATION,
@@ -119,6 +120,7 @@ function runningItemPlace(item: AttentionItem): string {
 /** Running chats; rows that do not fit the card hide behind "N more", which opens Activity. */
 export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?: () => void }) {
   const availability = useActivityStore((state) => state.availability);
+  const readFailed = useActivityReadFailed();
   const [error, setError] = useState<string | null>(null);
 
   const openItem = useCallback(async (item: AttentionItem) => {
@@ -131,9 +133,11 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
       // Centred and muted, like every other empty card.
       <div className="ade-home-empty">
         <span>
-          {availability?.state === "signed_out"
-            ? "Nothing running here · sign in to see other machines"
-            : "Nothing running right now"}
+          {readFailed
+            ? "Activity isn't loading, so running chats can't show here"
+            : availability?.state === "signed_out"
+              ? "Nothing running here · sign in to see other machines"
+              : "Nothing running right now"}
         </span>
       </div>
     );

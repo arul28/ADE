@@ -3763,6 +3763,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // Invalidate in-flight lane refreshes before the async switch so stale
     // responses from the previous project are discarded immediately.
     ++laneRefreshVersion;
+    // The copy the tab leaves: a move to this computer's copy of the same
+    // repository (a Disconnect of the tab's computer) keeps the open chat,
+    // tabs and grid, as a move to a remote copy does.
+    const outgoingBinding = get().projectBinding;
     // Stash the OUTGOING project's lane/session selection so switching back
     // restores it instead of falling through to "first lane".
     const outgoingProjectKey = selectActiveProjectStateKey(get());
@@ -3775,6 +3779,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       cachedProject != null && get().openProjectTabRoots.includes(rootPath);
     if (isWarmTabSwitch && cachedProject) {
       get().setProject(cachedProject, { replaceBinding: true });
+      carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
     }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
@@ -3829,6 +3834,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     try {
       const project = await window.ade.project.switchToPath(rootPath);
       get().setProject(project, { replaceBinding: true });
+      carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
         get().laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
       // Stale-while-revalidate: if we have cached lanes for the destination
@@ -4358,6 +4364,12 @@ export function unregisterProjectSurfaceStore(projectKey: string, store: AppStor
   const key = normalizeProjectKey(projectKey);
   if (!key) return;
   if (_projectSurfaceStores.get(key) === store) _projectSurfaceStores.delete(key);
+}
+
+/** This computer's binding for a project just opened by path, for `carryWorkViewToCopy`. */
+function localBindingForCarry(current: OpenProjectBinding | null, project: ProjectInfo): OpenProjectBinding {
+  if (current?.kind === "local" && current.rootPath === project.rootPath) return current;
+  return { kind: "local", key: project.rootPath, rootPath: project.rootPath, displayName: project.displayName };
 }
 
 /**

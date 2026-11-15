@@ -202,6 +202,7 @@ import { ClaudeModUi } from "./ClaudeModUi";
 import { registerDraftModelSetter } from "./draftModelSeam";
 import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { useMachineSlotHold } from "../../lib/machineSlotHolds";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -5668,6 +5669,9 @@ export function AgentChatPane({
   // A cloud lane's chat follows its lane to a new computer (contract C3).
   useFollowLaneMoves({ sessionId: selectedSessionId, laneId: selectedSession?.laneId ?? null, pin: chatRuntimePin });
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  // While this chat is on screen its computer keeps its ADE Web connection
+  // slot: connecting another computer never parks it.
+  useMachineSlotHold(chatRuntimePin ?? projectBinding, isTileVisible);
   // An ADE Cloud lane computer is called by its lane in the notice; any other
   // machine keeps the name it was given, short or not.
   const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);

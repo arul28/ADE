@@ -16,7 +16,7 @@ import {
   type WebMachineStatus,
 } from "../../webclient/workspace/webWorkspaceModel";
 import { WorktreeBadge } from "./WorktreeBadge";
-import { computerCountLabel, type CopyComputers } from "../../../shared/repositoryTab";
+import { computerCountLabel, computerReachLabel, type CopyComputers } from "../../../shared/repositoryTab";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 import { subscribeProjectIcon } from "../../lib/projectIconCache";
@@ -296,7 +296,7 @@ function ProjectMachineStack({
         className="ade-welcome-machines-chip"
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`On ${computerCountLabel(count)}${reachable ? ", reachable now" : ", none reachable now"}`}
+        aria-label={computerReachLabel({ count, reachableCount: computers ? computers.reachableCount : online })}
         title={summary}
         onClick={(event) => {
           // The row behind opens the project; the chip only shows its copies.

@@ -75,6 +75,7 @@ import {
 } from "./appStore";
 import { chatLaunchBindingKey, noteChatLaunchSourceRead } from "./chatLaunchStore";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { isWebClientMode } from "../lib/webClientMode";
 import { subscribeAdeCloudAccess } from "./cloudAccess";
 import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from "./cloudRestingRows";
 import { useStableBinding } from "./laneMachineRouting";
@@ -1811,7 +1812,33 @@ async function readThisMachine(
   }
 }
 
+/**
+ * The desktop reads a computer's project list when it connects, and then only
+ * when something asks. A repository added there later (also one removed and
+ * added again) never reached the union, so its chats stayed missing. Each
+ * refresh re-reads, at most every 30 s, the list of a connected computer that
+ * does not host this repository. ADE Web needs none of this: each computer
+ * pushes its catalog to the tab when it changes.
+ */
+const PROJECT_LIST_REREAD_MS = 30_000;
+const projectListReadAtMs = new Map<string, number>();
+
+function rereadProjectListsWithoutRepo(): void {
+  if (isWebClientMode()) return;
+  const listProjects = window.ade?.remoteRuntime?.listProjects;
+  if (!isAdeAvailable(listProjects)) return;
+  const nowMs = Date.now();
+  for (const option of resolveMachineOptions()) {
+    if (option.repoMatch !== "missing" || !option.targetId || option.id === THIS_MACHINE_ID) continue;
+    if (nowMs - (projectListReadAtMs.get(option.targetId) ?? 0) < PROJECT_LIST_REREAD_MS) continue;
+    projectListReadAtMs.set(option.targetId, nowMs);
+    // The read updates the connection snapshot, which re-runs the union.
+    void listProjects(option.targetId).catch(() => {});
+  }
+}
+
 async function runRefresh(): Promise<void> {
+  rereadProjectListsWithoutRepo();
   const generation = ++runtime.generation;
   const depth = runtime.pendingLaneReadDepth;
   runtime.pendingLaneReadDepth = "identity";
@@ -2537,6 +2564,7 @@ export function resetCrossMachineLaneSyncForTest(): void {
   runtime.connections = [];
   pendingForeignOptimisticSessionsByBinding.clear();
   retainedSlots.clear();
+  projectListReadAtMs.clear();
   runtime.scope = {
     scopeKey: null,
     repoDisplayName: null,

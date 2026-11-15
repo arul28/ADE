@@ -497,15 +497,26 @@ export function connectionStateLabel(
  * (a first Connect turns auto-connect on, so there is nothing to explain yet).
  * A manual disconnect is the stronger reason and wins over the preference.
  */
+/** "at 7:51 PM" today, "yesterday", else "on Nov 12". */
+function disconnectedWhen(at: number, now = Date.now()): string {
+  const when = new Date(at);
+  const today = new Date(now);
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  if (sameDay(when, today)) {
+    return `at ${when.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (sameDay(when, yesterday)) return "yesterday";
+  return `on ${when.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
 export function autoConnectOffReason(
   target: Pick<RemoteRuntimeTarget, "autoConnect" | "lastConnectedAt" | "manuallyDisconnectedAt">,
 ): string | null {
   if (target.manuallyDisconnectedAt != null) {
-    const day = new Date(target.manuallyDisconnectedAt).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-    });
-    return `you disconnected it on ${day}`;
+    return `You disconnected it ${disconnectedWhen(target.manuallyDisconnectedAt)}`;
   }
   if (target.autoConnect === false && target.lastConnectedAt != null) {
     return "Reconnect automatically is off";

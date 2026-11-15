@@ -427,7 +427,7 @@ function EarlierToggle({
       className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left font-sans text-[10.5px] text-fg/40 transition-colors hover:text-fg/60"
     >
       <span aria-hidden>{expanded ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}</span>
-      <span className="whitespace-nowrap">Completed ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
+      <span className="whitespace-nowrap">Done ({count}){clearedCount ? ` · ${clearedCount} hidden` : ""}</span>
     </button>
   );
 }

@@ -179,9 +179,12 @@ function joinDiagnosticMessages(
   return diagnostics.map((entry) => entry.message).join(" ");
 }
 
+// "Not connected", not "Ready to connect": this section also holds computers
+// that are connecting or that this app can't reach right now, and the heading
+// has to be true for every row under it.
 const SECTION_LABELS: Record<MachineSection, string> = {
   connected: "Connected",
-  available: "Ready to connect",
+  available: "Not connected",
   unavailable: "Not reachable right now",
 };
 
@@ -1278,6 +1281,7 @@ export function RemoteTargetList({
           parked={extras.parked}
           sessionLimit={sessionLimit}
           accountOnline={pairAgainMachine ? accountMachinePresence(pairAgainMachine) === "online" : null}
+          accountLastSeenAt={pairAgainMachine?.lastSeenAt ?? null}
         />
       );
     }

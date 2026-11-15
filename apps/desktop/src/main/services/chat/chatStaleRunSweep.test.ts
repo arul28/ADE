@@ -15,7 +15,7 @@ function envelope(sessionId: string, sequence: number, event: AgentChatEvent): A
 }
 
 /** One still-open background command and one still-"running" subagent row. */
-function orphanTranscript(sessionId: string, subagentTaskId = "sub-1"): AgentChatEventEnvelope[] {
+function orphanTranscript(sessionId: string, subagentTaskId = "sub-1", agentId = subagentTaskId): AgentChatEventEnvelope[] {
   return [
     envelope(sessionId, 1, {
       type: "scheduled_work_update",
@@ -31,7 +31,7 @@ function orphanTranscript(sessionId: string, subagentTaskId = "sub-1"): AgentCha
     envelope(sessionId, 2, {
       type: "subagent_started",
       taskId: subagentTaskId,
-      agentId: subagentTaskId,
+      agentId,
       agentType: "Explore",
       parentToolUseId: "toolu_1",
       description: "look",
@@ -268,7 +268,8 @@ describe("reconcileStaleRuns", () => {
     let childRuntimeLive = true;
     let clock = 1_000_000;
     const { sweep, emitted } = harness({
-      transcripts: { [sessionId]: orphanTranscript(sessionId, `chat:${childId}`).slice(1) },
+      // A spawn's real shape: `chat:<id>` task, the bare child id as agent.
+      transcripts: { [sessionId]: orphanTranscript(sessionId, `chat:${childId}`, childId).slice(1) },
       chatRows: { [childId]: { id: childId, status: "running" } },
       ownerLive: (id) => id === childId && childRuntimeLive,
       now: () => clock,
@@ -285,7 +286,8 @@ describe("reconcileStaleRuns", () => {
     sweep.reconcileStaleRuns();
 
     expect(results(emitted)).toHaveLength(1);
-    expect(results(emitted)[0]).toMatchObject({ taskId: `chat:${childId}`, status: "stopped" });
+    // Closed under the spawn's own key, or the parent keeps a "running" row.
+    expect(results(emitted)[0]).toMatchObject({ taskId: `chat:${childId}`, agentId: childId, status: "stopped" });
   });
 
   it("does not let a chat with a live delegate consume the per-pass budget on the next pass", () => {

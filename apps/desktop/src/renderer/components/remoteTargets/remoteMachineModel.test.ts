@@ -426,7 +426,7 @@ describe("autoConnectOffReason", () => {
       autoConnect: false,
       lastConnectedAt: 1_700_000_000,
       manuallyDisconnectedAt: 1_700_000_100_000,
-    })).toMatch(/^you disconnected it on /);
+    })).toMatch(/^You disconnected it on /);
   });
 });
 

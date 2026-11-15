@@ -3504,3 +3504,28 @@ rows above).
   write moves its database version, the peers' acks report it). Two frames
   only ~250 ms apart with nothing but the uptime changed were seen once
   before the brains restarted, not after; left as is.
+
+#### Round 3 fixes (2026-11-14)
+
+Same branch on `029f2c5b2` plus the round 3 fixes. Same rig as round 2 (8
+test brains, a dev desktop brain, ADE Web in headless Chrome with 8 of 9
+computers connected). Mac Studio M4 Max (not the baseline machine). No row
+above was measured again: the round adds reads that run only while a given
+surface is on screen, and removes listeners. Their cost:
+
+| Row | Before | After | Ceiling |
+| --- | --- | --- | --- |
+| New Tab visible: Activity snapshot reads per minute (desktop IPC, or the account `since` read on ADE Web) | 0.5–4 (15 s, backing off to 120 s while nothing changes) | 12 (every 5 s while New Tab is visible and the window is visible), plus the 15 s poll, which is unchanged; 0 while New Tab is closed or hidden. Computed from the timer; the test directory has no Activity endpoint, so the web rig made no such request to count | not set |
+| Connections panel open: account machine list reads per minute | 0 after the one on open | 3 (every 20 s while the panel is open and the window is visible) | — |
+| Desktop: project list re-reads of a connected computer whose list lacks the open project's repository | 0 (read only at connect) | at most 2 a minute for each such computer, and only while that is the case; 0 in the steady state | — |
+| Desktop: `connectionSnapshotChanged` IPC listeners in the window (reload, Connections opened, four chats opened) | 11, Node's `MaxListenersExceededWarning` | below 11, no warning in the same steps: every `useRemoteConnectionSnapshot` caller shares one listener and one snapshot read | — |
+
+- New Tab's "Working now" read Activity on the 15 s poll, which backs off to
+  120 s while nothing changes, so a turn that started after a quiet spell
+  never showed during a 45 s run. New Tab now reads it on open and every 5 s
+  while it is visible. The read carries the store's revision, so an unchanged
+  snapshot answers small.
+- ADE Web parks the least recently used computer that no visible chat or
+  terminal holds; this adds no read or timer.
+- `ade chat status` reads each spawned child's session row once per call (a
+  map lookup in the brain), only for a parent with spawned chats.

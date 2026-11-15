@@ -5652,7 +5652,23 @@ export function readValue(args: string[], names: readonly string[]): string | nu
     const matchedName = names.find(
       (name) => token === name || token.startsWith(`${name}=`),
     );
-    if (!matchedName) continue;
+    if (!matchedName) {
+      // `"--type peer"` quoted as one argument: the flag and its value never
+      // split, so the flag would be ignored without a word. Say so instead.
+      // Not when the token is another flag's value (`--title "--type peer"`).
+      const previous = args[index - 1];
+      const isValue = previous != null && VALUE_CARRIER_FLAGS.has(previous);
+      const glued = isValue
+        ? undefined
+        : names.find((name) => token.startsWith(name) && /^\s+\S+$/.test(token.slice(name.length)));
+      if (glued) {
+        const value = token.slice(glued.length).trim();
+        throw new CliUsageError(
+          `"${token}" reached ADE as one argument. Pass ${glued} and its value as two: ${glued} ${value}, or ${glued}=${value}.`,
+        );
+      }
+      continue;
+    }
     if (token.includes("=")) {
       args.splice(index, 1);
       return token.slice(token.indexOf("=") + 1);

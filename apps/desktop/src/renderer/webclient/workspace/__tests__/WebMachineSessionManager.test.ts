@@ -10,6 +10,7 @@ import {
   recoverProjectHost,
   resetProjectHostRecoveryStore,
 } from "../../sync/projectHostRecoveryStore";
+import { holdMachineSlot } from "../../../lib/machineSlotHolds";
 import { WEB_MACHINE_SESSION_LIMIT, WebMachineSessionManager } from "../WebMachineSessionManager";
 
 function environment(index: number): WebClientEnvironmentRecord {
@@ -253,7 +254,15 @@ describe("WebMachineSessionManager", () => {
     )).toHaveLength(1);
   });
 
-  it("never automatically parks the target protected by the federated workspace", async () => {
+  // Two ways a computer is in use: the tab's own copy, and a computer whose
+  // chat or terminal is open on screen (its draft and running turn with it).
+  it.each([
+    ["the target protected by the federated workspace", (manager: WebMachineSessionManager) => {
+      manager.setProtectedTargetId("machine-1");
+      return () => undefined;
+    }],
+    ["a computer an open chat holds", () => holdMachineSlot("machine-1")],
+  ])("never automatically parks %s", async (_label, protect) => {
     let clock = 0;
     vi.spyOn(Date, "now").mockImplementation(() => ++clock);
     const clients = Array.from(
@@ -270,9 +279,10 @@ describe("WebMachineSessionManager", () => {
     for (let index = 1; index <= WEB_MACHINE_SESSION_LIMIT; index += 1) {
       await manager.connectEnvironment(`machine-${index}`);
     }
-    manager.setProtectedTargetId("machine-1");
+    const release = protect(manager);
 
     await manager.connectEnvironment(`machine-${WEB_MACHINE_SESSION_LIMIT + 1}`);
+    release();
 
     expect(manager.getSession("machine-1")?.state).toBe("live");
     expect(manager.getSession("machine-2")?.state).toBe("parked");
@@ -483,9 +493,7 @@ describe("WebMachineSessionManager", () => {
     manager.replaceEnvironments(clients.map((_, index) => environment(index + 1)));
 
     const attempts = clients.map((_, index) => manager.connectEnvironment(`machine-${index + 1}`));
-    await expect(attempts[WEB_MACHINE_SESSION_LIMIT]).rejects.toThrow(
-      `All ${WEB_MACHINE_SESSION_LIMIT} machine sessions are currently active`,
-    );
+    await expect(attempts[WEB_MACHINE_SESSION_LIMIT]).rejects.toThrow();
     for (const release of releases) release();
     await Promise.all(attempts.slice(0, WEB_MACHINE_SESSION_LIMIT));
 

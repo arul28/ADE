@@ -40,6 +40,11 @@ export type HeadlineLimit = {
 export type HeadlineInput = {
   needsYou: number;
   working: number;
+  /**
+   * Activity could not be read, so the chat counts above are not known. The
+   * page then never says nothing is waiting on you.
+   */
+  chatsUnknown?: boolean;
   /** Null when no project is open (no PR data to speak for). */
   prs: { failing: number; changes: number; ready: number; mergedToday: number; mergedThisWeek: number } | null;
   daily: readonly AdeUsageDailyPoint[] | null;
@@ -231,5 +236,8 @@ export function buildHomeHeadline(input: HeadlineInput): HomeHeadline {
     };
   }
 
+  if (input.chatsUnknown) {
+    return { kind: "allClear", text: "Activity isn't loading, so chats that need you may be missing here.", target: "activity" };
+  }
   return { kind: "allClear", text: "All clear. Nothing is failing and nothing is waiting on you." };
 }

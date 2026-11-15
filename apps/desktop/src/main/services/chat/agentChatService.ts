@@ -967,6 +967,11 @@ import {
 import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { describePendingInputForAgent, pendingInputIsAnswerable, pendingInputItemId as pendingInputRequestItemId } from "../../../shared/pendingInputCommand";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
+import {
+  deriveOrphanChildChatState,
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+} from "../../../shared/chatOrphanRunReconcile";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import {
@@ -10086,6 +10091,12 @@ import {
   mapPermissionToClaude,
   mapPermissionToCodex
 } from "./permissionMapping";
+
+/** The stale-run sweep's notes for a spawned chat that only went quiet: its card says done. */
+const SWEEP_STOP_SUMMARIES: ReadonlySet<string> = new Set([
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+]);
 
 function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   switch (sandbox) {
@@ -71502,6 +71513,62 @@ export function createAgentChatService(args: {
     return lineage?.orchestrationParentSessionId?.trim() || null;
   };
 
+  /**
+   * The parent's subagent rows for `ade chat status`, with each spawned chat's
+   * row told by that chat itself, as its card is. A spawn's row says "running"
+   * until a report or the stale-run sweep closes it, so a child that never ran,
+   * or whose turn ended without a report, read as running. Older sweeps closed
+   * such a row under the bare child id: a second row for one child, which the
+   * merge folds onto the first or not depending on what is live. One row per
+   * child, keyed `chat:<id>`, either way.
+   */
+  const settleSpawnedChatRows = (
+    parentSessionId: string,
+    snapshots: AgentChatSubagentSnapshot[],
+  ): AgentChatSubagentSnapshot[] => {
+    const out: AgentChatSubagentSnapshot[] = [];
+    const indexByChild = new Map<string, number>();
+    for (const snapshot of snapshots) {
+      const childId = snapshot.taskId.startsWith("chat:")
+        ? snapshot.taskId.slice("chat:".length)
+        : snapshot.agentId?.trim() || snapshot.taskId;
+      // An id that names a chat on this machine is that chat, as the stale-run
+      // sweep reads it (`orphanRowChildSessionCandidate`); SDK task ids never do.
+      const row = childId && childId !== parentSessionId ? sessionService.get(childId) : null;
+      if (!row || !isChatToolType(row.toolType)) {
+        out.push(snapshot);
+        continue;
+      }
+      const child = managedSessions.get(childId);
+      const working = child?.session.status === "active" || (child != null && collectPendingInputRequests(child).length > 0);
+      const note = snapshot.finalSummary ?? snapshot.summary ?? snapshot.description;
+      const status: AgentChatSubagentSnapshot["status"] = working
+        ? "running"
+        : deriveOrphanChildChatState(row, false) === "failed"
+          ? "failed"
+          : snapshot.status === "stopped" && !SWEEP_STOP_SUMMARIES.has(note ?? "")
+            ? "stopped"
+            : "completed";
+      const isSpawnRow = snapshot.taskId.startsWith("chat:");
+      const settled: AgentChatSubagentSnapshot = {
+        ...snapshot,
+        taskId: `chat:${childId}`,
+        agentId: childId,
+        // A bare row carries the sweep's note as its description.
+        description: isSpawnRow ? snapshot.description : row.title?.trim() || snapshot.description,
+        status,
+      };
+      const at = indexByChild.get(childId);
+      if (at == null) {
+        indexByChild.set(childId, out.length);
+        out.push(settled);
+      } else if (isSpawnRow) {
+        out[at] = settled;
+      }
+    }
+    return out;
+  };
+
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
     // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
@@ -71513,7 +71580,7 @@ export function createAgentChatService(args: {
     const queuedMessageCount = managed?.runtime && "pendingSteers" in managed.runtime
       ? managed.runtime.pendingSteers.length
       : 0;
-    const snapshots = await getTrackedSubagents(trimmed);
+    const snapshots = settleSpawnedChatRows(trimmed, await getTrackedSubagents(trimmed));
     const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
     // The account is extra: an unreadable registry leaves it off, logged.
     let instanceId: string | null = null;

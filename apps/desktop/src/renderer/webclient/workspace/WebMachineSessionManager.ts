@@ -7,6 +7,7 @@ import type {
 } from "../../../shared/types";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { BrowserAccountClient } from "../account/client";
+import { isMachineSlotHeld, machineSlotLastHeldAt } from "../../lib/machineSlotHolds";
 import { machineCatalogKey } from "./machineIdentity";
 import {
   AdeSyncClient,
@@ -876,15 +877,26 @@ export class WebMachineSessionManager {
       (session) => session.client !== null,
     );
     if (liveSessions.length + this.pairingClients < WEB_MACHINE_SESSION_LIMIT) return;
+    // A computer under a visible chat or CLI pane is never parked: its chat,
+    // draft and running turn stay on screen. The rest go least recently used
+    // first, where a pane closing counts as use.
+    const lastUsed = (session: SessionRecord) =>
+      Math.max(session.lastUsedAt, machineSlotLastHeldAt(session.targetId));
     const candidate = liveSessions
       .filter((session) => (
         session.targetId !== this.activeTargetId
         && session.targetId !== this.protectedTargetId
         && session.targetId !== nextTargetId
         && !this.environmentConnects.has(session.targetId)
+        && !isMachineSlotHeld(session.targetId)
       ))
-      .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
-    if (!candidate) throw new Error(`All ${WEB_MACHINE_SESSION_LIMIT} machine sessions are currently active.`);
+      .sort((a, b) => lastUsed(a) - lastUsed(b))[0];
+    if (!candidate) {
+      throw new Error(
+        `This tab already has ${WEB_MACHINE_SESSION_LIMIT} computers connected, and each one has an open chat or is in use. `
+        + "Close a chat or disconnect a computer, then connect again.",
+      );
+    }
     await this.park(candidate.targetId);
   }
 

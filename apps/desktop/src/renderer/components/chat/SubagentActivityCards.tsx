@@ -663,8 +663,11 @@ export function SubagentRunHeader({ members }: { members: readonly SubagentCardG
           </span>
         ))}
       </span>
-      <span className={cn("min-w-0 truncate", SUBAGENT_RUN_HEADER_TEXT)} title={`${members.length} agents`}>
-        <span className="text-fg/60">{pluralCount(members.length, "agent")}</span>
+      {/* "started", not "agents": the strip counts every card here, also the
+          chats that do not report back, which the Subagents panel leaves out.
+          One noun for two different counts read as a contradiction. */}
+      <span className={cn("min-w-0 truncate", SUBAGENT_RUN_HEADER_TEXT)} title={`${pluralCount(members.length, "agent")} started from this chat`}>
+        <span className="text-fg/60">{members.length} started</span>
         {parts.map((part) => (
           <span key={part.key} className={part.className}> · {part.text}</span>
         ))}
