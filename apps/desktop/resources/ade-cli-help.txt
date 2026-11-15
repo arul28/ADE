@@ -2056,7 +2056,7 @@ App Control
   delay. --session <id> guards a command against a session that has changed.
 
   Capture and proof:
-    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control screenshot --out shot.png    Capture without filing proof (--text alone saves to a temp file)
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
     $ ade app-control select --x 120 --y 420       Add that element to the chat as context
