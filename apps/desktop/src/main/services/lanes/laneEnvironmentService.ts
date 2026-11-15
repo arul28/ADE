@@ -209,6 +209,8 @@ export type LaneEnvInitOptions = {
   precondition?: () => Promise<boolean>;
 };
 
+type SpawnResult = { exitCode: number; stdout: string; stderr: string; tail: string; stoppedBySignal?: boolean };
+
 export function createLaneEnvironmentService({
   projectRoot,
   adeDir,
@@ -335,6 +337,13 @@ export function createLaneEnvironmentService({
   }
 
   /**
+   * A setup command a signal stopped that ADE did not send (a service stop
+   * signals every process at once), so the step's failure is the stop's, not
+   * the command's.
+   */
+  class SetupStoppedBySignalError extends Error {}
+
+  /**
    * Run a single init step with timing, status updates, and error handling.
    * Returns true on success, false on failure (progress already marked failed).
    */
@@ -360,6 +369,7 @@ export function createLaneEnvironmentService({
       updateStep(progress, kind, {
         status: "failed",
         error: setupStepError(message, err?.code),
+        ...(err instanceof SetupStoppedBySignalError ? { stoppedBySignal: true } : {}),
         durationMs: Date.now() - startTime
       });
       markFailed(progress, laneId);
@@ -372,7 +382,7 @@ export function createLaneEnvironmentService({
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeoutMs: number
-  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
+  ): Promise<SpawnResult> {
     return new Promise((resolve) => {
       const child = spawn(invocation.command, invocation.args, {
         cwd,
@@ -391,9 +401,11 @@ export function createLaneEnvironmentService({
       // Both streams' last 64 KB together, so a reason said past the 10 MB cap is still read.
       let tail = "";
       let settled = false;
+      let timedOut = false;
       const maxBuffer = 10 * 1024 * 1024;
       const timer = setTimeout(() => {
         if (settled) return;
+        timedOut = true;
         signalChildProcessTree(child, "SIGKILL");
       }, timeoutMs);
       const append = (current: string, chunk: Buffer): string =>
@@ -412,11 +424,13 @@ export function createLaneEnvironmentService({
         clearTimeout(timer);
         resolve({ exitCode: 1, stdout, stderr: error instanceof Error ? error.message : String(error), tail: tail.slice(-OUTPUT_TAIL_CHARS) });
       });
-      child.on("close", (code) => {
+      child.on("close", (code, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolve({ exitCode: code ?? 1, stdout, stderr, tail: tail.slice(-OUTPUT_TAIL_CHARS) });
+        // Killed by a signal, or a shell that exited 128 + HUP/INT/TERM: and not our timeout's kill.
+        const stoppedBySignal = !timedOut && (signal != null || code === 129 || code === 130 || code === 143);
+        resolve({ exitCode: code ?? 1, stdout, stderr, tail: tail.slice(-OUTPUT_TAIL_CHARS), ...(stoppedBySignal ? { stoppedBySignal } : {}) });
       });
     });
   }
@@ -425,7 +439,7 @@ export function createLaneEnvironmentService({
     command: string[],
     cwd: string,
     timeoutMs = 120_000
-  ): Promise<{ exitCode: number; stdout: string; stderr: string; tail: string }> {
+  ): Promise<SpawnResult> {
     const [cmd, ...args] = command;
     if (!cmd) {
       return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command", tail: "" });
@@ -514,6 +528,7 @@ export function createLaneEnvironmentService({
       }
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
       const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
+      if (result.stoppedBySignal) throw new SetupStoppedBySignalError(`${dep.command.join(" ")}: stopped by a signal`);
       if (result.exitCode !== 0) {
         // The excerpt is the output's start; a full disk is often said only at its end.
         const failure = commandFailure(result, result.stderr.slice(0, 500));
@@ -650,6 +665,10 @@ export function createLaneEnvironmentService({
 
     for (const step of steps) {
       const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
+      if (result.stoppedBySignal) {
+        logger.warn("lane_env_init.setup_script_stopped_by_signal", { laneId, command: step.label, exitCode: result.exitCode });
+        throw new SetupStoppedBySignalError(`${step.label}: stopped by a signal`);
+      }
       if (result.exitCode !== 0) {
         // npm says ENOSPC after pages of warnings, past the excerpt: the whole output is read for it.
         const failure = commandFailure(result, (result.stderr.trim() || result.stdout.trim()).slice(0, 500));

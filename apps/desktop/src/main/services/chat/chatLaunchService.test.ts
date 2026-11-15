@@ -586,17 +586,42 @@ describe("chatLaunchService", () => {
     reloaded.dispose();
   });
 
-  it("Start now while setup runs again after the grow's restart starts the agent at once", async () => {
+  it("Start now while setup runs again after the grow's restart starts the agent at once, and a later restart reads as interrupted instead of rerunning setup under it", async () => {
     const { h, environmentDisk } = await launchWaitingForRoom();
     const runEnvironment = setupRunning();
-    const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment });
+    // The restart lands while the agent is still being started.
+    const sendMessage = vi.fn(() => new Promise<never>(() => {}));
+    const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment, agentChatService: { ...h.deps.agentChatService, sendMessage } });
     await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
 
     await resumed.startNow({ launchId: LAUNCH_ID });
 
-    await vi.waitFor(() => expect(resumed.get({ launchId: LAUNCH_ID })?.agentStarted).toBe(true));
+    await vi.waitFor(() => expect(sendMessage).toHaveBeenCalled());
     expect(resumed.get({ launchId: LAUNCH_ID })?.stages.find((stage) => stage.id === "environment")?.status).toBe("running");
     resumed.dispose();
+
+    const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("failed");
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.error).toMatch(/interrupted when ADE restarted/);
+    reloaded.dispose();
+  });
+
+  it("a rerun's setup stopped by the brain's own service stop is resumed after the restart, not failed", async () => {
+    const { h, environmentDisk } = await launchWaitingForRoom();
+    let finish!: (progress: unknown) => void;
+    const runEnvironment = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const resumed = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: runEnvironment as never });
+    await vi.waitFor(() => expect(runEnvironment).toHaveBeenCalled());
+    // The stop signals every process at once: the setup dies a moment before the brain hears of it.
+    finish({ laneId: LANE_ID, overallStatus: "failed", steps: [{ kind: "setup-script", label: "Setup script", status: "failed", error: "Setup script: stopped by a signal", stoppedBySignal: true }] });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    resumed.dispose();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const reloaded = createChatLaunchService({ ...h.deps, environmentDisk, runEnvironment: setupPasses() });
+    expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("running");
+    await vi.waitFor(() => expect(reloaded.get({ launchId: LAUNCH_ID })?.phase).toBe("completed"));
+    reloaded.dispose();
   });
 
   it.each([

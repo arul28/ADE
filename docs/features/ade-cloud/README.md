@@ -1369,7 +1369,12 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   on Retry. Past 3 resumes, or an hour after the mark (a computer that slept),
   the launch reads as interrupted with Retry (`chat_launch.environment_resume_refused`).
   Start now waits only while the grow is in flight (it starts the agent right
-  after the restart); during the rerun it starts the agent at once. A refused grow fails the
+  after the restart); during the rerun it starts the agent at once. An agent
+  started early clears the mark, so a restart then reads as interrupted
+  instead of rerunning setup under it. A rerun's setup command stopped by a
+  signal ADE didn't send (a service stop signals every process at once) waits
+  up to 10 s for the brain's own shutdown and keeps its mark when it comes.
+  `ade chat launch-status` prints the running stage's sentence as `now`. A refused grow fails the
   stage with the refusal's way out (extra disk, a bigger size, a plan) and
   Retry; a boot launch keeps following a failed launch across restarts, so a
   Retry that grows goes on with nobody watching.

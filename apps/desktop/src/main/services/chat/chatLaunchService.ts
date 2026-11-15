@@ -245,6 +245,8 @@ class LaunchCancelledError extends Error {
 
 const MAX_QUEUED_MESSAGES = 10;
 const CANCEL_PIPELINE_WAIT_MS = 15_000;
+/** How long a setup stopped by a signal waits for the brain's own shutdown before it fails as itself. */
+const SIGNAL_STOP_SHUTDOWN_WAIT_MS = 10_000;
 
 /** A closed name for why a cancelled launch's cleanup step failed. Never the text, which holds paths. */
 function cancelCleanupFailureKind(error: unknown): string {
@@ -355,6 +357,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   const runtimes = new Map<string, LaunchRuntime>();
   const listeners = new Set<(event: ChatLaunchEvent) => void>();
   let disposed = false;
+  /** Resolves when this service is disposed (the brain shutting down). */
+  let markDisposed: () => void = () => {};
+  const disposedNow = new Promise<void>((resolve) => { markDisposed = resolve; });
 
   /** Runtime event stream first, then in-process observers (the sync host's phone fan-out). */
   const emit = (event: ChatLaunchEvent): void => {
@@ -782,6 +787,25 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     record.startNowRequested ? "warning" : "failed";
 
   /** One run of the lane's setup: its outcome, or the disk filling up (the stage is still running then). */
+  /**
+   * A setup command stopped by a signal ADE didn't send, while a launch waits
+   * out a grow's restarts: a service stop signals every process at once, so
+   * the setup can die a moment before this service hears of the shutdown.
+   * True when the shutdown comes within a few seconds; otherwise it was a
+   * real stop and the setup fails as itself.
+   */
+  const shutDownSoon = async (): Promise<boolean> => {
+    if (disposed) return true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const later = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SIGNAL_STOP_SHUTDOWN_WAIT_MS);
+      (timer as { unref?: () => void }).unref?.();
+    });
+    await Promise.race([disposedNow, later]);
+    if (timer) clearTimeout(timer);
+    return disposed;
+  };
+
   const runEnvironmentOnce = async (record: LaunchRecord): Promise<EnvironmentOutcome | { diskFull: LaneEnvInitProgress["steps"]; error: string }> => {
     const laneId = record.snapshot.laneId;
     const resumes = record.roomMark?.resumes ?? 0;
@@ -810,6 +834,14 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       }
       if (progress.overallStatus === "failed") {
         const failedStep = progress.steps.find((step) => step.status === "failed");
+        if (failedStep?.stoppedBySignal && record.roomMark && await shutDownSoon()) {
+          // The service stop that is restarting the brain stopped the setup too:
+          // left running, with its mark, for the next start to resume.
+          logger.info("chat_launch.environment_stopped_for_restart", { launchId: record.snapshot.launchId });
+          return "failed";
+        }
+        // Cancel may land during that wait (the type narrowed before it).
+        if ((record.snapshot.phase as string) === "cancelled") return "failed";
         const steps = progress.steps.map((step) => ({ ...step }));
         if (failedStep?.error && isDiskFullText(failedStep.error)) return { diskFull: steps, error: failedStep.error };
         const message = failedStep ? `${failedStep.label}: ${failedStep.error ?? "failed"}` : "Lane environment setup failed.";
@@ -1101,6 +1133,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         const first = await Promise.race([environmentDone, startNow]);
         runtime.startNow = null;
         assertActive(record);
+        // The agent starts while setup still runs: a restart from here would rerun
+        // setup under it, so it reads as interrupted instead of resuming.
+        if (first === "start-now") clearRoomMark(record, "start_now");
         if (first === "failed") {
           record.snapshot.phase = "failed";
           record.snapshot.error = stageOf(record, "environment")?.error ?? "Lane environment setup failed.";
@@ -1502,6 +1537,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
 
   const dispose = (): void => {
     disposed = true;
+    markDisposed();
     unsubscribeChatEvents();
     for (const [launchId, runtime] of runtimes) {
       runtime.abort.abort();
