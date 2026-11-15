@@ -137,3 +137,5 @@ export const modifierKeyLabel = isMac ? "Cmd" : "Ctrl";
 export function modifierChordLabel(key: string): string {
   return isMac ? `⌘${key}` : `${modifierKeyLabel}+${key}`;
 }
+
+// Temporary line for a CI timing measurement.
