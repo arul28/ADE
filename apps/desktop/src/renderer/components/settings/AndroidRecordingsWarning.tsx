@@ -9,7 +9,7 @@ import { RecordingsWarningCard } from "./deviceSettingsCards";
  * (`getMachinePreferences`) with the page's pin, so it is right for whichever
  * machine Diagnostics shows.
  */
-export function AndroidRecordingsWarning({ pin }: { pin: OpenProjectBinding | null }) {
+export function AndroidRecordingsWarning({ pin }: { pin: OpenProjectBinding | null; proofOnly: string }) {
   const { preferences, recordingsBytes } = useAndroidMachinePreferences(pin);
   if (recordingsBytes == null) return null;
   return (

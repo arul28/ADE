@@ -58,3 +58,8 @@ describe("isMacRuntimeTarget", () => {
     }
   });
 });
+
+import { it as proofIt, expect as proofExpect } from "vitest";
+proofIt("temporary: planted failure for the CI gate proof", () => {
+  proofExpect(1).toBe(2);
+});
