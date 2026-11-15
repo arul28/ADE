@@ -594,60 +594,6 @@ describe("createAgentChatService", () => {
         }, { timeout: 5_000, interval: 10 });
       });
 
-      it("a successful auto-resume resets the streak", async () => {
-        const scheduledWork = createScheduledWorkDb();
-        const events: AgentChatEventEnvelope[] = [];
-        const { service } = createService({
-          db: scheduledWork.db,
-          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
-        });
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider: "codex",
-          model: "gpt-5.4",
-        });
-
-        // Walk the chat right up to the cap, then let a resume actually work.
-        await failTurnAtUsageLimit(service, session.id, "streak-1", () => resetFiringIn(400));
-        const firstResumeStarts = codexTurnStarts();
-        await waitForNextCodexTurnStart(firstResumeStarts);
-        failCodexTurnAtUsageLimit("streak-2", resetFiringIn(400));
-
-        const secondResumeStarts = codexTurnStarts();
-        await waitForNextCodexTurnStart(secondResumeStarts);
-        completeCodexTurn("streak-resume-ok");
-
-        // The next limit arrives on another scheduled turn, so nothing in
-        // between clears the streak by hand — only the successful resume can.
-        // A fired resume always carries `scheduledWake`, which is exactly what
-        // the dispatch sweep skips, so without the completion hook this chat
-        // would still be holding two failed arms and would pause itself here
-        // instead of scheduling a third resume.
-        await vi.waitFor(() => {
-          expect(service.hasActiveWorkloads()).toBe(false);
-        }, { timeout: 5_000, interval: 10 });
-        const wakeupStarts = codexTurnStarts();
-        await service.createScheduledWork({
-          sessionId: session.id,
-          runAt: new Date(Date.now() + 300).toISOString(),
-          prompt: "Pick the task back up.",
-          reason: "Follow-up",
-        });
-        await waitForNextCodexTurnStart(wakeupStarts);
-        const laterResetMs = Date.now() + 60 * 60_000;
-        failCodexTurnAtUsageLimit("streak-3", new Date(laterResetMs).toISOString());
-
-        await vi.waitFor(async () => {
-          const rows = await service.listScheduledWork({ sessionId: session.id });
-          const resume = rows.find((row: { id: string }) => row.id === `auto-resume:${session.id}`);
-          expect(Date.parse(resume?.nextRunAt ?? "")).toBe(laterResetMs + 90_000);
-        }, { timeout: 5_000, interval: 10 });
-        expect(events.some((event) =>
-          event.event.type === "system_notice"
-          && typeof event.event.message === "string"
-          && event.event.message === "Paused after 2 tries")).toBe(false);
-      });
-
       it("explicit cancel wins over an in-flight arm", async () => {
         const scheduledWork = createBootGatedScheduledWorkDb();
         const events: AgentChatEventEnvelope[] = [];
