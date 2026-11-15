@@ -2319,6 +2319,17 @@ export function useCloudViewOnScreen(active: boolean): void {
 /** Connects asked for by the resting watch, by connection target: one at a time per computer. */
 const backgroundWakeConnects = new Set<string>();
 
+/** First wait after a failed connect to a computer woken elsewhere; it doubles up to the cap. */
+const WOKEN_CONNECT_RETRY_MIN_MS = 8_000;
+const WOKEN_CONNECT_RETRY_MAX_MS = 5 * 60_000;
+
+/**
+ * Failed connects to a computer the account says runs, by connection target.
+ * Its brain may not answer yet (or at all): the next try waits longer each
+ * time, instead of a dial at every 4 s read.
+ */
+const wokenConnectRetries = new Map<string, { failures: number; nextAtMs: number }>();
+
 /** The connection's `connectedAt`, as the mark of one connection. */
 function connectedAtOf(machineId: string): string {
   const connection = runtime.connections.find((candidate) => candidate.target.id === machineId);
@@ -2507,6 +2518,8 @@ function readCloudTurnComputers(): void {
       // Woken elsewhere: connect now, in the background (a background connect
       // never wakes a computer). The rows and the chat read the computer as
       // asleep until that connection lands; it ends the rest (`applySnapshot`).
+      // The page may have hidden, or its cloud views left, while the read ran.
+      if (!isDocumentVisible() || cloudViewsOnScreen === 0) return;
       for (const connection of restingDroppedCloudConnections()) {
         const machineKey = cloudKeyOfConnection(connection);
         const box = cloudBoxForMachine(result.machines, { machineKey, hostname: connection.target.hostname });
@@ -2526,9 +2539,23 @@ function readCloudTurnComputers(): void {
 function connectWokenCloudComputer(targetId: string, machineKey: string): void {
   const connect = window.ade?.machines?.connect;
   if (!isAdeAvailable(connect) || backgroundWakeConnects.has(targetId)) return;
+  const retry = wokenConnectRetries.get(targetId);
+  if (retry && Date.now() < retry.nextAtMs) return;
   backgroundWakeConnects.add(targetId);
+  const failed = () => {
+    const failures = (wokenConnectRetries.get(targetId)?.failures ?? 0) + 1;
+    const waitMs = Math.min(WOKEN_CONNECT_RETRY_MIN_MS * 2 ** (failures - 1), WOKEN_CONNECT_RETRY_MAX_MS);
+    wokenConnectRetries.set(targetId, { failures, nextAtMs: Date.now() + waitMs });
+  };
   void connect(machineKey, { background: true })
-    .catch((error: unknown) => console.warn("[cloud] connecting a computer woken elsewhere failed", error))
+    .then((result) => {
+      if (result?.ok) wokenConnectRetries.delete(targetId);
+      else failed();
+    })
+    .catch((error: unknown) => {
+      failed();
+      console.warn("[cloud] connecting a computer woken elsewhere failed", error);
+    })
     .finally(() => backgroundWakeConnects.delete(targetId));
 }
 
@@ -2547,6 +2574,7 @@ function resetMachineTracking(): void {
     restingCloud.turnWatchTimer = null;
   }
   restingCloud.machineIds.clear();
+  wokenConnectRetries.clear();
   runtime.dropsByMachineId.clear();
   runtime.laneReadAtMsByMachineId.clear();
   runtime.laneStatusReadAtMsByMachineId.clear();

@@ -2313,10 +2313,12 @@ export function TopBar({
         const store = useAppStore.getState();
         const frontKey = store.projectBinding?.kind === "remote" ? store.projectBinding.key : store.project?.rootPath ?? null;
         try {
+          // That tab is already open: it comes back with its own chats and
+          // grid, not the removed checkout's view.
           if (frontKey && removed.has(frontKey)) {
-            if (repositoryOpen.isLocal) await store.switchProjectToPath(repositoryOpen.rootPath, { carryWorkView: true });
+            if (repositoryOpen.isLocal) await store.switchProjectToPath(repositoryOpen.rootPath);
             else if (repositoryOpen.binding?.kind === "remote") {
-              await store.switchRemoteProject(repositoryOpen.binding.targetId, repositoryOpen.binding.projectId, { carryWorkView: true });
+              await store.switchRemoteProject(repositoryOpen.binding.targetId, repositoryOpen.binding.projectId);
             }
           }
         } catch (error) {

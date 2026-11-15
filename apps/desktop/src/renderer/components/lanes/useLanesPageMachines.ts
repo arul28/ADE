@@ -18,6 +18,8 @@ import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachin
 import { wakeRestingCloudMachine } from "../../lib/cloudMachineWake";
 import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useCloudViewOnScreen } from "../../state/crossMachineLanes";
+import { isCloudConnectionTarget, isSavedChatsMachineId } from "../../state/cloudSavedChats";
 
 /**
  * A lane on another machine is selected here, never in the store's
@@ -134,6 +136,10 @@ export function useLanesPageMachines({
     return { rowByKey, viewLanes, realLanesByMachineId };
   }, [allMachineLanes, goneMachineIds, restingMachineIds]);
   const foreignRowByKey = foreignLanes.rowByKey;
+  // The page's ADE Cloud lanes are watched for their computer's sleep and wake.
+  useCloudViewOnScreen(active && [...foreignLanes.realLanesByMachineId.keys()].some(
+    (machineId) => isCloudConnectionTarget(machineId) || isSavedChatsMachineId(machineId),
+  ));
   const foreignRowByKeyRef = useRef(foreignRowByKey);
   foreignRowByKeyRef.current = foreignRowByKey;
   const activeMachine = allMachineLanes.machines[0] ?? null;
