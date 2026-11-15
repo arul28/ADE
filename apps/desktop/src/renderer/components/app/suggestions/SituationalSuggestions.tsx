@@ -158,7 +158,7 @@ function useMachineMentionSuggestion({ enabled, lanes, navigate }: Props, machin
 /** A sent message looked like it had a key or password in it. Again only after 30 days. */
 function useChatSecretSuggestion({ enabled, navigate }: Props): void {
   const { secretSeq } = useChatSendSignals();
-  const start = useCallback(() => navigate(settingsRouteFor("secrets.secrets")), [navigate]);
+  const start = useCallback(() => navigate(settingsRouteFor("passwords.secrets")), [navigate]);
   useSituationalSuggestion({
     id: "chat-secret",
     signalKey: enabled && secretSeq > 0 ? "sent" : null,

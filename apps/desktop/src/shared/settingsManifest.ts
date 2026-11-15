@@ -50,8 +50,8 @@ export const SETTINGS_TAB_IDS = [
   // The Android SDK belongs to one machine, so the page follows `?machine=`.
   "android",
   "keyboard",
-  // Saved logins and API keys, on the machine the page follows. Not the
-  // project's (Project → Secrets): these are the account's.
+  // Passwords & Secrets: the account's logins, codes, passkeys and secrets
+  // (a project's secrets too), read on this computer.
   "passwords",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
   // still lands.
@@ -61,7 +61,6 @@ export const SETTINGS_TAB_IDS = [
   // used to share the Lanes page. `?tab=storage` was Health's id; it lands here.
   "storage",
   "location",
-  "secrets",
   // Every machine on one page; a machine opens the sections that work for it.
   "machines",
   // The background service, the ade command, reports and reset.
@@ -136,7 +135,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
  * (a machine's own page).
  * Absent means This computer.
  */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "passwords", "machines"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "machines"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -147,7 +146,7 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
  * page (the tab's copy by default), and names the computer it is on. They
  * never follow the Settings machine picker.
  */
-export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "integrations"];
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "integrations"];
 
 export function isProjectSettingsTab(tab: SettingsTabId): boolean {
   return PROJECT_SETTINGS_TAB_IDS.includes(tab);
@@ -158,7 +157,7 @@ export function isProjectSettingsTab(tab: SettingsTabId): boolean {
  * (Behaviour), its simulators (Apple devices), its service (Advanced) and its
  * overview (General). Another machine's own settings are on its Machines page.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "keyboard", "advanced"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "keyboard", "passwords", "advanced"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -220,16 +219,15 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // Keys are read by the window you type into, and each computer has its own
   // keyboard and OS shortcuts, so the page is per computer.
   { id: "keyboard", label: "Keyboard", description: "Shortcuts and Quick slots on this computer.", group: "app" },
-  // The account's saved sign-ins, followed one machine at a time: the switch
-  // is per computer, the cloud switch is the account's.
-  { id: "passwords", label: "Passwords", description: "Saved logins and API keys. Agents can use them to sign in and run commands, but never see them.", group: "app" },
+  // The account's vault, synced to every computer, read on this one (where
+  // "this computer only" secrets also show).
+  { id: "passwords", label: "Passwords & Secrets", description: "Logins, codes, passkeys and API keys, on every computer you sign in to. Agents use them but never see them.", group: "app" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
   { id: "project-agents", label: "Agents", description: "What agents keep about this project: PR chat transcripts.", group: "project" },
   { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
-  { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
 
   // ── System ──────────────────────────────────────────────────────────────
   // No description: the page is the machines themselves.
@@ -1865,22 +1863,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Machines",
   },
 
-  // ── Secrets ──────────────────────────────────────────────────────────────
-  {
-    id: "secrets.secrets",
-    label: "Secrets",
-    keywords: ["credential", "api key", "token", "keychain", "env", "password", "environment", "variable"],
-    tab: "secrets",
-    anchor: "secrets",
-    scope: "account-repo",
-    web: "hidden",
-    group: "Secrets",
-  },
-
-  // ── Passwords ────────────────────────────────────────────────────────────
-  // The account's saved sign-ins, one machine at a time. Scope `account`
-  // because what is kept is the account's; the switch beside it is this
-  // computer's, and the page follows a machine picker.
+  // ── Passwords & Secrets ──────────────────────────────────────────────────
+  // The account's vault. Scope `account`: it is the same on every computer.
   {
     id: "passwords.logins",
     label: "Saved logins",
@@ -1889,17 +1873,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "passwords-logins",
     scope: "account",
     web: "hidden",
-    group: "Passwords",
+    group: "Passwords & Secrets",
   },
   {
     id: "passwords.secrets",
     label: "Saved secrets",
-    keywords: ["secret", "api key", "token", "environment", "variable", "vault", "credential"],
+    keywords: ["secret", "secrets", "api key", "token", "env", ".env", "environment", "variable", "project", "vault", "credential", "keychain"],
     tab: "passwords",
     anchor: "passwords-secrets",
     scope: "account",
     web: "hidden",
-    group: "Passwords",
+    group: "Passwords & Secrets",
   },
   {
     id: "passwords.activity",
@@ -1909,7 +1893,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "passwords-activity",
     scope: "account",
     web: "hidden",
-    group: "Passwords",
+    group: "Passwords & Secrets",
   },
 
   // ── Stats ────────────────────────────────────────────────────────────────
@@ -1982,7 +1966,9 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "lane-templates": "lanes-git",
   "ade-usage": "stats",
   usage: "stats",
-  secret: "secrets",
+  // Project → Secrets became part of Passwords & Secrets.
+  secret: "passwords",
+  secrets: "passwords",
   // Overview became General (Settings opens there), and Computer → ADE
   // service split in two: its version and updates are on General, the
   // service, the ade command, reports and reset on System → Advanced. A
@@ -2045,6 +2031,9 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
  * the top of it: `?tab=archive` opens Project → Storage & cleanup at the archive.
  */
 export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
+  // Project → Secrets is now the Secrets view of Passwords & Secrets.
+  secret: "passwords-secrets",
+  secrets: "passwords-secrets",
   storage: "storage",
   disk: "storage",
   space: "storage",
@@ -2070,7 +2059,7 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   github: "integrations.github",
   linear: "integrations.linear",
   "ai-providers": "agents.providers",
-  secrets: "secrets.secrets",
+  secrets: "passwords.secrets",
   diagnostics: "storage.diagnostics",
   "agent-completion-sound": "notifications.completion-sound",
   "voice-input": "agents.dictation",

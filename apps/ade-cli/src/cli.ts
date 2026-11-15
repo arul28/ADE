@@ -199,10 +199,6 @@ import { customNotificationProblem, describeCustomNotificationResult } from "../
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
-import {
-  isProjectSecretPullResult,
-  projectSecretPullSummary,
-} from "../../desktop/src/shared/projectSecretPullSummary";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
@@ -1696,7 +1692,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -4926,34 +4922,34 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade proxy logout <login-id> --text         Remove a separate proxy login (not a lent one)
 `,
   secrets: `${ADE_BANNER}
-  ADE project secrets
+  ADE secrets
 
-  Secrets are encrypted under the active project's .ade/secrets directory.
-  Account-linked projects default to account storage, but only when the account
-  vault is reachable: otherwise the secret is saved for this machine and the
-  list says so. List output never reveals values and shows where each secret
-  lives.
+  A project's secrets live in Passwords & Secrets, encrypted on the person's
+  account and synced to every computer they sign in to: the secrets for every
+  project, then this project's own over them. A secret saved with
+  --storage device stays on this computer only. List output never reveals
+  values and shows where each secret lives.
 
   Agents use secrets, they never read them: \`ade secrets exec\` runs a command
-  with the project's secrets (and Passwords' secrets for it) in its
-  environment, on this computer, and prints its output with every value masked
-  (also in base64 and URL-encoded form; values under 8 characters are not
-  masked, and it says which). \`get\` and \`export\` are the person's, in the ADE
-  desktop app. --env NAME (repeatable) passes only those; --timeout 10m.
+  with the project's secrets in its environment, on this computer, and prints
+  its output with every value masked (also in base64 and URL-encoded form;
+  values under 8 characters are not masked, and it says which). \`get\` is the
+  person's; export is in the ADE desktop app (Settings › Passwords & Secrets).
+  --env NAME (repeatable) passes only those; --timeout 10m.
 
     $ ade secrets list --text                       List secret names and metadata
-    $ ade secrets pull --text                       Take account secrets from the vault
     $ ade secrets exec -- npm run deploy            Run a command with the secrets in its env
     $ ade secrets exec --env STRIPE_API_KEY -- sh -c 'stripe login --api-key "$STRIPE_API_KEY"'
-    $ ade secrets set STRIPE_API_KEY --value sk_... Save in account storage
-    $ ade secrets set TOKEN --value local --storage device
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save for this project, on every computer
+    $ ade secrets set TOKEN --value local --storage device   This computer only
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
 
   Asking the person for a secret (agents: use this, never ask them to paste a
   secret into chat). The chat shows a private card; the value is saved to this
-  project's secrets and only the outcome comes back — never the value:
+  project's secrets (Passwords & Secrets) and only the outcome comes back —
+  never the value:
 
     $ ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
       --generate offers a strong random value first; --timeout 30m (default)
@@ -4961,7 +4957,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
 
     $ ade secrets request CLOUDFLARE_API_TOKEN --reason "Deploys the worker with wrangler" --delivery file --request-id cf-deploy
       For a token a shell CLI needs once, not kept in ADE. The person picks
-      "Temporary private file" or "Save to ADE secrets" (your --delivery is the
+      "Temporary private file" or "Save to Passwords & Secrets" (your --delivery is the
       default). A file answer prints {name, saved: true, delivery: "file",
       file, expiresAt}: an owner-only file on this chat's machine. Read it only
       inside a command: CLOUDFLARE_API_TOKEN="$(cat <file>)" wrangler deploy.
@@ -4976,14 +4972,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   them and never see them: nothing here prints a password or a secret value.
 
     $ ade passwords list --text      Sites, usernames and kinds of saved items
-    $ ade passwords status --text    Whether Passwords is on for this computer
+    $ ade passwords status --text    Whether Passwords & Secrets is on for this computer
     $ ade passwords sync --text      Pull what other computers saved
 
   To sign in to a site, open its sign-in page and run \`ade browser signin\`:
   ADE types the saved login into the page. With no saved login, the person is
   asked in your chat. To create an account, run \`ade browser signup\` on the
   sign-up form: ADE makes the password, saves it, and types it in. Changing
-  and removing items is the person's, in Settings › Passwords.
+  and removing items is the person's, in Settings › Passwords & Secrets.
 `,
   code: `${ADE_BANNER}
   ADE sign-in codes
@@ -21844,14 +21840,6 @@ function buildSecretsPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "project_secret", "list", {})],
     };
   }
-  if (sub === "pull" || sub === "sync") {
-    return {
-      kind: "execute",
-      label: "secrets pull",
-      formatter: "project-secrets",
-      steps: [actionStep("result", "project_secret", "pullFromAccount", {})],
-    };
-  }
   if (sub === "get" || sub === "show" || sub === "view" || sub === "read") {
     const name = readValue(args, ["--name"]) ?? firstPositional(args);
     if (!name) throw new CliUsageError("Secret name is required.");
@@ -38639,9 +38627,6 @@ function formatMcpServerRemove(value: unknown): string {
 
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  if (isProjectSecretPullResult(value)) {
-    return projectSecretPullSummary(value);
-  }
   if (typeof record.value === "string") {
     return record.value;
   }
@@ -38665,32 +38650,26 @@ function formatProjectSecrets(value: unknown): string {
   }
   if (typeof record.name === "string" && typeof record.deleted === "boolean") {
     return record.deleted
-      ? `Deleted ADE secret ${record.name}.`
-      : `No ADE secret named ${record.name} was found.`;
+      ? `Deleted ${record.name}.`
+      : `This project has no secret of its own named ${record.name}.`;
   }
+  // Where a secret lives, as the person reads it in Passwords & Secrets.
+  const where = (storage: unknown) => (storage === "device" ? "this computer" : "every computer");
   if (typeof record.name === "string") {
-    const storage = typeof record.storage === "string" ? ` in ${record.storage} storage` : "";
-    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars${storage}).`;
+    return `Saved ${record.name} (${cell(record.valueLength)} chars) for this project, on ${where(record.storage)}.`;
   }
   const secrets = Array.isArray(record.secrets)
     ? record.secrets.filter(isRecord)
     : Array.isArray(value)
       ? value.filter(isRecord)
       : [];
-  const rows = secrets.map((secret) => [
-    secret.name,
-    secret.valueLength,
-    secret.uploadPending === true ? `${secret.storage} (uploading)` : secret.storage,
-    secret.updatedAt,
-  ]);
-  const storage = isRecord(record.storage) ? record.storage : {};
+  const rows = secrets.map((secret) => [secret.name, secret.valueLength, where(secret.storage), secret.updatedAt]);
   const header = renderTable(
-    ["name", "chars", "where", "updated"],
+    ["name", "chars", "on", "updated"],
     rows,
-    "ADE project secrets\n(no secrets found)",
+    "This project's secrets\n(none yet: add one in Settings › Passwords & Secrets, or ade secrets request)",
   );
-  const pathLine = typeof storage.path === "string" ? `\n\nLocal cache: ${storage.path}` : "";
-  return `${header}${pathLine}`;
+  return `${header}\n\nIn Passwords & Secrets: those for every project, then this project's own.`;
 }
 
 /**

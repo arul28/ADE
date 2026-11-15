@@ -4563,7 +4563,6 @@ app.whenReady().then(async () => {
     });
     const projectSecretService = createProjectSecretService(projectRoot, {
       getAccountVault: () => accountVaultBridge,
-      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
 
@@ -5305,8 +5304,8 @@ app.whenReady().then(async () => {
       getAutomationPlannerService: () => automationPlannerService,
       getUsageService: () => usageTrackingService,
       getBudgetService: () => budgetCapService,
-      // Names and metadata only. `projectSecretService.get`/`exportEnv` are
-      // deliberately NOT reachable from any CTO tool.
+      // Names and metadata only. `projectSecretService.get` and every other
+      // value read are deliberately NOT reachable from any CTO tool.
       getProjectSecretService: () => ({ list: () => projectSecretService.list() }),
       getIosSimulatorService: () => iosSimulatorService,
       // Lazy like the rest: `macDesktopService` is constructed further down
@@ -10992,14 +10991,6 @@ app.whenReady().then(async () => {
         const normalizedRoot = normalizeProjectRoot(projectRoot);
         if (projectContexts.has(normalizedRoot)) continue;
         const adeDir = resolveAdeLayout(normalizedRoot).adeDir;
-        try {
-          createProjectSecretService(normalizedRoot).purgeAccountCredentials();
-        } catch (error) {
-          getActiveContext().logger.warn("account.closed_project_secrets_purge_failed", {
-            projectRoot: normalizedRoot,
-            error: error instanceof Error ? error.message : String(error ?? ""),
-          });
-        }
         try {
           createLinearCredentialService({
             adeDir,

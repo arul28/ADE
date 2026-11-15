@@ -1697,12 +1697,16 @@ export async function createAdeRuntime(args: {
           error: error instanceof Error ? error.name : "unknown",
         });
       });
+    // The project's view of Passwords & Secrets. Secrets saved by the old
+    // per-project store move in on their own (again on each account sync, a
+    // no-op once nothing old is left).
     const projectSecretService = createProjectSecretService(projectRoot, {
+      getPasswordService: () => passwordService ?? null,
       getAccountVault: accountRuntimeLifecycle.getAccountVault,
-      getAccountUserId: () => accountAuthService.getStatus().userId,
       logger,
     });
     projectSecretServiceForAccount = projectSecretService;
+    void projectSecretService.migrateLegacy();
     const onboardingService = createOnboardingService({
       db,
       logger,

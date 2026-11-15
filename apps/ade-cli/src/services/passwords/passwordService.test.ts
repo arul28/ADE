@@ -89,7 +89,7 @@ describe("password service", () => {
       ["secret", "OPENAI_API_KEY", [], null],
     ]);
     expect(JSON.stringify(summaries)).not.toMatch(/s3cret|key-value/);
-    expect(await laptop.resolveSecretValue({ name: "OPENAI_API_KEY", projectScope: "repo:x" })).toBe("key-value-xyz");
+    expect((await laptop.secretsForProject("repo:x")).get("OPENAI_API_KEY")?.value).toBe("key-value-xyz");
   });
 
   it("fills a login only into a page on its own site", async () => {
@@ -188,6 +188,41 @@ describe("password service", () => {
     expect(await laptop.resolveForFill({ itemId: during.id, pageUrl: "https://during.example/" })).toMatchObject({ password: "during-pass-2" });
   });
 
+  it("keeps nothing on an ADE Cloud computer turned off while a sync is pulling", async () => {
+    const { relay, control } = fakeRelay();
+    let cloudOn = true;
+    let keyRequests = 0;
+    const counted: PasswordsRelay = { ...relay, requestPasswordKey: (input) => { keyRequests += 1; return relay.requestPasswordKey(input); } };
+    const values = new Map<string, string>();
+    const cloud = createPasswordService({
+      adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")),
+      relay: counted,
+      getAccountUserId: () => "user_a",
+      getDeviceId: () => "cloud",
+      machineKind: "cloud",
+      getCloudEnabled: () => cloudOn,
+      setCloudEnabled: (enabled) => { cloudOn = enabled; },
+      store: { get: async (k) => values.get(k) ?? null, set: async (k, v) => void values.set(k, v), delete: async (k) => void values.delete(k) },
+    });
+    await cloud.saveLogin({ origins: ["https://cloud.example"], username: "a", password: "cloud-pass-1" });
+    await cloud.sync();
+
+    let releasePull!: () => void;
+    let pullStarted!: () => void;
+    const started = new Promise<void>((resolve) => { pullStarted = resolve; });
+    control.beforePull = () => new Promise<void>((resolve) => { pullStarted(); releasePull = resolve; });
+    const syncing = cloud.sync();
+    await started;
+    await cloud.setCloudEnabled(false);
+    const requestsAtOff = keyRequests;
+    releasePull();
+    await syncing;
+
+    // The sync that the switch overtook asks for no key and writes no items back.
+    expect(keyRequests).toBe(requestsAtOff);
+    expect(values.has("passwords.items.v1")).toBe(false);
+  });
+
   it("sends a backlog bigger than one relay write once the relay is back", async () => {
     const { relay, rows, control } = fakeRelay();
     const mac = await machine(relay, "mac");
@@ -204,6 +239,59 @@ describe("password service", () => {
     const laptop = await machine(relay, "laptop");
     await laptop.sync();
     expect((await laptop.listSummaries()).length).toBe(205);
+  });
+
+  it("is on with no switch set, on this computer and for ADE Cloud, and off only once turned off", async () => {
+    const { relay } = fakeRelay();
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-"));
+    const open = () => createPasswordService({
+      adeDir,
+      relay,
+      getAccountUserId: () => "user_a",
+      getDeviceId: () => "mac",
+      machineKind: "desktop",
+      getCloudEnabled: () => null,
+      store: memoryStore(),
+    });
+    expect(await open().status()).toMatchObject({ enabled: true });
+    await open().setEnabled(false);
+    // A restart reads the switch the person left.
+    expect(await open().status()).toMatchObject({ enabled: false });
+
+    const cloud = createPasswordService({ adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")), relay, getAccountUserId: () => "user_a", getDeviceId: () => "cloud", machineKind: "cloud", getCloudEnabled: () => null, store: memoryStore() });
+    expect(await cloud.status()).toMatchObject({ enabled: true });
+
+    // A just-started ADE Cloud computer has not read the account's switch yet:
+    // off until the first settings sync, so a switch the person turned off is never ignored.
+    let settingsSynced = false;
+    const fresh = createPasswordService({ adeDir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-passwords-")), relay, getAccountUserId: () => "user_a", getDeviceId: () => "cloud", machineKind: "cloud", getCloudEnabled: () => null, cloudSwitchSynced: () => settingsSynced, store: memoryStore() });
+    expect(await fresh.status()).toMatchObject({ enabled: false });
+    settingsSynced = true;
+    expect(await fresh.status()).toMatchObject({ enabled: true });
+  });
+
+  it("keeps a this-computer-only secret off the relay and other computers, through a reset, and out of use while off", async () => {
+    const { relay, rows } = fakeRelay();
+    const mac = await machine(relay, "mac");
+    await mac.saveSecret({ name: "DEPLOY_TOKEN", value: "account-value-123", projectScope: "repo:acme/app" });
+    await mac.saveSecret({ name: "DEPLOY_TOKEN", value: "local-value-456", projectScope: "repo:acme/app", deviceOnly: true });
+    await mac.sync();
+    expect(JSON.stringify([...rows.values()])).not.toContain("local-value");
+    // The deliberate this-computer value wins here.
+    expect((await mac.secretsForProject("repo:acme/app")).get("DEPLOY_TOKEN")?.value).toBe("local-value-456");
+
+    const laptop = await machine(relay, "laptop");
+    await laptop.sync();
+    expect((await laptop.listSummaries()).map((s) => [s.title, s.deviceOnly])).toEqual([["DEPLOY_TOKEN", false]]);
+    expect((await laptop.secretsForProject("repo:acme/app")).get("DEPLOY_TOKEN")?.value).toBe("account-value-123");
+
+    await mac.reset();
+    expect((await mac.listSummaries()).map((s) => [s.title, s.deviceOnly])).toEqual([["DEPLOY_TOKEN", true]]);
+
+    await mac.setEnabled(false);
+    expect((await mac.secretsForProject("repo:acme/app")).size).toBe(0);
+    await mac.setEnabled(true);
+    expect((await mac.secretsForProject("repo:acme/app")).get("DEPLOY_TOKEN")?.value).toBe("local-value-456");
   });
 });
 

@@ -16,11 +16,12 @@ describe("project route memory", () => {
     writeStoredProjectRoute(BINDING_KEY, "/settings?tab=storage#diagnostics");
     // `#diagnostics` names a This computer card, so it wins over `?tab=chat`.
     writeStoredProjectRoute(BINDING_KEY, "/settings?tab=chat#diagnostics");
+    writeStoredProjectRoute(BINDING_KEY, "/settings?tab=passwords");
     expect(window.localStorage.getItem(STORAGE_KEY)).toBe("/lanes");
 
     // A project settings page is still remembered.
-    writeStoredProjectRoute(BINDING_KEY, "/settings?tab=secrets");
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("/settings?tab=secrets");
+    writeStoredProjectRoute(BINDING_KEY, "/settings?tab=memory");
+    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("/settings?tab=memory");
 
     // A value stored before machine pages were excluded restores to the default and is replaced.
     window.localStorage.setItem(STORAGE_KEY, "/settings?tab=storage#diagnostics");

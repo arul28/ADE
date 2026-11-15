@@ -177,7 +177,6 @@ export type ProvidersActions = {
   }) => Promise<AiSettingsStatus | null>;
   loadAuthMethods: () => Promise<void>;
   setError: (message: string | null) => void;
-  setNotice: (message: string | null) => void;
 
   deleteApiKey: (provider: string, options?: { alsoOpenCode?: boolean }) => Promise<void>;
   verifyApiKey: (provider: string) => Promise<void>;

@@ -560,10 +560,10 @@ const TIP_LIST = [
     ),
   },
   {
-    id: "secrets", group: "safety", icon: LockKey, title: "ADE secrets",
-    size: "screen", shot: { src: secretsShot, alt: "Settings, Secrets: three encrypted keys saved for this project" },
-    sentence: "Keep this project's API keys encrypted, where agents can use them without pasting them into chat.",
-    action: setting("secrets.secrets", "Add this project's keys here. Agents use them without seeing them in chat."),
+    id: "secrets", group: "safety", icon: LockKey, title: "Passwords & Secrets",
+    size: "screen", shot: { src: secretsShot, alt: "Settings, Passwords & Secrets: API keys saved for every project and for one project" },
+    sentence: "Keep API keys and logins encrypted on your account, where agents can use them without ever seeing them.",
+    action: setting("passwords.secrets", "Add your keys here, for every project or one. Agents use them without seeing them."),
   },
   {
     id: "private-desktop", group: "safety", icon: AppWindow, title: "A private desktop for agents", size: "wide",

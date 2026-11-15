@@ -33,7 +33,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `~/.ade/cache/desktop/` | Partially downloaded desktop installer, kept between `ade setup` runs so an interrupted 1 GB download resumes. Deleted once the install succeeds. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
-Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). Project-scoped ADE secrets use the encrypted local cache at `<project>/.ade/secrets/project-secrets.v1.enc`; signed-in account-scoped entries also sync through the encrypted account vault. They are exposed through `ade secrets` / the `project_secret` action domain.
+Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). A project's secrets live in Passwords & Secrets (the account's vault, plus "this computer only" secrets in the machine's encrypted cache): those for every project, then the project's own. `ade secrets` / the `project_secret` action domain is the project's view of them. A project's old `.ade/secrets/project-secrets.v1.enc` moves in on its own the first time it opens.
 
 Channel builds use parallel state roots and binary names so Stable, Beta, and Alpha can coexist:
 
@@ -909,10 +909,9 @@ ade sync web --text                                # print the browser web-clien
 ade sync web --open                                # also open the pairing link in the default browser
 ade sync web --no-clipboard                        # print only; don't copy the link to the clipboard
 ade secrets list --text
-ade secrets pull --text                            # take account secrets out of the vault onto this machine
-ade secrets get STRIPE_API_KEY --text
-ade secrets set STRIPE_API_KEY --value sk_... --storage account
-ade secrets set LOCAL_TOKEN --value local-value --storage device
+ade secrets exec -- npm run deploy                 # run a command with the secrets in its env, output masked
+ade secrets set STRIPE_API_KEY --value sk_...      # this project, on every computer
+ade secrets set LOCAL_TOKEN --value local-value --storage device   # this computer only
 printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
@@ -1187,9 +1186,9 @@ Legacy opaque refresh tokens still work when local `CLERK_ISSUER` and
 `CLERK_OAUTH_CLIENT_ID` are configured; recreate them with the command above to
 remove that dependency. ADE never logs this environment value.
 
-Provider API keys, Linear OAuth credentials, and project secrets can follow the
-signed-in account through the encrypted account vault; device-only values remain
-in the machine's encrypted stores. GitHub tokens and computer-use policy remain
+Provider API keys and Linear OAuth credentials can follow the signed-in account
+through the encrypted account vault, and secrets through Passwords & Secrets;
+device-only values remain in the machine's encrypted stores. GitHub tokens and computer-use policy remain
 separate and are read from their existing secure stores.
 
 `ade doctor` inspects the installed app and machine-brain health and prints one

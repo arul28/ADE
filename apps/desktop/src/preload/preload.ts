@@ -32,6 +32,11 @@ import type {
   PasswordItemSummary,
   PasswordLoginSaveInput,
   PasswordSecretSaveInput,
+  PasswordEnvFile,
+  PasswordSecretsExportResult,
+  PasswordSecretsImportInput,
+  PasswordSecretsImportResult,
+  PasswordsProject,
   PasswordsStatus, PasswordUseRecord,
 } from "../shared/types/passwords";
 import type { MachineStats } from "../shared/types/machineStats";
@@ -114,7 +119,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
-import { isMachineScopePin, THIS_MACHINE_SCOPE_KEY } from "../shared/machineScope";
+import { THIS_MACHINE_SCOPE_KEY } from "../shared/machineScope";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type {
   ProjectRemovalOutcome,
@@ -257,18 +262,9 @@ import type {
   ProjectDetail,
   ProjectPathInspection,
   ProjectIcon,
-  ProjectSecretDeleteArgs,
-  ProjectSecretEnvFile,
-  ProjectSecretGetArgs,
-  ProjectSecretPullResult,
-  ProjectSecretsExportResult,
-  ProjectSecretsImportArgs,
-  ProjectSecretsImportPreview,
-  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
-  ProjectSecretValueResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -2630,55 +2626,15 @@ function callProviderLogins<T>(action: string, args: Record<string, unknown>, pi
 }
 
 /**
- * Passwords: the account's saved logins and secrets on the pinned machine,
- * else the tab's bound runtime, else this computer's brain with no project
- * (`passwords.call`). Only summaries and person-only writes cross this
- * boundary: no method here returns a saved value, and `resolveForFill` is
- * never wired (the browser fills pages in main, not in a renderer).
+ * Passwords & Secrets is the account's vault, read and written on this
+ * computer's own brain through main (`passwords.call`), whatever project tab
+ * the window is on: it syncs to every other computer from here, and a secret
+ * kept on this computer only lives here. Only summaries and person-only
+ * writes cross this boundary: no method here returns a saved value, and
+ * `resolveForFill` is never wired (the browser fills pages in main).
  */
-/**
- * Passwords actions that carry a value or wipe the vault always run on this
- * computer's own brain, through main: a value never travels to the machine
- * the page follows (the vault is the account's, so it syncs from here), and a
- * reset always gets main's Touch ID / Windows Hello check first.
- */
-const PASSWORDS_THIS_COMPUTER_ACTIONS = new Set(["saveLogin", "saveSecret", "importCsv", "reset"]);
-
-async function callPasswords<T>(action: string, args: Record<string, unknown>, pin: OpenProjectBinding | null | undefined): Promise<T> {
-  const local = (name: string, input: Record<string, unknown>) => ipcRenderer.invoke(IPC.passwordsCall, { action: name, args: { ...input } }) as Promise<T>;
-  // This computer's machine route (Settings from a window whose project has
-  // no copy here): its brain answers with no project, never the tab's machine.
-  if (pin?.kind === "local" && isMachineScopePin(pin)) return await local(action, args);
-  if (!PASSWORDS_THIS_COMPUTER_ACTIONS.has(action)) {
-    return await callPinnedOrBoundRuntimeActionOr<T>(pin, "passwords", action, { args: { ...args } }, () => local(action, args));
-  }
-  const remotePin = pin && !isBoundCopyPin(pin) ? pin : null;
-  if (remotePin) {
-    // Passwords off on this computer but on where Settings is pointed: the
-    // write goes there (over the paired connection). A reset still asks the
-    // person here first.
-    const localOn = await local("status", {})
-      .then((status) => Boolean(status && typeof status === "object" && (status as { enabled?: unknown }).enabled === true))
-      .catch(() => false);
-    if (!localOn) {
-      if (action === "reset" && !(await ipcRenderer.invoke(IPC.passwordsCall, { action: "confirmReset", args: {} }))) {
-        throw new Error("Reset cancelled.");
-      }
-      return await callPinnedOrBoundRuntimeActionOr<T>(remotePin, "passwords", action, { args: { ...args } }, () => local(action, args));
-    }
-  }
-  // An edit by id needs the item on this computer: pull first. A failure here
-  // surfaces as the write's own error just below.
-  if (typeof args.id === "string" && args.id) {
-    await local("sync", {}).catch((error: unknown) => console.warn("[preload] Passwords sync before an edit failed", error));
-  }
-  const result = await local(action, args);
-  // The page lists the pinned machine's copy: it pulls this write now.
-  if (remotePin) {
-    await callPinnedOrBoundRuntimeActionOr<unknown>(remotePin, "passwords", "sync", { args: {} }, async () => undefined)
-      .catch((error: unknown) => console.warn("[preload] the pinned machine could not pull Passwords yet", error));
-  }
-  return result;
+function callPasswords<T>(action: string, args: Record<string, unknown> = {}): Promise<T> {
+  return ipcRenderer.invoke(IPC.passwordsCall, { action, args: { ...args } }) as Promise<T>;
 }
 
 /**
@@ -6159,42 +6115,14 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
       ),
   },
+  // One project's secrets (Passwords & Secrets, seen from that project), on
+  // the machine the pin names: a chat's secret card, a webhook's signing
+  // secret, Cursor Cloud's env. Settings › Passwords & Secrets uses `passwords`.
   projectSecrets: {
-    list: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretsListResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "list", {}, () =>
-        ipcRenderer.invoke(IPC.projectSecretsList),
-      ),
-    get: async (args: ProjectSecretGetArgs, pin?: OpenProjectBinding | null): Promise<ProjectSecretValueResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "get", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsGet, args),
-      ),
-    set: async (args: ProjectSecretSetArgs, pin?: OpenProjectBinding | null): Promise<ProjectSecretSummary> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "set", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsSet, args),
-      ),
-    delete: async (args: ProjectSecretDeleteArgs, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean; name: string }> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "delete", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsDelete, args),
-      ),
-    pullFromAccount: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretPullResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "pullFromAccount", {}, () =>
-        ipcRenderer.invoke(IPC.projectSecretsPullFromAccount),
-      ),
-    chooseEnvFile: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretsImportPreview | null> => {
-      const file = await ipcRenderer.invoke(IPC.projectSecretsChooseEnvFile) as ProjectSecretEnvFile | null;
-      if (!file) return null;
-      return callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "previewEnvImport", { args: file }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsPreviewEnvImport, file),
-      );
-    },
-    importEnv: async (args: ProjectSecretsImportArgs, pin?: OpenProjectBinding | null): Promise<ProjectSecretsImportResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "importEnv", { args }, () =>
-        ipcRenderer.invoke(IPC.projectSecretsImportEnv, args),
-      ),
-    exportEnv: async (pin?: OpenProjectBinding | null): Promise<ProjectSecretsExportResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "project_secret", "exportEnv", {}, () =>
-        ipcRenderer.invoke(IPC.projectSecretsExportEnv),
-      ),
+    list: (pin: OpenProjectBinding): Promise<ProjectSecretsListResult> =>
+      callPinnedRuntimeAction<ProjectSecretsListResult>(pin, "project_secret", "list", {}),
+    set: (args: ProjectSecretSetArgs, pin: OpenProjectBinding): Promise<ProjectSecretSummary> =>
+      callPinnedRuntimeAction<ProjectSecretSummary>(pin, "project_secret", "set", { args }),
   },
   ai: {
     // The shared Jev helper on the machine `pin` names. `null` is the normal
@@ -12246,27 +12174,28 @@ const adeBridge = {
         ?? remoteProviderLoginsChangedFanout.subscribe(() => cb()),
   },
   /**
-   * Settings › Passwords: the account's saved logins and secrets on the
-   * machine in front of the page. Every method takes the machine's pin from
-   * `useSettingsMachineScope().pin`. Nothing here returns a saved value:
+   * Settings › Passwords & Secrets: the account's saved logins and secrets as
+   * this computer holds them. No method takes a pin: the account's vault is
+   * the same on every computer, so the page always asks the computer in front
+   * of the person, whichever machine the tab is bound to. Nothing here returns a saved value:
    * `list` and `save*` answer with the same summaries agents may see, and the
    * value-reading `resolveForFill` is deliberately absent (only a browser
    * fill in main may read one).
    */
   passwords: {
-    status: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
-      callPasswords<PasswordsStatus>("status", args, pin),
-    setEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
-      callPasswords<PasswordsStatus>("setEnabled", args, pin),
-    setCloudEnabled: (args: { enabled: boolean }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
-      callPasswords<PasswordsStatus>("setCloudEnabled", args, pin),
-    reset: (args: { confirm: "reset" }, pin?: OpenProjectBinding | null): Promise<PasswordsStatus> =>
-      callPasswords<PasswordsStatus>("reset", args, pin),
-    list: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary[]> =>
-      callPasswords<PasswordItemSummary[]>("list", args, pin),
+    status: (args: Record<string, never> = {}): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("status", args),
+    setEnabled: (args: { enabled: boolean }): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setEnabled", args),
+    setCloudEnabled: (args: { enabled: boolean }): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("setCloudEnabled", args),
+    reset: (args: { confirm: "reset" }): Promise<PasswordsStatus> =>
+      callPasswords<PasswordsStatus>("reset", args),
+    list: (args: Record<string, never> = {}): Promise<PasswordItemSummary[]> =>
+      callPasswords<PasswordItemSummary[]>("list", args),
     /** The machine's recorded uses (site, who, chat, when), newest first. Never a value. */
-    activity: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<PasswordUseRecord[]> =>
-      callPasswords<PasswordUseRecord[]>("activity", args, pin),
+    activity: (args: Record<string, never> = {}): Promise<PasswordUseRecord[]> =>
+      callPasswords<PasswordUseRecord[]>("activity", args),
     /**
      * Show or copy one saved value, after Touch ID / Windows Hello on this
      * computer. A copy goes to the clipboard in main and returns no value.
@@ -12274,18 +12203,27 @@ const adeBridge = {
     reveal: (args: { itemId: string; field: "password" | "username" | "value" | "notes"; copy?: boolean; label?: string }): Promise<{ value?: string; copied?: true }> =>
       ipcRenderer.invoke(IPC.passwordsReveal, args),
     /** A login's current authenticator code (never its key), and its seconds left. */
-    code: (args: { itemId: string }, pin?: OpenProjectBinding | null): Promise<{ code: string; secondsLeft: number } | null> =>
-      callPasswords<{ code: string; secondsLeft: number } | null>("code", args, pin),
-    saveLogin: (args: PasswordLoginSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
-      callPasswords<PasswordItemSummary>("saveLogin", args, pin),
-    saveSecret: (args: PasswordSecretSaveInput, pin?: OpenProjectBinding | null): Promise<PasswordItemSummary> =>
-      callPasswords<PasswordItemSummary>("saveSecret", args, pin),
-    remove: (args: { id: string }, pin?: OpenProjectBinding | null): Promise<boolean> =>
-      callPasswords<boolean>("remove", args, pin),
-    importCsv: (args: { text: string }, pin?: OpenProjectBinding | null): Promise<PasswordImportResult> =>
-      callPasswords<PasswordImportResult>("importCsv", args, pin),
-    sync: (args: Record<string, never> = {}, pin?: OpenProjectBinding | null): Promise<void> =>
-      callPasswords<void>("sync", args, pin),
+    code: (args: { itemId: string }): Promise<{ code: string; secondsLeft: number } | null> =>
+      callPasswords<{ code: string; secondsLeft: number } | null>("code", args),
+    saveLogin: (args: PasswordLoginSaveInput): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveLogin", args),
+    saveSecret: (args: PasswordSecretSaveInput): Promise<PasswordItemSummary> =>
+      callPasswords<PasswordItemSummary>("saveSecret", args),
+    remove: (args: { id: string }): Promise<boolean> =>
+      callPasswords<boolean>("remove", args),
+    importCsv: (args: { text: string }): Promise<PasswordImportResult> =>
+      callPasswords<PasswordImportResult>("importCsv", args),
+    sync: (args: Record<string, never> = {}): Promise<void> =>
+      callPasswords<void>("sync", args),
+    importSecrets: (args: PasswordSecretsImportInput): Promise<PasswordSecretsImportResult> =>
+      callPasswords<PasswordSecretsImportResult>("importSecrets", args),
+    /** Writes to this computer's Downloads, after Touch ID / Windows Hello. */
+    exportSecrets: (args: { projectScope: string | null }): Promise<PasswordSecretsExportResult> =>
+      callPasswords<PasswordSecretsExportResult>("exportSecrets", args),
+    chooseEnvFile: (): Promise<PasswordEnvFile | null> =>
+      ipcRenderer.invoke(IPC.passwordsChooseEnvFile),
+    projects: (): Promise<PasswordsProject[]> =>
+      ipcRenderer.invoke(IPC.passwordsProjects),
   },
   providerInstances: {
     list: async (

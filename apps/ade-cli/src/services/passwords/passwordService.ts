@@ -12,7 +12,7 @@
  * What it gives out, and to whom:
  * - `listSummaries()`: sites, usernames and which kinds of value an item has.
  *   Safe for agents; never a value.
- * - `resolveForFill()` and `resolveSecretValue()`: the values, for desktop
+ * - `resolveForFill()` and `secretsForProject()`: the values, for desktop
  *   main to fill a page or for ADE to inject a secret into a process it
  *   starts. These are never wired to an agent-reachable action; the action
  *   layer exposes them only to the person's own client (see `passwords`
@@ -21,7 +21,6 @@
  * Nothing here logs a value, a site or a username: log lines carry item ids
  * and counts only.
  */
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,12 +30,11 @@ import type {
   PasswordItemSummary,
   PasswordLoginSecret,
   PasswordPasskeySecret,
-  PasswordSecretSecret,
   PasswordsStatus,
   PasswordUseRecord,
 } from "../../../../desktop/src/shared/types/passwords";
 import { createStoreRegistry } from "../account/accountCacheStore";
-import { EncryptedFileCredentialStore, type CredentialStore } from "../credentials/credentialStore";
+import { EncryptedFileCredentialStore, type CredentialStore, type SyncCredentialStore } from "../credentials/credentialStore";
 import type {
   PasswordMachineKind,
   PasswordRelayItem,
@@ -49,8 +47,11 @@ import {
   sealPasswordItem,
 } from "./passwordCrypto";
 import { dedupeImportedLogins, parsePasswordCsv } from "./passwordCsvImport";
+import { createDeviceSecretStore, isDeviceId } from "./passwordDeviceSecrets";
+import { newPasswordItemId, savedForExactOrigin, summarizePasswordItem as summarize, totpOrThrow } from "./passwordItems";
 import { matchLoginsForOrigin, normalizeLoginOrigin } from "./passwordMatching";
-import { normalizeTotpInput, parseTotp, totpCode } from "./passwordTotp";
+import { createProjectSecrets } from "./passwordProjectSecrets";
+import { parseTotp, totpCode } from "./passwordTotp";
 
 export type PasswordsRelay = {
   /** `epoch`: the account's current key epoch (a newer one means another computer reset Passwords). */
@@ -67,13 +68,11 @@ export type PasswordsLogger = {
 type StoredItem = { id: string; revision: string | null; deleted: boolean; envelope: string | null };
 type PendingWrite = { id: string; envelope: string | null; deleted: boolean; ifRevision: string | null };
 type CacheShape = { v: 1; accountId: string; cursor: string | null; items: StoredItem[]; pending: PendingWrite[] };
-
 const CACHE_KEY = "passwords.items.v1";
 const KEY_CACHE_KEY = "passwords.key.v1";
 const ACTIVITY_KEY = "passwords.activity.v1";
-/** Newest uses kept on this computer, for Settings › Passwords › Activity. */
+/** Newest uses kept on this computer, for Settings › Passwords & Secrets › Activity. */
 const ACTIVITY_LIMIT = 500;
-const ITEM_ID_BYTES = 12;
 const SYNC_INTERVAL_MS = 60_000;
 /** The most items the relay takes in one write (`MAX_ITEMS_PER_WRITE` there). */
 const RELAY_WRITE_BATCH = 200;
@@ -83,65 +82,6 @@ export class PasswordsUnavailableError extends Error {
     super(message);
     this.name = "PasswordsUnavailableError";
   }
-}
-
-function totpOrThrow(value: string | null, label: string): string | null {
-  if (value === null || !value.trim()) return null;
-  const normalized = normalizeTotpInput(value, label);
-  if (!normalized) throw new Error("That authenticator key isn't one ADE can read. Paste the otpauth:// link or the key the site shows.");
-  return normalized;
-}
-
-/** Whether a login was saved for this page's exact origin (scheme, host and port). */
-function savedForExactOrigin(secret: PasswordLoginSecret, pageUrl: string): boolean {
-  const page = normalizeLoginOrigin(pageUrl)?.origin;
-  return Boolean(page) && secret.origins.includes(page!);
-}
-
-function newItemId(): string {
-  return `pw_${crypto.randomBytes(ITEM_ID_BYTES).toString("base64url")}`;
-}
-
-function summarize(id: string, secret: PasswordItemSecret): PasswordItemSummary {
-  if (secret.kind === "login") {
-    const sites = [...new Set(secret.origins.map((origin) => normalizeLoginOrigin(origin)?.site).filter((site): site is string => Boolean(site)))];
-    return {
-      id,
-      kind: "login",
-      title: secret.title || sites[0] || "Login",
-      sites,
-      username: secret.username || null,
-      hasPassword: Boolean(secret.password),
-      hasTotp: Boolean(secret.totpUri),
-      projectScope: null,
-      updatedAt: secret.updatedAt,
-    };
-  }
-  if (secret.kind === "passkey") {
-    const site = normalizeLoginOrigin(`https://${secret.rpId}`)?.site ?? secret.rpId;
-    return {
-      id,
-      kind: "passkey",
-      title: site,
-      sites: [site],
-      username: secret.userName || secret.userDisplayName || null,
-      hasPassword: false,
-      hasTotp: false,
-      projectScope: null,
-      updatedAt: secret.updatedAt,
-    };
-  }
-  return {
-    id,
-    kind: "secret",
-    title: secret.name,
-    sites: [],
-    username: null,
-    hasPassword: Boolean(secret.value),
-    hasTotp: false,
-    projectScope: secret.projectScope,
-    updatedAt: secret.updatedAt,
-  };
 }
 
 export function createPasswordService(args: {
@@ -156,6 +96,12 @@ export function createPasswordService(args: {
    */
   getCloudEnabled?: () => boolean | null;
   setCloudEnabled?: (enabled: boolean) => void;
+  /**
+   * Whether this computer has read the account's settings at least once. On
+   * an ADE Cloud computer, an unset switch counts as off until then: a fresh
+   * cloud computer must not open the vault before it can see "off".
+   */
+  cloudSwitchSynced?: () => boolean;
   logger?: PasswordsLogger;
   /** Tests inject a store; production uses the machine's encrypted file store. */
   store?: CredentialStore;
@@ -163,7 +109,7 @@ export function createPasswordService(args: {
 }) {
   const logger = args.logger ?? { info: () => {}, warn: () => {} };
   const now = args.now ?? (() => new Date());
-  const store: CredentialStore = args.store ?? new EncryptedFileCredentialStore({
+  const store: CredentialStore & Partial<SyncCredentialStore> = args.store ?? new EncryptedFileCredentialStore({
     credentialsPath: path.join(args.adeDir, "passwords", "passwords.v1.enc"),
     machineKeyPath: path.join(args.adeDir, "secrets", ".machine-key"),
     lockPath: path.join(args.adeDir, "passwords", "passwords.v1.enc.lock"),
@@ -178,30 +124,48 @@ export function createPasswordService(args: {
   const readEnabledHere = (): boolean => {
     if (enabledHere !== null) return enabledHere;
     try {
-      enabledHere = (JSON.parse(fs.readFileSync(statePath, "utf8")) as { enabled?: unknown }).enabled === true;
+      // On unless the person turned it off on this computer.
+      enabledHere = (JSON.parse(fs.readFileSync(statePath, "utf8")) as { enabled?: unknown }).enabled !== false;
     } catch {
-      enabledHere = false;
+      enabledHere = true;
     }
     return enabledHere;
   };
-  const cloudEnabled = (): boolean => args.getCloudEnabled?.() === true;
-  /** Passwords is off until the person turns it on: per computer, or by the one ADE Cloud switch. */
+  const cloudEnabled = (): boolean => {
+    const value = args.getCloudEnabled?.() ?? null;
+    if (value === null && args.cloudSwitchSynced && !args.cloudSwitchSynced()) return false;
+    return value !== false;
+  };
+  /** Passwords is on unless turned off: per computer, or by the one ADE Cloud switch. */
   const isEnabled = (): boolean => (isCloud ? cloudEnabled() : readEnabledHere());
 
   let memoryKey: { accountId: string; key: Buffer; epoch: number } | null = null;
   /** Opened items, by id; rebuilt from the cache whenever it changes. Values live only here. */
   let opened = new Map<string, PasswordItemSecret>();
   let openedFor: string | null = null;
+  /**
+   * Counts purges (sign-out, off, reset). An open or a key fetch that started
+   * before one never installs what it got after it: a purge means this
+   * computer forgot the key and the values.
+   */
+  let purgeCount = 0;
+  /**
+   * True when what started at `count` for `accountId` must not install what it
+   * got: a purge ran since, Passwords is off now, or another account signed in.
+   */
+  const purgedSince = (count: number, accountId?: string): boolean =>
+    purgeCount !== count || (accountId !== undefined && (!isEnabled() || args.getAccountUserId() !== accountId));
+  const purgedError = (): Error => new PasswordsUnavailableError("Passwords & Secrets was signed out or turned off here while it opened.");
   let syncing: Promise<void> | null = null;
   let periodicSync: ReturnType<typeof setInterval> | null = null;
 
   const accountOrThrow = (): string => {
     const accountId = args.getAccountUserId();
-    if (!accountId) throw new PasswordsUnavailableError("Sign in to ADE to use Passwords.");
+    if (!accountId) throw new PasswordsUnavailableError("Sign in to ADE to use Passwords & Secrets.");
     if (!isEnabled()) {
       throw new PasswordsUnavailableError(isCloud
-        ? "Passwords is off for ADE Cloud computers. The person can turn it on in Settings › Passwords."
-        : "Passwords is off on this computer. The person can turn it on in Settings › Passwords.");
+        ? "Passwords & Secrets is off for ADE Cloud computers. The person can turn it on in Settings › Passwords & Secrets."
+        : "Passwords & Secrets is off on this computer. The person can turn it on in Settings › Passwords & Secrets.");
     }
     return accountId;
   };
@@ -224,10 +188,16 @@ export function createPasswordService(args: {
     await store.set(CACHE_KEY, JSON.stringify(cache));
   }
 
-  async function vaultKey(accountId: string): Promise<{ key: Buffer; epoch: number }> {
+  async function vaultKey(
+    accountId: string,
+    /** The purge count when the caller started (a sync's start, not this call's). */
+    startedAt = purgeCount,
+  ): Promise<{ key: Buffer; epoch: number }> {
+    if (purgedSince(startedAt, accountId)) throw purgedError();
     if (memoryKey?.accountId === accountId) return memoryKey;
     if (keepKeyOnDisk) {
       const cached = await store.get(KEY_CACHE_KEY);
+      if (purgedSince(startedAt, accountId)) throw purgedError();
       if (cached) {
         try {
           const parsed = JSON.parse(cached) as { accountId: string; dek: string; epoch: number };
@@ -243,7 +213,8 @@ export function createPasswordService(args: {
     const deviceId = args.getDeviceId();
     if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
     const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind });
-    if (!released) throw new PasswordsUnavailableError("Passwords is unavailable right now; try again shortly.");
+    if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
+    if (purgedSince(startedAt, accountId)) throw purgedError();
     memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
     if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
     logger.info("passwords.key_ready", { epoch: released.epoch, source: "relay" });
@@ -267,6 +238,14 @@ export function createPasswordService(args: {
     if (keepKeyOnDisk) await store.delete(KEY_CACHE_KEY);
   }
 
+  /** Each item's current envelope (null: deleted); local writes not yet on the relay win over the mirrored copy. */
+  function liveEnvelopes(cache: Pick<CacheShape, "items" | "pending">): Map<string, string | null> {
+    const live = new Map<string, string | null>();
+    for (const item of cache.items) live.set(item.id, item.deleted ? null : item.envelope);
+    for (const write of cache.pending ?? []) live.set(write.id, write.deleted ? null : write.envelope);
+    return live;
+  }
+
   /**
    * Open every live item into memory. An item sealed under a NEWER key epoch
    * means Passwords was reset on another machine: this machine's cached key is
@@ -278,16 +257,14 @@ export function createPasswordService(args: {
     cache: CacheShape,
     /** Unsent saves opened with the previous key, on the pass after a key change. */
     carried: Map<string, PasswordItemSecret> | null = null,
+    /** The purge count when the caller started: a sync that a purge overtook installs nothing. */
+    startedAt = purgeCount,
   ): Promise<void> {
     const retried = carried !== null;
-    const { key, epoch } = await vaultKey(accountId);
+    const { key, epoch } = await vaultKey(accountId, startedAt);
     const next = new Map<string, PasswordItemSecret>();
     let unopenable = 0;
-    const live = new Map<string, string | null>();
-    for (const item of cache.items) live.set(item.id, item.deleted ? null : item.envelope);
-    // Local writes not yet on the relay win over the mirrored copy.
-    for (const write of cache.pending) live.set(write.id, write.deleted ? null : write.envelope);
-    for (const [id, raw] of live) {
+    for (const [id, raw] of liveEnvelopes(cache)) {
       if (!raw) continue;
       const envelope = parsePasswordEnvelope(raw);
       if (!envelope) {
@@ -309,7 +286,7 @@ export function createPasswordService(args: {
           }
         }
         await dropKey();
-        return await openAll(accountId, cache, unsent);
+        return await openAll(accountId, cache, unsent, startedAt);
       }
       const carriedSecret = envelope.epoch !== epoch ? carried?.get(id) : undefined;
       if (carriedSecret) {
@@ -323,13 +300,17 @@ export function createPasswordService(args: {
       }
     }
     if (unopenable) logger.warn("passwords.items_unopenable", { count: unopenable });
+    if (purgedSince(startedAt, accountId)) throw purgedError();
     opened = next;
     openedFor = accountId;
   }
 
   async function ensureOpened(): Promise<string> {
     const accountId = accountOrThrow();
-    if (openedFor !== accountId) await openAll(accountId, await readCache(accountId));
+    if (openedFor !== accountId) {
+      const startedAt = purgeCount;
+      await openAll(accountId, await readCache(accountId), null, startedAt);
+    }
     return accountId;
   }
 
@@ -378,8 +359,21 @@ export function createPasswordService(args: {
   }
 
   /** Pull new revisions, push pending writes, and reopen. Safe to call often; one at a time. */
+  /** One more sync, asked for while a sync was running; shared by every caller that asked. */
+  let followUp: Promise<void> | null = null;
+  /**
+   * Pull, then push this computer's unsent writes. A call while a sync is
+   * running gets one more sync after it, so a save made mid-sync is sent now,
+   * not at the next minute's tick (and a caller awaiting it sees it sent).
+   */
   async function sync(): Promise<void> {
-    if (syncing) return syncing;
+    if (syncing) {
+      followUp ??= syncing.catch(() => undefined).then(() => {
+        followUp = null;
+        return sync();
+      });
+      return followUp;
+    }
     syncing = (async () => {
       const accountId = args.getAccountUserId();
       const relay = args.relay;
@@ -389,6 +383,9 @@ export function createPasswordService(args: {
         if (memoryKey || openedFor) await purgeLocal();
         return;
       }
+      // A purge (off, sign-out, reset) after this point stops the sync: it
+      // writes, fetches and opens nothing more, so off stays off.
+      const startedAt = purgeCount;
       // Pull, outside the queue: the network can be slow, saves must not wait on it.
       const startCursor = (await withCache(() => readCache(accountId))).cursor;
       let cursor = startCursor;
@@ -411,19 +408,21 @@ export function createPasswordService(args: {
       if (keyIsStale) {
         logger.info("passwords.key_epoch_advanced", { from: known.epoch, to: relayEpoch });
         // Kept to open unsent saves made under it (it is cached here: no network).
-        pulledOldKey = await vaultKey(accountId);
+        pulledOldKey = await vaultKey(accountId, startedAt);
         await dropKey();
       }
       const toPush = await withCache(async () => {
+        if (purgedSince(startedAt, accountId)) return null;
         const cache = await readCache(accountId);
         const byId = new Map(cache.items.map((item) => [item.id, item]));
         for (const [id, row] of pulled) byId.set(id, row);
         cache.items = [...byId.values()];
         cache.cursor = cursor;
-        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId), pulledOldKey);
+        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId, startedAt), pulledOldKey);
         await writeCache(cache);
         return cache.pending.map((write) => ({ ...write }));
       });
+      if (!toPush) return;
       // Push, also outside the queue.
       if (toPush.length) {
         // In batches the relay accepts (a big import made offline is many);
@@ -449,22 +448,34 @@ export function createPasswordService(args: {
           const staleKey = results.some((result) => result.status === "stale_key");
           let refusedKey: { key: Buffer; epoch: number } | null = null;
           if (staleKey) {
-            refusedKey = await vaultKey(accountId);
+            refusedKey = await vaultKey(accountId, startedAt);
             await dropKey();
           }
           await withCache(async () => {
+            if (purgedSince(startedAt, accountId)) return;
             const cache = await readCache(accountId);
+            const recordAccepted = (accepted: { id: string; deleted: boolean; envelope: string | null }, revision: string | null): void => {
+              const updated: StoredItem = { id: accepted.id, revision, deleted: accepted.deleted, envelope: accepted.envelope };
+              const existing = cache.items.find((item) => item.id === accepted.id);
+              if (existing) Object.assign(existing, updated);
+              else cache.items.push(updated);
+            };
             cache.pending = cache.pending.filter((write) => {
               const pushed = sent.get(write.id);
-              // A newer save of the same item, made while this push was out: keep it.
-              if (!pushed || pushed.envelope !== write.envelope || pushed.deleted !== write.deleted) return true;
+              if (!pushed) return true;
               const answer = answered.get(write.id);
+              // A newer save of the same item, made while this push was out: keep
+              // it, based on the revision the push just got, so it is not refused as stale.
+              if (pushed.envelope !== write.envelope || pushed.deleted !== write.deleted) {
+                if (answer?.status === "ok") {
+                  recordAccepted(pushed, answer.revision);
+                  write.ifRevision = answer.revision;
+                }
+                return true;
+              }
               if (!answer || answer.status === "stale_key") return true;
               if (answer.status === "ok") {
-                const updated: StoredItem = { id: write.id, revision: answer.revision, deleted: write.deleted, envelope: write.envelope };
-                const existing = cache.items.find((item) => item.id === write.id);
-                if (existing) Object.assign(existing, updated);
-                else cache.items.push(updated);
+                recordAccepted(write, answer.revision);
               } else if (answer.status === "stale") {
                 // Another machine changed it first: theirs stands, this edit is dropped and said so.
                 logger.warn("passwords.write_superseded", { itemId: write.id });
@@ -474,12 +485,20 @@ export function createPasswordService(args: {
               return false;
             });
             // Kept writes are sealed again under the current key; the next sync sends them.
-            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId), refusedKey);
+            if (staleKey && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId, startedAt), refusedKey);
             await writeCache(cache);
           });
         }
       }
+      if (purgedSince(startedAt, accountId)) return;
       openedFor = null;
+      // Open what the sync brought in now, so a caller that cannot wait (a
+      // webhook check) reads today's secrets, not the last open's.
+      try {
+        await openAll(accountId, await withCache(() => readCache(accountId)), null, startedAt);
+      } catch (error) {
+        logger.warn("passwords.reopen_failed", { error: error instanceof Error ? error.name : "unknown" });
+      }
     })().finally(() => {
       syncing = null;
     });
@@ -506,6 +525,7 @@ export function createPasswordService(args: {
 
   async function purgeLocal(): Promise<void> {
     await withCache(async () => {
+      purgeCount += 1;
       await dropKey();
       opened = new Map();
       openedFor = null;
@@ -513,6 +533,127 @@ export function createPasswordService(args: {
       await store.delete(ACTIVITY_KEY);
     });
     logger.info("passwords.purged", {});
+  }
+
+  const device = createDeviceSecretStore(store, logger);
+
+  /** Is the account vault usable here right now (signed in, on)? Opens it when so. */
+  async function accountVaultOpen(): Promise<boolean> {
+    if (!args.getAccountUserId() || !isEnabled()) return false;
+    await ensureOpened();
+    return true;
+  }
+
+  /**
+   * Open this computer's copy without waiting, for a process that has not
+   * opened it yet (a CLI command, a fresh project runtime) and a caller that
+   * cannot wait. Only with a key already cached on disk; it never asks the
+   * relay, and skips anything sealed under a newer key (the next sync's job).
+   */
+  function openFromDiskSync(accountId: string): void {
+    if (!keepKeyOnDisk || typeof store.getSync !== "function") return;
+    try {
+      const keyRaw = JSON.parse(store.getSync(KEY_CACHE_KEY) ?? "null") as { accountId?: string; dek?: string; epoch?: number } | null;
+      if (keyRaw?.accountId !== accountId || typeof keyRaw.dek !== "string" || typeof keyRaw.epoch !== "number") return;
+      const cache = JSON.parse(store.getSync(CACHE_KEY) ?? "null") as CacheShape | null;
+      if (cache?.v !== 1 || cache.accountId !== accountId || !Array.isArray(cache.items)) return;
+      const key = Buffer.from(keyRaw.dek, "base64");
+      const epoch = keyRaw.epoch;
+      const next = new Map<string, PasswordItemSecret>();
+      for (const [id, raw] of liveEnvelopes(cache)) {
+        const envelope = raw ? parsePasswordEnvelope(raw) : null;
+        if (!envelope || envelope.epoch !== epoch) continue;
+        try {
+          next.set(id, openPasswordItem<PasswordItemSecret>(key, { accountId, itemId: id, epoch }, envelope));
+        } catch {
+          // Unopenable here; the async open logs it.
+        }
+      }
+      memoryKey ??= { accountId, key, epoch };
+      opened = next;
+      openedFor = accountId;
+    } catch (error) {
+      logger.warn("passwords.open_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+    }
+  }
+  /** The account's opened items without waiting (from disk when it can), or null while locked. */
+  function openedNow(): ReadonlyMap<string, PasswordItemSecret> | null {
+    const accountId = args.getAccountUserId();
+    if (!accountId) return null;
+    if (openedFor !== accountId) openFromDiskSync(accountId);
+    return openedFor === accountId ? opened : null;
+  }
+
+  const projectSecrets = createProjectSecrets({
+    logger,
+    now,
+    device,
+    isEnabled,
+    accountUserId: () => args.getAccountUserId(),
+    openedNow,
+    ensureOpened: async () => {
+      const accountId = await ensureOpened();
+      return { accountId, opened };
+    },
+    writeItem,
+    vaultKey,
+    cacheView: (accountId) => withCache(() => readCache(accountId)),
+  });
+
+  /** Whether Passwords is on here, and what this computer holds. Never a value. */
+  async function status(): Promise<PasswordsStatus> {
+    const accountId = args.getAccountUserId();
+    const enabled = isEnabled();
+    let itemCount: number | null = null;
+    if (accountId && enabled) {
+      try {
+        await ensureOpened();
+        itemCount = opened.size;
+      } catch (error) {
+        logger.warn("passwords.status_open_failed", { error: error instanceof Error ? error.message : String(error) });
+        itemCount = null;
+      }
+    }
+    return {
+      signedIn: Boolean(accountId),
+      enabled,
+      machineKind: args.machineKind,
+      cloudEnabled: args.getCloudEnabled?.() ?? null,
+      itemCount,
+    };
+  }
+
+  /**
+   * Add a login, or change one by id. A change keeps whatever it does not
+   * name: its exact sites, username, title, notes and code.
+   */
+  async function saveLogin(input: { id?: string; title?: string; origins?: string[]; username?: string; password: string; notes?: string; totpUri?: string | null }): Promise<PasswordItemSummary> {
+    await ensureOpened();
+    const existingItem = input.id ? opened.get(input.id) : undefined;
+    if (input.id && existingItem?.kind !== "login") throw new Error("That saved login no longer exists.");
+    const existing = existingItem?.kind === "login" ? existingItem : undefined;
+    const named = input.origins?.length ? input.origins : existing?.origins ?? [];
+    const origins = [...new Set(named.map((origin) => normalizeLoginOrigin(origin)?.origin).filter((origin): origin is string => Boolean(origin)))];
+    if (origins.length === 0) throw new Error("A saved login needs an https site.");
+    if (!input.password) throw new Error("A saved login needs a password.");
+    const id = input.id ?? newPasswordItemId();
+    const stamp = now().toISOString();
+    const secret: PasswordLoginSecret = {
+      kind: "login",
+      title: input.title?.trim() || existing?.title || normalizeLoginOrigin(origins[0]!)?.site || "Login",
+      origins,
+      username: input.username ?? existing?.username ?? "",
+      password: input.password,
+      notes: input.notes ?? existing?.notes ?? "",
+      // A bare key a site shows ("can't scan?") is kept as a standard URI; a
+      // value that is neither is refused rather than saved broken.
+      totpUri: input.totpUri !== undefined ? totpOrThrow(input.totpUri, input.title?.trim() || existing?.title || "") : existing?.totpUri ?? null,
+      createdAt: existing?.createdAt ?? stamp,
+      updatedAt: stamp,
+    };
+    await writeItem(id, secret);
+    logger.info("passwords.item_saved", { itemId: id, kind: "login" });
+    return summarize(id, secret);
   }
 
   return {
@@ -560,28 +701,10 @@ export function createPasswordService(args: {
       }
     },
 
-    /** Whether Passwords is on here, and what this computer holds. Never a value. */
-    async status(): Promise<PasswordsStatus> {
-      const accountId = args.getAccountUserId();
-      const enabled = isEnabled();
-      let itemCount: number | null = null;
-      if (accountId && enabled) {
-        try {
-          await ensureOpened();
-          itemCount = opened.size;
-        } catch (error) {
-          logger.warn("passwords.status_open_failed", { error: error instanceof Error ? error.message : String(error) });
-          itemCount = null;
-        }
-      }
-      return {
-        signedIn: Boolean(accountId),
-        enabled,
-        machineKind: args.machineKind,
-        cloudEnabled: args.getCloudEnabled?.() ?? null,
-        itemCount,
-      };
-    },
+    status,
+
+    /** Who this computer is signed in as, or null. */
+    accountUserId: (): string | null => args.getAccountUserId(),
 
     /**
      * Turn Passwords on or off for this computer. Off forgets the key and every
@@ -589,20 +712,29 @@ export function createPasswordService(args: {
      * turns it on, the ADE Cloud switch starts on.
      */
     async setEnabled(enabled: boolean): Promise<PasswordsStatus> {
-      if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords.");
+      if (isCloud) throw new PasswordsUnavailableError("On an ADE Cloud computer, Passwords follows the ADE Cloud switch in Settings › Passwords & Secrets.");
+      // Before turning off, send what is still waiting (a save made offline),
+      // while the switch still allows it. Offline, the purge still runs: off means off.
+      if (!enabled && isEnabled() && args.getAccountUserId()) {
+        await sync().catch((error: unknown) => {
+          logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
+      }
       fs.mkdirSync(path.dirname(statePath), { recursive: true });
       fs.writeFileSync(statePath, JSON.stringify({ enabled }), { mode: 0o600 });
       enabledHere = enabled;
       if (enabled) {
         if (args.getCloudEnabled?.() === null) args.setCloudEnabled?.(true);
-        void sync().catch((error: unknown) => {
+        // Bring the account's items back before answering, so the page that
+        // turned it on lists them.
+        await sync().catch((error: unknown) => {
           logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
         });
       } else {
         await purgeLocal();
       }
       logger.info("passwords.enabled_changed", { enabled });
-      return await this.status();
+      return await status();
     },
 
     /** The account-wide switch for ADE Cloud computers. */
@@ -611,7 +743,7 @@ export function createPasswordService(args: {
       args.setCloudEnabled(enabled);
       if (isCloud && !enabled) await purgeLocal();
       logger.info("passwords.cloud_enabled_changed", { enabled });
-      return await this.status();
+      return await status();
     },
 
     /**
@@ -624,21 +756,25 @@ export function createPasswordService(args: {
       const deviceId = args.getDeviceId();
       if (!args.relay || !deviceId) throw new PasswordsUnavailableError("Passwords needs ADE's account service; try again when online.");
       const released = await args.relay.requestPasswordKey({ deviceId, machineKind: args.machineKind, reset: true });
-      if (!released) throw new PasswordsUnavailableError("Passwords is unavailable right now; try again shortly.");
+      if (!released) throw new PasswordsUnavailableError("Passwords & Secrets is unavailable right now; try again shortly.");
       await purgeLocal();
       memoryKey = { accountId, key: Buffer.from(released.dek, "base64"), epoch: released.epoch };
       if (keepKeyOnDisk) await store.set(KEY_CACHE_KEY, JSON.stringify({ accountId, dek: released.dek, epoch: released.epoch }));
       logger.info("passwords.reset", { epoch: released.epoch });
       await sync();
-      return await this.status();
+      return await status();
     },
 
     /** Everything an agent or a list may see. Never a value. */
     async listSummaries(): Promise<PasswordItemSummary[]> {
-      await ensureOpened();
-      return [...opened.entries()]
-        .map(([id, secret]) => summarize(id, secret))
-        .sort((a, b) => a.title.localeCompare(b.title));
+      const own = isEnabled() ? (await device.read()).map((secret) => summarize(secret.id, secret, true)) : [];
+      // A vault that can't be opened now still lists this computer's own secrets.
+      const accountOpen = await accountVaultOpen().catch((error: unknown) => {
+        logger.warn("passwords.account_open_failed", { error: error instanceof Error ? error.name : "unknown" });
+        return false;
+      });
+      const account = accountOpen ? [...opened.entries()].map(([id, secret]) => summarize(id, secret)) : [];
+      return [...account, ...own].sort((a, b) => a.title.localeCompare(b.title));
     },
 
     /** The site and exact origin Passwords would fill a page on, or null (not https, not a site). */
@@ -647,8 +783,8 @@ export function createPasswordService(args: {
       return normalized ? { site: normalized.site, origin: normalized.origin } : null;
     },
 
-    /** Saved logins for the site a page is on, best match first. Summaries only. */
     /**
+     * Saved logins for the site a page is on, best match first. Summaries only.
      * `exactOrigin`: only logins saved for this exact address (scheme, host,
      * port). An agent's fill asks for that, so a login is never typed into
      * another subdomain of its site; the person's key button matches the site.
@@ -706,20 +842,7 @@ export function createPasswordService(args: {
       return { itemId: entry[0], site: summarize(entry[0], entry[1]).sites[0] ?? entry[1].title, username: entry[1].username || null, code, secondsLeft };
     },
 
-    /**
-     * The Passwords secrets a project's processes get: those for every project,
-     * then the project's own over them. Empty when Passwords is off or locked.
-     */
-    async secretValuesForProject(projectScope: string | null): Promise<Record<string, string>> {
-      if (!args.getAccountUserId() || !isEnabled()) return {};
-      await ensureOpened();
-      const out: Record<string, string> = {};
-      for (const secret of opened.values()) if (secret.kind === "secret" && secret.projectScope === null) out[secret.name] = secret.value;
-      if (projectScope) {
-        for (const secret of opened.values()) if (secret.kind === "secret" && secret.projectScope === projectScope) out[secret.name] = secret.value;
-      }
-      return out;
-    },
+    ...projectSecrets,
 
     /**
      * One saved value for the person's own eyes (Settings' Reveal / Copy, after
@@ -727,6 +850,12 @@ export function createPasswordService(args: {
      * action layer. Null when the item or field is not there.
      */
     async revealValue(input: { itemId: string; field: "password" | "username" | "value" | "notes" }): Promise<string | null> {
+      if (isDeviceId(input.itemId)) {
+        if (!isEnabled()) return null;
+        const secret = (await device.read()).find((item) => item.id === input.itemId);
+        if (!secret) return null;
+        return input.field === "value" ? secret.value : input.field === "notes" ? secret.notes : null;
+      }
       await ensureOpened();
       const secret = opened.get(input.itemId);
       if (!secret) return null;
@@ -772,77 +901,24 @@ export function createPasswordService(args: {
         createdAt: input.createdAt ?? stamp,
         updatedAt: stamp,
       };
-      const id = newItemId();
+      const id = newPasswordItemId();
       await writeItem(id, secret);
       logger.info("passwords.item_saved", { itemId: id, kind: "passkey" });
       return summarize(id, secret);
     },
 
-    /** A secret's value by name, for injecting into a process ADE starts. Never returned to an agent. */
-    async resolveSecretValue(input: { name: string; projectScope: string | null }): Promise<string | null> {
-      await ensureOpened();
-      let fallback: string | null = null;
-      for (const secret of opened.values()) {
-        if (secret.kind !== "secret" || secret.name !== input.name) continue;
-        if (secret.projectScope === input.projectScope) return secret.value;
-        if (secret.projectScope === null) fallback = secret.value;
-      }
-      return fallback;
-    },
-
-    /**
-     * Add a login, or change one by id. A change keeps whatever it does not
-     * name: its exact sites, username, title, notes and code.
-     */
-    async saveLogin(input: { id?: string; title?: string; origins?: string[]; username?: string; password: string; notes?: string; totpUri?: string | null }): Promise<PasswordItemSummary> {
-      await ensureOpened();
-      const existingItem = input.id ? opened.get(input.id) : undefined;
-      if (input.id && existingItem?.kind !== "login") throw new Error("That saved login no longer exists.");
-      const existing = existingItem?.kind === "login" ? existingItem : undefined;
-      const named = input.origins?.length ? input.origins : existing?.origins ?? [];
-      const origins = [...new Set(named.map((origin) => normalizeLoginOrigin(origin)?.origin).filter((origin): origin is string => Boolean(origin)))];
-      if (origins.length === 0) throw new Error("A saved login needs an https site.");
-      if (!input.password) throw new Error("A saved login needs a password.");
-      const id = input.id ?? newItemId();
-      const stamp = now().toISOString();
-      const secret: PasswordLoginSecret = {
-        kind: "login",
-        title: input.title?.trim() || existing?.title || normalizeLoginOrigin(origins[0]!)?.site || "Login",
-        origins,
-        username: input.username ?? existing?.username ?? "",
-        password: input.password,
-        notes: input.notes ?? existing?.notes ?? "",
-        // A bare key a site shows ("can't scan?") is kept as a standard URI; a
-        // value that is neither is refused rather than saved broken.
-        totpUri: input.totpUri !== undefined ? totpOrThrow(input.totpUri, input.title?.trim() || existing?.title || "") : existing?.totpUri ?? null,
-        createdAt: existing?.createdAt ?? stamp,
-        updatedAt: stamp,
-      };
-      await writeItem(id, secret);
-      logger.info("passwords.item_saved", { itemId: id, kind: "login" });
-      return summarize(id, secret);
-    },
-
-    async saveSecret(input: { id?: string; name: string; value: string; projectScope: string | null; notes?: string }): Promise<PasswordItemSummary> {
-      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(input.name)) throw new Error("A secret's name must look like an environment variable.");
-      const id = input.id ?? newItemId();
-      const existing = input.id ? opened.get(input.id) : undefined;
-      const stamp = now().toISOString();
-      const secret: PasswordSecretSecret = {
-        kind: "secret",
-        name: input.name,
-        value: input.value,
-        projectScope: input.projectScope,
-        notes: input.notes ?? (existing?.kind === "secret" ? existing.notes : ""),
-        createdAt: existing?.createdAt ?? stamp,
-        updatedAt: stamp,
-      };
-      await writeItem(id, secret);
-      logger.info("passwords.item_saved", { itemId: id, kind: "secret" });
-      return summarize(id, secret);
-    },
+    saveLogin,
 
     async remove(id: string): Promise<boolean> {
+      if (isDeviceId(id)) {
+        let removed = false;
+        await device.update((items) => {
+          removed = items.some((item) => item.id === id);
+          return removed ? items.filter((item) => item.id !== id) : undefined;
+        });
+        if (removed) logger.info("passwords.item_removed", { itemId: id, deviceOnly: true });
+        return removed;
+      }
       await ensureOpened();
       if (!opened.has(id)) return false;
       await writeItem(id, null);
@@ -859,7 +935,7 @@ export function createPasswordService(args: {
         .map((secret) => ({ origins: secret.origins, username: secret.username, password: secret.password }));
       const { fresh, skippedDuplicate } = dedupeImportedLogins(parsed.rows, existing);
       for (const row of fresh) {
-        await this.saveLogin({
+        await saveLogin({
           title: row.title,
           origins: row.origins,
           username: row.username,
@@ -877,6 +953,9 @@ export function createPasswordService(args: {
     /** Keep this computer's copy in step with the account, once per service (unref'd). */
     startPeriodicSync(): void {
       if (periodicSync) return;
+      void sync().catch((error: unknown) => {
+        logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+      });
       periodicSync = setInterval(() => {
         void sync().catch((error: unknown) => {
           logger.warn("passwords.sync_failed", { error: error instanceof Error ? error.name : "unknown" });
@@ -902,9 +981,14 @@ const registry = createStoreRegistry<PasswordService>();
 const PASSWORDS_CLOUD_SETTING_KEY = "passwords.cloudEnabled";
 
 /** The ADE Cloud switch, read and written as an ordinary account setting (it holds no secret). */
-export function passwordsCloudSwitch(settings: { get(scope: string, key: string): unknown; set(scope: string, key: string, value: unknown): boolean } | null): {
+export function passwordsCloudSwitch(settings: {
+  get(scope: string, key: string): unknown;
+  set(scope: string, key: string, value: unknown): boolean;
+  health?(): { lastSyncedAt: string | null };
+} | null): {
   getCloudEnabled: () => boolean | null;
   setCloudEnabled: (enabled: boolean) => void;
+  cloudSwitchSynced: () => boolean;
 } {
   return {
     getCloudEnabled: () => {
@@ -914,6 +998,7 @@ export function passwordsCloudSwitch(settings: { get(scope: string, key: string)
     setCloudEnabled: (enabled) => {
       settings?.set("all", PASSWORDS_CLOUD_SETTING_KEY, enabled);
     },
+    cloudSwitchSynced: () => Boolean(settings?.health?.().lastSyncedAt),
   };
 }
 

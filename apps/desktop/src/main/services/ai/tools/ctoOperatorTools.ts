@@ -272,8 +272,8 @@ export interface CtoOperatorToolDeps {
   } | null;
   /**
    * NAMES ONLY. There is deliberately no accessor for a secret VALUE on this
-   * type — `get`/`exportEnv` are not reachable from any CTO tool, so no tool
-   * body can return one even by mistake.
+   * type — `get` and the other value reads are not reachable from any CTO
+   * tool, so no tool body can return one even by mistake.
    */
   projectSecretService?: {
     list: () => any;

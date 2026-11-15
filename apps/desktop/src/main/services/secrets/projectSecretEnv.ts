@@ -1,3 +1,9 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { securePrivatePath } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import type { PasswordSecretsExportResult } from "../../../shared/types/passwords";
+
 export type ParsedProjectSecretEnvEntry = {
   name: string;
   value: string;
@@ -128,3 +134,32 @@ export function formatProjectSecretEnv(entries: ParsedProjectSecretEnvEntry[]): 
 
 export const PROJECT_SECRET_ENV_MAX_BYTES = MAX_ENV_FILE_BYTES;
 export const PROJECT_SECRET_ENV_MAX_ENTRIES = MAX_ENV_ENTRIES;
+
+/**
+ * Write secrets, unencrypted, to a new `.env` file in this computer's
+ * Downloads (`ade-secrets.env`, then `ade-secrets (1).env`…). Only ever for the
+ * person, on the computer they are using.
+ */
+export function writeSecretsEnvFile(
+  secrets: ParsedProjectSecretEnvEntry[],
+  downloadsDir = path.join(os.homedir(), "Downloads"),
+): PasswordSecretsExportResult {
+  const sorted = [...secrets].sort((a, b) => a.name.localeCompare(b.name));
+  fs.mkdirSync(downloadsDir, { recursive: true, mode: 0o700 });
+  let filePath = path.join(downloadsDir, "ade-secrets.env");
+  for (let suffix = 1; fs.existsSync(filePath) && suffix < 1_000; suffix += 1) {
+    filePath = path.join(downloadsDir, `ade-secrets (${suffix}).env`);
+  }
+  if (fs.existsSync(filePath)) throw new Error("ADE couldn't find an unused file name in Downloads.");
+  // Created empty and locked down first: Windows ignores the mode, so the
+  // owner-only ACL is in place before any value is in the file.
+  fs.writeFileSync(filePath, "", { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    securePrivatePath(filePath);
+    fs.writeFileSync(filePath, formatProjectSecretEnv(sorted), { encoding: "utf8" });
+  } catch (error) {
+    fs.rmSync(filePath, { force: true });
+    throw error;
+  }
+  return { filePath, secretCount: sorted.length };
+}

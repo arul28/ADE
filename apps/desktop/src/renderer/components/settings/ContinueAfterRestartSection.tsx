@@ -26,7 +26,7 @@ export function ContinueAfterRestartSection() {
   const [pickedId, setPickedId] = useState<string>(scope.machineId);
   const picked = machines.find((machine) => machine.machineId === pickedId) ?? null;
   const pickedPage = picked && !picked.isThisMachine ? settingsMachinePageFor(picked) : null;
-  const pickedScope = pickedPage ? routedPageFor("machine", pickedPage) : null;
+  const pickedScope = pickedPage ? routedPageFor(pickedPage) : null;
   // A picked machine nothing reaches is read from nowhere, never from the
   // machine the unpinned call would land on.
   const unreachable = pickedPage != null && pickedScope == null;
