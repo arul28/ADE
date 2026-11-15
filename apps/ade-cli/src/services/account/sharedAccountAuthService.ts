@@ -3,6 +3,7 @@ import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { expectedErrorKind, markExpected } from "../../../../desktop/src/shared/expectedError";
 import { createProjectSecretService } from "../../../../desktop/src/main/services/secrets/projectSecretService";
+import { SIGN_IN_CONFIG_SECRET_NAMES } from "../../../../desktop/src/shared/types/passwords";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_JWKS_URL,
@@ -89,12 +90,7 @@ export function registerAccountConfigProjectRoot(
  * and URLs. Any other name is read as before, never remembered, and is
  * unavailable while its project is refused.
  */
-const REMEMBERED_ACCOUNT_SETTING_NAMES: ReadonlySet<string> = new Set([
-  "CLERK_ISSUER",
-  "CLERK_OAUTH_CLIENT_ID",
-  "CLERK_JWKS_URL",
-  "ADE_ACCOUNT_DIRECTORY_URL",
-]);
+const REMEMBERED_ACCOUNT_SETTING_NAMES: ReadonlySet<string> = SIGN_IN_CONFIG_SECRET_NAMES;
 
 type AccountConfigRootGate = {
   skip: (projectRoot: string) => boolean;
@@ -153,7 +149,7 @@ function readProjectSecret(projectRoot: string, name: string): string | null {
   }
   let value: string | null;
   try {
-    value = createProjectSecretService(projectRoot).get({ name }).value.trim() || null;
+    value = createProjectSecretService(projectRoot).getSignInConfig({ name }).value.trim() || null;
   } catch (error) {
     // The secret service answers "not set" with an expected `user` error;
     // anything else is a read that failed. Only a real answer is remembered,

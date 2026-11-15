@@ -4,6 +4,7 @@ import {
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
+import { showToast } from "../app/toast/toastStore";
 import { isDegradedSyncSnapshot, readLocalSyncStatus } from "../../lib/localSyncStatusReader";
 
 export type SyncConnections = ReturnType<typeof useSyncConnections>;
@@ -40,7 +41,6 @@ export function useSyncConnections() {
   const [routedDevices, setRoutedDevices] = useState<SyncDeviceRuntimeState[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshGeneration = useRef(0);
 
@@ -133,13 +133,11 @@ export function useSyncConnections() {
 
   const runAction = useCallback(async (work: () => Promise<void>) => {
     setBusy(true);
-    setError(null);
-    setNotice(null);
     try {
       await work();
       await refresh({ force: true });
     } catch (actionError) {
-      setError(errorMessage(actionError));
+      showToast({ tone: "error", title: "That did not work", message: errorMessage(actionError) });
     } finally {
       setBusy(false);
     }
@@ -154,28 +152,28 @@ export function useSyncConnections() {
 
   const generatePin = useCallback(() => runAction(async () => {
     await window.ade.sync.generatePin();
-    setNotice("Pairing code generated.");
+    showToast({ tone: "success", title: "Pairing code generated" });
   }), [runAction]);
 
   const clearPin = useCallback(() => runAction(async () => {
     await window.ade.sync.clearPin();
-    setNotice("Pairing code removed. New devices can no longer connect.");
+    showToast({ tone: "success", title: "Pairing code removed", message: "New devices can no longer connect." });
   }), [runAction]);
 
   const saveRuntimeName = useCallback((name: string) => runAction(async () => {
     const trimmed = name.trim();
     if (trimmed) {
       await window.ade.sync.setRuntimeName(trimmed);
-      setNotice("Machine name updated.");
+      showToast({ tone: "success", title: "Machine name updated" });
     } else {
       await window.ade.sync.clearRuntimeName();
-      setNotice("Machine name cleared.");
+      showToast({ tone: "success", title: "Machine name cleared" });
     }
   }), [runAction]);
 
   const forgetDevice = useCallback((device: SyncDeviceRuntimeState) => runAction(async () => {
     await window.ade.sync.forgetDevice(device.deviceId);
-    setNotice(device.connectionState === "connected" ? "Device revoked." : "Device removed.");
+    showToast({ tone: "success", title: device.connectionState === "connected" ? "Device revoked" : "Device removed" });
   }), [runAction]);
 
   const retryInitialLoad = useCallback(() => {
@@ -198,7 +196,6 @@ export function useSyncConnections() {
     devices,
     loading,
     busy,
-    notice,
     error,
     /** True when this window's project is bound to a different (remote) machine. */
     isRemoteBound,

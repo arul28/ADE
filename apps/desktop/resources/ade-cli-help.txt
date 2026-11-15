@@ -99,7 +99,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -273,7 +273,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -1125,7 +1125,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -1408,7 +1408,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac
@@ -2564,7 +2564,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage this machine's Claude/Codex logins
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
-    $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade secrets list | set | request | delete | exec  This project's secrets, in Passwords & Secrets
     $ ade passwords list | status                     Saved logins agents can use (never a value)
     $ ade code --site <host>                          A site's current sign-in code
     $ ade messages recent | send                      The person's texts, on their Mac

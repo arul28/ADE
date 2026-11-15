@@ -1385,23 +1385,18 @@ function createCtoNamespace(
   } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
 
-const PROJECT_SECRETS_DESKTOP_ONLY = "Project secrets can only be changed in the ADE desktop app on that machine.";
+const PROJECT_SECRETS_DESKTOP_ONLY = "Secrets can only be changed in the ADE desktop app (Settings › Passwords & Secrets).";
 
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   return {
-    list: async () => ({ secrets: [] }),
-    get: async () => ({ value: null }),
-    // Secret values stay on their machine. Saving one here used to resolve as
-    // if it worked while nothing was stored, so a chat asking for a secret
-    // waited forever; every caller shows this message instead.
+    list: async () => ({ secrets: [], storage: { path: "Passwords & Secrets", encrypted: true, scope: "project" as const } }),
+    // Saving one here used to resolve as if it worked while nothing was
+    // stored, so a chat asking for a secret waited forever; every caller
+    // shows this message instead.
     set: async () => {
       throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
     },
-    delete: async () => {
-      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
-    },
-    pullFromAccount: async () => ({ state: "unavailable" as const }),
-  } as unknown as AdeNamespace<"projectSecrets">;
+  };
 }
 
 function createTranscriptionNamespace(): AdeNamespace<"transcription"> {

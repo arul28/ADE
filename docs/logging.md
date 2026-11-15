@@ -201,8 +201,8 @@ Not every operational log belongs to the active project. The rule is the **subje
 Account sync against this machine writes local lines only:
 `ai.api_key_removed_by_account` (with the provider name, content-free) when a
 provider key the account reports deleted is dropped here, and
-`project_secret.account_vault_pull` (added, updated and removed counts) when a
-pull changes something. Neither is a PostHog event. A pull
+`project_secret.legacy_moved` (moved and waiting counts) when a project's old
+secrets move into Passwords & Secrets. Neither is a PostHog event. A sync
 is a sync tick, not a person, so it captures nothing — the same reason the
 runtime-workload exemption below does not: an event here would report
 engagement nobody generated. A credential removal the ACCOUNT performed must

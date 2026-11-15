@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import { useAppStore } from "../../state/appStore";
+import { getToasts } from "../app/toast/toastStore";
 import type { AgentChatEventEnvelope, AiSettingsStatus, CursorSdkAuthEvent, PiAuthStatusEvent } from "../../../shared/types";
 import { setUsageHeaderVisible, setUsageProviderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 
@@ -1486,7 +1487,7 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" }, null);
       expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai", null);
     });
-    expect(await screen.findByText("OpenAI disconnected.")).toBeTruthy();
+    await waitFor(() => expect(getToasts().some((toast) => toast.title === "OpenAI disconnected")).toBe(true));
   });
 
   it("drives the OAuth connect modal happy path via provider detail", async () => {

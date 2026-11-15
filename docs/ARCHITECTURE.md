@@ -633,7 +633,6 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
 │       ├── github/*.bin         # safeStorage-encrypted tokens
-│       ├── project-secrets.v1.enc # encrypted ADE project secrets for agents/CLI/UI
 │       ├── sync-site-id
 │       ├── sync-device-id
 │       └── sync-bootstrap-token
@@ -1399,7 +1398,7 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 | API provider keys (machine) | `~/.ade/secrets/` via `resolveMachineAdeLayout` | Same store, machine scope, device-only. A key here follows the machine rather than the project |
 | Account settings cache | `~/.ade/account-settings.json` | Non-secret settings only; owner-tagged `0600` cache that survives sign-out and is discarded on account switch |
 | Account vault cache | `~/.ade/account-vault.json.enc` | Atomic `0600` machine-key-encrypted cache; legacy plaintext is accepted only for migration and removed after encrypted write succeeds |
-| ADE project secrets | `.ade/secrets/project-secrets.v1.enc` | AES-GCM encrypted file store sealed with its own machine key; also co-owned by the brain |
+| Passwords & Secrets | `~/.ade/passwords/passwords.v1.enc` (+ the relay's sealed items) | Each item sealed under the account's vault key; this file is the machine-key-encrypted cache. "This computer only" secrets live in the same file, never synced. A project's old `.ade/secrets/project-secrets.v1.enc` is moved in and deleted on first open (`projectSecretService.migrateLegacy`) |
 | Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store sealed with the machine key. Read and written by the brain, the `ade` CLI, and desktop |
 | Machine credential store (Electron) | `.ade/secrets/credentials.safe.enc` | `safeStorage.encryptString`; readable only by Electron |
 | Claude OAuth creds | Claude's own store | Inherited |
@@ -1517,12 +1516,12 @@ from Connections — the control runs the store repair before restarting the
 brain — and reported once per episode as `ade_account_session_unreadable` (see
 [logging](./logging.md)).
 
-ADE project-secret dotenv imports are explicit transfers, not background
-sync: the desktop reads a user-selected local file (1 MB cap) and sends its
-content to the active project runtime for parsing and atomic import. Exports are
-also runtime-owned and create a mode-`0600` plaintext file in that runtime
-machine's Downloads folder. The review modal intentionally displays imported
-values before save; the encrypted store remains the normal at-rest location.
+Secret `.env` imports and exports in Settings › Passwords & Secrets are explicit
+transfers on the computer the person is using: main reads a file they pick (1 MB
+cap) and returns its entries to choose from, and `passwords.importSecrets`
+saves them; `passwords.exportSecrets` (after Touch ID or Windows Hello) writes a
+new mode-`0600` plaintext file in this computer's Downloads. The import dialog
+shows each value's length, never the value.
 
 ### 8.2 Preload as only cross-boundary surface
 
@@ -1600,8 +1599,9 @@ vault value through this bridge: account credentials use the brain-backed
 `account_vault` action domain, whose `list`, `get`, `set`, `remove`, and `sync`
 operations are policy-gated separately from the non-secret
 `account_settings` domain. Desktop main services reach the vault through
-`accountVaultBridge`, and the account migration runner hydrates provider keys,
-Linear refresh credentials, and repository-scoped project secrets after sign-in.
+`accountVaultBridge`, and the account migration runner hydrates provider keys
+and Linear refresh credentials after sign-in, and moves a project's old
+secrets into Passwords & Secrets.
 
 Application-wide shell state also crosses this boundary.
 `useAppWideSessionAttention` derives the loud session-attention count from
@@ -1648,7 +1648,7 @@ a badge would materialize a primary lane. See
 - **Path validation** (`resolvePathWithinRoot()`) resolves symlinks via `realpathSync` before containment checks. Applied to lane env init, coordinator tools, process working dirs, sync artifact paths, ADE CLI context file resolution, computer-use artifact ingestion.
 - **No config arrives from a repository**: `.ade/ade.yaml` is not read. A legacy committed file is carried over into `local.yaml` once — only `project`, `environments`, `github`, `ai`, `linearSync`, `ui`, and `browser`; executable `testSuites`, `laneOverlayPolicies`, `automations`, `laneEnvInit`, `laneTemplates`, `defaultLaneTemplate`, `git`, and `laneCleanup` are dropped — and then deleted. A clone therefore cannot supply a `command`, a `setupScript`, or an agent prompt, and there is no trust gate to approve.
 - **Provider sign-in relays, never stores**: Pi sign-in runs Pi's own `ModelRuntime.login` in a worker; Pi's `AuthStorage` writes `auth.json` under its cross-process lock. ADE receives prompt text only, passes the user's answer straight back, and keeps nothing on the status event. `ade.ai.piLoginSubmit`'s `value` argument is in the per-channel redaction map because for an API-key prompt that argument *is* the credential. That map lives in `services/ipc/ipcChannelRedaction.ts` (`ipcChannelRedactionMap` + `redactIpcArgsForChannel`) rather than inside `registerIpc.ts` so the contract is reachable from a test — a channel silently dropping out of it leaks into verbose IPC traces and nothing else fails.
-- **IPC trace redaction is two rules, kept visibly apart.** `ipcChannelRedactionMap` is the specific statement, and it names the two key-store channels (`ai.storeApiKey` and `ai.setOpencodeProviderKey`, both on `key`) and the three project-secret channels (`projectSecrets.set` on `value`, `previewEnvImport` on `content`, `importEnv` on `secrets`) alongside the terminal, browser, and app-control channels. `shouldRedactIpcKey` is the backstop for a channel nobody remembered to list: a SUBSTRING match for a family of names (`token`, `secret`, `password`, `authorization`) and an EXACT match for one that would over-match (`apikey`, `api_key`, `pairingpin`, `pairing_pin`). A bare `key` is deliberately **not** in the backstop — it is a credential on the key-store channels, which the map names outright, and the ordinary word for a lookup key everywhere else, where blanking it generically would empty the traces that exist to explain those calls.
+- **IPC trace redaction is two rules, kept visibly apart.** `ipcChannelRedactionMap` is the specific statement, and it names the two key-store channels (`ai.storeApiKey` and `ai.setOpencodeProviderKey`, both on `key`) and `passwords.call` on `args` (a saved secret's value or a `.env` import travels inside it) alongside the terminal, browser, and app-control channels. `shouldRedactIpcKey` is the backstop for a channel nobody remembered to list: a SUBSTRING match for a family of names (`token`, `secret`, `password`, `authorization`) and an EXACT match for one that would over-match (`apikey`, `api_key`, `pairingpin`, `pairing_pin`). A bare `key` is deliberately **not** in the backstop — it is a credential on the key-store channels, which the map names outright, and the ordinary word for a lookup key everywhere else, where blanking it generically would empty the traces that exist to explain those calls.
 - **Untrusted project code stays unexecuted**: the Pi worker constructs Pi's `SettingsManager` with `projectTrusted: false` and passes it to both the resource loader and the session, so only the user's own `~/.pi/agent/extensions` can load — never a checked-out repository's `.pi/extensions`. If a Pi build will not accept that flag, extensions are disabled rather than loaded unconstrained.
 
 Related trust-boundary docs: [Computer-use artifact broker](./features/computer-use/artifact-broker.md), [Computer-use backends](./features/computer-use/backends.md), and [Configuration schema](./features/onboarding-and-settings/configuration-schema.md).
@@ -2029,8 +2029,9 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
   `localTrustOrigin`, so signing out or switching accounts demotes the record
   back to purely local trust rather than deleting it. Signing in never makes a
   hand-paired machine destructible.
-- Account-owned provider keys, Linear OAuth refresh credentials, and account
-  project secrets follow the signed-in account through the encrypted vault;
+- Account-owned provider keys and Linear OAuth refresh credentials follow the
+  signed-in account through the encrypted vault, and secrets through Passwords
+  & Secrets;
   local stores retain provenance and purge account-origin values on sign-out or
   account switch. GitHub tokens, vendor CLI refresh credentials, and other
   device-only credentials remain on the host.
