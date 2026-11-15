@@ -11,6 +11,7 @@
 if [ -n "${ade_login_inherited_path:-}" ]; then
   ade_p=$ade_login_inherited_path
   ade_ifs=$IFS
+  case $- in *f*) ade_noglob=1 ;; *) ade_noglob= ;; esac
   set -f
   IFS=:
   for ade_d in $PATH; do
@@ -18,8 +19,8 @@ if [ -n "${ade_login_inherited_path:-}" ]; then
     case ":$ade_p:" in *":$ade_d:"*) ;; *) ade_p=$ade_p:$ade_d ;; esac
   done
   IFS=$ade_ifs
-  set +f
+  [ -n "$ade_noglob" ] || set +f
   PATH=$ade_p
   export PATH
 fi
-unset ade_login_inherited_path ade_p ade_d ade_ifs
+unset ade_login_inherited_path ade_p ade_d ade_ifs ade_noglob
