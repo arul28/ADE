@@ -1995,7 +1995,12 @@ Renderer surfaces:
   `BASH_ENV=""`, fish `--no-config`, PowerShell `-NoLogo -NoProfile`,
   `cmd.exe /d`); `ptyService.resolveShellCandidates("clean")`
   uses the same recipe for command-backed and provider-fallback shells. Plain
-  interactive shells use their login configuration. Windows accepts configured Windows PowerShell,
+  interactive shells use their login configuration on macOS (`-l`, as
+  Terminal and iTerm do). On Linux they are interactive but not login, as
+  GNOME Terminal, Konsole and VS Code start them: a login shell runs
+  `/etc/profile`, which on Debian sets PATH from scratch and dropped ADE's
+  `ade` and `gh` shims. The login shell's PATH still reaches the terminal,
+  resolved into its environment, and `~/.bashrc` / `~/.zshrc` still run. Windows accepts configured Windows PowerShell,
   PowerShell 7, cmd, or an absolute Git for Windows `bash.exe` path and then
   falls back through PowerShell 5.1, PowerShell 7, and cmd. Bare `bash.exe` and
   `wsl.exe` are rejected so the local runtime never crosses into WSL.

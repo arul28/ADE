@@ -1217,7 +1217,16 @@ function cleanShellSpec(file: string): ShellSpec {
   return { file, args: [], env: { ENV: "" } };
 }
 
+/**
+ * A shell the person opens to type in. macOS starts a login shell, as
+ * Terminal and iTerm do. Linux starts an interactive non-login shell, as GNOME
+ * Terminal, Konsole and VS Code do: a login shell runs /etc/profile, which on
+ * Debian sets PATH from scratch and drops ADE's `ade` and `gh` shims. The
+ * login shell's PATH still arrives, resolved into the terminal's environment
+ * (withResolvedCliLaunchPath), and ~/.bashrc or ~/.zshrc still runs.
+ */
 function loginShellSpec(file: string): ShellSpec {
+  if (process.platform === "linux") return { file, args: [] };
   const name = path.basename(file).toLowerCase();
   if (name === "zsh" || name === "bash") return { file, args: ["-l"] };
   if (name === "fish") return { file, args: ["--login"] };
