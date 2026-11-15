@@ -312,6 +312,16 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     if (presence === "online") return "Connect";
     return copy.isAdeCloud && presence === "asleep" ? "Wake" : null;
   };
+  /**
+   * The state word of a copy's computer, the same on ADE Web and the desktop:
+   * "Asleep" only for an ADE Cloud computer that went to sleep (it can sleep
+   * for days with no heartbeat), "Offline" for every other computer.
+   */
+  const offlineWord = (copy: RepositoryCopy): "Asleep" | "Offline" => {
+    if (!copy.isAdeCloud) return "Offline";
+    const machine = accountMachineOf(copy);
+    return accountMachinePresence(machine) === "asleep" || machine?.sleepState === "asleep" ? "Asleep" : "Offline";
+  };
   const connectable = webOpenable || copies.some((copy) => wakeOrConnectLabel(copy) != null);
   // The computer this page is opening the project on now, if any.
   const opening = autoOpen?.machineName
@@ -406,7 +416,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                       {manualConnectKey != null && manualConnectKey === copy.machineKey ? "Connecting…" : wakeOrConnect}
                     </button>
                   ) : (
-                    <span className="kit-tag shrink-0">{webMode ? webMachineOf(copy)?.statusLabel ?? "Offline" : "Offline"}</span>
+                    <span className="kit-tag shrink-0">{offlineWord(copy)}</span>
                   )}
                 </div>
                 );
