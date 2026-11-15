@@ -25,6 +25,18 @@
   animation-delay: -750ms !important;
 }
 
+/* lib/caretRest.ts: after 10 s with no input, carets stay drawn but stop
+   blinking. A blinking caret repaints every 500 ms and keeps the display link
+   awake, so an idle focused prompt box woke the app about 60 times a second.
+   xterm's hidden input never shows its caret, so it never blinks. */
+html.caret-resting,
+html.caret-resting * {
+  caret-animation: manual;
+}
+.xterm .xterm-helper-textarea {
+  caret-animation: manual;
+}
+
 /* The app's text selection color. Chromium inherits ::selection from the
    parent's ::selection, so one rule on the app root colors every descendant,
    and a nested `selection:` class still wins for its own subtree. Tailwind's

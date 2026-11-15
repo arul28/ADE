@@ -17,6 +17,7 @@ import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installScrollingIndicator } from "./lib/scrollingIndicator";
+import { installCaretRest } from "./lib/caretRest";
 import { captureError } from "../shared/sentry/capture";
 import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
 import { reportRendererMemorySnapshot } from "./lib/rendererMemorySnapshot";
@@ -37,6 +38,7 @@ trackWindowsCaptionInset();
 
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
+installCaretRest();
 installAnimationPhaseAlignment();
 
 (function injectFontFaces() {
