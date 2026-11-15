@@ -1428,16 +1428,19 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   also puts the shim on the first chat after it starts: it reads the repo's
   owner from the git config file (`gitConfigOrigin.ts`), as the desktop does,
   so a launch's chat no longer misses it.
-- Login shells: Debian's `/etc/profile` sets PATH from scratch, and ADE's
-  terminals were `bash -l`, so they lost the `ade` and `gh` shims (`gh` then
-  ran with no token). `/etc/profile.d/ade-shims.sh`
-  (`infra/ade-cloud/template/ade-shims-profile.sh`) puts back
-  `ADE_CLI_BIN_DIR` and the folder of the git credential helper ADE set
-  (`git-credential-ade-github`, beside the `gh` shim). ADE itself no longer
-  starts login shells on Linux (terminals are interactive non-login shells and
-  Codex runs with `allow_login_shell=false`; see
-  [Linux support](../../development/linux-support.md)), so the script now
-  covers login shells started outside ADE, such as an SSH session.
+- Login shells keep their PATH: Debian's `/etc/profile` sets PATH from
+  scratch, so a login shell lost everything the brain put on PATH: the `ade`
+  and `gh` shims, `~/.local/bin`, npm's global bin, the Android tools. Checked
+  on beta.39: a Codex chat (then `bash -lc` for every command) found no `gh`
+  in `~/.local/bin` though its own PATH had it. The image's `/etc/profile`
+  saves the PATH it was given on its first line, and
+  `/etc/profile.d/ade-shims.sh` (`infra/ade-cloud/template/ade-shims-profile.sh`)
+  puts it back in front, keeping Debian's folders after it (as macOS's
+  path_helper does). The Dockerfile checks it at build time. ADE itself no
+  longer starts login shells on Linux (terminals are interactive non-login
+  shells and Codex runs with `allow_login_shell=false`; see
+  [Linux support](../../development/linux-support.md)), so the script covers
+  login shells started outside ADE, such as an SSH session.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

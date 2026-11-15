@@ -158,7 +158,6 @@ import {
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { LaneEnvInitProgress } from "../../desktop/src/shared/types/config";
-import { isTrackedAgentCliToolType } from "../../desktop/src/shared/types/sessions";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -3822,22 +3821,6 @@ function ensurePtyTargetAuthorized(
   }
 }
 
-function ensureTrackedCliTargetAuthorized(
-  runtime: AdeRuntime,
-  session: SessionState,
-  method: string,
-  targetSessionId: string | null,
-): void {
-  if (
-    callerHasRoleAtLeast(session.identity.role, "cto")
-    || isUnboundAdeCliCaller(session)
-    || !targetSessionId
-  ) return;
-  const target = getPtySessionForAuthorization(runtime, targetSessionId);
-  if (!target || !isTrackedAgentCliToolType(target.toolType ?? null)) return;
-  ensurePtyTargetAuthorized(runtime, session, method, { sessionId: targetSessionId });
-}
-
 function listAuthorizedPtySessions(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3933,25 +3916,43 @@ function scopeTerminalListArgs(
   method: string,
   terminalArgs: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Any caller may list any lane's or chat's terminals. With nothing asked
+  // for, the list stays the caller's own (its chat, or its one lane).
   const scopedArgs = { ...terminalArgs };
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const requestedChatSessionId = asOptionalTrimmedString(scopedArgs.chatSessionId);
   const requestedLaneId = extractLaneId(scopedArgs);
-  const laneIds = authorizedPtyLaneIds(runtime, session);
-  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    ptyAccessDenied(method, session);
-  }
-  if (requestedLaneId && !laneIds.has(requestedLaneId)) {
-    ptyAccessDenied(method, session);
-  }
-  if (!requestedChatSessionId && callerChatSessionId) {
+  if (requestedChatSessionId || requestedLaneId) return scopedArgs;
+  if (callerChatSessionId) {
     scopedArgs.chatSessionId = callerChatSessionId;
-  } else if (!requestedLaneId && laneIds.size === 1) {
-    scopedArgs.laneId = [...laneIds][0];
-  } else if (!requestedChatSessionId && !requestedLaneId) {
-    ptyAccessDenied(method, session);
+    return scopedArgs;
   }
-  return scopedArgs;
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  if (laneIds.size === 1) {
+    scopedArgs.laneId = [...laneIds][0];
+    return scopedArgs;
+  }
+  ptyAccessDenied(method, session);
+}
+
+/**
+ * `terminal.read` / `terminal.preview`: any caller reads any terminal (by id,
+ * pty or chat). With no target it reads the caller's own chat's terminal.
+ */
+function scopeTerminalReadArgs(
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = { ...terminalArgs };
+  if (
+    asOptionalTrimmedString(scopedArgs.terminalId)
+    || asOptionalTrimmedString(scopedArgs.ptyId)
+    || asOptionalTrimmedString(scopedArgs.chatSessionId)
+  ) return scopedArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!callerChatSessionId) ptyAccessDenied(method, session);
+  return { ...scopedArgs, chatSessionId: callerChatSessionId };
 }
 
 function scopeTerminalTargetArgs(
@@ -3996,15 +3997,9 @@ function scopeTerminalWatchArgs(
   method: string,
   terminalArgs: Record<string, unknown>,
 ): Record<string, unknown> {
+  // Watching is reading: any terminal may be the target. The watch itself
+  // belongs to the caller's chat (scopeTerminalChatArgs pins that).
   const scopedArgs = scopeTerminalChatArgs(runtime, session, method, terminalArgs);
-  const terminalId = asOptionalTrimmedString(scopedArgs.terminalId);
-  const ptyId = asOptionalTrimmedString(scopedArgs.ptyId);
-  if (terminalId || ptyId) {
-    ensurePtyTargetAuthorized(runtime, session, method, {
-      ...(terminalId ? { sessionId: terminalId } : {}),
-      ...(ptyId ? { ptyId } : {}),
-    });
-  }
   // An agent's own watch is armed by the agent, whatever it claims.
   return { ...scopedArgs, armedBy: "agent" };
 }
@@ -4024,6 +4019,7 @@ function scopeTerminalAdeActionArgs(
       return scopeTerminalChatArgs(runtime, session, method, terminalArgs);
     case "read":
     case "preview":
+      return scopeTerminalReadArgs(session, method, terminalArgs);
     case "write":
     case "resize":
     case "signal":
@@ -7160,11 +7156,6 @@ async function runTool(args: {
           ? value
           : value.filter((entry) => isRecord(entry) && typeof entry.laneId === "string" && laneIds.has(entry.laneId))
         : [];
-    } else if (!callerIsCto && domain === "chat" && action === "getTurnStatus") {
-      const targetSessionId = typeof argsList?.[0] === "string"
-        ? argsList[0]
-        : asOptionalTrimmedString(rawObjectArgs.sessionId);
-      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
     }
 
     if (domain === "chat" && (action === "readTranscript" || action === "readTranscriptPage")) {
@@ -7175,9 +7166,10 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
+      // Any caller may read any session's transcript and turn status, a CLI
+      // agent's in another lane included: reading is how chats follow each
+      // other's work. Writing to another session stays scoped.
       const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-      const targetSessionId = asOptionalTrimmedString(chatArgs.sessionId) || callerSessionId;
-      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
@@ -7222,13 +7214,19 @@ async function runTool(args: {
       // `terminal.write` `fromUser` strip above already removed a claim a
       // non-user caller may not make, and re-reading the raw args would put it
       // back.
+      const requestedTerminalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs);
+      // A list that names a chat or lane is a read of exactly that, which any
+      // caller may make; only the default list (the caller's own) is filtered below.
+      const namedTerminalList = Boolean(
+        asOptionalTrimmedString(requestedTerminalArgs.chatSessionId) || extractLaneId(requestedTerminalArgs),
+      );
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
         session,
         action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
+        requestedTerminalArgs,
       );
-      if (action === "list") {
+      if (action === "list" && !namedTerminalList) {
         // A lane-wide list leaves out shells a chat on another machine owns here.
         const caller = asOptionalTrimmedString(session.identity.chatSessionId);
         // A chat on another machine lists only its own shells here (the scope
