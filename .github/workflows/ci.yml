@@ -164,6 +164,15 @@ jobs:
   # ade-cli steps run. Its own step at the end waits for it and prints its
   # output, so a failure still names the check. Peak memory measured together:
   # desktop tsc about 7 GB, ade-cli tsc about 2.5 GB, on a 16 GB runner.
+  #
+  # Both run tsc --incremental. The build info holds a hash of each file and
+  # the errors tsc found in it. A pull request restores the build info of the
+  # newest main commit with the same TypeScript, lockfiles and tsconfigs, so
+  # tsc checks again only the files that changed and the files they affect,
+  # and still reports the errors it recorded for the others. A push to main
+  # and a dispatch restore nothing and run the full check; a push to main
+  # then saves a fresh build info. A missing or unreadable build info makes
+  # tsc run the full check, so it can never make the check pass.
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -175,6 +184,25 @@ jobs:
       - uses: ./.github/actions/restore-core-node-modules
         with:
           install-on-miss: "true"
+      - name: Typecheck build info key
+        id: tsc_cache
+        env:
+          INPUTS_HASH: ${{ hashFiles('apps/desktop/package-lock.json', 'apps/ade-cli/package-lock.json', 'apps/desktop/tsconfig.json', 'apps/ade-cli/tsconfig.json') }}
+        run: |
+          set -euo pipefail
+          desktop_ts="$(node -p 'require("./apps/desktop/node_modules/typescript/package.json").version')"
+          cli_ts="$(node -p 'require("./apps/ade-cli/node_modules/typescript/package.json").version')"
+          echo "prefix=tsc-v1-${RUNNER_OS}-ts${desktop_ts}-${cli_ts}-${INPUTS_HASH}-" >> "$GITHUB_OUTPUT"
+          mkdir -p .tsbuildinfo
+      # Only main saves build infos (the last step), so restore-keys can only
+      # match a main commit's entry with the same inputs, the newest first.
+      - name: Restore the typecheck build info of main
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: .tsbuildinfo
+          key: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
+          restore-keys: ${{ steps.tsc_cache.outputs.prefix }}
       # A background process outlives its step; the runner stops leftover
       # processes only when the job ends. The status file appears only when
       # tsc has exited, so the wait step below cannot read a partial result.
@@ -185,13 +213,13 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=8192
         run: |
           (
-            if (cd apps/desktop && npm run typecheck) > "$RUNNER_TEMP/typecheck-desktop.log" 2>&1; then code=0; else code=$?; fi
+            if (cd apps/desktop && npm run typecheck -- --incremental --tsBuildInfoFile "$GITHUB_WORKSPACE/.tsbuildinfo/desktop.tsbuildinfo") > "$RUNNER_TEMP/typecheck-desktop.log" 2>&1; then code=0; else code=$?; fi
             echo "$code" > "$RUNNER_TEMP/typecheck-desktop.status.tmp"
             mv "$RUNNER_TEMP/typecheck-desktop.status.tmp" "$RUNNER_TEMP/typecheck-desktop.status"
           ) &
           echo "TYPECHECK_DESKTOP_PID=$!" >> "$GITHUB_ENV"
       - name: "ade-cli: typecheck"
-        run: cd apps/ade-cli && npm run typecheck
+        run: cd apps/ade-cli && npm run typecheck -- --incremental --tsBuildInfoFile "$GITHUB_WORKSPACE/.tsbuildinfo/ade-cli.tsbuildinfo"
       # scripts/validate-docs.test.mjs covers the docs validator that the
       # docs job runs. scripts/check-package-licenses.test.mjs covers
       # the package-license checker that the packages job runs.
@@ -216,6 +244,14 @@ jobs:
             exit 1
           fi
           exit "$(cat "$status")"
+      # Each main commit saves its own entry, because a cache key cannot be
+      # replaced. Old entries expire when no run reads them.
+      - name: Save the typecheck build info
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: .tsbuildinfo
+          key: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
 
   lint-desktop:
     runs-on: ubuntu-latest
