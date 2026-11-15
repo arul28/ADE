@@ -3428,7 +3428,7 @@ describe("adeRpcServer", () => {
     expect(notifyParentOfCliChildSpawn).toHaveBeenLastCalledWith("session-1", { resumed: true });
   });
 
-  it("lane-filters CLI children for an agent and denies a transcript from another lane", async () => {
+  it("lane-filters CLI children for an agent and reads a transcript from any lane", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
       if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
@@ -3466,13 +3466,14 @@ describe("adeRpcServer", () => {
     });
     expect(deniedList.isError).toBe(true);
 
-    const deniedRead = await callTool(handler, "run_ade_action", {
+    // Reading is open: any caller reads any session, another lane's CLI too.
+    const foreignRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "readTranscript",
       args: { sessionId: "cli-foreign" },
     });
-    expect(deniedRead.isError).toBe(true);
-    expect(getChatTranscript).not.toHaveBeenCalled();
+    expect(foreignRead.isError).toBeUndefined();
+    expect(getChatTranscript).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "cli-foreign" }));
 
     const allowedRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
