@@ -18304,6 +18304,11 @@ final class ADETests: XCTestCase {
 
   @MainActor
   func testSyncActiveSessionsKeepsFailedChatsForAttentionDrawer() throws {
+    // A user pause left by another test would unlist the focused computer,
+    // and its rows with it (the lists rule Activity follows).
+    let pausedKey = "ade.sync.autoReconnectPausedByUser"
+    UserDefaults.standard.removeObject(forKey: pausedKey)
+    defer { UserDefaults.standard.removeObject(forKey: pausedKey) }
     let baseURL = makeTemporaryDirectory()
     let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
     XCTAssertNil(database.initializationError)
