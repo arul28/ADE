@@ -2440,12 +2440,18 @@ export function createAppControlLaneController(context: AppControlLaneController
     return { ok: true };
   };
 
-  const captureScreenshotWithClient = async (client: CdpClient, session: AppControlSession): Promise<AppControlScreenshot> => {
+  const captureScreenshotWithClient = async (
+    client: CdpClient,
+    session: AppControlSession,
+    options: { png?: boolean } = {},
+  ): Promise<AppControlScreenshot> => {
     // Prefer the most recent screencast frame: it's already the latest paint
     // the user can see, and reuses 0 CDP commands. Falls back to an explicit
-    // capture only when streaming hasn't produced a frame yet.
+    // capture only when streaming hasn't produced a frame yet. A caller that
+    // writes a .png file asks for `png`: the live frame is a JPEG.
     if (
-      lastScreencastFrame
+      !options.png
+      && lastScreencastFrame
       && lastScreencastFrame.sessionId === session.id
       && lastScreencastFrame.cdpTargetId === session.cdpTargetId
       && lastScreencastFrame.width > 0
@@ -2488,7 +2494,8 @@ export function createAppControlLaneController(context: AppControlLaneController
     };
   };
 
-  const screenshot = async (): Promise<AppControlScreenshot> => withCdp(captureScreenshotWithClient);
+  const screenshot = async (options: { png?: boolean } = {}): Promise<AppControlScreenshot> =>
+    withCdp((client, session) => captureScreenshotWithClient(client, session, options));
 
   /** The lane's newest frame, when it is of the app and window attached now. */
   const currentFrame = (): AppControlScreencastFrame | null => {

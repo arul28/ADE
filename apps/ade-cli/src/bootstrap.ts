@@ -13,6 +13,7 @@ import {
 import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import type { RemoteWorkChatEnded, RemoteWorkTurnRelease } from "../../desktop/src/shared/chatRemoteWork";
 import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
+import { defaultCliShimsRoot } from "../../desktop/src/main/services/shared/cliShimsRoot";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -729,7 +730,7 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain) {
     entryPath,
     execPath: process.execPath,
     brain,
-    shimsRoot: path.join(os.tmpdir(), "ade-cli-shims"),
+    shimsRoot: defaultCliShimsRoot(),
     resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
     nodeModulePaths: packagedCliNodeModulePaths(entryPath),
   });

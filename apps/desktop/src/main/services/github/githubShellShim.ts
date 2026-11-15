@@ -7,6 +7,7 @@ import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runti
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { getPathEnvKey } from "../ai/cliExecutableResolver";
 import { installWindowsCliLauncher, resolveWindowsCliLauncherSource } from "../cli/windowsCliLauncher";
+import { defaultCliShimsRoot } from "../shared/cliShimsRoot";
 
 /**
  * `gh` and `git` in agent shells, chats and CLI sessions with the ADE
@@ -26,7 +27,7 @@ import { installWindowsCliLauncher, resolveWindowsCliLauncherSource } from "../c
  *   5) on Windows. One per process (desktop main, brain), named by its pid.
  *   `GET /v1/token?owner=<owner>` answers 200 with the token, or 204 when
  *   ADE has none for that owner (the shim then steps aside).
- * - The shims, written to `<tmp>/ade-cli-shims/github-<hash>` (beside the
+ * - The shims, written to `<tmp>/ade-cli-shims[-<uid>]/github-<hash>` (beside the
  *   `ade` shims), refusing a folder another user owns or can write:
  *   - macOS/Linux: `gh` is a `#!/bin/sh` script. It asks with `curl`
  *     (about 10 ms) and `exec`s the real `gh`, so stdin, stdout, stderr,
@@ -694,7 +695,7 @@ export function configureGithubShellShim(args: {
   const env = args.env ?? process.env;
   const layout = resolveMachineAdeLayout(env, platform);
   const installed = installGithubShellShim({
-    shimsRoot: args.shimsRoot ?? path.join(os.tmpdir(), "ade-cli-shims"),
+    shimsRoot: args.shimsRoot ?? defaultCliShimsRoot(platform),
     execPath: args.execPath ?? process.execPath,
     platform,
     launcherSource: args.launcherSource,

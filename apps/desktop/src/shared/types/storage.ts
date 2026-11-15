@@ -49,6 +49,17 @@ export function diskFullLine(text: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * A lane's setup took nearly all of an ADE Cloud computer's memory and ADE
+ * stopped it (`laneSetupMemoryGuard.ts`): with no swap, the provider would
+ * otherwise restart the whole computer and the setup would run, and fill it,
+ * again. Unlike the disk, memory comes only with a bigger size.
+ */
+export function laneSetupOutOfMemoryError(totalMb: number): string {
+  const gb = Math.max(1, Math.round(totalMb / 1024));
+  return `Setup used nearly all of this computer's memory (${gb} GB), so ADE stopped it before the computer had to restart. Use a bigger size, or make setup use less memory, then retry.`;
+}
+
 /** A setup filled the disk, and the note that a grow is under way couldn't be saved: no grow without it. */
 export const LANE_SETUP_NO_ROOM_TO_SAVE_ERROR = "Setup filled this computer's disk, and ADE couldn't save its place to grow it. Free some space (or use Clear caches in Settings > ADE Cloud), then retry.";
 
