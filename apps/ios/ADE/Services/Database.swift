@@ -286,12 +286,49 @@ final class DatabaseService {
   }
 
   func close() {
-    withLock {
-      if let db {
-        sqlite3_close(db)
-        self.db = nil
+    withLock { closeLocked() }
+  }
+
+  private func closeLocked() {
+    if let db {
+      sqlite3_close(db)
+      self.db = nil
+    }
+  }
+
+  /// Deletes this phone's replica and opens an empty one under a new site id,
+  /// as a fresh install does. Used when an account leaves the phone: every
+  /// row its computers synced (sessions, chats, lanes, PRs, file caches) goes
+  /// at once. A file delete writes no change rows, so nothing of it can sync
+  /// back to a machine; a machine still paired by code sends its data again
+  /// to the new site.
+  func resetReplica() throws {
+    try withLock {
+      closeLocked()
+      for suffix in ["", "-wal", "-shm"] {
+        let url = URL(fileURLWithPath: dbURL.path + suffix)
+        if fileManager.fileExists(atPath: url.path) {
+          try fileManager.removeItem(at: url)
+        }
+      }
+      if fileManager.fileExists(atPath: siteIdURL.path) {
+        try fileManager.removeItem(at: siteIdURL)
+      }
+      syncTableInfoCache = [:]
+      activeProjectIdOverride = nil
+      shouldCaptureLocalChanges = true
+      skippedUnknownSyncTables = []
+      do {
+        try openConnection(at: dbURL)
+        try migrateAndPrepare()
+        initializationError = nil
+      } catch {
+        closeLocked()
+        initializationError = error as NSError
+        throw error
       }
     }
+    notifyDidChange()
   }
 
   func localSiteId() -> String {
@@ -2764,7 +2801,7 @@ final class DatabaseService {
     cachedSiteIdBlob = Data(hex: desiredSiteId) ?? Data()
     try forceSiteId(desiredSiteId)
     if readCurrentSiteId() != desiredSiteId {
-      close()
+      closeLocked()
       try openConnection(at: dbURL)
       try exec("pragma journal_mode = wal")
       try exec("pragma synchronous = normal")

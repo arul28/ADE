@@ -1305,11 +1305,15 @@ struct WorkSessionDestinationView: View {
     return DuoToolTiles(tiles: tiles) { tab in openChatTool(tab) }
   }
 
-  /// The wide column's subtitle: lane · model · machine, the three facts that
-  /// tell two chats with the same title apart.
+  /// The wide column's subtitle: machine · lane · model, the three facts that
+  /// tell two chats with the same title apart. The machine goes first: a
+  /// narrow column (the book pose) cuts the end of the line, and the machine
+  /// is where a message sent here runs, while the model chip in the prompt
+  /// box names the model too.
   private var duoChatSubtitle: String? {
     let current = session ?? initialSession
     var parts: [String] = []
+    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     // The CTO's lane is a stand-in named "CTO": the title already says it.
     if duoCtoSettings == nil,
        let lane = current?.laneName.trimmingCharacters(in: .whitespacesAndNewlines), !lane.isEmpty {
@@ -1317,7 +1321,6 @@ struct WorkSessionDestinationView: View {
     }
     let model = shortModelLabel(composerChatSummary?.model)
     if !model.isEmpty { parts.append(model) }
-    if let machine = sessionDestinationNavigationSubtitle { parts.append(machine) }
     return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 

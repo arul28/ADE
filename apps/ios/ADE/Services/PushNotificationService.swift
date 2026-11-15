@@ -252,6 +252,11 @@ final class PushNotificationService: ObservableObject {
         sessionMuteRetrier.cancel()
         pendingSessionMutes = [:]
         setAccountMutedSessions([], ownerId: nil)
+        // Delivered notifications name the account's chats and quote them:
+        // they leave Notification Center with the account.
+        let center = UNUserNotificationCenter.current()
+        center.removeAllDeliveredNotifications()
+        Task { try? await center.setBadgeCount(0) }
         guard SyncService.shared?.hasPairedHost != true else { return }
         relayStatus = nil
         relayRefreshError = nil

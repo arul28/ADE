@@ -744,7 +744,10 @@ extension LanesTabView {
       if refreshRemote {
         try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
       }
-      let loadedSnapshots = try await syncService.fetchLaneListSnapshots(includeArchived: true)
+      let loadedSnapshots = laneSnapshotsByHubRule(
+        try await syncService.fetchLaneListSnapshots(includeArchived: true),
+        roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
+      )
       let loadedPullRequests = try await syncService.fetchPullRequestListItems()
       if laneSnapshots != loadedSnapshots {
         laneSnapshots = loadedSnapshots

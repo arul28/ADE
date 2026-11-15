@@ -85,9 +85,16 @@ final class LaneRemoteMachinesModel: ObservableObject {
       case nil:
         break
       }
-      let snapshots = isLive
+      let read = isLive
         ? (lastRead[key] ?? laneRemoteRosterSnapshots(repo))
         : laneRemoteRosterSnapshots(repo)
+      // Badge counts by the Hub's rule, from that machine's roster.
+      let snapshots = read.map { snapshot -> LaneListSnapshot in
+        guard let rosterLaneId = workParseRemoteLaneId(snapshot.lane.id)?.laneId else { return snapshot }
+        var next = snapshot
+        next.runtime = laneRuntimeByHubRule(snapshot.runtime, rosterLaneId: rosterLaneId, chats: repo.chats)
+        return next
+      }
       next.append(MachineLanes(
         machineKey: repo.machineKey,
         name: repo.machineName,
@@ -119,5 +126,57 @@ func laneRemoteRosterSnapshots(_ repo: WorkRemoteMachineRepo) -> [LaneListSnapsh
     var lane = rosterLane.asLaneSummary()
     lane.id = workRemoteLaneId(machineKey: repo.machineKey, laneId: rosterLane.id)
     return LaneListSnapshot(lane: lane, runtime: syncRemoteLaneEmptyRuntime)
+  }
+}
+
+/// A lane's badge counts by the Hub's rule (`hubChatBoardState`): a session
+/// counts as running only while it works now, and as waiting only while it
+/// asks for the user. The brain's lane summary counts every live session as
+/// running, so a quiet shell or a chat between turns lit the lane's ring.
+/// `chats` is the lane's machine roster for that checkout; nil (no roster yet)
+/// keeps the brain's counts. `rosterLaneId` is the lane id the roster uses.
+func laneRuntimeByHubRule(
+  _ runtime: LaneRuntimeSummary,
+  rosterLaneId: String,
+  chats: [RemoteRosterChat]?
+) -> LaneRuntimeSummary {
+  guard let chats else { return runtime }
+  var running = 0
+  var awaiting = 0
+  var count = 0
+  for chat in chats where chat.laneId == rosterLaneId && chat.archived != true && !chat.isIdentityChat {
+    count += 1
+    if chat.status == .awaiting || chat.awaitingInput == true {
+      awaiting += 1
+    } else if hubChatBoardState(chat, lane: nil).column == .working {
+      running += 1
+    }
+  }
+  let sessions = max(count, runtime.sessionCount)
+  let bucket: String
+  if awaiting > 0 {
+    bucket = "awaiting-input"
+  } else if running > 0 {
+    bucket = "running"
+  } else {
+    bucket = sessions > 0 ? "ended" : "none"
+  }
+  var next = runtime
+  next.bucket = bucket
+  next.runningCount = running
+  next.awaitingInputCount = awaiting
+  next.endedCount = max(0, sessions - running - awaiting)
+  next.sessionCount = sessions
+  return next
+}
+
+/// The focused machine's lane rows with badge counts by the Hub's rule, from
+/// its live roster of the open project.
+func laneSnapshotsByHubRule(_ snapshots: [LaneListSnapshot], roster: RemoteRosterProject?) -> [LaneListSnapshot] {
+  guard let roster else { return snapshots }
+  return snapshots.map { snapshot in
+    var next = snapshot
+    next.runtime = laneRuntimeByHubRule(snapshot.runtime, rosterLaneId: snapshot.lane.id, chats: roster.chats)
+    return next
   }
 }

@@ -55,12 +55,17 @@ encrypted account vault and are hydrated there after sign-in. The host performs
 the silent, receipt-backed migration from device-local credentials; the phone
 does not copy or migrate secrets. Sign-out closes Relay and clears account
 authorization while preserving explicit direct pairing trust for recovery.
-An explicit "Sign out of this iPhone" also removes the computers the phone
-reached through the account, and hides their cached projects
-(`SyncService.hideSignedOutAccountProjects`): only projects of computers paired
-by code stay on the Hub, and with none left the Hub shows its signed-out empty
-state. The cached rows stay in the replica (it syncs with machines) and show
-again when the same account signs in or a paired machine lists the folder.
+An explicit "Sign out of this iPhone", or a sign-in as another account, also
+removes the computers the phone reached through the account and resets the
+phone's local copy (`SyncService.resetLocalReplicaAfterAccountLeft`). The
+replica file and its site id go, as on a fresh install, so the reset writes no
+change rows that could sync back to a computer. The same reset empties the
+offline roster of each removed computer, the App Group workspace snapshot
+(widgets, Live Activity data), the Activity drawer, the last project route, and
+offline work queued for a removed computer. A computer still paired by code
+stays paired and syncs again from the start. With none left, every tab shows its
+signed-out empty state. When the account signs in again, its rows come back from
+its computers.
 
 Choosing a signed-in account machine performs first-time adoption through the
 directory using LAN, Tailscale, then Relay. LAN/Tailscale adoption is allowed

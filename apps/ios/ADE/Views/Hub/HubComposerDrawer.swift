@@ -1474,7 +1474,8 @@ struct HubInlineComposer: View {
     var laneId: String
   }
 
-  private static let lastDestinationKey = "ade.hub.lastDestination.v1"
+  /// Removed on sign-out with the account's other stores (`AccountService.publishSignedOut`).
+  static let lastDestinationKey = "ade.hub.lastDestination.v1"
 
   private static func loadLastDestination() -> HubLastDestination? {
     guard let data = ADESharedContainer.defaults.data(forKey: lastDestinationKey) else { return nil }

@@ -863,21 +863,6 @@ final class AccountService: ObservableObject {
     return rememberedFleetKeys(ownerId: ownerId)[fleetKey]
   }
 
-  /// Device identity (lowercased) -> account machine key, from the loaded
-  /// list and the last list this account loaded.
-  private func machineKeysByIdentity(ownerId: String) -> [String: String] {
-    var map: [String: String] = [:]
-    for (fleetKey, machineKey) in rememberedFleetKeys(ownerId: ownerId) {
-      guard let identity = HiddenMachineStore.identity(fromFleetKey: fleetKey) else { continue }
-      map[identity.lowercased()] = machineKey
-    }
-    for machine in machines {
-      guard let deviceId = machine.deviceId?.trimmingCharacters(in: .whitespacesAndNewlines), !deviceId.isEmpty else { continue }
-      map[deviceId.lowercased()] = machine.machineKey
-    }
-    return map
-  }
-
   private static func fleetKeyMapDefaultsKey(ownerId: String) -> String {
     "ade.account.fleetKeyMap.v1.\(ownerId)"
   }
@@ -1091,8 +1076,6 @@ final class AccountService: ObservableObject {
         CrashReporting.setUser(accountId: nextIdentity.userId)
       }
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
-      // Projects this account's last sign-out hid show again.
-      SyncService.shared?.showSignedOutAccountProjects(ownerId: nextIdentity.userId)
       identity = nextIdentity
       // The account's saved project list shows at once, before any read.
       AccountProjectStore.shared.activate(userId: nextIdentity.userId)
@@ -1162,6 +1145,11 @@ final class AccountService: ObservableObject {
       // a LAN-only user's cache.
       SyncService.shared?.chatThreadRegistry.purgeAll()
       SyncService.shared?.machineFleet?.reset()
+      // The account's cloud lane names, the last computer per account
+      // project, and the Hub composer's last project/lane leave with it.
+      UserDefaults.standard.removeObject(forKey: CloudLaneComputerLabels.defaultsKey)
+      UserDefaults.standard.removeObject(forKey: StartOnMemory.defaultsKey)
+      ADESharedContainer.defaults.removeObject(forKey: HubInlineComposer.lastDestinationKey)
     }
     cancelAttentionRefresh()
     stopAttentionPolling()
@@ -1368,23 +1356,14 @@ final class AccountService: ObservableObject {
     // cannot restore account machines or issue a session token.
     localSignOutState.suppress()
     let signingOutOwner = identity?.userId ?? revocation?.pending.ownerId
-    // Read before `publishSignedOut` clears them: which saved project copy
-    // is on which computer.
-    let projectStore = AccountProjectStore.shared
-    let accountCopies = (projectStore.liveProjects + projectStore.removedProjects).flatMap(\.copies)
-    let machineKeyByIdentity = signingOutOwner.map(machineKeysByIdentity(ownerId:)) ?? [:]
     publishSignedOut()
     // The person chose to sign out: the computers this phone connected
-    // through the account leave with it, at once, and so do their projects.
-    // Only machines paired directly with a code stay, as the sign-out dialog
-    // says. A session that only expired keeps them (`publishSignedOut` alone).
+    // through the account leave with it, at once, and so does everything they
+    // synced (`resetLocalReplicaAfterAccountLeft`). Only machines paired
+    // directly with a code stay, as the sign-out dialog says. A session that
+    // only expired keeps them (`publishSignedOut` alone).
     if let signingOutOwner {
       SyncService.shared?.removeAccountOwnedPairings(ownerId: signingOutOwner)
-      SyncService.shared?.hideSignedOutAccountProjects(
-        ownerId: signingOutOwner,
-        copies: accountCopies,
-        machineKeyByIdentity: machineKeyByIdentity
-      )
     }
     if let revocation, let token = revocation.token {
       await attemptDeviceRevocation(revocation.pending, token: token)

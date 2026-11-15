@@ -247,6 +247,16 @@ struct LanesTabView: View, Equatable {
     .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
     .onChange(of: syncService.focusedMachineListsWork) { _, _ in refreshLaneListPresentation() }
     .onChange(of: machineFilter) { _, _ in refreshLaneListPresentation() }
+    // The badge counts follow the focused roster (the Hub's rule) between reloads.
+    .onChange(of: syncService.rosterRevision) { _, _ in
+      let next = laneSnapshotsByHubRule(
+        laneSnapshots,
+        roster: syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
+      )
+      guard next != laneSnapshots else { return }
+      laneSnapshots = next
+      refreshLaneListPresentation()
+    }
     .onChange(of: remoteLanes.machines) { _, machines in
       // A machine that left the list cannot stay the filter: it would hide
       // every row, this machine's too.
