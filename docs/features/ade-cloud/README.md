@@ -1394,6 +1394,20 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   (`laneSetupOutOfMemoryError`, logged `lane_env_init.setup_stopped_for_memory`),
   never as a signal stop. A failed setup step's error keeps the end of the
   output (where npm says why), without warning lines, and the exit code.
+  Beyond setup, the brain runs one machine-wide guard
+  (`ade-cli/src/services/power/cloudMemoryGuard.ts`, started at serve on a
+  cloud computer): below a twentieth of memory (200 to 512 MB) it kills the
+  one biggest process of the brain's user, never the brain, its `ade __…`
+  workers, the entrypoint or the provider's processes, and logs
+  `cloud.memory_guard_killed` with the command. An agent's `npm install` or a
+  terminal's build then fails with "Killed" instead of restarting the
+  computer under every chat. Measured on ADE's own repo: `npm ci` for
+  `apps/desktop` peaks near 3.8 GB, so it sets up on a Medium (8 GB) and the
+  setup guard stops it on a Small.
+- Build tools: the image has `build-essential` and `pkg-config`, so npm
+  packages with native code and no prebuilt binary (node-pty, some sqlite and
+  bcrypt builds) compile on install; before, every such setup failed with
+  "gyp ERR!" on every size.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer

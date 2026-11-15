@@ -30167,6 +30167,10 @@ async function runServe(
         logger: headlessProjectLogger,
       })
     : null;
+  // No swap here: when memory runs out the provider restarts the whole computer. The biggest process goes instead.
+  const cloudMemoryGuard = isAdeCloudComputer()
+    ? (await import("./services/power/cloudMemoryGuard")).startCloudMemoryGuard({ logger: headlessProjectLogger })
+    : null;
   // What this computer tells ADE Cloud at its idle step: its lanes' work, its disk, an update, its boot.
   const cloudComputerReports = cloudKeepAwakeModule && isAdeCloudComputer()
     ? (await import("./services/power/cloudComputerReports")).createCloudComputerReports({
@@ -32091,6 +32095,7 @@ async function runServe(
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
     cloudKeepAwake?.dispose();
+    cloudMemoryGuard?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
