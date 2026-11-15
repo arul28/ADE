@@ -580,10 +580,20 @@ export function createCloudDiskGrower(deps: {
           const pending = pendingGrows.get(launchId);
           pendingGrows.delete(launchId);
           if (!pending) return null;
+          const before = readHistory()[launchId];
           if (!writeHistory({ ...readHistory(), [launchId]: { ...pending, at: now() } })) {
             return { state: "refused", error: LANE_SETUP_NO_ROOM_TO_SAVE_ERROR };
           }
-          return await grower.makeRoomForSetup({ stillIdle, signal, ...(onAsking ? { onAsking } : {}) });
+          const room = await grower.makeRoomForSetup({ stillIdle, signal, ...(onAsking ? { onAsking } : {}) });
+          // A grow that never started (refused by the plan, busy, cancelled) isn't one:
+          // a Retry after the person makes room must grow again, not read "another step wouldn't help".
+          if (room?.state !== "growing") {
+            const history = readHistory();
+            if (before) history[launchId] = before;
+            else delete history[launchId];
+            writeHistory(history);
+          }
+          return room;
         },
       };
     },
