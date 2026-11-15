@@ -74,6 +74,7 @@ import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
 import type {
@@ -7655,6 +7656,19 @@ export function createPtyService({
           const preferredKey = pathKey(preferred.file);
           shellCandidates = [preferred, ...shellCandidates.filter((shell) => pathKey(shell.file) !== preferredKey)];
         }
+      }
+      // Linux opens this shell without `-l` (loginShellSpec), so its login PATH
+      // comes from the probe above, which ran `$SHELL`. A saved shell other
+      // than `$SHELL` (zsh picked, SHELL=/bin/bash) adds its own login PATH
+      // (~/.zprofile), behind ADE's entries.
+      const chosenShell = shellCandidates[0]?.file;
+      if (
+        process.platform === "linux"
+        && useLoginInteractiveShell
+        && chosenShell
+        && pathKey(chosenShell) !== pathKey(launchEnv.SHELL?.trim() || "/bin/sh")
+      ) {
+        setPathEnvValue(launchEnv, getPathEnvValue(withResolvedCliLaunchPath({ ...launchEnv, SHELL: chosenShell })) ?? "");
       }
       let launchedDirectCommand = false;
       // Set when the launch names a provider CLI: its pinned copy runs, and a
