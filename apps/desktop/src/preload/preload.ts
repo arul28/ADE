@@ -5152,6 +5152,31 @@ const remoteConnectionSnapshotFanout = createIpcEventFanout<RemoteRuntimeConnect
   IPC.remoteRuntimeConnectionSnapshotChanged,
 );
 const ptyExitEventFanout = createIpcEventFanout<PtyExitEvent>(IPC.ptyExit);
+// One IPC listener per window for each, however many tabs subscribe: every
+// project tab adds a subscriber, and a listener per subscriber outgrows
+// Electron's per-channel warning at the third tab. Each subscribe call passes
+// its own callback, so two subscriptions of one function stay two.
+const laneLifecycleEventFanout = createIpcEventFanout<LaneLifecycleEvent>(IPC.lanesLifecycleEvent);
+const cloudStatusChangedFanout = createIpcEventFanout<unknown>(IPC.cloudStatusChanged);
+const updateEventFanout = createIpcEventFanout<AutoUpdateSnapshot>(IPC.updateEvent);
+const projectChangedFanout = createIpcEventFanout<ProjectInfo | null>(
+  IPC.appProjectChanged,
+  () => clearProjectScopedReadCaches(),
+);
+// Main's binding push. Subscribers hear it through `rememberProjectBinding`,
+// which publishes to `projectBindingChangedCallbacks`; this fan-out only keeps
+// one listener on the channel while anyone subscribes.
+const projectBindingPushFanout = createIpcEventFanout<OpenProjectBinding | null>(
+  IPC.appProjectBindingChanged,
+  (payload) => {
+    rememberProjectBinding(payload);
+    // Unconditional, unlike that publish: main re-sends the binding on
+    // project changes that keep the same binding (reopening the project it
+    // already had), and those still invalidate project-scoped reads.
+    clearProjectScopedReadCaches();
+  },
+);
+
 
 function normalizeProviderInstanceListResult(
   result: ProviderInstance[] | { instances: ProviderInstance[] },
@@ -5365,39 +5390,18 @@ const adeBridge = {
     /** Native-menu commands (⌘F, ⌘W) offered to the renderer first. */
     onMenuCommand: (cb: (command: AppMenuCommand) => void) =>
       subscribeAppCommand("menu", cb),
-    onProjectChanged: (cb: (project: ProjectInfo | null) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: ProjectInfo | null,
-      ) => {
-        clearProjectScopedReadCaches();
-        cb(payload);
-      };
-      ipcRenderer.on(IPC.appProjectChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.appProjectChanged, listener);
-    },
+    onProjectChanged: (cb: (project: ProjectInfo | null) => void) =>
+      projectChangedFanout(cb),
     onProjectBindingChanged: (
       cb: (binding: OpenProjectBinding | null) => void,
     ) => {
       projectBindingChangedCallbacks.add(cb);
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: OpenProjectBinding | null,
-      ) => {
-        // `cb` is not called here: `rememberProjectBinding` publishes to every
-        // registered callback, this one included. Calling it directly as well
-        // would deliver main's push twice to whichever subscriber owns this
-        // listener, and not at all a second time to the others.
-        rememberProjectBinding(payload);
-        // Unconditional, unlike the publish above: main re-sends the binding on
-        // project changes that keep the same binding (reopening the project it
-        // already had), and those still invalidate project-scoped reads.
-        clearProjectScopedReadCaches();
-      };
-      ipcRenderer.on(IPC.appProjectBindingChanged, listener);
+      // A fresh callback per subscription: the fan-out counts subscribers by
+      // callback, and a shared one would drop the listener at the first unsubscribe.
+      const unsubscribe = projectBindingPushFanout(() => {});
       return () => {
         projectBindingChangedCallbacks.delete(cb);
-        ipcRenderer.removeListener(IPC.appProjectBindingChanged, listener);
+        unsubscribe();
       };
     },
     openOwnedDeeplink: async (url: string): Promise<boolean> =>
@@ -7766,15 +7770,12 @@ const adeBridge = {
     onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void, pin?: OpenProjectBinding | null) => {
       const removePinned = subscribePinnedFanoutEvents(pin, remoteLaneLifecycleEventFanout, cb, "lanes.onLifecycleEvent");
       if (removePinned) return removePinned;
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: LaneLifecycleEvent,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.lanesLifecycleEvent, listener);
+      // A fresh callback per subscription: the fan-out counts subscribers by callback.
+      const removeLocal = laneLifecycleEventFanout((payload) => cb(payload));
       const removeRemote = subscribeRemoteLaneLifecycleEvents(cb);
       return () => {
         removeRemote();
-        ipcRenderer.removeListener(IPC.lanesLifecycleEvent, listener);
+        removeLocal();
       };
     },
     attachLinearIssueToSession: async (args: {
@@ -14006,11 +14007,7 @@ const adeBridge = {
   /** Whether ADE Cloud exists for this account (`renderer/state/cloudAccess.ts`). */
   cloudAccess: {
     read: (): Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }> => ipcRenderer.invoke(IPC.cloudGetAccess),
-    onChanged: (cb: () => void): (() => void) => {
-      const listener = () => cb();
-      ipcRenderer.on(IPC.cloudStatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.cloudStatusChanged, listener);
-    },
+    onChanged: (cb: () => void): (() => void) => cloudStatusChangedFanout(() => cb()),
   },
   cloud: {
     getStatus: (): Promise<CloudStatus | null> => ipcRenderer.invoke(IPC.cloudGetStatus),
@@ -14071,11 +14068,7 @@ const adeBridge = {
     reconnectMachine: (args: { requestId: string; instanceId: string }): Promise<{ started: boolean }> =>
       ipcRenderer.invoke(IPC.cloudReconnectMachine, args),
     /** ADE Cloud's status changed; read it again. */
-    onStatusChanged: (cb: () => void): (() => void) => {
-      const listener = () => cb();
-      ipcRenderer.on(IPC.cloudStatusChanged, listener);
-      return () => ipcRenderer.removeListener(IPC.cloudStatusChanged, listener);
-    },
+    onStatusChanged: (cb: () => void): (() => void) => cloudStatusChangedFanout(() => cb()),
     /** Saved chats: account-level, so no pin. Reads a computer's copy while it can't answer. */
     savedChats: {
       list: (args: CloudSavedChatsListArgs): Promise<CloudSavedChatList | null> => ipcRenderer.invoke(IPC.cloudSavedChatsList, args),
@@ -15535,14 +15528,8 @@ const adeBridge = {
     ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
   updateRelaunchApp: (): Promise<boolean> =>
     ipcRenderer.invoke(IPC.updateRelaunchApp),
-  onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {
-    const listener = (
-      _event: Electron.IpcRendererEvent,
-      payload: AutoUpdateSnapshot,
-    ) => cb(payload);
-    ipcRenderer.on(IPC.updateEvent, listener);
-    return () => ipcRenderer.removeListener(IPC.updateEvent, listener);
-  },
+  onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) =>
+    updateEventFanout((payload) => cb(payload)),
   // This computer's ADE.app only; no pin (see registerAppBundleOwnershipIpc).
   appBundleOwnership: {
     getStatus: (args?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.appBundleOwnershipGetStatus, args ?? {}),

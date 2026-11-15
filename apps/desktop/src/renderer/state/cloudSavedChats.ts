@@ -41,6 +41,23 @@ export type SavedChatLocation = {
   row: CloudSavedChatRow;
 };
 
+/**
+ * Connections whose computer is an ADE Cloud computer that still exists: the
+ * saved chats list holds chats under their keys. Filled by the same list read.
+ * A connection target is a browser environment id on ADE Web, so this is how a
+ * list knows such a connection is a cloud computer the moment its rows dim,
+ * before its saved copies are read in.
+ */
+let cloudConnectionTargetIds: ReadonlySet<string> = new Set();
+
+export function replaceCloudConnectionTargets(targetIds: Iterable<string>): void {
+  cloudConnectionTargetIds = new Set(targetIds);
+}
+
+export function isCloudConnectionTarget(machineId: string): boolean {
+  return cloudConnectionTargetIds.has(machineId);
+}
+
 /** `pinKey\0sessionId` → the saved copy, filled by the sidebar's list read. */
 const locations = new Map<string, SavedChatLocation>();
 const locationKey = (pinKey: string, sessionId: string) => `${pinKey}\0${sessionId}`;

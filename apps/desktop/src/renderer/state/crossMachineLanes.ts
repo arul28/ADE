@@ -2228,7 +2228,14 @@ function applyReachability(): void {
     }
     store.dropCrossMachineLanes(forgotten);
   }
+  const reachableIds = new Set(reachable);
+  const dimmed = Object.entries(store.crossMachineLanesByMachineId).some(([machineId, entry]) =>
+    entry.online && machineId !== THIS_MACHINE_ID && !reachableIds.has(machineId) && !forgotten.includes(machineId));
   store.setCrossMachineMachinesOnline(reachable);
+  // A machine whose rows just dimmed may be an ADE Cloud computer that fell
+  // asleep: its saved chats take over its rows now, not at the next snapshot
+  // (ADE Web's relay can keep the connection up, so none may come).
+  if (dimmed && connectionSnapshotSeen) scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
 
   if (runtime.graceTimer) {
     clearTimeout(runtime.graceTimer);

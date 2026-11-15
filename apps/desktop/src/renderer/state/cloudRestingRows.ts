@@ -1,7 +1,7 @@
 import type { TerminalSessionSummary } from "../../shared/types";
 import type { CrossMachineMachineLanes } from "./appStore";
 import { adeCloudLaneComputerForMachine, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
-import { isSavedChatsMachineId } from "./cloudSavedChats";
+import { isCloudConnectionTarget, isSavedChatsMachineId } from "./cloudSavedChats";
 
 /**
  * Which machine shows each session when several report it. A machine that
@@ -44,9 +44,9 @@ export function claimSessionsLiveFirst<E extends { sessions: readonly TerminalSe
 /**
  * An ADE Cloud computer that is not connected here and still exists: asleep,
  * stopped, or never connected in this window. Its work is listed as normal
- * rows, and opening one wakes the computer. Three signs, any one is enough:
- * a `cloud-saved:` slice, a saved chat copy, or a machine the ADE Cloud lane
- * index knows. A deleted computer (`computerGone`) is never resting.
+ * rows, and opening one wakes the computer. Four signs, any one is enough:
+ * a `cloud-saved:` slice, a connection the saved chats list names, a saved
+ * chat copy, or a machine the ADE Cloud lane index knows. A deleted computer (`computerGone`) is never resting.
  *
  * A React caller passes the index it subscribes to (`useAdeCloudLaneComputers`)
  * so its memo runs again when the index fills after the entries.
@@ -57,6 +57,9 @@ export function machineIsCloudResting(
 ): boolean {
   if (entry.online || entry.computerGone === true) return false;
   if (isSavedChatsMachineId(entry.machineId)) return true;
+  // A cloud computer's connection whose rows just dimmed: listed at once, its
+  // saved copies replace the rows when the saved chats read lands.
+  if (isCloudConnectionTarget(entry.machineId)) return true;
   if (entry.sessions.some((session) => session.cloudSavedCopy === true)) return true;
   const hostname = entry.binding?.kind === "remote" ? entry.binding.hostname ?? null : null;
   return adeCloudLaneComputerForMachine({ hostname }, cloudLaneComputers) != null;

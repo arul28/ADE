@@ -78,6 +78,7 @@ import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import {
   activeMachineForGroup,
   groupProjectTabs,
+  ownTabKeysOf,
   recentProjectLocationKey,
   remoteBindingFromRecent,
   resolveProjectTabFallback,
@@ -1203,6 +1204,8 @@ export function TopBar({
         order: tabOrder,
         canonicalOrigin: repositoryIdentity.canonicalOrigin,
         repositoryIdForOrigin: repositoryIdentity.repositoryIdForOrigin,
+        // The last grouping: a second clone that has its own tab keeps it.
+        ownTabKeys: ownTabKeysOf(tabGroupsRef.current),
       }),
     [
       activeTabBindingKey,
@@ -1766,10 +1769,20 @@ export function TopBar({
         const group = tabGroupsRef.current.find((entry) =>
           entry.machines.some((machine) => machine.bindingKey === tab.key));
         if (!group?.origin) return null;
+        // A group keyed by a folder (a second clone's tab) names its
+        // repository apart.
+        const keyedByFolder = group.machines.some((machine) => machine.bindingKey === group.id);
+        const repositoryId = keyedByFolder
+          ? tabGroupsRef.current.find((entry) => (
+              entry.origin === group.origin && !entry.machines.some((machine) => machine.bindingKey === entry.id)
+            ))?.id ?? `repo:${group.origin}`
+          : group.id;
         return {
           id: group.id,
           displayName: recordNameForRef.current(group) ?? tab.displayName,
           iconDataUrl: tab.iconDataUrl ?? null,
+          lastCopyKey: tab.key,
+          repositoryId: keyedByFolder ? repositoryId : null,
         };
       };
       const waitingTabs = plans.flatMap((plan) => {

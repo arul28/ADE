@@ -336,7 +336,7 @@ import {
   recordChatTextFlush,
   type ChatTextFlushReason,
 } from "../perf/chatTextProbe";
-import { chatEventsPage, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
+import { chatEventsPage, chatLifecycleEvents, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
@@ -71574,6 +71574,35 @@ export function createAgentChatService(args: {
     return out;
   };
 
+  /**
+   * Whether the last turn of a chat that another brain runs is still open, from
+   * the chat's transcript, which both brains share: the owner writes each
+   * turn's start and end there. The list (`subagent` rows, `chat list`) settles
+   * from the same file. Null when the tail holds no turn or cannot be read.
+   */
+  const foreignChatTurnOpen = async (sessionId: string): Promise<boolean | null> => {
+    let envelopes: readonly AgentChatEventEnvelope[];
+    try {
+      const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
+      if (!transcriptPath) return null;
+      ({ envelopes } = await readEnvelopesBackToSequence({
+        transcriptPath,
+        sessionId,
+        since: null,
+        onPageError: (error) => logger.warn("agent_chat.foreign_turn_read_failed", { sessionId, error: getErrorMessage(error) }),
+      }));
+    } catch (error) {
+      logger.warn("agent_chat.foreign_turn_read_failed", { sessionId, error: getErrorMessage(error) });
+      return null;
+    }
+    let open: boolean | null = null;
+    for (const event of chatLifecycleEvents(envelopes)) {
+      if (event.kind === "turn_started") open = true;
+      else if (event.kind === "turn_completed" || event.kind === "turn_failed" || event.kind === "turn_interrupted") open = false;
+    }
+    return open;
+  };
+
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
     // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
@@ -71608,6 +71637,7 @@ export function createAgentChatService(args: {
       instanceId,
       sessionStatus: summary.status,
       ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
+      ownerTurnOpen: summary.runtimeOwnedElsewhere ? await foreignChatTurnOpen(summary.sessionId) : null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
       lastActivityAt: summary.lastActivityAt ?? null,
       awaitingInput: summary.awaitingInput === true,

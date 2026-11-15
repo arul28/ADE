@@ -314,8 +314,12 @@ export function useProjectTabLifecycle({
     async (rootPath: string, remoteKey: string) => {
       const keys = tabGroupsRef.current.map(tabOrderKey);
       const at = keys.indexOf(remoteKey);
+      // The clone replaces the remote copy in its tab, so it keeps the open
+      // chat and grid. The copy job can end while another tab is in front:
+      // only the tab's own view moves, never another tab's.
+      const carryWorkView = useAppStore.getState().projectBinding?.key === remoteKey;
       try {
-        await useAppStore.getState().switchProjectToPath(rootPath, { skipWorktreeGate: true });
+        await useAppStore.getState().switchProjectToPath(rootPath, { skipWorktreeGate: true, carryWorkView });
       } catch {
         return;
       }

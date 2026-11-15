@@ -16,6 +16,7 @@ import { WOKEN_MACHINE_CONNECT_WAIT_MS } from "../../shared/wokenMachine";
 import { rootAppStoreApi } from "./appStore";
 import { adeCloudLaneComputerForMachine, adeCloudLaneComputersNow, cloudLaneIndexFresh } from "./adeCloudLaneIndex";
 import { sameMachineKey } from "../../shared/machineAddress";
+import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
 import { projectPinOnMachine } from "../lib/machineConnect";
 import { MachineConnectError } from "../../shared/machineAddress";
 import { adeCloudEnabled } from "./cloudAccess";
@@ -25,6 +26,7 @@ import { SAVED_CHATS_MACHINE_PREFIX } from "../../shared/cloudSavedChats";
 import { isAdeAvailable } from "../lib/adeAvailability";
 import {
   isSavedChatsMachineId,
+  replaceCloudConnectionTargets,
   replaceSavedChatLocations,
   savedChatLane,
   savedChatLocation,
@@ -74,12 +76,18 @@ export function scheduleCloudSavedChatsRefresh(context: () => SavedChatsContext,
   }, REFRESH_DEBOUNCE_MS);
 }
 
+/**
+ * The connection of the computer with this account key. ADE Web names its
+ * connections by environment id and leaves `pairedMachine.machineKey` empty;
+ * its key map says which account computer each one is.
+ */
 const connectionFor = (
   connections: readonly RemoteRuntimeConnectionStatus[],
   machineKey: string,
   instanceId: string | null,
 ): RemoteRuntimeConnectionStatus | null =>
-  connections.find((connection) => connection.target.pairedMachine?.machineKey === machineKey)
+  connections.find((connection) => sameMachineKey(connection.target.pairedMachine?.machineKey, machineKey))
+  ?? connections.find((connection) => sameMachineKey(readWebAccountMachineKeys().get(connection.target.id), machineKey))
   ?? (instanceId
     ? connections.find((connection) => connection.target.hostname?.trim().toLowerCase() === instanceId.toLowerCase())
     : undefined)
@@ -164,6 +172,11 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     const list = await bridge.list({ projectKey: context.projectKey, limit: 500 });
     if (!list || !context.isActive()) return;
     const store = rootAppStoreApi.getState();
+    // Live here: connected, and its rows not dimmed. A connection can stay up
+    // after its computer stopped answering (ADE Web's relay holds it), and the
+    // list hides a dimmed live slice: its saved copies show instead.
+    const liveHere = (connection: RemoteRuntimeConnectionStatus | null) =>
+      connection?.state === "connected" && store.crossMachineLanesByMachineId[connection.target.id]?.online !== false;
     const byMachine = new Map<string, RoutedSavedChatRow[]>();
     for (const row of routeSavedChatsToLaneComputers(list.chats)) {
       const rows = byMachine.get(row.machineKey);
@@ -190,6 +203,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         || (cloudBoxes != null ? !box : !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }
+    replaceCloudConnectionTargets([...machineFacts.values()]
+      .flatMap((facts) => (facts.connection && !facts.gone ? [facts.connection.target.id] : [])));
     // One computer shows each chat. After a move, the new computer saves the
     // same chats (same ids) as the old one. A computer that still exists wins
     // over a deleted one; between two that exist, a connected one, then the
@@ -198,7 +213,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     for (const [machineKey, rows] of byMachine) {
       const facts = machineFacts.get(machineKey)!;
       if (facts.gone) continue;
-      const connected = facts.connection?.state === "connected";
+      const connected = liveHere(facts.connection);
       for (const row of rows) {
         const current = ownerByChatId.get(row.chatId);
         if (
@@ -219,7 +234,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       if (rows.length === 0) {
         // Every chat it saved shows from another computer now: drop the saved
         // copies an earlier read put on its connection's slice.
-        const stale = connection && connection.state !== "connected"
+        const stale = connection && !liveHere(connection)
           ? store.crossMachineLanesByMachineId[connection.target.id] ?? null
           : null;
         if (stale?.sessions.some((session) => session.cloudSavedCopy)) {
@@ -239,8 +254,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       }
       showsSavedChats.add(machineKey);
       const first = rows[0]!;
-      // Connected: the live list owns this machine. Nothing saved shows.
-      if (connection?.state === "connected") continue;
+      // Live: the live list owns this machine. Nothing saved shows.
+      if (liveHere(connection)) continue;
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
       const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
       if (!connection) keptSyntheticIds.add(machineId);
@@ -295,7 +310,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       if (!machineKey || showsSavedChats.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
       if (!computer.projectOrigin || computer.projectOrigin !== context.projectKey) continue;
       const connection = connectionFor(context.connections, machineKey, computer.instanceId);
-      if (connection?.state === "connected") continue;
+      if (liveHere(connection)) continue;
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
       const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
       // A connection's slice from its live reads keeps its own lanes.
