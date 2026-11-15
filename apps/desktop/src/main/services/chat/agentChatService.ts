@@ -21449,7 +21449,11 @@ export function createAgentChatService(args: {
         // This brain's unsaved change, else what the file holds now: another
         // brain may have written it since, and a persist of any other field
         // must not put an older copy back.
-        const remoteWork = pendingRemoteWork.get(managed.session.id) ?? savedRemoteWork(managed.session.id) ?? [];
+        // With no readable file, the last list this brain read or wrote.
+        const remoteWork = pendingRemoteWork.get(managed.session.id)
+          ?? savedRemoteWork(managed.session.id)
+          ?? remoteWorkBySession.get(managed.session.id)
+          ?? [];
         return remoteWork.length ? { remoteWork } : {};
       })(),
       ...(runtimeOwner ? { runtimeOwner } : {}),
@@ -70927,7 +70931,10 @@ export function createAgentChatService(args: {
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
     // Saved before live: another brain may have moved the chat's work since,
     // and the live list is only for a session with no state file.
-    const remoteWork = withRemoteWorkSeenAt(row.id, pendingRemoteWork.get(row.id) ?? persisted?.remoteWork ?? remoteWorkBySession.get(row.id) ?? null);
+    const remoteWork = withRemoteWorkSeenAt(
+      row.id,
+      pendingRemoteWork.get(row.id) ?? (persisted ? persisted.remoteWork ?? null : remoteWorkBySession.get(row.id) ?? null),
+    );
     return {
       ...(remoteWork?.length ? { remoteWork } : {}),
       sessionId: row.id,
@@ -81874,17 +81881,23 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The remote-work record saved in a chat's state file, or null when it has
-   * none or the file cannot be read. Read every time (the file cache checks
-   * the file's stat): another brain may have written it.
+   * The remote-work record saved in a chat's state file (empty when the file
+   * has none), or null when there is no readable file: missing, unreadable or
+   * corrupt. Read every time (the file cache checks the file's stat): another
+   * brain may have written it. A good read is kept as the last known list, so
+   * a file that later cannot be read does not turn into "no work".
    */
   const savedRemoteWork = (sessionId: string): AgentChatRemoteWorkUse[] | null => {
+    let state: PersistedChatState | null = null;
     try {
-      return readPersistedState(sessionId)?.remoteWork ?? null;
+      state = readPersistedState(sessionId);
     } catch (error) {
       logger.debug?.("agent_chat.remote_work_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
-      return null;
     }
+    if (!state) return null;
+    const saved = state.remoteWork ?? [];
+    remoteWorkBySession.set(sessionId, saved);
+    return saved;
   };
 
   /**
@@ -81929,14 +81942,20 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return;
     }
+    // Pending until a write succeeds: every read prefers it, so a failed write
+    // is not lost to the older saved list, and the chat's next persist (once
+    // loaded) writes it.
+    pendingRemoteWork.set(sessionId, list);
     const filePath = metadataPathFor(sessionId);
     const recovered = persistedStateFiles.read(filePath);
+    // No readable file: nothing safe to write the field into.
     if (recovered.value === null) return;
     try {
       const record = { ...(recovered.value as Record<string, unknown>) };
       if (list.length) record.remoteWork = list;
       else delete record.remoteWork;
       writeJsonWithPrevious(filePath, record, { validate: isPersistedChatStateShape });
+      pendingRemoteWork.delete(sessionId);
     } catch (error) {
       logger.warn("agent_chat.remote_work_write_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
     }
