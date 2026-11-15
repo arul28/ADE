@@ -246,15 +246,19 @@ jobs:
           key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
           restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
+      # No audit request and 50 download sockets instead of npm's 15: plain
+      # npm ci took 132-163 s here, about 80 s of it the audit of 1,600
+      # packages; with these flags it takes 44-54 s (measured 2026-11-15).
+      # The installed tree is the same.
       - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
+        run: cd apps/desktop && npm ci --no-audit --no-fund --maxsockets=50
 
       - name: Add darwin-x64 npm platform packages
         if: ${{ matrix.arch == 'x64' }}
         run: cd apps/desktop && node scripts/install-cross-arch-packages.mjs --cpu=x64
 
       - name: Install ADE CLI dependencies
-        run: cd apps/ade-cli && npm ci
+        run: cd apps/ade-cli && npm ci --no-audit --no-fund --maxsockets=50
 
       # The transcribe.cpp binary and the five Swift helpers are universal and
       # depend only on their own sources, yet compiling them took 16 minutes of
@@ -439,6 +443,41 @@ jobs:
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
         run: cd apps/desktop && npm run dist:mac:${{ matrix.arch }}:signed
 
+      # Readable stack traces for this build in Sentry (ade-desktop and
+      # ade-brain), then the same maps for PostHog error tracking. They only
+      # read the source maps the build just wrote, so they run in the
+      # background while the steps below validate and upload the release, and
+      # the last step waits for them. They cannot change what the release
+      # ships and never fail the job; both scripts skip without their token
+      # and never exit non-zero.
+      #
+      # Sentry: release ade@<tag without v> is the version stamped above,
+      # which is what the app and the brain report. A beta is its own Sentry
+      # release (ade@1.2.128-beta.3); the track tag on events is set by the
+      # app at runtime, since Sentry releases carry no environment.
+      #
+      # PostHog: keyed by the Sentry debug IDs already in the bundles (nothing
+      # is injected), so a beta and the stable that promotes it both resolve.
+      # See scripts/posthog/upload-sourcemaps.mjs.
+      - name: Start ${{ matrix.arch }} source map uploads
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          log="$RUNNER_TEMP/sourcemap-uploads.log"
+          # Detached so it outlives this step; the last step waits for it.
+          # shellcheck disable=SC2016 # $1 expands in the child shell.
+          nohup bash -c '
+            node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "mac-$ARCH"
+            node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
+            echo done > "$1.done"' _ "$log" > "$log" 2>&1 &
+
       # The DMG is not notarized separately: the app inside it is notarized
       # and stapled, and that is what Gatekeeper checks when ADE is opened.
       # electron-builder does not notarize DMGs by default either, and this
@@ -472,44 +511,38 @@ jobs:
       - name: Rename per-arch updater manifest
         run: cd apps/desktop && mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
 
+      # Two artifacts: smoke-mac-x64 needs only the update zip and its
+      # manifest, and release-publish.yml downloads both by the
+      # ade-mac-release-<tag>-* pattern. Stored, not compressed: the zip and
+      # the DMG are compressed already, and recompressing them only cost time
+      # here and in every download.
       - name: Upload ${{ matrix.arch }} artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ade-mac-release-${{ inputs.release_tag }}-${{ matrix.arch }}
           path: |
-            apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
             apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
+          compression-level: 0
 
-      # Readable stack traces for this build in Sentry (ade-desktop and
-      # ade-brain). After the artifact upload, so it can never hold up or
-      # change a release; the script skips without SENTRY_AUTH_TOKEN and never
-      # exits non-zero. Release ade@<tag without v> is the version stamped
-      # above, which is what the app and the brain report. A beta is its own
-      # Sentry release (ade@1.2.128-beta.3); the track tag on events is set by
-      # the app at runtime, since Sentry releases carry no environment.
-      - name: Upload ${{ matrix.arch }} source maps to Sentry
+      - name: Upload ${{ matrix.arch }} DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-mac-release-${{ inputs.release_tag }}-${{ matrix.arch }}-dmg
+          path: apps/desktop/release/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+
+      # Bounded: a stalled upload gives up with a warning after 10 minutes.
+      - name: Finish ${{ matrix.arch }} source map uploads
         if: ${{ !inputs.windows_proof }}
         continue-on-error: true
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "mac-${{ matrix.arch }}"
-
-      # The same maps for PostHog error tracking. Keyed by the Sentry debug IDs
-      # already in the bundles (nothing is injected), so a beta and the stable
-      # that promotes it both resolve. Skips without POSTHOG_PERSONAL_API_KEY
-      # and never exits non-zero. See scripts/posthog/upload-sourcemaps.mjs.
-      - name: Upload ${{ matrix.arch }} source maps to PostHog
-        if: ${{ !inputs.windows_proof }}
-        continue-on-error: true
-        env:
-          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
-          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
-          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
-        run: node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
+        run: |
+          log="$RUNNER_TEMP/sourcemap-uploads.log"
+          for _ in $(seq 1 600); do [ -f "$log.done" ] && break; sleep 1; done
+          cat "$log" 2>/dev/null || true
+          [ -f "$log.done" ] || echo "::warning::The ${{ matrix.arch }} source map uploads did not finish in 10 minutes."
 
   build-linux-release:
     needs: [verify, build-runtime-binaries]
@@ -838,7 +871,7 @@ jobs:
           $repeat = if ("${{ inputs.windows_proof }}" -eq "true") { 10 } else { 0 }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName -FreshInstallRepeat $repeat
 
-      # See the equivalent step in smoke-mac-x64.
+      # The same check as the old-database one in smoke-mac-x64's validation.
       - name: Open the last stable release's database
         env:
           GH_TOKEN: ${{ github.token }}
@@ -999,8 +1032,11 @@ jobs:
           - target: darwin-arm64
             os: macos-15
             binary: ade-darwin-arm64
+          # Built on Apple Silicon, like the x64 app: see "Prepare the
+          # darwin-x64 Node" below. The Intel runner took 520 s for this job
+          # and every macOS and Linux package waited for it.
           - target: darwin-x64
-            os: macos-15-intel
+            os: macos-15
             binary: ade-darwin-x64
           # Fixed for the same reason as build-linux-release.
           - target: linux-x64
@@ -1029,9 +1065,9 @@ jobs:
 
       # The Linux lane-screen helper (Rust, static musl) ships inside the
       # runtime's native archive. It builds in the background while npm
-      # installs, so it adds nothing to these jobs' wall time (and they are
-      # minutes off the release's critical path, which runs through darwin-x64
-      # and the Mac build). Pure Rust: no musl-tools needed.
+      # installs, so it adds nothing to these jobs' wall time (and they end
+      # before the macOS runtime jobs, which the Mac build waits for). Pure
+      # Rust: no musl-tools needed.
       - name: Restore Linux desktop driver cargo cache
         if: ${{ startsWith(matrix.target, 'linux-') }}
         uses: actions/cache/restore@v4
@@ -1084,8 +1120,32 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "PYTHON=$(python3 -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
+      # The darwin-x64 runtime is built on Apple Silicon. The native arm64 Node
+      # bundles and packages it; the SEA host is the official darwin-x64 Node
+      # of the same version, checked against nodejs.org's SHASUMS256.txt.
+      # package-native-deps.mjs adds the x64 platform package the archive
+      # carries (the Cursor SDK's) from package-lock.json, and the Swift
+      # helpers are universal. Rosetta 2 runs the x64 Node to write the SEA
+      # blob (portable: build-static.mjs turns off the code cache and the
+      # snapshot) and runs the binary for every check below that executes it.
+      # smoke-mac-x64 runs this runtime again on a real x64 Mac. Before npm ci:
+      # Rosetta's first run of the x64 Node translates it (about 20 s), which
+      # happens in the background while the dependencies install.
+      - name: Prepare the darwin-x64 Node
+        if: ${{ matrix.target == 'darwin-x64' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
+            sudo softwareupdate --install-rosetta --agree-to-license
+          fi
+          node_x64="$(node scripts/release-tools/officialNodeBinary.mjs --target darwin-x64 --cache-dir "$RUNNER_TEMP/official-node")"
+          nohup "$node_x64" -p 'process.version + " " + process.arch' > "$RUNNER_TEMP/node-x64-warmup.log" 2>&1 &
+          echo "ADE_STATIC_NODE_BINARY=$node_x64" >> "$GITHUB_ENV"
+
+      # Same flags as build-mac-release's installs; see there.
       - name: Install ADE CLI dependencies
-        run: cd apps/ade-cli && npm ci
+        run: cd apps/ade-cli && npm ci --no-audit --no-fund --maxsockets=50
 
       - name: Stamp runtime release version
         env:
@@ -1235,7 +1295,9 @@ jobs:
             grep -E "$leak_pattern" "$archive_listing" | head -20 || true
             exit 1
           fi
-          node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
+          # The target's own Node loads the extension; on the darwin-x64 leg
+          # that is the x64 Node above, under Rosetta.
+          "${ADE_STATIC_NODE_BINARY:-node}" apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
           # Android streaming on a standalone brain, every OS (package-native-deps.mjs).
           grep -q '^\./android/scrcpy-server$' "$archive_listing"
           grep -q '^\./android/scrcpy-LICENSE$' "$archive_listing"
@@ -1310,6 +1372,8 @@ jobs:
     # that build rather than waiting on a macOS runner; see build-mac-release.
     # The CLI files the validator lists come from that build (the
     # ade-cli-dist artifact), not from a second CLI install and build here.
+    # It is also the one run of the darwin-x64 runtime on x64 hardware, since
+    # build-runtime-binaries builds that runtime on Apple Silicon.
     needs: build-mac-release
     runs-on: macos-15-intel
     env:
@@ -1318,40 +1382,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref }}
+          fetch-depth: 1
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-
-      # Restore-only: a cache saved on a release tag is invisible to the next
-      # release, so saving here only filled the repo's 10 GB cache limit. main's
-      # CI saves npm-dl-v1 entries per OS and arch; any of them seeds npm ci.
-      # Ask npm where its cache is: hosted Windows runners move it to
-      # C:\npm\cache, so a hard-coded path silently caches nothing.
-      - name: Locate npm download cache
-        id: npm_cache_dir
-        shell: bash
-        run: echo "dir=$(npm config get cache)" >> "$GITHUB_OUTPUT"
-      - name: Restore npm download cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ steps.npm_cache_dir.outputs.dir }}
-          key: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
-          restore-keys: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-
 
       # The packaged-app smoke imports its SDKs with ESM import(), which
       # ignores the app's NODE_PATH, so it resolves their dependencies from the
       # node_modules above the app, as it always has in the build jobs. The
       # production tree is enough for that and installs in a fraction of a full
       # npm ci. The validator's one dev dependency, @electron/asar, goes one
-      # directory up, where Node still finds it.
-      - name: Install validator and smoke dependencies
+      # directory up, where Node still finds it. The install runs in the
+      # background while the artifacts download; "Finish" below waits for it.
+      # No npm cache restore: on this runner the restore (26-36 s) plus the
+      # install took longer than the install from the registry alone (73 s),
+      # and the restore had to finish before the install could start.
+      - name: Start installing validator and smoke dependencies
         run: |
-          set -euo pipefail
-          cd apps/desktop
-          npm ci --omit=dev --ignore-scripts --no-audit --no-fund
-          asar="$(node -p 'require("./package-lock.json").packages["node_modules/@electron/asar"].version')"
-          npm install --prefix "$GITHUB_WORKSPACE/apps" --no-save --no-package-lock --no-audit --no-fund --ignore-scripts "@electron/asar@$asar"
+          log="$RUNNER_TEMP/smoke-install.log"
+          # Detached so it outlives this step; "Finish" below waits for it.
+          nohup bash -c '
+            set -euo pipefail
+            cd apps/desktop
+            npm ci --omit=dev --ignore-scripts --no-audit --no-fund --maxsockets=50
+            asar="$(node -p "require(\"./package-lock.json\").packages[\"node_modules/@electron/asar\"].version")"
+            npm install --prefix "$GITHUB_WORKSPACE/apps" --no-save --no-package-lock --no-audit --no-fund --ignore-scripts "@electron/asar@$asar"
+          ' > "$log" 2>&1 < /dev/null && echo 0 > "$log.exit" || echo 1 > "$log.exit" &
 
       # The validator reads which CLI files the app must bundle from the CLI
       # build output (packaged-ade-cli-resources.cjs). The x64 build job
@@ -1365,13 +1422,8 @@ jobs:
           name: ade-cli-dist-${{ inputs.release_tag }}-x64
           path: apps/ade-cli/dist
 
-      - name: Build the ADE CLI
-        if: ${{ steps.cli_dist.outcome != 'success' }}
-        run: |
-          cd apps/ade-cli && npm ci
-          cd ../desktop && npm run ade:build
-
-      - name: Download x64 release artifacts
+      # The update zip and its manifest only; the DMG is its own artifact.
+      - name: Download the x64 update zip
         uses: actions/download-artifact@v4
         with:
           name: ade-mac-release-${{ inputs.release_tag }}-x64
@@ -1385,18 +1437,73 @@ jobs:
           ditto -x -k "${zips[0]}" mac
           mv latest-mac-x64.yml latest-mac.yml
 
-      - name: Validate x64 release on x64 hardware
-        env:
-          DO_NOT_TRACK: "1"
-        run: cd apps/desktop && node scripts/validate-mac-artifacts.mjs --skip-dmg
-
-      # The last stable release makes a project database; this build's own
-      # brain must open it (T3 #25928, #25840). See the script header.
-      - name: Open the last stable release's database
+      # Two of the three checks need only Node and the unpacked app, not the
+      # validator's dependencies, so they start here and run while the install
+      # finishes and the validator runs. Each writes only its own temporary
+      # folder, and the last step reports all three.
+      # - The last stable release makes a project database; this build's own
+      #   brain must open it (T3 #25928, #25840). See the script header.
+      # - The app's darwin-x64 runtime sidecar, the same binary and native
+      #   archive the standalone install gets: its version, and cr-sqlite
+      #   loaded by an x64 Node.
+      - name: Start the old-database and runtime checks
         env:
           GH_TOKEN: ${{ github.token }}
           DO_NOT_TRACK: "1"
-        run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/mac/ADE.app
+        run: |
+          app="apps/desktop/release/mac/ADE.app"
+          expected="$(sed -n 's/^version: *//p' apps/desktop/release/latest-mac.yml | tr -d "'\"")"
+          # Detached so they outlive this step; the last step waits for them.
+          # set +e: the step shell's -e would end the subshell before it
+          # records a failed check's exit code.
+          (set +e; nohup node apps/desktop/scripts/old-database-launch-check.mjs --app "$app" > "$RUNNER_TEMP/old-db.log" 2>&1 < /dev/null
+            echo $? > "$RUNNER_TEMP/old-db.exit") &
+          # shellcheck disable=SC2016 # $1 and $2 expand in the child shell.
+          (set +e; nohup bash -c '
+            set -euo pipefail
+            runtime="$1/Contents/Resources/runtime/ade-darwin-x64"
+            actual="$("$runtime" --version)"
+            actual="${actual#ade }"
+            echo "darwin-x64 runtime reports $actual; the release is $2"
+            [ "$actual" = "$2" ]
+            node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$runtime.native.tar.gz" --target darwin-x64
+          ' _ "$app" "$expected" > "$RUNNER_TEMP/runtime.log" 2>&1 < /dev/null
+            echo $? > "$RUNNER_TEMP/runtime.exit") &
+
+      - name: Finish installing validator and smoke dependencies
+        run: |
+          log="$RUNNER_TEMP/smoke-install.log"
+          for _ in $(seq 1 900); do [ -f "$log.exit" ] && break; sleep 1; done
+          cat "$log"
+          [ "$(cat "$log.exit" 2>/dev/null)" = "0" ]
+
+      - name: Build the ADE CLI
+        if: ${{ steps.cli_dist.outcome != 'success' }}
+        run: |
+          cd apps/ade-cli && npm ci
+          cd ../desktop && npm run ade:build
+
+      # The full validator on x64 hardware, then the two checks started above.
+      - name: Validate x64 release on x64 hardware
+        env:
+          DO_NOT_TRACK: "1"
+        run: |
+          set +e
+          (cd apps/desktop && node scripts/validate-mac-artifacts.mjs --skip-dmg) > "$RUNNER_TEMP/validator.log" 2>&1
+          echo $? > "$RUNNER_TEMP/validator.exit"
+          for name in old-db runtime; do
+            for _ in $(seq 1 900); do [ -f "$RUNNER_TEMP/$name.exit" ] && break; sleep 1; done
+          done
+          failed=0
+          for name in validator old-db runtime; do
+            code="$(cat "$RUNNER_TEMP/$name.exit" 2>/dev/null || echo "no exit code after 15 minutes")"
+            if [ "$code" = 0 ]; then result=passed; else result="FAILED ($code)"; failed=1; fi
+            echo "::group::$name: $result"
+            cat "$RUNNER_TEMP/$name.log" 2>/dev/null || true
+            echo "::endgroup::"
+            [ "$code" = 0 ] || echo "::error::The $name check failed; its log is in the group above."
+          done
+          exit "$failed"
 
   build-results:
     # This workflow deliberately holds no job that can write to the repository,

@@ -1,12 +1,10 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { createReadStream, createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
-import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { resolveNpmInvocation } from "../../../scripts/dev-shared.mjs";
+import { downloadOfficialNodeBinary, isSeaCapableNodeBinary } from "../../../scripts/release-tools/officialNodeBinary.mjs";
 import runtimeResourceTargets from "./runtime-resource-targets.cjs";
 
 const {
@@ -27,10 +25,8 @@ const repoRoot = path.resolve(desktopRoot, "..", "..");
 const cliRoot = path.join(repoRoot, "apps", "ade-cli");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
 const cliDistStaticRoot = path.join(cliRoot, "dist-static");
-const seaFuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const runtimeTargetSet = resolveRuntimeTargets();
 const allowHostOnlyRuntimeResources = runtimeTargetSet.mode === "host-only";
-const maxDownloadRedirects = 10;
 
 function uniquePaths(paths) {
   const seen = new Set();
@@ -54,148 +50,16 @@ async function pathExists(targetPath) {
   }
 }
 
-async function isSeaCapableNodeBinary(binaryPath) {
-  try {
-    const contents = await fs.readFile(binaryPath);
-    return contents.includes(Buffer.from(seaFuse));
-  } catch {
-    return false;
-  }
-}
-
-function nodeArchiveCandidates(version, target) {
-  return [
-    {
-      name: `node-${version}-${target}.tar.gz`,
-      tarFlag: "-xzf",
-    },
-    {
-      name: `node-${version}-${target}.tar.xz`,
-      tarFlag: "-xJf",
-    },
-  ];
-}
-
-async function downloadFile(url, destinationPath, redirectsRemaining = maxDownloadRedirects) {
-  await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-  await new Promise((resolve, reject) => {
-    const request = https.get(url, (response) => {
-      if (
-        response.statusCode &&
-        response.statusCode >= 300 &&
-        response.statusCode < 400 &&
-        response.headers.location
-      ) {
-        response.resume();
-        if (redirectsRemaining <= 0) {
-          reject(new Error(`Too many redirects while downloading ${url}`));
-          return;
-        }
-        downloadFile(
-          new URL(response.headers.location, url).toString(),
-          destinationPath,
-          redirectsRemaining - 1
-        ).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error(`HTTP ${response.statusCode ?? "unknown"}`));
-        return;
-      }
-      const output = createWriteStream(destinationPath, { mode: 0o644 });
-      response.pipe(output);
-      output.once("finish", () => {
-        output.close(resolve);
-      });
-      output.once("error", reject);
-    });
-    request.once("error", reject);
+// Version: ADE_STATIC_NODE_VERSION, else the Node running this script.
+async function downloadOfficialNodeBinaryForHost(target) {
+  return downloadOfficialNodeBinary({
+    target,
+    version: process.env.ADE_STATIC_NODE_VERSION?.trim() || process.version,
+    cacheRoot: path.resolve(
+      process.env.ADE_STATIC_NODE_CACHE_DIR?.trim() || path.join(desktopRoot, ".cache", "runtime-node")
+    ),
+    logPrefix: "[runtime-resources]",
   });
-}
-
-async function sha256OfFile(filePath) {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(filePath)) {
-    hash.update(chunk);
-  }
-  return hash.digest("hex");
-}
-
-// Expected SHA-256 for one Node release archive, from nodejs.org's official
-// SHASUMS256.txt. The Node version is not pinned here (it follows
-// ADE_STATIC_NODE_VERSION / process.version), so the checksum manifest is
-// fetched per-version at build time instead of hard-coding hashes; it is
-// cached next to the archives so a cached, already-verified extract keeps
-// working offline.
-async function officialNodeSha256(version, cacheRoot, archiveName) {
-  const shasumsPath = path.join(cacheRoot, version, "SHASUMS256.txt");
-  if (!(await pathExists(shasumsPath))) {
-    await downloadFile(`https://nodejs.org/dist/${version}/SHASUMS256.txt`, shasumsPath);
-  }
-  const contents = await fs.readFile(shasumsPath, "utf8");
-  for (const line of contents.split("\n")) {
-    const [hash, name] = line.trim().split(/\s+/);
-    if (name === archiveName && /^[0-9a-f]{64}$/i.test(hash ?? "")) {
-      return hash.toLowerCase();
-    }
-  }
-  throw new Error(`SHASUMS256.txt for Node ${version} has no entry for ${archiveName}`);
-}
-
-async function downloadOfficialNodeBinary(target) {
-  const version = (process.env.ADE_STATIC_NODE_VERSION?.trim() || process.version).replace(/^([^v])/, "v$1");
-  const cacheRoot = path.resolve(
-    process.env.ADE_STATIC_NODE_CACHE_DIR?.trim() || path.join(desktopRoot, ".cache", "runtime-node")
-  );
-  const extractRoot = path.join(cacheRoot, version, target);
-  const binaryPath = path.join(extractRoot, `node-${version}-${target}`, "bin", "node");
-  if (await isSeaCapableNodeBinary(binaryPath)) {
-    return binaryPath;
-  }
-
-  await fs.rm(extractRoot, { recursive: true, force: true });
-  await fs.mkdir(extractRoot, { recursive: true });
-
-  let lastError = null;
-  for (const candidate of nodeArchiveCandidates(version, target)) {
-    const archivePath = path.join(cacheRoot, version, candidate.name);
-    const url = `https://nodejs.org/dist/${version}/${candidate.name}`;
-    try {
-      console.log(`[runtime-resources] Downloading official Node ${version} for ${target}: ${url}`);
-      await downloadFile(url, archivePath);
-      const expectedSha256 = await officialNodeSha256(version, cacheRoot, candidate.name);
-      const actualSha256 = await sha256OfFile(archivePath);
-      if (actualSha256 !== expectedSha256) {
-        await fs.rm(archivePath, { force: true });
-        const mismatch = new Error(
-          `SHA-256 mismatch for ${candidate.name}: nodejs.org SHASUMS256.txt expects ${expectedSha256}, ` +
-            `got ${actualSha256}. Refusing to use the unverified Node binary.`
-        );
-        // A hash mismatch is a tamper signal, not a fetch hiccup — abort
-        // instead of falling through to the next archive format.
-        mismatch.fatalIntegrityFailure = true;
-        throw mismatch;
-      }
-      console.log(`[runtime-resources] Verified ${candidate.name} against nodejs.org SHASUMS256.txt (${actualSha256}).`);
-      await execFileAsync("tar", [candidate.tarFlag, archivePath, "-C", extractRoot], {
-        cwd: desktopRoot,
-        maxBuffer: 20 * 1024 * 1024,
-      });
-      if (await isSeaCapableNodeBinary(binaryPath)) {
-        await fs.chmod(binaryPath, 0o755);
-        return binaryPath;
-      }
-      throw new Error(`Downloaded Node binary is not SEA-capable: ${binaryPath}`);
-    } catch (error) {
-      if (error?.fatalIntegrityFailure) throw error;
-      lastError = error instanceof Error ? error : new Error(String(error));
-      await fs.rm(extractRoot, { recursive: true, force: true });
-      await fs.mkdir(extractRoot, { recursive: true });
-    }
-  }
-
-  throw lastError ?? new Error(`Unable to download official Node ${version} for ${target}.`);
 }
 
 async function resolveSeaNodeBinaryForHostBuild(target) {
@@ -212,7 +76,7 @@ async function resolveSeaNodeBinaryForHostBuild(target) {
         "This does not affect people downloading ADE releases; release downloads already include the helper."
     );
   }
-  return downloadOfficialNodeBinary(target);
+  return downloadOfficialNodeBinaryForHost(target);
 }
 
 async function walkFiles(rootPath, files = []) {

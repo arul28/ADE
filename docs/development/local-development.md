@@ -343,7 +343,12 @@ Node it runs on in the headless runtime, so a release brain built by CI gets
 Node 24's proxy and system-certificate support; the build warns when it embeds
 a Node older than 24.14, which ignores `HTTPS_PROXY`, and refuses one older
 than 22.19.0 because the runtime runs Pi's SDK worker on its own Node. Set
-`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. The `ade`
+`ADE_STATIC_NODE_BINARY` to use another Node binary for that build. On Apple
+Silicon, `npm run build:static -- --target darwin-x64` builds the Intel runtime
+when `ADE_STATIC_NODE_BINARY` names an official darwin-x64 Node (`node
+scripts/release-tools/officialNodeBinary.mjs --target darwin-x64` downloads one
+and prints its path) and Rosetta 2 is installed; the release builds it that
+way. The `ade`
 CLI still runs on Node 22.13 or newer: before 24.14 it ignores `HTTPS_PROXY`
 (a brain says so once at start) and otherwise works as before.
 
