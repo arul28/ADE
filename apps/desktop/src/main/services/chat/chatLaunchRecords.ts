@@ -49,7 +49,11 @@ export const CHAT_LAUNCH_ROOM_MAX_RESUMES = 3;
 /** Nor once its mark is this old: a computer asleep for days doesn't rerun a stale setup when it wakes. */
 export const CHAT_LAUNCH_ROOM_MAX_AGE_MS = 60 * 60_000;
 
-/** The record's mark, an older ADE's `awaitingRoom` read as a fresh one; null when none. */
+/**
+ * The record's mark; null when none. An older ADE's `awaitingRoom` reads as a mark
+ * dated at the record's last update (not now), so a beta.34 record whose brain
+ * never booted again after the grow is held to the same age cap.
+ */
 function roomMarkOf(record: ChatLaunchRecord): ChatLaunchRoomMark | null {
   const mark = record.roomMark;
   if (mark && typeof mark.at === "string" && typeof mark.resumes === "number") return mark;
