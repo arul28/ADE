@@ -1384,8 +1384,9 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   even then). `npm ci` from a warm cache does that on a Small: it holds the
   unpacked packages in memory (3.6 GB+ for ADE's desktop app; 0.7 GB on a
   Mac), and a setup rerun after a disk grow always has a warm cache. Every
-  lane setup, dependency or Docker command on a cloud computer therefore runs
-  beside a small `sh` guard (not a brain timer: the brain's event loop lags
+  lane setup script and dependency install on a cloud computer therefore runs
+  beside a small `sh` guard (never a teardown, which frees memory, or Docker,
+  whose containers run under the daemon outside the command's process group) (not a brain timer: the brain's event loop lags
   seconds while setup saturates the CPUs) that reads `MemAvailable` every
   0.5 s and kills the command's process group below a tenth of the computer's
   memory (256 MB to 1 GB). The step then fails with "Setup used nearly all of

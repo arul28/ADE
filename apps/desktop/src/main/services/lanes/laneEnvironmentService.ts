@@ -410,11 +410,17 @@ export function createLaneEnvironmentService({
     }
   }
 
+  /**
+   * `guardMemory`: a setup or install command that could take a cloud
+   * computer's last memory. Never a teardown (it frees memory) or Docker (its
+   * containers run under the daemon, outside the command's process group).
+   */
   function runSpawn(
     invocation: SpawnInvocation,
     cwd: string,
     env: NodeJS.ProcessEnv,
-    timeoutMs: number
+    timeoutMs: number,
+    { guardMemory = false }: { guardMemory?: boolean } = {}
   ): Promise<SpawnResult> {
     return new Promise((resolve) => {
       const child = spawn(invocation.command, invocation.args, {
@@ -430,7 +436,7 @@ export function createLaneEnvironmentService({
       });
       processes.trackChild(child, cwd);
       // On a cloud computer, a command that takes the last memory is stopped before the provider restarts the computer.
-      const memoryGuard = watchSetupMemory(child.pid, {
+      const memoryGuard = !guardMemory ? null : watchSetupMemory(child.pid, {
         onError: (error) => logger.warn("lane_env_init.memory_guard_failed", { error: error instanceof Error ? error.message : String(error) }),
       });
       let stdout = "";
@@ -490,14 +496,15 @@ export function createLaneEnvironmentService({
   function execCommand(
     command: string[],
     cwd: string,
-    timeoutMs = 120_000
+    timeoutMs = 120_000,
+    options: { guardMemory?: boolean } = {}
   ): Promise<SpawnResult> {
     const [cmd, ...args] = command;
     if (!cmd) {
       return Promise.resolve({ exitCode: 1, stdout: "", stderr: "Missing command", tail: "" });
     }
     const env = laneSetupProcessEnv();
-    return runSpawn(resolveCliSpawnInvocation(cmd, args, env), cwd, env, timeoutMs);
+    return runSpawn(resolveCliSpawnInvocation(cmd, args, env), cwd, env, timeoutMs, options);
   }
 
   async function copyEnvFiles(
@@ -579,7 +586,7 @@ export function createLaneEnvironmentService({
         continue;
       }
       const cwd = resolveCheckedPath(worktreePath, dep.cwd ?? ".", logger, "lane_env_init.dependency_cwd_escape", { cwd: dep.cwd ?? ".", worktreePath });
-      const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS);
+      const result = await execCommand(dep.command, cwd, LANE_ENV_COMMAND_TIMEOUT_MS, { guardMemory: true });
       if (result.stoppedForMemory) {
         logger.warn("lane_env_init.dependency_stopped_for_memory", { command: commandLabel(dep.command.join(" ")), ...result.stoppedForMemory });
         failures.push(laneSetupOutOfMemoryError(result.stoppedForMemory.totalMb));
@@ -720,7 +727,7 @@ export function createLaneEnvironmentService({
     }
 
     for (const step of steps) {
-      const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS);
+      const result = await runSpawn(step.invocation, worktreePath, env, SETUP_SCRIPT_TIMEOUT_MS, { guardMemory: true });
       if (result.stoppedForMemory) {
         logger.warn("lane_env_init.setup_stopped_for_memory", { laneId, command: commandLabel(step.label), ...result.stoppedForMemory });
         return laneSetupOutOfMemoryError(result.stoppedForMemory.totalMb);
@@ -917,7 +924,6 @@ export function createLaneEnvironmentService({
             const result = await startDocker(lane.worktreePath, docker, lane.id);
             // A pull that fills the disk says so after pages of progress: the whole output is read for it.
             if (result.exitCode === 0) return null;
-            if (result.stoppedForMemory) return laneSetupOutOfMemoryError(result.stoppedForMemory.totalMb);
             return commandFailure(result).text || `exited with code ${result.exitCode}`;
           },
         });
