@@ -472,7 +472,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/sourcemap-uploads.log"
           # Detached so it outlives this step; the last step waits for it.
-          # shellcheck disable=SC2016 # $1 expands in the child shell.
+          # shellcheck disable=SC2016,SC2094 # $1 expands in the child shell, which only writes "$1.done".
           nohup bash -c '
             node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "mac-$ARCH"
             node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
@@ -1402,6 +1402,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/smoke-install.log"
           # Detached so it outlives this step; "Finish" below waits for it.
+          # shellcheck disable=SC2016 # The variables expand in the child shell.
           nohup bash -c '
             set -euo pipefail
             cd apps/desktop
