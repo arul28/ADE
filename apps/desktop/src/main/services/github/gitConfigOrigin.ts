@@ -16,23 +16,33 @@ function gitConfigValue(raw: string): string {
   return raw.replace(/\s*[#;].*$/, "").trim();
 }
 
-function readOriginUrlFromConfig(configPath: string): string | null {
+/**
+ * The first value of `key` in the first matching section of one config file,
+ * or null. A key with no `=` is git's shorthand for true.
+ */
+function readGitConfigValue(
+  configPath: string,
+  isSection: (name: string) => boolean,
+  key: string,
+): string | null {
   try {
     // Reading a FIFO here would freeze the whole process.
     if (!fs.statSync(configPath, { throwIfNoEntry: false })?.isFile()) return null;
     const raw = fs.readFileSync(configPath, "utf8");
-    let inOriginSection = false;
+    const keyLine = new RegExp(`^\\s*${key}\\s*(?:=\\s*(.*?))?\\s*$`, "i");
+    let inSection = false;
     for (const line of raw.split(/\r?\n/)) {
-      // A section header may carry a trailing comment. The section name
-      // ("remote") is case-insensitive; the subsection ("origin") is not.
+      // A section header may carry a trailing comment.
       const section = line.match(/^\s*\[([^\]]+)\]\s*(?:[#;].*)?$/);
       if (section) {
-        inOriginSection = /^[Rr][Ee][Mm][Oo][Tt][Ee]\s+"origin"$/.test(section[1]?.trim() ?? "");
+        inSection = isSection(section[1]?.trim() ?? "");
         continue;
       }
-      if (!inOriginSection) continue;
-      const url = line.match(/^\s*url\s*=\s*(.+?)\s*$/i);
-      const value = url?.[1] ? gitConfigValue(url[1]) : "";
+      if (!inSection) continue;
+      const match = line.match(keyLine);
+      if (!match) continue;
+      if (match[1] === undefined) return "true";
+      const value = gitConfigValue(match[1]);
       if (value) return value;
     }
     return null;
@@ -40,6 +50,9 @@ function readOriginUrlFromConfig(configPath: string): string | null {
     return null;
   }
 }
+
+/** The section name ("remote") is case-insensitive; the subsection ("origin") is not. */
+const isOriginRemote = (name: string): boolean => /^[Rr][Ee][Mm][Oo][Tt][Ee]\s+"origin"$/.test(name);
 
 function resolveGitDir(projectRoot: string): string | null {
   try {
@@ -73,10 +86,17 @@ export function readOriginUrlFromGitConfig(projectRoot: string): string | null {
   const gitDir = resolveGitDir(projectRoot);
   if (!gitDir) return null;
   const commonGitDir = resolveCommonGitDir(gitDir);
+  // Git reads config.worktree only with extensions.worktreeConfig on.
+  const worktreeConfig = readGitConfigValue(
+    path.join(commonGitDir, "config"),
+    (name) => name.toLowerCase() === "extensions",
+    "worktreeConfig",
+  );
+  const worktreeConfigOn = /^(true|yes|on|1)$/i.test(worktreeConfig ?? "");
   return (
-    readOriginUrlFromConfig(path.join(gitDir, "config.worktree")) ??
-    readOriginUrlFromConfig(path.join(commonGitDir, "config")) ??
-    readOriginUrlFromConfig(path.join(gitDir, "config"))
+    (worktreeConfigOn ? readGitConfigValue(path.join(gitDir, "config.worktree"), isOriginRemote, "url") : null) ??
+    readGitConfigValue(path.join(commonGitDir, "config"), isOriginRemote, "url") ??
+    readGitConfigValue(path.join(gitDir, "config"), isOriginRemote, "url")
   );
 }
 
