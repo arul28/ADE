@@ -42,7 +42,10 @@ jobs:
       # and the post steps save the other groups' entries.
       # The core group's key and paths live in one composite action, which
       # every job that restores the group uses too. It only looks the entry
-      # up; the step after the install saves it.
+      # up; the step after the install saves it. This job is the only one
+      # that saves the core entry. The jobs that use the core group do not
+      # wait for it: they restore the entry themselves and, on a miss, run
+      # the same install script (install-on-miss).
       - name: Check core node_modules cache
         id: cache_core
         uses: ./.github/actions/restore-core-node-modules
@@ -101,11 +104,8 @@ jobs:
         run: |
           set -euo pipefail
           pids=()
-          # Electron 42+ fetches its binary on first require instead of in npm ci; fetch it
-          # here so the cached node_modules carries it, as it did on Electron 41. Without it,
-          # every brain a test starts from source downloads Electron before it can listen.
-          if [ "$MISS_CORE" = "true" ]; then (cd apps/desktop && npm ci && node scripts/ensure-electron.cjs) & pids+=($!); fi
-          if [ "$MISS_CORE" = "true" ]; then (cd apps/ade-cli && npm ci) & pids+=($!); fi
+          # The same script the core restore action runs on a miss.
+          if [ "$MISS_CORE" = "true" ]; then scripts/ci/install-core-node-modules.sh & pids+=($!); fi
           if [ "$MISS_WEB" = "true" ]; then (cd apps/web && npm ci) & pids+=($!); fi
           if [ "$MISS_WEBHOOK_RELAY" = "true" ]; then (cd apps/webhook-relay && npm ci) & pids+=($!); fi
           if [ "$MISS_PUSH_RELAY" = "true" ]; then (cd apps/push-relay && npm ci) & pids+=($!); fi
@@ -165,7 +165,6 @@ jobs:
   # output, so a failure still names the check. Peak memory measured together:
   # desktop tsc about 7 GB, ade-cli tsc about 2.5 GB, on a 16 GB runner.
   typecheck:
-    needs: install
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -174,6 +173,8 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
       # A background process outlives its step; the runner stops leftover
       # processes only when the job ends. The status file appears only when
       # tsc has exited, so the wait step below cannot read a partial result.
@@ -217,7 +218,6 @@ jobs:
           exit "$(cat "$status")"
 
   lint-desktop:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -225,6 +225,8 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
       - run: cd apps/desktop && npm run test:lint-tooling
       - run: cd apps/desktop && npm run lint:ci
       # The iOS scene shell and the web client's scene headers are copies of
@@ -234,7 +236,6 @@ jobs:
       - run: node apps/desktop/scripts/generate-ios-settings-catalog.mjs --check
 
   test-desktop:
-    needs: install
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -247,10 +248,11 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -258,6 +260,8 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
+        with:
+          install-on-miss: "true"
       - run: cd apps/ade-cli && npm test
 
   # The five Cloudflare Workers in one job, with one step per check. Every
@@ -459,7 +463,6 @@ jobs:
         run: npm run test:posthog
 
   build:
-    needs: install
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -467,11 +470,20 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/restore-core-node-modules
-      - uses: actions/cache/restore@v4
+        with:
+          install-on-miss: "true"
+      # This job does not wait for the install job, so a miss installs the
+      # web group here. Only the install job saves the entry.
+      - name: Restore web node_modules cache
+        id: cache_web
+        uses: actions/cache/restore@v4
         with:
           path: |
             apps/web/node_modules
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
+      - name: Install web node_modules (no cache entry)
+        if: steps.cache_web.outputs.cache-hit != 'true'
+        run: cd apps/web && npm ci
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       # The desktop app ships the CLI help digest to agents. This job already
