@@ -45,6 +45,10 @@ beforeEach(() => {
   runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-restart-loop-"));
   captureProblem.mockReset();
   vi.useFakeTimers({ now: NOW, toFake: ["setTimeout", "Date"] });
+  // The watch ignores a brain that started before this boot. The seeded
+  // starts are minutes old, so the computer must have been up longer than
+  // that; a CI runner can be younger.
+  vi.spyOn(os, "uptime").mockReturnValue(24 * 60 * 60);
 });
 
 afterEach(() => {
