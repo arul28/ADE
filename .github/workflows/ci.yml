@@ -235,6 +235,12 @@ jobs:
       # The iOS settings-chip labels are a copy of the settings manifest.
       - run: node apps/desktop/scripts/generate-ios-settings-catalog.mjs --check
 
+  # The desktop and ade-cli suites run in shards. Each vitest.config.ts sets a
+  # sequencer (scripts/ci/test-shards.mjs) that splits the files Vitest finds
+  # by the durations in the package's vitest.durations.json, so the shards
+  # take about the same time. Every shard computes the same split, so each
+  # test file runs in exactly one shard. scripts/ci/update-test-durations.mjs
+  # refreshes the durations.
   test-desktop:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -252,8 +258,15 @@ jobs:
           install-on-miss: "true"
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
+  # ci-pass reads the matrix as one result, `test-ade-cli`; the checks are
+  # named `test-ade-cli (1)` and `test-ade-cli (2)`.
   test-ade-cli:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -262,7 +275,7 @@ jobs:
       - uses: ./.github/actions/restore-core-node-modules
         with:
           install-on-miss: "true"
-      - run: cd apps/ade-cli && npm test
+      - run: cd apps/ade-cli && npm test -- --shard=${{ matrix.shard }}/2
 
   # The five Cloudflare Workers in one job, with one step per check. Every
   # check runs even when an earlier step failed (`!cancelled()`), so one
