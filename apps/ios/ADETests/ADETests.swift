@@ -4161,9 +4161,20 @@ final class ADETests: XCTestCase {
     )
     service.installSavedProfileForTesting(studio, token: "studio-secret")
     service.installSavedProfileForTesting(cloud, token: "cloud-secret")
+    // Writes that began before the account left: a changeset batch of its
+    // connection and a project row, both still waiting for the database.
+    let epochBeforeLeave = database.replicaEpoch
+    let formerChanges = database.exportChangesSince(version: 0)
+    let formerProject = MobileProjectSummary(
+      id: "project_cloud", displayName: "hello-world", rootPath: "/demo/cloud/hello-world", defaultBaseRef: "main",
+      lastOpenedAt: nil, laneCount: 0, isAvailable: true, isCached: true
+    )
 
     service.removeAccountOwnedPairings(ownerId: "user_1")
 
+    XCTAssertThrowsError(try database.applyChanges(formerChanges, replicaEpoch: epochBeforeLeave))
+    XCTAssertThrowsError(try database.upsertMobileProjectCache(formerProject, replicaEpoch: epochBeforeLeave))
+    XCTAssertEqual(database.listMobileProjects().map(\.id), [])
     XCTAssertEqual(service.projects.map(\.id), [])
     XCTAssertEqual(SyncService(database: makeProjectLaneForeignKeyDatabase(baseURL: baseURL)).projects.map(\.id), [])
     let remaining = service.savedProfilesForTesting()

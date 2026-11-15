@@ -6168,8 +6168,14 @@ final class SyncService: ObservableObject {
           let project = activeProjectCatalogEntryForHydration() else {
       return
     }
-    try await performDatabaseOffMain { try $0.upsertMobileProjectCache(project) }
+    // An account change while the write waits resets the replica; the row
+    // of the former account's project is then dropped (`replicaEpoch`).
+    let replicaEpoch = database.replicaEpoch
+    try await performDatabaseOffMain { try $0.upsertMobileProjectCache(project, replicaEpoch: replicaEpoch) }
     let rows = await readDatabaseOffMain { $0.listMobileProjects() }
+    // The account change also clears the selection: rows read before it
+    // belong to the former account.
+    guard self.activeProjectId == activeProjectId else { return }
     refreshProjectCatalog(preferRemoteSelection: true, cachedRows: rows)
   }
 
@@ -7399,6 +7405,7 @@ final class SyncService: ObservableObject {
       // work in them).
       let database = self.database
       let projectIdBeforeRead = activeProjectId
+      let accountGenerationBeforeRead = accountDataGeneration
       let prefetched = await Task.detached(priority: .userInitiated) {
         (
           projects: affectsProjectCatalog ? database.listMobileProjects() : nil,
@@ -7407,9 +7414,12 @@ final class SyncService: ObservableObject {
       }.value
       // No cancellation check here: the pending tables were already taken
       // above, so a newer change arriving during the read must not drop them.
+      // An account change during the read reset the replica: rows read before
+      // it are the former account's, so the new replica is read instead.
+      let prefetchedIsCurrent = accountDataGeneration == accountGenerationBeforeRead
 
       if affectsProjectCatalog {
-        self.refreshProjectCatalog(cachedRows: prefetched.projects)
+        self.refreshProjectCatalog(cachedRows: prefetchedIsCurrent ? prefetched.projects : nil)
       }
       if affectsAnyProjection {
         localStateRevision += 1
@@ -7418,7 +7428,7 @@ final class SyncService: ObservableObject {
       if affectsActiveSessions {
         // The user can change the project during the read. Rows read for the
         // previous project are then dropped, and a fresh read is done.
-        let sessions = activeProjectId == projectIdBeforeRead ? prefetched.sessions : nil
+        let sessions = prefetchedIsCurrent && activeProjectId == projectIdBeforeRead ? prefetched.sessions : nil
         self.refreshActiveSessionsAndSnapshot(rows: sessions)
       }
     }
@@ -11127,6 +11137,16 @@ final class SyncService: ObservableObject {
     })
     savePendingChatCreations([])
 
+    // The saved work lists (chat titles and previews, per computer and
+    // project) and the list answers kept for a "not modified" reply. The
+    // folder goes too, so a save already on its way to the disk fails.
+    workSessionsConditionalCache = nil
+    workSessionsCacheLoadedKeys = []
+    pullRequestListConditionalCache = nil
+    if let dir = Self.workSessionsCacheDirectory {
+      try? FileManager.default.removeItem(at: dir)
+    }
+
     // The in-memory and App Group copies of the old rows.
     chatSummaryCache = [:]
     personalChatSessions = loadCachedPersonalChats()
@@ -11447,11 +11467,13 @@ final class SyncService: ObservableObject {
     var sessions: [TerminalSessionSummary]
   }
 
-  private func workSessionsCacheURL() -> URL? {
-    guard let key = savedConditionalReadKey("work") else { return nil }
-    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
+  private static var workSessionsCacheDirectory: URL? {
+    FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
       .appendingPathComponent("ade-conditional-reads", isDirectory: true)
-    guard let dir else { return nil }
+  }
+
+  private func workSessionsCacheURL() -> URL? {
+    guard let key = savedConditionalReadKey("work"), let dir = Self.workSessionsCacheDirectory else { return nil }
     try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     return dir.appendingPathComponent("work-\(DpopKeyService.sha256Hex(key)).json")
   }
@@ -12499,13 +12521,20 @@ final class SyncService: ObservableObject {
     pullRequests: [PullRequestListItem]
   ) {
     let database = self.database
-    let rows = await Task.detached(priority: .userInitiated) {
-      (
-        sessions: database.fetchSessions(),
-        lanes: database.fetchLanes(includeArchived: false),
-        pullRequests: database.fetchPullRequestListItems()
-      )
-    }.value
+    let read = {
+      await Task.detached(priority: .userInitiated) {
+        (
+          sessions: database.fetchSessions(),
+          lanes: database.fetchLanes(includeArchived: false),
+          pullRequests: database.fetchPullRequestListItems()
+        )
+      }.value
+    }
+    let accountGeneration = accountDataGeneration
+    var rows = await read()
+    // An account change during the read reset the replica: these rows are
+    // the former account's. Read the new replica instead.
+    if accountGeneration != accountDataGeneration { rows = await read() }
     return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests)
   }
 
@@ -23167,8 +23196,13 @@ final class SyncService: ObservableObject {
       }
       do {
         let database = self.database
+        // Read on the main actor with the generation check above. An account
+        // change resets the replica on the main actor; a batch of the former
+        // account's connection that waits for the database queue is then
+        // dropped inside it, not written into the new replica.
+        let replicaEpoch = database.replicaEpoch
         let result = try await Task.detached(priority: .userInitiated) {
-          try database.applyChanges(batch.changes)
+          try database.applyChanges(batch.changes, replicaEpoch: replicaEpoch)
         }.value
         // Stale apply after a reconnect: the rows are already committed
         // (insert-or-ignore makes the resend idempotent), but the cursor and
