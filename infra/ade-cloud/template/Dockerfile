@@ -21,11 +21,18 @@ FROM node:24-bookworm-slim
 # compiler. Without them every such project's setup failed on ADE Cloud, on
 # every size ("gyp ERR!"). About 200 MB.
 #
+# bubblewrap: the sandbox Codex runs each shell command in. Codex prefers a
+# `bwrap` on PATH to its bundled one, and /usr/bin/bwrap is ADE's wrapper
+# (bwrap-gvisor.sh) around the real one: under gVisor a network namespace
+# can't be set up, so for Codex, which blocks the network with its own
+# seccomp filter, the wrapper drops that one flag. Without it no Codex
+# command ran on ADE Cloud outside full-auto. About 0.2 MB.
+#
 # /etc/machine-id stays absent: ADE's hardware anchor hashes it, and one value
 # baked into the image would be shared by every box made from it, which makes
 # the account directory merge different boxes into one row.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git gawk tini python3 unzip procps build-essential pkg-config \
+      ca-certificates curl git gawk tini python3 unzip procps build-essential pkg-config bubblewrap \
       xvfb openbox dbus at-spi2-core ffmpeg chromium \
       xterm thunar fonts-liberation fonts-noto-color-emoji librsvg2-common \
  && rm -rf /var/lib/apt/lists/* \
@@ -122,6 +129,10 @@ RUN set -eu; baked=/opt/ade-tools; scratch=/tmp/ade-bake; mkdir -p "$baked"; \
 
 COPY ade-entrypoint.sh /usr/local/bin/ade-entrypoint.sh
 RUN chmod 755 /usr/local/bin/ade-entrypoint.sh
+# The real bubblewrap moves aside (dpkg keeps it there on upgrades); the wrapper takes its name.
+RUN dpkg-divert --local --rename --divert /usr/bin/bwrap.real --add /usr/bin/bwrap
+COPY bwrap-gvisor.sh /usr/bin/bwrap
+RUN chmod 755 /usr/bin/bwrap && /usr/bin/bwrap --version
 
 USER node
 WORKDIR /home/node

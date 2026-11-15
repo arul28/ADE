@@ -1411,6 +1411,17 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   packages with native code and no prebuilt binary (node-pty, some sqlite and
   bcrypt builds) compile on install; before, every such setup failed with
   "gyp ERR!" on every size.
+- Codex's sandbox: Codex runs each shell command in bubblewrap with its own
+  network namespace, which gVisor can't set up ("bwrap: loopback: Failed
+  RTM_NEWADDR"), so no Codex command ran outside full-auto. The image's
+  `/usr/bin/bwrap` is a wrapper (`infra/ade-cloud/template/bwrap-gvisor.sh`)
+  around Debian's bubblewrap that drops `--unshare-net` only for Codex's
+  sandbox, which also blocks the network with its seccomp filter. Checked on a
+  cloud computer: plan mode can't write and can't reach the network (a raw IP
+  is refused too), default mode writes only in the workspace, and Codex's
+  network-on setting still reaches the network. Codex prefers a `bwrap` on
+  PATH to its bundled one; when the wrapper can't run, Codex falls back to its
+  own and fails as before.
 
 Waking: `WorkSidebar` wraps tool panels in `CloudToolGate`
 (`terminals/cloudToolGate.tsx`): a person's click on a tool that needs the computer
