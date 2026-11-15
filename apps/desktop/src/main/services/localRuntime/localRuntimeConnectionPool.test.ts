@@ -267,6 +267,36 @@ function runningTestServiceStatus() {
   };
 }
 
+/** `sun_path` holds 104 bytes on macOS (108 on Linux), and one is the NUL. */
+const MAX_UNIX_SOCKET_PATH_BYTES = 103;
+
+/**
+ * The temp root for a directory that will hold a Unix socket at
+ * `longestSocketTail` below it.
+ *
+ * Many tests here bind or connect a real socket inside a temp dir, and the
+ * default macOS tmpdir already spends 48 of the `sun_path` bytes. A deeper
+ * `TMPDIR` (an agent's scratch directory, a sandbox) pushes the longer socket
+ * paths over the limit, and bind or connect then fails with a bare EINVAL that
+ * says nothing about the behavior under test. Such a path goes under `/tmp`
+ * instead, as `cursorSdkPool` does for its own socket. A Windows endpoint is a
+ * named pipe and has no such limit.
+ */
+function socketSafeTempRoot(longestSocketTail: string): string {
+  if (process.platform === "win32") return os.tmpdir();
+  const deepest = path.join(os.tmpdir(), longestSocketTail);
+  return Buffer.byteLength(deepest, "utf8") <= MAX_UNIX_SOCKET_PATH_BYTES ? os.tmpdir() : "/tmp";
+}
+
+/**
+ * A new temp dir that can serve as an `ADE_HOME`: the longest socket name the
+ * machine layout puts in its `sock/` directory still fits in `sun_path`.
+ */
+function makeTempDir(prefix: string): string {
+  const longestSocketTail = path.join(`${prefix}XXXXXX`, "sock", "desktop-bridge.sock");
+  return fs.mkdtempSync(path.join(socketSafeTempRoot(longestSocketTail), prefix));
+}
+
 function removeTempDir(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -321,9 +351,9 @@ async function withFakeRuntimeCli(
   cliSource: (paths: { tempDir: string; socketPath: string; cliPath: string }) => string,
   run: (paths: { tempDir: string; socketPath: string; cliPath: string }) => Promise<void>,
 ): Promise<void> {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-lifecycle-"));
-  const endpointHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-endpoint-"));
-  const layoutHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pool-layout-"));
+  const tempDir = makeTempDir("ade-pool-lifecycle-");
+  const endpointHome = makeTempDir("ade-pool-endpoint-");
+  const layoutHome = makeTempDir("ade-pool-layout-");
   const socketPath = machineRuntimeSocketPath(endpointHome);
   const cliPath = path.join(tempDir, "cli.cjs");
   fs.writeFileSync(cliPath, cliSource({ tempDir, socketPath, cliPath }), "utf8");
@@ -775,7 +805,7 @@ describe("local runtime connection pool", () => {
     // A background install already running cannot satisfy a Repair click: it
     // may skip, or may have spawned before the user asked. The forced call must
     // queue behind it and then spawn its own forcing install.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-force-"));
+    const dir = makeTempDir("ade-install-force-");
     const logPath = path.join(dir, "spawns.log");
     const cliPath = path.join(dir, "fake-cli.cjs");
     fs.writeFileSync(
@@ -819,7 +849,7 @@ describe("local runtime connection pool", () => {
   it("settles a wedged service install as failed instead of hanging forever", async () => {
     // Without the timeout a stuck installer pins serviceInstallPromise, so the
     // Repair button spins forever and every later install is blocked too.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-wedge-"));
+    const dir = makeTempDir("ade-install-wedge-");
     const cliPath = path.join(dir, "wedged-cli.cjs");
     fs.writeFileSync(cliPath, "setInterval(() => {}, 1000);\n");
     const originalEnv = {
@@ -866,7 +896,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-skip-"));
+    const adeHome = makeTempDir("ade-install-skip-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -1304,7 +1334,7 @@ describe("local runtime connection pool", () => {
   });
 
   it("clears stale client and project state when an app-owned runtime exits", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-exit-"));
+    const tempDir = makeTempDir("ade-runtime-exit-");
     const cliPath = path.join(tempDir, "cli.cjs");
     const socketPath = path.join(tempDir, "ade.sock");
     const originalAdeCliJs = process.env.ADE_CLI_JS;
@@ -1359,7 +1389,7 @@ describe("local runtime connection pool", () => {
   });
 
   it("does not clear a replacement connection when a superseded owned runtime exits", async () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-runtime-superseded-"));
+    const tempDir = makeTempDir("ade-runtime-superseded-");
     const oldCliPath = path.join(tempDir, "old-cli.cjs");
     const replacementCliPath = path.join(tempDir, "replacement-cli.cjs");
     const socketPath = path.join(tempDir, "ade.sock");
@@ -2792,7 +2822,7 @@ setInterval(() => {}, 1000);
   let stubPath = "";
 
   beforeAll(() => {
-    stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-brain-stub-"));
+    stubDir = makeTempDir("ade-brain-stub-");
     stubPath = path.join(stubDir, "brain-stub.cjs");
     fs.writeFileSync(stubPath, BRAIN_STUB_SOURCE, "utf8");
   });
@@ -2806,7 +2836,7 @@ setInterval(() => {}, 1000);
     const id = randomUUID().slice(0, 8);
     return process.platform === "win32"
       ? `\\\\.\\pipe\\ade-brain-${id}`
-      : path.join(os.tmpdir(), `ade-brain-${id}.sock`);
+      : path.join(socketSafeTempRoot(`ade-brain-${id}.sock`), `ade-brain-${id}.sock`);
   }
 
   function startBrain(endpoint: string, mode: BrainMode, identity: string[] = []) {
@@ -3092,7 +3122,7 @@ setInterval(() => {}, 1000);
 
     beforeAll(() => {
       // The update-window check reads the machine layout: keep it off the real home.
-      homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-old-brain-home-"));
+      homeDir = makeTempDir("ade-old-brain-home-");
       originalHome = process.env.ADE_HOME;
       process.env.ADE_HOME = homeDir;
     });
@@ -3181,8 +3211,8 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-"));
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-"));
+    const adeHome = makeTempDir("ade-local-runtime-");
+    const projectRoot = makeTempDir("ade-local-runtime-project-");
     const expectedProjectRoot = canonicalProjectRoot(projectRoot);
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
@@ -3265,9 +3295,9 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-"));
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
-    const secondProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
+    const adeHome = makeTempDir("ade-local-runtime-version-");
+    const projectRoot = makeTempDir("ade-local-runtime-version-project-");
+    const secondProjectRoot = makeTempDir("ade-local-runtime-version-project-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -3398,7 +3428,7 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-newer-"));
+    const adeHome = makeTempDir("ade-local-runtime-newer-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -3489,7 +3519,7 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-eq-"));
+    const adeHome = makeTempDir("ade-eq-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -3568,8 +3598,8 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-dev-version-"));
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-dev-version-project-"));
+    const adeHome = makeTempDir("ade-local-runtime-dev-version-");
+    const projectRoot = makeTempDir("ade-local-runtime-dev-version-project-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
     expect(expectedBuildHash).toBeTruthy();
@@ -3647,8 +3677,8 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-"));
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-"));
+    const adeHome = makeTempDir("ade-local-runtime-build-");
+    const projectRoot = makeTempDir("ade-local-runtime-build-project-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -3766,8 +3796,8 @@ setInterval(() => {}, 1000);
     expect(fs.existsSync(cliPath)).toBe(true);
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-"));
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-project-"));
+    const adeHome = makeTempDir("ade-local-runtime-role-");
+    const projectRoot = makeTempDir("ade-local-runtime-role-project-");
     const socketPath = machineRuntimeSocketPath(adeHome);
     const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
     expect(expectedBuildHash).toBeTruthy();
@@ -4226,7 +4256,7 @@ setInterval(() => {}, 1000);
       fallback: null,
     },
   ])("primary socket with failed service repair: $name", async ({ install, running, fallback }) => {
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-fallback-"));
+    const adeHome = makeTempDir("ade-local-runtime-fallback-");
     const originalAdeHome = process.env.ADE_HOME;
     const originalSocketPath = process.env.ADE_RUNTIME_SOCKET_PATH;
     process.env.ADE_HOME = adeHome;
@@ -4293,7 +4323,7 @@ setInterval(() => {}, 1000);
     // installer is a real `serve --install-service` child that fails the way a
     // refusing launchd does, and the restored fallback is a real `serve` child
     // the pool itself spawns. Only the socket connect is faked.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-fallback-restore-"));
+    const dir = makeTempDir("ade-fallback-restore-");
     const logPath = path.join(dir, "cli.log");
     const cliPath = path.join(dir, "fake-cli.cjs");
     fs.writeFileSync(cliPath, [
@@ -4416,7 +4446,7 @@ setInterval(() => {}, 1000);
   });
 
   it("surfaces a recorded disk failure with crash-loop context when repair remains blocked", async () => {
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-recovery-report-"));
+    const adeHome = makeTempDir("ade-local-runtime-recovery-report-");
     const originalAdeHome = process.env.ADE_HOME;
     process.env.ADE_HOME = adeHome;
     try {
@@ -4452,7 +4482,7 @@ setInterval(() => {}, 1000);
   });
 
   it("codes a missing unowned primary endpoint as socket_stale_no_owner", async () => {
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-stale-socket-"));
+    const adeHome = makeTempDir("ade-local-runtime-stale-socket-");
     vi.stubEnv("ADE_HOME", adeHome);
     // Hermetic: a shell (or an ADE chat) that exports its live brain's socket
     // would otherwise point the owner probe at that brain.
@@ -4490,7 +4520,7 @@ setInterval(() => {}, 1000);
   it.each([true, false])(
     "codes a live primary endpoint as socket_owned_by_other when the service is running=%s",
     async (serviceRunning) => {
-      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-owned-endpoint-"));
+      const adeHome = makeTempDir("ade-local-runtime-owned-endpoint-");
       vi.stubEnv("ADE_HOME", adeHome);
       vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
       const socketPath = resolveMachineAdeLayout().socketPath;
@@ -4541,7 +4571,7 @@ setInterval(() => {}, 1000);
   );
 
   it("does not spawn a primary sync runtime when service repair is not configured", async () => {
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-primary-block-"));
+    const adeHome = makeTempDir("ade-local-runtime-primary-block-");
     const originalEnv = {
       ADE_HOME: process.env.ADE_HOME,
       ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
@@ -4674,7 +4704,7 @@ setInterval(() => {}, 1000);
   it.runIf(process.platform === "win32")(
     "treats a forward-slash named pipe spelling as the same primary endpoint",
     async () => {
-      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-slash-alias-"));
+      const adeHome = makeTempDir("ade-pipe-slash-alias-");
       try {
         // Win32 accepts `/` and `\` interchangeably, so this addresses the very
         // pipe the layout resolves to. Comparing the raw strings would miss it
@@ -4697,7 +4727,7 @@ setInterval(() => {}, 1000);
   it.runIf(process.platform === "win32")(
     "treats a differently-cased named pipe as the same primary endpoint",
     async () => {
-      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-case-alias-"));
+      const adeHome = makeTempDir("ade-pipe-case-alias-");
       try {
         // Windows pipe names are case-insensitive: this connects to the same
         // pipe object as the layout address.
@@ -4720,7 +4750,7 @@ setInterval(() => {}, 1000);
     // comparison cannot match and only the cross-channel set can catch this.
     // On Windows that set was hardcoded to `~/.ade*/sock/ade.sock` — addresses
     // that never exist there — so this protection silently did not apply.
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cross-channel-"));
+    const adeHome = makeTempDir("ade-cross-channel-");
     try {
       const outcome = await runPrimaryEndpointGuard({
         adeHome,
@@ -4741,7 +4771,7 @@ setInterval(() => {}, 1000);
       // The named-pipe canonicalization must not bleed onto filesystem sockets:
       // `/tmp/.../ADE.sock` and `/tmp/.../ade.sock` are genuinely different
       // files on a case-sensitive filesystem.
-      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-posix-case-"));
+      const adeHome = makeTempDir("ade-posix-case-");
       try {
         const outcome = await runPrimaryEndpointGuard({
           adeHome,
@@ -5346,7 +5376,7 @@ describe("service health probe never blocks the main thread", () => {
     it("a recovery read after a service install does not resolve with a probe that began before it", async () => {
       // The first probe begins while the service is absent and is held until the
       // test lands it; every later probe answers at once.
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-read-window-install-"));
+      const dir = makeTempDir("ade-read-window-install-");
       const logPath = path.join(dir, "installs.log");
       const cliPath = path.join(dir, "fake-cli.cjs");
       fs.writeFileSync(
@@ -5449,7 +5479,7 @@ describe("defaultQueryServiceStatusAsync", () => {
   // Only Windows runs the probe in a child process; elsewhere it is the cheap
   // in-process call and there is no exit code to interpret.
   it.skipIf(process.platform !== "win32")("keeps an ok:false payload the CLI exits 1 for", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-service-status-exit-1-"));
+    const dir = makeTempDir("ade-service-status-exit-1-");
     const stub = path.join(dir, "cli.cjs");
     const payload = {
       ok: false,
@@ -5523,7 +5553,7 @@ describe("service repair storm control", () => {
   let originalRepairAdeHome: string | undefined;
   beforeEach(() => {
     originalRepairAdeHome = process.env.ADE_HOME;
-    repairAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-repair-home-"));
+    repairAdeHome = makeTempDir("ade-repair-home-");
     process.env.ADE_HOME = repairAdeHome;
   });
 
@@ -5654,7 +5684,7 @@ describe("service repair storm control", () => {
   });
 
   it("refuses a connect during the update window instead of recovering into it", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-update-window-"));
+    const dir = makeTempDir("ade-update-window-");
     const originalSocketPath = process.env.ADE_RUNTIME_SOCKET_PATH;
     // A path nothing listens on: the machine's real endpoint must stay
     // untouched by this test.

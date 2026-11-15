@@ -285,6 +285,9 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
 
   beforeEach(() => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-login-renew-"));
+    readsInFlight = 0;
+    readsIdle = [];
+    countDiskReads();
   });
 
   const started: Array<{ sync: { stop(): void } }> = [];
@@ -514,12 +517,42 @@ describe("provider login renewal: the owner renews, nobody else overwrites", () 
   type Computer = Awaited<ReturnType<typeof makeComputer>>;
   const FAKE = { toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] as const };
 
-  /** One step of fake time, after the real I/O in flight (a file read, a stat) has had its turn. */
-  async function step(ms: number): Promise<void> {
-    for (let turn = 0; turn < 2; turn += 1) {
-      await fs.promises.access(root);
-      await new Promise((resolve) => setImmediate(resolve));
+  /**
+   * The real disk reads the code under test has in flight. Capture reads the
+   * login files with `fs.promises.stat` and `readFile`; those are the only
+   * async disk calls on this path, so they are counted here (the file system
+   * is a process boundary).
+   */
+  let readsInFlight = 0;
+  let readsIdle: Array<() => void> = [];
+  function countDiskReads(): void {
+    for (const name of ["stat", "readFile"] as const) {
+      const real = fs.promises[name].bind(fs.promises) as (...args: unknown[]) => Promise<unknown>;
+      vi.spyOn(fs.promises, name).mockImplementation((async (...args: unknown[]) => {
+        readsInFlight += 1;
+        try {
+          return await real(...args);
+        } finally {
+          readsInFlight -= 1;
+          if (readsInFlight === 0) for (const wake of readsIdle.splice(0)) wake();
+        }
+      }) as never);
     }
+  }
+
+  /**
+   * One step of fake time, once no disk read is in flight. A step taken while
+   * a read waits on the disk would move the fake clock by an amount that
+   * depends on how slow the disk is. Reads that took 1 ms were enough for the
+   * gate's 45 s budget to run out in fake time while capture waited on them.
+   */
+  async function step(ms: number): Promise<void> {
+    do {
+      await new Promise((resolve) => setImmediate(resolve));
+      if (readsInFlight > 0) await new Promise<void>((resolve) => { readsIdle.push(resolve); });
+      // The code that awaited the read runs now, and may start the next one.
+      await new Promise((resolve) => setImmediate(resolve));
+    } while (readsInFlight > 0);
     await vi.advanceTimersByTimeAsync(ms);
   }
 
