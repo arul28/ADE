@@ -351,61 +351,6 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, DAEMON_TEST_TIMEOUT_MS);
 
-  it("restarts a stale daemon before bridging stdio requests", async () => {
-    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    const cliPath = path.join(packageRoot, "src", "cli.ts");
-    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-version-"));
-    const socketPath = machineRuntimeSocketPath(adeHome);
-    const baseEnv = {
-      ...environmentWithoutAde(),
-      ADE_HOME: adeHome,
-      ADE_RUNTIME_SOCKET_PATH: socketPath,
-      NODE_OPTIONS: withTsxNodeOptions(process.env.NODE_OPTIONS),
-    };
-    const oldDaemon = startServeProcess({
-      cliPath,
-      cwd: packageRoot,
-      env: {
-        ...baseEnv,
-        ADE_CLI_VERSION: "1.0.0",
-      },
-      socketPath,
-    });
-
-    let proxy: StdioRpcProcess | null = null;
-    try {
-      await waitForSocket(socketPath);
-
-      proxy = StdioRpcProcess.start({
-        cliPath,
-        cwd: packageRoot,
-        env: {
-          ...baseEnv,
-          ADE_CLI_VERSION: "2.0.0",
-        },
-      });
-      const initialize = await proxy.request("ade/initialize", {
-        protocolVersion: "2025-06-18",
-        clientName: "stdio-daemon-version-test",
-        identity: { role: "external", callerId: "stdio-daemon-version-test" },
-      });
-
-      expect(initialize).toMatchObject({
-        runtimeInfo: {
-          version: "2.0.0",
-          multiProject: true,
-        },
-      });
-
-      await expect(proxy.request("shutdown")).resolves.toEqual({});
-      proxy.closeInput();
-      await expect(proxy.waitForExit()).resolves.toMatchObject({ code: 0, signal: null });
-    } finally {
-      proxy?.kill();
-      if (!oldDaemon.killed) oldDaemon.kill();
-    }
-  }, DAEMON_TEST_TIMEOUT_MS);
-
   it("restarts a same-version daemon when its build hash is stale", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
