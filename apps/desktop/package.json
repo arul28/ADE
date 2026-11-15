@@ -302,6 +302,10 @@
         "to": "ade-cli/cli.cjs"
       },
       {
+        "from": "../ade-cli/dist/watchdogCheck.cjs",
+        "to": "ade-cli/watchdogCheck.cjs"
+      },
+      {
         "from": "../ade-cli/dist/bootstrap.cjs",
         "to": "ade-cli/bootstrap.cjs"
       },
