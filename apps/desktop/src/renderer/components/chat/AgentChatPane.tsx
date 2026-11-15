@@ -255,7 +255,8 @@ import {
 } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
-import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
+import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_BACKFILL_PAGE_MAX_BYTES,
@@ -278,6 +279,7 @@ import {
 const NO_NESTING: ReadonlyMap<string, string> = new Map();
 /** A pane locked to one chat has no spawned children in its session list. */
 const NO_SPAWNED_CHAT_SESSIONS: readonly AgentChatSessionSummary[] = [];
+const NO_PENDING_STEERS: PendingSteerEntry[] = [];
 
 export {
   advanceOlderHistoryCursor,
@@ -464,7 +466,7 @@ import {
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
-import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -4634,7 +4636,7 @@ export function AgentChatPane({
   // rendered transcript is kept as-is (it is real, just possibly behind) and a
   // later pass renders a catch-up hairline from this flag.
   const [syncPendingBySession, setSyncPendingBySession] = useState<Record<string, boolean>>({});
-  const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
+  const [turnActiveBySessionState, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   // Raw derivations, straight from the transcript. Every reader goes through
   // `resolvedPendingInputsBySession` below instead of reading this directly —
   // an entry swept at a turn boundary is still in here, and only the session
@@ -5659,6 +5661,19 @@ export function AgentChatPane({
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   const draftStartedOnRef = useRef<{ tabId: string | null; machineKey: string | null }>({ tabId: null, machineKey: null });
   chatRuntimePinRef.current = chatRuntimePin;
+  // The chat's ADE Cloud computer is asleep: no turn runs there, whatever the
+  // transcript ended on. The pane shows the saved state, as the row does: no
+  // "Thinking", no Stop, no steer.
+  const chatMachineEntry = useMachineEntryForBinding(chatRuntimePin);
+  const { computers: chatCloudLaneComputers } = useAdeCloudLaneComputers();
+  const chatComputerResting = chatMachineEntry != null && machineIsCloudResting(chatMachineEntry, chatCloudLaneComputers);
+  const restingChatSessionId = chatComputerResting ? selectedSessionId : null;
+  const turnActiveBySession = useMemo(
+    () => (restingChatSessionId && turnActiveBySessionState[restingChatSessionId]
+      ? { ...turnActiveBySessionState, [restingChatSessionId]: false }
+      : turnActiveBySessionState),
+    [restingChatSessionId, turnActiveBySessionState],
+  );
   // The tab's own copy, for the draft's branch picks (an ADE Cloud start).
   const tabCopyPin = useTabCopyPin();
   const tabCopyPinRef = useRef(tabCopyPin);
@@ -7140,7 +7155,8 @@ export function AgentChatPane({
     }
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
-  const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
+  // Steers wait for a turn; an asleep computer runs none.
+  const pendingSteers = selectedSessionId && selectedSessionId !== restingChatSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : NO_PENDING_STEERS;
   /* The exact preset the composer is showing: a running chat's own preset (or
      the pick still waiting for Send), or the draft's. The launch must read its
      source-model ladder, not the harness's ladder, or a picked level is lost

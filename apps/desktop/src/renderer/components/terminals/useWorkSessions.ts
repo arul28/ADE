@@ -1770,6 +1770,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     const hostPin = tabCopyPinRef.current;
     if (!hostPin) {
+      // No address for the tab's computer (it is offline, or the tab is just
+      // coming back to the front): an empty list here is not the computer's
+      // answer, so it must not close the chats the tab has open.
+      hasAuthoritativeSessionsRef.current = false;
       setHostSessions([]);
       setLoading(false);
       return;

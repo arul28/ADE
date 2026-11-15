@@ -8,6 +8,7 @@ import {
 import { repositoryTabOfNoMachineTab } from "../../state/repositoryScope";
 import { useAppStore, type NoMachineRepositoryTab } from "../../state/appStore";
 import { useAccountProjectList, useRepositoryCopies } from "../../state/useRepositoryCopies";
+import { isAdeCloudComputer, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { copyMachines, repoKeyForOriginIdentity } from "./projectCopies";
@@ -305,24 +306,35 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
     })();
   };
   const webOpenable = webMode && copies.some((copy) => webMachineFor(copy) != null);
+  // Any ADE Cloud computer, with a lane or not: it sleeps, and Wake starts it.
+  const cloudIndex = useAdeCloudLaneComputers();
+  const onAdeCloud = (copy: RepositoryCopy): boolean => (
+    copy.isAdeCloud || isAdeCloudComputer({ machineKey: copy.machineKey }, cloudIndex)
+  );
   /** "Connect" for a copy on an awake computer with no connection here, "Wake" for a resting ADE Cloud computer. */
   const wakeOrConnectLabel = (copy: RepositoryCopy): "Connect" | "Wake" | null => {
     if (copy.isThisMachine || copy.online || !copy.machineKey) return null;
     const presence = accountMachinePresence(accountMachineOf(copy));
     if (presence === "online") return "Connect";
-    return copy.isAdeCloud && presence === "asleep" ? "Wake" : null;
+    return onAdeCloud(copy) && presence === "asleep" ? "Wake" : null;
   };
   /**
    * The state word of a copy's computer, the same on ADE Web and the desktop:
    * "Asleep" only for an ADE Cloud computer that went to sleep (it can sleep
    * for days with no heartbeat), "Offline" for every other computer.
    */
-  const offlineWord = (copy: RepositoryCopy): "Asleep" | "Offline" => {
-    if (!copy.isAdeCloud) return "Offline";
+  const offlineWord = (copy: RepositoryCopy): string => {
+    // ADE Web still dialing a computer says so until the try ends.
+    const webMachine = webMode ? webMachineOf(copy) : null;
+    if (webMachine?.status === "connecting") return webMachine.statusLabel;
+    if (!onAdeCloud(copy)) return "Offline";
     const machine = accountMachineOf(copy);
     return accountMachinePresence(machine) === "asleep" || machine?.sleepState === "asleep" ? "Asleep" : "Offline";
   };
   const connectable = webOpenable || copies.some((copy) => wakeOrConnectLabel(copy) != null);
+  // Every computer the page can reach is an asleep ADE Cloud computer: the
+  // action is Wake, not Connect.
+  const wakeOnly = connectable && !webOpenable && copies.every((copy) => wakeOrConnectLabel(copy) !== "Connect");
   // The computer this page is opening the project on now, if any.
   const opening = autoOpen?.machineName
     ?? (openingCopyKey ? copies.find((copy) => copyKeyOf(copy) === openingCopyKey)?.machineName : undefined)
@@ -357,7 +369,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
               <strong className="text-[13px] font-semibold">
                 {opening
                   ? `Opening on ${opening}…`
-                  : connectable
+                  : wakeOnly
+                    ? "A computer with this project is asleep"
+                    : connectable
                     ? "A computer with this project is not connected"
                     : directoryFailure && copies.length > 0
                       ? "ADE couldn't check which computers are on"
@@ -366,7 +380,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
               <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>
                 {opening
                   ? "The project opens here when it answers."
-                  : connectable
+                  : wakeOnly
+                    ? "Wake it to open the project here."
+                    : connectable
                     ? "Connect it to open the project here."
                     : copies.length === 0
                       ? "Add a copy on a computer to work on it."
@@ -406,6 +422,8 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                       Open
                     </button>
                   ) : wakeOrConnect ? (
+                    <>
+                    {wakeOrConnect === "Wake" ? <span className="kit-tag shrink-0">Asleep</span> : null}
                     <button
                       type="button"
                       className="kit-btn"
@@ -415,6 +433,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
                     >
                       {manualConnectKey != null && manualConnectKey === copy.machineKey ? "Connecting…" : wakeOrConnect}
                     </button>
+                    </>
                   ) : (
                     <span className="kit-tag shrink-0">{offlineWord(copy)}</span>
                   )}

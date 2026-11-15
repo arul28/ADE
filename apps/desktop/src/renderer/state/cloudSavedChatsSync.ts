@@ -203,8 +203,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         || (cloudBoxes != null ? !box : !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }
-    replaceCloudConnectionTargets([...machineFacts.values()]
-      .flatMap((facts) => (facts.connection && !facts.gone ? [facts.connection.target.id] : [])));
+    replaceCloudConnectionTargets([...machineFacts.entries()]
+      .flatMap(([machineKey, facts]) => (facts.connection && !facts.gone ? [[facts.connection.target.id, machineKey] as const] : [])));
     // One computer shows each chat. After a move, the new computer saves the
     // same chats (same ids) as the old one. A computer that still exists wins
     // over a deleted one; between two that exist, a connected one, then the

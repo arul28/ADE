@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { savedChatsMachineKey } from "../../shared/cloudSavedChats";
 import { adeCloudLaneComputerForMachine } from "../state/adeCloudLaneIndex";
-import { isCloudConnectionTarget } from "../state/cloudSavedChats";
+import { cloudConnectionMachineKey, isCloudConnectionTarget } from "../state/cloudSavedChats";
 import { readWebAccountMachineKeys } from "../state/webAccountMachineKeys";
 import { showToast } from "../components/app/toast/toastStore";
 import { connectMachine } from "./machineConnect";
@@ -61,6 +61,10 @@ export function restingCloudMachineKey(machine: Pick<RestingCloudMachine, "machi
   // computer made without a lane (absent from the lane index) still wakes.
   const savedKey = savedChatsMachineKey(machine.machineId);
   if (savedKey) return savedKey;
+  // A cloud computer's connection: the saved chats read names its key (the
+  // target itself may carry none, on ADE Web and for a computer with no lane).
+  const connectionKey = cloudConnectionMachineKey(machine.machineId);
+  if (connectionKey) return connectionKey;
   // ADE Web names a connection by its environment id and its target carries no
   // machine key: for a cloud computer's connection, the web's key map names it.
   const webKey = isCloudConnectionTarget(machine.machineId) ? readWebAccountMachineKeys().get(machine.machineId) : undefined;

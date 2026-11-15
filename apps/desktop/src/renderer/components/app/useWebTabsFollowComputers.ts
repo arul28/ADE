@@ -85,6 +85,7 @@ export function useWebTabsFollowComputers({
   setOpenRemoteProjectTabs,
   setTabOrder,
   setPreferredBindingKeyByGroup,
+  noteTabMove,
 }: {
   webMode: boolean;
   /** The remote copy in front, if any. */
@@ -101,6 +102,8 @@ export function useWebTabsFollowComputers({
   setOpenRemoteProjectTabs: (next: RemoteOpenProjectBinding[]) => void;
   setTabOrder: Dispatch<SetStateAction<string[]>>;
   setPreferredBindingKeyByGroup: Dispatch<SetStateAction<Record<string, string>>>;
+  /** Records that one copy takes another's place in its tab (the top bar's `noteTabMove`). */
+  noteTabMove?: (from: string, to: string) => void;
 }): void {
   // The last remote tab in front: a forget can drop the binding before the
   // connection list loses its computer (see `frontRemoteTabKey`).
@@ -184,6 +187,7 @@ export function useWebTabsFollowComputers({
       if (plan.fallback?.kind === "remote") {
         nextRemote.set(plan.fallback.binding.key, plan.fallback.binding);
         renamed.set(plan.tab.key, plan.fallback.binding.key);
+        noteTabMove?.(plan.tab.key, plan.fallback.binding.key);
         if (plan.groupId) preferred[plan.groupId] = plan.fallback.binding.key;
       }
     }
@@ -235,7 +239,7 @@ export function useWebTabsFollowComputers({
       }
       void bringFrontPlanForward(frontPlan, { noMachineShown: false });
     });
-  }, [bringFrontPlanForward, openProjectTabRootsRef, openRemoteProjectTabsRef, recordNameForRef, remoteSnapshotRef, setOpenRemoteProjectTabs, setPreferredBindingKeyByGroup, setTabOrder, tabGroupsRef]);
+  }, [bringFrontPlanForward, noteTabMove, openProjectTabRootsRef, openRemoteProjectTabsRef, recordNameForRef, remoteSnapshotRef, setOpenRemoteProjectTabs, setPreferredBindingKeyByGroup, setTabOrder, tabGroupsRef]);
   const webSeenTargetIdsRef = useRef<ReadonlySet<string>>(new Set());
   // Computers connected at some point in this page, and the ones whose drop is
   // settling: a project open passes through "idle" and "connecting" for a

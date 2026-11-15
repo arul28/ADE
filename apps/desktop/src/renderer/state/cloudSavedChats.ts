@@ -48,14 +48,24 @@ export type SavedChatLocation = {
  * list knows such a connection is a cloud computer the moment its rows dim,
  * before its saved copies are read in.
  */
-let cloudConnectionTargetIds: ReadonlySet<string> = new Set();
+let cloudConnectionKeys: ReadonlyMap<string, string> = new Map();
 
-export function replaceCloudConnectionTargets(targetIds: Iterable<string>): void {
-  cloudConnectionTargetIds = new Set(targetIds);
+/** Each cloud computer's connection target id, with that computer's account key. */
+export function replaceCloudConnectionTargets(targets: Iterable<readonly [targetId: string, machineKey: string]>): void {
+  cloudConnectionKeys = new Map(targets);
 }
 
 export function isCloudConnectionTarget(machineId: string): boolean {
-  return cloudConnectionTargetIds.has(machineId);
+  return cloudConnectionKeys.has(machineId);
+}
+
+/**
+ * The account key of the cloud computer behind a connection, or null. A
+ * connection's own fields may not carry it (ADE Web's target has none, and
+ * its host name is the box's OS name), so a wake reads it here.
+ */
+export function cloudConnectionMachineKey(machineId: string): string | null {
+  return cloudConnectionKeys.get(machineId) ?? null;
 }
 
 /** `pinKey\0sessionId` → the saved copy, filled by the sidebar's list read. */
@@ -272,7 +282,12 @@ export function withSavedChatReads(
       if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
       // A computer this window never connected to (another desktop made it):
       // reach it by its machine key, which wakes it, then send there.
-      if (!location || !reach || !isSavedChatsMachineId(location.machineId)) return api.send(args, pin);
+      // So is an ADE Cloud computer this window has a connection to that went
+      // to sleep: a plain send through the connection only dials, which an
+      // asleep computer does not answer.
+      if (!location || !reach || !(isSavedChatsMachineId(location.machineId) || isCloudConnectionTarget(location.machineId))) {
+        return api.send(args, pin);
+      }
       const reachedPin = await reach.pinFor(location);
       if (!reachedPin) return api.send(args, pin);
       const result = await api.send(args, reachedPin);

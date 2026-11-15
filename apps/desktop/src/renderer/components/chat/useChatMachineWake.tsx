@@ -206,9 +206,9 @@ export function useChatMachineWake(): ChatMachineWake {
 }
 
 /**
- * The opened chat's own progress line while its ADE Cloud computer wakes, and
- * why the last wake failed. Nothing for a machine that is up or not a cloud
- * computer. The list row stays as it is; the progress lives here.
+ * The opened chat's own line while its ADE Cloud computer is asleep (with
+ * Wake), while it wakes, and why the last wake failed. Nothing for a machine
+ * that is up or not a cloud computer. The list row stays as it is; the progress lives here.
  */
 export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
   const machine = useChatMachineWake();
@@ -223,7 +223,22 @@ export function ChatMachineWakeBanner({ style }: { style?: CSSProperties }) {
       />
     );
   }
-  if (!machine.error) return null;
+  if (!machine.error) {
+    // Asleep and nobody woke it yet: say so, and offer the wake here.
+    return (
+      <Banner
+        layout="inline"
+        style={style}
+        model={{
+          id: "chat-machine-asleep",
+          tone: "info",
+          title: `${scope.machineName} is asleep`,
+          detail: "Wake it to keep working. Sending a message wakes it too.",
+          actions: [{ label: "Wake", onClick: () => void machine.wake() }],
+        }}
+      />
+    );
+  }
   return (
     <Banner
       layout="inline"

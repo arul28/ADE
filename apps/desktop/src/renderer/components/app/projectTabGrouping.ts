@@ -138,6 +138,11 @@ function remoteMachine(binding: RemoteOpenProjectBinding): ProjectTabMachine {
  *   clone that already has its own tab) keeps that tab while it stays open,
  *   even after the copy it stood next to moved to another machine. Without
  *   this, the one-copy rule would close it as a duplicate of the moved tab.
+ * - A move stays in the tab it was made in. A copy in `joinTabOf` (the copy a
+ *   tab just moved to, keyed to the copy it moved from) joins the tab of that
+ *   copy, whatever tab that is, as long as both are one repository. Without
+ *   this, a second clone's tab that moved to another machine joined the first
+ *   tab of the repository, and the one-copy rule closed that tab's copy.
  */
 export function groupProjectTabs(args: {
   localTabs: readonly RecentProjectSummary[];
@@ -161,6 +166,8 @@ export function groupProjectTabs(args: {
   /** Open copies that head a tab of their own (a second clone): each keeps
    *  that tab and joins no other. */
   ownTabKeys?: ReadonlySet<string>;
+  /** The copy a tab just moved to → the copy it moved from: it joins that tab. */
+  joinTabOf?: ReadonlyMap<string, string>;
 }): ProjectTabGroup[] {
   const {
     localTabs,
@@ -174,6 +181,7 @@ export function groupProjectTabs(args: {
     canonicalOrigin = (origin: string) => origin,
     repositoryIdForOrigin = (origin: string) => `repo:${origin}`,
     ownTabKeys,
+    joinTabOf,
   } = args;
   const repositoryOf = (origin: string | null): string | null => (origin ? canonicalOrigin(origin) : null);
 
@@ -223,7 +231,19 @@ export function groupProjectTabs(args: {
     origin,
   });
 
+  const openKeySet = new Set(openEntries.map((entry) => entry.machine.bindingKey));
+  // A moved copy waits for the tab it moved from (it can sort before it).
+  const movesIn = (machine: ProjectTabMachine, origin: string | null): boolean => {
+    const from = joinTabOf?.get(machine.bindingKey);
+    if (!from || !origin || !openKeySet.has(from)) return false;
+    return openEntries.some((entry) => entry.machine.bindingKey === from && entry.origin === origin);
+  };
+  const moved: { machine: ProjectTabMachine; origin: string }[] = [];
   for (const { machine, origin } of openEntries) {
+    if (origin && movesIn(machine, origin)) {
+      moved.push({ machine, origin });
+      continue;
+    }
     if (!origin || ownTabKeys?.has(machine.bindingKey)) {
       groups.push(standalone(machine, origin));
       continue;
@@ -247,6 +267,14 @@ export function groupProjectTabs(args: {
     claimed.add(machine.machineId);
     existing.machines.push(machine);
     if (machine.bindingKey === activeBindingKey) existing.activeBindingKey = machine.bindingKey;
+  }
+
+  for (const { machine, origin } of moved) {
+    const from = joinTabOf!.get(machine.bindingKey)!;
+    const tab = groups.find((group) => group.machines.some((candidate) => candidate.bindingKey === from))!;
+    tab.machines.push(machine);
+    claimedMachines.get(origin)?.add(machine.machineId);
+    if (machine.bindingKey === activeBindingKey) tab.activeBindingKey = machine.bindingKey;
   }
 
   // Attach discovered counterparts only after open entries establish the tab
@@ -281,10 +309,15 @@ export function groupProjectTabs(args: {
   return groups;
 }
 
-/** The open copies that head a tab of their own in `groups`: a repository's second clone, keyed by its one copy. */
+/**
+ * The open copies in a tab of their own in `groups`: a repository's second
+ * clone, keyed by its copy, and the copy that tab just moved to.
+ */
 export function ownTabKeysOf(groups: readonly ProjectTabGroup[]): Set<string> {
   return new Set(groups.flatMap((group) => (
-    group.origin && group.machines.length === 1 && group.machines[0]!.bindingKey === group.id ? [group.id] : []
+    group.origin && group.machines.some((machine) => machine.bindingKey === group.id)
+      ? group.machines.map((machine) => machine.bindingKey)
+      : []
   )));
 }
 

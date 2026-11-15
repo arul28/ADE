@@ -78,8 +78,12 @@ import { isAdeAvailable } from "../lib/adeAvailability";
 import { isWebClientMode } from "../lib/webClientMode";
 import { subscribeAdeCloudAccess } from "./cloudAccess";
 import { claimSessionsLiveFirst, machineIsCloudResting, rowShowsConnected } from "./cloudRestingRows";
+import { sessionTurnLive } from "../../shared/sessionStatusPresentation";
 import { useStableBinding } from "./laneMachineRouting";
-import { isSavedChatsMachineId } from "./cloudSavedChats";
+import { cloudConnectionMachineKey, isCloudConnectionTarget, isSavedChatsMachineId } from "./cloudSavedChats";
+import { cloudMachineResting } from "../../shared/adeCloud";
+import { cloudBoxForMachine } from "../components/remoteTargets/cloudMachineModel";
+import { readWebAccountMachineKeys } from "./webAccountMachineKeys";
 import { scheduleCloudSavedChatsRefresh, type SavedChatsContext } from "./cloudSavedChatsSync";
 import { adeCloudLaneComputersNow, machineLabelForMachine, subscribeAdeCloudLaneComputers, useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "./adeCloudLaneIndex";
 
@@ -2132,6 +2136,9 @@ function applyReachability(): void {
   for (const [machineId, machine] of connectivity) {
     if (!machine.eligible) continue;
     if (machine.reconnectingSinceMs != null) {
+      // An ADE Cloud computer the account says went to sleep has no blip to
+      // wait out: its rows dim now, and its saved chats show.
+      if (restingCloud.machineIds.has(machineId)) continue;
       // Shown connected while it reconnects, but it dropped then: the floor
       // runs from the drop, so every client hides it at the same moment.
       const drop = runtime.dropsByMachineId.get(machineId)
@@ -2144,7 +2151,13 @@ function applyReachability(): void {
       }
       continue;
     }
+    // The account says it went to sleep while its connection still reads
+    // connected (a relay can hold the connection open for a while): its rows
+    // dim now. A new connection (it was woken) clears the mark.
+    const asleepOnConnection = restingCloud.machineIds.get(machineId);
+    if (asleepOnConnection != null && asleepOnConnection === connectedAtOf(machineId)) continue;
     runtime.dropsByMachineId.delete(machineId);
+    restingCloud.machineIds.delete(machineId);
     reachable.push(machineId);
   }
   const scopedMachineIds = new Set([
@@ -2192,8 +2205,9 @@ function applyReachability(): void {
     runtime.dropsByMachineId.set(machineId, drop);
 
     // The person's own Disconnect is not a blip to wait out: its rows leave
-    // now, with no floor, and only the retention below still applies.
-    if (!machine.userDisconnected) {
+    // now, with no floor, and only the retention below still applies. Nor is
+    // an ADE Cloud computer the account says went to sleep.
+    if (!machine.userDisconnected && !restingCloud.machineIds.has(machineId)) {
       // `idle` means the target is not dialing and will not start on its own,
       // and `connected` means it answers but cannot be read for this
       // repository — in both cases there is no attempt left to wait for.
@@ -2252,12 +2266,171 @@ function applyReachability(): void {
   }
 }
 
+/**
+ * ADE Cloud computers whose connection dropped and that the account lists as
+ * asleep or stopped. A turn that ran there stopped with the computer, so the
+ * rows take the saved state at once instead of after `UNREACHABLE_FLOOR_MS`.
+ */
+const restingCloud: {
+  /**
+   * Machine id → null when it rests with its connection dropped, or the
+   * connection's `connectedAt` when the account named it asleep while that
+   * connection still read connected.
+   */
+  machineIds: Map<string, string | null>;
+  probeTimer: ReturnType<typeof setTimeout> | null;
+  probing: boolean;
+  turnWatchTimer: ReturnType<typeof setTimeout> | null;
+  turnWatchReading: boolean;
+} = { machineIds: new Map(), probeTimer: null, probing: false, turnWatchTimer: null, turnWatchReading: false };
+/** How soon a dropped ADE Cloud computer is asked about again, while its floor runs. */
+const RESTING_CLOUD_PROBE_GAP_MS = 8_000;
+/** How often the account is asked about an ADE Cloud computer while a turn runs there. */
+const CLOUD_TURN_WATCH_MS = 4_000;
+
+/** The connection's `connectedAt`, as the mark of one connection. */
+function connectedAtOf(machineId: string): string {
+  const connection = runtime.connections.find((candidate) => candidate.target.id === machineId);
+  return String(connection?.connectedAt ?? "");
+}
+
+/** The account key of the ADE Cloud computer behind a connection, or null. */
+function cloudKeyOfConnection(connection: RemoteRuntimeConnectionStatus): string | null {
+  return cloudConnectionMachineKey(connection.target.id)
+    ?? connection.target.pairedMachine?.machineKey
+    ?? readWebAccountMachineKeys().get(connection.target.id)
+    ?? null;
+}
+
+/** ADE Cloud connections that dropped inside their floor and are not known to rest. */
+function droppedCloudConnections(nowMs: number): RemoteRuntimeConnectionStatus[] {
+  return runtime.connections.filter((connection) => {
+    const machineId = connection.target.id;
+    if (connection.state === "connected" || restingCloud.machineIds.has(machineId)) return false;
+    if (!isCloudConnectionTarget(machineId)) return false;
+    const drop = runtime.dropsByMachineId.get(machineId);
+    return drop == null || nowMs - drop.droppedAtMs < UNREACHABLE_FLOOR_MS;
+  });
+}
+
+/**
+ * Asks the account whether a dropped ADE Cloud computer went to sleep: one read
+ * of the account's computers, again every few seconds while the floor runs (the
+ * provider can name the box asleep a little after its brain stopped).
+ */
+function probeRestingCloudComputers(): void {
+  if (restingCloud.probing || restingCloud.probeTimer) return;
+  const listMachines = window.ade?.cloud?.listMachines;
+  if (!isAdeAvailable(listMachines) || droppedCloudConnections(Date.now()).length === 0) return;
+  restingCloud.probing = true;
+  void listMachines().then(
+    (result) => {
+      if (result?.state !== "ok") return;
+      let changed = false;
+      for (const connection of droppedCloudConnections(Date.now())) {
+        const box = cloudBoxForMachine(result.machines, {
+          machineKey: cloudKeyOfConnection(connection),
+          hostname: connection.target.hostname,
+        });
+        if (!box || !cloudMachineResting(box.state)) continue;
+        restingCloud.machineIds.set(connection.target.id, null);
+        changed = true;
+      }
+      if (changed) applyReachability();
+    },
+    () => undefined,
+  ).finally(() => {
+    restingCloud.probing = false;
+    if (droppedCloudConnections(Date.now()).length === 0) return;
+    restingCloud.probeTimer = setTimeout(() => {
+      restingCloud.probeTimer = null;
+      probeRestingCloudComputers();
+    }, RESTING_CLOUD_PROBE_GAP_MS);
+  });
+}
+
+/**
+ * Connected ADE Cloud computers with a turn running there. A relay can hold
+ * the connection open for half a minute after the computer went to sleep, and
+ * all that time the turn would read as running.
+ */
+function cloudConnectionsWithLiveTurns(): RemoteRuntimeConnectionStatus[] {
+  const slices = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+  return runtime.connections.filter((connection) => {
+    const machineId = connection.target.id;
+    if (connection.state !== "connected" || restingCloud.machineIds.has(machineId)) return false;
+    if (!isCloudConnectionTarget(machineId)) return false;
+    return slices[machineId]?.sessions.some((session) => sessionTurnLive(session)) === true;
+  });
+}
+
+/**
+ * While a turn runs on an ADE Cloud computer, asks the account every few
+ * seconds whether that computer went to sleep, so the turn stops reading as
+ * running within seconds of the sleep. Runs only then, and only while the
+ * window is visible; one read of the account's computers each time.
+ */
+function syncCloudTurnWatch(): void {
+  const watching = runtime.refCount > 0 && isDocumentVisible() && cloudConnectionsWithLiveTurns().length > 0;
+  if (!watching) {
+    if (restingCloud.turnWatchTimer) {
+      clearTimeout(restingCloud.turnWatchTimer);
+      restingCloud.turnWatchTimer = null;
+    }
+    return;
+  }
+  if (restingCloud.turnWatchTimer || restingCloud.turnWatchReading) return;
+  restingCloud.turnWatchTimer = setTimeout(readCloudTurnComputers, CLOUD_TURN_WATCH_MS);
+}
+
+function readCloudTurnComputers(): void {
+  restingCloud.turnWatchTimer = null;
+  const listMachines = window.ade?.cloud?.listMachines;
+  const watched = cloudConnectionsWithLiveTurns();
+  if (!isAdeAvailable(listMachines) || watched.length === 0 || !isDocumentVisible()) return;
+  restingCloud.turnWatchReading = true;
+  // A read that began before a connection did may describe the computer
+  // before it woke: each connection keeps the mark it had when the read began.
+  const marks = new Map(watched.map((connection) => [connection.target.id, connectedAtOf(connection.target.id)]));
+  void listMachines().then(
+    (result) => {
+      if (result?.state !== "ok") return;
+      let changed = false;
+      for (const connection of cloudConnectionsWithLiveTurns()) {
+        const mark = marks.get(connection.target.id);
+        if (mark == null || mark !== connectedAtOf(connection.target.id)) continue;
+        const box = cloudBoxForMachine(result.machines, {
+          machineKey: cloudKeyOfConnection(connection),
+          hostname: connection.target.hostname,
+        });
+        if (!box || !cloudMachineResting(box.state)) continue;
+        restingCloud.machineIds.set(connection.target.id, mark);
+        changed = true;
+      }
+      if (changed) applyReachability();
+    },
+    () => undefined,
+  ).finally(() => {
+    restingCloud.turnWatchReading = false;
+    syncCloudTurnWatch();
+  });
+}
+
 /** Forgets every per-machine record. Used by teardown and by scope changes. */
 function resetMachineTracking(): void {
   if (runtime.graceTimer) {
     clearTimeout(runtime.graceTimer);
     runtime.graceTimer = null;
   }
+  if (restingCloud.probeTimer) {
+    clearTimeout(restingCloud.probeTimer);
+    restingCloud.probeTimer = null;
+  }
+  if (restingCloud.turnWatchTimer) {
+    clearTimeout(restingCloud.turnWatchTimer);
+    restingCloud.turnWatchTimer = null;
+  }
+  restingCloud.machineIds.clear();
   runtime.dropsByMachineId.clear();
   runtime.laneReadAtMsByMachineId.clear();
   runtime.laneStatusReadAtMsByMachineId.clear();
@@ -2307,6 +2480,10 @@ function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
     if (connection.state !== "connected") runtime.legacySessionPageMachineIds.delete(connection.target.id);
   }
   applyReachability();
+  // A dropped ADE Cloud computer may have gone to sleep: then nothing runs
+  // there, and its rows should not wait out the floor.
+  probeRestingCloudComputers();
+  syncCloudTurnWatch();
   // A machine going to sleep is when its saved chats start to matter.
   scheduleCloudSavedChatsRefresh(savedChatsContext);
   // A machine that just appeared has no rows at all, so its first read has to be
@@ -2338,8 +2515,17 @@ function attach(): void {
   // The refresh loop stops itself while the window is hidden, so coming back is
   // the only thing that can restart it. Returning to the surface is also when a
   // stale status badge is about to be looked at, so this read pays for status.
+  // A turn that starts or ends on an ADE Cloud computer starts or stops the
+  // watch for its sleep. Only the slices' identity is compared on each change.
+  let lastSlices = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+  runtime.disposers.push(rootAppStoreApi.subscribe((state) => {
+    if (state.crossMachineLanesByMachineId === lastSlices) return;
+    lastSlices = state.crossMachineLanesByMachineId;
+    syncCloudTurnWatch();
+  }));
   if (typeof document !== "undefined") {
     const onVisibilityChange = () => {
+      syncCloudTurnWatch();
       if (isDocumentVisible()) scheduleRefresh("status");
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
