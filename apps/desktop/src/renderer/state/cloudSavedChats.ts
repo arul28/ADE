@@ -334,8 +334,18 @@ export function withSavedChatReads(
       return result;
     },
     // The chat's settings go with a send (the model, the mode): the first call
-    // of a send that a sleeping computer refuses.
-    updateSession: async (args, pin) => wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession(args, callPin)),
+    // of a send that a sleeping computer refuses. A saved chat on a computer
+    // this window never connected to has no connection to refuse it: its
+    // computer is reached by its machine key first, as a send does.
+    updateSession: async (args, pin) => {
+      const location = locate(args.sessionId, pin);
+      if (location?.computerGone) throw new Error(SAVED_CHAT_COMPUTER_GONE_MESSAGE);
+      if (location && reach && isSavedChatsMachineId(location.machineId)) {
+        const reachedPin = await reach.pinFor(location);
+        if (reachedPin) return api.updateSession(args, reachedPin);
+      }
+      return wakeOnRefusal(pin, args.sessionId, (callPin) => api.updateSession(args, callPin));
+    },
     // A message typed while a turn reads running. It names the turn it may
     // join, so after the wake it goes in once or is refused, never twice.
     steer: async (args, pin) => wakeOnRefusal(pin, args.sessionId, (callPin) => api.steer(args, callPin)),

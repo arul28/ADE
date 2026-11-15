@@ -1100,17 +1100,10 @@ export function TopBar({
     });
   }, [remoteBinding]);
 
-  useEffect(() => {
-    if (project || remoteBinding) return;
-    // ADE Web: the binding goes away when a computer is forgotten in this
-    // browser; its tabs move to another copy or wait with no machine
-    // (`moveWebTabsOffGoneTargets`). A tab the person closes leaves on its own.
-    if (webMode) return;
-    // Same guard as above: only wipe remote tabs on a true close, not while a
-    // transition is in flight or before the welcome screen is shown.
-    if (projectTransition != null || showWelcome !== true) return;
-    setOpenRemoteProjectTabs([]);
-  }, [project, remoteBinding, projectTransition, showWelcome, webMode]);
+  // No effect empties the remote tabs when the window has no project: main can
+  // close the front project for a moment ("Start fresh", "Use this copy"), and
+  // tabs of other computers must stay. A real close empties both tab lists in
+  // the store's `closeProject`.
 
   const projectTabs = useMemo<RecentProjectSummary[]>(
     () =>

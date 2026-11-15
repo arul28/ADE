@@ -205,6 +205,8 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     }
     const nextLocations: Array<{ pinKey: string; location: SavedChatLocation }> = [];
     const keptSyntheticIds = new Set<string>();
+    // Slices that hold a lane computer of this project: they stay for their lane.
+    const laneSliceIds = new Set<string>();
     // Slices this read put this project's saved copies on.
     const savedSliceIds = new Set<string>();
     // The account's cloud computers, when a surface keeps that list current.
@@ -336,6 +338,7 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       if (liveHere(connection)) continue;
       const machineId = connection?.target.id ?? `${SAVED_CHATS_MACHINE_PREFIX}${machineKey}`;
       const previous = store.crossMachineLanesByMachineId[machineId] ?? null;
+      laneSliceIds.add(machineId);
       // A connection's slice from its live reads keeps its own lanes.
       if (previous && previous.lanes.length > 0 && !isSavedChatsMachineId(machineId)) continue;
       if (!connection) keptSyntheticIds.add(machineId);
@@ -372,14 +375,15 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
     if (staleSynthetic.length) store.dropCrossMachineLanes(staleSynthetic);
     // Saved copies this read did not return belong to another project (a tab
     // switch from atlas to orbit keeps the computer's slice) or were removed:
-    // they leave. A slice that held only them, with its computer away, leaves too.
+    // they leave. A slice that held only them, with its computer away, leaves too,
+    // unless it holds a lane computer of this project: its lane stays listed.
     const current = rootAppStoreApi.getState().crossMachineLanesByMachineId;
     const emptied: string[] = [];
     for (const [machineId, slice] of Object.entries(current)) {
       if (savedSliceIds.has(machineId) || isSavedChatsMachineId(machineId)) continue;
       if (!slice.sessions.some((session) => session.cloudSavedCopy)) continue;
       const live = slice.sessions.filter((session) => !session.cloudSavedCopy);
-      if (live.length === 0 && slice.online === false) {
+      if (live.length === 0 && slice.online === false && !laneSliceIds.has(machineId)) {
         emptied.push(machineId);
         continue;
       }
