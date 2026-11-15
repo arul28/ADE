@@ -72,7 +72,8 @@ extension WorkRootListScreen {
     let remoteMerge = workMergeRemoteMachineRows(
       sessions: focusedListed ? activeRosterProjection.sessions : [],
       lanes: focusedListed ? activeRosterProjection.lanes : [],
-      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : []
+      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : [],
+      focused: activeRoster
     )
     syncService.setWorkListRemoteChats(remoteMerge.remoteChats)
     let rosterProjection = (sessions: remoteMerge.sessions, lanes: remoteMerge.lanes)
