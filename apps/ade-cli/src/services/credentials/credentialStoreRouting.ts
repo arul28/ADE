@@ -105,3 +105,46 @@ export function createUnavailableCredentialStore(message: string): SyncCredentia
     deleteSync: refuse,
   };
 }
+
+/**
+ * A store that is built on its first call, not when it is made.
+ *
+ * The desktop's Electron-only store needs this. On macOS, the first safeStorage
+ * call reads the app's key from the Keychain. A build that the Keychain does
+ * not recognize (a new signature) gets a prompt, and that read holds the
+ * calling thread until the person answers. Built at launch, it held the main
+ * process before the first window existed, so no window opened. Built on first
+ * use, it costs nothing until a key that lives in it is needed.
+ *
+ * `build` runs again on a later call when it throws, so a store that could not
+ * be built is not kept.
+ */
+export function createLazyCredentialStore(build: () => SyncCredentialStore): SyncCredentialStore {
+  let store: SyncCredentialStore | null = null;
+  const resolve = (): SyncCredentialStore => {
+    store ??= build();
+    return store;
+  };
+  return {
+    get: async (key) => resolve().get(key),
+    getWithReadState: async (key) => {
+      const target = resolve();
+      if (target.getWithReadState) return await target.getWithReadState(key);
+      const value = await target.get(key);
+      return { value, state: target.getLastReadState?.() ?? "missing" };
+    },
+    set: async (key, value) => resolve().set(key, value),
+    delete: async (key) => resolve().delete(key),
+    getSync: (key) => resolve().getSync(key),
+    setSync: (key, value) => resolve().setSync(key, value),
+    deleteSync: (key) => resolve().deleteSync(key),
+    // Atomic when the built store is: it picks the built store's own update.
+    updateKeySync: (key, mutator) => {
+      updateCredentialKeySync(resolve(), key, mutator);
+    },
+    // Not built by a question about the last read: before the first call,
+    // there was no read.
+    getLastReadState: () => store?.getLastReadState?.() ?? "missing",
+    getLastReadFailureReason: () => store?.getLastReadFailureReason?.() ?? null,
+  };
+}

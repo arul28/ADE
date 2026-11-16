@@ -416,6 +416,7 @@ import {
 import { adoptFileBackedCredentials } from "../../../ade-cli/src/services/credentials/credentialStoreAdoption";
 import { readExistingOsBoundKeyMaterialAsync } from "../../../ade-cli/src/services/credentials/osBoundKeyMaterial";
 import {
+  createLazyCredentialStore,
   createRoutedCredentialStore,
   createUnavailableCredentialStore,
 } from "../../../ade-cli/src/services/credentials/credentialStoreRouting";
@@ -996,10 +997,42 @@ function getRendererUrl(): string {
   return pathToFileURL(path.join(__dirname, "../renderer/index.html")).toString();
 }
 
+/**
+ * The desktop's machine credential store. File-backed keys (the account
+ * session, the GitHub App token) go to the shared file, which needs no
+ * keychain. Every other key goes to the Electron-only store, and that store,
+ * with the one-time adoption that reads it, is built on the first call for
+ * such a key (`createLazyCredentialStore`), not here.
+ *
+ * Making a store must not touch safeStorage. On macOS its first use reads the
+ * app's key from the Keychain; a build with a new signature gets a prompt, and
+ * that read holds the main process until the person answers. These stores are
+ * made before the first window, so a read here kept the window from opening.
+ */
 function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   const legacyStore = new EncryptedFileCredentialStore({ secretsDir });
+  return createRoutedCredentialStore({
+    primary: createLazyCredentialStore(() => buildDesktopPrimaryCredentialStore(secretsDir, legacyStore)),
+    fileStore: legacyStore,
+  });
+}
+
+let keychainReadBeforeWindowLogged = false;
+
+function buildDesktopPrimaryCredentialStore(
+  secretsDir: string,
+  legacyStore: EncryptedFileCredentialStore,
+): SyncCredentialStore {
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
+  if (!keychainReadBeforeWindowLogged && BrowserWindow.getAllWindows().length === 0) {
+    // Not stopped: the caller needs the key. Named, so the launch path that
+    // asked for it can be moved after the window.
+    keychainReadBeforeWindowLogged = true;
+    getMachineMainLogger().warn("credential_store.keychain_read_before_window", {
+      stack: new Error().stack?.split("\n").slice(2, 8).join(" | ") ?? null,
+    });
+  }
   try {
     // Electron reports encryption available for Linux's basic_text backend,
     // even though its fixed key offers no OS credential-store protection.
@@ -1014,7 +1047,7 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
       // store cannot see them, and a build that wrote one into it signs the
       // brain out.
       adoptFileBackedCredentials({ primary, fileStore: legacyStore, identity: secretsDir });
-      return createRoutedCredentialStore({ primary, fileStore: legacyStore });
+      return primary;
     }
   } catch {
     // Fall through to the file store when Electron cannot reach the OS keychain.
@@ -1025,12 +1058,9 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
   ) {
     // The shared file needs no keychain, so the credentials the brain co-owns
     // stay reachable even while the Electron-only ones are locked away.
-    return createRoutedCredentialStore({
-      primary: createUnavailableCredentialStore(
-        "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
-      ),
-      fileStore: legacyStore,
-    });
+    return createUnavailableCredentialStore(
+      "Electron safeStorage is unavailable; unlock the OS credential store to read ADE credentials.",
+    );
   }
   return legacyStore;
 }
