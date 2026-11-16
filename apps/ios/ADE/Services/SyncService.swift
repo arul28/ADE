@@ -20717,6 +20717,15 @@ final class SyncService: ObservableObject {
     }
     // A port the pairing and live discovery do not name (`namedDirectPorts`).
     let sweptPort = !isRelay && !namedDirectPorts(for: profile).contains(candidate.endpoint.port)
+    if sweptPort {
+      // Before any credential goes to that port: which ADE answers there.
+      try await requireSweptCandidateIdentity(
+        url: url,
+        expectedHostIdentity: profile.hostIdentity,
+        connectionAttempt: connectionAttempt,
+        fleetDial: fleetDial
+      )
+    }
     // The hello below signs with the device key; read it off the main thread.
     await DpopKeyService.shared.warmKey()
     guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
@@ -20991,6 +21000,71 @@ final class SyncService: ObservableObject {
     guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
           let type = object["type"] as? String else { return false }
     return type == "hello_ok" || type == "hello_error"
+  }
+
+  /// A swept port can reach another ADE on the same address, and the
+  /// authenticated hello carries the pairing secret. So the first hello there
+  /// carries only a random one-time setup token: the host refuses it at once,
+  /// and its `hello_error` names the host (`host.deviceId`). Only the computer
+  /// this pairing names gets the authenticated hello after it. Another
+  /// computer, or a host that does not name itself (an older ADE), loses this
+  /// candidate; the pairing stays. The host logs one refused sign-in for it.
+  func requireSweptCandidateIdentity(
+    url: URL,
+    expectedHostIdentity: String?,
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext?
+  ) async throws {
+    let refusal = NSError(
+      domain: "ADE",
+      code: 37,
+      userInfo: [NSLocalizedDescriptionKey: "Another ADE answered at this address."]
+    )
+    guard let expected = syncNonEmpty(expectedHostIdentity) else { throw refusal }
+    let probe = socketSession.webSocketTask(with: URLRequest(url: url))
+    probe.maximumMessageSize = 1_024 * 1_024
+    defer { probe.cancel(with: .goingAway, reason: nil) }
+    try await awaitSocketOpen(probe)
+    let requestId = makeRequestId()
+    let payload: [String: Any] = [
+      "peer": fleetDial?.peerMetadata(connectionAttempt) ?? currentPeerMetadata(connectionAttempt: connectionAttempt),
+      "compression": syncApplicationCompressionCodecs,
+      "auth": ["kind": "bootstrap", "token": "probe-\(UUID().uuidString)-\(UUID().uuidString)"],
+    ]
+    syncConnectLog.notice(
+      "ADE_SYNC_TRACE candidate hello auth=probe host=\(url.host ?? "", privacy: .public) port=\(url.port ?? 0) swept=true"
+    )
+    try await probe.send(.string(try encodedCandidateEnvelope(type: "hello", requestId: requestId, payload: payload)))
+    let responding: String? = try await withThrowingTaskGroup(of: String?.self) { group in
+      group.addTask {
+        while true {
+          let message = try await probe.receive()
+          let text: String
+          switch message {
+          case .string(let value): text = value
+          case .data(let data): text = String(decoding: data, as: UTF8.self)
+          @unknown default: continue
+          }
+          guard let frame = try? syncPreprocessIncoming(text), frame.requestId == requestId else { continue }
+          guard frame.type == "hello_error" else { return nil }
+          let host = (frame.payload as? [String: Any])?["host"] as? [String: Any]
+          return host?["deviceId"] as? String
+        }
+      }
+      group.addTask {
+        try await Task.sleep(nanoseconds: SyncSocketTiming.openTimeoutNanoseconds)
+        return nil
+      }
+      let first = try await group.next() ?? nil
+      group.cancelAll()
+      return first
+    }
+    guard syncNonEmpty(responding) == expected else {
+      syncConnectLog.notice(
+        "ADE_SYNC_TRACE swept candidate refused host=\(url.host ?? "", privacy: .public) port=\(url.port ?? 0) named=\(responding == nil ? "none" : "another", privacy: .public)"
+      )
+      throw refusal
+    }
   }
 
   private func encodedCandidateEnvelope(
