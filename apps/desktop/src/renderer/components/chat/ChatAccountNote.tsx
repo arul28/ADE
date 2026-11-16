@@ -135,8 +135,8 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
     : null;
   const email = clean(turn?.email) ?? clean(instance?.account?.email);
   const plan = clean(turn?.plan) ?? clean(instance?.account?.plan);
-  // An account is its email; before it has one, it is not signed in.
-  const primary = email ?? (instance ? providerAccountName(instance) : null);
+  // An account is its email; a working pass without one is named by its title.
+  const primary = email ?? (instance ? accountName(instance) : null);
   if (!primary) return null;
   return {
     family: provider,
@@ -152,6 +152,15 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
       .filter(Boolean)
       .join("\n"),
   };
+}
+
+/**
+ * The note names the login that paid: its email when it has one, otherwise the
+ * pass title. A working Claude pass can have no account record at all; calling
+ * that "Not signed in" hides a selectable account.
+ */
+function accountName(instance: ProviderInstance): string {
+  return instance.account?.email?.trim() || instance.label?.trim() || providerAccountName(instance);
 }
 
 /** The account the latest finished turn reported, scanning back from the end. */
@@ -354,6 +363,7 @@ export function ChatAccountNote({
 
   const accountRow = (instance: ProviderInstance, isCurrent: boolean) => {
     const left = roomLeft(usage, instance.provider, instance.id);
+    const name = accountName(instance);
     let side: string | null = left === null ? null : `${Math.round(left)}% left`;
     if (pendingId === instance.id) side = "Switching…";
     return (
@@ -362,8 +372,8 @@ export function ChatAccountNote({
           {isCurrent ? <Check size={12} weight="bold" /> : null}
         </span>
         {/* Truncated in a narrow menu: the full name on hover and focus. */}
-        <span className="min-w-0 flex-1 truncate" title={providerAccountName(instance)}>
-          {providerAccountName(instance)}
+        <span className="min-w-0 flex-1 truncate" title={name}>
+          {name}
         </span>
         {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}
       </>
