@@ -1,4 +1,5 @@
 import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
+import { msToNextBeat } from "../../lib/workBeat";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
@@ -1335,6 +1336,12 @@ function useOpenedOnce(open: boolean): boolean {
  * other event commits the whole reply at once.
  */
 const QUIET_EVENTS_COMMIT_MS = 1_000;
+/**
+ * A flush less than this long after the last one is part of a running stream:
+ * it waits for the next work beat (`lib/workBeat.ts`) instead of the next
+ * frame. The first text after a pause still shows in the next frame.
+ */
+const STREAM_FLUSH_GAP_MS = 250;
 
 type LiveTranscript = {
   store: ChatLiveEventsStore;
@@ -5598,6 +5605,8 @@ export function AgentChatPane({
   const olderHistoryPaneUnmountedRef = useRef(false);
   const eventFlushTimerRef = useRef<number | null>(null);
   const eventFlushFrameRef = useRef<number | null>(null);
+  /** When the last queued-event flush ran (document timeline), for STREAM_FLUSH_GAP_MS. */
+  const lastEventFlushAtRef = useRef(-Infinity);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   /**
@@ -10983,6 +10992,7 @@ export function AgentChatPane({
     const queued = pendingEventQueueRef.current;
     if (!queued.length) return;
     pendingEventQueueRef.current = [];
+    lastEventFlushAtRef.current = performance.now();
 
     // Build the next events map from the ref (latest committed state) so
     // that derived state (turnActive, approvals) can be computed and applied
@@ -11089,10 +11099,12 @@ export function AgentChatPane({
     liveEventsStore.notify();
     if (quiet) {
       if (quietNeedsCommit && quietEventsCommitTimerRef.current == null) {
+        // On a work beat, so the commit shares a frame with the thinking row.
+        const delayMs = QUIET_EVENTS_COMMIT_MS + msToNextBeat(undefined, performance.now() + QUIET_EVENTS_COMMIT_MS);
         quietEventsCommitTimerRef.current = window.setTimeout(() => {
           quietEventsCommitTimerRef.current = null;
           setEventsBySession(eventsBySessionRef.current);
-        }, QUIET_EVENTS_COMMIT_MS);
+        }, delayMs);
       }
       return;
     }
@@ -11126,17 +11138,25 @@ export function AgentChatPane({
     eventFlushFrameRef.current = null;
   }, []);
 
-  // One flush for a burst of events, at the start of the next frame: the
-  // live-events subscribers render inside that frame, so streamed text shows
-  // in the first frame after it arrives. From a 16 ms timer it waited for the
-  // timer and then for the frame after it. The timer stays as the fallback for
-  // a window that draws no frames (hidden), whichever comes first.
+  // One flush for a burst of events. The first after a pause runs at the
+  // start of the next frame: the live-events subscribers render inside that
+  // frame, so the first streamed text shows in the first frame after it
+  // arrives (the 16 ms timer is the fallback for a window that draws no
+  // frames). While a stream runs, a flush waits for the next work beat
+  // instead (at most 1/30 s), so the growing text and its scroll change in the
+  // frame the thinking indicator already draws: on macOS each frame is a
+  // whole-window composite, and words that land between beats would each
+  // cost one more.
   const scheduleQueuedEventFlush = useCallback(() => {
     if (eventFlushTimerRef.current != null) return;
     const flush = () => {
       cancelQueuedEventFlush();
       flushQueuedEvents();
     };
+    if (performance.now() - lastEventFlushAtRef.current < STREAM_FLUSH_GAP_MS) {
+      eventFlushTimerRef.current = window.setTimeout(flush, msToNextBeat());
+      return;
+    }
     eventFlushTimerRef.current = window.setTimeout(flush, 16);
     eventFlushFrameRef.current = window.requestAnimationFrame(flush);
   }, [cancelQueuedEventFlush, flushQueuedEvents]);
@@ -11425,13 +11445,13 @@ export function AgentChatPane({
       }
 
       // User messages and lifecycle edges must flush immediately so the
-      // optimistic bubble cannot disappear behind the 16ms debounce and
-      // visible grid tiles show fresh activity without requiring focus.
+      // optimistic bubble cannot disappear behind the 16ms debounce. A visible
+      // grid tile streams on the scheduled flush like any pane: it needs no
+      // focus, and a flush per event cost a frame per event for each tile.
       if (
         envelope.event.type === "done"
         || envelope.event.type === "user_message"
         || envelope.event.type === "status"
-        || (layoutVariant === "grid-tile" && isTileVisible)
       ) {
         cancelQueuedEventFlush();
         flushQueuedEvents();

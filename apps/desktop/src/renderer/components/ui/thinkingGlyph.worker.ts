@@ -128,9 +128,11 @@ function tick(): void {
     if (!entry.state.resting && !entry.state.still) moving = true;
   }
   if (!moving) return;
-  // Wake just past the next step edge of the page timeline.
+  // Wake just past the next step edge of the page timeline: the work beat
+  // (lib/workBeat.ts) every other live signal changes on. Rounded up, since
+  // setTimeout drops the fraction and an early wake draws nothing.
   const next = (Math.floor(now / STEP_MS) + 1) * STEP_MS + 0.5;
-  timer = scope.setTimeout(tick, Math.max(0, next - now));
+  timer = scope.setTimeout(tick, Math.max(0, Math.ceil(next - now)));
 }
 
 function reschedule(): void {

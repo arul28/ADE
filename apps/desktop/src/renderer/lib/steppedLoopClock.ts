@@ -207,7 +207,9 @@ function schedule(): void {
   if (loops.size === 0 || document.visibilityState === "hidden") return;
   let next = Infinity;
   for (const loop of loops.values()) next = Math.min(next, loop.nextAtMs);
-  timer = setTimeout(tick, Math.max(0, next - performance.now()));
+  // Rounded up: setTimeout drops the fraction, and a wake just before the
+  // step instant would seek to the old value and need a second wake.
+  timer = setTimeout(tick, Math.max(0, Math.ceil(next - performance.now())));
 }
 
 function tick(): void {

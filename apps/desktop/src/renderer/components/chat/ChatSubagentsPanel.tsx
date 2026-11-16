@@ -72,6 +72,7 @@ import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared
 import { ChatWorkflowActiveCard, workflowRunTaskIds } from "./ChatWorkflowActiveCard";
 import type { ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { redactCommandLine } from "../../../shared/secretRedaction";
+import { subscribeToTicker } from "../../lib/ticker";
 
 const PANE_UI_STORAGE_PREFIX = "ade.chat.paneUi.v1";
 const PANE_CLEARED_STORAGE_PREFIX = "ade.chat.paneCleared.v1";
@@ -239,25 +240,27 @@ function compactPaneHint(parts: Array<{ count: number; text: string }>): { full:
 
 /*
  * One shared 1s clock for every live timer in the pane. A row subscribes only
- * while it is running; the interval exists only while someone subscribes.
+ * while it is running; the clock runs only while someone subscribes. It rides
+ * the renderer's one-second ticker (`lib/ticker.ts`), so the pane's timers
+ * change in the same frame as every other live label, not in one of their own.
  */
 const paneClockListeners = new Set<() => void>();
 let paneClockNow = Date.now();
-let paneClockTimer: number | null = null;
+let paneClockTimer: (() => void) | null = null;
 
 function subscribePaneClock(listener: () => void): () => void {
   paneClockListeners.add(listener);
   if (paneClockTimer === null) {
     paneClockNow = Date.now();
-    paneClockTimer = window.setInterval(() => {
+    paneClockTimer = subscribeToTicker(1000, () => {
       paneClockNow = Date.now();
       for (const notify of paneClockListeners) notify();
-    }, 1000);
+    });
   }
   return () => {
     paneClockListeners.delete(listener);
     if (paneClockListeners.size === 0 && paneClockTimer !== null) {
-      window.clearInterval(paneClockTimer);
+      paneClockTimer();
       paneClockTimer = null;
     }
   };
