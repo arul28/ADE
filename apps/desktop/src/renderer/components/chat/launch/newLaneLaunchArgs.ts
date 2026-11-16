@@ -55,8 +55,11 @@ export function buildNewLaneLaunchArgs(input: {
 /**
  * ADE Web's start of a draft chat on a new ADE Cloud lane (`POST /cloud/launches`
  * through the account server): the same lane fields and launch args the
- * desktop's main process sends (`cloudLaneComputerStages.ts`). The server
- * names the lane from the launch id.
+ * desktop's main process sends (`cloudLaneComputerStages.ts`), less the ids
+ * into one machine's stores (a provider account, a harness preset, a stored
+ * key), which the web leaves out: the new computer's provider then signs in
+ * on its own, as it did before the web sent these args. The server names the
+ * lane from the launch id.
  */
 export function buildAccountCloudDraftStart(input: {
   prepared: Pick<PreparedDraftLaunch, "finalText" | "finalDisplayText" | "selectedAttachments" | "modelId">;
@@ -70,8 +73,6 @@ export function buildAccountCloudDraftStart(input: {
   sizeChoice: "default" | "picked";
 }): StartAccountCloudChat {
   const { create, message } = input.chat;
-  // A provider account, a harness preset or a stored key names one machine's
-  // stores, never the new computer's: there the provider signs in on its own.
   const { instanceId: _instanceId, presetId: _presetId, presetSnapshot: _presetSnapshot, credentialId: _credentialId, ...portable } = create;
   const launchId = newCloudLaunchId();
   const launch = cloudLaunchAppArgs(buildNewLaneLaunchArgs({

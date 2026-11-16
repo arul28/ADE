@@ -94,8 +94,10 @@ function messagesSignature(messages: readonly CloudLaunchMessage[]): string {
   return messages.map((message) => `${message.messageId}:${message.state}`).join(",");
 }
 
+const isWaiting = (message: CloudLaunchMessage): boolean => message.state === "queued" || message.state === "sending";
+
 function messagesWaiting(entry: AccountCloudLaunchEntry): boolean {
-  return entry.messages.some((message) => message.state === "queued" || message.state === "sending");
+  return entry.messages.some(isWaiting);
 }
 
 /**
@@ -108,7 +110,7 @@ const QUEUED_AFTER_CHAT_READ_MS = 10 * 60_000;
 function messagesWaitingRecently(entry: AccountCloudLaunchEntry, now = Date.now()): boolean {
   const chatAt = entry.record?.updatedAt ?? 0;
   return entry.messages.some((message) =>
-    (message.state === "queued" || message.state === "sending")
+    isWaiting(message)
     && now - Math.max(message.createdAt, chatAt) < QUEUED_AFTER_CHAT_READ_MS);
 }
 
