@@ -394,6 +394,24 @@ describe("ADE Cloud account", () => {
       clock += HOUR;
       expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/sleep`)).status).toBe(200);
     }, 3000],
+    ["a resize whose writes were lost, taken from the provider by the tick", async () => {
+      // The provider resized it, but the restart cut the Worker off before its writes.
+      Object.assign(harness.net.instances.get(INSTANCE)!, { resources: { cpu: 4, memory: 8, disk: 4 } });
+      await harness.tick();
+      expect(computer(harness)).toMatchObject({ cpu: 4, memory_gb: 8, multiplier_milli: 2000 });
+      clock += HOUR;
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/sleep`)).status).toBe(200);
+    }, 3000],
+    ["a resize that finishes its writes while the tick reads the provider", async () => {
+      // The provider has resized it; the resize's own writes land after the tick read the row.
+      Object.assign(harness.net.instances.get(INSTANCE)!, { resources: { cpu: 4, memory: 8, disk: 4 } });
+      harness.net.after.push({ match: /GET .*\/instances$/, run: async () => {
+        expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/resize`, { cpu: 4, memory: 8 })).status).toBe(200);
+      } });
+      await harness.tick();
+      clock += HOUR;
+      expect((await harness.send(OWNER, "POST", `/cloud/instances/${INSTANCE}/sleep`)).status).toBe(200);
+    }, 3000],
   ])("charges one stretch once: %s", async (_label, run, expectedMilli) => {
     seedAccount(harness, OWNER);
     seedComputer(harness, { awake_since: NOW - HOUR, machine_key: "key-a" });

@@ -831,39 +831,53 @@ async function handleResize(request: Request, env: CloudEnv, computer: ComputerR
     await env.DB.prepare("update cloud_computers set disk_gb = ?, disk_reserved_at = null, disk_confirmed_gb = null where instance_id = ? and disk_gb = ?")
       .bind(currentDisk, computer.instance_id, nextDisk).run();
   };
-  let status: string;
-  try {
-    const awake = await resizeAwake(env, computer, provider, resize, now);
-    if ("blocked" in awake) {
-      if (nextDisk !== currentDisk) await releaseDiskReservation();
-      return refuse(awake.blocked);
+  // The provider call and every write after it run to the end even when the
+  // caller goes away. A resize the computer asks for itself (a disk grow, a
+  // setup's move to Medium) restarts that computer within seconds, which drops
+  // its request, and Cloudflare cancels a request's unfinished work when its
+  // client disconnects: the size, the hours stretch and the launch record were
+  // then never written, and the computer ran Medium billed as a Small.
+  const finish = (async (): Promise<Response> => {
+    let status: string;
+    try {
+      const awake = await resizeAwake(env, computer, provider, resize, now);
+      if ("blocked" in awake) {
+        if (nextDisk !== currentDisk) await releaseDiskReservation();
+        return refuse(awake.blocked);
+      }
+      status = awake.status;
+    } catch (error) {
+      if (nextDisk !== currentDisk && providerMadeNothing(error)) {
+        await releaseDiskReservation();
+      }
+      throw error;
     }
-    status = awake.status;
-  } catch (error) {
-    if (nextDisk !== currentDisk && providerMadeNothing(error)) {
-      await releaseDiskReservation();
+    const statements: D1PreparedStatement[] = [];
+    // The time so far is charged at the old size; the new size starts its own stretch here.
+    if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
+      statements.push(...restartStretchStatements(env, computer, now));
     }
-    throw error;
-  }
-  const statements: D1PreparedStatement[] = [];
-  // The time so far is charged at the old size; the new size starts its own stretch here.
-  if (size.multiplierMilli !== computer.multiplier_milli && computer.awake_since != null && computer.awake_since <= now) {
-    statements.push(...restartStretchStatements(env, computer, now));
-  }
-  computer.multiplier_milli = size.multiplierMilli;
-  statements.push(
-    // A confirmed grow is no longer a reservation, so it counts as billed disk from here.
-    env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
-      .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
-    ...statusChangeStatements(env, computer, status, now, "resize"),
-    ...launchStatements,
-  );
-  // The bigger disk is billed only now that the provider made it; a refused grow gave its room back above.
-  if (nextDisk !== currentDisk) statements.push(diskDayStatement(env, account, now));
-  await env.DB.batch(statements);
-  if (shapeChanges) track({ action: "tier_change", tier: tierOf(size) });
-  if (nextDisk !== currentDisk) track({ action: "grow", tier: tierOf(size) });
-  return json({ status });
+    computer.multiplier_milli = size.multiplierMilli;
+    statements.push(
+      // A confirmed grow is no longer a reservation, so it counts as billed disk from here.
+      env.DB.prepare(`update cloud_computers set cpu = ?, memory_gb = ?, disk_gb = ?, multiplier_milli = ?${nextDisk !== currentDisk ? ", disk_reserved_at = null, disk_confirmed_gb = null" : ""} where instance_id = ?`)
+        .bind(size.cpu, size.memoryGb, nextDisk, size.multiplierMilli, computer.instance_id),
+      ...statusChangeStatements(env, computer, status, now, "resize"),
+      ...launchStatements,
+    );
+    // The bigger disk is billed only now that the provider made it; a refused grow gave its room back above.
+    if (nextDisk !== currentDisk) statements.push(diskDayStatement(env, account, now));
+    await env.DB.batch(statements);
+    if (shapeChanges) track({ action: "tier_change", tier: tierOf(size) });
+    if (nextDisk !== currentDisk) track({ action: "grow", tier: tierOf(size) });
+    return json({ status });
+  })();
+  // A caller that is still here gets the error below and the router reports it;
+  // one that went away (the restarting computer) leaves only this log line.
+  waitUntil?.(finish.then(() => undefined, (error: unknown) => {
+    logCloud("cloud.resize_finish_failed", { instanceId: computer.instance_id, error: error instanceof Error ? error.message : String(error) });
+  }));
+  return await finish;
 }
 
 async function handleSleepLike(env: CloudEnv, computer: ComputerRow, provider: CloudProvider, now: number, reason: string): Promise<Response> {
