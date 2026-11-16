@@ -536,6 +536,39 @@ describe("Windows sync-host listener scan", () => {
   });
 });
 
+// macOS reads listeners from `lsof`, whose COMMAND column holds the process
+// name. The brain runs as `ADE Brain` (`brainExecutable.ts`, mode `brain-copy`):
+// a name with a space, which a `(\S+)` token split drops.
+describe("macOS sync-host listener scan", () => {
+  const beforeEachEnv = process.env.ADE_SYNC_HOST_LEGACY_SCAN;
+
+  beforeEach(() => {
+    process.env.ADE_SYNC_HOST_LEGACY_SCAN = "1";
+  });
+
+  afterEach(() => {
+    if (beforeEachEnv == null) delete process.env.ADE_SYNC_HOST_LEGACY_SCAN;
+    else process.env.ADE_SYNC_HOST_LEGACY_SCAN = beforeEachEnv;
+  });
+
+  it("finds the brain running as its own signed program", async () => {
+    const conflict = await detectSyncHostSingletonConflictAsync(
+      { platform: "darwin", lockPath: tempLockPath(), pidAlive: () => true },
+      {
+        runProbe: async (command) => ({
+          stdout: command === "lsof"
+            ? "ADE Brain 4242 me   23u  IPv4 0x1      0t0  TCP *:8787 (LISTEN)"
+            : "4242 /Applications/ADE.app/Contents/MacOS/ADE Brain /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve",
+          failed: false,
+        }),
+      },
+    );
+    expect(conflict?.reason).toBe("listener");
+    expect(conflict?.owner.pid).toBe(4242);
+    expect(conflict?.owner.port).toBe(8787);
+  });
+});
+
 // The desktop launch gate's async path on Windows. Only the identity probe is
 // injected (the PowerShell child, the process boundary); the lock file and the
 // verdict logic run for real. `pidAlive` is pinned so the recorded owner is live.

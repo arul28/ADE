@@ -188,6 +188,8 @@ type ApiKeyScopeState = {
   macosKeychainError: string | null;
   missingMacosKeychainProviders: Set<string>;
   missingCredentialProviders: Set<string>;
+  /** The bulk legacy Keychain migration ran (or was skipped) for this scope. */
+  legacyKeychainMigrationTried: boolean;
 };
 
 function emptyScopeState(): ApiKeyScopeState {
@@ -204,6 +206,7 @@ function emptyScopeState(): ApiKeyScopeState {
     macosKeychainError: null,
     missingMacosKeychainProviders: new Set<string>(),
     missingCredentialProviders: new Set<string>(),
+    legacyKeychainMigrationTried: false,
   };
 }
 
@@ -913,7 +916,18 @@ function migrateLegacyKeychainIntoCredentialStore(
   scope: ApiKeyScopeState,
   currentStore: StoredKeys,
 ): StoredKeys {
+  // Once per scope: a migration that could not finish fails the same way
+  // again, and each try is about 15 `security` runs, each a sync spawn.
+  if (scope.legacyKeychainMigrationTried) return currentStore;
+  scope.legacyKeychainMigrationTried = true;
   if (isCredentialLegacyKeychainMigrated(scope)) return currentStore;
+  // The marker could not be read: the credential store is locked or
+  // unreadable, so it cannot take the keys or record the migration either.
+  // Reading the Keychain now only blocked the main process (166 ms at launch,
+  // on every launch). Keys still come from the Keychain one at a time when
+  // asked for (`getApiCredentialKeyIn`), and a later launch with a readable
+  // store migrates.
+  if (scope.decryptionFailed) return currentStore;
   if (!isMacosKeychainAvailable()) return currentStore;
 
   const index = readMacosKeychainProviderIndex(scope);

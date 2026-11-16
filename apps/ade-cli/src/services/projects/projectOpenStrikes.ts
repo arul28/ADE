@@ -244,6 +244,15 @@ export class ProjectOpenStrikes {
     return struck;
   }
 
+  /** Whether any project is refused right now: lets a caller skip its per-project lookup. */
+  anyBlocked(): boolean {
+    const now = Date.now();
+    for (const entry of this.entries.values()) {
+      if (entry.blockedUntil !== undefined && entry.blockedUntil > now) return true;
+    }
+    return false;
+  }
+
   /** The refusal holding this project, or null. The open path's only check. */
   blocked(projectId: string): ProjectOpenBlock | null {
     const entry = this.entries.get(projectId);

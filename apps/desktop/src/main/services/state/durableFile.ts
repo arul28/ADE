@@ -476,7 +476,13 @@ export function createStampedJsonCache<T>(
   };
 
   return {
-    read(filePath: string): ReadJsonRecoveryResult<T> {
+    /**
+     * `remember: false` reads through the cache without adding the file or
+     * moving it up: for a one-off walk that must not push out the files that
+     * are read again and again.
+     */
+    read(filePath: string, options?: { remember?: boolean }): ReadJsonRecoveryResult<T> {
+      const rememberRead = options?.remember !== false;
       // A step back of the wall clock can give a later write the stamp an entry
       // already holds.
       const wallNow = Date.now();
@@ -493,8 +499,10 @@ export function createStampedJsonCache<T>(
         const value = parseValid(cached.text);
         if (value !== null) {
           // Re-insert to mark it most recently used.
-          entries.delete(filePath);
-          entries.set(filePath, cached);
+          if (rememberRead) {
+            entries.delete(filePath);
+            entries.set(filePath, cached);
+          }
           return { value, source: "primary" };
         }
       }
@@ -510,7 +518,7 @@ export function createStampedJsonCache<T>(
       }
       const value = text === null ? null : parseValid(text);
       if (text !== null && value !== null) {
-        if (look !== null && look.changedAtMs <= settledBefore) {
+        if (rememberRead && look !== null && look.changedAtMs <= settledBefore) {
           // Charged for the text read, not stat.size: a rewrite between the stat and
           // the read makes the two differ. remember() evicts the oldest entries to fit
           // a new one, so an entry over the whole budget is skipped rather than
@@ -525,6 +533,59 @@ export function createStampedJsonCache<T>(
 
     /** Drops the entry for a file that was deleted or is about to be. */
     forget,
+
+    /** Drops every entry, to give the memory back. The next read of each file refills it. */
+    clear,
+  };
+}
+
+/**
+ * A small fact derived from a JSON file, kept while the file's bytes are
+ * unchanged: for a reader that walks many files for a field or two of each.
+ *
+ * A walk of every file through `createStampedJsonCache` keeps each file's
+ * whole text, and a walk longer than that cache's entry limit evicts every
+ * entry before it is read again, so each walk reads and parses every file. This
+ * keeps only the fact, so a walk costs one stat per file while the files do not
+ * change. The stamp and settle rules are the same as `createStampedJsonCache`:
+ * `compute` runs the real read after the stat, a fact is kept only for a file
+ * that was settled before the read began, and a step back of the wall clock
+ * drops every entry.
+ */
+export function createStampedFileFactCache<V>(limits: { maxEntries: number }) {
+  const entries = new Map<string, { stamp: string; fact: V }>();
+  const clockSteppedBack = createClockStepDetector();
+  return {
+    /**
+     * The fact for the file. `compute` reads it the normal way and says whether
+     * the answer came from the file itself (`cacheable`); a recovered or
+     * missing read is answered and never kept.
+     */
+    read(filePath: string, compute: () => { fact: V; cacheable: boolean }): V {
+      const wallNow = Date.now();
+      if (clockSteppedBack(wallNow)) entries.clear();
+      const stat = bigIntStatOrNull(filePath);
+      const look = stat && stat.ino !== 0n ? fileStampOf(stat) : null;
+      const cached = entries.get(filePath);
+      if (look !== null && cached?.stamp === look.stamp) return cached.fact;
+      if (cached) entries.delete(filePath);
+      const { fact, cacheable } = compute();
+      if (cacheable && look !== null && look.changedAtMs <= wallNow - STAMP_SETTLE_MS) {
+        entries.set(filePath, { stamp: look.stamp, fact });
+        while (entries.size > limits.maxEntries) {
+          const oldest = entries.keys().next().value;
+          if (oldest === undefined) break;
+          entries.delete(oldest);
+        }
+      }
+      return fact;
+    },
+    forget(filePath: string): void {
+      entries.delete(filePath);
+    },
+    clear(): void {
+      entries.clear();
+    },
   };
 }
 

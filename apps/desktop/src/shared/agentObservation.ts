@@ -688,7 +688,7 @@ function(inputArg) {
     // closest clickable ancestor of that text. When a control already includes
     // the needle, scan only that control's subtree: a wait loop polls this
     // every 250 ms and must not re-walk the whole document each time. The row
-    // case lands here — the lane name sits in a span inside a clickable
+    // case lands here -- the lane name sits in a span inside a clickable
     // role=option row within the list container.
     const smallestShownText = (roots) => {
       let best = null;

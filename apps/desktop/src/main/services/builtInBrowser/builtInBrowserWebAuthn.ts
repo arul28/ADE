@@ -8,6 +8,9 @@ import {
 
 let configured = false;
 const configuredSessions = new WeakSet<Session>();
+/** The account picker's logger for the shared profile, set by `configureBuiltInBrowserWebAuthn`. */
+let sharedSessionLogger: () => Logger | null = () => null;
+let sharedSessionOpened = false;
 
 function shouldConfigureTouchIdWebAuthn(): boolean {
   const value = process.env.ADE_ENABLE_TOUCH_ID_WEBAUTHN?.trim().toLowerCase();
@@ -29,6 +32,7 @@ export function configureBuiltInBrowserWebAuthn(args: {
       return null;
     }
   };
+  sharedSessionLogger = logger;
 
   if (process.platform === "darwin" && shouldConfigureTouchIdWebAuthn()) {
     try {
@@ -54,8 +58,29 @@ export function configureBuiltInBrowserWebAuthn(args: {
     });
   }
 
+  // The shared profile's session gets its account picker when something opens
+  // it (`openBuiltInBrowserSession`), not here at every start.
+}
+
+/**
+ * The shared ADE browser profile's session, with its passkey account picker.
+ *
+ * Opening it costs main a browser context and the network service the
+ * profile's cookie store, so nothing opens it until a browser surface needs
+ * it: a tab, the cloud approval window, a login import, the profile migration
+ * when an old profile exists. Every opener goes through here, so each one gets
+ * the picker and `builtInBrowserSessionOpened` stays true to what exists.
+ */
+export function openBuiltInBrowserSession(): Session {
   const browserSession = session.fromPartition(BUILT_IN_BROWSER_PARTITION);
-  configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
+  sharedSessionOpened = true;
+  configureBuiltInBrowserSessionWebAuthn(browserSession, () => sharedSessionLogger());
+  return browserSession;
+}
+
+/** Whether this run opened the shared profile's session (a quit flushes only an open one). */
+export function builtInBrowserSessionOpened(): boolean {
+  return sharedSessionOpened;
 }
 
 export function configureBuiltInBrowserSessionWebAuthn(

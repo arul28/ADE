@@ -2,7 +2,7 @@
  * The renderer's startup, loaded by `main.tsx` once `window.ade` exists (the
  * Electron preload's, or the browser mock's in a Vite-only preview).
  */
-import React from "react";
+import React, { useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { MotionConfig } from "motion/react";
 import "./index.css";
@@ -12,14 +12,18 @@ import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
 import { useAppStore } from "./state/appStore";
-import { logRendererDebugEvent } from "./lib/debugLog";
+import { logRendererDebugEvent, markBoot } from "./lib/debugLog";
 import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installScrollingIndicator } from "./lib/scrollingIndicator";
+import { installCaretRest } from "./lib/caretRest";
 import { captureError } from "../shared/sentry/capture";
 import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
 import { reportRendererMemorySnapshot } from "./lib/rendererMemorySnapshot";
+
+// Every boot module has run (imports evaluate before this body).
+markBoot("modules-evaluated");
 
 // Error tracking, loaded as its own chunk and only when main's Sentry client is
 // running (the preload installs the bridge in that case alone), so dev builds
@@ -37,6 +41,7 @@ trackWindowsCaptionInset();
 
 // Scrollbars show only while you scroll the region under the pointer.
 installScrollingIndicator();
+installCaretRest();
 installAnimationPhaseAlignment();
 
 (function injectFontFaces() {
@@ -146,20 +151,27 @@ window.addEventListener("unhandledrejection", (event) => {
 let rendererWatchdogLastTick = performance.now();
 let rendererWatchdogIntervalId: number | null = null;
 let rendererWatchdogTicks = 0;
-/** On the first watchdog tick, then every 30th (30 s while visible), main gets what this window holds. */
-const RENDERER_MEMORY_SNAPSHOT_TICKS = 30;
+/**
+ * The watchdog wakes every 5 s, not every second: a stall is measured as the
+ * tick's lateness (drift), so one longer than 1.5 s is still caught, and an
+ * idle window wakes a fifth as often.
+ */
+const RENDERER_WATCHDOG_INTERVAL_MS = 5_000;
+const RENDERER_STALL_DRIFT_MS = 1_500;
+/** On the first watchdog tick, then every 6th (30 s while visible), main gets what this window holds. */
+const RENDERER_MEMORY_SNAPSHOT_TICKS = 6;
 
 function startWatchdog() {
   if (rendererWatchdogIntervalId !== null) return;
   rendererWatchdogLastTick = performance.now();
   rendererWatchdogIntervalId = window.setInterval(() => {
     const now = performance.now();
-    const driftMs = now - rendererWatchdogLastTick - 1000;
+    const driftMs = now - rendererWatchdogLastTick - RENDERER_WATCHDOG_INTERVAL_MS;
     rendererWatchdogLastTick = now;
     rendererWatchdogTicks += 1;
     // The first tick reports too, so a window lost early still left a snapshot.
     if (rendererWatchdogTicks % RENDERER_MEMORY_SNAPSHOT_TICKS === 1) reportRendererMemorySnapshot();
-    if (driftMs < 1500) return;
+    if (driftMs < RENDERER_STALL_DRIFT_MS) return;
     logRendererDebugEvent("renderer.event_loop_stall", {
       driftMs: Math.round(driftMs),
       route: window.location.hash || window.location.pathname,
@@ -172,7 +184,7 @@ function startWatchdog() {
       visibilityState: document.visibilityState,
       memory: readRendererMemory(),
     })}`);
-  }, 1000);
+  }, RENDERER_WATCHDOG_INTERVAL_MS);
 }
 
 function stopWatchdog() {
@@ -207,6 +219,16 @@ try {
   // non-fatal — fall back to the persisted/default font size
 }
 
+/**
+ * Marks the end of the first commit: its layout effects run after the whole
+ * app's, as the last sibling. Diagnostics only; it draws nothing.
+ */
+function BootCommitMark() {
+  useLayoutEffect(() => markBoot("first-commit"), []);
+  return null;
+}
+
+markBoot("render-called");
 // `reducedMotion="user"` makes every `motion` element in the tree honour the
 // OS setting without each site opting in: transform and layout animations are
 // skipped, opacity still animates, so the information arrives and only the trip
@@ -218,6 +240,7 @@ createRoot(document.getElementById("root")!).render(
       <RendererErrorBoundary>
         <App />
       </RendererErrorBoundary>
+      <BootCommitMark />
     </RootWrapper>
   </MotionConfig>
 );

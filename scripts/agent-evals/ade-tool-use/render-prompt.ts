@@ -35,6 +35,9 @@ for (const [name, runtime] of runtimes) {
     runtime,
     adeSkillRoots: [skillRoot],
     sessionActivityGuidance: activity,
+    // The Claude adapter loads the skills with --plugin-dir, as an ADE Claude
+    // chat does, so Claude lists them itself.
+    nativeSkillListing: runtime === "claude-agent-sdk-query",
   });
   fs.writeFileSync(path.join(outDir, `prompt-${name}.md`), text);
 }

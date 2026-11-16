@@ -80,7 +80,7 @@ const SCENE_SDK_SOURCE = String.raw`
 
   // Every message carries the nonce of the document it was sent from. The host
   // keeps ONE mounted frame and swaps its src, and a contentWindow's identity
-  // survives that swap — so without this an outgoing document's late 'settled'
+  // survives that swap -- so without this an outgoing document's late 'settled'
   // is indistinguishable from the incoming one's.
   function post(type, payload) {
     var message = { __adeScene: 1, type: type, payload: payload };
@@ -355,8 +355,8 @@ const SCENE_SDK_SOURCE = String.raw`
    * Idle: a settled scene nobody is touching should cost nothing.
    *
    * A view that loops (a spinner, a pulsing dot, a canvas particle field) keeps
-   * the GPU compositing every frame at the display's refresh rate — 240 times a
-   * second on the panels ADE is developed on — for a picture that is not
+   * the GPU compositing every frame at the display's refresh rate -- 240 times a
+   * second on the panels ADE is developed on -- for a picture that is not
    * changing what it says. So once the scene has settled and the pointer and
    * focus are elsewhere: endless animations pause where they are, SVG (SMIL)
    * animations pause, and requestAnimationFrame callbacks are batched into a
@@ -528,8 +528,8 @@ const SCENE_SDK_SOURCE = String.raw`
    * never finish, so they do not hold a settle back.
    *
    * Reported exactly once. A scene that keeps changing forever hits the cap
-   * and is reported anyway — a frame of a loop is a truthful picture of a view
-   * that loops — and a late mutation after that must not produce a second
+   * and is reported anyway -- a frame of a loop is a truthful picture of a view
+   * that loops -- and a late mutation after that must not produce a second
    * settle, because the host acts on the first one.
    */
   var quietTimer = null;

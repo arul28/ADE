@@ -22,6 +22,10 @@ export {
 export const DEFAULT_BRAIN_LOOP_WATCHDOG_MS = 30_000;
 export const DEFAULT_WINDOWS_BRAIN_LOOP_WATCHDOG_MS = 60_000;
 export const BRAIN_LOOP_WATCHDOG_NEAR_MISS_MS = 2_000;
+/** The event loop delay monitor's timer period (see where it starts). */
+const BRAIN_LOOP_DELAY_RESOLUTION_MS = 100;
+/** A heartbeat whose largest delay sample is within this of the resolution had no delay worth a mean or a p99. */
+const BRAIN_LOOP_DELAY_QUIET_MARGIN_MS = 50;
 export const BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE = "event-loop-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE = "last-wedge.json";
 export const BRAIN_LOOP_WATCHDOG_REPORT_FILE = "event-loop-wedge-report.json";
@@ -819,7 +823,13 @@ export function startBrainLoopWatchdog(args: {
   // An open that started before the watchdog did.
   if (activeProjectOpens.size > 0) announceProjectOpens([...activeProjectOpens.values()]);
 
-  const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+  // The monitor is a timer of its own: at 20 ms it woke the main thread 50
+  // times a second and cost about 55 ms of CPU a minute in an idle brain, the
+  // largest part of the watchdog's cost. Its max is all the watchdog judges,
+  // and a block reads within one resolution of its length, so 100 ms is
+  // exact enough next to the 2 s near miss and the 30 s threshold. At rest
+  // the max reads about one resolution (100 ms), well under both.
+  const eventLoopDelay = monitorEventLoopDelay({ resolution: BRAIN_LOOP_DELAY_RESOLUTION_MS });
   eventLoopDelay.enable();
   const monotonicMs = (): number => Number(process.hrtime.bigint() / 1_000_000n);
   let lastHeartbeatMonotonicMs = monotonicMs();
@@ -955,13 +965,22 @@ export function startBrainLoopWatchdog(args: {
     );
     lastInvoluntarySwitches = resources.involuntaryContextSwitches;
     resolveHeldLag(nowMonotonicMs);
+    // The mean and the p99 walk the whole histogram: on the reference Mac they
+    // were about a third of a millisecond a second, the largest part of an idle
+    // heartbeat. Each sample is the time between two of the monitor's ticks, so
+    // none is below one resolution. In a quiet second no sample is more than
+    // the quiet margin above that either, so the mean and the p99 sit within the
+    // margin of the max; the max stands in for both. Any second with a real
+    // delay gets the exact numbers.
+    const eventLoopDelayMaxMs = eventLoopDelayMs(eventLoopDelay.max);
+    const quietSecond = eventLoopDelayMaxMs < BRAIN_LOOP_DELAY_RESOLUTION_MS + BRAIN_LOOP_DELAY_QUIET_MARGIN_MS;
     const diagnostics: BrainLoopWatchdogDiagnostics = {
       capturedAt: new Date().toISOString(),
       heartbeatLagMs: Math.floor(heartbeatLagMs),
       eventLoopDelay: {
-        maxMs: eventLoopDelayMs(eventLoopDelay.max),
-        meanMs: eventLoopDelayMs(eventLoopDelay.mean),
-        p99Ms: eventLoopDelayMs(eventLoopDelay.percentile(99)),
+        maxMs: eventLoopDelayMaxMs,
+        meanMs: quietSecond ? eventLoopDelayMaxMs : eventLoopDelayMs(eventLoopDelay.mean),
+        p99Ms: quietSecond ? eventLoopDelayMaxMs : eventLoopDelayMs(eventLoopDelay.percentile(99)),
       },
       memory: {
         rss: memory.rss,

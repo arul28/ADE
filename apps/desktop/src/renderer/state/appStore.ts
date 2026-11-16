@@ -2,7 +2,7 @@ import React, { useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { shallow } from "zustand/shallow";
-import { reuseStructurallyEqualArray } from "../lib/stableIdentity";
+import { reconcileRowsById, reconcileRowsByKey, reuseStructurallyEqualArray } from "../lib/stableIdentity";
 import { setTabBindingKey } from "../lib/tabBindingKey";
 import type { StateCreator } from "zustand";
 import {
@@ -1153,6 +1153,46 @@ function readPersistedLaneCache(projectRoot: string | null | undefined): WarmLan
   }
 }
 
+const laneSnapshotKey = (snapshot: LaneListSnapshot): string => snapshot.lane.id;
+
+/** A re-read list with each unchanged row's previous object kept (see `reconcileRowsById`). */
+function reconcileIncomingRows<T extends { id: string }>(incoming: T[] | undefined, current: T[] | undefined): T[] | undefined {
+  return incoming && current ? reconcileRowsById(current, incoming) : incoming;
+}
+
+function sameTerminalAttention(a: TerminalAttentionSnapshot, b: TerminalAttentionSnapshot): boolean {
+  return a === b || (
+    a.runningCount === b.runningCount
+    && a.activeCount === b.activeCount
+    && a.needsAttentionCount === b.needsAttentionCount
+    && a.indicator === b.indicator
+  );
+}
+
+function sameCtoAttention(a: CtoAttentionState, b: CtoAttentionState): boolean {
+  return a === b || (a.status === b.status && a.awaitingInput === b.awaitingInput && a.since === b.since);
+}
+
+/** The list each project's lane cache last saved, and when. */
+const persistedLaneCacheByProject = new Map<string, { lanes: LaneSummary[]; savedAt: number }>();
+/** Re-save an unchanged list this often, so its `savedAt` never ages out of the TTL while ADE runs. */
+const LANE_CACHE_RESAVE_MS = 60 * 60 * 1000;
+
+/**
+ * `persistLaneCache`, skipped when this exact list was saved in the last hour.
+ * A lane refresh runs on many events; most return the same lanes, and each
+ * save serializes every lane into localStorage on the main thread.
+ */
+function persistLaneCacheIfChanged(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey) return;
+  const last = persistedLaneCacheByProject.get(projectKey);
+  const now = Date.now();
+  if (last?.lanes === lanes && now - last.savedAt < LANE_CACHE_RESAVE_MS) return;
+  persistedLaneCacheByProject.set(projectKey, { lanes, savedAt: now });
+  persistLaneCache(projectKey, lanes);
+}
+
 function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey || lanes.length === 0) return;
@@ -1166,9 +1206,76 @@ function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSum
   }
 }
 
+/*
+ * The last project info this computer saw for each local folder: what a
+ * launch needs to show the Work view of the tab that was in front before the
+ * brain has opened its project (`switchProjectToPath` with `showCachedView`).
+ * The project the open reports reads the same, so the hand-over renders
+ * nothing new. Written only when a folder's info changes.
+ */
+const KNOWN_PROJECT_INFO_STORAGE_KEY = "ade.knownProjectInfo.v1";
+const KNOWN_PROJECT_INFO_LIMIT = 32;
+type KnownProjectInfoEntry = { displayName: string; baseRef: string };
+let knownProjectInfoMemo: Map<string, KnownProjectInfoEntry> | null = null;
+
+function knownProjectInfoMap(): Map<string, KnownProjectInfoEntry> {
+  if (knownProjectInfoMemo) return knownProjectInfoMemo;
+  const map = new Map<string, KnownProjectInfoEntry>();
+  try {
+    const parsed: unknown = JSON.parse(window.localStorage.getItem(KNOWN_PROJECT_INFO_STORAGE_KEY) ?? "null");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [rootPath, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!rootPath.trim() || !value || typeof value !== "object") continue;
+        const entry = value as Partial<KnownProjectInfoEntry>;
+        if (typeof entry.displayName !== "string" || !entry.displayName.trim()) continue;
+        if (typeof entry.baseRef !== "string" || !entry.baseRef.trim()) continue;
+        map.set(rootPath, { displayName: entry.displayName, baseRef: entry.baseRef });
+      }
+    }
+  } catch {
+    // Unreadable or missing storage: no folder is known, and launches take the normal path.
+  }
+  knownProjectInfoMemo = map;
+  return map;
+}
+
+/** The saved project info for a local folder, or null when this computer has none. */
+export function readKnownProjectInfo(rootPath: string | null | undefined): ProjectInfo | null {
+  const key = typeof rootPath === "string" ? rootPath.trim() : "";
+  if (!key) return null;
+  const entry = knownProjectInfoMap().get(key);
+  return entry ? { rootPath: key, displayName: entry.displayName, baseRef: entry.baseRef } : null;
+}
+
+/** Whether any local folder's project info is saved: a launch may open on a Work view. */
+export function hasKnownProjectInfo(): boolean {
+  return knownProjectInfoMap().size > 0;
+}
+
+function rememberKnownProjectInfo(project: ProjectInfo): void {
+  const key = project.rootPath.trim();
+  if (!key || !project.displayName?.trim() || !project.baseRef?.trim()) return;
+  const map = knownProjectInfoMap();
+  const known = map.get(key);
+  if (known && known.displayName === project.displayName && known.baseRef === project.baseRef) return;
+  map.delete(key);
+  map.set(key, { displayName: project.displayName, baseRef: project.baseRef });
+  while (map.size > KNOWN_PROJECT_INFO_LIMIT) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+  try {
+    window.localStorage.setItem(KNOWN_PROJECT_INFO_STORAGE_KEY, JSON.stringify(Object.fromEntries(map)));
+  } catch {
+    // Storage full or unavailable: the next launch opens the normal way.
+  }
+}
+
 function removePersistedLaneCache(projectRoot: string | null | undefined): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey) return;
+  persistedLaneCacheByProject.delete(projectKey);
   try {
     window.localStorage.removeItem(laneCacheStorageKey(projectKey));
   } catch {
@@ -1678,6 +1785,12 @@ export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
+  /**
+   * The local folder whose Work view shows from saved state while its launch
+   * open is still on its way (`switchProjectToPath` with `showCachedView`).
+   * Null once the open settles.
+   */
+  cachedProjectViewRoot: string | null;
   openRemoteProjectTabs: Extract<OpenProjectBinding, { kind: "remote" }>[];
   openProjectTabRoots: string[];
   /**
@@ -2059,7 +2172,18 @@ export type AppState = {
    */
   switchProjectToPath: (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean },
+    opts?: {
+      skipWorktreeGate?: boolean;
+      carryWorkView?: boolean;
+      /**
+       * A launch restoring the tab that was in front: with no project shown
+       * yet and saved project info for the folder, the Work view shows at
+       * once from that info and the lane cache while the brain opens the
+       * project. Calls the view makes carry the folder's pin and wait in main
+       * for the open.
+       */
+      showCachedView?: boolean;
+    },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
   /** The user said Trust: add this folder to git's safe.directory and open it. */
@@ -2441,6 +2565,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   project: null,
   projectBinding: null,
   projectHydrated: false,
+  cachedProjectViewRoot: null,
   openProjectTabRoots: [],
   noMachineTabs: readNoMachineTabs(),
   activeNoMachineTabId: null,
@@ -2538,6 +2663,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         prev.projectBinding.rootPath === project.rootPath
           ? prev.projectBinding
           : null;
+      // A local folder's info, for the next launch's Work view (desktop only:
+      // the hosted client has no folders of its own to reopen).
+      if (project && !matchingRemoteBinding && !isWebClientMode()) rememberKnownProjectInfo(project);
       const projectChanged = previousProjectRoot !== nextProjectRoot;
       // Lane caches and lane selection are keyed by the *binding* key
       // (`remote:<targetId>:<projectId>` for remote projects), which is what
@@ -2597,6 +2725,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : null,
         projectRevision:
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
+        // The window left a saved Work view whose open is still on its way.
+        ...(prev.cachedProjectViewRoot != null && nextProjectRoot !== prev.cachedProjectViewRoot
+          ? { cachedProjectViewRoot: null }
+          : {}),
         laneDeleteProgressByLaneId:
           projectChanged ? {} : prev.laneDeleteProgressByLaneId,
         // Per-lane UI context only resets when the project itself changes.
@@ -2802,10 +2934,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   setLaneDeleteProgressByLaneId: (next) =>
-    set((prev) => ({
-      laneDeleteProgressByLaneId:
-        typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next,
-    })),
+    set((prev) => {
+      const laneDeleteProgressByLaneId = typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next;
+      return laneDeleteProgressByLaneId === prev.laneDeleteProgressByLaneId ? prev : { laneDeleteProgressByLaneId };
+    }),
   selectLane: (laneId) =>
     set((prev) => {
       const projectKey = selectActiveProjectStateKey(prev);
@@ -2850,7 +2982,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       ) ?? null;
       const intendedChanged = stableIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
 
-      if (!scopeChanged && !intendedChanged) return {};
+      if (!scopeChanged && !intendedChanged) return prev;
       // Identity matters: consumers select this record straight out of the
       // store, so a fresh `{}` on every call would re-render the whole sidebar.
       const alreadyEmpty = Object.keys(prev.crossMachineLanesByMachineId).length === 0;
@@ -2864,15 +2996,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   mergeCrossMachineLanes: (entry) =>
     set((prev) => {
       const machineId = entry.machineId.trim();
-      if (!machineId) return {};
+      if (!machineId) return prev;
       const nextIntendedMachineIds = prev.crossMachineLaneIntendedMachineIds?.includes(machineId)
         ? prev.crossMachineLaneIntendedMachineIds
         : [...(prev.crossMachineLaneIntendedMachineIds ?? []), machineId].sort();
       const intendedChanged = nextIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
-      const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
-      const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
-      const prs = reuseStructurallyEqualArray(entry.prs, previous?.prs);
+      // Per row, not per list: a running chat on that machine changes its row
+      // on every read, and the other rows keep their objects.
+      const lanes = reconcileIncomingRows(entry.lanes, previous?.lanes);
+      const sessions = reconcileIncomingRows(entry.sessions, previous?.sessions);
+      const prs = reconcileIncomingRows(entry.prs, previous?.prs);
       const incomingBinding =
         entry.binding !== undefined ? entry.binding : previous?.binding ?? null;
       const binding = reuseStructurallyEqualValue(incomingBinding, previous?.binding ?? null);
@@ -2930,7 +3064,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.error === next.error
         && (previous.failedReads ?? 0) === next.failedReads
       );
-      if (sliceUnchanged && !intendedChanged) return {};
+      if (sliceUnchanged && !intendedChanged) return prev;
       return {
         ...(sliceUnchanged
           ? {}
@@ -2965,7 +3099,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : { ...entry, online: false };
         changed = true;
       }
-      return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
+      return changed ? { crossMachineLanesByMachineId: nextRecord } : prev;
     }),
 
   dropCrossMachineLanes: (machineIds) =>
@@ -2992,13 +3126,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ? { crossMachineLaneIntendedMachineIds: nextIntendedMachineIds }
               : {}),
           }
-        : {};
+        : prev;
     }),
 
   setCloudSessionWaking: (sessionId, since) =>
     set((prev) => {
       const current = prev.cloudWakingSinceBySessionId[sessionId];
-      if (since ? current === since : current === undefined) return {};
+      if (since ? current === since : current === undefined) return prev;
       const next = { ...prev.cloudWakingSinceBySessionId };
       if (since) next[sessionId] = since;
       else delete next[sessionId];
@@ -3193,8 +3327,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, terminalPreferences: updated });
       return { terminalPreferences: updated };
     }),
-  setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
-  setCtoAttention: (ctoAttention) => set({ ctoAttention }),
+  // Both are re-read on session and chat events. An equal read keeps the
+  // current object, so the badges that select it do not render again.
+  setTerminalAttention: (terminalAttention) =>
+    set((prev) => (sameTerminalAttention(prev.terminalAttention, terminalAttention) ? prev : { terminalAttention })),
+  setCtoAttention: (ctoAttention) =>
+    set((prev) => (sameCtoAttention(prev.ctoAttention, ctoAttention) ? prev : { ctoAttention })),
   setSmartTooltipsEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
@@ -3495,43 +3633,76 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             }
           }
         }
-        const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-        const nextSnapshots: LaneListSnapshot[] =
-          laneSnapshots ??
-          prev.laneSnapshots
-            .filter((snapshot) => allowed.has(snapshot.lane.id))
-            .map((snapshot) => {
-              const nextLane = lanesById.get(snapshot.lane.id);
-              return nextLane ? { ...snapshot, lane: nextLane } : snapshot;
-            });
+        // Every read builds new objects. Keep the previous object of each lane
+        // and snapshot whose contents did not change, and the previous list
+        // when nothing changed, so readers of `lanes` (and per-lane selectors)
+        // do not render again for an equal list.
+        const nextLanes = reconcileRowsById(prev.lanes, lanes);
+        const lanesById = new Map(nextLanes.map((lane) => [lane.id, lane] as const));
+        const reconciledSnapshots = reconcileRowsByKey(
+          prev.laneSnapshots,
+          laneSnapshots ?? prev.laneSnapshots.filter((snapshot) => allowed.has(snapshot.lane.id)),
+          laneSnapshotKey,
+        );
+        // Each snapshot carries the same lane object as `lanes`.
+        let snapshotLaneMoved = false;
+        const snapshotsWithLanes = reconciledSnapshots.map((snapshot) => {
+          const nextLane = lanesById.get(snapshot.lane.id);
+          if (!nextLane || nextLane === snapshot.lane) return snapshot;
+          snapshotLaneMoved = true;
+          return { ...snapshot, lane: nextLane };
+        });
+        const nextSnapshots: LaneListSnapshot[] = snapshotLaneMoved ? snapshotsWithLanes : reconciledSnapshots;
         if (removedLaneScopeKeys.length > 0) {
           persistWorkViewState({ deleteLaneScopeKeys: removedLaneScopeKeys });
         }
+        // Both are subsets of the previous record: an equal size means equal.
+        const keptTabs = Object.keys(nextTabs).length === Object.keys(prev.laneInspectorTabs).length
+          ? prev.laneInspectorTabs
+          : nextTabs;
+        const keptLaneWorkViews = removedLaneScopeKeys.length === 0 ? prev.laneWorkViewByScope : nextLaneWorkViews;
         // Cache the lane list per project root so the next switch back to this
         // project can apply lanes immediately (no flicker, no chat unmount).
         const activeProjectKey = selectActiveProjectStateKey(get());
+        const cachedEntry = activeProjectKey ? prev.laneCacheByProject[activeProjectKey] : undefined;
         const nextLaneCache = activeProjectKey
+          && !(cachedEntry?.lanes === nextLanes && cachedEntry.laneSnapshots === nextSnapshots)
           ? {
               ...prev.laneCacheByProject,
-              [activeProjectKey]: { lanes, laneSnapshots: nextSnapshots },
+              [activeProjectKey]: { lanes: nextLanes, laneSnapshots: nextSnapshots },
             }
           : prev.laneCacheByProject;
-        persistLaneCache(activeProjectKey, lanes);
+        persistLaneCacheIfChanged(activeProjectKey, nextLanes);
+        const nextLaneStatusStale = currentRequest.includeStatus
+          ? false
+          : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS;
+        // Nothing changed: skip the write, so no subscriber runs at all.
+        if (
+          nextLanes === prev.lanes
+          && nextSnapshots === prev.laneSnapshots
+          && !prev.lanesLoading
+          && prev.lanesLoadError === null
+          && nextLaneStatusStale === prev.laneStatusStale
+          && nextSelected === prev.selectedLaneId
+          && keptTabs === prev.laneInspectorTabs
+          && keptLaneWorkViews === prev.laneWorkViewByScope
+          && nextLaneCache === prev.laneCacheByProject
+        ) {
+          return prev;
+        }
         return {
           laneSnapshots: nextSnapshots,
-          lanes,
+          lanes: nextLanes,
           lanesLoading: false,
           lanesLoadError: null,
           // A measured read replaces the numbers and their flag together. A
           // status-less one only carries numbers forward: they stay as fresh
           // as they were, unless they have aged out or a lane arrived with
           // only the brain's 0/0 placeholder.
-          laneStatusStale: currentRequest.includeStatus
-            ? false
-            : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS,
+          laneStatusStale: nextLaneStatusStale,
           selectedLaneId: nextSelected,
-          laneInspectorTabs: nextTabs,
-          laneWorkViewByScope: nextLaneWorkViews,
+          laneInspectorTabs: keptTabs,
+          laneWorkViewByScope: keptLaneWorkViews,
           laneCacheByProject: nextLaneCache,
         };
       });
@@ -3744,7 +3915,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
 
   switchProjectToPath: async (
     rootPath: string,
-    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean },
+    opts?: { skipWorktreeGate?: boolean; carryWorkView?: boolean; showCachedView?: boolean },
   ) => {
     // Worktree gate: when opening a path that is NOT already a warm tab, inspect
     // it first. If it's an external linked worktree whose owning repo resolves,
@@ -3787,6 +3958,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       get().setProject(cachedProject, { replaceBinding: true });
       if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, cachedProject));
     }
+    // A launch restoring its front tab, with nothing on screen yet: the
+    // folder's Work view shows now, from its saved info and lane cache, and
+    // the open below replaces it with what the brain reports. The open is
+    // started in this same task, before any effect of the view can run, so
+    // main has the folder authorized for this window (as an open in flight)
+    // before the view's first pinned call reaches it; those calls wait in the
+    // runtime pool for the brain. With no saved info this is a normal cold
+    // switch.
+    const cachedViewProject =
+      opts?.showCachedView && !isWarmTabSwitch && !get().project && !get().projectTransition
+        ? readKnownProjectInfo(rootPath)
+        : null;
+    const showsCachedView = cachedViewProject != null;
+    if (cachedViewProject) {
+      get().setProject(cachedViewProject, { replaceBinding: true });
+    }
     const cachedWarmLanes =
       cachedProject != null ? get().laneCacheByProject[cachedProject.rootPath] : undefined;
     const restoredWarmSelection =
@@ -3794,7 +3981,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ? get().laneSelectionByProject[cachedProject.rootPath] ?? { laneId: null, sessionId: null }
         : { laneId: null, sessionId: null };
     set({
-      projectTransition: isWarmTabSwitch
+      projectTransition: isWarmTabSwitch || showsCachedView
         ? null
         : {
             kind: "switching",
@@ -3802,6 +3989,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             startedAtMs: Date.now(),
           },
       projectTransitionError: null,
+      // `setProject` above already restored the lanes and their selection.
+      ...(cachedViewProject
+        ? {
+            cachedProjectViewRoot: cachedViewProject.rootPath,
+            projectHydrated: true,
+            showWelcome: false,
+            isNewTabOpen: false,
+            standaloneSettingsOpen: false,
+            keybindings: readKeybindingsSnapshot(),
+          }
+        : {}),
       // A cold switch keeps the open project's binding until the new project
       // replaces both together: nulling it here left the old project (perhaps
       // one on another machine) reading as local, and a failure kept it so.
@@ -3839,6 +4037,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
     try {
       const project = await window.ade.project.switchToPath(rootPath);
+      if (showsCachedView && get().project?.rootPath !== rootPath) {
+        // The user moved to another project (or a remote copy) while the saved
+        // view's open ran. That move owns the window now; the open only
+        // refreshes what this computer knows about the folder.
+        get().rememberProjectInfo(project);
+        return;
+      }
       get().setProject(project, { replaceBinding: true });
       if (opts?.carryWorkView) carryWorkViewToCopy(outgoingBinding, localBindingForCarry(get().projectBinding, project));
       const restoredSelection =
@@ -3851,7 +4056,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const cachedLanes = get().laneCacheByProject[project.rootPath];
       // Banner-dismiss pruning happens in the second `set` call below, after recents are fetched,
       // so we can retain dismissals for the active project + all recent projects in one pass.
-      set(isWarmTabSwitch
+      // The cached view hands over in place: its lanes, selection and draft
+      // stay, the lane read below replaces the lanes, and a Home or another
+      // switch the user started during the open keeps its own state.
+      set(showsCachedView
+        ? {
+            projectHydrated: true,
+            ...(get().cachedProjectViewRoot === rootPath ? { cachedProjectViewRoot: null } : {}),
+          }
+        : isWarmTabSwitch
         ? {
             projectTransition: null,
             projectTransitionError: null,
@@ -3968,8 +4181,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     } catch (error) {
       const failure = transitionFailureState("switching", error, rootPath);
       const projectTransitionError = failure.projectTransitionError;
+      if (showsCachedView) {
+        // The folder did not open, so its saved view goes: the window is where
+        // a cold switch that failed leaves it, on Home with the error. A
+        // project the user moved to during the open stays.
+        if (get().cachedProjectViewRoot === rootPath) set({ cachedProjectViewRoot: null });
+        if (get().project?.rootPath === rootPath) {
+          get().setProject(null);
+          set({ showWelcome: true });
+        }
+      }
       set({
-        projectTransition: null,
+        // A cached view started no transition; one in flight now is a later switch's.
+        ...(showsCachedView ? {} : { projectTransition: null }),
         lanesLoading: false,
         ...failure,
         projectTransitionError: !projectTransitionError

@@ -64,7 +64,11 @@ import {
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
-import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
+import {
+  getRuntimeServiceStatus,
+  getRuntimeServiceStatusAsync,
+  type ServiceManagerStatusResult,
+} from "../../../../../ade-cli/src/serviceManager";
 import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME, isPidAlive } from "../../../../../ade-cli/src/serviceManager/common";
 import { readWindowsServicePidRecord } from "../../../../../ade-cli/src/serviceManager/installWindows";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -601,9 +605,10 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
 /**
  * Service-health probe that never blocks the Electron main thread.
  *
- * On macOS and Linux the in-process probe is a single `launchctl`/`systemctl`
- * call (tens of milliseconds), so it stays exactly as it was — same code, same
- * timing, no extra process. On Windows the same probe costs two
+ * On macOS the in-process probe runs its `launchctl` reads with `execFile`
+ * (the sync reads cost about 13 ms of main thread, inside the first window's
+ * wait for its session at launch). On Linux it is a single `systemctl` call,
+ * so it stays exactly as it was. On Windows the same probe costs two
  * `powershell.exe -Command Get-ScheduledTask` spawns; measured on a Windows 11
  * host that is 1,045-1,089 ms each, and `spawnSync` blocks the main thread —
  * which stalls the window message pump, so window drags and unrelated clicks
@@ -611,7 +616,7 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
  * executes the identical `getRuntimeServiceStatus()` code path.
  */
 export async function defaultQueryServiceStatusAsync(): Promise<ServiceManagerStatusResult> {
-  if (process.platform !== "win32") return getRuntimeServiceStatus();
+  if (process.platform !== "win32") return await getRuntimeServiceStatusAsync();
   const cliPath = resolveCliScriptPath();
   const stdout = await new Promise<string | null>((resolve) => {
     let child: ChildProcess;
@@ -786,6 +791,13 @@ type LocalRuntimeConnectionStats = {
   lastDisconnectedAt: string | null;
   projectReregistrations: number;
 };
+
+function readsChatCreateAndSendCapability(initializeResult: unknown): boolean {
+  if (!initializeResult || typeof initializeResult !== "object") return false;
+  const capabilities = (initializeResult as { capabilities?: unknown }).capabilities;
+  return Boolean(capabilities && typeof capabilities === "object"
+    && (capabilities as { chatCreateAndSend?: unknown }).chatCreateAndSend === true);
+}
 
 export function readLocalRuntimeInfo(value: unknown): {
   version: string | null;
@@ -1282,6 +1294,8 @@ export class LocalRuntimeConnectionPool {
   /** Folders the brain answered `project_folder_too_slow` for (see `isKnownRefused`). */
   private readonly refusedRoots = new Set<string>();
   private activeClient: RuntimeRpcClient | null = null;
+  /** Connections whose brain advertised `chatCreateAndSend` in its initialize answer. */
+  private readonly chatCreateAndSendClients = new WeakSet<RuntimeRpcClient>();
   private activeRuntimePid: number | null = null;
   private activeRuntimeSyncPort: number | null = null;
   private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
@@ -1394,6 +1408,8 @@ export class LocalRuntimeConnectionPool {
   // still connected may serve the long window; see `serviceHealthReadMaxAgeMs`.
   private serviceHealthSteadyClient: RuntimeRpcClient | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
+  /** The last status pushed to the windows, serialized; a refresh that matches it pushes nothing. */
+  private lastEmittedRuntimeStatus: string | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private healthSamples: HealthSample[] = [];
@@ -1455,20 +1471,24 @@ export class LocalRuntimeConnectionPool {
    * How old a cached service-health snapshot a read may serve before it probes
    * again. Only `steadyWindowApplies` gets the long window; everything else
    * (disconnected, connecting, an app-owned fallback, an install in flight, a
-   * failed probe, and every read on macOS and Linux) keeps the 2 s window.
+   * failed probe) keeps the 2 s window.
    */
   private serviceHealthReadMaxAgeMs(): number {
     return this.steadyWindowApplies() ? SERVICE_HEALTH_STEADY_MAX_AGE_MS : SERVICE_HEALTH_READ_MAX_AGE_MS;
   }
 
   /**
-   * Whether the cached snapshot may be read through the long window: Windows,
-   * connected to the brain client the snapshot was taken under, and that brain
-   * is the machine service's own (see `isServiceHealthSteady`).
+   * Whether the cached snapshot may be read through the long window: connected
+   * to the brain client the snapshot was taken under, and that brain is the
+   * machine service's own (see `isServiceHealthSteady`). On every platform: the
+   * macOS and Linux probe is cheaper than Windows', but it is a `spawnSync` on
+   * the main thread, and status polls asked for one every few seconds while
+   * the app sat idle. A brain that goes away clears `activeClient`, which ends
+   * the window, and a surface that shows service health still probes on open
+   * (`refreshServiceHealthForView`).
    */
   private steadyWindowApplies(): boolean {
-    return process.platform === "win32"
-      && this.isServiceHealthSteady()
+    return this.isServiceHealthSteady()
       && this.serviceHealthSteadyClient === this.activeClient;
   }
 
@@ -1563,7 +1583,11 @@ export class LocalRuntimeConnectionPool {
         this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
         this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
         this.activeRuntimeLastUnplannedRestart = runtimeInfo.lastUnplannedRestart;
-        this.emitRuntimeStatusChange();
+        // `app.getInfo` asks for this every 15 s from each window. A status the
+        // same as the last one pushed is not a change: pushing it again would
+        // wake every window's status listeners for nothing. Any other change
+        // since that push (service health, skew, mode) still goes out here.
+        this.emitRuntimeStatusChange({ onlyIfChanged: true });
       } catch (error) {
         this.logger.debug("local_runtime.status_refresh_failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -1578,14 +1602,27 @@ export class LocalRuntimeConnectionPool {
     await refresh;
   }
 
-  private emitRuntimeStatusChange(): void {
+  private emitRuntimeStatusChange(options: { onlyIfChanged?: boolean } = {}): void {
+    const snapshot = this.statusSnapshot();
+    const serialized = JSON.stringify(snapshot);
+    if (options.onlyIfChanged && serialized === this.lastEmittedRuntimeStatus) return;
+    this.lastEmittedRuntimeStatus = serialized;
     try {
-      this.options.onRuntimeStatusChange?.(this.statusSnapshot());
+      this.options.onRuntimeStatusChange?.(snapshot);
     } catch (error) {
       this.logger.warn("local_runtime.status_listener_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Whether the connected brain runs `chat.createSessionAndSend`. False with
+   * no connection or an older brain: the caller then makes two calls.
+   */
+  supportsChatCreateAndSend(): boolean {
+    const client = this.activeClient;
+    return client != null && !client.isClosed() && this.chatCreateAndSendClients.has(client);
   }
 
   getRuntimeProcessIds(): number[] {
@@ -4320,6 +4357,7 @@ export class LocalRuntimeConnectionPool {
       throw error;
     }
     const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+    if (readsChatCreateAndSendCapability(initializeResult)) this.chatCreateAndSendClients.add(client);
     if (options.expectedPid != null && runtimeInfo.pid !== options.expectedPid) {
       closeRuntimeClient(client);
       throw new Error(

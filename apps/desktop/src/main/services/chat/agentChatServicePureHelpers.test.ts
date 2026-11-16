@@ -131,15 +131,15 @@ describe("buildComputerUseDirective", () => {
     expect(buildComputerUseDirective(null)).toBeNull();
   });
 
-  it("still describes the local fallback when it is the only capability", () => {
+  it("keeps the real-screen rules when the local fallback is the only capability", () => {
     const result = buildComputerUseDirective(
       makeBackendStatus({ ghostOs: false, agentBrowser: false, localFallback: true }),
     );
     expect(result).not.toBeNull();
     expect(result).toContain("Computer Use");
-    expect(result).toContain("get_computer_use_backend_status");
-    expect(result).toMatch(/\bnot exposed\b/i);
-    expect(result).toContain("Respect the backend the user requested");
+    // No external backend is running, so there is no backend status to read;
+    // the rule about one the person asked for still applies.
+    expect(result).toContain("computer-use backend that is unavailable, stop and report");
     expect(result).toContain("mcp__computer_use");
     expect(result).toContain("do not bootstrap `@oai/sky`");
     expect(result).toContain("does not passively ingest");
@@ -166,13 +166,6 @@ describe("buildComputerUseDirective", () => {
     expect(result).toContain("Ghost OS (Desktop Automation)");
     expect(result).toContain("ghost_context");
     expect(result).toContain("ghost_annotate");
-  });
-
-  it("includes ADE Local fallback section when local fallback is enabled", () => {
-    const status = makeBackendStatus({ localFallback: true });
-    const result = buildComputerUseDirective(status);
-    expect(result).toContain("ADE Local (Fallback)");
-    expect(result).toContain("Proof Capture");
   });
 
   it("always includes Proof Capture section when directive is non-null", () => {

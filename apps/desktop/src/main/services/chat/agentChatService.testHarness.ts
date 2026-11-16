@@ -646,6 +646,20 @@ vi.mock("node:readline", () => {
   return { default: { createInterface }, createInterface };
 });
 
+// The SDK's loader reaches the package through `require` as its packaged
+// fallback, which a module mock cannot intercept. Mocking the loader keeps the
+// whole file on the mocked SDK: without this, the first synchronous access (a
+// usage-limit check on a result frame) loads the real SDK and later turns run
+// real queries against the harness's fake process.
+vi.mock("../ai/claudeSdkLoader", async () => {
+  const sdk = await import("@anthropic-ai/claude-agent-sdk");
+  return {
+    loadClaudeSdk: async () => sdk,
+    claudeSdkIfLoaded: () => sdk,
+    loadedClaudeSdk: () => sdk,
+  };
+});
+
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   // Mirrors the real export. Structured usage-limit detection reads it, so the
   // mock has to provide it; these are the prefixes the tests below exercise.
@@ -2406,12 +2420,22 @@ beforeEach(() => {
   vi.mocked(clearOpenCodeInventoryCache).mockClear();
   clearCursorCliModelsCache();
   // No test reaches Cursor's API. A Cursor send loads the model catalog when
-  // the chat names an effort, and a catalog the mocked SDK cannot list falls
-  // back to api.cursor.com; a real request there made those tests depend on
-  // the network. `vi.restoreAllMocks()` in afterEach puts `fetch` back.
+  // the chat names an effort; the catalog comes from `GET /v1/models` now, so
+  // a test that stubs the SDK's `Cursor.models.list` answers that read too,
+  // and anything else at api.cursor.com still fails. `vi.restoreAllMocks()` in
+  // afterEach puts `fetch` back.
   const passThroughFetch = globalThis.fetch;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (/^https:\/\/api\.cursor\.com\/v1\/models(?:\?|$)/u.test(url)) {
+      // `cursorModelsListMock` rejects in the tests that model a catalog that
+      // cannot be listed; that rejection is the answer here as well.
+      const rows = (await cursorModelsListMock()) as unknown[] | undefined;
+      return new Response(JSON.stringify({ items: Array.isArray(rows) ? rows : [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (/^https:\/\/api\.cursor\.com\//u.test(url)) throw new Error("Tests do not reach Cursor's API.");
     return passThroughFetch(input, init);
   });

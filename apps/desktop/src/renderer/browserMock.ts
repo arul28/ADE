@@ -8785,6 +8785,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         nextWakeAt: null,
       }),
       warmupModel: resolvedArg(undefined),
+      prewarmDraft: resolvedArg({ warming: false }),
       onEvent: (listener: (envelope: any) => void) => {
         browserMockChatListeners.add(listener);
         // `window.__adeMockEmitChatEvent(sessionId, event)` streams a chat event

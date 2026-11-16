@@ -184,7 +184,7 @@ export function useHealthData(
       ? window.ade.app.getRuntimeHealth
       : null;
     const [usage, runtimeHealth] = await Promise.all([
-      isThisMachine ? getAppResourceUsageCoalesced().catch(() => null) : Promise.resolve(null),
+      isThisMachine ? getAppResourceUsageCoalesced({ fresh: true }).catch(() => null) : Promise.resolve(null),
       runtimeHealthFn ? runtimeHealthFn().catch(() => null) : Promise.resolve(null),
     ]);
     if (request !== diagnosticsRequest.current) return;

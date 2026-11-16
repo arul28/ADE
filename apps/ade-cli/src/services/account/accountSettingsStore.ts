@@ -251,20 +251,49 @@ export function createAccountSettingsStore(args: {
     }),
   });
 
+  /**
+   * The cached rows' keys, split and sorted by key, for each scope and for all
+   * of them. Settings are listed on every config read and account pass, and
+   * each list split every key in the cache again. Built once per cache
+   * revision (which changes with any write, pull, reset or account switch);
+   * the rows themselves are always read live.
+   */
+  type SplitKey = { composite: string; scope: string; key: string };
+  let keyIndex: { revision: number; all: SplitKey[]; byScope: Map<string, SplitKey[]> } | null = null;
+  const indexedKeys = (scope: string | undefined): SplitKey[] => {
+    const revision = cache.revision();
+    if (keyIndex?.revision !== revision) {
+      const all: SplitKey[] = [];
+      for (const composite of Object.keys(cache.readCache().rows)) {
+        const split = splitCacheKey(composite);
+        if (split) all.push({ composite, ...split });
+      }
+      // Stable, so keys equal across scopes keep the cache's order, as before.
+      all.sort((left, right) => left.key.localeCompare(right.key));
+      const byScope = new Map<string, SplitKey[]>();
+      for (const entry of all) {
+        const inScope = byScope.get(entry.scope);
+        if (inScope) inScope.push(entry);
+        else byScope.set(entry.scope, [entry]);
+      }
+      keyIndex = { revision, all, byScope };
+    }
+    return scope ? keyIndex.byScope.get(scope) ?? [] : keyIndex.all;
+  };
+
   return {
     /** The whole cached view, optionally narrowed to one scope. */
     list(scope?: string): AccountSettingRecord[] {
+      const entries = indexedKeys(scope);
       const current = cache.readCache();
       const rows: AccountSettingRecord[] = [];
-      for (const [composite, setting] of Object.entries(current.rows)) {
+      for (const { composite, scope: rowScope, key } of entries) {
+        const setting = current.rows[composite];
         // A tombstone is bookkeeping, not a setting. Callers list settings.
-        if (setting.deleted) continue;
-        const split = splitCacheKey(composite);
-        if (!split) continue;
-        if (scope && split.scope !== scope) continue;
-        rows.push({ ...split, ...setting });
+        if (!setting || setting.deleted) continue;
+        rows.push({ scope: rowScope, key, ...setting });
       }
-      return rows.sort((left, right) => left.key.localeCompare(right.key));
+      return rows;
     },
 
     /**
@@ -272,13 +301,14 @@ export function createAccountSettingsStore(args: {
      * a copy between scopes needs them so it does not bring a deleted row back.
      */
     deletedKeys(scope: string): Array<{ key: string; updatedAt: string }> {
+      const entries = indexedKeys(scope);
+      const current = cache.readCache();
       const keys: Array<{ key: string; updatedAt: string }> = [];
-      for (const [composite, setting] of Object.entries(cache.readCache().rows)) {
-        if (!setting.deleted) continue;
-        const split = splitCacheKey(composite);
-        if (split && split.scope === scope) keys.push({ key: split.key, updatedAt: setting.updatedAt });
+      for (const { composite, key } of entries) {
+        const setting = current.rows[composite];
+        if (setting?.deleted) keys.push({ key, updatedAt: setting.updatedAt });
       }
-      return keys.sort((left, right) => left.key.localeCompare(right.key));
+      return keys;
     },
 
     get(scope: string, key: string): unknown {
@@ -361,6 +391,11 @@ export function createAccountSettingsStore(args: {
     /** How this machine's settings sync is doing, without the network. */
     health(): AccountCacheHealth {
       return cache.health();
+    },
+
+    /** Changes whenever the cached settings may have changed; see `AccountCacheStore.revision`. */
+    revision(): number {
+      return cache.revision();
     },
 
     /** False on a brain with no account service to sync with (`--no-sync`): no other computer shares its settings. */

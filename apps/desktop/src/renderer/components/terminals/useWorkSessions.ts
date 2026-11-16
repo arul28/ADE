@@ -2006,12 +2006,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // During a project switch, `sessions` can still be the previous project's list
     // for one render; mirroring it into the new project's cache poisons warm reload.
     if (pendingProjectSwitchRef.current != null) return;
-    appStore.setState((prev) => ({
-      sessionsCacheByProject: {
-        ...prev.sessionsCacheByProject,
-        [projectStateKey]: hostSessions,
-      },
-    }));
+    appStore.setState((prev) => (prev.sessionsCacheByProject[projectStateKey] === hostSessions
+      ? prev
+      : {
+          sessionsCacheByProject: {
+            ...prev.sessionsCacheByProject,
+            [projectStateKey]: hostSessions,
+          },
+        }));
   }, [appStore, hostSessions, projectStateKey]);
 
   useEffect(() => {

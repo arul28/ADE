@@ -10,6 +10,12 @@ import {
   resolveReachableMachineRuntimeSocketPath,
 } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import {
+  BRAIN_EXECUTABLE_ENV,
+  isSameElectronRuntime,
+  resolveBrainNodeExecutable,
+} from "./brainExecutable";
+export { isSameElectronRuntime } from "./brainExecutable";
 import { markBrainStoppedBy } from "../sentry/brainStartsFile";
 import { isAdeRuntimeNamedPipePath } from "../../../desktop/src/shared/adeRuntimeIpc";
 import { lastFailurePathForMachine } from "../../../desktop/src/main/services/runtime/lastFailureStore";
@@ -378,6 +384,9 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "ADE_WINDOWS_USER_SID",
   // The opt-out of whoever installed the service holds for its brain too.
   "DO_NOT_TRACK",
+  // A test override of the brain-executable switch must reach the brain, so
+  // the brain computes the same service command as whoever installed it.
+  BRAIN_EXECUTABLE_ENV,
 ] as const;
 
 /**
@@ -505,8 +514,10 @@ function resolveCliDistPath(entryPath: string): string | null {
 
 export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): string | null {
   const firstArg = command.args[0] ? path.resolve(command.args[0]) : "";
+  // The app's helper or brain copy runs this process's own Node, so it hashes like it.
+  const runsThisNode = isSameElectronRuntime(command.command, process.execPath);
   const isNodeServeFallback =
-    command.command === process.execPath
+    runsThisNode
     && command.args.length === 1
     && command.args[0] === "serve";
   if (isNodeServeFallback) {
@@ -516,10 +527,10 @@ export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): s
     const distPath = resolveCliDistPath(entry);
     return distPath ? fileSha256(distPath) : null;
   }
-  if (command.command === process.execPath && firstArg && fs.existsSync(firstArg)) {
+  if (runsThisNode && firstArg && fs.existsSync(firstArg)) {
     return fileSha256(firstArg);
   }
-  if (command.command !== process.execPath && fs.existsSync(command.command)) {
+  if (!runsThisNode && fs.existsSync(command.command)) {
     return fileSha256(path.resolve(command.command));
   }
   return null;
@@ -1319,9 +1330,12 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
   // Same path `resolveCliScriptPath` in the desktop pool hands the brain it
   // spawns, so the command matches the running brain's character for character.
   const mainCli = electronMainCliScript();
+  // `process.execPath`, except in a Mac app bundle, where the brain-executable
+  // switch picks the app, its helper or its brain copy (`brainExecutable.ts`).
+  const nodeExecutable = resolveBrainNodeExecutable(process.execPath);
   if (mainCli) {
     return withRuntimeBuildHash({
-      command: process.execPath,
+      command: nodeExecutable,
       args: [mainCli, "serve"],
       env: runtimeEnvironment(mainCli),
     });
@@ -1332,7 +1346,7 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
   const isNodeScript = /\.(?:cjs|mjs|js|ts)$/i.test(entry) && fs.existsSync(entry);
   if (isNodeScript) {
     return withRuntimeBuildHash({
-      command: process.execPath,
+      command: nodeExecutable,
       args: [entry, "serve"],
       env: runtimeEnvironment(entry),
     });
@@ -1345,7 +1359,7 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
     });
   }
   return withRuntimeBuildHash({
-    command: process.execPath,
+    command: nodeExecutable,
     args: ["serve"],
     env: runtimeEnvironment(),
   });
@@ -1378,15 +1392,52 @@ export function isLaunchAgentRegistered(label: string, run: ServiceManagerSpawnS
   );
 }
 
-/** Whether the job is on launchd's disabled list for the gui domain. */
-export function isLaunchAgentDisabled(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
-  const answer = run("launchctl", ["print-disabled", `gui/${currentUid()}`], { encoding: "utf8" });
+/** The `launchctl` arguments that list launchd's disabled jobs for the gui domain. */
+export function launchAgentDisabledListArgs(): string[] {
+  return ["print-disabled", `gui/${currentUid()}`];
+}
+
+/** Whether a `launchctl print-disabled` answer lists the job as disabled. */
+export function parseLaunchAgentDisabled(answer: ServiceManagerProcessResult, label: string): boolean {
   if (answer.status !== 0) return false;
   const line = (typeof answer.stdout === "string" ? answer.stdout : answer.stdout?.toString("utf8") ?? "")
     .split("\n")
     .find((entry) => entry.includes(`"${label}"`));
   // Older macOS prints `=> true` for a disabled job; newer prints `=> disabled`.
   return line != null && /=>\s*(disabled|true)\b/.test(line);
+}
+
+/** Whether the job is on launchd's disabled list for the gui domain. */
+export function isLaunchAgentDisabled(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
+  return parseLaunchAgentDisabled(run("launchctl", launchAgentDisabledListArgs(), { encoding: "utf8" }), label);
+}
+
+/**
+ * `spawnSync`'s answer shape from `execFile`, so a status read can run off the
+ * caller's thread. A command that cannot start, or that runs past
+ * `timeoutMs`, answers with a null status and the error.
+ */
+export function runServiceCommandAsync(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<ServiceManagerProcessResult> {
+  return new Promise((resolve) => {
+    try {
+      execFile(command, args, { encoding: "utf8", timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        resolve({
+          status: error ? (typeof code === "number" ? code : null) : 0,
+          stdout,
+          stderr,
+          error: error ?? undefined,
+          signal: (error as { signal?: NodeJS.Signals | null } | null)?.signal ?? null,
+        });
+      });
+    } catch (error) {
+      resolve({ status: null, error: error instanceof Error ? error : new Error(String(error)) });
+    }
+  });
 }
 
 export type LaunchAgentLoadResult = { ok: true } | { ok: false; detail: string };

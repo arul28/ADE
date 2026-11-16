@@ -66,8 +66,12 @@ export async function migrateLegacyBuiltInBrowserProfiles(args: {
   // Completed in an earlier version that never retired anything: check them
   // once more now, so their disk space comes back on the next launch.
   const unverifiedPartitions = legacyPartitions.filter((partition) => completed.has(partition));
-  const globalSession = args.getSession(BUILT_IN_BROWSER_PARTITION);
-  const globalCookies = await globalSession.cookies.get({});
+  // With no old profile to copy from or check, the shared session stays
+  // unopened: opening it here at every start cost a browser context and two
+  // full reads of its cookie store before anyone used the browser.
+  const hasLegacyWork = legacyPartitions.length > 0;
+  const globalSession = hasLegacyWork ? args.getSession(BUILT_IN_BROWSER_PARTITION) : null;
+  const globalCookies = globalSession ? await globalSession.cookies.get({}) : [];
   const globalCookieKeys = new Set(globalCookies.map(cookieKey));
   let migratedCookieCount = 0;
   let skippedCookieCount = 0;
@@ -101,7 +105,7 @@ export async function migrateLegacyBuiltInBrowserProfiles(args: {
       }
       remainingBudget -= 1;
       try {
-        await globalSession.cookies.set(cookieSetDetails(cookie));
+        await globalSession!.cookies.set(cookieSetDetails(cookie));
         globalCookieKeys.add(key);
         migratedCookieCount += 1;
       } catch (error) {
@@ -116,12 +120,12 @@ export async function migrateLegacyBuiltInBrowserProfiles(args: {
     if (complete) completed.add(partitionName);
   }
 
-  if (migratedCookieCount > 0) await globalSession.cookies.flushStore();
+  if (globalSession && migratedCookieCount > 0) await globalSession.cookies.flushStore();
 
   // Retire a completed partition only when every live persistent cookie it
   // holds is now in the shared profile, read back from the shared store
   // rather than trusted from the copy loop above.
-  const sharedKeysAfter = new Set((await globalSession.cookies.get({})).map(cookieKey));
+  const sharedKeysAfter = new Set((globalSession ? await globalSession.cookies.get({}) : []).map(cookieKey));
   for (const partitionName of [...pendingPartitions, ...unverifiedPartitions]) {
     if (!completed.has(partitionName)) continue;
     try {

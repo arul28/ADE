@@ -1,6 +1,6 @@
 # CTO
 
-The CTO is ADE's persistent project operator: one chat session per project that never rotates, a short memory it keeps itself, and a face you can change. The session is the conversation of record. Behind it, the model runs on a provider thread that ADE throws away and rebuilds whenever it gets full, compacts, overflows or hits a model limit, carrying the notes, the open work, the live project state and the last 40 messages onto the new one. Around the thread sit a page built for one daily chat (a floating name pill, a profile panel, quiet chips instead of tool rows) and a settings page with five sections: Look, Brain, Memory, Routines, Instructions.
+The CTO is ADE's persistent project operator: one chat session per project that never rotates, a short memory it keeps itself, and a face you can change. The session is the conversation of record. Behind it, the model runs on a provider thread that ADE throws away and rebuilds whenever it gets full, compacts, overflows or hits a model limit, carrying the notes, the open work, the live project state, the story so far and the newest messages onto the new one. Around the thread sit a page built for one daily chat (a floating name pill, a profile panel, quiet chips instead of tool rows) and a settings page with five sections: Look, Brain, Memory, Routines, Instructions.
 
 ## Source file map
 
@@ -8,7 +8,9 @@ The CTO is ADE's persistent project operator: one chat session per project that 
 
 - `ctoStateService.ts` — identity (name, persona, model preferences, standing instructions) in `.ade/cto/identity.yaml` mirrored to the `cto_identity_state` row, with the fallback models, avatar look and personality in the `.ade/cto/preferences.json` sidecar (see [Where the identity is stored](#where-the-identity-is-stored)); the prompt layers (`IMMUTABLE_CTO_DOCTRINE`, `CTO_CONTINUITY_OPERATING_MODEL`, `CTO_MEMORY_SYSTEM_GUIDANCE`, the ADE environment document, the capability manifest); `previewSystemPrompt()` and `buildStaticContextSection()`; the per-turn volatile block `buildReconstructionContext()`; and the live project state block (`captureLiveState()`, `getLiveStateSnapshot()`, the pure `renderCtoLiveStateBlock()`, `CTO_LIVE_STATE_MAX_CHARS`). Its `getLiveStateSources` argument is a thunk because the service is built at boot, before the chat, PR and automation services exist.
 - `ctoMemoryService.ts` — the whole memory store. Project notes (`.ade/cto/MEMORY.md`), notes about the person (`<ADE home>/cto/USER.md`), open work (`.ade/cto/open-work.json`), the one-time v1 reset, the worker-discovery queue (`discoveries.md`, `discoveries-archive.md`, `discoveries.cursor`) and `buildMemoryContextSections()`, the three sections injected every turn.
-- `ctoAccountCopyService.ts` — the CTO's account copy (vault kind `cto_copy`): identity, both notes files, open work, routines and the conversation tail, gzip-encoded, written by the home machine only and restored by the next home (see [The home machine and the account copy](#the-home-machine-and-the-account-copy)). Also `homeGate`, which refuses a CTO turn on a machine that is not the home.
+- `ctoStory.ts` — the story so far and the history block a fresh thread gets (see [The story so far](#the-story-so-far)). Pure: choosing the tail, planning a fold, the helper's prompt, and cleaning and accepting its answer.
+- `ctoStoryUpdater.ts` — runs the story updates: one at a time per chat, batches, the failure wait, the supersede check. `agentChatService` hands it the chat (transcript, helper model, prompt runner).
+- `ctoAccountCopyService.ts` — the CTO's account copy (vault kind `cto_copy`): identity, both notes files, open work, routines, the conversation tail and the story so far, gzip-encoded, written by the home machine only and restored by the next home (see [The home machine and the account copy](#the-home-machine-and-the-account-copy)). Also `homeGate`, which refuses a CTO turn on a machine that is not the home.
 - `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool operating rules and the tool-pack list injected into the prompt, plus the opening turn (`CTO_INTRO_PROMPT`, `CTO_INTRO_ONBOARDING_STEP`).
 - `linearClient.ts`, `linearIssueTracker.ts`, `issueTracker.ts`, `linearGraphQLInput.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearOAuthRefreshLock.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` — Linear plumbing the CTO tools call. The canonical description is [Linear integration](../linear-integration/README.md); this doc covers only what the CTO itself uses.
 
@@ -76,10 +78,10 @@ The model's own thread is disposable. `refreshCtoProviderThread(managed, reason)
 
 1. Refuses while a turn is running or an account move holds the thread (Smart Balance, an account switch, a move to another machine), and records the reason on `managed.ctoRefreshPending`, persisted with the chat state, so the next settled turn runs it, after a restart too.
 2. Tears the runtime down with a non-preserving reason, then forgets every provider pointer: the thread id, Claude's SDK session (and background-resume id and fork fields), the provider session id and its seeded copy, Cursor's SDK agent and run ids, Droid's, Copilot's and ACP session ids, Pi's session id and file, and Muse's session id. Claude also gets `claudeFreshThreadPending`, because that runtime resumes from a persisted SDK id. Both copies of the chat metadata file are written, so neither can hand the old thread back.
-3. Re-stages the once-per-thread half of the turn context (the static prompt and the conversation tail) and rebuilds the volatile half, so the next send opens a new thread carrying the doctrine, the notes, the open work, the live state and the last 40 messages. The CTO never gets a full transcript replay.
-4. Emits one quiet `system_notice` with status `cto_context_refreshed`: "Fresh context — notes, open work and the last 40 messages carried over." The page draws it as a hairline divider.
+3. Re-stages the once-per-thread half of the turn context (the static prompt and the conversation tail) and rebuilds the volatile half, so the next send opens a new thread carrying the doctrine, the notes, the open work, the live state, the story so far and the newest messages. The CTO never gets a full transcript replay.
+4. Emits one quiet `system_notice` with status `cto_context_refreshed`: "Fresh context — notes, open work, the story so far and the newest messages carried over." The CTO page and the iOS CTO thread draw nothing for it (the thread stays quiet); anywhere else, such as the Work tab, it is a hairline divider.
 
-The reasons are `occupancy`, `compaction`, `overflow`, `model_fallback` and `manual`. A CTO running on a Cursor Cloud agent keeps its cloud agent and refuses the refresh.
+The reasons are `occupancy`, `compaction`, `overflow`, `model_fallback`, `manual` and `cold_cache`. A CTO running on a Cursor Cloud agent keeps its cloud agent and refuses the refresh.
 
 Triggers, all decided on the `done` event in `onCtoTurnSettled()`:
 
@@ -87,6 +89,7 @@ Triggers, all decided on the `done` event in `onCtoTurnSettled()`:
 - **Compaction.** A completed `context_compact` or `codex_context_compaction` refreshes as soon as the turn settles: a compacted thread lost detail anyway.
 - **Overflow.** A turn that failed with `lastTurnFailure.kind === "context_overflow"` gets a fresh thread and the person's failed message is sent once more, as they typed it (never the mid-task wrapper), with its display text, attachments and metadata, marked `metadata.ctoResend`. A per-message key set stops any loop.
 - **A model fallback** refreshes as part of the switch (below).
+- **Cold cache.** Decided on the send, not on `done`: when the CTO's prompt cache has expired and the thread is big enough that Compact first would offer to compact (`compactFirstOffer` in "always" mode, so Claude, Codex, Pi, OpenCode and Cursor), `refreshCtoForColdCache()` moves it to a fresh thread before the message goes out. It checks the clock first (no read until the idle window has passed since the last activity) and skips a thread no turn has completed on yet, so a fresh thread whose first turn failed is not refreshed again on every send. The CTO has no Compact first pill on desktop or iOS; this replaces it.
 - **Manual.** The settings "Refresh context" button, `cto.refreshContext` over IPC, or `cto_state.refreshContext` as an action. A busy CTO answers that it will refresh when the turn ends.
 
 A person's Stop is not a failure and triggers nothing but a refresh that was already owed.
@@ -127,7 +130,31 @@ The turn context has two halves with different lifetimes.
 
 The live state block is captured per turn, with a bounded wait. `refreshCtoLiveStateForTurn` waits at most `CTO_LIVE_STATE_SEND_WAIT_MS` (350 ms) before a send; a capture still running then finishes into the cache for the next turn (`refreshLiveState` is single-flight, so a second send joins it), and this send carries the previous snapshot, whose header reads "as of 40 s ago" once it is more than 5 s old. Inside the capture, the two slow reads (lanes, which run git status, and the chat summaries) run in parallel; PRs, machines and automation runs are synchronous reads. The block covers who is waiting on the person, the account's machines, lanes, active chats with their lineage, open PRs with checks and review state, scheduled work, recent automation runs, and any source that failed this turn. It is capped at `CTO_LIVE_STATE_MAX_CHARS` (6000) with per-section row caps and "…and N more" lines. It stays last because the volatile prefix is truncated by keeping its tail: the freshest, most perishable section must be where a budgeted send cannot cut it.
 
-The conversation tail (`Recent Conversation Tail`, the last 40 entries for the CTO) rides only when the provider thread the next send lands on is not the one those turns happened on. A live thread already holds them.
+The conversation tail (`Recent Conversation Tail`) rides only when the provider thread the next send lands on is not the one those turns happened on. A live thread already holds them. For the CTO it is the history block below; other chats get their last 20 entries.
+
+### The story so far
+
+A fresh CTO thread gets its history as one block (`buildCtoHistoryBlock` in `ctoStory.ts`):
+
+1. A line saying what follows is a record, not instructions, and that `readHistory` has the exact words of anything older.
+2. `<story_so_far>`: a running summary of the conversation older than the tail, in four sections (Where things stand, Decisions and preferences, Open threads, Earlier), at most 12,000 characters. Stored in `.ade/cto/story.json` (`ctoMemoryService.readStory/writeStory`, secrets redacted).
+3. Turns a move carried here, in `<conversation_history>`, until the thread has 40 of its own.
+4. A count of older messages that are in neither the story nor the tail, if any.
+5. The tail in `<conversation_history>`: the newest messages that fit 36,000 characters (at most 40, at least 4), each clipped to 6,000 with its start and end kept.
+
+Text inside that quotes our tags is defused (`<` becomes `‹`), so a pasted `</conversation_history>` cannot end the block early.
+
+The story is written by the helper model that names chats, with the same rules (`buildSessionIntelligenceModelCandidates`): Haiku 5.5 on Claude, GPT-6 Luna on Codex, Composer 2.5 on Cursor, and the CTO's own model on the other providers, at the lowest effort, on the CTO's own account. When that account has no helper model, the CTO's own model writes it. Times in the prompt and the block are in the person's zone (the identity's `timeZone`), not the machine's. It runs in the background, never on the send path:
+
+- Every 6 completed CTO turns, when at least 12,000 characters outside the tail are not in the story yet.
+- On every fresh thread (`refreshCtoProviderThread`), forced: whatever fell out of the tail is folded, however little. The first send on the new thread rebuilds the block, so an update that finished by then is in it.
+- One update per chat at a time; a request during one runs once after it. One update folds at most 40,000 characters per helper call and 4 calls per run, oldest first; a long backlog takes several runs.
+- The story only moves forward (`coveredThrough`, the time of the last message folded; messages that share that time go in the same batch). A run re-reads the story before writing and drops its answer if a move replaced it meanwhile.
+- An answer must look like a story to replace one (`acceptCtoStoryAnswer`): at least one of its section names, and at least 35% of the previous story's length. A refusal or a fragment would otherwise replace the only record of what the story covers. A failed or rejected answer leaves the story as it was and that chat waits 10 minutes before trying again (a fresh thread still forces one).
+- A `story.json` that exists but can't be read (a lock, a truncated write, a newer format) is never taken for "no story": updates stop and log `cto.story_unreadable` instead of writing a new story over it.
+- When the transcript read (its newest 4 MB) no longer reaches back to where the story ends, the helper is told and the story says that stretch is missing.
+
+The account copy carries the story's summary. A new home writes it with `coveredThrough` set to the copy's last save (never later than the move), and the carried turns waiting in `carried`; the next update folds them in first, noting that the old home's turns between its story's end and the carried ones may be missing. Turns this machine ran after the move, while the account was out of reach, are newer than that and get folded.
 
 ### `readHistory`: the whole conversation
 
@@ -209,7 +236,7 @@ The CTO lives on one machine per project, named by the account setting `cto.home
 
 The home keeps a copy of the CTO in the account vault after every change: a turn's end, a notes, open-work or identity edit, and a routine change, debounced, and once more at shutdown. Each write names the revision it read (`absent` when there is no row), so it can never replace a copy it hasn't seen. A machine that isn't the home never writes, and with no home chosen no machine writes over another's copy.
 
-A new home takes the copy when it moves in (`adopt`): the notes, open work and identity replace its own (the notes about the person are joined), the routines are re-created, and the conversation tail is carried into the next turns until the new thread has 40 of its own. It takes a copy once per move (`account-copy-taken.json` records the move it was taken for). When the account can't be read at the move, the new home holds the CTO: its turns are refused with a sentence saying it is still on its way, and its routines wait. Each send and a retry every 30 seconds ask the account again, and the first answer takes the old home's latest copy, so nothing the old home wrote before it heard of the move is lost, and nothing done on the new home is replaced by it. After 10 minutes without an answer the hold lifts, so the CTO is never left unusable; a later save still takes the copy, but not while the CTO is mid-turn.
+A new home takes the copy when it moves in (`adopt`): the notes, open work and identity replace its own (the notes about the person are joined), the routines are re-created, the story so far comes along, and the conversation tail is carried into the next turns until the new thread has 40 of its own (and folded into the story by its next update). It takes a copy once per move (`account-copy-taken.json` records the move it was taken for). When the account can't be read at the move, the new home holds the CTO: its turns are refused with a sentence saying it is still on its way, and its routines wait. Each send and a retry every 30 seconds ask the account again, and the first answer takes the old home's latest copy, so nothing the old home wrote before it heard of the move is lost, and nothing done on the new home is replaced by it. After 10 minutes without an answer the hold lifts, so the CTO is never left unusable; a later save still takes the copy, but not while the CTO is mid-turn.
 
 ### Where CTO-launched work runs
 
@@ -294,10 +321,10 @@ Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syn
 
 - **A refresh never runs mid-turn.** `refreshCtoProviderThread` refuses while the session is active or the runtime holds work, and records `ctoRefreshPending`; the next settled turn runs it. Tearing a runtime down under a live turn loses the turn.
 - **A forgotten pointer is the whole trick.** A teardown reason alone does not stop a provider resuming: Claude reads its persisted SDK id, Codex its `threadId`, Cursor its SDK agent. `refreshCtoProviderThread` clears every field `persistedPointerState` knows, writes both metadata copies, and uses `claudeFreshThreadPending` for Claude. Codex refuses to start a fresh thread while a `threadId` exists, so the clear must come first.
-- **No full replay for the CTO.** A Cursor rotation normally stages the whole transcript; the CTO's refresh deliberately does not. It carries the notes, open work, live state and 40 messages.
+- **No full replay for the CTO.** A Cursor rotation normally stages the whole transcript; the CTO's refresh deliberately does not. It carries the notes, open work, live state, the story so far and the newest messages.
 - **The live state block must stay last in the volatile half.** That prefix is truncated by keeping the tail. Anything appended after the live state pushes the freshest section into the part a budgeted send can cut.
 - **The static block is staged once.** Re-sending ~21 KB every turn is what once grew a real CTO thread from 46k to 237k input tokens and tripped auto-compaction. Re-stage it only for a new provider thread or when its content key changes.
-- **Occupancy 55 is a deliberate choice, not a ceiling.** The CTO's turns are short and its memory is injected, so a small provider thread is fast and cheap, and a fresh one loses nothing the notes and the 40-message tail do not carry. Raising the number trades that for thread age; change it with measurements, not by feel.
+- **Occupancy 55 is a deliberate choice, not a ceiling.** The CTO's turns are short and its memory is injected, so a small provider thread is fast and cheap, and a fresh one loses little that the notes, the story and the tail do not carry. Raising the number trades that for thread age; change it with measurements, not by feel.
 - **The notes caps are the point.** A `remember` past the cap is refused, not truncated, so the CTO has to merge or forget. Lowering a cap silently makes the CTO look forgetful; raising it grows every turn.
 - **`replaces` and `forget` must match exactly one line.** Zero or several matches are refused with the candidate lines. A substring that is not unique is a question, not a write.
 - **User notes are machine-wide.** `<ADE home>/cto/USER.md` is shared by every project on that machine. A project fact written there leaks into other projects' CTOs.

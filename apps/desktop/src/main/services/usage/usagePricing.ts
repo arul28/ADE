@@ -451,8 +451,26 @@ function readPricingCacheFile(cachePath: string): { timestamp: number; pricing: 
   }
 }
 
+/**
+ * One object for each distinct price. models.dev lists a model under every
+ * provider that resells it, nearly always at the vendor's rate: about 12,000
+ * rows hold about 3,300 distinct prices, and a separate object per row was
+ * half of the table's heap in the brain. Lookups return the same values;
+ * nothing writes to a returned price (an alias hit already shares one).
+ */
+function shareEqualPrices(pricing: Map<string, TokenPrice>): Map<string, TokenPrice> {
+  const byValue = new Map<string, TokenPrice>();
+  for (const [key, price] of pricing) {
+    const value = JSON.stringify(price);
+    const shared = byValue.get(value);
+    if (shared) pricing.set(key, shared);
+    else byValue.set(value, price);
+  }
+  return pricing;
+}
+
 function installDynamicTokenPricing(pricing: Map<string, TokenPrice>, timestamp: number): number {
-  dynamicTokenPricing = pricing;
+  dynamicTokenPricing = shareEqualPrices(pricing);
   dynamicTokenPricingTimestamp = timestamp;
   dynamicTokenPricingLoaded = true;
   sortedDynamicPricingKeys = null;

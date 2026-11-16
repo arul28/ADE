@@ -658,6 +658,8 @@ const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
 // state a wake trigger fails to observe.
 const DEFAULT_SYNC_POLL_IDLE_INTERVAL_MS = 2_000;
 const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
+/** How often the account lease is checked while no peer is connected (see `accountLeaseTimer`). */
+const ACCOUNT_LEASE_IDLE_CHECK_MS = 15_000;
 // A peer on the relay gets the periodic status at most this often. Every frame
 // through the tunnel relay wakes its Durable Object from hibernation, and the
 // periodic status was most of an idle peer's traffic (docs/perf/cloudflare-costs.md).
@@ -3798,10 +3800,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const brainStatusTimer = guestsOnly ? null : setInterval(() => {
     broadcastBrainStatus({ periodic: true });
   }, brainStatusIntervalMs);
+  // Each check reads the account status and asks for an access token. With a
+  // peer connected it runs every second, so a sign-out or account switch
+  // closes that peer at once. With none, nothing is held open by the lease:
+  // every connect and pairing reads the lease itself first
+  // (`refreshAccountLease`, `captureAccountAuthorization`), so the idle check
+  // only revokes account-owned pairings ahead of time and runs every 15 s.
+  let lastAccountLeaseCheckAtMs = 0;
   const accountLeaseTimer = setInterval(() => {
+    const nowMs = Date.now();
+    if (peers.size === 0 && nowMs - lastAccountLeaseCheckAtMs < ACCOUNT_LEASE_IDLE_CHECK_MS) return;
+    lastAccountLeaseCheckAtMs = nowMs;
     void refreshAccountLease();
   }, Math.max(250, Math.floor(args.accountLeasePollMs ?? 1_000)));
   accountLeaseTimer.unref?.();
+  lastAccountLeaseCheckAtMs = Date.now();
   void refreshAccountLease();
   const chatEventSubscription = args.agentChatService?.subscribeToEvents(
     (event) => {
@@ -9700,6 +9713,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getPeerStates(): SyncPeerConnectionState[] {
+      // Every sync status read asks (the account publisher's relay check runs
+      // one every 2 s); with no peer there is no lag to compute, and the
+      // version read is a database query.
+      if (peers.size === 0) return [];
       const dbVersion = args.db.sync.getDbVersion();
       const latestByDevice = new Map<string, SyncPeerConnectionState>();
       for (const peer of [...peers]

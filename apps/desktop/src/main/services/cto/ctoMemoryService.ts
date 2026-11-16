@@ -15,6 +15,7 @@ import {
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 import { resolveAdeHomeForOwnership } from "../chat/chatRuntimeOwnership";
+import type { CtoStoryRecord } from "./ctoStory";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -147,6 +148,14 @@ export function noteSimilarity(a: string, b: string): number {
   return (2 * shared) / (left.size + right.size);
 }
 
+/** `.ade/cto/story.json` exists but is not a story this build can read. */
+export class CtoStoryUnreadableError extends Error {
+  constructor(detail: string) {
+    super(`The CTO's story file can't be read: ${detail}`);
+    this.name = "CtoStoryUnreadableError";
+  }
+}
+
 /* ── Helpers ── */
 
 function readFileOrEmpty(filePath: string): string {
@@ -254,6 +263,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const ctoDir = path.join(args.adeDir, "cto");
   const memoryPath = path.join(ctoDir, "MEMORY.md");
   const openWorkPath = path.join(ctoDir, "open-work.json");
+  const storyPath = path.join(ctoDir, "story.json");
   const discoveriesPath = path.join(ctoDir, "discoveries.md");
   const discoveriesArchivePath = path.join(ctoDir, "discoveries-archive.md");
   const discoveriesCursorPath = path.join(ctoDir, "discoveries.cursor");
@@ -422,6 +432,64 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     }
     fs.mkdirSync(path.dirname(openWorkPath), { recursive: true });
     writeTextAtomic(openWorkPath, text);
+  };
+
+  /**
+   * The story so far (`ctoStory.ts`): a summary of the conversation older
+   * than what a fresh thread carries word for word. Null when there is none.
+   * Throws `CtoStoryUnreadableError` when the file is there but can't be read
+   * (a lock, a truncated write, a newer format): the caller must not take
+   * that for "no story" and write a new one over it.
+   */
+  const readStory = (): CtoStoryRecord | null => {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(storyPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw new CtoStoryUnreadableError(error instanceof Error ? error.message : String(error));
+    }
+    if (!raw.trim()) return null;
+    try {
+      const parsed = JSON.parse(raw) as Partial<CtoStoryRecord>;
+      if (parsed?.v !== 1 || typeof parsed.summary !== "string" || typeof parsed.coveredThrough !== "string") {
+        throw new Error(`not a version 1 story (v=${String(parsed?.v)})`);
+      }
+      const carried = parsed.carried && typeof parsed.carried.text === "string" && parsed.carried.text.trim()
+        ? { fromName: typeof parsed.carried.fromName === "string" ? parsed.carried.fromName : "another computer", text: parsed.carried.text }
+        : null;
+      return {
+        v: 1,
+        summary: parsed.summary,
+        coveredThrough: parsed.coveredThrough,
+        startsAt: typeof parsed.startsAt === "string" ? parsed.startsAt : parsed.coveredThrough,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : parsed.coveredThrough,
+        model: typeof parsed.model === "string" ? parsed.model : null,
+        ...(carried ? { carried } : {}),
+        ...(typeof parsed.movedAt === "string" ? { movedAt: parsed.movedAt } : {}),
+        ...(parsed.movedFrom && typeof parsed.movedFrom.coveredThrough === "string"
+          ? { movedFrom: { coveredThrough: parsed.movedFrom.coveredThrough } }
+          : {}),
+      };
+    } catch (error) {
+      throw new CtoStoryUnreadableError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  /** Writes the story; null removes it. Secrets in it are redacted. */
+  const writeStory = (record: CtoStoryRecord | null): void => {
+    if (record == null) {
+      fs.rmSync(storyPath, { force: true });
+    } else {
+      fs.mkdirSync(path.dirname(storyPath), { recursive: true });
+      const clean: CtoStoryRecord = {
+        ...record,
+        summary: redactSecrets(record.summary),
+        ...(record.carried ? { carried: { ...record.carried, text: redactSecrets(record.carried.text) } } : {}),
+      };
+      writeTextAtomic(storyPath, `${JSON.stringify(clean, null, 2)}\n`);
+    }
+    args.onChanged?.();
   };
 
   const trackWork = (text: string, addedBy: CtoOpenWorkItem["addedBy"] = "cto"): CtoOpenWorkResult => {
@@ -754,6 +822,8 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     readOpenWork,
     readOpenWorkText,
     replaceOpenWorkText,
+    readStory,
+    writeStory,
     trackWork,
     finishWork,
     updateOpenWork,

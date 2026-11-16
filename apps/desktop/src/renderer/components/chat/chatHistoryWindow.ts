@@ -65,17 +65,25 @@ const residentChatEventBytesByEvents = new WeakMap<
 /**
  * The resident size of a list, carried forward from the list the live merge
  * appended to, so a streamed event costs that event and not a walk of the
- * transcript. The merge can replace a repeated tool call in place, which
- * changes the size of an entry the carry cannot see; a batch with replacements
- * folds the list again (it is rare, and the answer stays exact either way).
+ * transcript. The merge can replace a repeated tool call in place (Claude
+ * sends each call twice); a replaced entry keeps its position, so the carry
+ * swaps the old entry's size for the new one's and the answer stays exact.
+ *
+ * The trim and the pane's view cache both read it, so after a trim the cache
+ * write finds the answer for its list already computed.
  */
-function residentChatEventBytes(events: AgentChatEventEnvelope[]): number {
+export function residentChatEventBytes(events: AgentChatEventEnvelope[]): number {
   return foldedOverAppends(
     residentChatEventBytesByEvents,
     events,
     (before, append) => {
-      if (append.replacedIndexes.length) return null;
       let total = before;
+      for (const index of append.replacedIndexes) {
+        const previous = append.base[index];
+        const next = events[index];
+        if (!previous || !next) return null;
+        total += estimatedChatEventResidentBytes(next) - estimatedChatEventResidentBytes(previous);
+      }
       for (let index = append.appendedFrom; index < events.length; index += 1) {
         total += estimatedChatEventResidentBytes(events[index]!);
       }

@@ -56,8 +56,21 @@
  * site matching uses (`passwordMatching.ts`).
  */
 import crypto from "node:crypto";
-import { getPublicSuffix } from "tldts";
+import type * as Tldts from "tldts";
 import { encodeCbor, type CborMap, type CborMapKey, type CborValue } from "./cbor";
+
+let tldts: typeof Tldts | null = null;
+
+/**
+ * The public suffix of `host` per the list, private suffixes included.
+ * `tldts` loads on the first passkey request (about 3 ms once): its suffix
+ * list cost main 0.7 MB of heap from start, and only this check reads it.
+ */
+function publicSuffixOf(host: string): string | null {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  tldts ??= require("tldts") as typeof Tldts;
+  return tldts.getPublicSuffix(host, { allowPrivateDomains: true });
+}
 
 /** ES256 with SHA-256, the one algorithm every platform authenticator supports. */
 export const WEBAUTHN_ALGORITHM_ES256 = -7;
@@ -173,7 +186,7 @@ export function rpIdAllowedForOrigin(rpId: string, origin: string): boolean {
   const normalizedRpId = normalizeRpId(rpId);
   const url = parseWebAuthnOrigin(origin);
   if (!normalizedRpId || !url) return false;
-  if (normalizedRpId !== "localhost" && getPublicSuffix(normalizedRpId, { allowPrivateDomains: true }) === normalizedRpId) return false;
+  if (normalizedRpId !== "localhost" && publicSuffixOf(normalizedRpId) === normalizedRpId) return false;
 
   const host = stripIpv6Brackets(url.hostname.toLowerCase());
 

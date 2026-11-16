@@ -130,6 +130,130 @@ export function focusWorkInputSoon(attempts = 30): void {
   requestAnimationFrame(tick);
 }
 
+/** The window's last pointer press or key press, for "did a click cause this?". */
+let lastWorkInput: { kind: "pointer" | "key"; at: number } | null = null;
+let workInputTrackerInstalled = false;
+/**
+ * The first Work view of the window gives the prompt box the keyboard once,
+ * within a few seconds; a chat the restore selects meanwhile carries it on.
+ */
+let launchPromptFocus: { until: number; done: boolean } | null = null;
+/** A chat switch this soon after a pointer press counts as made by the pointer. */
+const POINTER_SWITCH_WINDOW_MS = 1_000;
+const LAUNCH_PROMPT_FOCUS_WAIT_MS = 5_000;
+const POINTER_PROMPT_FOCUS_WAIT_MS = 1_000;
+
+function installWorkInputTracker(): void {
+  if (workInputTrackerInstalled || typeof window === "undefined") return;
+  workInputTrackerInstalled = true;
+  const note = (kind: "pointer" | "key") => () => {
+    lastWorkInput = { kind, at: performance.now() };
+  };
+  window.addEventListener("pointerdown", note("pointer"), { capture: true, passive: true });
+  window.addEventListener("keydown", note("key"), { capture: true, passive: true });
+}
+
+function isEditableElement(element: Element): boolean {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+    return true;
+  }
+  if (element instanceof HTMLElement && element.isContentEditable) return true;
+  return element.closest(".xterm") != null;
+}
+
+/**
+ * Whether the keyboard is somewhere the prompt box may take it from: nowhere
+ * (the page body), or a control the person clicked. Never from a field, a
+ * terminal, a dialog or menu, a keyboard-focused control (Tab, arrows), or a
+ * text selection.
+ */
+function promptBoxMayTakeFocus(): boolean {
+  const selection = window.getSelection?.();
+  if (selection && selection.rangeCount > 0 && !selection.isCollapsed) return false;
+  const active = document.activeElement;
+  if (!active || active === document.body || active === document.documentElement) return true;
+  if (isEditableElement(active)) return false;
+  if (active.closest("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], [aria-modal='true']")) {
+    return false;
+  }
+  try {
+    if (active.matches(":focus-visible")) return false;
+  } catch {
+    // An engine without `:focus-visible`: treat the control as clicked.
+  }
+  return true;
+}
+
+function findWorkInputIn(root: ParentNode): HTMLElement | null {
+  for (const selector of ["[data-chat-composer-text]", ".xterm textarea"]) {
+    for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+      if (element.closest("[inert]")) continue;
+      if (element.getClientRects().length > 0) return element;
+    }
+  }
+  return null;
+}
+
+/**
+ * Gives the visible prompt box (or the CLI terminal) in `root` the keyboard
+ * once the Work view shows a chat after launch, and after a pointer click
+ * switches the chat. A switch made with the keyboard keeps the focus where it
+ * is, and nothing takes the focus from a field, a dialog or a selection.
+ */
+export function useWorkInputFocusOnChatSwitch(
+  rootRef: { readonly current: HTMLElement | null },
+  chatKey: string | null,
+  active: boolean,
+): void {
+  const previousKeyRef = useRef<{ key: string | null } | null>(null);
+  useEffect(() => {
+    installWorkInputTracker();
+  }, []);
+  useEffect(() => {
+    if (!active) return;
+    const previous = previousKeyRef.current;
+    previousKeyRef.current = { key: chatKey };
+    const now = performance.now();
+    launchPromptFocus ??= { until: now + LAUNCH_PROMPT_FOCUS_WAIT_MS, done: false };
+    const launch = launchPromptFocus;
+    const launchPending = !launch.done && now < launch.until;
+    let deadline: number;
+    if (launchPending) {
+      deadline = launch.until;
+    } else if (
+      previous
+      && previous.key !== chatKey
+      && lastWorkInput?.kind === "pointer"
+      && now - lastWorkInput.at <= POINTER_SWITCH_WINDOW_MS
+    ) {
+      deadline = now + POINTER_PROMPT_FOCUS_WAIT_MS;
+    } else {
+      return;
+    }
+    let frame = 0;
+    const tick = () => {
+      frame = 0;
+      if (!promptBoxMayTakeFocus()) {
+        // The person put the keyboard somewhere first: launch focus is over.
+        if (launchPending) launch.done = true;
+        return;
+      }
+      const root = rootRef.current;
+      const target = root ? findWorkInputIn(root) : null;
+      if (target) {
+        target.focus({ preventScroll: true });
+        if (launchPending) launch.done = true;
+        return;
+      }
+      if (performance.now() < deadline) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [active, chatKey, rootRef]);
+}
+
 /** Put the keyboard inside the tools pane once it is on screen. */
 export function focusWorkToolsPaneSoon(attempts = 30): void {
   let remaining = attempts;

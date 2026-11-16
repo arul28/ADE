@@ -66,7 +66,7 @@ import {
   onlineMacElsewhere,
   remoteDeviceStatus,
 } from "./workToolCatalog";
-import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
+import { WORK_TOOL_COMPONENTS, preloadWorkToolPanel, type WorkToolPanelProps } from "./workToolPanels";
 import { CloudToolGate, type WorkToolOpen } from "./cloudToolGate";
 import { useSideChatView } from "../chat/sideChatState";
 import { withChatPin } from "../chat/chatMachinePin";
@@ -146,6 +146,22 @@ function desktopToolTwin(tool: WorkSidebarTab, context: WorkToolContext): WorkSi
   return hostTool !== tool && !isHostMismatchWorkTool(hostTool, context) && isAvailableWorkSidebarTab(hostTool, context)
     ? hostTool
     : null;
+}
+
+/**
+ * A pointer over (or the keyboard on) a tool's tab, dot or picker card starts
+ * loading that tool's panel code, so its first open shows the tool at once.
+ */
+function preloadToolUnderPointer(event: { target: EventTarget | null }): void {
+  const element = event.target instanceof Element
+    ? event.target.closest("[data-tool-tab], [data-tool-dot], [data-tool-id]")
+    : null;
+  if (!element) return;
+  preloadWorkToolPanel(
+    element.getAttribute("data-tool-tab")
+      ?? element.getAttribute("data-tool-dot")
+      ?? element.getAttribute("data-tool-id"),
+  );
 }
 
 export function WorkSidebar({
@@ -920,6 +936,8 @@ export function WorkSidebar({
     <aside
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
+      onPointerOver={preloadToolUnderPointer}
+      onFocus={preloadToolUnderPointer}
       data-maximized={maximized ? "true" : undefined}
       // The Work page's keyboard template reaches this pane with `T`; the
       // marker is how it finds the element to focus.

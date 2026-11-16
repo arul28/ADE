@@ -412,7 +412,30 @@ function readIdentityProvider(value: unknown): AccountIdentityProvider | null {
   return null;
 }
 
+/**
+ * The last few decoded payloads, by token. Every status read decodes the
+ * session's access token two or three times (expiry, issuer, claims), and the
+ * account stores read the status on each cache read, so the brain decoded the
+ * same token hundreds of times a minute at idle. A token's text fixes its
+ * payload, so the answer for one text never changes. Callers only read the
+ * payload; none of them edits it.
+ */
+const DECODED_JWT_CACHE_LIMIT = 4;
+const decodedJwtPayloads = new Map<string, Record<string, unknown> | null>();
+
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  if (decodedJwtPayloads.has(token)) return decodedJwtPayloads.get(token) ?? null;
+  const payload = decodeJwtPayloadUncached(token);
+  decodedJwtPayloads.set(token, payload);
+  while (decodedJwtPayloads.size > DECODED_JWT_CACHE_LIMIT) {
+    const oldest = decodedJwtPayloads.keys().next().value;
+    if (oldest === undefined) break;
+    decodedJwtPayloads.delete(oldest);
+  }
+  return payload;
+}
+
+function decodeJwtPayloadUncached(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3 || !parts[1]) return null;
@@ -441,18 +464,44 @@ function isDevelopmentOAuthConfig(
     || isClerkDevelopmentOAuthClientId(config?.clientId);
 }
 
+/**
+ * The last answer of {@link isDevelopmentAccountMaterial}. Every session read
+ * in a packaged build asks it, several times a second in the brain (the relay
+ * lease check alone reads the session three times a second), and each answer
+ * decodes the token and parses two URLs. It depends only on these three
+ * strings, so the same strings give the same answer.
+ */
+let lastDevelopmentMaterialCheck: {
+  accessToken: string | null;
+  issuer: string | null;
+  clientId: string | null;
+  development: boolean;
+} | null = null;
+
+function isDevelopmentAccountMaterial(
+  accessToken: string | null | undefined,
+  oauthConfig: AccountOAuthConfig | null | undefined,
+): boolean {
+  const token = accessToken || null;
+  const issuer = oauthConfig?.issuer ?? null;
+  const clientId = oauthConfig?.clientId ?? null;
+  const last = lastDevelopmentMaterialCheck;
+  if (last && last.accessToken === token && last.issuer === issuer && last.clientId === clientId) {
+    return last.development;
+  }
+  const development = isDevelopmentOAuthConfig(oauthConfig)
+    || isClerkDevelopmentIssuer(token ? accessTokenIssuer(token) : null);
+  lastDevelopmentMaterialCheck = { accessToken: token, issuer, clientId, development };
+  return development;
+}
+
 function shouldRejectDevelopmentAccountMaterial(args: {
   env: NodeJS.ProcessEnv;
   accessToken?: string | null;
   oauthConfig?: AccountOAuthConfig | null;
 }): boolean {
   return shouldIgnoreDevelopmentClerkConfiguration(args.env)
-    && (
-      isDevelopmentOAuthConfig(args.oauthConfig)
-      || isClerkDevelopmentIssuer(
-        args.accessToken ? accessTokenIssuer(args.accessToken) : null,
-      )
-    );
+    && isDevelopmentAccountMaterial(args.accessToken, args.oauthConfig);
 }
 
 function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
@@ -688,8 +737,25 @@ function decodeAccountClaims(accessToken: string): {
   }
 }
 
+/**
+ * The last stored session string `parseStoredSession` read, and its result.
+ * Every account status read parses the stored session, and the brain reads
+ * status many times a minute while the credential stays the same.
+ */
+let lastParsedSession: { raw: string; record: AccountSessionRecord | null } | null = null;
+
+/** The stored session record for `raw`; the same string parses once. */
 function parseStoredSession(raw: string | null | undefined): AccountSessionRecord | null {
   if (!raw?.trim()) return null;
+  if (lastParsedSession?.raw !== raw) {
+    lastParsedSession = { raw, record: parseStoredSessionUncached(raw) };
+  }
+  const record = lastParsedSession.record;
+  // A copy, so a caller that edits its record cannot change the next read's.
+  return record ? { ...record } : null;
+}
+
+function parseStoredSessionUncached(raw: string): AccountSessionRecord | null {
   try {
     const parsed = asRecord(JSON.parse(raw));
     const accessToken = readNonEmptyString(parsed.accessToken);
@@ -2808,16 +2874,22 @@ export function createAccountAuthService(args: {
   const getAccessToken = async (
     options: AccountAccessTokenOptions = {},
   ): Promise<string> => {
-    const controller = new AbortController();
-    const abortFromCaller = () => controller.abort(options.signal?.reason);
-    options.signal?.throwIfAborted();
-    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const requestedTimeoutMs = options.timeoutMs;
     const timeoutMs = typeof requestedTimeoutMs === "number"
       && Number.isFinite(requestedTimeoutMs)
       && requestedTimeoutMs > 0
       ? Math.trunc(requestedTimeoutMs)
       : null;
+    // With no signal and no timeout nothing can abort the request, so the
+    // controller, its listeners and the race would only cost time. The relay
+    // lease check asks for a token this way every few seconds.
+    if (!options.signal && timeoutMs == null) {
+      return await getAccessTokenWithSignal(options.forceRefresh ? { forceRefresh: true } : {});
+    }
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(options.signal?.reason);
+    options.signal?.throwIfAborted();
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const timeout = timeoutMs == null
       ? null
       : setTimeout(() => {

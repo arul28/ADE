@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow } from "electron";
 import type { CloudApprovalMode, CloudApprovalWindowResult } from "./cloudMachineCreator";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import { openBuiltInBrowserSession } from "../builtInBrowser/builtInBrowserWebAuthn";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
@@ -31,6 +32,8 @@ export function openCloudApprovalWindow(
   },
   logger: Logger,
 ): Promise<CloudApprovalWindowResult> {
+  // The shared profile opens on first use; this opens it with its passkey picker.
+  if (args.mode !== "ticket") openBuiltInBrowserSession();
   const win = new BrowserWindow({
     show: false,
     width: 540,

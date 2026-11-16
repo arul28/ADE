@@ -4,13 +4,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { asciiBundleSource } from "../../scripts/build/asciiBundleSource";
+import { sharedNodeBuiltins } from "../../scripts/build/sharedNodeBuiltins";
 
 const external = [
   "@anthropic-ai/claude-agent-sdk",
   "@cursor/sdk",
   "chokidar",
   "node-pty",
-  "node:sqlite",
+  // `node:sqlite` is not listed: sharedNodeBuiltins makes every `node:`
+  // import external (tsup's own plugin did before), and a listed name would
+  // reach tsup's external check first and keep its prefix.
   "sqlite3",
 ];
 const ZOD_IMPORT = /^zod(?:\/.*)?$/;
@@ -47,6 +50,7 @@ const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0
 const releaseBuild = process.env.ADE_RELEASE_BUILD === "1"
   || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha";
 const unreleasedVersion = !releaseBuild || version === "0.0.0" || process.env.ADE_CLI_DEV_BUILD === "1";
+const minifyBundle = process.env.ADE_BUILD_MINIFY !== "0";
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
 if (posthogProjectToken && !/^phc_[A-Za-z0-9_-]{8,}$/.test(posthogProjectToken)) {
   throw new Error("ADE_POSTHOG_PROJECT_TOKEN must be a public phc_ project token; personal API keys must never be bundled.");
@@ -56,6 +60,7 @@ export default defineConfig([
   {
     entry: {
       cli: "src/cli.ts",
+      watchdogCheck: "src/watchdogCheckEntry.ts",
       bootstrap: "src/bootstrap.ts",
       adeRpcServer: "src/adeRpcServer.ts",
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
@@ -70,6 +75,13 @@ export default defineConfig([
     target: "node22",
     outDir: "dist",
     sourcemap: true,
+    // V8 keeps every loaded script's source in the heap for the life of the
+    // process, so a minified bundle is about half the memory of a readable
+    // one. `keepNames` keeps function and class names in stack traces and in
+    // `.name`; the source maps beside each bundle map frames back to the
+    // source. `ADE_BUILD_MINIFY=0` turns minify off.
+    minify: minifyBundle,
+    keepNames: minifyBundle,
     clean: true,
     // @opencode/client is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
@@ -96,7 +108,11 @@ export default defineConfig([
       js: ".cjs"
     }),
     external,
-    esbuildPlugins: [droidSdkOwnZod],
+    // One import wrapper per Node built-in instead of one per importing module
+    // (scripts/build/sharedNodeBuiltins.ts). The plugin strips `node:` itself,
+    // because tsup's own plugin would run first and claim those imports.
+    esbuildPlugins: [droidSdkOwnZod, sharedNodeBuiltins()],
+    removeNodeProtocol: false,
     plugins: [asciiBundleSource()],
     esbuildOptions(options) {
       options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));

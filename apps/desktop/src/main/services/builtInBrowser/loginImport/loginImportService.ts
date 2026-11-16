@@ -16,7 +16,7 @@
  * @module loginImport/loginImportService
  */
 import os from "node:os";
-import { session as electronSession, type Session } from "electron";
+import type { Session } from "electron";
 
 import type {
   BrowserLoginImportArgs,
@@ -33,7 +33,7 @@ import type {
 } from "../../../../shared/types/builtInBrowserLoginImport";
 import type { SystemSettingsPaneId } from "../../../../shared/types/systemSettings";
 import type { Logger } from "../../logging/logger";
-import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowserConstants";
+import { openBuiltInBrowserSession } from "../builtInBrowserWebAuthn";
 import type { ImportedCookie } from "./cookieDatabase";
 import { aggregateCookieDomains, selectCookiesForDomains, displayDomain } from "./cookieDomains";
 import type { LoginImportReadRequest, LoginImportReadResponse } from "./loginImportRead";
@@ -110,8 +110,7 @@ export function createBrowserLoginImportService(args: BrowserLoginImportServiceA
       return null;
     }
   };
-  const getSession = args.getSession
-    ?? (() => electronSession.fromPartition(BUILT_IN_BROWSER_PARTITION));
+  const getSession = args.getSession ?? openBuiltInBrowserSession;
 
   /** Jars read for the picker, so `import` does not ask for consent twice. */
   const readCache = new Map<string, CacheEntry>();

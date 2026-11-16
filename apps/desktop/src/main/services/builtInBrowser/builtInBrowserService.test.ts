@@ -2008,6 +2008,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       fakes.getCookies.mockClear();
       const migrationCookies = createDeferred<Array<{ domain?: string; expirationDate?: number }>>();
       fakes.getCookies.mockReturnValue(migrationCookies.promise);
+      // An old per-project profile is what makes this launch's profile
+      // migration read the shared cookie store; with none, the shared session
+      // is not opened at all and there is nothing to wait for.
+      fs.mkdirSync(path.join(tempDir, "Partitions", "ade-browser-project-0123456789abcdef"), { recursive: true });
       const restoredWin = fakeBrowserWindow();
       projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
       const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];
@@ -2066,6 +2070,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       fakes.getCookies.mockClear();
       const migrationCookies = createDeferred<Array<{ domain?: string; expirationDate?: number }>>();
       fakes.getCookies.mockReturnValue(migrationCookies.promise);
+      // An old per-project profile is what makes this launch's profile
+      // migration read the shared cookie store; with none, the shared session
+      // is not opened at all and there is nothing to wait for.
+      fs.mkdirSync(path.join(tempDir, "Partitions", "ade-browser-project-0123456789abcdef"), { recursive: true });
       const restoredWin = fakeBrowserWindow();
       projectRootByWindow.set(restoredWin.id, "/Users/ade/project-alpha");
       const restoredBrowserWin = restoredWin as unknown as Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0];

@@ -505,6 +505,14 @@ describe("createSyncTunnelClientService", () => {
     let relayEnabled = true;
     let connections = 0;
     let closes = 0;
+    // Sign-in, sign-out and the relay setting arrive as events, as in
+    // production; the backstop poll is longer than the 1 s the owner is
+    // promised, so only the event path can meet the relay-off deadline.
+    const eligibilityListeners = new Set<() => void>();
+    const emitEligibilityChange = () => {
+      for (const listener of eligibilityListeners) listener();
+    };
+    let leaseChecks = 0;
     relay.on("connection", (socket) => {
       connections += 1;
       socket.on("close", () => {
@@ -518,10 +526,16 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getRelayBridgeProof: () => "e".repeat(43),
       isAccountSignedIn: () => signedIn,
-      getAccountLease: async () => signedIn && leaseValid
-        ? { userId: "relay-owner" }
-        : null,
+      getAccountLease: async () => {
+        leaseChecks += 1;
+        return signedIn && leaseValid ? { userId: "relay-owner" } : null;
+      },
       configStore: { ...fakeStore(`http://127.0.0.1:${relayPort}`), isRelayEnabled: () => relayEnabled },
+      subscribeEligibilityChanges: (listener) => {
+        eligibilityListeners.add(listener);
+        return () => eligibilityListeners.delete(listener);
+      },
+      accountStatusPollMs: 2_000,
     });
 
     try {
@@ -534,14 +548,20 @@ describe("createSyncTunnelClientService", () => {
       });
 
       signedIn = true;
+      emitEligibilityChange();
       await vi.waitFor(() => {
         expect(connections).toBe(1);
         expect(service.getStatus().connected).toBe(true);
       }, { timeout: 3_000 });
 
       // The owner turns ADE Relay off: the live control socket closes, the
-      // status says why, and no redial happens while it stays off.
+      // status says why, within a second, and no redial happens while it
+      // stays off. It turns off just after a backstop poll, so the next poll
+      // is about 2 s away and cannot be what closes it.
+      const checksBefore = leaseChecks;
+      await vi.waitFor(() => expect(leaseChecks).toBeGreaterThan(checksBefore), { timeout: 3_000 });
       relayEnabled = false;
+      emitEligibilityChange();
       await vi.waitFor(() => {
         expect(closes).toBe(1);
         expect(service.getStatus()).toMatchObject({
@@ -550,16 +570,18 @@ describe("createSyncTunnelClientService", () => {
           relayTurnedOff: true,
           lastError: "ADE Relay is turned off on this computer.",
         });
-      }, { timeout: 3_000 });
+      }, { timeout: 1_000 });
       expect(connections).toBe(1);
 
       // Exactly one more dial: none happened while it was off.
       relayEnabled = true;
+      emitEligibilityChange();
       await vi.waitFor(() => {
         expect(connections).toBe(2);
         expect(service.getStatus()).toMatchObject({ connected: true, relayTurnedOff: false });
       }, { timeout: 3_000 });
 
+      // A lost lease has no event: the backstop poll finds it.
       leaseValid = false;
       await vi.waitFor(() => {
         expect(service.getStatus()).toMatchObject({

@@ -339,7 +339,12 @@ type GitOriginCacheEntry = {
   configPath: string;
   mtimeMs: number;
   url: string | null;
+  /** When the config file was last stat'ed for this entry (`Date.now()`). */
+  checkedAt: number;
 };
+
+/** How long a git origin answer stands before the config file is checked again. */
+const GIT_ORIGIN_RECHECK_MS = 5_000;
 
 // Recents are re-summarized on every focus and every project change. The config
 // file is small, but re-reading and re-parsing one per recent on every pass is
@@ -417,6 +422,11 @@ export function readGitOriginUrlFromConfigOrGit(projectRoot: string): string | n
  * {@link readGitOriginUrl}; this raw form is for code that must see the alias.
  */
 export function readGitConfigOriginUrl(projectRoot: string): string | null {
+  // Main asks for this on every window-session read (each runtime call from a
+  // window resolves its binding through it). An answer checked within the last
+  // few seconds stands, so those reads skip the `.git` lookups and the stat.
+  const recent = gitOriginCache.get(projectRoot);
+  if (recent && Date.now() - recent.checkedAt < GIT_ORIGIN_RECHECK_MS) return recent.url;
   try {
     const gitDir = resolveGitMetadataDirectory(projectRoot);
     if (!gitDir) return null;
@@ -433,12 +443,13 @@ export function readGitConfigOriginUrl(projectRoot: string): string | null {
     }
     const cached = gitOriginCache.get(projectRoot);
     if (cached && cached.configPath === configPath && cached.mtimeMs === mtimeMs) {
+      cached.checkedAt = Date.now();
       return cached.url;
     }
 
     const url = parseGitOriginUrlFromConfig(fs.readFileSync(configPath, "utf8"));
     if (gitOriginCache.size >= GIT_ORIGIN_CACHE_LIMIT) gitOriginCache.clear();
-    gitOriginCache.set(projectRoot, { configPath, mtimeMs, url });
+    gitOriginCache.set(projectRoot, { configPath, mtimeMs, url, checkedAt: Date.now() });
     return url;
   } catch {
     return null;

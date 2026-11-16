@@ -133,6 +133,7 @@ struct ADEApp: App {
             // sockets without a close event, so the gap is the only evidence
             // available about whether the connection is still real.
             syncService.handleBackgroundTransition()
+            SyncLiveDropReport.noteAppBackgrounded()
             // Roster connections to other machines close in the background;
             // push and Activity cover "needs you" meanwhile.
             machineFleet.setAppActive(false)

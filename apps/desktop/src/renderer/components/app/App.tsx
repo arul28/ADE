@@ -55,19 +55,22 @@ import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
 import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
 import { SpotlightHost } from "../onboarding/spotlight/SpotlightHost";
-import { AnnouncementsHost } from "../announcements/AnnouncementsHost";
+import { subscribeWhatsNewRequests, whatsNewRequested } from "../announcements/whatsNewEvents";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { whenBootPriorityOpen } from "../../webclient/adapter/infra/bootPriority";
+import { preloadRoute, registerRoutePreload, scheduleQuietRoutePreload } from "../../lib/routePreload";
 import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
 import { AppearanceRoot } from "./AppearanceRoot";
 import { AppearanceScheduleHost } from "./AppearanceScheduleHost";
 import { fgTint } from "../lanes/laneDesignTokens";
+import { WorkLoadingFallback } from "./EarlyWorkComposer";
+import { whenEarlyComposerSettled } from "../../lib/earlyComposer";
 import {
   originUrlForBinding,
   rememberedLocalOrigin,
@@ -99,6 +102,47 @@ function createPreloadableRoute<TProps extends object>(
   return { Component, preload: load };
 }
 
+// "What's new" (its pages and the bundled release notes) loads after the first
+// paint settles, or at once when something asks for it (`whatsNewEvents`).
+const AnnouncementsHost = React.lazy(() =>
+  import("../announcements/AnnouncementsHost").then((m) => ({ default: m.AnnouncementsHost }))
+);
+
+function AnnouncementsHostLoader() {
+  const [load, setLoad] = React.useState(() => whatsNewRequested());
+  React.useEffect(() => {
+    if (load) return undefined;
+    const unsubscribe = subscribeWhatsNewRequests(() => setLoad(true));
+    // A request made between the first render and this subscription.
+    if (whatsNewRequested()) {
+      setLoad(true);
+      return unsubscribe;
+    }
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    let cancelScheduled: () => void;
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      const handle = idleWindow.requestIdleCallback(() => setLoad(true), { timeout: 3_000 });
+      cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
+    } else {
+      const handle = window.setTimeout(() => setLoad(true), 1_500);
+      cancelScheduled = () => window.clearTimeout(handle);
+    }
+    return () => {
+      unsubscribe();
+      cancelScheduled();
+    };
+  }, [load]);
+  if (!load) return null;
+  return (
+    <React.Suspense fallback={null}>
+      <AnnouncementsHost />
+    </React.Suspense>
+  );
+}
+
 const lanesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
   import("../lanes/LanesPage").then((m) => ({ default: m.LanesPage }))
 );
@@ -110,7 +154,10 @@ const filesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 const FilesTab = filesRoute.Component;
 const preloadFilesTab = filesRoute.preload;
 const workRoute = createPreloadableRoute<{ active?: boolean }>(() =>
-  import("../terminals/TerminalsPage").then((m) => ({ default: m.TerminalsPage }))
+  import("../terminals/TerminalsPage")
+    // A word the early prompt box is composing (IME) finishes there before the
+    // Work page replaces it (`whenEarlyComposerSettled`).
+    .then((m) => whenEarlyComposerSettled().then(() => ({ default: m.TerminalsPage })))
 );
 const TerminalsPage = workRoute.Component;
 const preloadTerminalsPage = workRoute.preload;
@@ -148,9 +195,20 @@ const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const CtoPage = ctoRoute.Component;
 const preloadCtoPage = ctoRoute.preload;
+// The tab buttons load these on hover or focus (`preloadRoute`).
+registerRoutePreload("/work", preloadTerminalsPage);
+registerRoutePreload("/lanes", preloadLanesPage);
+registerRoutePreload("/files", preloadFilesTab);
+registerRoutePreload("/prs", preloadPrsPage);
+registerRoutePreload("/cto", preloadCtoPage);
+/** The tabs whose code loads after launch, when the person stops for a moment. */
+const OTHER_TAB_ROUTE_PATHS = ["/lanes", "/files", "/prs", "/cto"] as const;
+/** Once per window: the quiet-time load of `OTHER_TAB_ROUTE_PATHS`. */
+let otherTabRoutesPreload: "waiting" | "scheduled" | "done" = "waiting";
 import {
   AppStoreProvider,
   createProjectAppStore,
+  hasKnownProjectInfo,
   hydrateProjectAppStore,
   releaseProjectAppStore,
   retainProjectAppStoreState,
@@ -276,35 +334,10 @@ const GuardLoadingFallback = isWebClientMode() ? RouteLoadingFallback : StartupS
 const LazyFallback = RouteLoadingFallback;
 
 /**
- * The Work tab's own placeholder while its chunk loads: shaped like the chat it
- * is about to show (a title bar, a few messages, the prompt box at the bottom)
- * rather than the generic list-and-panels grid, so the page does not change
- * shape when it arrives.
+ * The Work tab's own placeholder while its chunk loads (`WorkLoadingFallback`):
+ * shaped like the chat it is about to show, or, for an empty new chat, the
+ * new-chat screen with a prompt box that already takes typing.
  */
-const WorkLoadingFallback = (
-  <div className="flex h-full min-h-0 w-full flex-col" style={{ background: "var(--color-bg)" }} aria-label="Loading chats" aria-busy="true">
-    <div className="flex h-12 shrink-0 items-center gap-3 px-5" style={{ borderBottom: "1px solid var(--color-border)" }}>
-      <div className="h-3.5 w-56 animate-pulse rounded" style={{ background: fgTint(7) }} />
-      <span className="ml-auto text-[11px] text-muted-fg/60">Loading chats…</span>
-    </div>
-    <div className="mx-auto flex min-h-0 w-full max-w-[52rem] flex-1 flex-col gap-5 px-6 pt-8">
-      <div className="ml-auto h-14 w-2/3 animate-pulse rounded-2xl" style={{ background: fgTint(6) }} />
-      <div className="space-y-2.5">
-        {["w-11/12", "w-4/5", "w-3/5"].map((width) => (
-          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
-        ))}
-      </div>
-      <div className="space-y-2.5">
-        {["w-5/6", "w-2/3"].map((width) => (
-          <div key={width} className={`h-3 ${width} animate-pulse rounded`} style={{ background: fgTint(5) }} />
-        ))}
-      </div>
-    </div>
-    <div className="mx-auto w-full max-w-[52rem] shrink-0 px-6 pb-5">
-      <div className="h-[88px] animate-pulse rounded-2xl border border-border" style={{ background: fgTint(4) }} />
-    </div>
-  </div>
-);
 
 function isWorkRoutePath(pathname: string): boolean {
   return pathname === "/work" || pathname.startsWith("/work/");
@@ -574,10 +607,11 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           <div
             ref={workSurfaceRef}
             className="h-full min-h-0 w-full"
+            data-ade-work-route=""
             {...parkedSurfaceProps(!isWorkRoute)}
           >
             <PageErrorBoundary>
-              <React.Suspense fallback={WorkLoadingFallback}>
+              <React.Suspense fallback={<WorkLoadingFallback shown={workShown} />}>
                 <ProjectSidebarHold held={heldWork}>
                   <CloudViewsShownContext.Provider value={workShown}>
                     <TerminalsPage active={workShown} />
@@ -939,12 +973,13 @@ function ProjectTabHost() {
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
-    const preload = () => {
+    // Work is the page a project opens on, so it loads at the first idle
+    // frame. The other tabs (Lanes, Files, PRs, CTO) load when the person
+    // stops for a moment after their first input (`scheduleQuietRoutePreload`),
+    // or at once when the pointer moves onto their tab (`preloadRoute`). Their
+    // parse work then stays out of launch and the first new chat.
+    const preloadWork = () => {
       void preloadTerminalsPage().catch(() => undefined);
-      void preloadLanesPage().catch(() => undefined);
-      void preloadFilesTab().catch(() => undefined);
-      void preloadPrsPage().catch(() => undefined);
-      void preloadCtoPage().catch(() => undefined);
     };
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
@@ -952,14 +987,22 @@ function ProjectTabHost() {
     };
     let cancelled = false;
     let cancelScheduled: (() => void) | null = null;
+    let cancelQuietPreload: (() => void) | null = null;
     const schedule = () => {
       if (cancelled) return;
+      if (otherTabRoutesPreload === "waiting") {
+        otherTabRoutesPreload = "scheduled";
+        cancelQuietPreload = scheduleQuietRoutePreload(() => {
+          otherTabRoutesPreload = "done";
+          for (const path of OTHER_TAB_ROUTE_PATHS) preloadRoute(path);
+        });
+      }
       if (typeof idleWindow.requestIdleCallback === "function") {
-        const handle = idleWindow.requestIdleCallback(preload, { timeout: 900 });
+        const handle = idleWindow.requestIdleCallback(preloadWork, { timeout: 900 });
         cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
         return;
       }
-      const handle = window.setTimeout(preload, 150);
+      const handle = window.setTimeout(preloadWork, 150);
       cancelScheduled = () => window.clearTimeout(handle);
     };
     // ADE Web downloads this code over the network: on a page that opens on a
@@ -969,6 +1012,11 @@ function ProjectTabHost() {
     return () => {
       cancelled = true;
       cancelScheduled?.();
+      if (cancelQuietPreload && otherTabRoutesPreload === "scheduled") {
+        // Not run yet: the next surface schedules it again.
+        cancelQuietPreload();
+        otherTabRoutesPreload = "waiting";
+      }
     };
   }, [activeSurfaceKey]);
 
@@ -1834,6 +1882,14 @@ export function App() {
     void getAiStatusCached({ projectRoot: projectRoot ?? null }).catch(() => undefined);
   }, [projectRoot]);
 
+  // A launch that can reopen a folder's Work view (saved project info) loads
+  // the Work page while the launch gate and the window session are read,
+  // rather than after them.
+  React.useEffect(() => {
+    if (isWebClientMode() || !hasKnownProjectInfo()) return;
+    void preloadTerminalsPage().catch(() => undefined);
+  }, []);
+
   return (
     // Interface, theme, reduce-motion and the OS colour scheme come from
     // AppearanceRoot, which the hosted sign-in screen mounts too.
@@ -1869,7 +1925,7 @@ export function App() {
           <OnboardingTourHost />
           <OnboardingHintHost />
           {/* "What's new" pages: once per computer, inside a project, after onboarding. */}
-          <AnnouncementsHost />
+          <AnnouncementsHostLoader />
           {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
           <AdeTipsDialogHost />
           {/* The ring "Try it" leaves around the control it went to. */}

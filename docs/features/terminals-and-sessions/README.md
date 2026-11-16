@@ -213,7 +213,7 @@ and in tests.
   table, which is excluded from CRR replication because PIDs are OS-local.
   Every ADE process (desktop main, chat-only runtime, `ade serve` daemon) inserts a
   row on boot keyed by the process incarnation (`pid`, `started_at`),
-  refreshes `last_seen` on a 5 s heartbeat, and
+  refreshes `last_seen` on a 15 s heartbeat, and
   reports live and known owners through `isPidLive(candidatePid)`,
   `listLivePids()`, `listLiveProcessIdentities()`, `listKnownPids()`, and
   `listKnownProcessIdentities()`. The default liveness window is 3× the

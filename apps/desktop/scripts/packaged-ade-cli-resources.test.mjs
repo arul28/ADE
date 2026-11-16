@@ -56,6 +56,7 @@ test("reports every missing runtime-critical ADE CLI payload", () => {
       { relativePath: "usageLedgerWorker.cjs" },
     ]),
     [
+      "watchdogCheck.cjs",
       "bootstrap.cjs",
       "ptyHostWorker.cjs",
       "cursorSdkWorker.cjs",
