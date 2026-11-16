@@ -688,8 +688,25 @@ function decodeAccountClaims(accessToken: string): {
   }
 }
 
+/**
+ * The last stored session string `parseStoredSession` read, and its result.
+ * Every account status read parses the stored session, and the brain reads
+ * status many times a minute while the credential stays the same.
+ */
+let lastParsedSession: { raw: string; record: AccountSessionRecord | null } | null = null;
+
+/** The stored session record for `raw`; the same string parses once. */
 function parseStoredSession(raw: string | null | undefined): AccountSessionRecord | null {
   if (!raw?.trim()) return null;
+  if (lastParsedSession?.raw !== raw) {
+    lastParsedSession = { raw, record: parseStoredSessionUncached(raw) };
+  }
+  const record = lastParsedSession.record;
+  // A copy, so a caller that edits its record cannot change the next read's.
+  return record ? { ...record } : null;
+}
+
+function parseStoredSessionUncached(raw: string): AccountSessionRecord | null {
   try {
     const parsed = asRecord(JSON.parse(raw));
     const accessToken = readNonEmptyString(parsed.accessToken);
