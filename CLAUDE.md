@@ -210,6 +210,9 @@ on the machine (rule 9).
 only when it can name the critical path, the failure that turns the test red,
 and why no existing test already catches that.
 
+Keep this list the same as the copy in `AGENTS.md` and the **Test value rules**
+in `.agents/skills/test/SKILL.md`. Change all three together.
+
 ## Running checks
 
 Claude Code does not load `AGENTS.md`, so this is a copy of its **Running
