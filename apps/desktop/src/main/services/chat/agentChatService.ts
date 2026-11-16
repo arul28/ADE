@@ -11921,7 +11921,8 @@ function personalChatUserPromptFallback(
  */
 export type CtoAccountCopyHooks = {
   homeGate: (ctoName: string) => Promise<{ ok: true } | { ok: false; message: string }>;
-  homeIsHereNow: () => boolean;
+  /** Why the CTO's routines must not run here now (another home, a move still landing), or null. */
+  routineHoldReason: () => string | null;
   /** `restoredAt`: when the copy was restored here; this thread's turns from then on are its own. */
   carriedTail: () => { fromName: string; tail: string; restoredAt: string | null } | null;
   dropCarriedTail: () => void;
@@ -81381,10 +81382,12 @@ export function createAgentChatService(args: {
     shouldDefer: (schedule) => {
       if (getCrossMachineMoveLock(schedule.sessionId, "scheduled_work")) return true;
       // An old CTO home keeps its routines armed but quiet: the CTO runs on
-      // its new home, which took them from the account copy.
-      if (ctoAccountCopyHooks && !ctoAccountCopyHooks.homeIsHereNow() && sessionIdentityKeyNow(schedule.sessionId) === "cto") {
-        return { reason: "The CTO lives on another computer now, and its routines run there." };
-      }
+      // its new home, which took them from the account copy. A new home holds
+      // them until the old home's copy has landed.
+      const ctoHold = ctoAccountCopyHooks && sessionIdentityKeyNow(schedule.sessionId) === "cto"
+        ? ctoAccountCopyHooks.routineHoldReason()
+        : null;
+      if (ctoHold) return { reason: ctoHold };
       const row = sessionService.get(schedule.sessionId);
       if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {
         // A quiet-output heuristic is not a turn boundary: a CLI can think for

@@ -133,16 +133,20 @@ describe("ctoAccountCopyService across machines", () => {
     a.reach.synced = "unavailable";
     expect((await a.service.adopt({ home })).restored).toBe(false);
     expect(account.copy()?.ownerDeviceId).toBe("device-b");
+    // Until B's CTO has landed, A runs no CTO turn or routine that it would replace.
+    await expect(a.service.homeGate("Atlas")).resolves.toMatchObject({ ok: false });
+    expect(a.service.routineHoldReason()).not.toBeNull();
 
     // B keeps working and saves after the move.
     b.memory.writeNotes("project", "- Release train is weekly\n- Freeze starts Friday");
     tick();
     await b.service.save("turn_ended");
 
-    // A's first save once the account answers takes B's latest CTO first.
+    // Once the account answers, the next turn first takes B's latest CTO.
     a.reach.synced = "ready";
     tick();
-    await a.service.save("turn_ended");
+    await expect(a.service.homeGate("Atlas")).resolves.toEqual({ ok: true });
+    expect(a.service.routineHoldReason()).toBeNull();
     expect(a.memory.readNotes("project")).toContain("Freeze starts Friday");
     expect(a.memory.readNotes("project")).not.toContain("months ago");
     expect(account.copy()?.ownerDeviceId).toBe("device-a");

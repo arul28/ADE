@@ -367,11 +367,11 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
    */
   const homeGate = async (ctoName: string): Promise<CtoHomeGate> => {
     let record = readHome();
-    if (homeIsHere(record)) return { ok: true };
+    if (homeIsHere(record)) return moveInLanded() ? { ok: true } : await landMoveIn(ctoName, record);
     if (args.settings?.sync) {
       await withTimeout(args.settings.sync({ maxAgeMs: HOME_RECHECK_MAX_AGE_MS }), SYNC_TIMEOUT_MS);
       record = readHome();
-      if (homeIsHere(record)) return { ok: true };
+      if (homeIsHere(record)) return moveInLanded() ? { ok: true } : await landMoveIn(ctoName, record);
     }
     const name = homeName(record);
     return { ok: false, homeName: name, message: `${ctoName} lives on ${name} now. Open the CTO there, or move it back here.` };
@@ -389,6 +389,12 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
 
   /** The same answer from this machine's copy of the account, without asking it again. */
   const homeIsHereNow = (): boolean => homeIsHere(readHome());
+
+  const routineHoldReason = (): string | null => {
+    if (!homeIsHereNow()) return "The CTO lives on another computer now, and its routines run there.";
+    if (!moveInLanded()) return "The CTO is still arriving from its old home; its routines run once it has.";
+    return null;
+  };
 
   const writeJson = (file: string, value: unknown): void => {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -479,14 +485,18 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
    */
   let adoptRetry: ReturnType<typeof setTimeout> | null = null;
   const retryAdoptLater = (attempt = 1): void => {
-    if (disposed || adoptRetry || attempt > ADOPT_RETRY_ATTEMPTS || !args.vault) return;
-    const vault = args.vault;
+    if (disposed || adoptRetry || !args.vault) return;
+    if (attempt > ADOPT_RETRY_ATTEMPTS) {
+      // The account stayed out of reach: stop holding the CTO here rather
+      // than leave it unusable. Its next save still takes the old copy.
+      logger.warn("cto.account_copy_move_in_unlanded", { attempts: ADOPT_RETRY_ATTEMPTS });
+      moveInPendingFor = null;
+      return;
+    }
     adoptRetry = setTimeout(() => {
       adoptRetry = null;
-      void withTimeout(vault.sync(), SYNC_TIMEOUT_MS).then((synced) => {
-        if (disposed) return;
-        if (synced === "ready") void save("adopt_retry");
-        else retryAdoptLater(attempt + 1);
+      void tryLandMoveIn().then((landed) => {
+        if (!landed) retryAdoptLater(attempt + 1);
       });
     }, ADOPT_RETRY_MS);
     adoptRetry.unref?.();
@@ -514,12 +524,15 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     if (synced !== "ready") {
       // Writing now could replace the CTO the old home left in the account
       // with this machine's older one. The first save after the account
-      // answers takes that copy instead (`saveNow`).
+      // answers takes that copy instead (`saveNow`); CTO turns and routines
+      // wait for it here (`moveInPendingFor`).
       logger.warn("cto.account_copy_adopt_unsynced", { status: synced ?? "timeout" });
+      moveInPendingFor = readHome()?.chosenAt ?? null;
       retryAdoptLater();
       args.onMoveLanded?.("failed");
       return { restored: false, fromName: null, savedAt: null };
     }
+    moveInPendingFor = null;
     const { copy } = readCopyRow();
     if (!copy || sameDevice(copy.ownerDeviceId, self)) {
       await save("adopt");
@@ -561,6 +574,39 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     fs.rmSync(carriedTailPath, { force: true });
   };
 
+  /**
+   * The move named by `moveInPendingFor` (its `chosenAt`) couldn't read the
+   * account. Until the old home's copy has landed here, CTO turns and routines
+   * wait, so nothing done here is replaced by that older copy.
+   */
+  let moveInPendingFor: string | null = null;
+  const moveInLanded = (): boolean => moveInPendingFor == null;
+
+  /** Reads the account again; once it answers, the save takes the old home's copy. */
+  const tryLandMoveIn = async (): Promise<boolean> => {
+    if (disposed || moveInPendingFor == null) return true;
+    if (!args.vault) return false;
+    const synced = await withTimeout(args.vault.sync(), SYNC_TIMEOUT_MS);
+    if (synced !== "ready" || disposed) return false;
+    await save("adopt_retry");
+    const home = readHome();
+    const { copy } = readCopyRow();
+    // Landed, the move moved on (another home), or there is nothing left to take.
+    if (!home || home.chosenAt !== moveInPendingFor || !copy || sameDevice(copy.ownerDeviceId, me()) || takenForMove(home)) {
+      moveInPendingFor = null;
+    }
+    return moveInLanded();
+  };
+
+  const landMoveIn = async (ctoName: string, record: CtoHomeMachineRecord | null): Promise<CtoHomeGate> => {
+    if (await tryLandMoveIn()) return { ok: true };
+    return {
+      ok: false,
+      homeName: homeName(record),
+      message: `${ctoName} is still on its way here: ADE can't reach your account to bring it over yet. Try again in a moment.`,
+    };
+  };
+
   /** Saves a change still waiting on the debounce and waits for a save in flight, then stops. */
   const dispose = async (): Promise<void> => {
     const pending = saveTimer != null;
@@ -580,6 +626,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     status,
     homeGate,
     homeIsHereNow,
+    routineHoldReason,
     carriedTail,
     dropCarriedTail,
     applyCarriedRoutines,

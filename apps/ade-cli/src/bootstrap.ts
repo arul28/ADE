@@ -3452,7 +3452,7 @@ export async function createAdeRuntime(args: {
     if (ctoAccountCopy && chatServiceForCtoCopy) {
       chatServiceForCtoCopy.setCtoAccountCopyHooks({
         homeGate: (ctoName) => ctoAccountCopy.homeGate(ctoName),
-        homeIsHereNow: () => ctoAccountCopy.homeIsHereNow(),
+        routineHoldReason: () => ctoAccountCopy.routineHoldReason(),
         carriedTail: () => ctoAccountCopy.carriedTail(),
         dropCarriedTail: () => ctoAccountCopy.dropCarriedTail(),
         applyCarriedRoutines: () => ctoAccountCopy.applyCarriedRoutines(),
