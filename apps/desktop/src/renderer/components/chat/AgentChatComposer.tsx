@@ -3807,6 +3807,7 @@ function AgentChatComposerImpl({
   const [launchAccountsReloadKey, setLaunchAccountsReloadKey] = useState(0);
   const launchAccountsScopeRef = useRef<string | null>(null);
   const launchAccountPinRef = useRef(modelRuntimePin?.key ?? null);
+  const launchAccountProviderRef = useRef(launchAccountProvider);
   const launchAccountsPinKey = modelRuntimePin?.key ?? null;
   const launchAccountsScopeKey = `${launchAccountsPinKey ?? "local"}|${launchAccountProvider ?? "none"}`;
   // An account id names a login on one machine. A pin change is a different
@@ -3816,6 +3817,13 @@ function AgentChatComposerImpl({
     launchAccountPinRef.current = launchAccountsPinKey;
     if (launchAccountId && onLaunchAccountChange) onLaunchAccountChange(null);
   }, [launchAccountId, launchAccountsPinKey, onLaunchAccountChange]);
+  // An account id also names one provider's login. Clear it before the new
+  // provider's read, so a failed read cannot send a stale id to the host.
+  useEffect(() => {
+    if (launchAccountProviderRef.current === launchAccountProvider) return;
+    launchAccountProviderRef.current = launchAccountProvider;
+    if (launchAccountId && onLaunchAccountChange) onLaunchAccountChange(null);
+  }, [launchAccountId, launchAccountProvider, onLaunchAccountChange]);
   // The machine that owns the model read owns the accounts: an id from this
   // computer does not resolve on another one.
   useEffect(() => {

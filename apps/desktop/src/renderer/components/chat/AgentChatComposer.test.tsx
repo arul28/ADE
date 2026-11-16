@@ -4196,4 +4196,48 @@ describe("the OpenCode Fast chip reads the effort a launch sends", () => {
       (window as any).ade = previousAde;
     }
   });
+
+  it("clears a launch account pick when the draft switches provider", async () => {
+    const previousAde = (window as any).ade;
+    const list = vi.fn(async (args: { provider?: string }) => {
+      if (args.provider === "claude") throw new Error("accounts offline");
+      return [{
+        id: "codex-work",
+        provider: "codex",
+        label: "Work",
+        signedIn: true,
+        isDefault: true,
+        account: { email: "work@example.com" },
+      }];
+    });
+    (window as any).ade = {
+      ...(previousAde ?? {}),
+      providerInstances: { list },
+    };
+    try {
+      const onLaunchAccountChange = vi.fn();
+      const props = buildComposerProps({
+        modelRuntimePin: CHAT_BINDING,
+        launchAccountId: "codex-work",
+        onLaunchAccountChange,
+      });
+      const view = render(<AgentChatComposer {...props} />, { wrapper: ChatScope });
+      await waitFor(() => expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "codex" }),
+        expect.anything(),
+      ));
+
+      view.rerender(
+        <AgentChatComposer
+          {...props}
+          modelId="anthropic/claude-sonnet-5"
+          availableModelIds={["anthropic/claude-sonnet-5", "openai/gpt-5.4"]}
+        />,
+      );
+
+      await waitFor(() => expect(onLaunchAccountChange).toHaveBeenCalledWith(null));
+    } finally {
+      (window as any).ade = previousAde;
+    }
+  });
 });
