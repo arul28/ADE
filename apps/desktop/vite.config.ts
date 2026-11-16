@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sceneThreePlugin } from "./vite.sceneThree";
 import { linearPreloadHelperPlugin } from "./vite.preloadHelper";
+import { asciiChunksPlugin } from "./vite.asciiChunks";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,6 +82,7 @@ export default defineConfig(({ mode }) => ({
     // The Electron build only: the website demo (`--mode demo`) keeps Vite's helper.
     // `ADE_VITE_PRELOAD_HELPER=vite` builds with Vite's own helper, for an A/B.
     ...(mode !== "demo" && process.env.ADE_VITE_PRELOAD_HELPER !== "vite" ? [linearPreloadHelperPlugin()] : []),
+    asciiChunksPlugin(),
   ],
   optimizeDeps: {
     // Loaded lazily by the first terminal, so the dep scan misses it; found at

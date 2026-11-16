@@ -19,6 +19,11 @@ assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
 // build stays readable (it has no source maps), and `ADE_BUILD_MINIFY=0` turns
 // minify off for any build.
 const minifyBundle = !devMainReadyMarker && process.env.ADE_BUILD_MINIFY !== "0";
+// The in-process project runtime (tests and the ADE_ENABLE_DESKTOP_SYNC_HOST
+// diagnostics host) stays in the dev watch build only, or with
+// `ADE_BUILD_IN_PROCESS_RUNTIME=1`. Every other main hands projects to the
+// brain, and dropping that graph makes main.cjs about 7 MB smaller.
+const inProcessProjectRuntime = Boolean(devMainReadyMarker) || process.env.ADE_BUILD_IN_PROCESS_RUNTIME === "1";
 
 export default defineConfig({
   entry: {
@@ -82,5 +87,6 @@ export default defineConfig({
     __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
     __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
     __ADE_RELEASE_BUILD__: JSON.stringify(releaseBuild),
+    __ADE_IN_PROCESS_PROJECT_RUNTIME__: JSON.stringify(inProcessProjectRuntime),
   },
 });

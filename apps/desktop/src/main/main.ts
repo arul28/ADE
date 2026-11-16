@@ -186,7 +186,6 @@ import {
 } from "./services/sessions/sessionService";
 import { createLateBoundSettle, createSettleWiring } from "./services/sessions/settleWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
-import { createPtyService } from "./services/pty/ptyService";
 import { terminalShellPreferenceStoreFor } from "./services/pty/terminalShells";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
 import {
@@ -206,7 +205,6 @@ import { createProcessRegistryService } from "./services/runtime/processRegistry
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
-import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
 import {
@@ -357,7 +355,6 @@ import type {
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
-import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
 // The buffer's own module: the brain's bootstrap brings its whole service
 // graph (the chat service and the Claude Agent SDK with it). Its first import
 // marks a packaged bundle as packaged, which `shared/accountDirectory` reads,
@@ -575,6 +572,21 @@ import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
 import { createWebhookRemoteSource } from "./services/automations/webhookAutomationFactory";
+
+/**
+ * Whether this build carries the in-process project runtime: the whole
+ * service graph that tests and the `ADE_ENABLE_DESKTOP_SYNC_HOST` diagnostics
+ * host run inside main. Every other main hands projects to the brain. A
+ * packaged or release build sets it false (`tsup.config.ts`), and the bundler
+ * drops that graph, about 7 MB of the bundle and its module objects. Tests and
+ * the dev build keep it (undefined counts as true).
+ *
+ * Each use writes out `(typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean"
+ * || __ADE_IN_PROCESS_PROJECT_RUNTIME__)`: with `keepNames` the bundler folds
+ * the expression where it stands, but it does not inline a const built from
+ * it, and then nothing is dropped.
+ */
+declare const __ADE_IN_PROCESS_PROJECT_RUNTIME__: boolean | undefined;
 
 /**
  * Milliseconds since the process started, at each step to the first window:
@@ -1854,12 +1866,15 @@ app.whenReady().then(async () => {
   markMainBoot("launchGateMs");
   /**
    * Launch work the first window does not need: sweeps and cleanups that
-   * spawn processes or scan folders. Each runs right after the first window
-   * starts to load its page, while the renderer process starts up in
-   * parallel, instead of before the window exists. Nothing in the window or
-   * in a project open waits on any of them.
+   * spawn processes or scan folders. They run a short while after the first
+   * window has loaded its page, once the renderer has booted and restored its
+   * tabs. Run beside the renderer's start, their process listings and the
+   * parsing of them delayed main's answers to the window's first requests.
+   * Nothing in the window or in a project open waits on any of them.
    */
   const afterFirstLoadStarts: Array<{ name: string; run: () => void }> = [];
+  /** After the first page load; the renderer shows its prompt box well inside this. */
+  const DEFERRED_LAUNCH_JOBS_DELAY_MS = 2_000;
   const runAfterFirstLoadStarts = (): void => {
     for (const job of afterFirstLoadStarts.splice(0)) {
       try {
@@ -2878,7 +2893,7 @@ app.whenReady().then(async () => {
     ipcWindowScope.getStore() ?? null;
 
   const shouldUseInProcessProjectRuntime = (): boolean =>
-    process.env.NODE_ENV === "test";
+    (typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean" || __ADE_IN_PROCESS_PROJECT_RUNTIME__) && process.env.NODE_ENV === "test";
 
   /**
    * The chat title and lane name for the browser agent-access prompt, read
@@ -3094,9 +3109,16 @@ app.whenReady().then(async () => {
     return null;
   };
 
-  const isDesktopSyncHostEnabled = (): boolean =>
-    process.env.ADE_ENABLE_DESKTOP_SYNC_HOST === "1"
-    && process.env.ADE_DISABLE_SYNC_HOST !== "1";
+  let warnedDesktopSyncHostNotBuilt = false;
+  const isDesktopSyncHostEnabled = (): boolean => {
+    if (process.env.ADE_ENABLE_DESKTOP_SYNC_HOST !== "1" || process.env.ADE_DISABLE_SYNC_HOST === "1") return false;
+    if (typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean" || __ADE_IN_PROCESS_PROJECT_RUNTIME__) return true;
+    if (!warnedDesktopSyncHostNotBuilt) {
+      warnedDesktopSyncHostNotBuilt = true;
+      console.warn("[main] ADE_ENABLE_DESKTOP_SYNC_HOST is set, but this build has no in-process sync host; use a dev build. The brain hosts sync.");
+    }
+    return false;
+  };
 
   const getMobileSyncHostRoot = (): string | null =>
     isDesktopSyncHostEnabled()
@@ -4253,7 +4275,13 @@ app.whenReady().then(async () => {
       });
   }
 
-  const initContextForProjectRoot = async ({
+  // Only the in-process runtime reaches this (see __ADE_IN_PROCESS_PROJECT_RUNTIME__);
+  // a build without it keeps a stub, and its service graph is not bundled.
+  const initContextForProjectRoot = !(typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean" || __ADE_IN_PROCESS_PROJECT_RUNTIME__)
+    ? async (_args: { projectRoot: string }): Promise<AppContext> => {
+      throw new Error("This build has no in-process project runtime; the brain opens projects.");
+    }
+    : async ({
     projectRoot,
     baseRef,
     ensureExclude,
@@ -4278,6 +4306,13 @@ app.whenReady().then(async () => {
       listMachineProviderAccountChatLoad,
       writeSessionLinearIssueContextFile,
     } = await import("./services/chat/agentChatService");
+    // The same for these: each module starts work at load (headless xterm,
+    // zod's locales, the RPC server's tables) that only this runtime uses.
+    const [{ createPtyService }, { createProjectConfigService }, { createAdeRpcRequestHandler }] = await Promise.all([
+      import("./services/pty/ptyService"),
+      import("./services/config/projectConfigService"),
+      import("../../../ade-cli/src/adeRpcServer"),
+    ]);
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
     // but the db is gitignored and machine-local. A missing db, or a scaffold
     // first-open marker, means this machine has not finished a real bind yet.
@@ -11308,13 +11343,14 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
-  // `createWindow` has run up to its page load (`firstLoadUrlMs`); the renderer
-  // process starts now, so the deferred launch work runs beside it.
-  runAfterFirstLoadStarts();
-  markMainBoot("deferredJobsMs");
   const initialWindow = await initialWindowLoad;
   markMainBoot("firstPageLoadedMs");
   getMachineMainLogger().info("startup.main_boot", { ...mainBootMarks });
+  setTimeout(() => {
+    const startedAt = Date.now();
+    runAfterFirstLoadStarts();
+    getMachineMainLogger().info("startup.deferred_jobs", { ms: Date.now() - startedAt });
+  }, DEFERRED_LAUNCH_JOBS_DELAY_MS);
   if (quitInstallLaunch) {
     // Shown by anything (the person reopening ADE, a deep link, a notification),
     // a hidden quit-install launch stays open as an ordinary one.

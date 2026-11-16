@@ -22,7 +22,7 @@
  * every Windows release shipped a map from the bundle to itself.
  */
 type EsbuildOptionsLike = { charset?: string };
-type RawMap = { mappings: string; [field: string]: unknown };
+export type RawMap = { mappings: string; [field: string]: unknown };
 
 const NON_ASCII = /[^\x00-\x7f]/g;
 const ESCAPE_GROWTH = "\\u0000".length - 1;
@@ -47,7 +47,7 @@ function encodeVlq(value: number): string {
  * the source, line, column and name fields are relative to the previous
  * segment, and the segments stay the same, so they are kept as written.
  */
-function shiftMap(original: RawMap, escapedColumnsByLine: Map<number, number[]>): RawMap {
+export function shiftMap(original: RawMap, escapedColumnsByLine: Map<number, number[]>): RawMap {
   const mappings = original.mappings.split(";").map((line, lineIndex) => {
     const escapedColumns = escapedColumnsByLine.get(lineIndex);
     if (!escapedColumns) return line;
