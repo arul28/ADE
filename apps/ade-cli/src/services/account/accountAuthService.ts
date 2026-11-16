@@ -464,18 +464,44 @@ function isDevelopmentOAuthConfig(
     || isClerkDevelopmentOAuthClientId(config?.clientId);
 }
 
+/**
+ * The last answer of {@link isDevelopmentAccountMaterial}. Every session read
+ * in a packaged build asks it, several times a second in the brain (the relay
+ * lease check alone reads the session three times a second), and each answer
+ * decodes the token and parses two URLs. It depends only on these three
+ * strings, so the same strings give the same answer.
+ */
+let lastDevelopmentMaterialCheck: {
+  accessToken: string | null;
+  issuer: string | null;
+  clientId: string | null;
+  development: boolean;
+} | null = null;
+
+function isDevelopmentAccountMaterial(
+  accessToken: string | null | undefined,
+  oauthConfig: AccountOAuthConfig | null | undefined,
+): boolean {
+  const token = accessToken || null;
+  const issuer = oauthConfig?.issuer ?? null;
+  const clientId = oauthConfig?.clientId ?? null;
+  const last = lastDevelopmentMaterialCheck;
+  if (last && last.accessToken === token && last.issuer === issuer && last.clientId === clientId) {
+    return last.development;
+  }
+  const development = isDevelopmentOAuthConfig(oauthConfig)
+    || isClerkDevelopmentIssuer(token ? accessTokenIssuer(token) : null);
+  lastDevelopmentMaterialCheck = { accessToken: token, issuer, clientId, development };
+  return development;
+}
+
 function shouldRejectDevelopmentAccountMaterial(args: {
   env: NodeJS.ProcessEnv;
   accessToken?: string | null;
   oauthConfig?: AccountOAuthConfig | null;
 }): boolean {
   return shouldIgnoreDevelopmentClerkConfiguration(args.env)
-    && (
-      isDevelopmentOAuthConfig(args.oauthConfig)
-      || isClerkDevelopmentIssuer(
-        args.accessToken ? accessTokenIssuer(args.accessToken) : null,
-      )
-    );
+    && isDevelopmentAccountMaterial(args.accessToken, args.oauthConfig);
 }
 
 function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
