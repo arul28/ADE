@@ -1233,11 +1233,9 @@ async function createWindow(args: {
     ).map((base) => new URL(base).origin),
   });
 
-  // Main-frame responses only: the policy is for the app document, and every
-  // other response passed through unchanged. Without the filter each response
-  // in this session (the ~580 module and style files of the first load among
-  // them) waited for a turn on main's JS thread.
-  win.webContents.session.webRequest.onHeadersReceived({ urls: ["<all_urls>"], types: ["mainFrame"] }, (details, callback) => {
+  // No URL filter: a filter's patterns do not match the app's own page
+  // scheme, so a filtered hook never sets the policy on the app document.
+  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     if (
       !shouldApplyRendererCsp(details, {
         isDevMode,
