@@ -85,7 +85,22 @@ function createBrainCopy(appPath, { mode = readBrainExecutableMode() } = {}) {
   const target = path.join(appPath, "Contents", "MacOS", `${name}${BRAIN_COPY_SUFFIX}`);
   fs.copyFileSync(source, target);
   fs.chmodSync(target, 0o755);
+  adHocSignIfUnsigned(target);
   return target;
+}
+
+/**
+ * The x64 Electron executable has no signature at all (arm64 has the linker's
+ * ad-hoc one), and `codesign` refuses to sign an app holding unsigned code
+ * ("code object is not signed at all, In subcomponent: … Brain"). An ad-hoc
+ * signature puts the x64 copy where the arm64 copy starts; afterSign then
+ * signs it with the app's identity. A copy that is signed already is kept.
+ */
+function adHocSignIfUnsigned(file) {
+  if (process.platform !== "darwin") return;
+  const display = run("/usr/bin/codesign", ["-d", file], { allowFailure: true });
+  if (display.status === 0 || !/not signed at all/.test(`${display.stderr || ""}${display.stdout || ""}`)) return;
+  run("/usr/bin/codesign", ["--force", "--sign", "-", file]);
 }
 
 /** What the app's signature says, read from `codesign -dvvv`. */
