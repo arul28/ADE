@@ -9707,6 +9707,8 @@ const adeBridge = {
       args: {
         sessionId: string;
         modelId: string;
+        /** Load the provider's SDK only; start no process (typing in an open chat). */
+        sdkOnly?: boolean;
       },
       pin?: OpenProjectBinding | null,
     ): Promise<void> =>

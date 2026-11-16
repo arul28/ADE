@@ -9874,11 +9874,12 @@ export function AgentChatPane({
     turnActive,
   ]);
 
-  // An open Claude chat: the first keystroke warms it on its machine, as a new
-  // draft's does. The brain loads the Claude SDK, which it no longer loads at
-  // start, and starts the query when the chat is idle, so the first send waits
-  // for neither. The text is read from the draft store, so typing does not
-  // render the pane, and one request per chat and model is enough.
+  // An open Claude chat: the first keystroke asks its machine to load the
+  // Claude SDK, which the brain no longer loads at start, so the first send in
+  // a chat reopened after a brain restart does not wait for it. `sdkOnly`: it
+  // starts no query and no process. The text is read from the draft store, so
+  // typing does not render the pane, and one request per chat and model is
+  // enough.
   useEffect(() => {
     if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return undefined;
     const desc = getModelById(selectedSessionModelId);
@@ -9892,6 +9893,7 @@ export function AgentChatPane({
       withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
         sessionId: selectedSessionId,
         modelId: selectedSessionModelId,
+        sdkOnly: true,
       }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
     };
     requestWarm();

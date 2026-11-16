@@ -78837,9 +78837,16 @@ export function createAgentChatService(args: {
   const warmupModel = async ({
     sessionId,
     modelId,
+    sdkOnly,
   }: {
     sessionId: string;
     modelId: string;
+    /**
+     * Load the provider's SDK and stop: no runtime, no process. Typing in an
+     * open chat sends this, so a chat reopened after a brain restart finds
+     * the Claude SDK loaded at its first send.
+     */
+    sdkOnly?: boolean;
   }): Promise<void> => {
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     // The Claude SDK loads on first use. A warm-up (a new chat, or the first
@@ -78848,6 +78855,7 @@ export function createAgentChatService(args: {
     if (descriptor?.family === "anthropic" && descriptor.isCliWrapped) {
       void loadClaudeSdk().catch(() => { /* the send reports a failed load */ });
     }
+    if (sdkOnly === true) return;
     const managed = managedSessions.get(sessionId);
     if (!managed) return;
     // Prewarm starts a provider process with nobody watching, which is the
