@@ -535,22 +535,31 @@ function parseLsofListeners(output: string): Array<{ pid: number; port: number; 
   return listeners;
 }
 
-function psCommandLines(pids: number[]): Map<number, string> {
+/** The `ps` arguments for the command lines of `pids`, or null when there are none. */
+function psCommandLineArgs(pids: number[]): string[] | null {
   const unique = Array.from(new Set(pids.filter((pid) => pid > 0)));
-  if (unique.length === 0) return new Map();
+  return unique.length === 0 ? null : ["-p", unique.join(","), "-o", "pid=,command="];
+}
+
+function parsePsCommandLines(output: string): Map<number, string> {
+  const commands = new Map<number, string>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!match) continue;
+    commands.set(Number(match[1]), match[2]);
+  }
+  return commands;
+}
+
+function psCommandLines(pids: number[]): Map<number, string> {
+  const args = psCommandLineArgs(pids);
+  if (!args) return new Map();
   try {
-    const output = execFileSync("ps", ["-p", unique.join(","), "-o", "pid=,command="], {
+    return parsePsCommandLines(execFileSync("ps", args, {
       encoding: "utf8",
       timeout: 2_000,
       windowsHide: true,
-    });
-    const commands = new Map<number, string>();
-    for (const line of output.split(/\r?\n/)) {
-      const match = line.trim().match(/^(\d+)\s+(.+)$/);
-      if (!match) continue;
-      commands.set(Number(match[1]), match[2]);
-    }
-    return commands;
+    }));
   } catch {
     return new Map();
   }
@@ -697,14 +706,24 @@ function scanNativeSyncHostListeners(
   if (isTestProcess() && process.env.ADE_SYNC_HOST_LEGACY_SCAN !== "1") return [];
   const readText = deps.readText ?? defaultScanText;
   if (platform === "win32") return scanWindowsSyncHostListeners(readText);
-  const output = readText("lsof", [
-    "-nP",
-    `-iTCP:${DEFAULT_SYNC_HOST_PORT}-${SYNC_HOST_MAX_PORT}`,
-    "-sTCP:LISTEN",
-  ]);
-  const listeners = parseLsofListeners(output)
-    .filter((listener) => listener.pid !== process.pid);
-  const commands = psCommandLines(listeners.map((listener) => listener.pid));
+  const listeners = darwinListenersFromLsof(readText("lsof", DARWIN_LISTENER_LSOF_ARGS));
+  return darwinSyncHostOwners(listeners, psCommandLines(listeners.map((listener) => listener.pid)));
+}
+
+const DARWIN_LISTENER_LSOF_ARGS = [
+  "-nP",
+  `-iTCP:${DEFAULT_SYNC_HOST_PORT}-${SYNC_HOST_MAX_PORT}`,
+  "-sTCP:LISTEN",
+];
+
+function darwinListenersFromLsof(output: string): Array<{ pid: number; port: number; processName: string }> {
+  return parseLsofListeners(output).filter((listener) => listener.pid !== process.pid);
+}
+
+function darwinSyncHostOwners(
+  listeners: Array<{ pid: number; port: number; processName: string }>,
+  commands: Map<number, string>,
+): SyncHostSingletonOwner[] {
   return listeners
     .map((listener) => legacyOwner(
       listener.pid,
@@ -716,6 +735,21 @@ function scanNativeSyncHostListeners(
       if (owner.commandLine != null) return looksLikeAdeSyncHostProcess(owner.commandLine);
       return looksLikeAdeProcessName(listeners[index]?.processName ?? "");
     });
+}
+
+/**
+ * `scanNativeSyncHostListeners` on macOS with `lsof` and `ps` run through
+ * `runProbe`, so neither holds the caller's thread. A failed or timed-out
+ * probe reads its partial output, as `defaultScanText` does.
+ */
+async function scanDarwinSyncHostListenersAsync(runProbe: SyncHostProbeRunner): Promise<SyncHostSingletonOwner[]> {
+  const lsof = await runProbe("lsof", DARWIN_LISTENER_LSOF_ARGS, 2_000, 4 * 1024 * 1024).catch(() => ({ stdout: "", failed: true }));
+  const listeners = darwinListenersFromLsof(lsof.stdout);
+  const psArgs = psCommandLineArgs(listeners.map((listener) => listener.pid));
+  const ps = psArgs
+    ? await runProbe("ps", psArgs, 2_000, 4 * 1024 * 1024).catch(() => ({ stdout: "", failed: true }))
+    : null;
+  return darwinSyncHostOwners(listeners, ps ? parsePsCommandLines(ps.stdout) : new Map());
 }
 
 function activeLockConflict(
@@ -816,6 +850,15 @@ export async function detectSyncHostSingletonConflictAsync(
   const injected = Boolean(deps.processMatchesOwner || deps.scanListeners || deps.scanListenersReadText);
   // Same test-mode gate as `detectSyncHostSingletonConflict`: a test that opts in runs this path.
   const testRun = isTestProcess() && process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE !== "1";
+  if (platform === "darwin" && !injected && !testRun && !deps.skipListenerScan && !isDevTestMachineProcess()) {
+    // macOS: the lock decides first, as in the synchronous detector; the
+    // listener scan's `lsof` and `ps` then run without holding the thread (the
+    // packaged launch waited ~19 ms on them before its window).
+    const lockConflict = detectSyncHostSingletonConflict({ ...deps, skipListenerScan: true });
+    if (lockConflict) return lockConflict;
+    const listeners = await scanDarwinSyncHostListenersAsync(options.runProbe ?? execFileText);
+    return detectSyncHostSingletonConflict({ ...deps, scanListeners: () => listeners });
+  }
   if (platform !== "win32" || injected || testRun) {
     return detectSyncHostSingletonConflict(deps);
   }
