@@ -47,8 +47,9 @@ async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling, acc
   if (link.kind === "page" || !isPaidPlanId(link.plan)) return;
   const plan = link.plan;
   const label = CLOUD_PLAN_LABELS[plan];
-  // The checkout is for the account that arrived with the link: a sign-out or switch meanwhile stops it.
-  const lease = accountClient.captureSessionLease();
+  // The checkout is for the account that arrived with the link: a sign-out or a switch meanwhile stops it.
+  // The user id, not the session lease: a token refresh during the reads renews the lease for the same person.
+  const userId = accountClient.getSnapshot().userId;
   try {
     if (!(await billing.accessEnabled())) {
       showToast({ title: "ADE Cloud isn't open to your account yet", message: `ADE didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
@@ -59,7 +60,10 @@ async function finishCloudLink(link: WebCloudLink, billing: WebCloudBilling, acc
       showToast({ title: `You're on ${cloudPlanLabelOf(account, cloudCatalogOf(account))} already`, message: "Change your plan under Plans on this page." });
       return;
     }
-    if (!lease || !accountClient.isSessionLeaseCurrent(lease)) return;
+    if (!userId || accountClient.getSnapshot().userId !== userId) {
+      showToast({ title: "You signed in as someone else", message: `ADE didn't start checkout for ${label}.`, durationMs: READABLE_TOAST_DURATION_MS });
+      return;
+    }
     showToast({ title: `Opening checkout for ${label}…` });
     await billing.openCheckout(plan, undefined, { afterSignIn: false });
   } catch (error) {
