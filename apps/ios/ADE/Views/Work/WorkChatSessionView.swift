@@ -1003,7 +1003,6 @@ struct WorkChatSessionView: View {
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
   /// The CTO greeting's starters: fills the composer with the text.
-  var onCtoStarter: ((String) -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1091,6 +1090,9 @@ struct WorkChatSessionView: View {
   /// The sign-in card to show, keyed so a dismissed one stays hidden until a
   /// new reason brings it back: the failed turn whose signed-out agent it is
   /// for, else the machine's word that the agent has no login yet.
+  /// The CTO greeting's starters need a prompt box on screen to land in.
+  var ctoStartersEnabled: Bool { canComposeMessages && shownProviderSignIn == nil }
+
   var shownProviderSignIn: (key: String, reason: WorkProviderSignInReason)? {
     guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat else { return nil }
     let shown: (key: String, reason: WorkProviderSignInReason)
@@ -1723,6 +1725,7 @@ struct WorkChatSessionView: View {
       var hasher = Hasher()
       hasher.combine(transcriptLoadState)
       hasher.combine(isLive)
+      hasher.combine(ctoLive != nil && ctoStartersEnabled)
       rows.append(
         WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
       )
@@ -1895,9 +1898,16 @@ struct WorkChatSessionView: View {
       }
       .adeInspectable("Work.Chat.Transcript.LoadFailed")
     case .idle:
-      if let ctoLive {
+      // Offline, the empty thread means "not loaded", not "no history": the
+      // reconnect copy below says so, not the greeting.
+      if let ctoLive, isLive {
         // The CTO's empty thread: it says hi and offers a start.
-        CtoGreetingView(live: ctoLive, onPick: canComposeMessages ? onCtoStarter : nil)
+        // A starter goes into the prompt box once, like a scene's reply: an
+        // event, not held state, so a composer that remounts later (after a
+        // sign-in card) keeps whatever the person typed since.
+        CtoGreetingView(live: ctoLive, onPick: ctoStartersEnabled ? { [sessionId = session.id] text in
+          WorkSceneReplyCenter.replies.send(WorkSceneReplyRequest(sessionId: sessionId, text: text))
+        } : nil)
       } else {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",

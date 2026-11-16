@@ -108,7 +108,7 @@ export function CtoWorkingLine({
           type="button"
           className="ade-cto-working-line"
           aria-expanded={open}
-          aria-label={`${open ? "Hide" : "Show"} steps: ${step}`}
+          aria-label={`${open ? "Hide" : "Show"} steps: ${step}${doneCount > 0 ? `, ${doneCount === 1 ? "1 step" : `${doneCount} steps`} done` : ""}`}
           onClick={() => setOpen((value) => !value)}
         >
           {line}

@@ -37,6 +37,7 @@ import { ACCOUNT_VAULT_NO_REVISION } from "../../../shared/types/accountVault";
 import { writeTextAtomic } from "../shared/utils";
 import { isAdeCloudComputer } from "../adeCloud/cloudComputerRules";
 import type { CtoMemoryService } from "./ctoMemoryService";
+import type { CtoStoryRecord } from "./ctoStory";
 
 const ENCODED_PREFIX = "gz1:";
 const SAVE_DEBOUNCE_MS = 3_000;
@@ -214,6 +215,31 @@ function mergeUserNotes(local: string, carried: string): string {
   return merged.join("\n");
 }
 
+/**
+ * The story a new home starts from: the copy's summary, its tail waiting to
+ * be folded. It covers through the copy's last save (never later than now):
+ * this machine's turns from an earlier stay are older than that, and any it
+ * ran after the move, while the copy was out of reach, are newer and get
+ * folded.
+ */
+function storyAfterMove(copy: CtoAccountCopy, restoredAt: string): CtoStoryRecord | null {
+  const summary = copy.story?.summary.trim() ? copy.story.summary : "";
+  const tail = copy.tail.trim() ? copy.tail : "";
+  if (!summary && !tail) return null;
+  const boundary = copy.savedAt < restoredAt ? copy.savedAt : restoredAt;
+  return {
+    v: 1,
+    summary,
+    startsAt: copy.story?.startsAt ?? boundary,
+    coveredThrough: boundary,
+    updatedAt: restoredAt,
+    model: null,
+    carried: tail ? { fromName: copy.ownerName, text: tail } : null,
+    movedAt: boundary,
+    movedFrom: copy.story?.summary.trim() ? { coveredThrough: copy.story.coveredThrough } : null,
+  };
+}
+
 export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
   const { logger } = args;
   const now = () => args.now?.() ?? Date.now();
@@ -275,7 +301,8 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       const story = args.ctoMemory.readStory?.() ?? null;
       if (!story?.summary.trim()) return null;
       return { summary: story.summary, startsAt: story.startsAt, coveredThrough: story.coveredThrough };
-    } catch {
+    } catch (error) {
+      logger.warn("cto.account_copy_story_unreadable", { error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   };
@@ -482,6 +509,11 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       ["user_notes", () => args.ctoMemory.writeNotes("user", mergeUserNotes(args.ctoMemory.readNotes("user"), copy.userNotes))],
       // No open work in the copy: this machine's list is from an earlier stay, and goes.
       ["open_work", () => args.ctoMemory.replaceOpenWorkText(copy.openWork)],
+      // The old home's story, with the carried turns waiting to be folded into
+      // it. It covers through the move: this machine's older turns are from an
+      // earlier stay, older than anything the copy holds. Required: a save
+      // after a restore without it would put this machine's story in the account.
+      ["story", () => args.ctoMemory.writeStory?.(storyAfterMove(copy, new Date(now()).toISOString()))],
     ];
     let complete = true;
     for (const [step, run] of steps) {
@@ -506,28 +538,6 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       tail: copy.tail,
     });
     writeJson(carriedRoutinesPath, { routines: copy.routines });
-    // The old home's story, with the carried turns waiting to be folded into
-    // it. It covers through the move: this machine's older turns are from an
-    // earlier stay, older than anything the copy holds.
-    try {
-      const restoredAt = new Date(now()).toISOString();
-      if (copy.story?.summary.trim() || copy.tail.trim()) {
-        args.ctoMemory.writeStory?.({
-          v: 1,
-          summary: copy.story?.summary ?? "",
-          startsAt: copy.story?.startsAt ?? restoredAt,
-          coveredThrough: restoredAt,
-          updatedAt: restoredAt,
-          model: null,
-          carried: copy.tail.trim() ? { fromName: copy.ownerName, text: copy.tail } : null,
-          movedAt: restoredAt,
-        });
-      } else {
-        args.ctoMemory.writeStory?.(null);
-      }
-    } catch (error) {
-      logger.warn("cto.account_copy_story_failed", { error: error instanceof Error ? error.message : String(error) });
-    }
     await applyCarriedRoutines();
     await args.startFreshThread?.().catch((error: unknown) => {
       logger.warn("cto.account_copy_fresh_thread_failed", { error: error instanceof Error ? error.message : String(error) });

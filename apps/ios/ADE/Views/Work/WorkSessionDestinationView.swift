@@ -2550,11 +2550,6 @@ struct WorkSessionDestinationView: View {
       onOpenSideChat: openSideChatAction
     )
     chatView.ctoLive = ctoLiveModel
-    if ctoLiveModel != nil {
-      chatView.onCtoStarter = { text in
-        composerDraftRestore = WorkChatComposerDraftRestore(text: text, replacesExistingDraft: true)
-      }
-    }
     return chatView
   }
 

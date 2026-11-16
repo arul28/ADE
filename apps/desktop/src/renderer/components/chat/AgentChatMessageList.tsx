@@ -7288,6 +7288,161 @@ function AgentChatMessageListMain({
     () => ({ staleInterruptReceipts, usageLimitResumeActive, ctoSurface }),
     [staleInterruptReceipts, usageLimitResumeActive, ctoSurface],
   );
+  /**
+   * Proof an answer already shows inline. The turn's "N proof filed" links
+   * skip it, so a picture never shows twice in one thread.
+   *
+   * Text streams in pieces, so each turn's pieces are joined before reading
+   * citations, which keeps a split citation whole. Per turn, the result is
+   * kept with the turn's text size and piece count: a streaming delta only
+   * grows the live turn, so only that turn is joined and read again.
+   */
+  const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
+  const answerCitedProofIds = useMemo(() => {
+    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
+    const piecesByTurn = new Map<string, string[]>();
+    for (const envelope of events) {
+      if (envelope.event.type !== "text") continue;
+      const key = envelope.event.turnId ?? "";
+      const pieces = piecesByTurn.get(key);
+      if (pieces) pieces.push(envelope.event.text);
+      else piecesByTurn.set(key, [envelope.event.text]);
+    }
+    const previous = citedIdsByTurnRef.current;
+    const next = new Map<string, { pieces: number; chars: number; ids: string[] }>();
+    const cited = new Set<string>();
+    for (const [key, pieces] of piecesByTurn) {
+      let chars = 0;
+      for (const piece of pieces) chars += piece.length;
+      const cachedTurn = previous.get(key);
+      const entry = cachedTurn && cachedTurn.pieces === pieces.length && cachedTurn.chars === chars
+        ? cachedTurn
+        : { pieces: pieces.length, chars, ids: turnCitedProofIds(pieces.join("")) };
+      next.set(key, entry);
+      for (const id of entry.ids) cited.add(id);
+    }
+    citedIdsByTurnRef.current = next;
+    return cited.size ? cited : EMPTY_PROOF_IDS;
+  }, [events, proofArtifacts.length]);
+
+  // Proof a "Filed proof" row already shows under its line. While the turn
+  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
+  const actionShownProofIds = useMemo(() => {
+    let ids: Set<string> | null = null;
+    for (const env of allGroupedRows) {
+      if (env.event.type !== "work_log_group") continue;
+      for (const { summary } of collectComputerUseActions(env.event.entries)) {
+        for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
+      }
+    }
+    return ids ?? EMPTY_PROOF_IDS;
+  }, [allGroupedRows]);
+
+  /**
+   * Proof captured during each turn, keyed by the turn's `done` row, for its
+   * "N proof filed" link — a way into the drawer, not a second copy of the
+   * pictures, which show on the rows that filed them. Proof outside a finished
+   * turn anchors on the row it follows. Bucketing is by wall clock because
+   * artifacts carry `createdAt`, not turnId.
+   */
+  const turnProofTimeline = useMemo(() => {
+    const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
+    const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
+    if (!proofArtifacts.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
+    const stamped = proofArtifacts
+      .filter((artifact) => !answerCitedProofIds.has(artifact.id))
+      .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    if (!stamped.length) {
+      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
+    }
+    const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
+      const at = Date.parse(env.timestamp);
+      return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
+    }, Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(loadedTranscriptStart)) {
+      return {
+        byDoneRowKey,
+        inlineByRowKey,
+        // With no loaded rows, an older page means this is not the transcript
+        // boundary. Do not pull unknown historic proof into the visible tail.
+        unanchored: hasOlderHistory ? EMPTY_PROOF_ARTIFACTS : stamped.map((entry) => entry.artifact),
+      };
+    }
+    const visibleStamped = stamped.filter((entry) => entry.at >= loadedTranscriptStart);
+    const assignedIds = new Set<string>();
+    let turnStartMs: number | null = null;
+    for (const env of allGroupedRows) {
+      const rowMs = Date.parse(env.timestamp);
+      if (!Number.isFinite(rowMs)) continue;
+      if (
+        turnStartMs == null
+        && (getGroupedTurnId(env) != null || env.event.type === "user_message")
+      ) {
+        turnStartMs = rowMs;
+      }
+      if (env.event.type !== "done") continue;
+      const endMs = rowMs;
+      const startMs = turnStartMs ?? endMs;
+      const captured = visibleStamped
+        .filter((entry) => entry.at >= startMs && entry.at <= endMs)
+        .map((entry) => entry.artifact);
+      if (captured.length > 0) {
+        byDoneRowKey.set(env.key, captured);
+        for (const artifact of captured) assignedIds.add(artifact.id);
+      }
+      turnStartMs = null;
+    }
+
+    // Anchored on the unfolded rows so opening or closing a fold never moves
+    // proof between rows; `inlineProofByRowKey` below lifts proof whose row is
+    // hidden onto the fold row.
+    const visibleRows = presentedRows
+      .map((row) => ({ row, at: Date.parse(row.timestamp) }))
+      .filter((entry) => Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at);
+    const unanchored: ComputerUseArtifactView[] = [];
+    for (const entry of visibleStamped) {
+      if (assignedIds.has(entry.artifact.id) || actionShownProofIds.has(entry.artifact.id)) continue;
+      let anchorKey: string | null = null;
+      for (const row of visibleRows) {
+        if (row.at > entry.at) break;
+        anchorKey = row.row.key;
+      }
+      if (!anchorKey) {
+        unanchored.push(entry.artifact);
+        continue;
+      }
+      const existing = inlineByRowKey.get(anchorKey) ?? [];
+      existing.push(entry.artifact);
+      inlineByRowKey.set(anchorKey, existing);
+    }
+
+    return {
+      byDoneRowKey,
+      inlineByRowKey,
+      unanchored,
+    };
+  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds, actionShownProofIds]);
+  const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
+  // Sources the agent used per turn: the turn-end chip and the fold count.
+  // A turn's list keeps its identity while its sources are unchanged, so a
+  // streaming delta does not re-render every memoized turn-end row.
+  const turnSourcesCacheRef = useRef<Map<string, ChatSource[]>>(new Map());
+  const turnSourcesByTurnId = useMemo(() => {
+    const previous = turnSourcesCacheRef.current;
+    const next = new Map<string, ChatSource[]>();
+    const derived = chatSources ?? deriveChatSources(events, { provider: sessionProvider });
+    for (const [turnId, list] of derived.byTurn) {
+      const prior = previous.get(turnId);
+      next.set(turnId, prior && sameChatSourceList(prior, list) ? prior : list);
+    }
+    turnSourcesCacheRef.current = next;
+    return next;
+  }, [chatSources, events, sessionProvider]);
   // The rows the timeline draws: every fold applied, then Thought rows that
   // ended up next to each other (the rows between them are not drawn: tools,
   // an open fold's duplicate answer) merged into one (`mergeAdjacentThoughtRows`).
@@ -7333,12 +7488,27 @@ function AgentChatMessageListMain({
     const calmTurnId = ctoSurface && showStreamingIndicator && !sessionEnded ? activeTurnId : null;
     // A finished CTO turn has no stats line: the reply's hover footer keeps
     // its time and Copy, and a hidden line still took a row of blank space.
-    // A wake turn's line stays: it is the toggle for that turn's fold.
+    // A turn-end row that carries something stays: a wake turn's fold toggle,
+    // a wake chain's toggle, scheduled work, its proof link, its sources, or its
+    // file changes.
+    const quietCtoTurnEnd = (row: (typeof arranged.rows)[number]): boolean =>
+      ctoSurface
+      && row.event.type === "done"
+      && row.event.status === "completed"
+      && !wakeTurnFoldIdByTurnEndKey.has(row.key)
+      && !wakeChainByAnchorKey.has(row.key)
+      && !scheduledWorkByTurnEndKey.has(row.key)
+      && !turnProofByRowKey.has(row.key)
+      && !(transcriptToolActivity.fileEntriesByDoneRowKey.get(row.key)?.length)
+      && !(row.event.turnId && (
+        checkpointDiffTurnIds.has(row.event.turnId)
+        || (turnSourcesByTurnId.get(row.event.turnId)?.length ?? 0) > 0
+      ));
     const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext)
       && !(calmTurnId && row.event.type === "reasoning" && row.event.turnId === calmTurnId)
-      && !(ctoSurface && row.event.type === "done" && row.event.status === "completed" && !wakeTurnFoldIdByTurnEndKey.has(row.key)));
+      && !quietCtoTurnEnd(row));
     return drawn.length === arranged.rows.length ? arranged.rows : drawn;
-  }, [activeTurnId, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, sessionEnded, showStreamingIndicator, turnFolds, unreadSince, wakeChains, wakeTurnFoldIdByTurnEndKey, wakeTurnIds]);
+  }, [activeTurnId, checkpointDiffTurnIds, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, scheduledWorkByTurnEndKey, sessionEnded, transcriptToolActivity, turnProofByRowKey, turnSourcesByTurnId, showStreamingIndicator, turnFolds, unreadSince, wakeChainByAnchorKey, wakeChains, wakeTurnFoldIdByTurnEndKey, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.
@@ -7673,161 +7843,6 @@ function AgentChatMessageListMain({
     [allGroupedRows, turnStartedAtMs],
   );
 
-  /**
-   * Proof an answer already shows inline. The turn's "N proof filed" links
-   * skip it, so a picture never shows twice in one thread.
-   *
-   * Text streams in pieces, so each turn's pieces are joined before reading
-   * citations, which keeps a split citation whole. Per turn, the result is
-   * kept with the turn's text size and piece count: a streaming delta only
-   * grows the live turn, so only that turn is joined and read again.
-   */
-  const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
-  const answerCitedProofIds = useMemo(() => {
-    if (!proofArtifacts.length) return EMPTY_PROOF_IDS;
-    const piecesByTurn = new Map<string, string[]>();
-    for (const envelope of events) {
-      if (envelope.event.type !== "text") continue;
-      const key = envelope.event.turnId ?? "";
-      const pieces = piecesByTurn.get(key);
-      if (pieces) pieces.push(envelope.event.text);
-      else piecesByTurn.set(key, [envelope.event.text]);
-    }
-    const previous = citedIdsByTurnRef.current;
-    const next = new Map<string, { pieces: number; chars: number; ids: string[] }>();
-    const cited = new Set<string>();
-    for (const [key, pieces] of piecesByTurn) {
-      let chars = 0;
-      for (const piece of pieces) chars += piece.length;
-      const cachedTurn = previous.get(key);
-      const entry = cachedTurn && cachedTurn.pieces === pieces.length && cachedTurn.chars === chars
-        ? cachedTurn
-        : { pieces: pieces.length, chars, ids: turnCitedProofIds(pieces.join("")) };
-      next.set(key, entry);
-      for (const id of entry.ids) cited.add(id);
-    }
-    citedIdsByTurnRef.current = next;
-    return cited.size ? cited : EMPTY_PROOF_IDS;
-  }, [events, proofArtifacts.length]);
-
-  // Proof a "Filed proof" row already shows under its line. While the turn
-  // runs, the inline "N proof filed" line skips it; the turn-end count keeps it.
-  const actionShownProofIds = useMemo(() => {
-    let ids: Set<string> | null = null;
-    for (const env of allGroupedRows) {
-      if (env.event.type !== "work_log_group") continue;
-      for (const { summary } of collectComputerUseActions(env.event.entries)) {
-        for (const id of computerUseShownProofIds(summary)) (ids ??= new Set()).add(id);
-      }
-    }
-    return ids ?? EMPTY_PROOF_IDS;
-  }, [allGroupedRows]);
-
-  /**
-   * Proof captured during each turn, keyed by the turn's `done` row, for its
-   * "N proof filed" link — a way into the drawer, not a second copy of the
-   * pictures, which show on the rows that filed them. Proof outside a finished
-   * turn anchors on the row it follows. Bucketing is by wall clock because
-   * artifacts carry `createdAt`, not turnId.
-   */
-  const turnProofTimeline = useMemo(() => {
-    const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
-    const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
-    if (!proofArtifacts.length) {
-      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
-    }
-    const stamped = proofArtifacts
-      .filter((artifact) => !answerCitedProofIds.has(artifact.id))
-      .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
-      .filter((entry) => Number.isFinite(entry.at))
-      .sort((left, right) => left.at - right.at);
-    if (!stamped.length) {
-      return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
-    }
-    const loadedTranscriptStart = allGroupedRows.reduce((earliest, env) => {
-      const at = Date.parse(env.timestamp);
-      return Number.isFinite(at) ? Math.min(earliest, at) : earliest;
-    }, Number.POSITIVE_INFINITY);
-    if (!Number.isFinite(loadedTranscriptStart)) {
-      return {
-        byDoneRowKey,
-        inlineByRowKey,
-        // With no loaded rows, an older page means this is not the transcript
-        // boundary. Do not pull unknown historic proof into the visible tail.
-        unanchored: hasOlderHistory ? EMPTY_PROOF_ARTIFACTS : stamped.map((entry) => entry.artifact),
-      };
-    }
-    const visibleStamped = stamped.filter((entry) => entry.at >= loadedTranscriptStart);
-    const assignedIds = new Set<string>();
-    let turnStartMs: number | null = null;
-    for (const env of allGroupedRows) {
-      const rowMs = Date.parse(env.timestamp);
-      if (!Number.isFinite(rowMs)) continue;
-      if (
-        turnStartMs == null
-        && (getGroupedTurnId(env) != null || env.event.type === "user_message")
-      ) {
-        turnStartMs = rowMs;
-      }
-      if (env.event.type !== "done") continue;
-      const endMs = rowMs;
-      const startMs = turnStartMs ?? endMs;
-      const captured = visibleStamped
-        .filter((entry) => entry.at >= startMs && entry.at <= endMs)
-        .map((entry) => entry.artifact);
-      if (captured.length > 0) {
-        byDoneRowKey.set(env.key, captured);
-        for (const artifact of captured) assignedIds.add(artifact.id);
-      }
-      turnStartMs = null;
-    }
-
-    // Anchored on the unfolded rows so opening or closing a fold never moves
-    // proof between rows; `inlineProofByRowKey` below lifts proof whose row is
-    // hidden onto the fold row.
-    const visibleRows = presentedRows
-      .map((row) => ({ row, at: Date.parse(row.timestamp) }))
-      .filter((entry) => Number.isFinite(entry.at))
-      .sort((left, right) => left.at - right.at);
-    const unanchored: ComputerUseArtifactView[] = [];
-    for (const entry of visibleStamped) {
-      if (assignedIds.has(entry.artifact.id) || actionShownProofIds.has(entry.artifact.id)) continue;
-      let anchorKey: string | null = null;
-      for (const row of visibleRows) {
-        if (row.at > entry.at) break;
-        anchorKey = row.row.key;
-      }
-      if (!anchorKey) {
-        unanchored.push(entry.artifact);
-        continue;
-      }
-      const existing = inlineByRowKey.get(anchorKey) ?? [];
-      existing.push(entry.artifact);
-      inlineByRowKey.set(anchorKey, existing);
-    }
-
-    return {
-      byDoneRowKey,
-      inlineByRowKey,
-      unanchored,
-    };
-  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds, actionShownProofIds]);
-  const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
-  // Sources the agent used per turn: the turn-end chip and the fold count.
-  // A turn's list keeps its identity while its sources are unchanged, so a
-  // streaming delta does not re-render every memoized turn-end row.
-  const turnSourcesCacheRef = useRef<Map<string, ChatSource[]>>(new Map());
-  const turnSourcesByTurnId = useMemo(() => {
-    const previous = turnSourcesCacheRef.current;
-    const next = new Map<string, ChatSource[]>();
-    const derived = chatSources ?? deriveChatSources(events, { provider: sessionProvider });
-    for (const [turnId, list] of derived.byTurn) {
-      const prior = previous.get(turnId);
-      next.set(turnId, prior && sameChatSourceList(prior, list) ? prior : list);
-    }
-    turnSourcesCacheRef.current = next;
-    return next;
-  }, [chatSources, events, sessionProvider]);
   // Proof stays visible when its row folds: it draws on the fold row.
   // Likewise proof anchored on a Thought row that merged into the one before it
   // draws on the merged row.

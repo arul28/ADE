@@ -148,6 +148,14 @@ export function noteSimilarity(a: string, b: string): number {
   return (2 * shared) / (left.size + right.size);
 }
 
+/** `.ade/cto/story.json` exists but is not a story this build can read. */
+export class CtoStoryUnreadableError extends Error {
+  constructor(detail: string) {
+    super(`The CTO's story file can't be read: ${detail}`);
+    this.name = "CtoStoryUnreadableError";
+  }
+}
+
 /* ── Helpers ── */
 
 function readFileOrEmpty(filePath: string): string {
@@ -428,15 +436,25 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   /**
    * The story so far (`ctoStory.ts`): a summary of the conversation older
-   * than what a fresh thread carries word for word. Null when there is none
-   * or the file is unreadable (the next update starts it again).
+   * than what a fresh thread carries word for word. Null when there is none.
+   * Throws `CtoStoryUnreadableError` when the file is there but can't be read
+   * (a lock, a truncated write, a newer format): the caller must not take
+   * that for "no story" and write a new one over it.
    */
   const readStory = (): CtoStoryRecord | null => {
-    const raw = readFileOrEmpty(storyPath);
+    let raw: string;
+    try {
+      raw = fs.readFileSync(storyPath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw new CtoStoryUnreadableError(error instanceof Error ? error.message : String(error));
+    }
     if (!raw.trim()) return null;
     try {
       const parsed = JSON.parse(raw) as Partial<CtoStoryRecord>;
-      if (parsed?.v !== 1 || typeof parsed.summary !== "string" || typeof parsed.coveredThrough !== "string") return null;
+      if (parsed?.v !== 1 || typeof parsed.summary !== "string" || typeof parsed.coveredThrough !== "string") {
+        throw new Error(`not a version 1 story (v=${String(parsed?.v)})`);
+      }
       const carried = parsed.carried && typeof parsed.carried.text === "string" && parsed.carried.text.trim()
         ? { fromName: typeof parsed.carried.fromName === "string" ? parsed.carried.fromName : "another computer", text: parsed.carried.text }
         : null;
@@ -449,10 +467,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         model: typeof parsed.model === "string" ? parsed.model : null,
         ...(carried ? { carried } : {}),
         ...(typeof parsed.movedAt === "string" ? { movedAt: parsed.movedAt } : {}),
+        ...(parsed.movedFrom && typeof parsed.movedFrom.coveredThrough === "string"
+          ? { movedFrom: { coveredThrough: parsed.movedFrom.coveredThrough } }
+          : {}),
       };
     } catch (error) {
-      logger?.warn("cto.story_unreadable", { error: error instanceof Error ? error.message : String(error) });
-      return null;
+      throw new CtoStoryUnreadableError(error instanceof Error ? error.message : String(error));
     }
   };
 

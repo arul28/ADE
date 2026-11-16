@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptCtoStoryAnswer,
   buildCtoHistoryBlock,
   cleanCtoStoryAnswer,
   countUncoveredBeforeTail,
@@ -64,6 +65,14 @@ describe("planCtoStoryFold", () => {
     expect(planCtoStoryFold({ entries: later, story: { ...story, movedAt: at(10) } })!.gap).toBeNull();
   });
 
+  it("keeps messages that share the batch's last time in that batch", () => {
+    // 20 messages of 4k at one time, then a long tail: a 40k batch would end inside the run.
+    const sameTime = [...entries(5, 1_000), ...entries(20, 4_000).map((entry) => ({ ...entry, at: at(30) })), ...entries(30, 2_000, 40)];
+    const plan = planCtoStoryFold({ entries: sameTime, story: null })!;
+    expect(plan.nextCursor).toBe(at(30));
+    expect(plan.batch.filter((entry) => entry.at === at(30))).toHaveLength(20);
+  });
+
   it("never folds untimed entries", () => {
     const untimed = list.map(({ at: _at, ...rest }) => rest);
     expect(planCtoStoryFold({ entries: untimed, story: null, force: true })).toBeNull();
@@ -93,6 +102,18 @@ describe("buildCtoHistoryBlock", () => {
     });
     expect(block).toContain("Mac Studio");
     expect(block).toContain("Person: ship it");
+  });
+});
+
+describe("acceptCtoStoryAnswer", () => {
+  const previous = "## Where things stand\n".padEnd(4_000, "x");
+  it.each([
+    ["a refusal", "I'm sorry, but I can't summarize this conversation for you.", previous, false],
+    ["a fragment that drops most of the story", "## Where things stand\nShipped.", previous, false],
+    ["a condensed story", "## Where things stand\n".padEnd(2_000, "y"), previous, true],
+    ["a first story", "## Where things stand\nThe person asked for the CTO story feature.", null, true],
+  ])("%s", (_label, answer, prior, accepted) => {
+    expect(acceptCtoStoryAnswer(answer, prior) !== null).toBe(accepted);
   });
 });
 

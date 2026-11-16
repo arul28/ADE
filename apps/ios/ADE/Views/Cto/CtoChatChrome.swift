@@ -451,7 +451,7 @@ struct CtoGreetingView: View {
   ]
 
   var body: some View {
-    let accent = live.look?.ctoAccent ?? ADEColor.ctoAccent
+    let accent = live.look.ctoAccent
     VStack(spacing: 0) {
       ZStack {
         CtoAvatarHalo(color: accent, diameter: 220)
@@ -541,7 +541,6 @@ struct CtoWorkingLine: View {
   var onOpenSteps: (() -> Void)? = nil
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var glowUp = false
 
   private var running: Bool { members.contains { $0.status == .running } }
   private var doneCount: Int { members.filter { $0.status != .running }.count }
@@ -553,14 +552,21 @@ struct CtoWorkingLine: View {
   }
 
   var body: some View {
-    let accent = look?.ctoAccent ?? ADEColor.ctoAccent
+    let accent = look.ctoAccent
     let row = HStack(spacing: 12) {
       ZStack {
         Circle()
           .fill(RadialGradient(colors: [accent.opacity(0.34), accent.opacity(0)], center: .center, startRadius: 0, endRadius: 30))
           .frame(width: 60, height: 60)
-          .scaleEffect(glowUp ? 1.06 : 0.92)
-          .opacity(glowUp ? 0.85 : 0.45)
+          // A phase animator, not a one-shot state: the row remounts inside a
+          // Button once the first step lands, and the glow must keep breathing.
+          .phaseAnimator(reduceMotion ? [false] : [false, true]) { glow, up in
+            glow
+              .scaleEffect(up ? 1.06 : 0.92)
+              .opacity(up ? 0.85 : 0.45)
+          } animation: { _ in
+            .easeInOut(duration: streamingText ? 0.8 : 1.2)
+          }
         CtoAvatarView(
           look: look,
           state: streamingText && !running ? .thinking : .working,
@@ -603,10 +609,6 @@ struct CtoWorkingLine: View {
     .background(accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(accent.opacity(0.16), lineWidth: 0.5))
     .contentShape(Rectangle())
-    .onAppear {
-      guard !reduceMotion else { return }
-      withAnimation(.easeInOut(duration: streamingText ? 0.8 : 1.2).repeatForever(autoreverses: true)) { glowUp = true }
-    }
     Group {
       if let onOpenSteps, !members.isEmpty {
         Button(action: onOpenSteps) { row }
@@ -619,6 +621,7 @@ struct CtoWorkingLine: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(step)
+    .accessibilityValue(doneCount == 0 ? "" : (doneCount == 1 ? "1 step done" : "\(doneCount) steps done"))
     .accessibilityIdentifier("Cto.WorkingLine")
   }
 }
