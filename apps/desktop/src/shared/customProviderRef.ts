@@ -9,7 +9,7 @@
  * the launch fields still say `presetId`. No agent-facing text does.
  */
 import type { HarnessPreset } from "./harnessPresets";
-import { harnessBodyLabel, presetLabel } from "./harnessPresets";
+import { harnessBodyLabel, presetLabel, presetSourceSummary } from "./harnessPresets";
 import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "./harnessRoutes";
 import { getModelById, resolveModelAlias } from "./modelRegistry";
 import type { LaunchModelSpelling } from "./launchModelRule";
@@ -40,7 +40,7 @@ export function findCustomProvider(presets: readonly HarnessPreset[] | null, ref
   if (isRoutePresetId(wanted)) {
     const route = decodeRoutePresetId(wanted);
     return route
-      ? { ok: true, preset: { id: wanted, name: "This route", harness: route.harness, source: route.source, model: route.model } }
+      ? { ok: true, preset: { id: wanted, name: `The ${presetSourceSummary(route.source).title} route`, harness: route.harness, source: route.source, model: route.model } }
       : { ok: false, message: `"${wanted}" is not a route id ADE can read. Build one again with \`ade harness route-id\`.` };
   }
   if (!presets?.length) {
@@ -61,6 +61,11 @@ export function findCustomProvider(presets: readonly HarnessPreset[] | null, ref
     };
   }
   return { ok: false, message: `No Custom provider "${wanted}" on this machine. ${LIST_HINT}` };
+}
+
+/** A saved Custom provider by its quoted name; a route by what it routes through. */
+function providerName(preset: CustomProviderTarget): string {
+  return isRoutePresetId(preset.id) ? preset.name : `"${presetLabel(preset)}"`;
 }
 
 /**
@@ -89,20 +94,22 @@ export function customProviderModelProblem(
   model: string | null | undefined,
   spelling: LaunchModelSpelling = "--model",
 ): string | null {
-  const name = presetLabel(preset);
+  const name = providerName(preset);
   const expected = preset.model.trim();
   const pass = (value: string) => (spelling === "--model" ? `Pass --model ${value}` : `Send ${spelling}: "${value}"`);
   if (!expected) return null;
   const given = model?.trim() ?? "";
-  if (!given) return `"${name}" runs ${expected}. ${pass(expected)} with it.`;
+  if (!given) return `${name} runs ${expected}. ${pass(expected)} with it.`;
   const launchId = launchModelIdFor(preset.harness, preset.source, expected);
   if (namesProviderModel(given, expected, launchId)) return null;
-  return `"${name}" runs ${expected}, not ${given}. ${pass(expected)}, or pick another Custom provider (${LIST_COMMAND} lists them).`;
+  // A route id names its setup in itself: there is nothing else to pick from.
+  if (isRoutePresetId(preset.id)) return `${name} runs ${expected}, not ${given}. ${pass(expected)}.`;
+  return `${name} runs ${expected}, not ${given}. ${pass(expected)}, or pick another Custom provider (${LIST_COMMAND} lists them).`;
 }
 
 /** Null when the harness the caller named (if any) is this Custom provider's. */
 export function customProviderHarnessProblem(preset: CustomProviderTarget, provider: string | null | undefined): string | null {
   const given = provider?.trim();
   if (!given || given.toLowerCase() === preset.harness) return null;
-  return `"${presetLabel(preset)}" runs in ${harnessBodyLabel(preset.harness)} (--provider ${preset.harness}), not ${given}. Leave out --provider or pass --provider ${preset.harness}.`;
+  return `${providerName(preset)} runs in ${harnessBodyLabel(preset.harness)} (--provider ${preset.harness}), not ${given}. Leave out --provider or pass --provider ${preset.harness}.`;
 }

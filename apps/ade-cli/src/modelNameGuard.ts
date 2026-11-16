@@ -105,7 +105,7 @@ const ACTION_MODEL_RULES: ReadonlyMap<string, ActionModelRule> = new Map<string,
     // Delivered into an existing chat, an event starts no new agent.
     launch: (fields) => (named(fields.chatSessionId)
       ? null
-      : { provider: null, models: [fields.modelId], message: webhookModelRequiredMessage("field") }),
+      : { provider: null, models: [fields.modelId], message: webhookModelRequiredMessage("modelId") }),
   }],
   ["automations.saveRule", {
     refs: (fields) => automationDraftModelRefs(record(fields.draft)),
@@ -124,45 +124,57 @@ function modelRefsPickedBy(domain: string, action: string, input: unknown): Pick
   return fields && rule ? rule.refs(fields) : [];
 }
 
+/** A rule's steps: `actions` (and the older `legacyActions`), and a built-in execution's own list. */
+function automationDraftSteps(draft: Fields): Fields[] {
+  return [draft.actions, draft.legacyActions, record(record(draft.execution)?.builtIn)?.actions]
+    .flatMap((list) => (Array.isArray(list) ? list : []))
+    .map(record)
+    .filter((step): step is Fields => step !== null);
+}
+
 /** The rule's own model and the model of each built-in agent or handoff step. */
 function automationDraftModelRefs(draft: Fields | null): PickedModel[] {
   if (!draft) return [];
   const refs: PickedModel[] = [{ ref: record(draft.modelConfig)?.modelId }];
-  // Steps live in `actions` (and the older `legacyActions`), and a built-in
-  // execution carries its own list; the rule runs whichever it has.
-  const steps = [draft.actions, draft.legacyActions, record(record(draft.execution)?.builtIn)?.actions]
-    .flatMap((list) => (Array.isArray(list) ? list : []));
-  for (const step of steps) {
-    const fields = record(step);
-    if (fields?.type === "agent-session") refs.push({ ref: record(fields.modelConfig)?.modelId });
-    if (fields?.type === "handoff") refs.push({ ref: fields.targetModelId });
+  for (const step of automationDraftSteps(draft)) {
+    if (step.type === "agent-session") refs.push({ ref: record(step.modelConfig)?.modelId });
+    if (step.type === "handoff") refs.push({ ref: step.targetModelId });
   }
   return refs;
+}
+
+/**
+ * The kind a draft with no `execution` gets, as the planner normalizes it
+ * (automationPlannerService: `legacyActions` when it holds steps, else
+ * `actions`; any steps make it built-in).
+ */
+function automationDraftKind(draft: Fields): string {
+  const kind = record(draft.execution)?.kind;
+  if (typeof kind === "string") return kind;
+  const legacy = Array.isArray(draft.legacyActions) && draft.legacyActions.length > 0 ? draft.legacyActions : null;
+  const steps = legacy ?? (Array.isArray(draft.actions) ? draft.actions : []);
+  return steps.length > 0 ? "built-in" : "agent-session";
 }
 
 /**
  * Which agent a rule would start on a model nobody named, or null. The rule's
  * own `modelConfig.modelId` runs an agent-session rule and any agent step that
  * names none; a handoff names its target. Without them the run falls back to
- * ADE's default, which an agent may not choose by leaving the field out.
+ * ADE's default, which an agent may not choose by leaving the field out. A
+ * rule bound to an existing chat (`execution.session.chatSessionId`) starts no
+ * agent. Exported so the RPC guard can tell a rule that already ran without a
+ * model (an edit keeps it as it was) from one losing its model now.
  */
-function automationDraftMissingModel(draft: Fields | null): string | null {
+export function automationDraftMissingModel(draft: Fields | null): string | null {
   if (!draft) return null;
+  if (named(record(record(draft.execution)?.session)?.chatSessionId)) return null;
   const ruleModel = record(draft.modelConfig)?.modelId;
-  const execution = record(draft.execution);
-  const steps = [draft.actions, draft.legacyActions, record(execution?.builtIn)?.actions]
-    .flatMap((list) => (Array.isArray(list) ? list : []))
-    .map(record)
-    .filter((step): step is Fields => step !== null);
-  const legacySteps = Array.isArray(draft.legacyActions) && draft.legacyActions.length > 0;
-  const kind = typeof execution?.kind === "string" ? execution.kind : legacySteps ? "built-in" : "agent-session";
-  const ask = "Set modelConfig.modelId on the rule (or on that step). ";
-  if (kind === "agent-session" && !named(ruleModel)) {
-    return `${ask}The rule starts an agent, and ADE never picks its model. ${unknownModelHint()}`;
+  if (automationDraftKind(draft) === "agent-session" && !named(ruleModel)) {
+    return `Set modelConfig.modelId on the rule: it starts an agent, and ADE never picks its model. ${unknownModelHint()}`;
   }
-  for (const step of steps) {
+  for (const step of automationDraftSteps(draft)) {
     if (step.type === "agent-session" && !named(record(step.modelConfig)?.modelId) && !named(ruleModel)) {
-      return `${ask}An agent step names no model, and ADE never picks one. ${unknownModelHint()}`;
+      return `Set modelConfig.modelId on the agent step (or on the rule): ADE never picks its model. ${unknownModelHint()}`;
     }
     if (step.type === "handoff" && !named(step.targetModelId)) {
       return `Set targetModelId on the handoff step: ADE never picks the model it hands to. ${unknownModelHint()}`;
@@ -238,39 +250,37 @@ function refuseMissingModel(provider: unknown, message?: string): never {
   );
 }
 
-/**
- * An agent that starts another agent names its model: ADE never picks one for
- * it. The desktop app (left out by the caller) always sends one.
- */
-export function assertLaunchModelNamed(domain: string, action: string, input: unknown): void {
-  const fields = record(input);
-  const launch = fields ? ACTION_MODEL_RULES.get(`${domain}.${action}`)?.launch?.(fields) : null;
-  if (launch && launchModelMissing(launch.provider, ...launch.models)) refuseMissingModel(launch.provider, launch.message);
-}
+export type LaunchModelGuardContext = {
+  /** This machine's saved Custom providers (the list the service resolves `presetId` against); read only when a launch names one. */
+  readPresets: () => readonly HarnessPreset[] | null;
+  /** The record this request edits already ran without a model; the edit may keep it that way. */
+  editKeepsMissingModel?: boolean;
+};
 
 /**
- * A launch on a saved Custom provider names that provider's own model: it runs
- * one model, so a different one is a mistake, and the service would otherwise
- * run the Custom provider's model without saying so. `readPresets` reads this
- * machine's saved list (the one the service resolves `presetId` against),
- * only when the launch names one. A
- * `--via` route id or an id not saved here is left to the service.
+ * An agent that starts another agent names its model: ADE never picks one for
+ * it. The desktop app (left out by the caller) always sends one. A launch on a
+ * saved Custom provider names that provider's own model: it runs one model, so
+ * a different one is a mistake, and the service would otherwise run the Custom
+ * provider's model without saying so. A `--via` route id or an id not saved
+ * here is left to the service.
  */
-export function assertCustomProviderModel(
-  domain: string,
-  action: string,
-  input: unknown,
-  readPresets: () => readonly HarnessPreset[] | null,
-): void {
+export function assertLaunchModels(domain: string, action: string, input: unknown, context: LaunchModelGuardContext): void {
   const fields = record(input);
   const launch = fields ? ACTION_MODEL_RULES.get(`${domain}.${action}`)?.launch?.(fields) : null;
-  const presetId = typeof launch?.presetId === "string" ? launch.presetId.trim() : "";
-  const given = (launch?.models ?? []).filter((model): model is string => named(model));
+  if (!launch) return;
+  if (launchModelMissing(launch.provider, ...launch.models)) {
+    if (context.editKeepsMissingModel) return;
+    refuseMissingModel(launch.provider, launch.message);
+  }
+  const presetId = typeof launch.presetId === "string" ? launch.presetId.trim() : "";
+  const given = launch.models.filter((model): model is string => named(model));
   if (!presetId || !given.length) return;
-  const preset = readPresets()?.find((candidate) => candidate.id === presetId);
+  const preset = context.readPresets()?.find((candidate) => candidate.id === presetId);
   if (!preset) return;
-  if (given.some((model) => customProviderModelProblem(preset, model, "model") === null)) return;
-  throwIfRefused(customProviderModelProblem(preset, given[0], "model"));
+  const problems = given.map((model) => customProviderModelProblem(preset, model, "model"));
+  if (problems.some((problem) => problem === null)) return;
+  throwIfRefused(problems[0] ?? null);
 }
 
 /** The same rule for a tool that starts a CLI agent (`start_cli_session`, `spawn_agent`). */

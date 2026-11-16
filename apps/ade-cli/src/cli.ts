@@ -775,7 +775,7 @@ import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverr
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
 import { DEVICES_HELP } from "./help/devicesHelp";
-import { DOCTOR_HELP, SETTINGS_HELP, STATUS_HELP, SYNC_HELP } from "./help/machineHelp";
+import { DOCTOR_HELP, SETTINGS_HELP, STATUS_HELP, SYNC_HELP } from "./help/systemHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -1930,7 +1930,6 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   login: "auth",
   logout: "auth",
 };
-
 
 export const HELP_BY_COMMAND: Record<string, string> = {
   sync: SYNC_HELP,
@@ -3339,8 +3338,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                             them; an account's id works too).
     --credential <id>       A stored API key for the provider.
     --custom-provider <name>
-                            A saved Custom provider, by name or id; --model must be
-                            its own model (ade harness providers --text lists them).
+                            A saved Custom provider, by name or id (or a route id
+                            from ade harness route-id); --model must be its own
+                            model (ade harness providers --text lists them).
     --via <source>          Any model in any harness: opencode-go, key:<provider>,
                             account:<claude|codex>:<id>, ... (ade help harness).
     --permissions <mode>    Alias for --permission-mode.
@@ -6624,7 +6624,8 @@ function readJsonPayloadOption(
 const REQUIRED_VALUE_HINTS: Readonly<Record<string, string>> = {
   sessionId: "a chat or CLI session id (`ade chat list --text` lists them)",
   workSessionId: "a chat, CLI or shell session id (`ade chat list --text` lists chats and CLI sessions; `ade terminal list --text` lists shells)",
-  launchProvider: "a provider (--provider claude, codex, opencode, …) or shell for a plain terminal",
+  launchProvider: `a provider (--provider ${CHAT_PROVIDER_IDS.join(" | ")}), or shell for a plain terminal`,
+  signInProvider: "the provider to sign in, as the first word (ade providers sign-in claude --remote)",
   proxyProvider: "--provider claude or --provider codex",
   chatSessionId: "a chat id (`ade chat list --text` lists them)",
   prId: "a PR number or id (`ade prs list --text` lists them)",
@@ -8453,7 +8454,8 @@ function readLaunchIdentitySelectors(
   consumed: { provider?: string | null; model?: string | null } = {},
 ): { instanceId: string | null; presetId: string | null; credentialId: string | null; provider: string | null } {
   if (findFlagName(args, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
-  const named = consumed.provider ?? peekValue(args, ["--provider"]);
+  // Lower-cased like every launch reads it, so `--provider Claude` matches.
+  const providerFlag = (consumed.provider ?? peekValue(args, ["--provider"]))?.trim().toLowerCase() || null;
   const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
   const via = readValue(args, ["--via"])?.trim() || null;
   const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
@@ -8463,16 +8465,20 @@ function readLaunchIdentitySelectors(
   if (chosen.length > 1) {
     throw new CliUsageError(`${chosen.join(" and ")} each say where the model runs. Pass at most one.`);
   }
-  if (via) return { instanceId, presetId: routePresetIdFromFlags(args, via, consumed), credentialId, provider: named };
-  if (customRef === null) return { instanceId, presetId: null, credentialId, provider: named };
+  if (via) {
+    // The route is built for `--provider` (or `--harness`); the launch runs that same harness.
+    const harness = providerFlag ?? peekValue(args, ["--harness"])?.trim().toLowerCase() ?? null;
+    return { instanceId, presetId: routePresetIdFromFlags(args, via, consumed), credentialId, provider: harness };
+  }
+  if (customRef === null) return { instanceId, presetId: null, credentialId, provider: providerFlag };
   const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
   if (!found.ok) throw new CliUsageError(found.message);
-  const harnessProblem = customProviderHarnessProblem(found.preset, named);
+  const harnessProblem = customProviderHarnessProblem(found.preset, providerFlag);
   if (harnessProblem) throw new CliUsageError(harnessProblem);
   const modelProblem = customProviderModelProblem(found.preset, consumed.model ?? peekValue(args, ["--model", "--model-id"]) ?? peekArgModel(args));
   if (modelProblem) throw new CliUsageError(modelProblem);
   // A Custom provider names its harness, so `--provider` may be left out.
-  return { instanceId, presetId: found.preset.id, credentialId, provider: named ?? found.preset.harness };
+  return { instanceId, presetId: found.preset.id, credentialId, provider: providerFlag ?? found.preset.harness };
 }
 
 /**
@@ -8506,12 +8512,16 @@ export function parseViaSourceSpec(spec: string): HarnessPresetSource {
   );
 }
 
-/** A model given as `--arg model=<id>` or `--arg modelId=<id>`, left in place for the launch to read. */
+/**
+ * A model given through the `--arg` / `--arg-json` / `--input-json` escape
+ * hatch (`model`, `modelId`, or `chat.create.model`), read from a copy so the
+ * launch still reads the flags itself.
+ */
 function peekArgModel(args: readonly string[]): string | null {
-  for (let index = 0; index < args.length - 1; index += 1) {
-    if (args[index] !== "--arg" && args[index] !== "--set") continue;
-    const match = /^(?:model|modelId)=(.+)$/.exec(args[index + 1] ?? "");
-    if (match?.[1]?.trim()) return match[1].trim();
+  const input = collectGenericObjectArgs([...args]);
+  const create = isRecord(input.chat) && isRecord(input.chat.create) ? input.chat.create : {};
+  for (const value of [input.model, input.modelId, create.model, create.modelId]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
   }
   return null;
 }
@@ -11224,7 +11234,7 @@ function buildCliSessionStartPlan(
   );
   const launchOpts = { allowShell: true };
   const provider = requireLaunchProfile(rawProvider, launchOpts);
-  if (!provider) throw new CliUsageError(`Pass ${REQUIRED_VALUE_HINTS.provider}, or shell for a plain terminal.`);
+  if (!provider) throw new CliUsageError(`Pass ${REQUIRED_VALUE_HINTS.launchProvider}.`);
   const promptArgs = takeArgsAfterTerminator(args);
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
@@ -22241,7 +22251,7 @@ function buildRemoteSignInPlan(group: "sign-in" | "sign-in-code" | "sign-in-stat
     if (!readFlag(args, ["--remote"])) {
       throw new CliUsageError("ade providers sign-in <provider> --remote: a sign-in finished on another screen. To sign in here, use Settings › Providers.");
     }
-    const provider = requireValue(firstPositional(args), "provider").trim().toLowerCase();
+    const provider = requireValue(firstPositional(args), "signInProvider").trim().toLowerCase();
     return {
       kind: "execute",
       label: "providers sign-in",
@@ -22875,7 +22885,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       const modelId = readValue(args, ["--model"]);
       // Each event starts a new chat unless it goes into an existing one.
       if (!modelId?.trim() && !inThisChat && !chat) {
-        throw new CliUsageError(webhookModelRequiredMessage("flag"));
+        throw new CliUsageError(webhookModelRequiredMessage("--model"));
       }
       const reasoningEffort = readValue(args, ["--effort", "--reasoning-effort"]);
       const input: JsonObject = {

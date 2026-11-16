@@ -186,7 +186,7 @@ import {
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
 import { resolveMachineAdeDir } from "./services/projects/machineLayout";
-import { assertActionModelNames, assertCliLaunchModelNamed, assertCustomProviderModel, assertFullModelName, assertLaunchModelNamed, savedRuleModelNames } from "./modelNameGuard";
+import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModel, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -1841,18 +1841,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The model names the rule an `automations.saveRule` edit replaces already holds. */
-function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
-  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+/**
+ * What the rule an `automations.saveRule` edit replaces already holds: its
+ * model names (an unchanged old shorthand passes) and whether it already ran
+ * without a model (an edit, such as a rename, may keep it that way; only a
+ * model removed now is refused).
+ */
+function savedRuleKeptBy(
+  domain: string,
+  action: string,
+  input: unknown,
+  service: Record<string, unknown>,
+): { modelNames: Set<string>; lacksModel: boolean } {
+  const none = { modelNames: new Set<string>(), lacksModel: false };
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return none;
   const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
-  if (!id || typeof service.get !== "function") return new Set();
+  if (!id || typeof service.get !== "function") return none;
   try {
-    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+    const saved = (service.get as (args: { id: string }) => unknown)({ id });
+    if (!isRecord(saved)) return none;
+    return { modelNames: savedRuleModelNames(saved), lacksModel: automationDraftMissingModel(saved) !== null };
   } catch (error) {
     // The save itself reports a missing or unreadable rule; without the saved
-    // names an unchanged old name is refused, which the caller can correct.
+    // rule an unchanged old name or missing model is refused, which the
+    // caller can correct.
     captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
-    return new Set();
+    return none;
   }
 }
 
@@ -6814,9 +6828,12 @@ async function runTool(args: {
       // The input the action receives: the first positional argument, a scalar
       // `arg` (an object there reaches the action too), or `args`.
       const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
-      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
-      assertLaunchModelNamed(domain, action, actionInput);
-      assertCustomProviderModel(domain, action, actionInput, () => readHarnessPresetsFromMachine(resolveMachineAdeDir()));
+      const savedRule = savedRuleKeptBy(domain, action, actionInput, service);
+      assertActionModelNames(domain, action, actionInput, savedRule.modelNames);
+      assertLaunchModels(domain, action, actionInput, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+        editKeepsMissingModel: savedRule.lacksModel,
+      });
     }
     if (
       domain === "cto_state"

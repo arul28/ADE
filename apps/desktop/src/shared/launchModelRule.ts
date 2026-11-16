@@ -32,9 +32,9 @@ export function launchModelRequiredMessage(provider?: string | null, spelling: L
  * The refusal for a webhook automation with no model: each delivery starts a
  * chat, unless deliveries go into an existing chat instead.
  */
-export function webhookModelRequiredMessage(spelling: "flag" | "field"): string {
-  const into = spelling === "flag" ? "--in-this-chat or --chat <id>" : "chatSessionId";
-  return `${askFor(spelling === "flag" ? "--model" : "modelId")} for the chat each delivery starts, or ${into} to send deliveries into a chat. ${unknownModelHint()}`;
+export function webhookModelRequiredMessage(spelling: LaunchModelSpelling): string {
+  const into = spelling === "--model" ? "--in-this-chat or --chat <id>" : "chatSessionId";
+  return `${askFor(spelling)} for the chat each delivery starts, or ${into} to send deliveries into a chat. ${unknownModelHint()}`;
 }
 
 /** A provider that runs a plain terminal and therefore takes no model. */
