@@ -42,6 +42,11 @@ function rowsFor(row: ApprovalRow) {
 }
 
 describe("<ApprovalCard>", () => {
+  it("shows the description and the command it is asking about", () => {
+    render(<ApprovalCard row={approvalRow()} onApprove={vi.fn()} />);
+    expect(screen.getByText("Run a shell command")).toBeTruthy();
+    expect(screen.getByText("ls -la /tmp")).toBeTruthy();
+  });
 
   it("reads a command nested under the tool input", () => {
     render(
@@ -51,6 +56,21 @@ describe("<ApprovalCard>", () => {
       />,
     );
     expect(screen.getByText("git status")).toBeTruthy();
+  });
+
+  it("shows the path and grant root of a file change", () => {
+    render(
+      <ApprovalCard
+        row={approvalRow({
+          kind: "file_change",
+          description: "Write a file",
+          detail: { path: "/work/notes.md", grantRoot: "/work" },
+        })}
+        onApprove={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("/work/notes.md")).toBeTruthy();
+    expect(screen.getByText("Inside /work")).toBeTruthy();
   });
 
   it.each([
