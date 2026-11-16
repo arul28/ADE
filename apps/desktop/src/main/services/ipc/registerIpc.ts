@@ -575,6 +575,8 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatUpdateSessionArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -9959,6 +9961,11 @@ export function registerIpc({
   handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.warmupModel(arg);
+  });
+
+  handle(IPC.agentChatPrewarmDraft, async (_event, arg: AgentChatPrewarmDraftArgs): Promise<AgentChatPrewarmDraftResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.prewarmDraft(withoutRendererRuntimeActor(arg));
   });
 
   handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {

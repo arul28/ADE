@@ -5403,6 +5403,13 @@ export function AgentChatPane({
   const draftExecutionBindingRequiredRef = useRef(false);
   const draftMachineUnavailableRef = useRef(false);
   /**
+   * The draft warmup this composer asked for (`agentChat.prewarmDraft`): the
+   * chat id it reserved, and the lane, machine and settings it was asked for.
+   * The chat `create` for that lane on that machine sends the id, so the brain
+   * can hand it the warm provider. Taken (set to null) by the first create.
+   */
+  const draftWarmRef = useRef<{ sessionId: string; key: string; laneId: string; pinKey: string } | null>(null);
+  /**
    * The lane whose branch drift the composer speaks for, mirrored for `submit`:
    * the turn it launches acts on this lane's worktree (or on none at all when it
    * will create one). Null while a draft targets "Auto-create lane" or another
@@ -12406,7 +12413,21 @@ export function AgentChatPane({
       }
       const built = buildChatCreateArgs(options.launchState);
       const { createArgs: laneFreeCreateArgs, desc, launchModelId } = built;
-      const createArgs = { laneId: targetLaneId, ...laneFreeCreateArgs };
+      // The id a draft warmup reserved, when this create is for the same lane
+      // on the same machine. Taken before the call, so a failed create never
+      // reuses it. Settings that changed since the warmup are the brain's to
+      // detect: it then starts the chat cold under the same id.
+      const draftWarm = draftWarmRef.current;
+      draftWarmRef.current = null;
+      const createPinKey = (options.pin ?? chatRuntimePinRef.current)?.key ?? null;
+      const reservedSessionId = draftWarm && draftWarm.laneId === targetLaneId && draftWarm.pinKey === createPinKey
+        ? draftWarm.sessionId
+        : null;
+      const createArgs = {
+        laneId: targetLaneId,
+        ...laneFreeCreateArgs,
+        ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
+      };
       // No pin given: the pane's own lane, on the chat's machine.
       const created = await agentChatApiRef.current.create(
         createArgs,
@@ -17474,6 +17495,70 @@ export function AgentChatPane({
   }, [chatRuntimePinKey, draftExecutionBindingKey, refetchDevinCloudAuth]);
   draftMachineUnavailableRef.current = draftMachineUnavailable;
   composerDriftLaneIdRef.current = composerDriftLaneId;
+  // Draft warmup: the first keystroke in a new Work chat asks the lane's
+  // machine to start the provider this chat will use, so pressing Enter does
+  // not wait for it. Typing is the intent; focus alone starts nothing, so an
+  // idle window keeps no process. A new-lane launch has no lane to warm yet,
+  // and ADE Cloud starts its own computer. The text is read from the draft
+  // store, so typing does not render the pane; the key below makes later
+  // keystrokes free. A model, mode, lane or machine change re-warms.
+  const draftWarmEligible = isWorkDraftComposer
+    && workDraftKind === "chat"
+    && !selectedSessionId
+    && !draftLaunchTargetIsAutoCreate
+    && !adeCloudMode
+    && Boolean(laneId)
+    && Boolean(modelId)
+    && !constrainedModelSelectionError
+    && !draftMachineUnavailable
+    && !draftLaneCatalogLoading
+    && draftExecutionBindingKey != null;
+  useEffect(() => {
+    if (!draftWarmEligible || !laneId) return undefined;
+    // Settings cannot change inside one run of this effect, so after one
+    // request the only thing that needs a new one is a create taking the id.
+    let requested = false;
+    const requestDraftWarm = () => {
+      if (requested && draftWarmRef.current) return;
+      if (!draftStore.get().trim()) return;
+      requested = true;
+      const pin = draftExecutionBindingRef.current;
+      if (!pin) return;
+      // An older or partial chat API has no draft warmup; then no id is
+      // reserved, and the create stays exactly as it was.
+      if (typeof agentChatApiRef.current.prewarmDraft !== "function") return;
+      let built: ReturnType<typeof buildChatCreateArgs>;
+      try {
+        built = buildChatCreateArgs();
+      } catch {
+        return;
+      }
+      const cursorRuntimeForSend = built.provider === "cursor" ? (cursorCloudMode ? "cloud" as const : "local" as const) : undefined;
+      const key = JSON.stringify([laneId, pin.key, built.createArgs, cursorRuntimeForSend ?? null]);
+      const current = draftWarmRef.current;
+      if (current?.key === key) return;
+      // The id stays with the draft until a create takes it; the brain
+      // replaces a warm runtime whose settings changed.
+      let sessionId = current?.sessionId ?? null;
+      try {
+        sessionId ??= globalThis.crypto?.randomUUID?.() ?? null;
+      } catch {
+        // An insecure context has no randomUUID; the brain needs a real UUID.
+      }
+      if (!sessionId) return;
+      draftWarmRef.current = { sessionId, key, laneId, pinKey: pin.key };
+      void agentChatApiRef.current.prewarmDraft({
+        laneId,
+        ...built.createArgs,
+        sessionId,
+        ...(cursorRuntimeForSend ? { cursorRuntime: cursorRuntimeForSend } : {}),
+      }, pin).catch(() => { /* best-effort: the first send starts the provider */ });
+    };
+    requestDraftWarm();
+    return draftStore.subscribe(requestDraftWarm);
+    // Keyed on the binding's key, not the binding: a rebuilt pin for the same
+    // machine must not re-warm.
+  }, [buildChatCreateArgs, cursorCloudMode, draftExecutionBindingKey, draftStore, draftWarmEligible, laneId]);
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;

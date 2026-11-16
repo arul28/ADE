@@ -4624,6 +4624,29 @@ export type AgentChatCreateArgs = PersonalAttachmentRootsField & {
   settingSources?: AgentChatSettingSources;
 };
 
+/**
+ * A draft composer's warmup request (`agentChat.prewarmDraft`): the same
+ * fields its `create` will send, plus the chat id the draft reserved. The
+ * `create` that sends that id and resolves to the same settings adopts the
+ * warm provider instead of starting a new one.
+ */
+export type AgentChatPrewarmDraftArgs = AgentChatCreateArgs & {
+  sessionId: string;
+  /** Cursor's runtime pick for the first send; a cloud agent is not warmed. */
+  cursorRuntime?: AgentChatRuntime;
+};
+
+export type AgentChatPrewarmDraftResult = {
+  warming: boolean;
+  /** Why nothing was warmed. Informational only. */
+  reason?:
+    | "unsupported_launch"
+    | "chat_exists"
+    | "unavailable"
+    | "invalid_settings"
+    | "provider_not_supported";
+};
+
 export type AgentChatImportExternalSessionArgs = {
   provider: AgentChatImportProvider;
   externalSessionId: string;

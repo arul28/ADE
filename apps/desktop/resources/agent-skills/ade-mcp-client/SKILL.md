@@ -1,6 +1,7 @@
 ---
 name: ade-mcp-client
 description: Use this skill when you reach ADE from outside through its MCP server (a cloud bot, a hosted agent, claude.ai, ChatGPT, a script) and need to pick a machine and project, use a device there, start a chat with an exact model, effort and permissions, learn when it finished, read its results and proof, or move files into a lane.
+disable-model-invocation: true
 ---
 
 # Using ADE over MCP

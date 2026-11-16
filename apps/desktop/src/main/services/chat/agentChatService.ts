@@ -574,6 +574,7 @@ import {
   stableStringify,
 } from "../shared/utils";
 import {
+  adeBackgroundUtilityProvider,
   backgroundUtilityReasoningEffort,
   NATIVE_TITLE_POLL_MS,
   NATIVE_TITLE_WAIT_MS,
@@ -654,6 +655,8 @@ import type {
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatDevinCloudConfig,
   AgentChatLaunchArgs,
   AgentChatContextUsage,
@@ -3246,10 +3249,22 @@ type ClaudeTaskToolInput = {
 /** How far before a turn's start an assistant message may originate and still belong to it. */
 const STALE_ASSISTANT_ORIGIN_TOLERANCE_MS = 2_000;
 
+/**
+ * The first-turn directives a Claude lane chat's system prompt carries
+ * (`buildClaudeQueryOptions`), as built for its latest query.
+ */
+type ClaudeSystemPromptDirectives = {
+  laneWorktreePath: string;
+  computerUse: string | null;
+  laneScreen: string | null;
+};
+
 type ClaudeRuntime = {
   kind: "claude";
   /** What `session_writes_lost` has already told the user about. */
   writesLostNoticed?: Set<string>;
+  /** Null when the latest query's system prompt carries no directives (not a lane chat). */
+  systemPromptDirectives?: ClaudeSystemPromptDirectives | null;
   compactionSummary?: string;
   sdkSessionId: string | null;
   /**
@@ -5491,6 +5506,12 @@ type ManagedChatSession = {
    * Codex `thread/sample` must name it (`codexThreadSample.ts`).
    */
   lastFinishedTurnId?: string | null;
+  /**
+   * A draft warmup (`prewarmDraft`): the provider starts for a chat that does
+   * not exist yet. Until `create` adopts it, nothing is persisted and no event
+   * leaves the brain, so no empty chat shows anywhere.
+   */
+  draftWarm?: boolean;
   session: AgentChatSession;
   transcriptPath: string;
   /** Bytes in this chat's dedicated transcript (on disk at load, plus lines queued since). */
@@ -5685,6 +5706,14 @@ type ManagedChatSession = {
    * it existed. Unset on a reloaded chat, so an old title is never rewritten.
    */
   autoTitleRefine?: "armed" | "due";
+  /**
+   * The first prompt was short, so its own line became the title with no
+   * model call. The first later message with more words replaces the seed, so
+   * the refine names the chat from what the user actually asked.
+   */
+  autoTitleShortSeed?: boolean;
+  /** The current run called a tool (reset when a run completes); a text-only run does not refine the title. */
+  autoTitleRunUsedTools?: boolean;
   /**
    * What a fork inherited, for its first title: the source chat's title and
    * requests. A fork's own first message is usually a follow-up ("now do the
@@ -6024,6 +6053,16 @@ type ManagedChatSession = {
    * so a stale tail can never headline a later, unrelated failure.
    */
   acpLastExitStderrTail?: string;
+};
+
+/** One draft warmup: a provider started for a chat a draft composer will create. */
+type DraftWarmup = {
+  managed: ManagedChatSession;
+  /** The resolved chat settings the warm runtime was built for (`draftWarmupFingerprint`). */
+  fingerprint: string;
+  /** Settles when the provider start returns (fulfilled or not). */
+  warming: Promise<void>;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 type HandoffArtifacts = {
@@ -6375,6 +6414,17 @@ export const TURN_ACCEPTED_START_TIMEOUT_MS = 60_000;
 // cache and a resumed Codex thread adds ~200 tokens, while each idle chat
 // holds 200-500 MB of provider and MCP processes.
 const SESSION_INACTIVITY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+/**
+ * Draft warmups (`prewarmDraft`). A draft that is never sent gives its process
+ * back after the same quiet time as an idle chat. At most two at once: one
+ * draft per window is the normal case.
+ */
+const DRAFT_WARMUP_IDLE_MS = SESSION_INACTIVITY_TIMEOUT_MS;
+const MAX_DRAFT_WARMUPS = 2;
+/** How long `create` waits for a draft's provider start before it starts cold. */
+const DRAFT_WARMUP_ADOPT_WAIT_MS = 20_000;
+/** A reserved chat id: it names files, so only a plain UUID is accepted. */
+const DRAFT_WARMUP_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** How long a retried send is recognized (a wake and reconnect take seconds; this is wide). */
 const CLIENT_SEND_DEDUPE_MS = 10 * 60_000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
@@ -8379,6 +8429,20 @@ const GENERIC_REMAINDER_TOKENS = new Set([
   "ok", "okay", "yes", "no", "true", "false",
   "ready", "response", "reply", "result", "output", "pass", "passed"
 ]);
+
+/** T3 Code's rule: a first prompt of this many words or fewer names the chat itself. */
+const SHORT_TITLE_PROMPT_MAX_WORDS = 4;
+
+/** One line of at most {@link SHORT_TITLE_PROMPT_MAX_WORDS} words: titled from its own text, with no model call. */
+function isShortTitlePrompt(raw: string): boolean {
+  const text = raw.trim();
+  if (!text || text.includes("\n") || text.length > 60) return false;
+  return text.split(/\s+/u).length <= SHORT_TITLE_PROMPT_MAX_WORDS;
+}
+
+function capitalizeFirst(text: string): string {
+  return text.length ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : text;
+}
 
 function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string | null {
   const normalized = raw
@@ -14082,6 +14146,11 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /**
+   * Draft warmups by the chat id the draft reserved (`prewarmDraft`). Kept out
+   * of `managedSessions`, so no list, sweep or sync reads them as chats.
+   */
+  const draftWarmups = new Map<string, DraftWarmup>();
   /** When this service (this brain) started: rows created since belong to this process. */
   const serviceStartedAtMs = Date.now();
   const copilotMcpAuthNotices = new Set<string>();
@@ -19369,6 +19438,21 @@ export function createAgentChatService(args: {
     const refiningOwnTitle = args.mode === "refine" && managed.autoTitleStage === "initial";
     if (!refiningOwnTitle && hasCustomChatSessionTitle(titleAfterWait, managed.session.provider)) return;
 
+    // A short first prompt ("hi", "fix the build") is its own title: no model
+    // call. The refine after the first run that does work names it properly.
+    if (stage === "initial" && isShortTitlePrompt(args.latestUserText ?? managed.autoTitleSeed ?? "")) {
+      const promptTitle = sanitizeAutoTitle(seed);
+      const adopted = promptTitle ? setManagedSessionTitle(managed, capitalizeFirst(promptTitle)) : null;
+      managed.autoTitleShortSeed = true;
+      managed.autoTitleStage = "initial";
+      armAutoTitleRefine(managed);
+      logger.info("agent_chat.auto_title_from_short_prompt", {
+        sessionId: managed.session.id,
+        adopted: Boolean(adopted),
+      });
+      return;
+    }
+
     const auth = await detectAuth();
     const availableModels = await getAvailableRegistryModels(auth);
     const candidateModelIds = buildSessionIntelligenceModelCandidates({
@@ -19377,6 +19461,15 @@ export function createAgentChatService(args: {
       sessionModelId: managed.session.modelId,
       sessionModel: managed.session.model,
     });
+    // A provider with no cheaper model than the chat's own names the chat
+    // once: a refine would run the chat's model a second time.
+    // A title written from a short prompt still gets its one refine.
+    if (
+      args.mode === "refine"
+      && candidateModelIds.length <= 1
+      && !adeBackgroundUtilityProvider(managed.session.provider)
+      && !managed.autoTitleShortSeed
+    ) return;
 
     const laneName = sessionService.get(managed.session.id)?.laneName ?? "Current lane";
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
@@ -19527,6 +19620,9 @@ export function createAgentChatService(args: {
 
   const maybeStartAutoTitleRefine = (managed: ManagedChatSession): void => {
     if (managed.autoTitleStage === "final") return;
+    // A run that only answered in text ("hi" → "Hi! How can I help?") shows
+    // nothing the first title missed. The refine waits for a run that works.
+    if (!managed.autoTitleRunUsedTools) return;
     if (managed.autoTitleRefine === "armed") startAutoTitleRefine(managed);
     else if (managed.autoTitleStage === "none") managed.autoTitleRefine = "due";
   };
@@ -21280,7 +21376,8 @@ export function createAgentChatService(args: {
   ): boolean => {
     // Tombstoned sessions (deleted while async work was in flight) must not be
     // re-persisted — otherwise the file recreates after deleteSession removed it.
-    if (managed.deleted) return false;
+    // A draft warmup is not a chat yet: `create` persists it when it adopts it.
+    if (managed.deleted || managed.draftWarm) return false;
     // When runtime has been torn down (null) but NOT intentionally invalidated,
     // fall back to the last persisted state so that provider session ids and
     // lastLaneDirectiveKey survive a transient teardown (e.g. app backgrounding).
@@ -25272,6 +25369,8 @@ export function createAgentChatService(args: {
    * `sessions[]` array — there's no value in replaying them on reload.
    */
   const emitTransientChatEnvelope = (sessionId: string, event: AgentChatEvent): void => {
+    // Same rule as `emitChatEvent`: a draft warmup is not a chat yet.
+    if (draftWarmups.get(sessionId)?.managed.draftWarm) return;
     const envelope: AgentChatEventEnvelope = {
       sessionId,
       timestamp: nowIso(),
@@ -25816,6 +25915,9 @@ export function createAgentChatService(args: {
     event: AgentChatEvent,
     options: CommitChatEventOptions = {},
   ): void => {
+    // A draft warmup has no chat to show an event in, and an event would put
+    // an empty chat in every client's list.
+    if (managed.draftWarm) return;
     // A message ADE wrote carries its row's one line, so no client keeps its
     // own table of reasons (`HOST_CONTINUATION_REASON_LABEL`).
     const continuation = event.type === "user_message" ? event.metadata?.hostContinuation : undefined;
@@ -25919,11 +26021,17 @@ export function createAgentChatService(args: {
     managed.lastActivityTimestamp = Date.now();
     chatWaits?.signal(managed.session.id);
     chatWebhooks?.signal(managed.session.id, event);
+    if (event.type === "tool_call" || event.type === "command" || event.type === "file_change" || event.type === "subagent_started") {
+      managed.autoTitleRunUsedTools = true;
+    }
     if (event.type === "done") {
       managed.claudeCompactError = null;
       if (event.turnId) managed.lastFinishedTurnId = event.turnId;
       settleClaudeGoalOnTurnEnd(managed, event.status);
-      if (event.status === "completed") maybeStartAutoTitleRefine(managed);
+      if (event.status === "completed") {
+        maybeStartAutoTitleRefine(managed);
+        managed.autoTitleRunUsedTools = false;
+      }
       if (managed.restartAfterTurn) runRestartAfterTurn(managed);
       if (managed.pendingLoginRestart) setTimeout(() => runLoginRestartIfIdle(managed), 0);
       void refreshLinkedIssueSnapshots(managed.session.id).catch((error) => {
@@ -33949,7 +34057,9 @@ export function createAgentChatService(args: {
       args.onDispatched?.();
     }
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
-    captureTurnBeforeSha(managed);
+    // The git baseline is captured right after the message is handed to
+    // Claude (below), not here: its two git processes would start on the
+    // path to the first request, and no tool can run before Claude answers.
     emitChatEvent(managed, {
       type: "activity",
       ...initialTurnActivity(managed.session),
@@ -34255,6 +34365,7 @@ export function createAgentChatService(args: {
         throw new Error("Claude's live input stream closed before the turn could be dispatched.");
       }
       pushClaudeMessage(managed, runtime, runtime.inputPump, messageToSend);
+      captureTurnBeforeSha(managed);
       settleClaudeInitialInputDispatch(runtime);
       keepClaudeRetainedMedia(managed, retainedSpend);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -48636,6 +48747,7 @@ export function createAgentChatService(args: {
       source: claudeExecutable.source,
       path: claudeExecutable.path,
     });
+    runtime.systemPromptDirectives = null;
     if (embeddedPersonal) {
       opts.systemPrompt = resolvePersonalSystemPrompt(managed.session);
       // Set for all four values, including "none" → []. An omitted
@@ -48752,7 +48864,22 @@ export function createAgentChatService(args: {
           runtime: "claude-agent-sdk-query",
           adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
           sessionActivityGuidance: claudeActivityGuidance,
+          nativeSkillListing: bundledPluginPaths.length > 0 && pluginPaths.length > 0,
         });
+      // The computer-use rules and the lane-screen line go in the system
+      // prompt, not the first message. Every new chat in the lane then reads
+      // them from the prompt cache, and the first message stays the user's own
+      // text: Claude Code skips its title call for a bare "hi", but not for
+      // "hi" behind ~2.6k characters of directives. The send path repeats a
+      // directive in the turn only when it changed after this query was built.
+      const claudeDirectives: ClaudeSystemPromptDirectives | null = claudeHarnessPrompt == null
+        ? null
+        : {
+          laneWorktreePath: managed.laneWorktreePath,
+          computerUse: currentComputerUseDirective(),
+          laneScreen: currentLaneScreenDirective(managed.session.laneId?.trim() || null),
+        };
+      runtime.systemPromptDirectives = claudeDirectives;
       opts.systemPrompt = claudeHarnessPrompt == null
         ? {
           type: "preset",
@@ -48774,6 +48901,8 @@ export function createAgentChatService(args: {
         append: [
           claudeHarnessPrompt,
           "",
+          ...(claudeDirectives?.computerUse ? [claudeDirectives.computerUse, ""] : []),
+          ...(claudeDirectives?.laneScreen ? [claudeDirectives.laneScreen, ""] : []),
           ...(linearDirective ? [linearDirective, ""] : []),
           ...slashCommandsSection,
           "",
@@ -49620,6 +49749,7 @@ export function createAgentChatService(args: {
       ? carryChatMentionBlocks(trimmed, expandedSlashCommand)
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
+            && !claudeSystemPromptCarries(managed, "laneWorktreePath", executionContext.laneWorktreePath)
             ? buildLaneWorktreeDirective({
                 laneId: executionContext.laneId,
                 laneWorktreePath: executionContext.laneWorktreePath,
@@ -52125,6 +52255,94 @@ export function createAgentChatService(args: {
      * launch by the actor.
      */
     launchedBySessionId?: string | null;
+    /**
+     * Set only by `prewarmDraft`: resolve the chat exactly as a create would,
+     * hand the unsaved session to this callback, and stop. No row, transcript
+     * or event is written.
+     */
+    draftWarmSink?: (managed: ManagedChatSession) => void;
+  };
+
+  /**
+   * The chat settings a draft warmup was started for, as resolved by
+   * `createSessionInternal`. A later create with the same reserved id adopts
+   * the warm runtime only when its own resolved settings give the same string.
+   * Timestamps are left out; everything else must match.
+   */
+  const draftWarmupFingerprint = (managed: ManagedChatSession): string => {
+    const { createdAt: _createdAt, lastActivityAt: _lastActivityAt, ...session } = managed.session;
+    return JSON.stringify({ session, cwd: managed.laneWorktreePath });
+  };
+
+  /** Stop a draft warmup's provider and forget it. Safe to call twice. */
+  const releaseDraftWarmup = (sessionId: string, reason: string): void => {
+    const entry = draftWarmups.get(sessionId);
+    if (!entry) return;
+    draftWarmups.delete(sessionId);
+    clearTimeout(entry.timer);
+    const { managed } = entry;
+    // Marked deleted first: a provider start still in flight sees it and
+    // stops (see `startDraftWarmup`), and nothing can persist it.
+    managed.deleted = true;
+    try {
+      if (managed.runtime) teardownRuntime(managed, "handle_close");
+    } catch (error) {
+      logger.warn("agent_chat.draft_warmup_release_failed", { sessionId, error: getErrorMessage(error) });
+    }
+    logger.info("agent_chat.draft_warmup_released", { sessionId, provider: managed.session.provider, reason });
+  };
+
+  /**
+   * Wait for a draft warmup's provider start before `create` writes the row.
+   * A start still running (Codex, Cursor) would race a second start that the
+   * first turn makes, and the turn waits for a start anyway. Claude's start
+   * returns at once; its turn waits on `waitForClaudeWarmup`. A start that
+   * fails or runs too long releases the warmup, and the chat starts cold.
+   */
+  const settleDraftWarmupStart = async (sessionId: string): Promise<void> => {
+    const entry = draftWarmups.get(sessionId);
+    if (!entry) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = await Promise.race([
+      entry.warming.then(() => "ready" as const),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), DRAFT_WARMUP_ADOPT_WAIT_MS);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (draftWarmups.get(sessionId) !== entry) return;
+    if (waited === "timeout" || !entry.managed.runtime) {
+      releaseDraftWarmup(sessionId, waited === "timeout" ? "adopt_timeout" : "not_started");
+    }
+  };
+
+  /**
+   * Hand a draft warmup to the chat `create` just built under the same id.
+   * Returns the managed session the new chat must use: the warm one when the
+   * resolved settings match, else `fresh` (and the stale warmup is stopped).
+   * The warm object is kept, not copied, because the provider's callbacks
+   * (tool gate, hooks, MCP) already close over it.
+   */
+  const adoptDraftWarmup = (
+    sessionId: string,
+    fresh: ManagedChatSession,
+  ): ManagedChatSession => {
+    const entry = draftWarmups.get(sessionId);
+    if (!entry) return fresh;
+    if (entry.fingerprint !== draftWarmupFingerprint(fresh) || !entry.managed.runtime) {
+      releaseDraftWarmup(sessionId, "settings_changed");
+      return fresh;
+    }
+    draftWarmups.delete(sessionId);
+    clearTimeout(entry.timer);
+    const managed = entry.managed;
+    managed.draftWarm = false;
+    managed.session.createdAt = fresh.session.createdAt;
+    managed.session.lastActivityAt = fresh.session.lastActivityAt;
+    managed.transcriptBytesWritten = fresh.transcriptBytesWritten;
+    managed.lastActivityTimestamp = Date.now();
+    logger.info("agent_chat.draft_warmup_adopted", { sessionId, provider: managed.session.provider });
+    return managed;
   };
 
   const createSessionInternal = async ({
@@ -52189,6 +52407,7 @@ export function createAgentChatService(args: {
     runtimeActor,
     rememberLaunchDefaults: rememberAsLaunchDefaults,
     launchedBySessionId: requestedLaunchedBySessionId,
+    draftWarmSink,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     // A client that still sends Cursor's Fast toggle as a model option gets it
     // as the chat's Fast tier, the one control that now carries it.
@@ -52433,9 +52652,16 @@ export function createAgentChatService(args: {
     // Every Claude and Codex chat records its account. A chat without one
     // follows the default, and a later default switch would relaunch it on a
     // config home that does not hold its thread.
+    // A draft warmup for this id already picked the account; picking again
+    // could pick another one and waste the warm runtime.
+    const draftWarmupAccount = !draftWarmSink && requestedSessionIdTrimmed
+      ? draftWarmups.get(requestedSessionIdTrimmed)?.managed.session
+      : undefined;
     const selectedInstanceId = requestedInstanceId?.trim()
       ? requestedAccountId(effectiveProvider, requestedInstanceId) || currentDefaultInstanceId(effectiveProvider)
-      : pickNewSessionAccount(effectiveProvider, normalizedModel, "chat.account_balance_pick");
+      : draftWarmupAccount?.provider === effectiveProvider && draftWarmupAccount.instanceId
+        ? draftWarmupAccount.instanceId
+        : pickNewSessionAccount(effectiveProvider, normalizedModel, "chat.account_balance_pick");
 
     /* A Custom provider's thinking level is part of the preset, and the preset
        is what the user picked — so a chat created on one adopts that level
@@ -52746,29 +52972,35 @@ export function createAgentChatService(args: {
     const normalizedTitle = typeof title === "string" ? title.trim() : "";
     const initialTitle = normalizedTitle || defaultChatSessionTitle(effectiveProvider);
 
-    sessionService.create({
-      sessionId,
-      laneId,
-      ptyId: null,
-      tracked: true,
-      title: initialTitle,
-      startedAt,
-      transcriptPath,
-      toolType: toolTypeFromProvider(effectiveProvider),
-      resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId),
-      // Tag the backing terminal row with its owning chat session so the lane
-      // agent list (laneAgents.ts) excludes it instead of surfacing a phantom
-      // "CLI" agent alongside the chat row it belongs to.
-      chatSessionId: sessionId,
-      ownerPid: processRegistry?.pid ?? null,
-      ownerProcessStartedAt: processRegistry?.startedAt ?? null,
-      goal: normalizedGoal,
-    });
-    if (normalizedTitle.length > 0) {
-      sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
+    // A draft warmup writes no row: the row is what lists show and sync sends.
+    if (!draftWarmSink) {
+      // Before the row exists, so no reader can find a half-made chat while
+      // this waits.
+      if (requestedSessionIdTrimmed) await settleDraftWarmupStart(requestedSessionIdTrimmed);
+      sessionService.create({
+        sessionId,
+        laneId,
+        ptyId: null,
+        tracked: true,
+        title: initialTitle,
+        startedAt,
+        transcriptPath,
+        toolType: toolTypeFromProvider(effectiveProvider),
+        resumeCommand: resumeCommandForProvider(effectiveProvider, sessionId),
+        // Tag the backing terminal row with its owning chat session so the lane
+        // agent list (laneAgents.ts) excludes it instead of surfacing a phantom
+        // "CLI" agent alongside the chat row it belongs to.
+        chatSessionId: sessionId,
+        ownerPid: processRegistry?.pid ?? null,
+        ownerProcessStartedAt: processRegistry?.startedAt ?? null,
+        goal: normalizedGoal,
+      });
+      if (normalizedTitle.length > 0) {
+        sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
+      }
     }
 
-    const managed: ManagedChatSession = {
+    let managed: ManagedChatSession = {
       session: {
         id: sessionId,
         laneId,
@@ -52942,6 +53174,12 @@ export function createAgentChatService(args: {
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     refreshReconstructionContext(managed);
 
+    if (draftWarmSink) {
+      managed.draftWarm = true;
+      draftWarmSink(managed);
+      return managed.session;
+    }
+
     // Init dedicated chat transcript file for persistence
     try {
       const chatTranscriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
@@ -52962,7 +53200,15 @@ export function createAgentChatService(args: {
       sessionId,
       pointerFingerprint(persistedPointerState({ provider: effectiveProvider })),
     );
+    // A draft composer that reserved this id may have warmed the provider.
+    if (requestedSessionIdTrimmed && draftWarmups.has(requestedSessionIdTrimmed)) {
+      managed = adoptDraftWarmup(requestedSessionIdTrimmed, managed);
+    }
     managedSessions.set(sessionId, managed);
+    if (managed.runtime?.kind === "claude" && managed.runtime.warmQuery) {
+      // The warmup finished while it was a draft, so its notice was held.
+      emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: "Session ready" });
+    }
 
     if (presetSnapshotAdoptionNotice) {
       emitChatEvent(managed, {
@@ -58386,6 +58632,25 @@ export function createAgentChatService(args: {
     macDesktopRuntime?.hasDisplaySync(laneId) === true,
   );
 
+  /**
+   * Whether a Claude lane chat's system prompt already carries this directive
+   * text (`buildClaudeQueryOptions`), so the turn need not repeat it. Before
+   * the chat's query is built, the prompt it is about to get carries the
+   * current text; afterwards, only the exact text it was built with counts.
+   */
+  const claudeSystemPromptCarries = (
+    managed: ManagedChatSession,
+    key: keyof ClaudeSystemPromptDirectives,
+    text: string | null,
+  ): boolean => {
+    if (!text || managed.session.provider !== "claude") return false;
+    if (isPersonalSession(managed.session) || isLightweightSession(managed.session)) return false;
+    const runtime = managed.runtime?.kind === "claude" ? managed.runtime : null;
+    const built = runtime?.systemPromptDirectives;
+    if (built === undefined) return true;
+    return built !== null && built[key] === text;
+  };
+
   const prepareSendMessage = ({
     sessionId,
     text,
@@ -58634,7 +58899,10 @@ export function createAgentChatService(args: {
       : providerSlashCommand && !personalSession
       ? slashCommandPromptWithMentions ?? trimmed
       : composeLaunchDirectives(trimmed, [
+          // A Claude lane chat's system prompt opens with the worktree and its
+          // write rule; the lane directive repeats it only after a move.
           shouldInjectLaneDirective
+            && !claudeSystemPromptCarries(managed, "laneWorktreePath", executionContext.laneWorktreePath)
             ? buildLaneWorktreeDirective({
                 laneId: executionContext.laneId,
                 laneWorktreePath: executionContext.laneWorktreePath,
@@ -58650,12 +58918,16 @@ export function createAgentChatService(args: {
               spawnSelfReportOpts(managed.session),
             )
             : null,
-          shouldInjectComputerUseDirective ? computerUseDirective : null,
+          shouldInjectComputerUseDirective && !claudeSystemPromptCarries(managed, "computerUse", computerUseDirective)
+            ? computerUseDirective
+            : null,
           // Exactly one line, and only for a lane that has a screen. A lane
           // with the tool off contributes `null` here, which
           // `composeLaunchDirectives` drops — so its prompt is byte-identical
           // to the pre-Mac-Desktop one.
-          shouldInjectLaneScreenDirective ? laneScreenDirective : null,
+          shouldInjectLaneScreenDirective && !claudeSystemPromptCarries(managed, "laneScreen", laneScreenDirective)
+            ? laneScreenDirective
+            : null,
           shouldInjectLaneDevicesDirective ? laneDevices.directive : null,
           contextAttachmentPrompt || null,
         ]);
@@ -58676,6 +58948,14 @@ export function createAgentChatService(args: {
         mode: "initial",
         latestUserText: autoTitleSeed,
       });
+    } else if (
+      managed.autoTitleShortSeed
+      && autoTitleSeed
+      && isShortTitlePrompt(managed.autoTitleSeed ?? "")
+      && !isShortTitlePrompt(autoTitleSeed)
+    ) {
+      // The first prompt named nothing ("hi"); the refine reads this one.
+      managed.autoTitleSeed = autoTitleSeed;
     }
     if (executionMode) {
       managed.session.executionMode = executionMode;
@@ -59266,23 +59546,19 @@ export function createAgentChatService(args: {
     if (!isCursorSdkPromptInjectEnabled(process.env[CURSOR_SDK_PROMPT_INJECT_ENV])) return "";
     const moduleDir = typeof __dirname === "string" ? __dirname : undefined;
     const cliFile = findAdeCliHelpDigestFile(moduleDir);
-    let cliHelpDigest = "";
-    if (cliFile) {
-      try {
-        const stat = await fsPromises.stat(cliFile);
-        if (stat.isFile()) {
-          cliHelpDigest = await loadAdeCliHelpDigest(path.dirname(cliFile));
+    // Two independent reads, done at the same time.
+    const [cliHelpDigest, rulesText] = await Promise.all([
+      (async () => {
+        if (!cliFile) return "";
+        try {
+          const stat = await fsPromises.stat(cliFile);
+          return stat.isFile() ? await loadAdeCliHelpDigest(path.dirname(cliFile)) : "";
+        } catch {
+          return "";
         }
-      } catch {
-        cliHelpDigest = "";
-      }
-    }
-    let rulesText = "";
-    try {
-      rulesText = await readProjectRulesText(args.laneWorktreePath);
-    } catch {
-      rulesText = "";
-    }
+      })(),
+      readProjectRulesText(args.laneWorktreePath).catch(() => ""),
+    ]);
     const built = buildCursorSdkSystemPrompt({
       runtime: args.runtime,
       laneWorktreePath: args.laneWorktreePath,
@@ -60577,13 +60853,16 @@ export function createAgentChatService(args: {
       );
     }
 
-    const cursorMcpLeases = await ensureHttpMcpLeases(managed);
     // These inline servers are additive. Caller-injected servers (ADE SDK
     // embedders) are additive too, and land first so an ADE lease can never be
     // shadowed by a caller reusing its name. Strict mode rides a trimmed
     // `local.settingSources`; see CALLER_MCP_SUPPORT.cursor for the residual
-    // (user-layer servers).
-    await chatUserMcp.prepareProviderServers(chatMcpTarget(managed));
+    // (user-layer servers). The leases and the user's servers do not depend
+    // on each other, so they are prepared at the same time.
+    const [cursorMcpLeases] = await Promise.all([
+      ensureHttpMcpLeases(managed),
+      chatUserMcp.prepareProviderServers(chatMcpTarget(managed)),
+    ]);
     const cursorCallerMcpServers = callerMcpServersForLaunch(managed);
     const cursorMcpServerConfig = cursorMcpLeases.length || cursorCallerMcpServers
       ? {
@@ -76081,6 +76360,7 @@ export function createAgentChatService(args: {
     crossMachineHandoffSweepTimer = null;
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
+    releaseAllDraftWarmups("shutdown");
     quietTurnHandler.dispose();
     warmIdleCompaction.dispose();
     warmIdleRearmStopped = true;
@@ -76667,6 +76947,8 @@ export function createAgentChatService(args: {
   const countActiveRuntimes = (): number => {
     let count = 0;
     for (const [, managed] of managedSessions) if (managed.runtime) count++;
+    // A draft warmup is a live provider process too.
+    for (const [, entry] of draftWarmups) if (entry.managed.runtime) count++;
     return count;
   };
 
@@ -78100,6 +78382,142 @@ export function createAgentChatService(args: {
    * Model selection itself stays local; callers opt into this only for flows
    * that intentionally prepare a runtime before the next message is sent.
    */
+  /**
+   * Start the provider a draft's chat will use. Only providers whose start
+   * leaves nothing behind when the draft is never sent:
+   * - Claude: the SDK query starts on a reserved thread id, and Claude writes
+   *   no thread until the first message.
+   * - Codex: the app-server process; the thread starts with the first turn.
+   * - Cursor (local): the SDK connection, the same start `warmupModel` makes
+   *   for a new chat.
+   * Every other provider makes a session in its own store when it starts, so
+   * a draft that is never sent would leave an empty session there.
+   */
+  const startDraftWarmup = async (managed: ManagedChatSession): Promise<void> => {
+    switch (managed.session.provider) {
+      case "claude":
+        ensureClaudeSessionRuntime(managed);
+        prewarmClaudeQuery(managed);
+        return;
+      case "codex":
+        await ensureCodexSessionRuntime(managed);
+        return;
+      case "cursor":
+        await ensureCursorSdkRuntime(managed);
+        return;
+      default:
+        return;
+    }
+  };
+
+  const draftWarmupSupported = (managed: ManagedChatSession, cursorRuntime: AgentChatRuntime | null | undefined): boolean => {
+    const provider = managed.session.provider;
+    if (provider === "claude" || provider === "codex") return true;
+    return provider === "cursor" && effectiveCursorRuntime(managed, cursorRuntime) === "local";
+  };
+
+  /**
+   * A draft composer's first keystroke: warm the provider its chat will use,
+   * on the machine that owns the lane. The draft reserved `sessionId`; the
+   * `create` that sends the same id and resolves to the same settings adopts
+   * the warm runtime. Nothing is written until then, so no empty chat shows in
+   * any list or on the phone. An unsent draft gives its process back after
+   * `DRAFT_WARMUP_IDLE_MS`. Best-effort: it never throws for a launch it
+   * cannot warm, it says why.
+   */
+  const prewarmDraft = async (
+    args: AgentChatPrewarmDraftArgs,
+  ): Promise<AgentChatPrewarmDraftResult> => {
+    const { cursorRuntime, ...createArgs } = args;
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!DRAFT_WARMUP_SESSION_ID_RE.test(sessionId)) {
+      throw new Error("invalid_argument: prewarmDraft needs the draft's reserved chat id (a UUID).");
+    }
+    if (serviceDisposed) return { warming: false, reason: "unavailable" };
+    // A person's new Work chat only: helpers, identities, automations,
+    // handoffs and agent launches start the way they always did.
+    if (
+      args.runtimeActor?.kind === "agent"
+      || args.orchestrationParentSessionId?.trim()
+      || args.recoveredFromSessionId?.trim()
+      || args.identityKey
+      || args.automationId?.trim()
+      || (args.surface && args.surface !== "work")
+    ) {
+      return { warming: false, reason: "unsupported_launch" };
+    }
+    if (managedSessions.has(sessionId) || sessionService.get(sessionId)) {
+      return { warming: false, reason: "chat_exists" };
+    }
+    // Same guard as `warmupModel`: a provider started with nobody watching
+    // must not be one a sibling brain should drive.
+    if (!chatAutoAdoptable(sessionId, null, { quiet: true })) {
+      return { warming: false, reason: "unavailable" };
+    }
+    let draft: ManagedChatSession | null = null;
+    try {
+      await createSessionInternal({
+        ...createArgs,
+        sessionId,
+        launchedBySessionId: null,
+        draftWarmSink: (managed) => { draft = managed; },
+      });
+    } catch (error) {
+      // The real create reports the same problem, in the chat.
+      logger.info("agent_chat.draft_warmup_unresolved", { sessionId, error: getErrorMessage(error) });
+      return { warming: false, reason: "invalid_settings" };
+    }
+    const resolved = draft as ManagedChatSession | null;
+    if (!resolved) return { warming: false, reason: "invalid_settings" };
+    const fingerprint = draftWarmupFingerprint(resolved);
+    const existing = draftWarmups.get(sessionId);
+    if (existing && existing.fingerprint === fingerprint) {
+      clearTimeout(existing.timer);
+      existing.timer = setTimeout(() => releaseDraftWarmup(sessionId, "idle"), DRAFT_WARMUP_IDLE_MS);
+      existing.timer.unref?.();
+      return { warming: true };
+    }
+    // The draft changed model, mode or lane: the old warm runtime is wrong now.
+    if (existing) releaseDraftWarmup(sessionId, "settings_changed");
+    if (!draftWarmupSupported(resolved, cursorRuntime)) {
+      return { warming: false, reason: "provider_not_supported" };
+    }
+    while (draftWarmups.size >= MAX_DRAFT_WARMUPS) {
+      const oldest = draftWarmups.keys().next().value;
+      if (oldest === undefined) break;
+      releaseDraftWarmup(oldest, "budget");
+    }
+    const timer = setTimeout(() => releaseDraftWarmup(sessionId, "idle"), DRAFT_WARMUP_IDLE_MS);
+    timer.unref?.();
+    const startedAt = Date.now();
+    // In the map before the start runs, so the runtime budget counts it and
+    // the event guards see it from the first synchronous step.
+    const entry: DraftWarmup = { managed: resolved, fingerprint, warming: Promise.resolve(), timer };
+    draftWarmups.set(sessionId, entry);
+    entry.warming = startDraftWarmup(resolved).then(() => {
+      // Released while the start ran: the runtime it made belongs to nobody.
+      if (resolved.deleted && resolved.runtime) teardownRuntime(resolved, "handle_close");
+      logger.info("agent_chat.draft_warmup_started", {
+        sessionId,
+        provider: resolved.session.provider,
+        durationMs: Date.now() - startedAt,
+      });
+    }, (error: unknown) => {
+      logger.warn("agent_chat.draft_warmup_failed", {
+        sessionId,
+        provider: resolved.session.provider,
+        error: getErrorMessage(error),
+      });
+      if (draftWarmups.get(sessionId) === entry) releaseDraftWarmup(sessionId, "failed");
+      else if (resolved.deleted && resolved.runtime) teardownRuntime(resolved, "handle_close");
+    });
+    return { warming: true };
+  };
+
+  const releaseAllDraftWarmups = (reason: string): void => {
+    for (const sessionId of [...draftWarmups.keys()]) releaseDraftWarmup(sessionId, reason);
+  };
+
   const warmupModel = async ({
     sessionId,
     modelId,
@@ -81646,15 +82064,19 @@ export function createAgentChatService(args: {
         case "claude": {
           const sessionIdFromEnvironment = process.platform !== "win32";
           activity = buildSessionActivityGuidance(session, true, { sessionIdFromEnvironment });
+          const bundledPluginPaths = claudeAgentSkillPluginRoots(agentSkillRootEnv());
+          const pluginPaths = [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(cwd)])];
           const harness = buildCodingAgentSystemPrompt({
             ...harnessArgs,
             runtime: "claude-agent-sdk-query",
             sessionActivityGuidance: activity,
+            nativeSkillListing: bundledPluginPaths.length > 0,
           });
-          const bundledPluginPaths = claudeAgentSkillPluginRoots(agentSkillRootEnv());
-          const pluginPaths = [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(cwd)])];
           const { slashCommandsSection, listedEntries } = buildClaudeSdkSlashCommandsSection(session, cwd, pluginPaths, bundledPluginPaths);
           if (slashCommandsSection.length) listing = { text: slashCommandsSection.join("\n").trim(), entries: listedEntries };
+          // The same directives `buildClaudeQueryOptions` puts in the prompt.
+          const computerUse = currentComputerUseDirective();
+          const laneScreen = currentLaneScreenDirective(laneId);
           return {
             label: "ADE system prompt",
             timing: "every-request",
@@ -81662,6 +82084,8 @@ export function createAgentChatService(args: {
             text: [
               harness,
               "",
+              ...(computerUse ? [computerUse, ""] : []),
+              ...(laneScreen ? [laneScreen, ""] : []),
               ...slashCommandsSection,
               "",
               buildAdeSessionLineageGuidance(session, spawnSelfReportOpts(session), { sessionIdFromEnvironment }) ?? "",
@@ -81757,9 +82181,10 @@ export function createAgentChatService(args: {
       activity,
       listing,
       perTurn,
-      launchDirective: laneId ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null,
-      computerUse: currentComputerUseDirective(),
-      laneScreen: currentLaneScreenDirective(laneId),
+      // A Claude chat carries these in its system prompt (the main text).
+      launchDirective: laneId && provider !== "claude" ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null,
+      computerUse: provider === "claude" ? null : currentComputerUseDirective(),
+      laneScreen: provider === "claude" ? null : currentLaneScreenDirective(laneId),
       laneDevices: resolveLaneDeviceDirective({
         laneId,
         appleLookup: laneAppleDeviceLookup,
@@ -82469,6 +82894,7 @@ export function createAgentChatService(args: {
     reconcileThreadPointerFromRedundantSources,
     isTranscriptPathActive,
     warmupModel,
+    prewarmDraft,
     listSubagents,
     deliverExternalChildCompletion,
     /**

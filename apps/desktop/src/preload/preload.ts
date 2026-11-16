@@ -791,6 +791,8 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -9627,6 +9629,15 @@ const adeBridge = {
     ): Promise<void> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "warmupModel", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatWarmupModel, args),
+      ),
+    // A draft's first keystroke: warm its provider on the machine that owns
+    // the draft's lane (the pin), so the first send finds it started.
+    prewarmDraft: async (
+      args: AgentChatPrewarmDraftArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<AgentChatPrewarmDraftResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "chat", "prewarmDraft", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatPrewarmDraft, args),
       ),
     onEvent: subscribeAgentChatEvents,
     slashCommands: async (

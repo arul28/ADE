@@ -95,12 +95,34 @@ export function backgroundUtilityReasoningEffort(
 }
 
 /**
- * Claude flags for a background utility call: no tools, no MCP servers.
+ * Claude flags for a background utility call: no tools, no MCP servers, no
+ * project or local settings, no hooks, no skills or commands. The prompt
+ * already holds every word the call needs. Only the user settings layer stays,
+ * for its auth (`apiKeyHelper`, `env`). With
+ * {@link claudeBackgroundUtilityEnv} a title call measured 1.9 KB of request
+ * instead of 10 KB plus every CLAUDE.md in the lane (2026-11-15, CLI 2.1.321).
  * `--tools=` is one argument because an empty `--tools ""` does not survive
  * every Windows spawn path.
  */
 export function claudeBackgroundUtilityFlags(): string[] {
-  return ["--tools=", "--strict-mcp-config"];
+  return [
+    "--tools=",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "user",
+    "--settings",
+    JSON.stringify({ disableAllHooks: true }),
+    "--disable-slash-commands",
+  ];
+}
+
+/**
+ * Environment for a Claude background utility call: no CLAUDE.md files (the
+ * user's own included). Read in the CLI (2.1.321), not documented: recheck on
+ * a bump.
+ */
+export function claudeBackgroundUtilityEnv(): Record<string, string> {
+  return { CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1" };
 }
 
 /**

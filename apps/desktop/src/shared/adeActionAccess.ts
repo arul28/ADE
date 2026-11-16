@@ -229,7 +229,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "setParallelLaunchState", "cancelScheduledWork", "resumeUsageLimitNow",
       "continueUsageLimitOnAlternate", "switchAccount", "setScheduledWorkPaused", "steer",
       "unarchiveSession", "updateSession", "regenerateSessionMetadata", "setSpawnKind", "setParent",
-      "dismissSubagentTakeoverPrompt", "warmupModel", "mcpAppRequest", "revokeMcpAppGrant",
+      "dismissSubagentTakeoverPrompt", "warmupModel", "prewarmDraft", "mcpAppRequest", "revokeMcpAppGrant",
     ],
   },
   keybindings: {

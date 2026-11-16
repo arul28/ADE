@@ -437,6 +437,8 @@ import type {
   AgentChatClaudeOutputStylesArgs,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -2980,6 +2982,10 @@ declare global {
           },
           pin: OpenProjectBinding,
         ) => Promise<void>;
+        prewarmDraft: (
+          args: AgentChatPrewarmDraftArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatPrewarmDraftResult>;
         onEvent: (
           cb: (ev: AgentChatEventEnvelope) => void,
           pin: OpenProjectBinding,
