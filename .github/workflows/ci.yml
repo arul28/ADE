@@ -1005,10 +1005,18 @@ jobs:
   # touches neither the app, the shared fixtures the Swift tests read, nor the
   # iOS part of CI. Any other dispatch builds.
   # A push to main is built by ios-main.yml (see its header).
+  #
+  # A pull request also skips the build when an earlier run of the same pull
+  # request already passed it with the same iOS inputs: the iOS files and
+  # ci.yml in the merge commit (`ios-gate.sh --fingerprint`). test-ios saves a
+  # tiny `ios-pass-v1-<fingerprint>` cache entry after a pass, which only this
+  # pull request can see; a push that changes only docs or desktop code finds
+  # it and reuses the pass instead of compiling the app again for ~20 minutes.
   ios-gate:
     runs-on: ubuntu-latest
     outputs:
-      run: ${{ steps.gate.outputs.run }}
+      run: ${{ steps.decide.outputs.run }}
+      pass-key: ${{ steps.fingerprint.outputs.key }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1029,6 +1037,33 @@ jobs:
             exit 0
           fi
           scripts/ci/ios-gate.sh >> "$GITHUB_OUTPUT"
+
+      - name: Fingerprint the iOS inputs
+        id: fingerprint
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'pull_request'
+        run: echo "key=ios-pass-v1-$(scripts/ci/ios-gate.sh --fingerprint)" >> "$GITHUB_OUTPUT"
+
+      - name: Look for an earlier pass with the same iOS inputs
+        id: earlier-pass
+        if: steps.fingerprint.outputs.key != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: .ios-pass
+          key: ${{ steps.fingerprint.outputs.key }}
+          lookup-only: true
+
+      - name: Decide
+        id: decide
+        env:
+          AFFECTED: ${{ steps.gate.outputs.run }}
+          EARLIER_PASS: ${{ steps.earlier-pass.outputs.cache-hit }}
+        run: |
+          if [[ "$AFFECTED" == "true" && "$EARLIER_PASS" == "true" ]]; then
+            echo "Skipping iOS: an earlier run of this pull request passed test-ios with the same iOS inputs."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=$AFFECTED" >> "$GITHUB_OUTPUT"
+          fi
 
   test-ios:
     needs: ios-gate
@@ -1052,6 +1087,18 @@ jobs:
       - name: Build and test
         if: needs.ios-gate.outputs.run == 'true'
         uses: ./.github/actions/ios-build-test
+
+      # Record the pass for this pull request's later runs (see ios-gate).
+      - name: Record the pass
+        if: needs.ios-gate.outputs.run == 'true' && needs.ios-gate.outputs.pass-key != ''
+        shell: bash
+        run: mkdir -p .ios-pass && echo "$GITHUB_SHA" > .ios-pass/sha
+      - name: Save the pass
+        if: needs.ios-gate.outputs.run == 'true' && needs.ios-gate.outputs.pass-key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .ios-pass
+          key: ${{ needs.ios-gate.outputs.pass-key }}
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:
