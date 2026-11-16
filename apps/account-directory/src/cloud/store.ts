@@ -496,6 +496,9 @@ export function deleteLogStatement(
     .bind(computer.instance_id, computer.user_id, args.who, args.reason, events, now);
 }
 
+/** A launch whose computer was deleted before it finished: it ends with this error, and Retry makes a new computer. */
+export const LAUNCH_COMPUTER_DELETED = "This launch's ADE Cloud computer was deleted before it finished. Retry makes a new one.";
+
 /** Settles an open stretch and marks the computer deleted, for after the provider's delete. */
 export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: number): D1PreparedStatement[] {
   // Guarded: two deletes of one computer charge its last stretch once.
@@ -508,6 +511,12 @@ export function markDeletedStatements(env: CloudDb, computer: ComputerRow, now: 
       lane_id = null, lane_name = null, lane_project_origin = null, lane_branch = null, lane_keep_reason = null
     where instance_id = ?
   `).bind(now, now, computer.instance_id));
+  // Its unfinished launch ends too, or the web and phone list it as running for good.
+  // Not a Retry in flight ('retrying'): that launch is getting a new computer.
+  statements.push(env.DB.prepare(`
+    update cloud_launches set state = 'failed', error = ?, updated_at = ?
+    where instance_id = ? and state in ('making', 'joining', 'needs_approval', 'joined', 'waiting_for_sign_in', 'running')
+  `).bind(LAUNCH_COMPUTER_DELETED, now, computer.instance_id));
   return statements;
 }
 
