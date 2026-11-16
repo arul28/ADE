@@ -24,9 +24,11 @@ export type CtoPanelTab = "activity" | "library";
 /** Children shown under "Now" before the rest fold into a count. */
 const NOW_CHILD_CAP = 6;
 
+/** The notes in the CTO's memory file; headings, rules and code fences are structure, not notes. */
 function noteLines(text: string | null | undefined): string[] {
   return (text ?? "")
     .split(/\r?\n/)
+    .filter((line) => !/^\s*(#|```|---|\*\*\*)/.test(line))
     .map((line) => line.replace(/^\s*[-*]\s+/, "").trim())
     .filter(Boolean);
 }

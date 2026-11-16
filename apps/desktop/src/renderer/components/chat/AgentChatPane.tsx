@@ -4253,6 +4253,7 @@ export function AgentChatPane({
   composerHandleRef,
   emptyStateAccessory = null,
   emptyStateHero = null,
+  emptyTranscript = null,
   ambientTurnContext,
 }: {
   laneId: string | null;
@@ -4384,6 +4385,8 @@ export function AgentChatPane({
    */
   emptyStateAccessory?: React.ReactNode;
   emptyStateHero?: React.ReactNode;
+  /** Shown in an open chat that has no messages yet (the CTO says hi there). */
+  emptyTranscript?: React.ReactNode;
   ambientTurnContext?: () => string | null;
 }) {
   // The chat API this pane talks to. A ref so every callback below reads the
@@ -20746,6 +20749,7 @@ export function AgentChatPane({
                         transcriptPending={subagentView
                           ? subagentTranscript === null && !subagentTranscriptUnsupported
                           : selectedChatCold}
+                        emptyTranscript={subagentView ? null : emptyTranscript}
                         sessionEnded={selectedSession?.status === "ended"}
                         sessionProvider={transcriptSessionProvider}
                         resolveSpawnedChatProvider={resolveSpawnedChatProvider}

@@ -2184,12 +2184,14 @@ struct CtoMemory: Codable, Hashable {
   }
 }
 
-/// Notes text as lines: list markers dropped, blanks skipped.
+/// Notes text as lines: list markers dropped, blanks skipped, and headings,
+/// rules and code fences left out (they are structure, not notes).
 func ctoNoteLines(_ text: String?) -> [String] {
   (text ?? "")
     .split(whereSeparator: \.isNewline)
-    .map { line -> String in
+    .compactMap { line -> String? in
       var value = line.trimmingCharacters(in: .whitespaces)
+      if ["#", "```", "---", "***"].contains(where: { value.hasPrefix($0) }) { return nil }
       if value.hasPrefix("- ") || value.hasPrefix("* ") { value = String(value.dropFirst(2)) }
       return value.trimmingCharacters(in: .whitespaces)
     }

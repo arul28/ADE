@@ -6300,6 +6300,7 @@ function AgentChatMessageListMain({
   showStreamingIndicator = false,
   textPacingEnabled = true,
   transcriptPending = false,
+  emptyTranscript = null,
     className,
   onApproval,
   onQuietTurnRecovery,
@@ -6381,6 +6382,8 @@ function AgentChatMessageListMain({
    * without their entrance (`RowEntranceGate`).
    */
   transcriptPending?: boolean;
+  /** Shown in place of a transcript that has no messages once its first read is done. */
+  emptyTranscript?: React.ReactNode;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onQuietTurnRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
@@ -9495,7 +9498,7 @@ function AgentChatMessageListMain({
           {/* Proof with no following turn completion is a chronological tail
               row, not the old permanently pinned footer. */}
           {rows.length === 0 && !streamingIndicator && !trailingProof ? (
-            null
+            transcriptPending || hasOlderHistory ? null : emptyTranscript
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">

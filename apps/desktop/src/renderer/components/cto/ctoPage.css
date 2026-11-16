@@ -610,3 +610,38 @@
 @media (prefers-reduced-motion: reduce) {
   .ade-cto-welcome-wake { animation: none; }
 }
+
+/* The empty thread: the CTO says hi above the composer and offers a start. */
+.ade-cto-greeting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: max(24px, 12vh);
+  text-align: center;
+  animation: ade-cto-wake-in 420ms cubic-bezier(0.3, 0.7, 0.4, 1) both;
+}
+
+.ade-cto-greeting-starters {
+  max-width: 440px;
+  margin-top: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-cto-greeting { animation: none; }
+}
+
+/* A routine the CTO just scheduled slides in and glows once. */
+[data-fresh="true"][data-routine-id] {
+  border-radius: 8px;
+  animation: ade-cto-routine-arrive 2400ms cubic-bezier(0.3, 0.7, 0.4, 1) both;
+}
+
+@keyframes ade-cto-routine-arrive {
+  0% { opacity: 0; transform: translateX(8px); background: color-mix(in srgb, var(--cto-accent, #7c9cff) 22%, transparent); }
+  14% { opacity: 1; transform: none; }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-fresh="true"][data-routine-id] { animation: none; }
+}

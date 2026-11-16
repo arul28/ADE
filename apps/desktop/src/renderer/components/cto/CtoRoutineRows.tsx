@@ -27,7 +27,9 @@ export type CtoRoutineRowsProps = {
   variant: "panel" | "settings";
 };
 
-const RELOAD_DEBOUNCE_MS = 800;
+const RELOAD_DEBOUNCE_MS = 300;
+/** How long a routine that just appeared stays lit. */
+const FRESH_MS = 2_400;
 const PENDING = new Set<AgentChatScheduledWorkItem["status"]>(["scheduled", "paused"]);
 const FINISHED_LIMIT = 8;
 
@@ -164,6 +166,7 @@ function RoutineRow({
   variant,
   nowMs,
   busy,
+  fresh,
   onPause,
   onRunNow,
   onCancel,
@@ -172,6 +175,8 @@ function RoutineRow({
   variant: CtoRoutineRowsProps["variant"];
   nowMs: number;
   busy: boolean;
+  /** It was scheduled while the list was on screen. */
+  fresh: boolean;
   onPause: (paused: boolean) => void;
   onRunNow: () => void;
   onCancel: () => void;
@@ -204,6 +209,7 @@ function RoutineRow({
         !pending && "opacity-70",
       )}
       data-routine-id={item.id}
+      data-fresh={fresh ? "true" : undefined}
     >
       <span className={cn("flex w-4 shrink-0 justify-center text-[var(--kit-text-3)]", settings && "mt-[3px]")} aria-hidden>
         <Icon size={14} />
@@ -296,6 +302,10 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Rows that appear after the first read light up, so a routine the CTO just
+  // scheduled is seen arriving. Null until that first read.
+  const seenIdsRef = useRef<Set<string> | null>(null);
+  const [freshIds, setFreshIds] = useState<ReadonlySet<string>>(() => new Set());
   const nowMs = useMinuteClock();
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -313,7 +323,14 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
     try {
       const next = await window.ade.agentChat.listScheduledWork({ sessionId, includeTerminal: settings }, target);
       if (generation !== generationRef.current) return;
-      setItems(next.filter((item) => item.sessionId === sessionId));
+      const mine = next.filter((item) => item.sessionId === sessionId);
+      const seen = seenIdsRef.current;
+      if (seen) {
+        const arrived = mine.filter((item) => !seen.has(item.id)).map((item) => item.id);
+        if (arrived.length > 0) setFreshIds((current) => new Set([...current, ...arrived]));
+      }
+      seenIdsRef.current = new Set(mine.map((item) => item.id));
+      setItems(mine);
       setError(null);
     } catch (err) {
       if (generation !== generationRef.current) return;
@@ -325,6 +342,8 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
 
   useEffect(() => {
     generationRef.current += 1;
+    seenIdsRef.current = null;
+    setFreshIds(new Set());
     setLoaded(false);
     setItems([]);
     void load();
@@ -348,6 +367,12 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
     // Keyed on the pin's key, not the object: a rebuilt pin re-subscribes nothing.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, pin?.key, load]);
+
+  useEffect(() => {
+    if (freshIds.size === 0) return undefined;
+    const timer = window.setTimeout(() => setFreshIds(new Set()), FRESH_MS);
+    return () => window.clearTimeout(timer);
+  }, [freshIds]);
 
   const act = async (item: AgentChatScheduledWorkItem, run: (target: OpenProjectBinding, sid: string) => Promise<unknown>, fallback: string) => {
     const target = pinRef.current;
@@ -431,6 +456,7 @@ export function CtoRoutineRows({ sessionId, pin, variant }: CtoRoutineRowsProps)
             variant={variant}
             nowMs={nowMs}
             busy={busyId === item.id}
+            fresh={freshIds.has(item.id)}
             onPause={(paused) => pause(item, paused)}
             onRunNow={() => runNow(item)}
             onCancel={() => void cancel(item)}

@@ -41,6 +41,7 @@ import { useCtoCloudHome } from "./useCtoCloudHome";
 import { useCloudMachines } from "../remoteTargets/useCloudMachines";
 import { showToast } from "../app/toast/toastStore";
 import type { CtoAdoptAccountCopyResult } from "../../../shared/ctoAccountCopy";
+import { CtoGreeting } from "./CtoGreeting";
 import "./ctoPage.css";
 
 const MAX_WAKING_RETRIES = 4;
@@ -543,6 +544,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     })
     : null;
 
+  const greeting = useMemo(
+    () => (ctoSessionId ? <CtoGreeting look={look} name={ctoDisplayName} sessionId={ctoSessionId} /> : null),
+    [ctoDisplayName, ctoSessionId, look],
+  );
+
   /* ── Render ── */
 
   const bridgeMissing = active && typeof window !== "undefined" && !window.ade?.cto;
@@ -769,6 +775,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               // The chip that says where this chat runs is where the CTO's home
               // machine is changed; the header does not repeat it.
               machineChipAction={machineChipAction}
+              emptyTranscript={greeting}
             />
           ) : error ? (
             <CtoStateCard
