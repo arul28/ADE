@@ -28755,3 +28755,28 @@ final class WorkChatTranscriptSelfSizingTests: XCTestCase {
     }
   }
 }
+
+/// Runs once for the whole test bundle (`NSPrincipalClass`). Before each
+/// test it clears the saved choices that decide whether the focused computer's
+/// work is listed. Many tests end with `disconnect()`, which saves a user
+/// pause; a later test in any order would then see an unlisted computer and
+/// no rows.
+@objc(ADETestDefaultsObserver)
+final class ADETestDefaultsObserver: NSObject, XCTestObservation {
+  static let listingGateKeys = [
+    "ade.sync.autoReconnectPausedByUser",
+    "ade.sync.autoReconnectPauseSource",
+    "ade.fleet.userDisconnectedMachineKeys.v1",
+  ]
+
+  override init() {
+    super.init()
+    XCTestObservationCenter.shared.addTestObserver(self)
+  }
+
+  func testCaseWillStart(_ testCase: XCTestCase) {
+    for key in Self.listingGateKeys {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+  }
+}

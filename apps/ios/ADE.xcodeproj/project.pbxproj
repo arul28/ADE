@@ -2776,6 +2776,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				INFOPLIST_KEY_NSPrincipalClass = ADETestDefaultsObserver;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ADE.app/ADE";
 			};
 			name = Debug;
@@ -3057,6 +3058,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				INFOPLIST_KEY_NSPrincipalClass = ADETestDefaultsObserver;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ADE.app/ADE";
 				VALIDATE_PRODUCT = YES;
 			};
@@ -3075,6 +3077,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
+				INFOPLIST_KEY_NSPrincipalClass = ADETestDefaultsObserver;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ADE.app/ADE";
 				VALIDATE_PRODUCT = YES;
 			};
