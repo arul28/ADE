@@ -66306,6 +66306,12 @@ export function createAgentChatService(args: {
   ): Promise<void | AgentChatSteerResult> {
     assertChatNotMovedAway(args.sessionId, "send_message");
     assertPlainPromptText(args);
+    // A send is activity from the moment it arrives: the pre-steps below
+    // (taking the chat back, mention expansion, lane recovery) await while the
+    // chat still reads idle, and the unattended release reads this clock, so
+    // without it a release can tear down the runtime this send is about to use.
+    const sending = managedSessions.get(args.sessionId);
+    if (sending) sending.lastActivityTimestamp = Date.now();
     const { clientSubmittedAtMs, ...argsWithoutTiming } = args;
     args = argsWithoutTiming;
     const timedManaged = managedSessions.get(args.sessionId);
@@ -66606,7 +66612,9 @@ export function createAgentChatService(args: {
     rawArgs: AgentChatSendArgs,
     options?: SendMessageOptions,
   ): Promise<void | AgentChatSteerResult> {
-    // Its callers (`sendMessage`) already took the chat back.
+    // Its callers (`sendMessage`) already took the chat back and marked the
+    // send as activity; this is the same entry point every internal sender
+    // uses, so the clock is already right here.
     assertChatRuntimeOwnedHere(rawArgs.sessionId, "send to");
     // Composer @-mention chips expand here, before any routing decision, so a
     // fresh turn, a steer, and every provider all receive the same pointer

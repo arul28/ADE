@@ -59,11 +59,13 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("**ade-cli-control-plane**");
       // A wake is the agent's own work; a message arriving later is a draft.
       expect(result).toContain("ade drafts");
-      expect(result).toContain('ade chat note "testing auth fallback"');
-      expect(result).toContain('ade chat ask "<the exact question>"');
-      // Agents cannot settle; the prompt says so instead of teaching a command.
-      expect(result).toContain("You cannot settle a session");
-      expect(result).not.toContain("ade chat settle --outcome");
+      expect(result).toContain('ade chat note "');
+      expect(result).toContain('ade chat ask "');
+      // Agents cannot settle, and a note is cut at 72 characters. Both rules
+      // are manual detail in ade-cli-control-plane, which the skill index names
+      // on every one of these prompts.
+      expect(result).toContain("`ade-cli-control-plane`");
+      expect(result).not.toContain("ade chat settle");
     });
 
   });
