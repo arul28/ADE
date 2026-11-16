@@ -1582,7 +1582,10 @@ export async function runCloudLaneLaunch(launchArgs: JsonObject, options: Global
   process.once("SIGINT", onInterrupt);
   try {
     // Always, --json too (stderr), before anything waits: the id is what follows or resumes this launch.
-    process.stderr.write(`ade: starting a lane on ADE Cloud (${sizeId ?? "your default size"}). Launch id ${launchId}.\n`);
+    // A retry (--launch-id) keeps the size its launch was given, picked or default.
+    const resumed = asString(launchArgs.launchId) != null;
+    const sizeText = sizeId ?? (resumed ? "the size it started with" : "your default size");
+    process.stderr.write(`ade: ${resumed ? "going on with" : "starting"} a lane on ADE Cloud (${sizeText}). Launch id ${launchId}.\n`);
     return await withCloudActions(options, roots.projectRoot, async (call) => {
       // A chat launch with no message only goes on with one ADE already holds.
       if (launch.kind === "chat" && !isRecord(launch.chat) && !(await call("lane_launch_status", { launchId }))) {
