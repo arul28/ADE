@@ -807,17 +807,19 @@ Two independent controls:
   `config-toml`, ADE defers both controls to the project's
   `.codex/config.toml`.
 
-Commands reach the network in every mode ADE sets (owner's decision,
-2026-11-16). Codex's own default keeps `read-only` and `workspace-write`
-offline, so `gh`, `npm install` and `git push` used to work only in Full auto.
-Each chat turn sends `sandboxPolicy: { type, networkAccess: true }`
-(`codexTurnSandboxPolicy`); a terminal Codex gets the same from
-`codexSandboxCliArgs` in `shared/pinnedToolSpawnEnv.ts`: `-c
-sandbox_workspace_write.network_access=true` for `workspace-write`, and for
-`read-only`, which has no such key, a permission profile with every path
-readable, none writable, and the network on (it replaces `--sandbox`). The
-file limits are unchanged, and `config-toml` still leaves both to the person's
-config.
+Codex commands reach the network in every chat mode ADE sets and in a
+terminal's Default and Edit (owner's decision, 2026-11-16). Codex's own
+default keeps `read-only` and `workspace-write` offline, so `gh`,
+`npm install` and `git push` used to work only in Full auto. Each chat turn
+sends `sandboxPolicy: { type, networkAccess: true }` (`codexTurnSandboxPolicy`).
+A terminal Codex gets its flags from `codexSandboxCliArgs` in
+`shared/pinnedToolSpawnEnv.ts`: `-c sandbox_workspace_write.network_access=true`
+for `workspace-write`. Plan in a terminal keeps Codex's own
+`--sandbox read-only`, offline: its only network switch is a custom permission
+profile, and an organization's managed Codex policy (requirements.toml, MDM, a
+ChatGPT workspace) that doesn't list it makes Codex fall back to the policy's
+default, which can be writable. The file limits are unchanged, and
+`config-toml` still leaves both to the person's config.
 
 The chat adapter translates ADE's persisted kebab-case approval/sandbox
 values into the Codex app-server wire format at the JSON-RPC boundary:

@@ -65,32 +65,22 @@ export const PINNED_PROVIDER_TOOLS: Readonly<Record<string, PinnedProviderToolSp
 };
 
 /**
- * The profile name ADE gives Codex's read-only sandbox with the network on.
- * Codex merges `-c` tables into a same-named profile from config, so the name
- * is one no person's config would carry: a hand-written profile of this name
- * could add a writable path to Plan.
- */
-const CODEX_READ_ONLY_PROFILE = "ade_internal_plan_read_only";
-
-/**
- * Codex CLI flags for the sandbox ADE picks, with commands reaching the
- * network in every mode (owner's decision, 2026-11-16). Codex's own default
- * keeps read-only (Plan) and workspace-write (Edit) offline, so `gh`,
- * `npm install` and `git push` only worked in Full auto. The file limits stay.
+ * Codex CLI flags for the sandbox ADE picks. Commands reach the network in
+ * workspace-write (Default, Edit) as in Full auto (owner's decision,
+ * 2026-11-16): Codex's own default keeps them offline, so `gh`,
+ * `npm install` and `git push` only worked in Full auto.
  *
- * workspace-write takes a config key. read-only has none, so it runs as a
- * permission profile with the same rule (every path readable, none
- * writable) plus the network; a profile replaces `--sandbox`, never joins it.
+ * read-only (Plan in a terminal) stays Codex's own `--sandbox read-only`,
+ * offline. Its only network switch is a custom permission profile, and an
+ * organization's managed Codex policy (requirements.toml, MDM, a ChatGPT
+ * workspace) that doesn't list that profile makes Codex fall back to the
+ * policy's default, which can be writable. ADE can't see every such policy,
+ * so Plan keeps the sandbox that is read-only under any of them. A Plan chat
+ * gets the network per turn (`codexTurnSandboxPolicy`), which no profile
+ * decides.
  */
 export function codexSandboxCliArgs(sandbox: "read-only" | "workspace-write" | "danger-full-access"): string[] {
   if (sandbox === "workspace-write") return ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
-  if (sandbox === "read-only") {
-    return [
-      "-c", `default_permissions="${CODEX_READ_ONLY_PROFILE}"`,
-      "-c", `permissions.${CODEX_READ_ONLY_PROFILE}.filesystem={":root"="read"}`,
-      "-c", `permissions.${CODEX_READ_ONLY_PROFILE}.network.enabled=true`,
-    ];
-  }
   return ["--sandbox", sandbox];
 }
 

@@ -5352,7 +5352,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenLastCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-permission-override \"first continuation\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\"`],
         expect.any(Object),
       );
 
@@ -5366,7 +5366,7 @@ describe("ptyService", () => {
       const laterSpawn = (loadPty.mock.results[1]?.value as any).spawn;
       expect(laterSpawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-permission-override \"later continuation\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\"`],
         expect.any(Object),
       );
     });
@@ -5446,7 +5446,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-resume-only`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5539,7 +5539,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"`],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5645,7 +5645,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"`],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();

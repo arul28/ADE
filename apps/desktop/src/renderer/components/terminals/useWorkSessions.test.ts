@@ -606,7 +606,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect((window as any).ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
       laneId: "lane-1",
       toolType: "codex",
-      startupCommand: expect.stringContaining("codex --no-alt-screen -c \"default_permissions=\\\"ade_internal_plan_read_only\\\"\" -c \"permissions.ade_internal_plan_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_internal_plan_read_only.network.enabled=true --ask-for-approval on-request"),
+      startupCommand: expect.stringContaining("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request"),
     }), FAKE_TAB_BINDING);
   });
 

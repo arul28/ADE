@@ -1500,8 +1500,8 @@ fed from each runtime (`readRuntimeBusyFacts`). Unknown is busy.
   cloud computer: plan mode can't write and can't reach the network (a raw IP
   is refused too), default mode writes only in the workspace, and Codex's
   network-on setting still reaches the network. ADE turns that setting on in
-  every mode (see Chat › Agent routing › Codex), so Codex commands reach the
-  network on every size; the sandbox keeps its file limits. Codex prefers a `bwrap` on
+  every chat mode and a terminal's Default and Edit (see Chat › Agent routing ›
+  Codex); the sandbox keeps its file limits. Codex prefers a `bwrap` on
   PATH to its bundled one; when the wrapper can't run, Codex falls back to its
   own and fails as before.
 - `gh`: the image has the GitHub CLI (GitHub's apt repository). ADE's `gh`

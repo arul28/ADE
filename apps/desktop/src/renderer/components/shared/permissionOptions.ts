@@ -176,7 +176,7 @@ export function getPermissionOptions(opts: {
         value: "plan",
         label: "Plan mode",
         shortDesc: "Safe read-only browsing",
-        detail: "Read-only sandbox with approval policy set to on-request. Codex can read files, answer questions and reach the network, but needs approval to make edits or run commands that write.",
+        detail: "Read-only sandbox with approval policy set to on-request. Codex can read files and answer questions, and in a chat its commands reach the network; it needs approval to make edits or run commands that write.",
         allows: ["File exploration", "Code search", "Plan generation", "Network access"],
         gates: ["File writes & patches", "Shell commands that write"],
         safety: "safe",
