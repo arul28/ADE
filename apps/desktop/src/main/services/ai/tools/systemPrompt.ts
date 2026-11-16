@@ -185,6 +185,8 @@ export function buildCodingAgentSystemPrompt(args: {
    * bundled `ade` plugin). The prompt then leaves out its own copy of the index.
    */
   nativeSkillListing?: boolean;
+  /** The caller appends the computer-use directive to this same prompt. */
+  computerUseDirectiveIncluded?: boolean;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -276,6 +278,7 @@ export function buildCodingAgentSystemPrompt(args: {
       nativeSkillListing: args.nativeSkillListing === true,
       // The runtime block already names the subagent route.
       subagentRouteStated: Boolean(runtime),
+      computerUseDirectiveIncluded: args.computerUseDirectiveIncluded === true,
     }),
     ...(args.sessionActivityGuidance ? ["", args.sessionActivityGuidance] : []),
     ...(hasWorkflowTools

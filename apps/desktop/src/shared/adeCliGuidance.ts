@@ -323,6 +323,13 @@ export type AdeBootstrapGuidanceOptions = {
   nativeSkillListing?: boolean;
   /** The prompt already names the subagent route (the runtime block). */
   subagentRouteStated?: boolean;
+  /**
+   * The same prompt carries the computer-use directive
+   * (`buildComputerUseDirective`), which states the real-screen rule and
+   * points at `ade-proof-artifacts` itself, so those two lines here are a
+   * second copy and are left out.
+   */
+  computerUseDirectiveIncluded?: boolean;
 };
 
 export function buildAdeBootstrapGuidance(
@@ -345,12 +352,14 @@ export function buildAdeBootstrapGuidance(
     // The one proof line every agent sees. Chat shows a picture only from the
     // project's own files or the proof store; an agent that linked a screenshot
     // it saved to /tmp left the user a chip saying "Outside this project".
-    "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show. Proof or demos for people: `ade-proof-artifacts`.",
+    `Images in answers: \`ade proof attach <file>\`, then paste its \`cite:\` line; other paths may not show.${options.computerUseDirectiveIncluded ? "" : " Proof or demos for people: `ade-proof-artifacts`."}`,
     // Agents opened about two thirds of recent PRs with `gh`, and rewrote the
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
-    "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
+    ...(options.computerUseDirectiveIncluded
+      ? []
+      : ["`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`."]),
     "CLI ground truth: `ade help <command>`, `ade actions list --text`; prefer typed commands with `--text`. Settings: `ade settings find <words>`. Stop processes you start.",
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only

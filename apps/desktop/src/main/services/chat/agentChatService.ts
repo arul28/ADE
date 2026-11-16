@@ -10109,7 +10109,11 @@ export function buildComputerUseDirective(
       ownScreen
         ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
         : "When the `mcp__computer_use` tools are present, they drive the user's real screen: start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
-      "If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching.",
+      // With no external backend there is no backend status to read: only
+      // the rule about a requested backend applies.
+      hasExternalBackends
+        ? "If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching."
+        : "If the user asks for a computer-use backend that is unavailable, stop and report instead of switching.",
     ].join("\n"),
   );
 
@@ -10132,16 +10136,6 @@ export function buildComputerUseDirective(
         "- Use ghost_annotate for a labeled screenshot with clickable coordinates",
         "- For web apps in Chrome, prefer dom_id for clicking elements",
         "- Use ghost_wait after clicks in web apps to wait for state changes",
-      ].join("\n"),
-    );
-  }
-
-  // --- Local fallback section ---
-  if (hasLocalFallback) {
-    sections.push(
-      [
-        "### ADE Local (Fallback)",
-        "ADE local screenshot capture is available as a fallback if external backends are unavailable.",
       ].join("\n"),
     );
   }
@@ -49016,6 +49010,9 @@ export function createAgentChatService(args: {
         !hadPlanIntentAtOptionBuildStart && managed.session.interactionMode !== "plan",
         { sessionIdFromEnvironment: claudeSessionIdFromEnvironment },
       );
+      // Read before the harness: the harness leaves out its own copy of the
+      // lines this directive already carries.
+      const claudeComputerUseDirective = assistantSession ? null : currentComputerUseDirective();
       const claudeHarnessPrompt = assistantSession
         ? null
         : buildCodingAgentSystemPrompt({
@@ -49027,6 +49024,7 @@ export function createAgentChatService(args: {
           adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
           sessionActivityGuidance: claudeActivityGuidance,
           nativeSkillListing: bundledPluginPaths.length > 0 && pluginPaths.length > 0,
+          computerUseDirectiveIncluded: claudeComputerUseDirective != null,
         });
       // The computer-use rules and the lane-screen line go in the system
       // prompt, not the first message. Every new chat in the lane then reads
@@ -49038,7 +49036,7 @@ export function createAgentChatService(args: {
         ? null
         : {
           laneWorktreePath: managed.laneWorktreePath,
-          computerUse: currentComputerUseDirective(),
+          computerUse: claudeComputerUseDirective,
           laneScreen: currentLaneScreenDirective(managed.session.laneId?.trim() || null),
         };
       runtime.systemPromptDirectives = claudeDirectives;
@@ -82459,17 +82457,18 @@ export function createAgentChatService(args: {
           activity = buildSessionActivityGuidance(session, true, { sessionIdFromEnvironment });
           const bundledPluginPaths = claudeAgentSkillPluginRoots(agentSkillRootEnv());
           const pluginPaths = [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(cwd)])];
+          // The same directives `buildClaudeQueryOptions` puts in the prompt.
+          const computerUse = currentComputerUseDirective();
+          const laneScreen = currentLaneScreenDirective(laneId);
           const harness = buildCodingAgentSystemPrompt({
             ...harnessArgs,
             runtime: "claude-agent-sdk-query",
             sessionActivityGuidance: activity,
             nativeSkillListing: bundledPluginPaths.length > 0,
+            computerUseDirectiveIncluded: computerUse != null,
           });
           const { slashCommandsSection, listedEntries } = buildClaudeSdkSlashCommandsSection(session, cwd, pluginPaths, bundledPluginPaths);
           if (slashCommandsSection.length) listing = { text: slashCommandsSection.join("\n").trim(), entries: listedEntries };
-          // The same directives `buildClaudeQueryOptions` puts in the prompt.
-          const computerUse = currentComputerUseDirective();
-          const laneScreen = currentLaneScreenDirective(laneId);
           return {
             label: "ADE system prompt",
             timing: "every-request",
