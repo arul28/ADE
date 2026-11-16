@@ -190,6 +190,7 @@ export function CloudSetupCard({
   const [draft, setDraft] = useState("");
   const [cancelling, setCancelling] = useState(false);
   const failed = entry.startError != null || record?.state === "failed";
+  const failureReason = entry.startError?.trim() || record?.error?.trim() || null;
   const cancelled = record?.state === "cancelled";
   const ready = Boolean(record?.sessionId) && (record?.state === "running" || record?.state === "done");
   const signIn = record?.signIn ?? null;
@@ -260,9 +261,12 @@ export function CloudSetupCard({
               id: `cloud-setup-failed-${entry.launchId}`,
               tone: "error",
               title: entry.startError ? "The chat didn't start" : "The computer stopped before the chat started",
-              detail: `${entry.startError ?? record?.error ?? "ADE Cloud didn't say why."} Your message is not sent.`,
+              // The server's sentence once: the report's raw error is the same
+              // text, so the notice hides its "›" line. The message rows above
+              // already say "Not sent".
+              detail: failureReason ?? "ADE Cloud didn't say why.",
               actions: [{ label: "Retry", onClick: () => void retryAccountCloudLaunch(entry.launchId) }],
-              report: { surface: "cloud_setup_card", code: "launch_failed", technicalDetail: entry.startError ?? record?.error ?? "" },
+              report: { surface: "cloud_setup_card", code: "launch_failed", technicalDetail: failureReason },
             }}
           />
         ) : null}
