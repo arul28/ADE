@@ -55,6 +55,17 @@ encrypted account vault and are hydrated there after sign-in. The host performs
 the silent, receipt-backed migration from device-local credentials; the phone
 does not copy or migrate secrets. Sign-out closes Relay and clears account
 authorization while preserving explicit direct pairing trust for recovery.
+An explicit "Sign out of this iPhone", or a sign-in as another account, also
+removes the computers the phone reached through the account and resets the
+phone's local copy (`SyncService.resetLocalReplicaAfterAccountLeft`). The
+replica file and its site id go, as on a fresh install, so the reset writes no
+change rows that could sync back to a computer. The same reset empties the
+offline roster of every computer that is no longer paired, the App Group workspace snapshot
+(widgets, Live Activity data), the Activity drawer, the last project route, and
+offline work queued for a removed computer. A computer still paired by code
+stays paired and syncs again from the start. With none left, every tab shows its
+signed-out empty state. When the account signs in again, its rows come back from
+its computers.
 
 Choosing a signed-in account machine performs first-time adoption through the
 directory using LAN, Tailscale, then Relay. LAN/Tailscale adoption is allowed
@@ -2666,8 +2677,14 @@ opens it or filters to it. The five chips at the top (All · Needs you ·
 Working · Waiting · Done, the same `HubRosterFilterBar` the Hub uses) are the
 count display and the single-select filter. A failed row sits under Needs you
 with its own red mark; a Waiting row says why ("Snoozed", "CI running",
-"Review requested"). It includes project filtering and machine/project context on every item,
-and remains useful when the phone is
+"Review requested"). It includes project filtering. A row names its project
+and lane but not its computer; the long-press menu names the computer ("On
+Demo Studio"), and so do the chat header and the prompt box. The widgets name
+the project only. Sessions count the rows the Hub counts: chats, CLI sessions
+and shells, with a chat's own shell rows kept inside that chat. The live
+`WorkspaceSnapshot` write waits at most 2 s and does not restart on each
+change, so a shell that prints every second cannot hold the drawer and the
+widgets on an old snapshot. The drawer remains useful when the phone is
 account-signed-in but not directly paired to a machine. Rows can be dismissed
 with a swipe; account fallback and offline states remain explicit.
 
@@ -2837,15 +2854,54 @@ merge across machines when their repository origins match. If either machine
 does not report an origin, the folder name is the fallback; known, different
 origins stay separate even when their folders match.
 
-The focused machine owns the full sync connection. Up to three other paired
+The focused machine owns the full sync connection. Up to seven other paired
 machines stay available through lightweight roster connections, for a maximum
-of four live machines including the focused one. The fleet prioritizes pinned
-machines and then recently used machines, closes background connections, and
-does not connect hidden or signed-out machines. Settings > Machines lists the
-paired computers and lets the user hide one. Only machines in the user's
-connected set get a roster connection, and only their projects merge into the
-Hub and Work. Disconnecting a machine — the primary included — takes it out of
-that set until the user connects it again. With no primary attached, the next
+of eight live machines including the focused one (`MachineFleet.liveMachineLimit`).
+The fleet closes background connections and does not connect hidden or
+signed-out machines. Settings > Machines lists the paired computers and lets
+the user hide one. Only machines in the user's connected set get a roster
+connection, and only their projects merge into the Hub. Disconnecting a
+machine — the primary included — takes it out of that set until the user
+connects it again.
+
+A project shows every machine at once. Opening a project connects every
+paired machine with a copy of its repository, with no pick
+(`activeProjectCopyMachineKeys` → `MachineFleet.setProjectMachines`). These
+machines go live before the rest of the connected set, up to the limit, and
+nothing is saved to the connected set. A machine past the limit is "parked".
+An online account computer with a copy that the phone never paired is paired
+next to the primary once per app run, while the limit has room
+(`connectActiveProjectAccountCopies`). Unlike Start on, that pairing does not
+add it to the connected set: like the other copies' machines, it stays live
+while the project is open. Settings lists every machine that is live for the
+open project as connected, with Disconnect. A machine the user connects, or
+whose chat the user opens, goes live first; a project machine past the limit
+parks instead. A machine the user disconnected in
+Settings stays off for the project too
+(`ade.fleet.userDisconnectedMachineKeys.v1`), until the user connects it. The
+Lanes list and the Work list show the lanes and sessions of every machine with
+a copy in one list. Rows show no machine: the machine shows only inside an
+open chat (its header), in the lane detail, in a lane row's menu ("Show only"), and in the
+machine menu where new work starts. The rows of a machine that drops stay
+listed for a 20-second reconnect window (`fleetMachineListsWork`,
+`MachineFleet.workListReconnectWindow`), then leave the list until it is back;
+the window restarts when the app comes back to the front. A machine that is
+parked, not connected or disconnected by the user lists no rows, and the Hub
+and filter counts follow what is listed. An ADE Cloud computer's rows always
+list, from its last roster, also while it sleeps. A cloud computer this phone
+never paired lists the chats and lane it last saved to the account
+(`restingCloudMachineRows`, from the account server's saved chats). Opening one
+of its chats or lanes wakes it (`beginCloudWakeIfAsleep` →
+`wakeCloudMachineIfNeeded`: through the focused machine, else another connected
+machine that can send cloud commands, else the account server itself, so no
+other computer has to be connected) and shows "Waking <computer>…" in the
+opened screen until it answers. One wake per computer: a second open waits for
+the first. A wake answer that arrives after an account change is dropped. There
+is no control in a project that switches
+the machine to see work: the Lanes and Work machine filters only narrow the
+list, and a machine is picked only where new work starts (Start on). The
+focused machine stays the phone's internal home for calls that name no lane
+or session. With no primary attached, the next
 machine the user connects becomes primary. With a primary attached, connecting
 an account machine this phone never paired adds it next to the primary, as on
 desktop (`pairAccountMachineAlongsidePrimary`): the adoption runs on its own

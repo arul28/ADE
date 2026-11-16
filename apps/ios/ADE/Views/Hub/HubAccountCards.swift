@@ -75,7 +75,7 @@ func hubAccountStatusInputs(
       },
     focusedLastSeen: hubAccountRelativeTime(epochMs: account.machine(forFleetKey: sync.focusedMachineKey)?.lastSeenAt),
     anyFleetMachineLive: fleetMachines.contains { $0.state == .live },
-    anyFleetMachineConnecting: fleetMachines.contains { $0.isPinned && $0.state == .connecting },
+    anyFleetMachineConnecting: fleetMachines.contains { $0.isWanted && $0.state == .connecting },
     hasPairedComputer: sync.canReconnectToSavedHost || !fleetMachines.isEmpty,
     accountHasComputers: !account.machines.isEmpty,
     hasCards: hasCards,
@@ -335,6 +335,23 @@ enum HubLayoutStore {
   static func accountKey(userId: String) -> String { accountPrefix + userId }
 
   static func isAccountKey(_ key: String) -> Bool { key.hasPrefix(accountPrefix) }
+
+  private static let accountDefaultsKeyPrefix = "ade.hub.layout.v2|"
+
+  /// The account-wide orders (account project ids) of every account but
+  /// `keepingUserId`; nil removes all of them.
+  static func removeAccountLayouts(keepingUserId: String?) {
+    let kept = keepingUserId.map { accountDefaultsKeyPrefix + $0 }
+    for key in ADESharedContainer.defaults.dictionaryRepresentation().keys
+      where key.hasPrefix(accountDefaultsKeyPrefix) && key != kept
+    {
+      ADESharedContainer.defaults.removeObject(forKey: key)
+    }
+  }
+
+  static func removeAccountLayout(userId: String) {
+    ADESharedContainer.defaults.removeObject(forKey: accountDefaultsKeyPrefix + userId)
+  }
 
   private static func defaultsKey(_ connectionKey: String) -> String {
     if isAccountKey(connectionKey) {

@@ -32,10 +32,13 @@ func overlayActiveProjectRoster(
   var sessions: [TerminalSessionSummary] = []
   sessions.reserveCapacity(localSessions.count + rosterChats.count)
   // Status only: this runs on the main actor on every roster delta, so keep
-  // it to one small map (at most `workActiveProjectRosterSessionLimit`).
+  // it to one small map. It holds shells and CLI sessions too: the replica's
+  // `runtime_state` of a terminal row changes only on a full session refresh,
+  // so a quiet shell read "Working" on the focused computer for minutes while
+  // its brain (and every other computer's view, which reads the roster)
+  // already said it was idle.
   var rosterStatusById: [String: RemoteRosterChatStatus] = [:]
-  rosterStatusById.reserveCapacity(rosterChats.count)
-  for chat in rosterChats where rosterStatusById[chat.id] == nil {
+  for chat in (roster?.chats ?? []) where chat.archived != true && !chat.isIdentityChat && rosterStatusById[chat.id] == nil {
     rosterStatusById[chat.id] = chat.status
   }
   for session in localSessions

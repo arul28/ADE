@@ -142,7 +142,9 @@ struct ActivityRow: View {
     /// `.combine`'s label override, so without them VoiceOver hears strictly
     /// less than a sighted reader sees.
     private var accessibilityLabel: String {
-        var parts = [row.title, row.phaseLabel, row.scopeLabel]
+        var parts = [row.title, row.phaseLabel]
+        let project = row.projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !project.isEmpty { parts.append(project) }
         // The provider left `scopeLine` wherever the mark could take over that
         // line, and a logo is not readable — so it is spoken here instead and
         // VoiceOver still hears which agent this is.
@@ -161,7 +163,7 @@ struct ActivityRow: View {
             parts.append("step \(progress.completed) of \(progress.total)")
         }
         if let model = row.modelLabel { parts.append(model) }
-        parts.append(row.machineOnline ? "machine online" : "machine offline")
+        parts.append(row.machineOnline ? "computer online" : "computer offline")
         return parts.joined(separator: ", ")
     }
 
@@ -193,12 +195,12 @@ struct ActivityRow: View {
         .adeKitCard(padding: nil)
     }
 
-    /// Lane, then the floor, then the status slot.
+    /// Lane, then the status slot.
     ///
-    /// The same layout contract the Work card documents: exactly one child is
-    /// flexible (the floor label's frame) and everything else is `.fixedSize()`,
-    /// which is what guarantees the status slot never truncates and never
-    /// degrades to a bare glyph no matter how long the lane name is.
+    /// The status slot is `.fixedSize()`, so it never truncates and never
+    /// degrades to a bare glyph no matter how long the lane name is; the lane
+    /// name truncates instead. The row names no computer, as Work rows do: the
+    /// computer shows in the long-press menu and in the chat itself.
     private var lineOne: some View {
         HStack(spacing: 5) {
             if let lane = row.laneName, !lane.isEmpty {
@@ -211,11 +213,6 @@ struct ActivityRow: View {
                         .truncationMode(.tail)
                 }
             }
-            Text(row.machineName)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(ADEColor.textMuted)
-                .fixedSize()
-                .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
             WorkSessionRowStatusSlot(
                 label: row.phaseLabel,

@@ -42,13 +42,6 @@ struct HubCreatedChat: Equatable {
   }
 }
 
-/// Reports the destination control's global top edge so the picker popover can
-/// size to the room above it.
-private struct HubDestinationTopKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
-}
-
 // MARK: - Inline composer
 
 /// The one animation every hub-composer expand/collapse rides on — shared with
@@ -105,6 +98,8 @@ struct HubInlineComposer: View {
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
   @State private var destinationPickerPresented = false
+  /// The picker opens as a sheet when the popover has no room above.
+  @State private var destinationPickerAsSheet = false
   @State private var presentedPicker: WorkComposerPicker?
   @State private var isDictating = false
   // Global top edge of the destination control, so the picker popover can size
@@ -135,7 +130,15 @@ struct HubInlineComposer: View {
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
     var restoredProjectId = ""
-    if let dest = HubInlineComposer.loadLastDestination() {
+    let live = HubComposerLiveSelection.shared
+    if let projectId = live.projectId {
+      // Built again for another pose: the pick made a moment ago stays.
+      restoredProjectId = projectId
+      _pickedProjectId = State(initialValue: projectId)
+      _selectedLaneId = State(initialValue: live.laneId)
+      _pickedMachineKey = State(initialValue: live.machineKey)
+      _destinationPickerPresented = State(initialValue: live.pickerOpen)
+    } else if let dest = HubInlineComposer.loadLastDestination() {
       restoredProjectId = dest.projectId
       _pickedProjectId = State(initialValue: dest.projectId)
       _selectedLaneId = State(initialValue: dest.laneId)
@@ -349,6 +352,12 @@ struct HubInlineComposer: View {
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
     }
+    // A pose change builds this composer again in another layout; these keep
+    // the destination and an open picker across it.
+    .onChange(of: pickedProjectId) { _, _ in rememberLiveSelection() }
+    .onChange(of: selectedLaneId) { _, _ in rememberLiveSelection() }
+    .onChange(of: pickedMachineKey) { _, _ in rememberLiveSelection() }
+    .onChange(of: destinationPickerPresented) { _, _ in rememberLiveSelection() }
     // Projects/lanes can appear or vanish while the hub sits open (reconnects,
     // roster refreshes) — keep the persisted destination honest against them.
     .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
@@ -383,6 +392,12 @@ struct HubInlineComposer: View {
 
   private var destinationControl: some View {
     Button {
+      // With the keyboard up on a short screen (a Duo held open, landscape)
+      // the room above the control is less than the picker's smallest height,
+      // and a popover there opened its Project section above the top edge.
+      // A sheet holds the same picker then.
+      destinationPickerAsSheet = destinationControlTopY > 0
+        && destinationControlTopY - 64 < Self.destinationPickerMinHeight
       destinationPickerPresented = true
     } label: {
       HStack(spacing: 7) {
@@ -416,20 +431,39 @@ struct HubInlineComposer: View {
       .contentShape(Capsule())
     }
     .buttonStyle(.plain)
-    .background(
-      GeometryReader { proxy in
-        Color.clear.preference(key: HubDestinationTopKey.self, value: proxy.frame(in: .global).minY)
-      }
-    )
-    .onPreferenceChange(HubDestinationTopKey.self) { destinationControlTopY = $0 }
+    // Measured directly: the preference this used did not reach this view in
+    // every layout (it read 0 in the Duo's open pose), so the picker fell
+    // back to a fixed height taller than the room above it.
+    .onGeometryChange(for: CGFloat.self, of: { $0.frame(in: .global).minY }) { top in
+      destinationControlTopY = top
+    }
     // Fixed while a send runs: it switches machines to reach this destination.
     .disabled(busy)
     .accessibilityLabel("Destination")
     .accessibilityValue("\(pickedProject?.displayName ?? "No project"), \(selectedLaneName)")
     .accessibilityHint("Choose the project and lane for this chat.")
-    .popover(isPresented: $destinationPickerPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
+    .popover(
+      isPresented: Binding(
+        get: { destinationPickerPresented && !destinationPickerAsSheet },
+        set: { destinationPickerPresented = $0 }
+      ),
+      attachmentAnchor: .rect(.bounds),
+      arrowEdge: .bottom
+    ) {
       destinationPicker
+        .frame(width: 320, height: destinationPickerHeight)
         .presentationCompactAdaptation(.popover)
+    }
+    .sheet(
+      isPresented: Binding(
+        get: { destinationPickerPresented && destinationPickerAsSheet },
+        set: { destinationPickerPresented = $0 }
+      )
+    ) {
+      destinationPicker
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
     .onChange(of: destinationPickerPresented) { _, presented in
       // Presenting the popover can resign the text field; bring the keyboard
@@ -465,6 +499,8 @@ struct HubInlineComposer: View {
     }
   }
 
+  private static let destinationPickerMinHeight: CGFloat = 240
+
   /// The picker fills the room between the destination control and the top of
   /// the screen (minus a small margin) so it never overflows and clips a
   /// project — the two sections then split that height evenly. Falls back to a
@@ -473,7 +509,7 @@ struct HubInlineComposer: View {
     let deviceCap = min(UIScreen.main.bounds.height * 0.62, 560)
     guard destinationControlTopY > 0 else { return min(deviceCap, 320) }
     let available = destinationControlTopY - 64
-    return max(240, min(deviceCap, available))
+    return max(Self.destinationPickerMinHeight, min(deviceCap, available))
   }
 
   private var destinationPicker: some View {
@@ -494,7 +530,7 @@ struct HubInlineComposer: View {
             HubComposerMachineHeader(name: syncService.focusedMachineDisplayName)
           }
           if syncService.projects.isEmpty {
-            emptyPickerRow("No projects on this machine")
+            emptyPickerRow("No projects on this computer")
           } else {
             ForEach(syncService.projects) { project in
               projectRow(project)
@@ -526,7 +562,6 @@ struct HubInlineComposer: View {
       }
       .frame(maxHeight: .infinity)
     }
-    .frame(width: 320, height: destinationPickerHeight)
     .background(ADEKit.surface)
   }
 
@@ -1310,7 +1345,7 @@ struct HubInlineComposer: View {
   /// when that machine cannot be reached or does not list the project.
   @MainActor
   private func focusPickedMachine(_ key: String) async -> Bool {
-    let machineName = pickedRemoteMachine?.name ?? "that machine"
+    let machineName = pickedRemoteMachine?.name ?? "that computer"
     let projectId = pickedProjectId
     let rootPath = syncNormalizedProjectRootScope(pickedRemoteProject?.rootPath)
     // The switch reconciles the destination against a roster that may not have
@@ -1424,6 +1459,14 @@ struct HubInlineComposer: View {
     }
   }
 
+  private func rememberLiveSelection() {
+    let live = HubComposerLiveSelection.shared
+    live.projectId = pickedProjectId
+    live.laneId = selectedLaneId
+    live.machineKey = pickedMachineKey
+    live.pickerOpen = destinationPickerPresented
+  }
+
   // MARK: Last-destination persistence (App Group)
 
   private struct HubLastDestination: Codable, Equatable {
@@ -1431,7 +1474,8 @@ struct HubInlineComposer: View {
     var laneId: String
   }
 
-  private static let lastDestinationKey = "ade.hub.lastDestination.v1"
+  /// Removed on sign-out with the account's other stores (`AccountService.publishSignedOut`).
+  static let lastDestinationKey = "ade.hub.lastDestination.v1"
 
   private static func loadLastDestination() -> HubLastDestination? {
     guard let data = ADESharedContainer.defaults.data(forKey: lastDestinationKey) else { return nil }
@@ -1499,4 +1543,19 @@ private func hubPrettyModelName(_ model: String) -> String {
     return pretty
   }
   return trimmed
+}
+
+/// The Hub composer's destination while the app runs. Each pose lays the Hub
+/// out in its own container, so the composer is built again on a fold or an
+/// unfold; it reads this, and the project, lane, computer and an open picker
+/// stay as the person left them. A send saves the lasting default
+/// (`HubLastDestination`) as before.
+@MainActor
+final class HubComposerLiveSelection {
+  static let shared = HubComposerLiveSelection()
+  /// Nil until the person (or a restore) picks a project in this run.
+  var projectId: String?
+  var laneId = ""
+  var machineKey: String?
+  var pickerOpen = false
 }

@@ -320,11 +320,14 @@ struct ADESettingsPageLink<Destination: View, Label: View>: View {
   @ViewBuilder var label: (_ selected: Bool, _ pushes: Bool) -> Label
   @Environment(\.duoSettingsSelection) private var splitSelection
   @Environment(\.duoSettingsShow) private var splitShow
+  @Environment(\.settingsRootPush) private var rootPush
 
   var body: some View {
     Group {
       if let splitShow {
         Button { splitShow(title) } label: { label(isSelected, false) }
+      } else if shape == .sidebar, let rootPush {
+        Button { rootPush(title) } label: { label(isSelected, true) }
       } else {
         NavigationLink { destination() } label: { label(isSelected, true) }
       }

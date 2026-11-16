@@ -37,6 +37,9 @@ struct HubScreen: View {
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
+  /// A chat open that waits on a connection. A newer open, or any change of
+  /// the open chat, clears it, so a late connect never replaces that choice.
+  @State private var pendingHubChatOpen: UUID?
   // "Created in <project> · <lane>" toast shown after a drawer send (the chat is
   // created in place and does NOT auto-open; the toast offers an Open shortcut).
   @State private var createdToast: HubCreatedChat?
@@ -119,6 +122,15 @@ struct HubScreen: View {
     .overlay {
       if showConnectBeat { ConnectSuccessBeat() }
     }
+    // A project opened on an ADE Cloud computer that is asleep opens once the
+    // computer is awake; the Hub says so meanwhile.
+    .overlay(alignment: .top) {
+      if openChatTarget == nil, let name = syncService.anyWakingCloudMachineName {
+        CloudComputerWakeBanner(machineName: name)
+          .padding(.top, 52)
+          .transition(.move(edge: .top).combined(with: .opacity))
+      }
+    }
     .sheet(isPresented: $addProjectSheetPresented) {
       RemoteProjectAddSheet().environmentObject(syncService)
     }
@@ -135,6 +147,9 @@ struct HubScreen: View {
     .task(id: hiddenListScope) { hiddenList.use(scope: hiddenListScope) }
     .onChange(of: hiddenList.keys) { _, _ in rebuildHubProjectPresentations() }
     .hubChatCover(target: $openChatTarget)
+    // Here, not on the project list: the list leaves the tree while a chat is
+    // open, and every change of the open chat must cancel a waiting open.
+    .onChange(of: openChatTarget?.id) { _, _ in pendingHubChatOpen = nil }
     .overlay(alignment: .bottom) {
       if let toast = createdToast {
         HubCreatedToast(toast: toast, onOpen: { openCreated(toast) }, onDismiss: { dismissToast() })
@@ -368,6 +383,8 @@ struct HubScreen: View {
       }
     }
     .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
+    .onChange(of: machineFleet.restingCloudMachines) { _, _ in rebuildHubProjectPresentations() }
+    .onChange(of: syncService.focusedMachineListsWork) { _, _ in rebuildHubProjectPresentations() }
     .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
     .task(id: accountRebuildKey) {
       guard accountRebuildKey != nil else { return }
@@ -501,6 +518,15 @@ struct HubScreen: View {
     // switching row carries its own spinner and the others disable, so the list
     // never blanks to a full-screen connecting swap (M12).
     let statusInputs = accountStatusInputs
+    // A failed wake of an ADE Cloud computer stays until it is closed, so it
+    // sits in the list and covers nothing (the wake itself is the overlay).
+    if syncService.anyWakingCloudMachineName == nil, let failure = syncService.anyCloudWakeFailure {
+      CloudComputerWakeFailedBanner(
+        message: failure.message,
+        action: .dismiss { syncService.clearCloudWakeFailure(fleetKey: failure.fleetKey) },
+        insetsFromEdges: false
+      )
+    }
     if let notice = hubAccountNotice(statusInputs) {
       HubAccountStatusCard(
         notice: notice,
@@ -631,12 +657,39 @@ struct HubScreen: View {
   // MARK: Other machines, folded in
 
   private func openHubProject(_ project: MobileProjectSummary) {
-    guard let owner = fleetMerge.projectOwners[project.id] else {
+    // The user chose a project: a chat open still waiting on its machine
+    // must not move the phone to that machine later.
+    pendingHubChatOpen = nil
+    guard let owner = preferredFleetOwner(project.id) else {
       syncService.selectProject(project)
       return
     }
     // Lives only on another machine: focus that machine, then open it there.
     openFleetCopy(owner.project, onMachine: owner.machineKey, cardId: project.id)
+  }
+
+  /// The copy a card opens on when the focused computer has none: a
+  /// connected computer first, then one that is connecting, then an ADE
+  /// Cloud computer (opening it wakes it, which costs money, so only when no
+  /// connected copy can serve), then the rest. Ties keep the card's own order.
+  private func preferredFleetOwner(_ cardId: String) -> HubRemoteOwner? {
+    guard let owner = fleetMerge.projectOwners[cardId] else { return nil }
+    let candidates = [owner] + (fleetMerge.projectLocations[cardId] ?? []).filter { $0.machineKey != owner.machineKey }
+    func rank(_ location: HubRemoteOwner) -> Int {
+      let state = machineFleet.machine(for: location.machineKey)?.state
+      let isCloud = syncService.cloudMachineFleetKeys.contains(location.machineKey)
+      if state == .live { return 0 }
+      if state == .connecting && !isCloud { return 1 }
+      if isCloud { return 2 }
+      return 3
+    }
+    var best = owner
+    var bestRank = rank(owner)
+    for location in candidates.dropFirst() where rank(location) < bestRank {
+      best = location
+      bestRank = rank(location)
+    }
+    return best
   }
 
   /// A local folder opens on its own computer, or on another reachable
@@ -656,6 +709,7 @@ struct HubScreen: View {
 
   /// Focuses `machineKey` and opens its own `project` there.
   private func openFleetCopy(_ project: MobileProjectSummary, onMachine machineKey: String, cardId: String? = nil) {
+    pendingHubChatOpen = nil
     let switching = cardId ?? project.id
     switchingRemoteProjectId = switching
     Task { @MainActor in
@@ -665,6 +719,7 @@ struct HubScreen: View {
   }
 
   private func openHubChat(_ chat: RemoteRosterChat, lane: RemoteRosterLane?, project: MobileProjectSummary) {
+    pendingHubChatOpen = nil
     guard let owner = fleetMerge.chatOwners[chat.id] else {
       openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
       return
@@ -673,14 +728,28 @@ struct HubScreen: View {
     var ownChat = chat
     if let ownLane = owner.lane { ownChat.laneId = ownLane.id }
     let state = machineFleet.machine(for: owner.machineKey)?.state
-    if state == .live || state == .connecting {
+    // An ADE Cloud computer opens its chat at once, also while it is asleep:
+    // the chat wakes the computer and shows the wake until it answers.
+    if state == .live || state == .connecting || syncService.cloudMachineFleetKeys.contains(owner.machineKey) {
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
       return
     }
-    // No live roster connection to that machine (paused, offline, or an older
-    // ADE there): focus the machine, then open the chat the ordinary way.
+    // No live roster connection to that machine (paused or offline): connect
+    // it next to the others and open the chat there. Only when that fails (an
+    // older ADE there, or it stays unreachable) does the phone make it the
+    // home machine, keeping the previous one connected.
+    let request = UUID()
+    pendingHubChatOpen = request
     Task { @MainActor in
-      guard await syncService.switchFocus(toMachineKey: owner.machineKey) else { return }
+      if state != .needsUpdate, await machineFleet.connect(machineKey: owner.machineKey, timeout: .seconds(8)) {
+        guard pendingHubChatOpen == request else { return }
+        openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
+        return
+      }
+      guard pendingHubChatOpen == request,
+            await syncService.switchFocusKeepingPrevious(toMachineKey: owner.machineKey),
+            pendingHubChatOpen == request
+      else { return }
       openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat)
     }
   }
@@ -695,14 +764,14 @@ struct HubScreen: View {
   /// The card's machine chip: one machine's name, or "N machines". Nil while
   /// the phone knows a single machine, where it would only repeat itself.
   private func hubMachineLabel(for project: MobileProjectSummary) -> String? {
-    guard machineFleet.machines.contains(where: \.isPinned) else { return nil }
+    guard machineFleet.machines.contains(where: \.isWanted) else { return nil }
     let others = hubProjectLocations(project)
     let onFocused = fleetMerge.projectOwners[project.id] == nil
     let count = others.count + (onFocused ? 1 : 0)
-    if count > 1 { return "\(count) machines" }
+    if count > 1 { return "\(count) computers" }
     if onFocused { return syncService.focusedMachineDisplayName }
     guard let key = others.first?.machineKey else { return nil }
-    return machineFleet.machine(for: key)?.name ?? "Another machine"
+    return machineFleet.machine(for: key)?.name ?? "Another computer"
   }
 
   private func hubMachineCount(for project: MobileProjectSummary) -> Int {
@@ -719,7 +788,7 @@ struct HubScreen: View {
       return HubComputerChip(label: hubMachineLabel(for: project), total: hubMachineCount(for: project), live: nil)
     }
     func accountKey(_ fleetKey: String) -> String {
-      account.machine(forFleetKey: fleetKey)?.machineKey ?? fleetKey
+      account.accountMachineKey(forFleetKey: fleetKey) ?? fleetKey
     }
     var holders: [HubChipHolder] = []
     if fleetMerge.projectOwners[project.id] == nil, let focusedKey = syncService.focusedMachineKey {
@@ -1011,9 +1080,22 @@ struct HubScreen: View {
 
   private func rebuildHubProjectPresentations() {
     let focusedProjects = hubProjects
-    let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
-    // Only machines the user keeps connected: a disconnected machine's last
-    // roster would keep its projects on the hub (and hide the no-machine state).
+    // A machine whose work is not listed (offline past its reconnect window,
+    // parked, disconnected) keeps its project cards but adds no chats or
+    // lanes: the counts follow what the lists show.
+    let focusedListed = syncService.focusedMachineListsWork
+    let focusedRosters = focusedProjects.map { project in
+      let roster = rosterEntry(for: project)
+      guard !focusedListed else { return (project: project, roster: roster) }
+      // No roster: the card falls back to the project's saved lane count,
+      // which must not show while its work is not listed.
+      var unlisted = project
+      unlisted.laneCount = 0
+      return (project: unlisted, roster: roster.map(hubRosterWithoutWork))
+    }
+    // Only machines that are connected (the user's set or the open project's):
+    // a disconnected machine's last roster would keep its projects on the hub
+    // (and hide the no-machine state).
     // Signed in, the account decides which folders are one project.
     let resolver: HubAccountResolver? = accountProjects.governsHub
       ? hubAccountResolver(
@@ -1025,7 +1107,11 @@ struct HubScreen: View {
       : nil
     let merge = hubMergeFleetRosters(
       focused: focusedRosters,
-      machines: machineFleet.machines.filter(\.isPinned),
+      // An asleep ADE Cloud computer lists its saved work too, also when this
+      // phone never connected to it, when no other computer is connected, and
+      // when it was paired for a project that is no longer open.
+      machines: (machineFleet.machines.filter { $0.isWanted || $0.isCloud } + machineFleet.restingCloudMachines)
+        .map(hubMachineWithListedWork),
       resolver: resolver,
       focusedMachineKey: syncService.focusedMachineKey
     )
@@ -1153,6 +1239,28 @@ struct HubScreen: View {
       hubProjectPresentations = nextPresentations
     }
     placeNewProjects(nextPresentations)
+    publishActivityHiddenChats(rosters: focusedRosters.compactMap(\.roster) + Array(merge.mergedRosters.values) + merge.extraProjects.map(\.roster))
+  }
+
+  /// Activity counts what the Hub counts: a chat in a roster that no shown card
+  /// lists (its project is hidden on this phone or removed from the account)
+  /// leaves Activity, the widgets and the Live Activity too.
+  private func publishActivityHiddenChats(rosters: [RemoteRosterProject]) {
+    var listed = Set<String>()
+    func collect(_ rows: [HubChatRowPresentation]) {
+      for row in rows {
+        listed.insert(row.chat.id)
+        collect(row.childRows)
+      }
+    }
+    for presentation in hubProjectPresentations + shownDuplicateFolders + localSections.flatMap(\.presentations) {
+      for lane in presentation.lanes { collect(lane.rows) }
+    }
+    var hidden = Set<String>()
+    for roster in rosters {
+      for chat in roster.chats where !listed.contains(chat.id) { hidden.insert(chat.id) }
+    }
+    syncService.setActivityHiddenChatIds(hidden)
   }
 
   private func loadHubLayoutForConnection(_ connectionKey: String?) {

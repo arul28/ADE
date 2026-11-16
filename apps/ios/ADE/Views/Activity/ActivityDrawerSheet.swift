@@ -271,6 +271,15 @@ struct ActivityDrawerSheet: View {
             // Switch Control, and direct-touch users with limited mobility get
             // the same two actions here.
             .contextMenu {
+                // Not an action: where the session runs, as on Work rows. The
+                // row itself names no computer.
+                let machine = row.machineName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !machine.isEmpty {
+                    Section {
+                        Label("On \(machine)", systemImage: "desktopcomputer")
+                            .accessibilityLabel("Runs on \(machine)")
+                    }
+                }
                 Button {
                     drawer.markSeen(row.id)
                 } label: {
@@ -355,7 +364,7 @@ struct ActivityDrawerSheet: View {
             return (
                 "antenna.radiowaves.left.and.right.slash",
                 ADEColor.textMuted,
-                "Can't reach your machines",
+                "Can't reach your computers",
                 "Sign in or reconnect to see what your agents are doing."
             )
         }

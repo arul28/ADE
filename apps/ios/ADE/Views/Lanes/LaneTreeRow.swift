@@ -5,6 +5,8 @@ import SwiftUI
 struct LaneTreeRow: View {
   let snapshot: LaneListSnapshot
   let pullRequest: LanePrTag?
+  /// The lane's machine while the list spans several; the peek names it.
+  var machineName: String? = nil
   let isPinned: Bool
   let isOpen: Bool
   let transitionNamespace: Namespace.ID?
@@ -13,30 +15,20 @@ struct LaneTreeRow: View {
   let onSelectLane: (String) -> Void
   /// Pushes the lane's detail through the list's navigation path.
   let onOpen: () -> Void
-  var machine: LaneMachineChip? = nil
-  /// Off where a section header already names the machine; repeating it
-  /// squeezed the branch name.
-  var showsMachineChip = true
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
-      if machine?.isLive == false {
-        // The last roster of a machine the phone has no live link to: shown,
-        // dimmed, no actions (the desktop's offline rule).
+      Button {
+        onSelectLane(snapshot.lane.id)
+        onOpen()
+      } label: {
         card
-      } else {
-        Button {
-          onSelectLane(snapshot.lane.id)
-          onOpen()
-        } label: {
-          card
-        }
-        .buttonStyle(ADEKitRowButtonStyle())
-        .contextMenu {
-          onContextMenu(snapshot)
-        } preview: {
-          LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
-        }
+      }
+      .buttonStyle(ADEKitRowButtonStyle())
+      .contextMenu {
+        onContextMenu(snapshot)
+      } preview: {
+        LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest, machineName: machineName)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -49,9 +41,7 @@ struct LaneTreeRow: View {
       isOpen: isOpen,
       pullRequest: pullRequest,
       transitionNamespace: transitionNamespace,
-      isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: machine,
-      showsMachineChip: showsMachineChip
+      isSelectedTransitionSource: isSelectedTransitionSource
     )
     .equatable()
   }
@@ -60,6 +50,7 @@ struct LaneTreeRow: View {
 struct LanePeekPreview: View {
   let snapshot: LaneListSnapshot
   var pullRequest: LanePrTag? = nil
+  var machineName: String? = nil
 
   var body: some View {
     let laneTint = laneSurfaceTint(forHex: snapshot.lane.color)
@@ -83,6 +74,16 @@ struct LanePeekPreview: View {
           .font(.system(.caption2, design: .monospaced))
           .foregroundStyle(ADEColor.textMuted)
           .lineLimit(1)
+        if let machineName {
+          Image(systemName: "desktopcomputer")
+            .font(.system(size: 10, weight: .regular))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+            .padding(.leading, 6)
+          Text(machineName)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
       }
 
       Divider().opacity(0.2)

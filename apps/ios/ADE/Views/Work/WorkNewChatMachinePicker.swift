@@ -134,7 +134,7 @@ struct WorkNewChatMachineDropdown: View {
           Button {
             onSelect(option)
           } label: {
-            Label(option.isPrimary ? "\(option.name) · Primary" : option.name, systemImage: option.symbol)
+            Label(option.name, systemImage: option.symbol)
           }
         }
       }

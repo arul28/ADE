@@ -109,8 +109,8 @@ struct ProviderAccountsPreviewHost: View {
 
   private var machines: [ProviderAccountsMachineOption] {
     [
-      ProviderAccountsMachineOption(id: "machine:studio", name: "Arul’s Mac Studio", isPrimary: true),
-      ProviderAccountsMachineOption(id: "machine:mbp", name: "MacBook Pro", isPrimary: false),
+      ProviderAccountsMachineOption(id: "machine:studio", name: "Mac Studio"),
+      ProviderAccountsMachineOption(id: "machine:mbp", name: "MacBook Pro"),
     ]
   }
 

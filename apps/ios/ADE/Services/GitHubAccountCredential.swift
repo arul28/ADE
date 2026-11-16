@@ -133,7 +133,7 @@ struct GitHubAccountClient {
 
   enum Failure: Error { case transport }
 
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   func send(
     _ method: String,

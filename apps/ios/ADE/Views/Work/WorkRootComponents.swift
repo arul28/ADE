@@ -400,9 +400,6 @@ struct WorkSidebarSectionHeader: View {
                   .truncationMode(.middle)
               }
             }
-            if let laneId = group.laneId, isWorkRemoteLaneId(laneId) {
-              WorkRemoteLaneGlyph()
-            }
           }
 
           // Beside the name, not in the trailing cluster: there it sat next to
@@ -732,6 +729,8 @@ struct WorkSessionListRow: View {
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
+  /// The computer it runs on: named in the long-press menu, never on the row.
+  var machineName: String? = nil
   var compact: Bool = false
   /// The parent's one mark for its nested subagents (count + worst state).
   /// Nil when nothing nests under this row.
@@ -744,8 +743,6 @@ struct WorkSessionListRow: View {
   var boardCard = false
   /// A row in the Duo's sessions column (see `WorkSessionRow.duoRow`).
   var duoRow = false
-  /// The machine a row from another machine lives on, for the Duo's meta line.
-  var machineName: String? = nil
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -782,6 +779,8 @@ struct WorkSessionListRow: View {
   var onDemoteToPeer: (TerminalSessionSummary) -> Void = { _ in }
   /// Promote a peer chat back to a subagent so it reports to its parent again.
   var onPromoteToSubagent: (TerminalSessionSummary) -> Void = { _ in }
+  /// The parent chat's title, for "Stop reports to …" / "Report back to …".
+  var parentChatTitle: String? = nil
   /// The host advertises `chat.setSpawnKind`. Older hosts have
   /// `chat.updateSession` but cannot apply spawn-kind writes.
   var spawnKindUpdateAvailable: Bool = false
@@ -976,8 +975,7 @@ struct WorkSessionListRow: View {
           showsLaneIdentity: showsLaneIdentity,
           waitingOnSubagent: waitingOnSubagent,
           boardCard: boardCard,
-          duoRow: duoRow,
-          machineName: machineName
+          duoRow: duoRow
         )
         .equatable()
       }
@@ -1305,14 +1303,20 @@ struct WorkSessionListRow: View {
           Button {
             onPromoteToSubagent(session)
           } label: {
-            Label("Promote to subagent", systemImage: "arrow.up.backward.and.arrow.down.forward")
+            Label(
+              workReportingMenuLabel(.reportBack, parentTitle: parentChatTitle),
+              systemImage: "arrow.up.backward.and.arrow.down.forward"
+            )
           }
         }
         if canDemoteToPeer {
           Button {
             onDemoteToPeer(session)
           } label: {
-            Label("Demote to peer", systemImage: "arrow.down.forward.and.arrow.up.backward")
+            Label(
+              workReportingMenuLabel(.stopReports, parentTitle: parentChatTitle),
+              systemImage: "arrow.down.forward.and.arrow.up.backward"
+            )
           }
         }
       }
@@ -1418,6 +1422,13 @@ struct WorkSessionActionsMenuContent: View {
 
   var body: some View {
     let status = normalizedWorkChatSessionStatus(session: row.session, summary: row.chatSummary)
+    if let machineName = row.machineName {
+      // Not an action: where the session runs, at the top of its menu.
+      Section {
+        Label("On \(machineName)", systemImage: "desktopcomputer")
+          .accessibilityLabel("Runs on \(machineName)")
+      }
+    }
     row.nameMenuSection
     row.fileMenuSection(includesSelect: includesSelect)
     row.lifecycleMenuSection(status: status)
@@ -2292,7 +2303,7 @@ struct WorkFilterMenu: View {
             }
             if !selectedMachines.isEmpty {
               Divider()
-              Button("Show all machines") {
+              Button("Show all computers") {
                 withAnimation(.snappy(duration: 0.18)) { machineFilter = "" }
               }
             }
@@ -2331,17 +2342,6 @@ struct WorkFilterMenu: View {
   private func laneMenuTitle(_ lane: LaneSummary) -> String {
     guard let machine = workRemoteLaneMachineName(lane.id, options: machineOptions) else { return lane.name }
     return "\(lane.name) — \(machine)"
-  }
-}
-
-/// Marks a lane that lives on another machine, after its name: two machines'
-/// lanes can share a name, and the machine never goes in the title.
-struct WorkRemoteLaneGlyph: View {
-  var body: some View {
-    Image(systemName: "desktopcomputer")
-      .font(.system(size: 9, weight: .medium))
-      .foregroundStyle(ADEColor.textMuted.opacity(0.8))
-      .accessibilityLabel("On another machine")
   }
 }
 

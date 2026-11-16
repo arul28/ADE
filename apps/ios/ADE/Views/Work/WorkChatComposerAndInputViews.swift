@@ -634,31 +634,40 @@ struct WorkComposerChipStrip: View {
   let onSelectRuntimeMode: ((String) -> Void)?
 
   var body: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        if chatSummary.isAvailable {
-          let currentMode = chatSummary.runtimeMode
-          WorkComposerControlsRow(
-            provider: chatSummary.provider,
-            modelDisplayName: chatSummary.modelLabel,
-            modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
-            reasoningEffort: chatSummary.reasoningEffort,
-            currentMode: currentMode,
-            modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
-            modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
-            fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
-            fastModeAllowed: chatSummary.fastModeAllowed,
-            onOpenModelPicker: onOpenModelPicker,
-            onSelectMode: onSelectRuntimeMode,
-            showsAccessControl: chatSummary.accessModeKnown
-          )
-        }
+    // Its own width when it fits, so the controls after it (the computer
+    // tag) get the free room on a wide composer; it scrolls only when narrow.
+    ViewThatFits(in: .horizontal) {
+      chips.fixedSize(horizontal: true, vertical: false)
+      ScrollView(.horizontal, showsIndicators: false) {
+        chips
       }
-      .padding(.horizontal, 2)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
     .disabled(settingsMutationInFlight)
     .opacity(settingsMutationInFlight ? 0.72 : 1)
+  }
+
+  private var chips: some View {
+    HStack(spacing: 8) {
+      if chatSummary.isAvailable {
+        let currentMode = chatSummary.runtimeMode
+        WorkComposerControlsRow(
+          provider: chatSummary.provider,
+          modelDisplayName: chatSummary.modelLabel,
+          modelBrandKey: WorkModelMentionDirectory.shared.entry(for: chatSummary.model)?.brandKey,
+          reasoningEffort: chatSummary.reasoningEffort,
+          currentMode: currentMode,
+          modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
+          modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
+          fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
+          fastModeAllowed: chatSummary.fastModeAllowed,
+          onOpenModelPicker: onOpenModelPicker,
+          onSelectMode: onSelectRuntimeMode,
+          showsAccessControl: chatSummary.accessModeKnown
+        )
+      }
+    }
+    .padding(.horizontal, 2)
   }
 }
 

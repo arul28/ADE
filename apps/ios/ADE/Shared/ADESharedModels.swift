@@ -37,6 +37,15 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     /// "planning" | "development" | "testing" | "validation" | "pr" | ...
     public let phase: String?
     public let toolCalls: Int
+    /// The account machine key of the computer this session runs on, when it
+    /// is not the snapshot's own `machineId` (a session of another connected
+    /// computer). Nil means the snapshot's computer. Rows never show it; the
+    /// Activity drawer uses it to replace that computer's relay rows.
+    public let machineId: String?
+    public let machineName: String?
+    /// The session's project. Nil in snapshots written before the field.
+    public let projectId: String?
+    public let projectName: String?
 
     public init(
         sessionId: String,
@@ -52,7 +61,11 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         pendingInputItemId: String? = nil,
         progress: Double?,
         phase: String?,
-        toolCalls: Int
+        toolCalls: Int,
+        machineId: String? = nil,
+        machineName: String? = nil,
+        projectId: String? = nil,
+        projectName: String? = nil
     ) {
         self.sessionId = sessionId
         self.provider = provider
@@ -68,12 +81,17 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.progress = progress
         self.phase = phase
         self.toolCalls = toolCalls
+        self.machineId = machineId
+        self.machineName = machineName
+        self.projectId = projectId
+        self.projectName = projectName
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionId, provider, modelId, laneName, title, status,
              awaitingInput, lastActivityAt, elapsedSeconds, preview,
-             pendingInputItemId, progress, phase, toolCalls
+             pendingInputItemId, progress, phase, toolCalls,
+             machineId, machineName, projectId, projectName
     }
 
     public init(from decoder: Decoder) throws {
@@ -92,6 +110,28 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
         self.progress = try c.decodeIfPresent(Double.self, forKey: .progress)
         self.phase = try c.decodeIfPresent(String.self, forKey: .phase)
         self.toolCalls = try c.decode(Int.self, forKey: .toolCalls)
+        self.machineId = try c.decodeIfPresent(String.self, forKey: .machineId)
+        self.machineName = try c.decodeIfPresent(String.self, forKey: .machineName)
+        self.projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
+        self.projectName = try c.decodeIfPresent(String.self, forKey: .projectName)
+    }
+}
+
+/// Another connected computer a `WorkspaceSnapshot` speaks for, beside its own
+/// `machineId`. `listed` is false while that computer's work is not listed
+/// (offline past its reconnect window, or not connected): the snapshot then
+/// holds none of its sessions, and the Activity drawer shows none either.
+public struct WorkspaceSnapshotMachine: Codable, Hashable, Sendable {
+    /// The account machine key, or the fleet key when the account does not
+    /// know the computer.
+    public let id: String
+    public let name: String
+    public let listed: Bool
+
+    public init(id: String, name: String, listed: Bool) {
+        self.id = id
+        self.name = name
+        self.listed = listed
     }
 }
 
@@ -158,6 +198,9 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
     public let machineName: String?
     public let projectId: String?
     public let projectName: String?
+    /// The other connected computers whose sessions `agents` also holds (each
+    /// such agent names its computer). Older snapshots decode with none.
+    public let otherMachines: [WorkspaceSnapshotMachine]
 
     public init(
         generatedAt: Date,
@@ -169,7 +212,8 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
         machineId: String? = nil,
         machineName: String? = nil,
         projectId: String? = nil,
-        projectName: String? = nil
+        projectName: String? = nil,
+        otherMachines: [WorkspaceSnapshotMachine] = []
     ) {
         self.generatedAt = generatedAt
         self.agents = agents
@@ -181,11 +225,12 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
         self.machineName = machineName
         self.projectId = projectId
         self.projectName = projectName
+        self.otherMachines = otherMachines
     }
 
     private enum CodingKeys: String, CodingKey {
         case generatedAt, agents, prs, connection, awaitingInputCount, idleCount
-        case machineId, machineName, projectId, projectName
+        case machineId, machineName, projectId, projectName, otherMachines
     }
 
     public init(from decoder: Decoder) throws {
@@ -219,6 +264,7 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
         self.machineName = try c.decodeIfPresent(String.self, forKey: .machineName)
         self.projectId = try c.decodeIfPresent(String.self, forKey: .projectId)
         self.projectName = try c.decodeIfPresent(String.self, forKey: .projectName)
+        self.otherMachines = try c.decodeIfPresent([WorkspaceSnapshotMachine].self, forKey: .otherMachines) ?? []
     }
 
     /// Subset of `agents` that are *actively producing output* right now.

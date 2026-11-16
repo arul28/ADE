@@ -115,7 +115,8 @@ struct LockScreenPriorityStatus {
         }
 
         let presentation = Self.presentation(for: focus.phase)
-        let scope = "\(focus.machine.name) · \(focus.project.name)"
+        // The focused row's project; rows name no computer.
+        let scope = focus.project.name
         let attentionCount = needsYou.count
         let ambientCount = visible.count
         let privateTitle = focus.privacyPreview
@@ -154,6 +155,8 @@ struct LockScreenPriorityStatus {
         // stranger's chat id on the wrong computer and reported "Connected".
         // Nil on legacy snapshots written before the machine fields existed;
         // the navigation guard resolves those by owner instead.
+        // Pull requests belong to the focused computer. An agent can belong to
+        // another listed computer, so its link names the agent's own computer.
         let owner = snapshot.machineId
         let running = snapshot.runningAgents.sorted { $0.lastActivityAt > $1.lastActivityAt }
         let awaiting = snapshot.agents.filter { agent in
@@ -220,7 +223,7 @@ struct LockScreenPriorityStatus {
                 symbol: "bell.badge.fill",
                 shortLabel: "WAIT",
                 tint: ADESharedTheme.warningAmber,
-                destinationURL: Self.sessionURL(first?.sessionId, owner: owner),
+                destinationURL: Self.sessionURL(first?.sessionId, owner: first?.machineId ?? owner),
                 metrics: metrics
             )
         } else if let first = failed.first {
@@ -233,7 +236,7 @@ struct LockScreenPriorityStatus {
                 symbol: "xmark.octagon.fill",
                 shortLabel: "FAIL",
                 tint: ADESharedTheme.statusFailed,
-                destinationURL: Self.sessionURL(first.sessionId, owner: owner),
+                destinationURL: Self.sessionURL(first.sessionId, owner: first.machineId ?? owner),
                 metrics: metrics
             )
         } else if let first = ciFailing.first {
@@ -289,7 +292,7 @@ struct LockScreenPriorityStatus {
                 symbol: "circle.dotted",
                 shortLabel: "WORK",
                 tint: ADESharedTheme.statusRunning,
-                destinationURL: Self.sessionURL(first.sessionId, owner: owner),
+                destinationURL: Self.sessionURL(first.sessionId, owner: first.machineId ?? owner),
                 metrics: metrics
             )
         } else if let first = openPrs.first {

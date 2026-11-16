@@ -212,7 +212,7 @@ struct AccountProjectsClient {
     case unreadable
   }
 
-  var session: URLSession = .shared
+  var session: URLSession = .adeAccount
 
   func list(
     baseURL: URL,

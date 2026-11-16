@@ -614,7 +614,6 @@ final class ActivityRowPresentationTests: XCTestCase {
 
         XCTAssertEqual(row.laneName, "activity-revamp")
         XCTAssertEqual(row.modelLabel, "claude-fable-5")
-        XCTAssertEqual(row.scopeLabel, "Studio Mac · ADE")
     }
 
     // MARK: - Fixture

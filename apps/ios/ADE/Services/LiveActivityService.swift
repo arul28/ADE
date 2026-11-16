@@ -286,6 +286,11 @@ final class LiveActivityService {
     /// revocation marker in `AccountService`.
     func prepareForAccountSignOut() {
         accountObserversSuspended = true
+        // Rows of the account that leaves, waiting for the local update loop:
+        // they must not reach an activity that the next account starts.
+        pendingLocalItems = nil
+        localUpdateTask?.cancel()
+        localUpdateTask = nil
         accountTokenStore.clear()
         accountTokenQueue.discardPending()
         for activity in Activity<ADEAgentRunsAttributes>.activities
@@ -639,13 +644,17 @@ final class LiveActivityService {
                 if wait > 0 {
                     try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 }
+                // Sign-out cancels this loop; `next` then belongs to the
+                // account that left.
+                guard !Task.isCancelled else { return }
                 // Re-read: a newer set may have landed during the sleep, and
                 // that one is the one worth writing.
                 let items = self.pendingLocalItems ?? next
                 self.pendingLocalItems = nil
                 await self.writeLocalContent(items: items)
             }
-            self?.localUpdateTask = nil
+            // A cancelled loop leaves the handle alone: a newer loop owns it.
+            if !Task.isCancelled { self?.localUpdateTask = nil }
         }
     }
 
