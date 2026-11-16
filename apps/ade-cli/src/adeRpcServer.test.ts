@@ -5550,6 +5550,25 @@ describe("adeRpcServer", () => {
     });
     expect(foreignTerminalRead?.isError).toBeUndefined();
     expect(fixture.runtime.ptyService.readTerminal).toHaveBeenCalledWith(expect.objectContaining({ terminalId: "terminal-2" }));
+    // An agent's preview carries the screen as text, not the desktop's styled cell grid.
+    const cell = { text: "x", fg: null, bg: null, fgMode: "default", bgMode: "default" };
+    (fixture.runtime.ptyService.previewTerminal as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      terminalId: "terminal-2",
+      source: "snapshot",
+      snapshot: {
+        cols: 3, rows: 3, serialized: "$ ok", screenSerialized: "$ ok",
+        visibleRows: [{ text: "$ ok  ", cells: [cell, cell, cell] }, { text: "", cells: [cell] }, { text: "   ", cells: [cell] }],
+      },
+    });
+    const foreignPreview = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "preview",
+      args: { terminalId: "terminal-2" },
+    });
+    expect(foreignPreview?.isError).toBeUndefined();
+    const previewSnapshot = (foreignPreview.structuredContent.result as { snapshot: Record<string, unknown> }).snapshot;
+    expect(previewSnapshot.screenText).toBe("$ ok");
+    expect(previewSnapshot).not.toHaveProperty("visibleRows");
 
     // A list that names a chat shows that chat's shells, one a chat on another
     // machine owns here included; the caller's default list still leaves those out.
