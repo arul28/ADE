@@ -64,7 +64,11 @@ import {
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
-import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
+import {
+  getRuntimeServiceStatus,
+  getRuntimeServiceStatusAsync,
+  type ServiceManagerStatusResult,
+} from "../../../../../ade-cli/src/serviceManager";
 import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME, isPidAlive } from "../../../../../ade-cli/src/serviceManager/common";
 import { readWindowsServicePidRecord } from "../../../../../ade-cli/src/serviceManager/installWindows";
 import { RUNTIME_SERVICE_START_WAIT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -601,9 +605,10 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
 /**
  * Service-health probe that never blocks the Electron main thread.
  *
- * On macOS and Linux the in-process probe is a single `launchctl`/`systemctl`
- * call (tens of milliseconds), so it stays exactly as it was — same code, same
- * timing, no extra process. On Windows the same probe costs two
+ * On macOS the in-process probe runs its `launchctl` reads with `execFile`
+ * (the sync reads cost about 13 ms of main thread, inside the first window's
+ * wait for its session at launch). On Linux it is a single `systemctl` call,
+ * so it stays exactly as it was. On Windows the same probe costs two
  * `powershell.exe -Command Get-ScheduledTask` spawns; measured on a Windows 11
  * host that is 1,045-1,089 ms each, and `spawnSync` blocks the main thread —
  * which stalls the window message pump, so window drags and unrelated clicks
@@ -611,7 +616,7 @@ export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerSta
  * executes the identical `getRuntimeServiceStatus()` code path.
  */
 export async function defaultQueryServiceStatusAsync(): Promise<ServiceManagerStatusResult> {
-  if (process.platform !== "win32") return getRuntimeServiceStatus();
+  if (process.platform !== "win32") return await getRuntimeServiceStatusAsync();
   const cliPath = resolveCliScriptPath();
   const stdout = await new Promise<string | null>((resolve) => {
     let child: ChildProcess;

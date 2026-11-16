@@ -1392,15 +1392,52 @@ export function isLaunchAgentRegistered(label: string, run: ServiceManagerSpawnS
   );
 }
 
-/** Whether the job is on launchd's disabled list for the gui domain. */
-export function isLaunchAgentDisabled(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
-  const answer = run("launchctl", ["print-disabled", `gui/${currentUid()}`], { encoding: "utf8" });
+/** The `launchctl` arguments that list launchd's disabled jobs for the gui domain. */
+export function launchAgentDisabledListArgs(): string[] {
+  return ["print-disabled", `gui/${currentUid()}`];
+}
+
+/** Whether a `launchctl print-disabled` answer lists the job as disabled. */
+export function parseLaunchAgentDisabled(answer: ServiceManagerProcessResult, label: string): boolean {
   if (answer.status !== 0) return false;
   const line = (typeof answer.stdout === "string" ? answer.stdout : answer.stdout?.toString("utf8") ?? "")
     .split("\n")
     .find((entry) => entry.includes(`"${label}"`));
   // Older macOS prints `=> true` for a disabled job; newer prints `=> disabled`.
   return line != null && /=>\s*(disabled|true)\b/.test(line);
+}
+
+/** Whether the job is on launchd's disabled list for the gui domain. */
+export function isLaunchAgentDisabled(label: string, run: ServiceManagerSpawnSync = spawnSync): boolean {
+  return parseLaunchAgentDisabled(run("launchctl", launchAgentDisabledListArgs(), { encoding: "utf8" }), label);
+}
+
+/**
+ * `spawnSync`'s answer shape from `execFile`, so a status read can run off the
+ * caller's thread. A command that cannot start, or that runs past
+ * `timeoutMs`, answers with a null status and the error.
+ */
+export function runServiceCommandAsync(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<ServiceManagerProcessResult> {
+  return new Promise((resolve) => {
+    try {
+      execFile(command, args, { encoding: "utf8", timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        resolve({
+          status: error ? (typeof code === "number" ? code : null) : 0,
+          stdout,
+          stderr,
+          error: error ?? undefined,
+          signal: (error as { signal?: NodeJS.Signals | null } | null)?.signal ?? null,
+        });
+      });
+    } catch (error) {
+      resolve({ status: null, error: error instanceof Error ? error : new Error(String(error)) });
+    }
+  });
 }
 
 export type LaunchAgentLoadResult = { ok: true } | { ok: false; detail: string };

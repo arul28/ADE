@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import type { ServiceManagerResult, ServiceManagerSpawnSync, ServiceManagerStatusResult } from "./common";
 import { ADE_RUNTIME_SERVICE_NAME, isPidAlive } from "./common";
-import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, readLaunchdServiceHome, uninstallLaunchdService } from "./installLaunchd";
+import { getLaunchdServiceMainPid, getLaunchdServiceStatus, getLaunchdServiceStatusAsync, installLaunchdService, readLaunchdServiceHome, uninstallLaunchdService } from "./installLaunchd";
 import { getSystemdServiceStatus, installSystemdService, readSystemdServiceHome, uninstallSystemdService } from "./installSystemd";
 import { readDetachedSupervisedBrainPid } from "./detachedSupervisor";
 import {
@@ -177,6 +177,17 @@ export async function uninstallRuntimeService(): Promise<ServiceManagerResult> {
  */
 export async function checkRuntimeServiceRemovable(): Promise<{ ok: true } | { ok: false; message: string }> {
   return process.platform === "win32" ? checkWindowsServiceRemovable() : { ok: true };
+}
+
+/**
+ * `getRuntimeServiceStatus` for a caller that must not block, such as the
+ * desktop's main thread. macOS runs the same `launchctl` reads with
+ * `execFile`. Linux and Windows answer through the sync read here; the
+ * desktop sends Windows to a CLI child process instead.
+ */
+export async function getRuntimeServiceStatusAsync(): Promise<ServiceManagerStatusResult> {
+  if (process.platform === "darwin") return await getLaunchdServiceStatusAsync();
+  return getRuntimeServiceStatus();
 }
 
 export function getRuntimeServiceStatus(): ServiceManagerStatusResult {

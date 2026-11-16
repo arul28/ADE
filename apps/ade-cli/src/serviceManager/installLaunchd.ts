@@ -10,16 +10,19 @@ import {
   currentUid,
   type BackgroundItemStatus,
   isCurrentProcessDescendantOfPid,
-  isLaunchAgentDisabled,
+  launchAgentDisabledListArgs,
   loadLaunchAgent,
   MATERIALIZE_DATALESS_FILES_KEY,
   listStaleChannelServePids,
+  parseLaunchAgentDisabled,
   readPidElapsedMs,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
+  runServiceCommandAsync,
   serviceManagerResultText,
   sleepSync,
+  type ServiceManagerProcessResult,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
@@ -179,10 +182,15 @@ export function readLaunchdBackgroundItemStatus(
 const BACKGROUND_ITEM_CACHE_MS = 5_000;
 const backgroundItemCache = new Map<string, { status: BackgroundItemStatus; at: number }>();
 
-function cachedBackgroundItemStatus(plistPath: string): BackgroundItemStatus {
+function* cachedBackgroundItemStatusSteps(plistPath: string): LaunchdStatusSteps<BackgroundItemStatus> {
   const cached = backgroundItemCache.get(plistPath);
   if (cached && Date.now() - cached.at < BACKGROUND_ITEM_CACHE_MS) return cached.status;
-  const status = readLaunchdBackgroundItemStatus(plistPath);
+  let status: BackgroundItemStatus = "unknown";
+  if (process.platform === "darwin") {
+    const { command, args } = backgroundItemStatusCommand(plistPath);
+    const result = yield { command, args, timeoutMs: 5_000 };
+    if (result.status === 0) status = parseBackgroundItemStatus(launchdPrintOutputText(result));
+  }
   backgroundItemCache.set(plistPath, { status, at: Date.now() });
   return status;
 }
@@ -763,7 +771,19 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
   };
 }
 
-export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
+/** One command a launchd status read needs answered. */
+type LaunchdStatusStep = { command: string; args: string[]; timeoutMs?: number };
+/**
+ * A status read written once as the commands it asks for, so the same steps
+ * run with `spawnSync` (the CLI and every sync caller) or with `execFile`
+ * (the desktop's main thread, which must not block on `launchctl`).
+ */
+type LaunchdStatusSteps<T> = Generator<LaunchdStatusStep, T, ServiceManagerProcessResult>;
+
+/** A command with no timeout of its own in the async read gets this long. */
+const LAUNCHD_STATUS_ASYNC_COMMAND_TIMEOUT_MS = 10_000;
+
+function* launchdServiceStatusSteps(): LaunchdStatusSteps<ServiceManagerStatusResult> {
   const servicePath = launchAgentPath();
   if (!fs.existsSync(servicePath)) {
     return {
@@ -778,14 +798,18 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
   }
 
   const uid = currentUid();
-  let print = spawnSync("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+  let print = yield { command: "launchctl", args: ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`] };
   if (print.status !== 0) {
-    const userPrint = spawnSync("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+    const userPrint = yield { command: "launchctl", args: ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`] };
     if (userPrint.status === 0) {
       print = userPrint;
     }
   }
   if (print.status !== 0) {
+    const disabled = parseLaunchAgentDisabled(
+      yield { command: "launchctl", args: launchAgentDisabledListArgs() },
+      ADE_RUNTIME_SERVICE_NAME,
+    );
     return {
       ok: true,
       serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -793,13 +817,14 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
       installed: true,
       running: false,
       path: servicePath,
-      message: isLaunchAgentDisabled(ADE_RUNTIME_SERVICE_NAME)
+      message: disabled
         ? "ADE service launchd service is installed but on launchd's disabled list, so macOS will not load it. Repair re-enables it."
         : serviceManagerResultText(print) || "ADE service launchd service is installed but not loaded.",
     };
   }
 
-  const running = isLaunchdPrintRunning(print.stdout);
+  const printText = launchdPrintOutputText(print);
+  const running = isLaunchdPrintRunning(printText);
   if (running) {
     return {
       ok: true,
@@ -811,8 +836,8 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
       message: "ADE service launchd service is running.",
     };
   }
-  const backgroundItem = cachedBackgroundItemStatus(servicePath);
-  const pendingSpawn = parseLaunchdPendingSpawn(print.stdout);
+  const backgroundItem = yield* cachedBackgroundItemStatusSteps(servicePath);
+  const pendingSpawn = parseLaunchdPendingSpawn(printText);
   return {
     ok: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -827,4 +852,25 @@ export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
         ? `ADE service launchd service is loaded but launchd has never started it (pended nondemand spawn = ${pendingSpawn}); launchctl kickstart starts it.`
         : "ADE service launchd service is loaded but not running.",
   };
+}
+
+export function getLaunchdServiceStatus(): ServiceManagerStatusResult {
+  const steps = launchdServiceStatusSteps();
+  let next = steps.next();
+  while (!next.done) {
+    const { command, args, timeoutMs } = next.value;
+    next = steps.next(spawnSync(command, args, { encoding: "utf8", ...(timeoutMs ? { timeout: timeoutMs } : {}) }));
+  }
+  return next.value;
+}
+
+/** `getLaunchdServiceStatus` without blocking the caller's thread. */
+export async function getLaunchdServiceStatusAsync(): Promise<ServiceManagerStatusResult> {
+  const steps = launchdServiceStatusSteps();
+  let next = steps.next();
+  while (!next.done) {
+    const { command, args, timeoutMs } = next.value;
+    next = steps.next(await runServiceCommandAsync(command, args, timeoutMs ?? LAUNCHD_STATUS_ASYNC_COMMAND_TIMEOUT_MS));
+  }
+  return next.value;
 }
