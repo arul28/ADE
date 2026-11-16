@@ -135,6 +135,12 @@ import {
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import {
+  getCursorApiCloudAgent,
+  isCursorCloudAgentId,
+  listCursorApiCloudAgents,
+  listCursorApiRepositories,
+} from "./cursorCloudApi";
 import { resolveCopilotSdkRuntime } from "./acpExecutables";
 import { ACP_PROVIDER_IDS } from "../../../shared/acpProviderMetadata";
 import { copilotConfigHome } from "../shared/providerConfigHomes";
@@ -1431,9 +1437,9 @@ export function createAiIntegrationService(args: {
     }
     if (cursorReposInFlight?.apiKey === apiKey) return cursorReposInFlight.request;
     const request = (async () => {
-      const { Cursor } = await loadCursorSdk();
       try {
-        const repos = (await Cursor.repositories.list({ apiKey }))
+        // REST, not the SDK: the Work prompt box asks for this at rest.
+        const repos = (await listCursorApiRepositories(apiKey))
           .map((repo) => ({ url: String(repo.url ?? "").trim() }))
           .filter((repo) => repo.url.length > 0);
         cursorReposCache = { apiKey, at: Date.now(), repos };
@@ -1465,13 +1471,11 @@ export function createAiIntegrationService(args: {
     cursor?: string | null;
   }): Promise<CursorCloudListAgentsResult> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await loadCursorSdk();
     const requestedLimit = typeof args?.limit === "number" && Number.isFinite(args.limit)
       ? Math.floor(args.limit)
       : 100;
-    const result = await Agent.list({
-      runtime: "cloud",
-      apiKey,
+    // REST, not the SDK: the same GET and the same summaries as `Agent.list`.
+    const result = await listCursorApiCloudAgents(apiKey, {
       includeArchived: args?.includeArchived,
       // Cursor rejects values over 100 even though older SDK typings do not
       // advertise the server-side cap.
@@ -1619,9 +1623,11 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await loadCursorSdk();
     try {
-      const raw = await Agent.get(id, { apiKey });
+      // A cloud id is one REST GET; any other id is the SDK's local store.
+      const raw = isCursorCloudAgentId(id)
+        ? await getCursorApiCloudAgent(apiKey, id)
+        : await (await loadCursorSdk()).Agent.get(id, { apiKey });
       return normalizeCursorCloudAgent(raw);
     } catch {
       return null;

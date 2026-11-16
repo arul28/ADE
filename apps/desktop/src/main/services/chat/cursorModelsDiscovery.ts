@@ -859,27 +859,26 @@ async function fetchCursorModelsFromSdk(
 ): Promise<CursorCliModelRow[]> {
   let listed = false;
   const rows = await withTimeout((async () => {
-    // REST first. `Cursor.models.list` is a GET of this same endpoint that
-    // returns its `items` as they came, so mapping them with the SDK path's
-    // own mapper gives the same rows, and the SDK (and its heap) loads only
-    // when this fails or a chat needs it. When the package does not resolve,
-    // the SDK goes first as before, so an unusable SDK still hides the models.
-    let apiItems: unknown[] | null = null;
-    let apiError: unknown = null;
+    // REST only, when the SDK is installed. `Cursor.models.list` is a GET of
+    // this same endpoint that returns its `items` as they came, so the SDK
+    // could only repeat this answer, and loading it to ask again kept its
+    // heap in the brain for good. The SDK path below runs only when the
+    // package does not resolve (so an unusable SDK still hides the models) or
+    // when there is no saved key (the SDK reads CURSOR_API_KEY itself).
     if (apiKey && cursorSdkResolvesWithoutLoading()) {
+      let apiItems: unknown[];
       try {
         apiItems = await fetchCursorModelItemsFromOfficialApi(apiKey);
-        const apiRows = normalizeSdkModelRows(apiItems as SDKModel[]);
-        if (apiRows.length) {
-          listed = true;
-          return apiRows;
-        }
       } catch (error) {
-        apiError = error;
-        // A rejected key fails the SDK's GET of this endpoint the same way, and
-        // the SDK path below would end on this same error.
-        if (toCursorModelDiscoveryError(error).kind === "auth") throw toCursorModelDiscoveryError(error);
+        throw toCursorModelDiscoveryError(error);
       }
+      const apiRows = normalizeSdkModelRows(apiItems as SDKModel[]);
+      if (apiRows.length) {
+        listed = true;
+        return apiRows;
+      }
+      // Hosted proxies that still answer with the older row shape.
+      return normalizeCursorModelRows(apiItems);
     }
 
     let sdkError: unknown = null;
@@ -902,9 +901,7 @@ async function fetchCursorModelsFromSdk(
     }
 
     try {
-      // The REST answer from above when there was one, else a first fetch.
-      if (apiError) throw apiError;
-      const apiRows = apiItems ? normalizeCursorModelRows(apiItems) : await fetchCursorModelsFromOfficialApi(apiKey);
+      const apiRows = await fetchCursorModelsFromOfficialApi(apiKey);
       if (apiRows.length) return apiRows;
     } catch (fallbackError) {
       const apiFailure = toCursorModelDiscoveryError(fallbackError);

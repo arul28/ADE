@@ -104,7 +104,8 @@ const cursorCloudMocks = vi.hoisted(() => ({
   resolveCursorCloudCreateCloudExtras: vi.fn(),
 }));
 
-vi.mock("./cursorSdkLoader", () => ({
+vi.mock("./cursorSdkLoader", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./cursorSdkLoader")>(),
   loadCursorSdk: (...args: unknown[]) => cursorCloudMocks.loadCursorSdk(...args),
 }));
 
@@ -800,29 +801,37 @@ describe("aiIntegrationService", () => {
       { type: "api-key", provider: "cursor", key, source: "store" },
     ]);
     useKey("crsr_one");
-    const list = vi.fn()
-      .mockRejectedValueOnce(new Error("rate limited"))
-      .mockResolvedValue([{ url: " https://github.com/acme/project " }, { url: "" }]);
-    cursorCloudMocks.loadCursorSdk.mockResolvedValue({ Cursor: { repositories: { list } } });
+    // Cursor's REST API at the fetch boundary: GET /v1/repositories.
+    const list = vi.fn(async (_url: string, _init?: RequestInit) => new Response(
+      JSON.stringify({ items: [{ url: " https://github.com/acme/project " }, { url: "" }] }),
+      { status: 200 },
+    ));
+    list.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "unknown", message: "rate limited" } }), { status: 500 }));
+    vi.stubGlobal("fetch", list);
+    try {
+      // A failure is not kept: the next read asks again.
+      await expect(service.listCursorCloudRepositories()).rejects.toThrow("rate limited");
+      const [first, second] = await Promise.all([
+        service.listCursorCloudRepositories(),
+        service.listCursorCloudRepositories(),
+      ]);
+      expect(first).toEqual([{ url: "https://github.com/acme/project" }]);
+      expect(second).toEqual(first);
+      await service.listCursorCloudRepositories();
+      expect(list).toHaveBeenCalledTimes(2);
 
-    // A failure is not kept: the next read asks again.
-    await expect(service.listCursorCloudRepositories()).rejects.toThrow("rate limited");
-    const [first, second] = await Promise.all([
-      service.listCursorCloudRepositories(),
-      service.listCursorCloudRepositories(),
-    ]);
-    expect(first).toEqual([{ url: "https://github.com/acme/project" }]);
-    expect(second).toEqual(first);
-    await service.listCursorCloudRepositories();
-    expect(list).toHaveBeenCalledTimes(2);
+      await service.listCursorCloudRepositories({ refresh: true });
+      expect(list).toHaveBeenCalledTimes(3);
 
-    await service.listCursorCloudRepositories({ refresh: true });
-    expect(list).toHaveBeenCalledTimes(3);
-
-    useKey("crsr_two");
-    await service.listCursorCloudRepositories();
-    expect(list).toHaveBeenCalledTimes(4);
-    expect(list).toHaveBeenLastCalledWith({ apiKey: "crsr_two" });
+      useKey("crsr_two");
+      await service.listCursorCloudRepositories();
+      expect(list).toHaveBeenCalledTimes(4);
+      expect(String(list.mock.calls.at(-1)?.[0])).toMatch(/\/v1\/repositories$/);
+      expect((list.mock.calls.at(-1)?.[1]?.headers as Record<string, string>).Authorization).toBe("Bearer crsr_two");
+      expect(cursorCloudMocks.loadCursorSdk).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("passes envVars on Cursor Cloud Agent.create and does not send metadata", async () => {

@@ -33,7 +33,7 @@ import {
   reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
-import { loadCursorSdk } from "./cursorSdkLoader";
+import { getCursorAccount, listCursorApiModels } from "./cursorCloudApi";
 import { resolveMuseExecutable } from "./museExecutable";
 
 type CliName =
@@ -1016,11 +1016,12 @@ async function verifyCursorApiKey(
 ): Promise<ApiKeyVerificationResult> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const { Cursor } = await loadCursorSdk();
+    // The two GETs `Cursor.me` and `Cursor.models.list` make, without loading
+    // the SDK into this process for a key check.
     const user = await Promise.race([
       (async () => {
-        const account = await Cursor.me({ apiKey: key });
-        const models = await Cursor.models.list({ apiKey: key });
+        const account = await getCursorAccount(key);
+        const models = await listCursorApiModels(key);
         if (!Array.isArray(models) || models.length === 0) {
           throw new Error("Cursor model verification returned no available models.");
         }
