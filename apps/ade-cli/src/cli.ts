@@ -768,6 +768,7 @@ import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverr
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
 import { DEVICES_HELP } from "./help/devicesHelp";
+import { lazyRecord } from "./help/lazyRecord";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
@@ -1915,7 +1916,8 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   logout: "auth",
 };
 
-export const HELP_BY_COMMAND: Record<string, string> = {
+// Built on the first read (`help/lazyRecord.ts`): the brain never prints these pages.
+export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   reset: `${ADE_BANNER}
   ADE Reset
 
@@ -5344,7 +5346,7 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   the downloaded archive so a retry is just another install, and only a second
   failure discards the download and forces a fresh one.
 `,
-};
+}));
 
 export function isRecord(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -29852,6 +29854,10 @@ async function runServe(
   // child process froze it, which is most of the near misses that use no CPU.
   const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
   installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  // Code that ran only while the brain started drops its compiled form at the
+  // next quiet full collection (`brainCodeAging.ts`).
+  const { scheduleBrainCodeAging } = await import("./services/runtime/brainCodeAging");
+  scheduleBrainCodeAging();
   // And this names the synchronous file call, path and caller, that the main
   // thread is stuck in, for the watchdog to read while it is stuck. Installed
   // before the watchdog starts, which hands the tracker's memory to its worker.
