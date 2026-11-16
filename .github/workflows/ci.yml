@@ -28,6 +28,11 @@ jobs:
   # ── Stage 1: Install & cache ──────────────────────────────────────────
   install:
     runs-on: ubuntu-latest
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -120,8 +125,17 @@ jobs:
             exit 1
           fi
 
-      - name: Save core node_modules cache
+      # On main, and on a pull request whose lockfile changed again.
+      - name: Delete the node_modules entry this save replaces
+        id: prune_core
         if: steps.cache_core.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.cache_core.outputs.key }}
+        run: scripts/ci/prune-cache-entries.sh "nm-core-v2-${RUNNER_OS}-" "$KEY"
+
+      - name: Save core node_modules cache
+        if: steps.cache_core.outputs.cache-hit != 'true' && steps.prune_core.outputs.save != 'false'
         uses: actions/cache/save@v4
         with:
           path: ${{ steps.cache_core.outputs.paths }}
@@ -176,6 +190,11 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -249,9 +268,18 @@ jobs:
           fi
           exit "$(cat "$status")"
       # Each main commit saves its own entry, because a cache key cannot be
-      # replaced. Old entries expire when no run reads them.
-      - name: Save the typecheck build info
+      # replaced; the step before it deletes the entries it replaces, since
+      # a restore reads only the newest.
+      - name: Delete main's build info entries this save replaces
+        id: prune_tsc
         if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.tsc_cache.outputs.prefix }}${{ github.sha }}
+        run: scripts/ci/prune-cache-entries.sh "tsc-v1-${RUNNER_OS}-" "$KEY"
+
+      - name: Save the typecheck build info
+        if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.prune_tsc.outputs.save != 'false'
         uses: actions/cache/save@v4
         with:
           path: .tsbuildinfo
@@ -621,6 +649,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.runtime-binaries-gate.outputs.matrix) }}
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -657,8 +690,17 @@ jobs:
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
 
-      - name: Save npm download cache
+      - name: Delete main's npm download entry this save replaces
+        id: prune_npm
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('apps/ade-cli/package-lock.json') }}
+        run: scripts/ci/prune-cache-entries.sh "npm-dl-v1-${{ runner.os }}-${{ runner.arch }}-" "$KEY"
+
+      - name: Save npm download cache
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.npm_cache.outputs.cache-hit != 'true' && steps.prune_npm.outputs.save != 'false'
         uses: actions/cache/save@v4
         with:
           path: ${{ steps.npm_cache_dir.outputs.dir }}
@@ -800,6 +842,11 @@ jobs:
       fail-fast: false
       matrix:
         group: [ade-cli, desktop-sync, desktop-platform]
+    # Deletes main's cache entries that its save replaces
+    # (scripts/ci/prune-cache-entries.sh).
+    permissions:
+      contents: read
+      actions: write
     steps:
       # Each test step below runs for one group only, so a group that no step
       # names would pass green with no tests. scripts/validate-platform-gates.mjs
@@ -828,8 +875,17 @@ jobs:
         run: npm --prefix apps/desktop ci
 
       # One group saves; the three would race to write the same key.
-      - name: Save Windows node_modules cache
+      - name: Delete main's Windows node_modules entry this save replaces
+        id: prune_win
         if: matrix.group == 'ade-cli' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ steps.nm_win.outputs.key }}
+        run: scripts/ci/prune-cache-entries.sh "nm-core-v2-${RUNNER_OS}-" "$KEY"
+
+      - name: Save Windows node_modules cache
+        if: matrix.group == 'ade-cli' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.nm_win.outputs.cache-hit != 'true' && steps.prune_win.outputs.save != 'false'
         uses: actions/cache/save@v4
         with:
           path: ${{ steps.nm_win.outputs.paths }}
