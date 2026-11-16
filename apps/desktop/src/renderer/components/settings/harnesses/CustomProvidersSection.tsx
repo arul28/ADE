@@ -258,7 +258,7 @@ export function CustomProvidersSection({
     <ModernSection
       group="Connections"
       anchor="ai-harnesses"
-      title="Custom"
+      title="Custom providers"
       hint="Any harness on a model you already pay for — saved to your account, on every computer."
       actions={toolbar}
     >

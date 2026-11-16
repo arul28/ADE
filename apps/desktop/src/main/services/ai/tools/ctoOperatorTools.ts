@@ -1,3 +1,4 @@
+import { launchModelRequiredMessage } from "../../../../shared/launchModelRule";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { isCredentialKey, normalizeConfigKey } from "../../../../shared/credentialKeys";
@@ -73,7 +74,6 @@ import {
 export interface CtoOperatorToolDeps {
   currentSessionId: string;
   defaultLaneId: string;
-  defaultModelId?: string | null;
   defaultReasoningEffort?: string | null;
   resolveExecutionLane: (args: {
     requestedLaneId?: string | null;
@@ -933,10 +933,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   defineLazyTool(tools, "spawnChat", () => core({
     description:
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
-      "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
+      "Always pass modelId, the full model ID " +
       "(e.g. 'anthropic/claude-opus-5' for Opus, 'anthropic/claude-sonnet-5' for Sonnet, " +
-      "'anthropic/claude-haiku-5-5' for Haiku, 'openai/gpt-5.6-sol' for Sol). " +
-      "If no modelId is passed, the CTO's default model preference is used. " +
+      "'anthropic/claude-haiku-5-5' for Haiku, 'openai/gpt-5.6-sol' for Sol): ADE never picks a model for an agent. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
       "Pass permissionMode only when the user asks for a specific access level; omitting it keeps the provider's " +
       "own default, which is the safe choice. It accepts ADE's full permission contract, including auto and " +
@@ -949,7 +948,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       "A chat on another machine cannot wake you, so a one-time check-in on your own thread is scheduled for checkBackMinutes later.",
     inputSchema: z.object({
       laneId: z.string().optional().describe("Existing lane to run in, on the machine the chat runs on. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
-      modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). MUST be set when user specifies a model."),
+      modelId: z.string().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). Required."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
       initialPrompt: z.string().optional().describe("Task description to seed the chat. The agent starts working immediately."),
@@ -1007,8 +1006,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
-        const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
-        const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;
+        if (!rawModelId) throw new Error(launchModelRequiredMessage(null, "field"));
+        const descriptor = resolveModelDescriptor(rawModelId);
+        const selectedModelId = descriptor?.id ?? rawModelId;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
         if (isCloudLaneMachine(machine)) {
           if (laneId?.trim()) throw new Error("machine \"cloud\" makes a new lane for the chat: leave out laneId.");

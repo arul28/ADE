@@ -4272,7 +4272,7 @@ Where it is set:
   and CLI lineage never populates `chatSessionId` because that field means
   attached-terminal ownership.
 - `ade chat create --type subagent --provider <p> --model <m> [--instance <id>]
-  [--preset <id>]` is how a coordinating agent spawns its own helpers from any
+  [--custom-provider <name>]` is how a coordinating agent spawns its own helpers from any
   thread. There is no separate orchestration mode.
 - The CTO's `spawnChat` tool sets `orchestrationParentSessionId` to the calling
   CTO session unconditionally and defaults `spawnKind` to `"subagent"` — twice,

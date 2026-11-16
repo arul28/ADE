@@ -42,7 +42,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
   return {
     currentSessionId: "cto-current",
     defaultLaneId: "lane-1",
-    defaultModelId: "openai/gpt-5-chat-latest",
     defaultReasoningEffort: "medium",
     resolveExecutionLane: vi.fn().mockResolvedValue("lane-1"),
     laneService: {

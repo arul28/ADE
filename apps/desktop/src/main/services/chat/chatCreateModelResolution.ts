@@ -1,3 +1,4 @@
+import { unknownModelHint } from "../../../shared/launchModelRule";
 import type { AgentChatCreateArgs, AgentChatModelInfo, AgentChatProvider } from "../../../shared/types";
 
 type ModelSource = {
@@ -36,7 +37,7 @@ export async function resolveChatCreateModel<T extends Pick<AgentChatCreateArgs,
   });
   const chosen = available[0];
   if (!chosen) {
-    throw new Error(`No configured ${payload.provider} chat model is available on the host.`);
+    throw new Error(`No ${payload.provider} model is available on this machine. Sign ${payload.provider} in, then pass one with --model. ${unknownModelHint(payload.provider)}`);
   }
   return {
     ...payload,

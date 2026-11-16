@@ -5,6 +5,7 @@
 
 import { resolveClaudeCliModelAlias } from "../../desktop/src/shared/claudeCliModels";
 import { getModelById, shorthandModelNameRefusal } from "../../desktop/src/shared/modelRegistry";
+import { launchModelRequiredMessage, unknownModelHint, launchTakesNoModel } from "../../desktop/src/shared/launchModelRule";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
 
 type Fields = Record<string, unknown>;
@@ -138,4 +139,59 @@ export function assertActionModelNames(
 /** Refuses one model name that is shorthand, for a launch on `provider`. */
 export function assertFullModelName(modelRef: string | null | undefined, provider: string): void {
   throwIfRefused(modelNameRefusal(modelRef, provider));
+}
+
+function named(value: unknown): boolean {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/** The provider a launch-shaped input names, for the refusal's model list. */
+function launchProvider(fields: Fields | null): string | null {
+  return typeof fields?.provider === "string" ? fields.provider : null;
+}
+
+/**
+ * An agent that starts another agent names its model: ADE never picks one for
+ * it. These are the actions that start a new agent; a move or handoff keeps
+ * the chat's own model, and the desktop app (left out by the caller) always
+ * sends one.
+ */
+export function assertLaunchModelNamed(domain: string, action: string, input: unknown): void {
+  const fields = record(input);
+  const refuse = (provider: string | null) => {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, launchModelRequiredMessage(provider, "field"));
+  };
+  switch (`${domain}.${action}`) {
+    case "chat.createSession":
+    case "chat.launchHeadless":
+      if (!named(fields?.model) && !named(fields?.modelId)) refuse(launchProvider(fields));
+      return;
+    case "chat.launchCli":
+      if (!launchTakesNoModel(fields?.provider) && !named(fields?.model)) refuse(launchProvider(fields));
+      return;
+    case "chat.startLaunch": {
+      if (fields?.kind === "cli") return;
+      const create = record(record(fields?.chat)?.create);
+      if (!named(create?.model) && !named(create?.modelId) && !named(fields?.modelId)) refuse(launchProvider(create) ?? launchProvider(fields));
+      return;
+    }
+    case "automations.webhookCreateAutomation":
+      // Delivered into an existing chat, an event starts no new agent.
+      if (!named(fields?.chatSessionId) && !named(fields?.modelId)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Send modelId for the chat each delivery starts, or chatSessionId to send deliveries into a chat. ${unknownModelHint()}`,
+        );
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+/** The same rule for a tool that starts a CLI agent (`start_cli_session`, `spawn_agent`). */
+export function assertCliLaunchModelNamed(model: string | null | undefined, provider: string): void {
+  if (!launchTakesNoModel(provider) && !named(model)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, launchModelRequiredMessage(provider, "field"));
+  }
 }

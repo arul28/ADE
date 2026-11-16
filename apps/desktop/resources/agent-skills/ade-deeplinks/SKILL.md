@@ -1,6 +1,6 @@
 ---
 name: ade-deeplinks
-description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, file, commit, artifact, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
+description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, chat or CLI session, file, commit, artifact, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
 ---
 
 # ADE deeplinks
@@ -12,7 +12,7 @@ identical semantics:
 
 ```
 ade://lane/<uuid>                                # local-only — focuses an existing lane
-ade://session/<id>[?lane=<lane-uuid>&event=<n>&offset=<bytes>]  # Work session + anchors
+ade://session/<id>[?lane=<lane-uuid>&event=<n>&offset=<bytes>]  # a chat or CLI session + anchors
 ade://file/<repo-relative-path>[?line=<n>&lane=<lane-uuid>]      # Files tab
 ade://commit/<sha>[?lane=<lane-uuid>]            # Lanes git detail, or GitHub fallback with envelope
 ade://artifact/<artifact-id>                     # local proof/history artifact
@@ -76,7 +76,7 @@ ade://open/<page>             # an ADE page (prs, lanes, history, connections…
 | Need                                                          | Use                                  |
 | ------------------------------------------------------------- | ------------------------------------ |
 | Jump back to MY lane from another terminal on the same Mac    | `ade://lane/<uuid>`                  |
-| Jump back to a Work session on this Mac                       | `ade://session/<id>`                 |
+| Jump back to a chat on this Mac                                | `ade://session/<id>`                 |
 | Jump to a chat event or terminal scrollback byte offset       | `ade://session/<id>?event=<n>` / `?offset=<bytes>` |
 | Open a file and reveal a line                                 | `ade://file/src/app.ts?line=42`      |
 | Open a commit from a local lane or GitHub fallback            | `ade://commit/<sha>?lane=<uuid>&repo=owner/repo` |
@@ -89,7 +89,7 @@ ade://open/<page>             # an ADE page (prs, lanes, history, connections…
 
 ```bash
 ade link lane <lane-uuid>                                  # local lane link
-ade link session <session-id> [--lane <lane-uuid>]          # local Work session link
+ade link session <session-id> [--lane <lane-uuid>]          # local chat or CLI session link
 ade link file <path> [--line N] [--lane <lane-uuid>]        # file link
 ade link commit <sha> [--lane <lane-uuid>]                  # commit link
 ade link artifact <id>                                      # proof/history artifact
@@ -236,7 +236,7 @@ the links in your final message.
 
 When you copy a deeplink from the desktop UI, the lane right-click menu offers
 Copy lane link, Copy branch link (cross-machine), Copy PR link, and Copy
-Linear-issue link. The Work session context menu also offers Copy session deep
+Linear-issue link. A chat's context menu also offers Copy session deep
 link for returning to the selected terminal/chat session on the same desktop.
 
 ## What deeplinks NEVER do silently
@@ -250,7 +250,7 @@ link for returning to the selected terminal/chat session on the same desktop.
   segments, malformed Linear identifiers, and non-https hosts on the mirror
   form.
 
-## Quick command palette for the CTO
+## Quick command palette
 
 ```bash
 # Mint links the user can paste anywhere
@@ -260,7 +260,7 @@ ade link linear-issue ADE-512 --branch arul/ade-512-feat            # Linear han
 ade link file apps/desktop/src/shared/deeplinks.ts --line 12         # source location
 ade link commit abc1234 --lane <lane-uuid>                           # commit detail
 ade link artifact proof-123                                          # proof/history artifact
-ade link session <session-id> --lane <lane-uuid>                    # Work session
+ade link session <session-id> --lane <lane-uuid>                    # chat or CLI session
 ade link lane "$(ade lanes list --text | head -2 | tail -1 | awk '{print $1}')"  # current lane
 
 # Open a link locally (any of these reach a running ADE)

@@ -6,9 +6,10 @@ description: Use this skill when you need to see an Android app actually running
 # ADE Android Development
 
 Drive the lane's Android emulator with `"$ADE_CLI_PATH" android <command>`.
-`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
-its brain, so your calls and the desktop's Android tool share one emulator. A
-bare `ade` goes through PATH and can reach a different ADE.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you, so your calls and the
+desktop's Android tool share one emulator. A bare `ade` goes through PATH and
+can reach a different ADE. Commands below written as `ade …` mean
+`"$ADE_CLI_PATH" …` too.
 
 Each lane has one emulator, on the machine that runs the lane. It works on
 macOS, Windows and Linux. ADE starts it without a window and shows it in the

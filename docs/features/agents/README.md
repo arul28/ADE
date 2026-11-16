@@ -293,7 +293,7 @@ path.
 
 There is no separate orchestration mode: a coordinating agent spawns its own
 helpers from any thread with
-`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--preset <id>]`,
+`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--custom-provider <name>]`,
 and reads their results back through the same spawn lineage.
 
 The runtime mechanics — provider-native mid-turn completion steering, the

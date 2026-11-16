@@ -29,7 +29,7 @@ ade archive list --kind chat --older-than 14 --text
 ade archive summary --text                    # counts per kind, what is 14+ days old
 ```
 
-Restoring is for the CTO (`ade archive restore <kind>:<id>`). Deleting is the
+Restoring is the person's (the CTO role), not an agent's: `ade archive restore <kind>:<id>`. Deleting is the
 user's alone: agents and automations are refused. When old archived items pile
 up, tell the user and point them to Settings → Archive; do not try to delete
 them yourself.

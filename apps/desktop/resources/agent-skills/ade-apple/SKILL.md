@@ -10,9 +10,10 @@ Electron app or a web page, the **ade-computer-use** skill picks the right
 surface.
 
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
-`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
-its brain, so your calls and the desktop's Apple Development tool share one
-session. A bare `ade` goes through PATH and can reach a different ADE.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you, so your calls and the
+desktop's Apple Development tool share one session. A bare `ade` goes through
+PATH and can reach a different ADE. Commands below written as `ade …` mean
+`"$ADE_CLI_PATH" …` too.
 
 The pixels come from a vendored Swift helper (`ade-sim-helper`) reading the
 device framebuffer. There is no Screen Recording grant, no Simulator window to

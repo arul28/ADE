@@ -94,11 +94,9 @@ ade linear label ENG-431 "needs-review"          # add a label by name
 ```
 
 Notes:
-- `set-state` takes a **workflow state id**, not a free-text name. To discover
-  the valid states/ids (and users) for the issue picker, run
-  `ade linear picker-data --text` (you may need to prefix `--role cto`:
-  `ade --role cto linear picker-data --text`). The state id can also be passed
-  via `--state-id <id>`.
+- `set-state` takes a state name (`"In Progress"`, matched within the issue's
+  team) or a state id (`--state-id <id>`). `ade linear picker-data --text`
+  lists the states and users.
 - `comment`, `set-state`, `assign`, and `label` all accept the value via a flag
   too (`--message/-m`, `--state-id`, `--assignee`, `--label`) if a positional is
   ambiguous.

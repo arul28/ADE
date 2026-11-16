@@ -621,8 +621,18 @@ import {
   isHarnessPresetAccountProvider,
   isHarnessPresetBody,
   isHarnessPresetSubscriptionProvider,
+  presetLabel,
+  type HarnessPreset,
   type HarnessPresetSource,
 } from "../../desktop/src/shared/harnessPresets";
+import {
+  customProviderHarnessProblem,
+  customProviderModelProblem,
+  findCustomProvider,
+  PRESET_FLAG_GONE_MESSAGE,
+} from "../../desktop/src/main/services/chat/customProviderRef";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { launchModelRequiredMessage, launchTakesNoModel, unknownModelHint } from "../../desktop/src/shared/launchModelRule";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   competingSyncHostSkipReason,
@@ -1095,6 +1105,7 @@ export type FormatterId =
   | "harness-env"
   | "harness-routes"
   | "harness-test"
+  | "harness-providers"
   | "archive-list"
   | "deleted-chats"
   | "deleted-lanes"
@@ -1615,7 +1626,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Every device this chat can use, on every machine
     $ ade devices use <kind>@<machine|here> | current
                                                     Pick the machine this chat's iPhone, Android, screen or app runs on
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
+    $ ade new chat --mode chat|cli --provider <p> --model <id> --prompt "fix"
+                                                    Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -1634,7 +1646,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
+    $ ade status                                    Does the ADE brain answer
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
+    $ ade health --text                             This project's problems and their fixes
     $ ade report-issue [--send] [--open]            Print a redacted diagnostic report; --send hands it to ADE privately,
                                                     --open then opens a public GitHub issue that holds only its reference
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
@@ -1659,7 +1673,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
     $ ade session show | move | snooze | wake | clear-woke
-                                                    Manage a session's lifecycle (file it on the board, snooze until a deadline)
+                                                    A chat or CLI session on the Work board: file it, snooze it until a deadline
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
                                                     Create, read, and edit Linear issues
     $ ade jira status | connect | projects | list | issue | create | edit
@@ -1679,6 +1693,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
+    $ ade scene preview <file> --text              Check a \`\`\`scene before putting it in a reply
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
         | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
@@ -1686,6 +1701,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
     $ ade models catalog | sheet                    Every model you can run: full registry profiles, or organized by task kind
+    $ ade harness routes | providers | env | test   Any model in any harness (--via), and your Custom providers
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade archive list | summary | restore | delete  Archived lanes, chats, and shells (delete needs --confirm)
     $ ade providers accounts list | add | remove | default
@@ -1713,6 +1729,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+    --role <cto|agent>      Who the call acts as. Agents run as agent; --role cto is for the person's
+                            own terminal, and a few commands (marked CTO only) need it.
 
   Common agent flows:
     $ ade doctor --text
@@ -1769,7 +1787,7 @@ function remoteMcpHelpScope(): "read" | "write" | undefined {
 /** Whether this account has ADE Cloud, answered by this machine's brain; false until it does. */
 let cliCloudEnabled = false;
 
-const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --prompt "…"
+const CHAT_CLOUD_HELP = `    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new ADE Cloud computer: ADE makes the
                                                     computer, gets the repository there (the pushed branch) and
                                                     starts the chat there. --size small, medium, large, xlarge
@@ -1911,7 +1929,55 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   logout: "auth",
 };
 
+/** `ade sync help` and `ade help sync`: one page. */
+const SYNC_HELP = `${ADE_BANNER}
+  Machine sync
+
+  How this machine's ADE brain syncs with your phone, the web client and your
+  other machines. Pair a phone with ade brain pin generate.
+
+    $ ade sync status [--include-transfer-readiness] --text
+    $ ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
+    $ ade sync refresh
+    $ ade sync devices --text                  Paired devices
+    $ ade sync name <name>                     Name this runtime for easy identification
+    $ ade sync name get
+    $ ade sync name clear
+    $ ade sync security status                 Machine sync security posture (require-DPoP)
+    $ ade sync security require-dpop <on|off>
+    $ ade sync pair-device --json-stdin        Advanced: authorize pairing through a trusted local/SSH session
+`;
+
 export const HELP_BY_COMMAND: Record<string, string> = {
+  sync: SYNC_HELP,
+  doctor: `${ADE_BANNER}
+  ADE doctor
+
+  Is ADE healthy on this machine: the installed app, the machine brain, the
+  CLI on PATH, the socket, and what to do about each problem. Read-only. Run
+  it first when the ADE environment is unclear.
+
+    $ ade doctor --text                             Check this machine
+    $ ade doctor --online --text                    Also check the ADE account and relay services
+    $ ade health --text                             This project's problems (moved folders, broken lanes, ...)
+`,
+  status: `${ADE_BANNER}
+  ADE status
+
+  Whether the ADE brain this CLI talks to answers, and which one it is. For a
+  full check of the machine, run ade doctor --text.
+
+    $ ade status --text
+`,
+  settings: `${ADE_BANNER}
+  ADE settings
+
+  Find where an ADE setting or page is, as a link the chat shows as a chip.
+  Changing a setting is the person's, in the app.
+
+    $ ade settings find <words> --text              Matching settings and pages, with links
+    $ ade settings actions --text                   Raw settings service actions
+`,
   reset: `${ADE_BANNER}
   ADE Reset
 
@@ -2106,7 +2172,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   confirms it on that computer (see \`reconnect\`); nothing this machine runs can
   bring it back.
 
-  Agents cannot remove a computer. Run from a chat, \`remove\` asks the person
+  Agents cannot remove a machine. Run from a chat, \`remove\` asks the person
   instead: the chat shows a card with the computer's name, platform, last seen
   time and online state, and Remove / Keep buttons (an online computer, or the
   one the chat runs on, needs a second yes). The command waits for the answer
@@ -2514,14 +2580,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
   new: `${ADE_BANNER}
-  New ADE work session
+  Start a chat or a CLI session
 
   Start either a persistent ADE Work chat or a tracked provider CLI session
-  with one command. This mirrors the desktop New Chat mode toggle.
+  with one command. This mirrors the desktop New Chat mode toggle. Every
+  launch names its model with --model; ADE never picks one.
 
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
+    $ ade new chat --mode chat --auto-create-lane --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash --prompt "Fix login"
     $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
 
   Flags:
@@ -2536,7 +2604,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                            reports back (the default). --no-report: it does not.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
                            CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity; CLI mode also accepts shell.
-    --model <id>           Runtime model id.
+    --model <id>           Required (not for a plain shell). The model id:
+                           ade chat models --provider <p> --text, or
+                           ade harness routes --text for any model in any harness.
+    --instance <email>     Which Claude/Codex account signs in (ade providers accounts list --text).
+    --custom-provider <name>, --credential <id>, --via <source>
+                           Where the model runs: a saved Custom provider, a stored
+                           API key, or any model in any harness. Pass one
+                           (ade help providers, ade help harness).
+    --title <text>         The session's title.
+    --print-config         Print what would launch, and launch nothing.
+    --machine <name>       Start it on another of your machines (ade help machines).
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
     --droid-permission-mode <m>
@@ -2574,9 +2652,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
-    $ ade new chat --mode chat --lane <lane> --prompt-file brief.md
-    $ ade new chat --mode chat --lane <lane> --prompt-file - <<'EOF'
+    $ ade new chat --mode chat --lane auto --lane-name fix-login --provider codex --model openai/gpt-5.6-sol --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file brief.md
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt-file - <<'EOF'
+
+  --model is required (not for a plain shell); see ade help new for every flag.
 
   The first message is --prompt <text>, text after --, or --prompt-file <path|->.
 
@@ -2653,7 +2733,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade lanes deleted restore <id>                Bring one back, uncommitted files included: as a new lane, or into its lane if space was freed
     $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
-    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, preset, risk, end, made by)
+    $ ade lanes share --lane <lane> --text          List the lane's shares (people, state, access, risk, end, made by)
     $ ade lanes share --lane <lane> --add <email> [--ends 1h|today|1w|<ISO date>] [--hide-machines] [--hide-models]
                                                     Share the lane with another ADE account, Watch only: they see
                                                     its chats and sessions and cannot send, run or approve anything.
@@ -2761,6 +2841,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   and deployments still resolve through ADE's own row.
 
     $ ade prs list --text                           List PRs known to ADE
+    $ ade prs show <pr> --text                      One PR: state, branch, checks and reviews
     $ ade prs list-open --text                      List every open GitHub PR in the repo, keyed by head branch
     $ ade prs create --lane <lane> --base main      Open a GitHub PR from a lane; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --title "fix(web): new chats no longer spike CPU" --body-file pr.md
@@ -2784,6 +2865,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade prs link --lane <lane> --url <pr-url>     Point a lane at an existing GitHub PR
     $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
+    $ ade prs reply <pr> --thread <id> --body "..." Reply to one review thread
     $ ade prs comment-edit <pr> --comment <id> --body "..."
                                                     Edit an issue or review comment
     $ ade prs comment-react <pr> --comment <id> --content +1
@@ -2820,9 +2902,9 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --permission-mode edit --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --model openai/gpt-5.6-sol --permission-mode edit
+    $ ade shell start-cli claude --lane <lane> --model claude-opus-5-5 --reasoning-effort ultracode --prompt "fix tests"
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
@@ -2851,8 +2933,9 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
   To move a file, use ade files push|pull --machine <name> (see ade files
   --help), never base64 or echo inside a shell command.
 
-  Provider CLI launches accept --instance for Claude/Codex accounts and
-  --preset or --credential for saved harness brains.
+  Provider CLI launches take --model (required) and accept --instance for a
+  Claude/Codex account, and --custom-provider, --credential or --via for where
+  the model runs (ade help providers).
 
   Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
   remains as the compatibility command behind that mode.
@@ -2974,7 +3057,7 @@ ${LANES_CLOUD_HELP}  ade lanes defaults [--text|--json]
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat list --machine "Mac mini" --text     Chats on another machine on your account (this repo's checkout there)
     $ ade chat list --all-machines --text           Every machine in one table, with a machine column
-    $ ade chat create --machine "Mac mini" --lane <lane there> --type subagent --prompt "…"
+    $ ade chat create --machine "Mac mini" --lane <lane there> --provider <p> --model <id> --type subagent --prompt "…"
                                                     Start a child on another machine; it wakes you when done.
                                                     Without --lane it starts in the project's primary lane there.
                                                     --project <name|path|id> picks the project there, --clone
@@ -2996,7 +3079,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
+    $ ade chat create --from-linear-issue ENG-431 --provider <p> --model <id> --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
                                                     Start a chat in a brand-new lane (the desktop composer's new-lane
@@ -3009,7 +3092,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
-                                                    use 'ade new chat --lane auto --type ...' for a parented child.
+                                                    use 'ade new chat --lane auto --model <id> --type ...' for a parented child.
     $ ade chat launches --text                      List new-lane launches running or recently finished on the brain
     $ ade chat launch-status <launch>               One launch's stages (exit 1 when unknown or expired)
     $ ade chat launch-cancel <launch>               Cancel a launch before its agent starts; deletes its chat, lane, and branch
@@ -3162,6 +3245,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
     $ ade chat scheduled-work pause <session>        Pause this agent session's durable wakeups/cron/loops
+    $ ade chat scheduled-work resume <session>       Re-arm them
     $ ade chat scheduled-work status <session>       Inspect pause state + next armed wake (resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
     $ ade chat scheduled-work create --in 12m --prompt "<text>"
@@ -3174,7 +3258,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
                                                     <session> is the chat that owns the job (first), <id> the job id;
                                                     also --session <s> --id <id>. Inside a chat, 'cancel <id>' is enough.
-    $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
@@ -3205,24 +3289,26 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade chat keep-reporting <session>             Dismiss the takeover prompt without changing the report channel
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider <p> --model <id> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text).
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
     --prompt-file <path|->  The first message from a file, or stdin with -. Use it
                             for multi-line text (ade.cmd on Windows cuts arguments
                             at the first line break).
-    --instance <email>      Provider account, by its email (its id works too);
-                            --credential <id> and --preset <id> pick a saved
-                            credential or harness preset (ade help providers).
+    --instance <email>      Provider account, by its email (its id works too).
+    --custom-provider <name>, --credential <id>, --via <source>
+                            Where the model runs: a saved Custom provider, a
+                            stored API key, or any model in any harness. Pass
+                            one (ade help providers, ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            The host may lower it for an agent caller (stderr note).
+                            ADE may lower it for an agent: never above the agent's own access (stderr note).
     --fast                  Request fast service tier when the model advertises it.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
@@ -3279,7 +3365,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --personal              Use machine-owned chats instead of a project/lane chat.
     --lane <lane>           Lane/worktree for the chat.
     --provider <name>       claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
-    --model <id>            Model id, also sent as modelId for runtime parity.
+    --model <id>            Required. The model id (ade chat models --provider <p> --text;
+                            ade harness routes --text for any model in any harness).
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
@@ -3291,11 +3378,15 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --instance <email>      Which provider account to run on, by its email (ade
                             usage limits and ade providers accounts list show
                             them; an account's id works too).
-    --credential <id>       A saved API credential for the provider.
-    --preset <id>           A saved harness preset. See ade help providers.
+    --credential <id>       A stored API key for the provider.
+    --custom-provider <name>
+                            A saved Custom provider, by name or id; --model must be
+                            its own model (ade harness providers --text lists them).
+    --via <source>          Any model in any harness: opencode-go, key:<provider>,
+                            account:<claude|codex>:<id>, ... (ade help harness).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            From an agent, the host may lower it: a chat never
+                            From an agent, ADE may lower it: a chat never
                             gets more access than the agent's own chat or its
                             parent. chat create then prints a note on stderr.
     --droid-permission-mode <m>
@@ -3419,8 +3510,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     --in <duration>         One-shot relative time: 45s, 90m, 2h, 3d, 1w.
     --target <session>      Send into an existing chat.
     --new-chat --lane <lane>  Create a chat in that lane at the fire time; also needs --provider and --model.
-    --provider <id> --model <runtime-facing model string> --model-id <id>
-                            Captured for a new chat; --model is required with --new-chat.
+    --provider <id> --model <id>
+                            Captured for a new chat; both are required with --new-chat
+                            (ade chat models --provider <p> --text lists the ids).
     --permission <mode>     Captured permission mode.
     --thinking <effort>     Captured reasoning effort.
     --machine <key>         Which machine delivers it. Omitted: whichever runtime is up.
@@ -3813,6 +3905,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade screen type "hello" --submit --text       Type, then press Return
     $ ade screen press s --ctrl --text              One key, with modifiers
     $ ade screen scroll down --amount 5 --text      Scroll the screen or a target
+    $ ade screen drag --from <handle|x,y> --to <handle|x,y> --text
+                                                    Drag inside a window (--real: onto another app)
+    $ ade screen present main | display --text      Show the lane's windows on the user's screen, and back (Mac)
     $ ade screen wait --label "Done" --timeout 8000 --text
 
   Modifier keys: --ctrl, --alt, --shift, and --win (Windows key, Windows only).
@@ -4348,7 +4443,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade browser status --text           Every tab on every machine, owners, and the route
+    $ ade browser status --text           Every tab on every machine, owners, and the route (alias: tabs)
     $ ade browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade browser panel --text            Open the Work sidebar Browser panel
@@ -4697,14 +4792,14 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade usage limits --machine "Mac mini" --text  Another machine's accounts (it must be online)
     $ ade usage limits --all-machines --text        Every machine on the account in one table
     $ ade usage snapshot --text                     Cached quota, source/stale state, and history
-    $ ade usage stats --preset 7d --text            Tokens, cost, and activity for a range
+    $ ade usage stats --range 7d --text             Tokens, cost, and activity for a range
     $ ade usage stats --scope account --text        Merge every machine on the account
-    $ ade usage stats --scope project --preset 30d  This project only
+    $ ade usage stats --scope project --range 30d   This project only
     $ ade usage stats --scope account --force       Skip the account fan-out rate floor
     $ ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z
     $ ade usage turns --days 14 --text              Per-turn ledger by provider, account, model
     $ ade usage turns --group-by provider --recent 20  Add the 20 newest turns
-    $ ade usage stats --by lane --preset 30d --text  ADE chat spend by chat, lane, or account
+    $ ade usage stats --by lane --range 30d --text   ADE chat spend by chat, lane, or account
     $ ade usage stats --provider claude --model claude-opus-5-5 --text  One model's cost, trend, price
     $ ade usage prices --text                       Custom model prices and Map to mappings
     $ ade --role cto usage prices set my-preview --map-to claude-opus-5-5  Count a model as another
@@ -4870,44 +4965,55 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     For cloud logins, inspect \`ai.opencodeAuthMethods\` first, then call
     \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
-  Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --instance you@example.com
-    $ ade new chat --mode cli --lane <lane> --provider claude --instance you@example.com
+  Every launch names its model with --model. Use an account for one session:
+    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
+    $ ade new chat --mode cli --lane <lane> --provider claude --model claude-opus-5-5 --instance you@example.com
 
-  Use a saved custom setup (agent + model, from Settings > Providers > Custom)
-  or one stored API key for one session:
-    $ ade chat create --lane <lane> --preset hp_opus_work
-    $ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
-    $ ade chat create --lane <lane> --provider claude --credential openrouter
-  --preset and --credential are mutually exclusive. In CLI mode a preset on
-  cursor launches the native CLI instead: Cursor takes no key or endpoint from
-  the launch.
+  Use a saved Custom provider (Settings › Providers › Custom providers) or one
+  stored API key for one session:
+    $ ade harness providers --text                      Your Custom providers, with the flags to launch each
+    $ ade chat create --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ ade new chat --mode cli --lane <lane> --custom-provider "Opus at work" --model claude-opus-5-5
+    $ ade chat create --lane <lane> --provider claude --model claude-opus-5-5 --credential openrouter
+  --custom-provider, --credential and --via each say where the model runs; pass
+  one. A Custom provider runs one model, so --model must be its own. In CLI
+  mode a Custom provider on Cursor launches the native CLI instead: Cursor
+  takes no key or endpoint from the launch.
 
-  Use any model you pay for in any harness, without saving a preset:
+  Use any model you pay for in any harness, with nothing saved:
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
     $ ade harness routes --harness claude --text        Everything each harness can reach
 `,
   harness: `${ADE_BANNER}
-  ADE custom providers: any model you pay for, inside any harness
+  Any model you pay for, inside any harness
+
+  A harness is the agent program ADE runs (the --provider list: claude, codex,
+  opencode, droid, pi, cursor, ...). Every launch names its model with --model.
 
   See what each harness can reach (your Claude, Codex and Grok sign-ins,
   OpenCode sign-ins, stored keys), and how:
     $ ade harness routes --harness claude --text
 
-  Launch ad-hoc, no saved preset (chat or CLI):
+  Launch any of them with nothing saved (chat or CLI):
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
     $ ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
     $ ade chat create --lane <lane> --provider droid --via account:codex:codex --model gpt-6-luna
     --via takes opencode-go | opencode | opencode:<provider> | key:<provider>[:<credentialId>]
       | account:<claude|codex>:<accountId> | subscription:<claude|codex|grok|kimi|devin|muse>
+    Model ids are examples; the routes list has the current ones.
+
+  Custom providers: a harness, where it runs and one model, saved under a name
+  in Settings › Providers › Custom providers. Launch one by name with its model:
+    $ ade harness providers --text                      Each one, with the exact flags to launch it
+    $ ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
 
   Check one pairing with a one-token request (records the verdict for routing):
     $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
 
-  Run a custom provider in your own terminal (the env is printed, never saved;
+  Run a Custom provider in your own terminal (the env is printed, never saved;
   the harness command it defines runs ADE's pinned copy, never one on your PATH):
-    $ eval "$(ade harness env <preset-id> --text)" && claude --model <model>
-    PS> ade harness env <preset-id> --shell pwsh --text | Out-String | Invoke-Expression
+    $ eval "$(ade harness env "DeepSeek on Claude" --text)" && claude --model <model>
+    PS> ade harness env "DeepSeek on Claude" --shell pwsh --text | Out-String | Invoke-Expression
     The output contains the provider token. Do not paste it anywhere.
 `,
   proxy: `${ADE_BANNER}
@@ -5040,11 +5146,12 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
   card only after they say yes.
 `,
   cloud: `${ADE_BANNER}
-  ADE Cloud machines
+  ADE Cloud computers
 
-  Computers on your ADE Cloud account. They sleep on their own after a few
-  idle minutes and use no hours while asleep; a --machine call or opening a
-  lane wakes one in about a second. <machine> is its name or id. Sizes: small,
+  Each computer on your ADE Cloud account is one of your machines: reach it
+  with --machine <its name>. They sleep on their own after a few idle minutes
+  and use no hours while asleep; a --machine call or opening a lane wakes one
+  in about a second. <machine> is its name or id. Sizes: small,
   medium, large, x-large (or 2x4, 4x8, 4x16, 4x32). --kind vm is a full
   computer: Android (medium or bigger) and Docker.
 
@@ -5052,6 +5159,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     plan, hours, disk, computers, each lane, sizes, agent limits
     $ ade cloud list --text                       Computers, state, size, how fast each uses hours
     $ ade cloud hours --text                      Plan, hours left, reset date, earned hours
+    $ ade cloud work-state --text                 On a cloud computer: which lanes have work not on GitHub yet
     $ ade cloud invite --text                     Your invite link: friends joined, rewards left, hours earned
                                                     (enter a friend's invite in Settings › Account)
     $ ade cloud create --kind vm --shape medium --name "android vm"
@@ -5066,7 +5174,7 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade cloud move <machine> --to vm|box        Change kind, keeping every repo, lane and chat
     $ ade cloud delete <machine>                  Gone for good, files and all
     $ ade cloud limits [ask|balanced|hands-off]   What unattended agents may do (--per-day N, --max-shape large, --unattended on|off)
-    $ ade chat create --machine cloud --size medium --prompt "…"
+    $ ade chat create --machine cloud --size medium --provider <p> --model <id> --prompt "…"
                                                     A new lane on its own new computer (sizes: small, medium,
                                                     large, xlarge); the chat starts there
     $ ade lanes create --machine cloud --name <n>  The lane alone on its own new computer, no chat
@@ -5162,6 +5270,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Attach an issue to the current CLI session
     $ ade linear issues --this-session --text       List issues attached to this session
     $ ade linear issue ENG-431 --text               Read one issue (defaults to the session's attached issue)
+    $ ade linear issue-comments ENG-431 --text      Its comments
+    $ ade linear picker-data --text                 Workflow states and users (for set-state and assign)
+    $ ade linear inbox [--all] --text               Your Linear notifications (unread unless --all)
     $ ade linear comment "Pushed a fix, running CI" Comment on the attached issue (or pass an id first)
     $ ade linear comment ENG-431 "Done"             Comment on a specific issue
     $ ade linear set-state ENG-431 "In Progress"    Move an issue to a state (name in the issue's team, or id)
@@ -5271,8 +5382,9 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
     $ ade --role cto automations linear-ingress disconnect
                                                      Remove the Linear webhook (CTO only)
     $ ade automations linear-ingress poll [--text]    Drain queued Linear events now
-    $ ade automations webhook create --preset github [--filter body.action=opened]
-                 [--prompt "…"] [--model <id>] [--in-this-chat | --chat <id>]
+    $ ade automations webhook create --service github --model <id> [--filter body.action=opened]
+                 [--prompt "…"] [--in-this-chat | --chat <id>]
+                 (--model is the chat each event starts; not needed with --in-this-chat / --chat)
                  [--name "…"] [--no-signature] [--any-request] [--confirm <key>]
                                                      One step: a private URL + the rule, then paste steps
     $ ade automations webhook list [--text]          Every webhook automation, its URL and last delivery
@@ -5296,8 +5408,8 @@ ${CHAT_CLOUD_HELP}    $ ade chat actions --personal --text            List machi
                                                     Create, reuse, or require lane at trigger time;
                                                     pr-branch runs in the trigger PR's own branch
     --lane <id>                                     Target lane (only with --lane-mode reuse)
-    --lane-name-preset <issue-title|issue-num-title|pr-title-author|custom>
-    --lane-name-template <string>                   Template (only with preset custom)
+    --lane-naming <issue-title|issue-num-title|pr-title-author|custom>
+    --lane-name-template <string>                   Template (only with --lane-naming custom)
     --allow-legacy                                  Pass legacy create-lane action through
                                                     unchanged (default: auto-migrate to laneMode)
 
@@ -6545,9 +6657,31 @@ function readJsonPayloadOption(
   return inline ?? fromFile;
 }
 
+/**
+ * The words and the list command for an id a caller left out. Callers pass the
+ * field name they read (`sessionId`), which means nothing to the agent that
+ * forgot it; this says what to pass and where to find one.
+ */
+const REQUIRED_VALUE_HINTS: Readonly<Record<string, string>> = {
+  sessionId: "a chat or CLI session id (`ade chat list --text` lists them)",
+  chatSessionId: "a chat id (`ade chat list --text` lists them)",
+  prId: "a PR number or id (`ade prs list --text` lists them)",
+  prUrlOrNumber: "a PR URL or number (`ade prs list --text` lists them)",
+  laneId: "a lane id or name (`ade lanes list --text` lists them)",
+  targetLaneId: "the lane to move to (`ade lanes list --text` lists them)",
+  targetModelId: "the model to hand it to, --model <id> (`ade chat models --text` lists them)",
+  model: "--model <id> (`ade chat models --text` lists them)",
+  provider: "a provider: claude, codex, cursor, droid, opencode, pi, muse, qwen, kimi, grok, copilot, devin or antigravity",
+  turnId: "a turn id (`ade chat transcript <chat> --json` shows them)",
+  templateId: "a lane template id (`ade lanes templates list --text` lists them)",
+  terminalId: "a terminal id, --terminal <id> (`ade terminal list --text` lists them)",
+  browserSessionId: "a browser session id, --browser-session <id> (`ade browser status --text` lists them)",
+};
+
 export function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
-  throw new CliUsageError(`${label} is required.`);
+  const hint = REQUIRED_VALUE_HINTS[label];
+  throw new CliUsageError(hint ? `Pass ${hint}.` : `${label} is required.`);
 }
 
 /**
@@ -7332,6 +7466,7 @@ function buildActionRunStep(
     : actionStep("result", domain, action, objectArgs);
 }
 
+
 function laneTemplateIdFromValue(value: unknown): string | null {
   const unwrapped = unwrapActionEnvelope(value);
   if (typeof unwrapped === "string") return unwrapped.trim() || null;
@@ -7569,18 +7704,18 @@ function buildLaneSharePlan(args: string[]): CliPlan {
   const laneId = requireValue(readLaneId(args) ?? envLaneIdForLaneCommand(), "laneId");
   const add = readValue(args, ["--add"]);
   const remove = readValue(args, ["--remove"]);
-  const preset = readValue(args, ["--preset"]);
+  const preset = readValue(args, ["--access", "--preset"]);
   const endsValue = readValue(args, ["--ends"]);
   const hideMachines = readFlag(args, ["--hide-machines"]);
   const hideModels = readFlag(args, ["--hide-models"]);
   // One flag per meaning: an unknown word is refused, never read as a list.
   const unknown = args.find((word) => !PARSED_SWITCHES.has(word));
   if (unknown !== undefined) {
-    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --preset watch, --hide-machines or --hide-models.`);
+    throw new CliUsageError(`ade lanes share does not take ${unknown}. Use --lane, --add <email>, --remove <email|grant id>, --ends, --access watch, --hide-machines or --hide-models.`);
   }
   if (add && remove) throw new CliUsageError("Pass --add or --remove, not both.");
   if (!add && (preset != null || endsValue != null || hideMachines || hideModels)) {
-    throw new CliUsageError("--preset, --ends, --hide-machines and --hide-models go with --add <email>.");
+    throw new CliUsageError("--access, --ends, --hide-machines and --hide-models go with --add <email>.");
   }
   if (add) {
     if (preset != null && preset.trim().toLowerCase() !== "watch") throw new CliUsageError(LANE_SHARE_AGENT_WATCH_ONLY_MESSAGE);
@@ -7673,7 +7808,7 @@ function buildLaneSharePlan(args: string[]): CliPlan {
     formatText: (value) => {
       const shares = (Array.isArray(shareObject(value).shares) ? shareObject(value).shares as unknown[] : []).filter(isRecord);
       return renderTable(
-        ["person", "state", "preset", "risk", "ends", "made by", "grant"],
+        ["person", "state", "access", "risk", "ends", "made by", "grant"],
         shares.map((share) => [
           share.receiverEmail ?? "-",
           share.state ?? "-",
@@ -8289,16 +8424,22 @@ function buildLanePlan(args: string[]): CliPlan {
 }
 
 /**
- * Read the model/provider/effort launch config shared by `--start-chat` and
- * `ade chat create`. Returns only the keys the caller explicitly set so the
- * daemon can fall back to its own defaults.
+ * Read the chat launch config of `lanes create --start-chat`. The model is
+ * required like on every launch; the other keys are sent only when set.
  */
 function readChatLaunchConfig(args: string[]): JsonObject {
   refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
   const modelArg = readValue(args, ["--model"]);
+  const providerRaw = readValue(args, ["--provider"]);
+  const { instanceId, presetId, credentialId, customProvider } = readLaunchIdentitySelectors(args, { provider: providerRaw, model: modelArg });
+  const provider = providerRaw ?? customProvider?.harness ?? null;
+  if (!modelArg?.trim()) throw new CliUsageError(launchModelRequiredMessage(provider));
   const fastMode = readFastModeFlag(args);
   const config: JsonObject = {};
-  maybePut(config, "provider", readValue(args, ["--provider"]));
+  maybePut(config, "provider", provider);
+  maybePut(config, "instanceId", instanceId);
+  maybePut(config, "presetId", presetId);
+  maybePut(config, "credentialId", credentialId);
   maybePut(config, "model", modelArg);
   maybePut(config, "modelId", modelArg);
   maybePut(config, "reasoningEffort", readValue(args, ["--reasoning-effort", "--effort"]));
@@ -8324,37 +8465,46 @@ function readChatLaunchConfig(args: string[]): JsonObject {
 
 
 /**
- * The three launch-identity selectors every session-creating command accepts:
- * which provider account signs in (`--instance`), and which saved brain the
- * session launches under (`--preset` XOR `--credential`).
+ * The launch-identity selectors every session-creating command accepts: which
+ * provider account signs in (`--instance`), and where the model runs: a saved
+ * Custom provider (`--custom-provider`), a stored API key (`--credential`), or
+ * any model in any harness (`--via`). The last three are exclusive.
  *
- * One reader so the parsing, the flag aliases, and the usage error cannot drift
- * between `ade new`, `ade shell start-cli`, and `ade chat create`. Call it AFTER
- * `takeArgsAfterTerminator`, so a selector written after `--` stays part of the
- * prompt rather than being consumed as a flag. The `--instance`/provider rule
- * is not checked here: `collectLaunchArgs` owns it, because only the merged
- * args know the provider the session actually launches under. Callers read the
- * spawn-lineage flags first, so a command that gets both wrong is answered with
- * the lineage error before the `--instance` one.
+ * A Custom provider runs one model, and the caller still passes it with
+ * `--model` like on every launch; a different model is refused here with the
+ * right one named. The provider list is read from this machine's copy of the
+ * account settings, the same one the launch reads.
+ *
+ * One reader so the parsing and the usage errors cannot drift between
+ * `ade new`, `ade shell start-cli`, `ade chat create` and `ade chat launch`.
+ * Call it AFTER `takeArgsAfterTerminator`, so a selector written after `--`
+ * stays part of the prompt rather than being consumed as a flag. The
+ * `--instance`/provider rule is not checked here: `collectLaunchArgs` owns it,
+ * because only the merged args know the provider the session launches under.
  */
 function readLaunchIdentitySelectors(
   args: string[],
   consumed: { provider?: string | null; model?: string | null } = {},
-): { instanceId: string | null; presetId: string | null; credentialId: string | null } {
+): { instanceId: string | null; presetId: string | null; credentialId: string | null; customProvider: HarnessPreset | null } {
+  if (findFlagName(args, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
   const instanceId = readValue(args, ["--instance", "--instance-id"])?.trim() || null;
   const via = readValue(args, ["--via"])?.trim() || null;
   const credentialId = readValue(args, ["--credential", "--credential-id"])?.trim() || null;
-  let presetId = readValue(args, ["--preset", "--preset-id"])?.trim() || null;
-  if (via) {
-    if (presetId || credentialId) {
-      throw new CliUsageError("--via names a brain on its own. Drop --preset / --credential.");
-    }
-    presetId = routePresetIdFromFlags(args, via, consumed);
+  const customRef = readValue(args, ["--custom-provider"])?.trim() || null;
+  const chosen = [via ? "--via" : null, customRef ? "--custom-provider" : null, credentialId ? "--credential" : null].filter(Boolean);
+  if (chosen.length > 1) {
+    throw new CliUsageError(`${chosen.join(" and ")} each say where the model runs. Pass one.`);
   }
-  if (presetId && credentialId) {
-    throw new CliUsageError("--preset and --credential name two different brains. Pass one.");
-  }
-  return { instanceId, presetId, credentialId };
+  if (via) return { instanceId, presetId: routePresetIdFromFlags(args, via, consumed), credentialId, customProvider: null };
+  if (!customRef) return { instanceId, presetId: null, credentialId, customProvider: null };
+  const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
+  if (!found.ok) throw new CliUsageError(found.message);
+  const provider = consumed.provider ?? peekValue(args, ["--provider"]);
+  const harnessProblem = customProviderHarnessProblem(found.preset, provider);
+  if (harnessProblem) throw new CliUsageError(harnessProblem);
+  const modelProblem = customProviderModelProblem(found.preset, consumed.model ?? peekValue(args, ["--model"]));
+  if (modelProblem) throw new CliUsageError(modelProblem);
+  return { instanceId, presetId: found.preset.id, credentialId, customProvider: found.preset };
 }
 
 /**
@@ -8414,10 +8564,10 @@ function routePresetIdFromFlags(
 ): string {
   // Peek, never consume: the launch command still reads --provider and
   // --model itself (the model rides the chat as its display id).
-  const harness = (consumed.provider ?? peekValue(args, ["--provider", "--harness"]))?.trim();
+  const harness = (consumed.provider ?? peekValue(args, ["--provider"]))?.trim();
   const model = (consumed.model ?? peekValue(args, ["--model"]))?.trim();
   if (!harness || !isHarnessPresetBody(harness)) {
-    throw new CliUsageError(`--via needs --provider <harness> (${ROUTABLE_HARNESSES.join(", ")}).`);
+    throw new CliUsageError(`--via needs --provider <name> (${ROUTABLE_HARNESSES.join(", ")}).`);
   }
   if (!model) throw new CliUsageError("--via needs --model <model id> (see `ade harness routes --harness <h> --text`).");
   const effort = peekValue(args, ["--reasoning-effort", "--effort"])?.trim();
@@ -8429,18 +8579,65 @@ function routePresetIdFromFlags(
   });
 }
 
+/** The Custom providers saved on this machine, as `ade harness providers` lists them. */
+function customProviderRows(presets: HarnessPreset[] | null): JsonObject[] {
+  return (presets ?? []).map((preset) => {
+    const row: JsonObject = {
+      name: presetLabel(preset),
+      id: preset.id,
+      provider: preset.harness,
+      via: formatViaSourceSpec(preset.source),
+      model: preset.model,
+    };
+    maybePut(row, "reasoningEffort", preset.reasoningEffort);
+    if (preset.subagentModel && preset.subagentModel !== "inherit") row.subagentModel = preset.subagentModel;
+    return row;
+  });
+}
+
+function formatHarnessProviders(value: unknown): string {
+  const rows = isRecord(value) && Array.isArray(value.customProviders) ? value.customProviders.filter(isRecord) : [];
+  if (!rows.length) {
+    return "No Custom providers on this machine. Make one in Settings › Providers › Custom providers,\n"
+      + "or run any model in any harness with --via (ade harness routes --text).\n";
+  }
+  const lines = ["Custom providers (launch one with both flags; the model must be its own):"];
+  for (const row of rows) {
+    const name = asString(row.name) ?? "";
+    const model = asString(row.model) ?? "";
+    lines.push(`  ${name}`);
+    lines.push(`    --custom-provider ${JSON.stringify(name)} --model ${model}`);
+    const effort = asString(row.reasoningEffort);
+    const subagent = asString(row.subagentModel);
+    lines.push(`    ${harnessBodyLabel(asString(row.provider) ?? "")} · --via ${asString(row.via) ?? ""}${effort ? ` · effort ${effort}` : ""}${subagent ? ` · subagents ${subagent}` : ""} · id ${asString(row.id) ?? ""}`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 function buildHarnessPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.harness ?? topLevelHelpText() };
   }
   const sub = firstStandalonePositional(args) ?? "routes";
   const rest = args;
+  if (sub === "providers") {
+    return {
+      kind: "static",
+      formatter: "harness-providers",
+      value: { customProviders: customProviderRows(readHarnessPresetsFromMachine(resolveMachineAdeDir())) },
+    };
+  }
   if (sub === "env") {
+    if (findFlagName(rest, ["--preset", "--preset-id"])) throw new CliUsageError(PRESET_FLAG_GONE_MESSAGE);
     const via = readValue(rest, ["--via"])?.trim() || null;
-    const presetId = readValue(rest, ["--preset", "--preset-id"])?.trim()
-      || (via ? routePresetIdFromFlags(rest, via) : null)
-      || firstStandalonePositional(rest);
-    if (!presetId) throw new CliUsageError("ade harness env needs a custom provider id (or --via with --provider and --model).");
+    const customRef = readValue(rest, ["--custom-provider"])?.trim() || (via ? null : firstStandalonePositional(rest));
+    let presetId = via ? routePresetIdFromFlags(rest, via) : null;
+    if (!presetId && customRef) {
+      const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
+      if (!found.ok) throw new CliUsageError(found.message);
+      presetId = found.preset.id;
+    }
+    if (!presetId) throw new CliUsageError("ade harness env needs a Custom provider (`ade harness env \"<name>\"`; `ade harness providers --text` lists them), or --via with --provider and --model.");
     // PowerShell by default on Windows, where `export` lines mean nothing.
     const shell = readValue(rest, ["--shell"])?.trim() || (process.platform === "win32" ? "pwsh" : undefined);
     if (shell && shell !== "zsh" && shell !== "bash" && shell !== "pwsh") {
@@ -8460,7 +8657,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
   }
   if (sub === "routes" || sub === "list" || sub === "models") {
     const harness = readValue(rest, ["--harness", "--provider"])?.trim() || null;
-    if (harness && !isHarnessPresetBody(harness)) throw new CliUsageError(`Unknown harness: ${harness}`);
+    if (harness && !isHarnessPresetBody(harness)) {
+      throw new CliUsageError(`Unknown harness '${harness}'. Harnesses: ${ROUTABLE_HARNESSES.join(", ")}.`);
+    }
     return {
       kind: "execute",
       label: harness ? `harness routes ${harness}` : "harness routes",
@@ -8494,9 +8693,9 @@ function buildHarnessPlan(args: string[]): CliPlan {
   if (sub === "route-id" || sub === "id") {
     const via = readValue(rest, ["--via"])?.trim();
     if (!via) throw new CliUsageError("ade harness route-id needs --via <source> --provider <harness> --model <id>.");
-    return { kind: "static", value: { presetId: routePresetIdFromFlags(rest, via) } };
+    return { kind: "static", value: { routeId: routePresetIdFromFlags(rest, via) } };
   }
-  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | env | test | route-id`);
+  throw new CliUsageError(`Unknown harness command: ${sub}. Try: ade harness routes | providers | env | test | route-id`);
 }
 
 function readFastModeFlag(args: string[]): boolean | undefined {
@@ -8716,15 +8915,17 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // One options object per surface, so the profile the flag is checked against
   // and the profile the merged arg bag is checked against cannot drift.
   const launchOpts = { allowShell: mode !== "chat" };
-  const provider = (mode === "chat" ? requireChatProvider(providerRaw) : requireLaunchProfile(providerRaw, launchOpts)) ?? "codex";
+  const { instanceId, presetId, credentialId, customProvider } = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
+    model: modelArg,
+  });
+  // A Custom provider names its harness; otherwise an unnamed provider is Codex.
+  const namedProvider = providerRaw ?? customProvider?.harness ?? null;
+  const provider = (mode === "chat" ? requireChatProvider(namedProvider) : requireLaunchProfile(namedProvider, launchOpts)) ?? "codex";
   const copilotFlags = readCopilotLaunchFlags(args, provider);
   if (mode !== "chat" && Object.keys(copilotFlags).length > 0) {
     throw new CliUsageError("--copilot-permission-mode, --copilot-context-tier and --copilot-auto-tier apply to chat mode only.");
   }
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
-    provider: providerRaw,
-    model: modelArg,
-  });
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
     if (!isTrackedCliPermissionMode(effectivePermissionMode)) {
@@ -8761,8 +8962,8 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         title,
         surface: readValue(args, ["--surface"]) ?? "work",
         ...(instanceId ? { instanceId } : {}),
-        // A saved harness preset (body + brain + model). CLI mode passes the
-        // same id; the runtime is what applies the locked gate for the four
+        // A Custom provider (harness + where it runs + model). CLI mode passes
+        // the same id; the runtime is what applies the locked gate for the four
         // harnesses whose CLI cannot take an outside key.
         ...(presetId ? { presetId } : {}),
         ...(credentialId ? { credentialId } : {}),
@@ -9122,7 +9323,7 @@ function buildChatCreateConfigPreview(
     // The dry run resolves the mode before the host's ceiling, so from an
     // agent it can promise more than the chat gets.
     ...(asString(process.env.ADE_CHAT_SESSION_ID) || asString(input.orchestrationParentSessionId)
-      ? { permissionNote: "The host may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
+      ? { permissionNote: "ADE may lower this mode: an agent cannot start a chat with more access than its own chat or parent has. `chat create` prints a note when it does." }
       : {}),
   };
 }
@@ -9671,7 +9872,7 @@ function buildGitPlan(args: string[]): CliPlan {
       clear: "stash_clear",
     };
     const toolName = toolNameByAction[action];
-    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'.`);
+    if (!toolName) throw new CliUsageError(`Unknown stash action '${action}'. Use push, list, apply, pop, drop or clear (ade help git).`);
     const stashRefTool =
       toolName === "stash_apply" || toolName === "stash_pop" || toolName === "stash_drop";
     const common = withLane({
@@ -11042,7 +11243,7 @@ function buildCliSessionStartPlan(
   );
   const launchOpts = { allowShell: true };
   const provider = requireLaunchProfile(rawProvider, launchOpts);
-  if (!provider) throw new CliUsageError("provider is required.");
+  if (!provider) throw new CliUsageError(`Pass ${REQUIRED_VALUE_HINTS.provider}, or shell for a plain terminal.`);
   const promptArgs = takeArgsAfterTerminator(args);
   const initialInput = promptArgs
     ? promptArgs.join(" ").trim()
@@ -11707,11 +11908,13 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
   if (pollIntervalMs <= 0) throw new CliUsageError("chat launch --poll-interval-ms must be greater than zero.");
-  const provider = requireChatProvider(readValue(args, ["--provider"])) ?? "codex";
-  const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, {
-    provider,
+  const providerRaw = readValue(args, ["--provider"]);
+  const { instanceId, presetId, credentialId, customProvider } = readLaunchIdentitySelectors(args, {
+    provider: providerRaw,
     model: modelArg,
   });
+  const provider = requireChatProvider(providerRaw ?? customProvider?.harness ?? null) ?? "codex";
+  if (!modelArg?.trim()) throw new CliUsageError(launchModelRequiredMessage(provider));
   const launchId = launchIdFlag == null ? randomUUID() : requireCliUuid(launchIdFlag, "--launch-id");
   const laneId = laneIdFlag == null ? randomUUID() : requireCliUuid(laneIdFlag, "--lane-id");
   const explicitPrompt = readChatTextFile(args, ["--prompt-file", "--text-file"], ["--prompt", "--text", "--message"])
@@ -11719,7 +11922,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const input = collectGenericObjectArgs(args);
   const prompt = requireValue(explicitPrompt ?? (args.join(" ").trim() || null), "prompt");
 
-  const create: JsonObject = { provider, model: modelArg ?? "" };
+  const create: JsonObject = { provider, model: modelArg };
   maybePut(create, "modelId", modelArg);
   maybePut(create, "reasoningEffort", reasoningEffort);
   maybePut(create, "permissionMode", permissionMode);
@@ -12781,8 +12984,10 @@ function buildChatPlan(args: string[]): CliPlan {
     // use it. A chat is never a shell session, so `shell` is rejected here the
     // same way `ade new chat --mode chat` rejects it.
     const launchOpts = { allowShell: false };
-    const provider = requireChatProvider(readValue(args, ["--provider"]));
-    const { instanceId, presetId, credentialId } = readLaunchIdentitySelectors(args, { provider, model: modelArg });
+    const providerRaw = requireChatProvider(readValue(args, ["--provider"]));
+    const { instanceId, presetId, credentialId, customProvider } = readLaunchIdentitySelectors(args, { provider: providerRaw, model: modelArg });
+    // A Custom provider names its harness.
+    const provider = providerRaw ?? (customProvider ? requireChatProvider(customProvider.harness) : null);
     const { base: lineageArgs, launchOptions } = spawnLineageLaunchArgs(lineage, launchOpts);
     const explicitLane = readLaneId(args);
     // Only `--machine cloud` takes these: the same id again follows that
@@ -12809,9 +13014,8 @@ function buildChatPlan(args: string[]): CliPlan {
       // "use the provider's default account" rule instead of receiving a
       // second, CLI-shaped way of saying the same thing.
       ...(instanceId ? { instanceId } : {}),
-      // Which saved harness preset the chat launches under. Same omit-when-
-      // unset rule as the account: the runtime keeps its own default instead
-      // of receiving a second, CLI-shaped way to say "no preset".
+      // Which Custom provider the chat launches under. Same omit-when-unset
+      // rule as the account.
       ...(presetId ? { presetId } : {}),
       ...(credentialId ? { credentialId } : {}),
       ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
@@ -14080,7 +14284,7 @@ function buildDraftScheduleInput(args: string[], existing: JsonObject | null): J
   // A new chat is created by the fire-time delivery, so it must carry its model
   // and provider up front — nobody is there to pick one when it fires.
   if (targetKind === "new" && !model) {
-    throw new CliUsageError("--new-chat needs --model <runtime-facing model string> (with --provider <id>).");
+    throw new CliUsageError(`--new-chat needs --model <id> (with --provider <id>). ${unknownModelHint(provider)}`);
   }
   if (targetKind === "new" && !provider) {
     throw new CliUsageError("--new-chat needs --provider <id> (with --model).");
@@ -14906,7 +15110,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       steps: [personalChatStep("getSummary", { sessionId })],
     };
   }
-  throw new CliUsageError(`Unhandled personal chat subcommand '${sub}'.`);
+  throw new CliUsageError(`Unknown personal chat command '${sub}'. Run ade help chat for the --personal commands.`);
 }
 
 /** `ade scene preview <file|->`: render a scene in the desktop and report what broke. */
@@ -19330,7 +19534,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           actionStep("result", "built_in_browser", "endSession", {
             sessionId: requireValue(
               explicitSessionId ?? genericSessionId ?? firstBrowserPositional(args),
-              "sessionId",
+              "browserSessionId",
             ),
             ...genericArgs,
           }),
@@ -19362,14 +19566,14 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           ?? firstStandalonePositional(args, BROWSER_VALUE_CARRIER_FLAGS)
           ?? wrappedTail.shift()
           ?? null,
-        "sessionId",
+        "browserSessionId",
       );
       return buildBrowserPlanWithLiteralTail(
         [mode, "--browser-session", sessionId, ...args],
         wrappedTail,
       );
     }
-    throw new CliUsageError(`Unknown browser session command: ${mode}`);
+    throw new CliUsageError(`Unknown browser session command '${mode}'. Run ade help browser.`);
   }
   if (sub === "handoff" || sub === "hand-off" || sub === "sign-in") {
     return buildBrowserHandoffPlan(args, tail);
@@ -21023,10 +21227,10 @@ function buildUsagePlan(args: string[]): CliPlan {
   // "how much quota is left"; this answers "what has been spent", which is a
   // different service call with its own range and scope.
   if (sub === "stats" || sub === "ade" || sub === "spend") {
-    const preset = readValue(args, ["--preset", "--range"]);
+    const preset = readValue(args, ["--range", "--preset"]);
     if (preset != null && !isAdeUsageRangePreset(preset)) {
       throw new CliUsageError(
-        `usage stats --preset must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
+        `usage stats --range must be one of ${ADE_USAGE_RANGE_PRESETS.join(", ")}.`,
       );
     }
     const scope = readValue(args, ["--scope"]);
@@ -21660,7 +21864,7 @@ function buildCloudPlan(args: string[]): CliPlan {
     }
     case "ready":
       // Ready machines are gone: a new lane gets its own computer when it starts.
-      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --prompt \"…\".");
+      throw new CliUsageError("ade cloud ready no longer exists: ADE makes a computer for each new lane. Use ade chat create --machine cloud --provider <p> --model <id> --prompt \"…\".");
     default:
       throw new CliUsageError(`Unknown cloud command "${sub}". Use: status, list, create, sleep, wake, resize, update, copy, move, delete, limits, hours, prepare-stop, push-work, work-state.`);
   }
@@ -22395,9 +22599,9 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   const laneId = readLaneId(args);
   const preset = readEnumOption<AutomationLaneNamePresetFlag>(
     args,
-    ["--lane-name-preset"],
+    ["--lane-naming", "--lane-name-preset"],
     AUTOMATION_LANE_NAME_PRESETS,
-    "--lane-name-preset",
+    "--lane-naming",
   );
   const template = readValue(args, ["--lane-name-template"]);
 
@@ -22425,17 +22629,17 @@ function applyLaneFlagsToDraft(draft: JsonObject, args: string[]): JsonObject {
   const namesLane = effectiveLaneMode === "create" || effectiveLaneMode === "pr-branch";
   if (preset != null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-preset is only valid with --lane-mode create or pr-branch.",
+      "--lane-naming is only valid with --lane-mode create or pr-branch.",
     );
   }
   if (template != null && preset != null && preset !== "custom") {
     throw new CliUsageError(
-      "--lane-name-template is only valid with --lane-name-preset custom.",
+      "--lane-name-template is only valid with --lane-naming custom.",
     );
   }
   if (template != null && preset == null && !namesLane) {
     throw new CliUsageError(
-      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-name-preset custom).",
+      "--lane-name-template requires --lane-mode create or pr-branch (with --lane-naming custom).",
     );
   }
 
@@ -22666,8 +22870,8 @@ function buildAutomationsPlan(args: string[]): CliPlan {
     const mode = firstPositional(args) ?? "list";
     const target = () => readValue(args, ["--hook", "--id"]) ?? firstPositional(args);
     if (mode === "create") {
-      // One step: URL + rule. Everything has a sensible default from the preset.
-      const preset = readValue(args, ["--preset", "--service"]);
+      // One step: URL + rule. Everything else has a sensible default from the service.
+      const preset = readValue(args, ["--service", "--preset"]);
       const filters = readRepeatedValues(args, ["--filter", "--only-when"]);
       const confirmations = readRepeatedValues(args, ["--confirm"]);
       const inThisChat = readFlag(args, ["--in-this-chat"]);
@@ -22680,6 +22884,10 @@ function buildAutomationsPlan(args: string[]): CliPlan {
       const prompt = readValue(args, ["--prompt"]);
       const secretName = readValue(args, ["--secret-name"]);
       const modelId = readValue(args, ["--model"]);
+      // Each event starts a new chat unless it goes into an existing one.
+      if (!modelId?.trim() && !inThisChat && !chat) {
+        throw new CliUsageError(`Pass --model <id> for the chat each event starts (or --in-this-chat / --chat <id> to send events into a chat). ${unknownModelHint()}`);
+      }
       const reasoningEffort = readValue(args, ["--effort", "--reasoning-effort"]);
       const input: JsonObject = {
         ...(name ? { name } : {}),
@@ -23990,6 +24198,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--instance-id",
   "--preset",
   "--preset-id",
+  "--custom-provider",
   "--via",
   "--harness",
   "--shell",
@@ -26665,7 +26874,7 @@ function buildBrainPinPlan(args: string[]): CliPlan {
       steps: [{ key: "result", method: "sync.clearPin" }],
     };
   }
-  throw new CliUsageError(`Unsupported brain pin action: ${action}`);
+  throw new CliUsageError(`Unknown brain pin action '${action}'. Use show, set, generate or clear.`);
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -26673,19 +26882,7 @@ function buildSyncPlan(args: string[]): CliPlan {
   if (sub === "help") {
     return {
       kind: "help",
-      text: `${ADE_BANNER}
-Usage:
-  ade sync status [--include-transfer-readiness]
-  ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
-  ade sync refresh
-  ade sync devices
-  ade sync name <name>              Name this runtime for easy identification
-  ade sync name get
-  ade sync name clear
-  ade sync security status          Machine sync security posture (require-DPoP)
-  ade sync security require-dpop <on|off>
-  ade sync pair-device --json-stdin Advanced: authorize pairing through a trusted local/SSH session
-`,
+      text: SYNC_HELP,
     };
   }
   if (sub === "web" || sub === "web-pair" || sub === "webclient") {
@@ -26836,7 +27033,7 @@ Usage:
     }
     throw new CliUsageError(`Unsupported sync security action: ${action}`);
   }
-  throw new CliUsageError(`Unsupported sync command: ${sub}`);
+  throw new CliUsageError(`Unknown sync command '${sub}'. Run ade help sync.`);
 }
 
 /** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
@@ -34191,7 +34388,7 @@ export function formatUsageLimits(value: unknown): string {
   const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
   if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
   if (accounts.some((account) => asString(account.instanceId))) {
-    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <email>");
+    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --model <id> --instance <email>");
   }
   return lines.join("\n");
 }
@@ -39861,6 +40058,8 @@ function formatTextOutput(
       return formatHarnessRoutes(value);
     case "harness-test":
       return formatHarnessTest(value);
+    case "harness-providers":
+      return formatHarnessProviders(value);
     case "history-list":
       return formatHistoryList(value);
     case "history-commits":

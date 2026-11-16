@@ -54,7 +54,7 @@ declines, carry on without it or explain what is blocked.
 
 To run an agent whenever another service does something (GitHub, Stripe,
 Linear, Sentry, a deploy hook), read the **ade-webhooks** skill. The short
-version: `ade automations webhook create --preset github --filter
+version: `ade automations webhook create --service github --filter
 body.action=opened --in-this-chat --text` makes the URL and the rule;
 `ade secrets request <NAME> --reason "…"` collects the signing secret without
 it ever entering chat; `ade automations webhook deliveries <wh-id> --text`

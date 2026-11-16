@@ -20,7 +20,7 @@ manages lanes, not computers.
 
 ## 2. Start a lane
 
-`ade chat create --machine cloud --launch-id <a new UUID> --prompt "<task>"` starts a lane with a chat.
+`ade chat create --machine cloud --launch-id <a new UUID> --provider <p> --model <id> --prompt "<task>"` starts a lane with a chat (the model is required, as for every launch).
 `ade lanes create --machine cloud --launch-id <a new UUID> --name "<name>"` makes the lane alone, with no chat.
 Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `chat create`, `lanes create` and `chat launch-status`; every other `--machine` is refused. An app is an unattended agent there (the next point).
 
@@ -40,7 +40,7 @@ Over ADE MCP: the `ade` tool takes exactly `--machine cloud` (and `--size`) on `
 - Follow: `ade chat launch-status <id> --machine cloud`.
 - Retry after a failure: the same command with the same `--launch-id`. It goes on from the failed step, on the same computer.
 - Cancel, which deletes its computer: `ade chat launch-cancel <id> --machine cloud`. Only the chat that started it, or the person. ADE MCP apps can't.
-- The new chat doesn't report back. Read it: `ade chat read --machine <its computer>`.
+- The new chat doesn't report back. Read it: `ade chat read <chat id> --machine <computer name>` (a cloud computer is one of the person's machines, so `--machine` takes its name).
 
 ## 4. What a refusal means, and the one next step
 

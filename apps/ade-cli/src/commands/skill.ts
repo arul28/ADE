@@ -15,6 +15,12 @@ import {
   readAgentSkill,
   readAgentSkillFile,
 } from "../services/skills/agentSkillCatalogService";
+import { adeDeprecatedAgentSkillAliases } from "../../../desktop/src/shared/adeCliGuidance";
+
+/** The skills a list shows: an old name still opens with `show`, but is not listed twice. */
+function listedAgentSkills(options: Parameters<typeof listAgentSkills>[0]) {
+  return listAgentSkills(options).filter((entry) => !adeDeprecatedAgentSkillAliases.has(entry.name));
+}
 
 export class CliSkillUsageError extends Error {}
 
@@ -81,7 +87,7 @@ function warnUnreadable(filePath: string, error: unknown): void {
 
 export function runSkillList(args: string[]): SkillCliResult {
   const { format } = extractFormat(args);
-  const entries = listAgentSkills({
+  const entries = listedAgentSkills({
     cwd: process.cwd(),
     includeUser: !isRemoteMcpInvocation(process.env),
     env: process.env,
@@ -124,7 +130,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
         );
       }
     }
-    const entries = listAgentSkills({ cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
+    const entries = listedAgentSkills({ cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
     const available = entries.map((candidate) => candidate.name).join(", ") || "(none found)";
     throw new CliSkillUsageError(
       `Unknown skill: ${name}. Available skills: ${available}.`,
