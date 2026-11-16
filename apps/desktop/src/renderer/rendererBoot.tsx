@@ -2,7 +2,7 @@
  * The renderer's startup, loaded by `main.tsx` once `window.ade` exists (the
  * Electron preload's, or the browser mock's in a Vite-only preview).
  */
-import React from "react";
+import React, { useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { MotionConfig } from "motion/react";
 import "./index.css";
@@ -12,7 +12,7 @@ import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
 import { useAppStore } from "./state/appStore";
-import { logRendererDebugEvent } from "./lib/debugLog";
+import { logRendererDebugEvent, markBoot } from "./lib/debugLog";
 import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
@@ -21,6 +21,9 @@ import { installCaretRest } from "./lib/caretRest";
 import { captureError } from "../shared/sentry/capture";
 import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
 import { reportRendererMemorySnapshot } from "./lib/rendererMemorySnapshot";
+
+// Every boot module has run (imports evaluate before this body).
+markBoot("modules-evaluated");
 
 // Error tracking, loaded as its own chunk and only when main's Sentry client is
 // running (the preload installs the bridge in that case alone), so dev builds
@@ -216,6 +219,16 @@ try {
   // non-fatal — fall back to the persisted/default font size
 }
 
+/**
+ * Marks the end of the first commit: its layout effects run after the whole
+ * app's, as the last sibling. Diagnostics only; it draws nothing.
+ */
+function BootCommitMark() {
+  useLayoutEffect(() => markBoot("first-commit"), []);
+  return null;
+}
+
+markBoot("render-called");
 // `reducedMotion="user"` makes every `motion` element in the tree honour the
 // OS setting without each site opting in: transform and layout animations are
 // skipped, opacity still animates, so the information arrives and only the trip
@@ -227,6 +240,7 @@ createRoot(document.getElementById("root")!).render(
       <RendererErrorBoundary>
         <App />
       </RendererErrorBoundary>
+      <BootCommitMark />
     </RootWrapper>
   </MotionConfig>
 );

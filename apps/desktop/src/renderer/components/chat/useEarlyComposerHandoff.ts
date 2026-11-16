@@ -135,11 +135,33 @@ function noteFirstDraftComposer(): void {
     }
     markBoot("composer");
     const origin = performance.timeOrigin;
+    const round = (ms: number) => Math.round(ms * 10) / 10;
+    const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
     logRendererDebugEvent("startup_renderer_boot", {
       timeOriginEpochMs: Math.round(origin),
       marks: performance.getEntriesByType("mark")
         .filter((mark) => isLaunchMark(mark.name))
         .map((mark) => ({ name: mark.name, atEpochMs: Math.round(origin + mark.startTime) })),
+      // The page and the files it loaded before this composer, in ms after
+      // timeOrigin: where the fetches end and the evaluation starts.
+      navigation: navigation
+        ? {
+            responseEndMs: round(navigation.responseEnd),
+            domInteractiveMs: round(navigation.domInteractive),
+            domContentLoadedEndMs: round(navigation.domContentLoadedEventEnd),
+            loadEventEndMs: round(navigation.loadEventEnd),
+          }
+        : null,
+      resources: (performance.getEntriesByType("resource") as PerformanceResourceTiming[])
+        .filter((entry) => entry.initiatorType === "script" || entry.initiatorType === "link" || entry.initiatorType === "css" || entry.initiatorType === "other")
+        .slice(0, 60)
+        .map((entry) => ({
+          file: entry.name.split("/").pop()?.split("?")[0] ?? "",
+          type: entry.initiatorType,
+          startMs: round(entry.startTime),
+          endMs: round(entry.responseEnd),
+          bytes: entry.decodedBodySize,
+        })),
     });
   } catch {
     // best effort
