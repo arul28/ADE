@@ -5806,7 +5806,12 @@ type ManagedChatSession = {
     turnId?: string;
     itemId?: string;
   } | null;
-  bufferedText: (BufferedAssistantText & { timer: NodeJS.Timeout | null }) | null;
+  /**
+   * The live 100ms text buffer. `shown` is set once some of the message has
+   * gone out; the buffer then keeps the message's identity with empty text, so
+   * the next delta joins it instead of counting as a new message's first words.
+   */
+  bufferedText: (BufferedAssistantText & { timer: NodeJS.Timeout | null; shown?: boolean }) | null;
   recentConversationEntries: Array<{
     role: "user" | "assistant";
     /** An assistant entry is raw streamed text; trim it when reading. */
@@ -25582,6 +25587,39 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Sends the buffered text now and keeps the message's identity with empty
+   * text, so later deltas still coalesce every 100ms. A flush that sends no
+   * text (nothing buffered) keeps nothing.
+   */
+  const flushBufferedTextKeepingIdentity = (
+    managed: ManagedChatSession,
+    perfReason: ChatTextFlushReason,
+  ): void => {
+    const buffered = managed.bufferedText;
+    if (!buffered?.text.length) return;
+    const { text: _text, timer: _timer, ...identity } = buffered;
+    flushBufferedText(managed, perfReason);
+    managed.bufferedText = { ...identity, text: "", timer: null, shown: true };
+  };
+
+  /**
+   * The first words of a message show at once; the rest coalesce every 100ms.
+   * Does nothing once some of the message has gone out. A Codex message
+   * without a phase waits: its phase can arrive at completion and must still
+   * label text in the buffer.
+   */
+  const showFirstBufferedText = (managed: ManagedChatSession): void => {
+    const buffered = managed.bufferedText;
+    if (!buffered || buffered.shown) return;
+    if (managed.session.provider === "codex" && !buffered.phase) return;
+    if (!buffered.text.length) return;
+    // Reasoning still in its own 100ms buffer arrived before these words; it
+    // goes out first, or the reasoning tail would split the message.
+    flushBufferedReasoning(managed);
+    flushBufferedTextKeepingIdentity(managed, "first");
+  };
+
   const scheduleBufferedTextFlush = (managed: ManagedChatSession): void => {
     const buffered = managed.bufferedText;
     if (!buffered || buffered.timer) return;
@@ -25589,7 +25627,7 @@ export function createAgentChatService(args: {
       if (managed.bufferedText) {
         managed.bufferedText.timer = null;
       }
-      flushBufferedText(managed, "timer");
+      flushBufferedTextKeepingIdentity(managed, "timer");
     }, BUFFERED_TEXT_FLUSH_MS);
   };
 
@@ -25602,6 +25640,7 @@ export function createAgentChatService(args: {
       managed.bufferedText = {
         ...appendBufferedAssistantText(managed.bufferedText, event),
         timer: managed.bufferedText?.timer ?? null,
+        ...(managed.bufferedText?.shown ? { shown: true } : {}),
       };
       scheduleBufferedTextFlush(managed);
       return;
@@ -25613,15 +25652,12 @@ export function createAgentChatService(args: {
       ...appendBufferedAssistantText(null, event),
       timer: null,
     };
-    // The first words of a message show at once; the rest coalesce every
-    // 100ms. The flush leaves an empty buffer with the message's identity, so
-    // the next delta joins it instead of flushing at once again. A Codex
-    // message without a phase waits: its phase can arrive at completion and
-    // must still label text in the buffer.
-    if (managed.session.provider !== "codex" || event.phase) {
-      const { text: _firstText, ...identity } = managed.bufferedText;
-      flushBufferedText(managed, "first");
-      managed.bufferedText = { ...identity, text: "", timer: null };
+    // Codex can stream one chunk twice, with its item id and on the turn
+    // alone, and drops the item copy only while it is still in this buffer.
+    // Its delta handler shows the first words once the turn's item stream is
+    // known to stand alone.
+    if (managed.session.provider !== "codex") {
+      showFirstBufferedText(managed);
       return;
     }
     scheduleBufferedTextFlush(managed);
@@ -46200,9 +46236,9 @@ export function createAgentChatService(args: {
         : runtime.activeTurnId ?? undefined;
       const itemId = typeof params.itemId === "string" ? params.itemId : undefined;
       const turnScopeKey = turnId ?? (itemId ? `item:${itemId}` : null);
+      const existingScope = turnScopeKey ? runtime.agentMessageScopeByTurn.get(turnScopeKey) ?? null : null;
       if (turnScopeKey) {
         const nextScope: "item" | "turn" = itemId ? "item" : "turn";
-        const existingScope = runtime.agentMessageScopeByTurn.get(turnScopeKey) ?? null;
         if (nextScope === "turn") {
           if (existingScope !== "turn") {
             runtime.agentMessageScopeByTurn.set(turnScopeKey, "turn");
@@ -46238,6 +46274,10 @@ export function createAgentChatService(args: {
         ...(itemId ? { itemId } : {}),
         ...(phase ? { phase } : {}),
       });
+      // A turn copy of a chunk follows its item copy at once. An earlier item
+      // delta in this turn with no turn copy after it means the item stream
+      // stands alone, so its first words can go out now.
+      if (itemId && existingScope === "item") showFirstBufferedText(managed);
       return;
     }
 
