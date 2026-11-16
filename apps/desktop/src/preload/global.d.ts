@@ -2,7 +2,7 @@ import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopy
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
-import type { AccountCloudLaunchesBridge } from "../shared/accountCloudLaunches";
+import type { AccountCloudLaunchesBridge, CloudRemoteSignInStatus } from "../shared/accountCloudLaunches";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
@@ -1149,7 +1149,6 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeHandoffStoragePreflightArgs,
   RemoteRuntimeHandoffStoragePreflightResult,
-  RemoteProviderSignInCodeResult,
   RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -1739,12 +1738,6 @@ declare global {
           request: ProjectRemovalRequest,
         ) => Promise<ProjectRemovalOutcome>;
         getDefaultParentDir: (id: string) => Promise<string>;
-        /**
-         * A code from a provider's sign-in page, for a sign-in job on machine
-         * `id` (`providers.remoteSignInCode`). Desktop only: the web sends it
-         * through the account server (`cloudLaunches.sendSignInCode`).
-         */
-        submitProviderSignInCode?: (id: string, args: { jobId: string; code: string }) => Promise<RemoteProviderSignInCodeResult>;
         getHandoffStoragePreflight: (
           id: string,
           input: RemoteRuntimeHandoffStoragePreflightArgs,
@@ -5089,6 +5082,13 @@ declare global {
          * same check at its start; no renderer surface calls this yet.
          */
         gitPreflight?: (args: { originUrl: string }) => Promise<CloudGitPreflight | null>;
+        /**
+         * The code from a provider's sign-in page (Claude's pasted code) for
+         * the sign-in job of one ADE Cloud computer. The account server runs
+         * it on that computer (`instanceId`), so no pin and never this
+         * window's machine. `state: "failed"` with `reason` when refused.
+         */
+        sendLaunchSignInCode?: (args: { instanceId: string; jobId: string; code: string }) => Promise<CloudRemoteSignInStatus>;
         /**
          * Sign-ins for cloud machines: the provider sign-ins every new cloud
          * machine starts with. Kept in the account vault and run on this

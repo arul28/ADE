@@ -23,6 +23,8 @@ import {
 import { type CloudSignInStatus } from "../../../shared/cloudSignIns";
 import type { CloudGitPreflight } from "../../../shared/cloudGitCredential";
 import { IPC } from "../../../shared/ipc";
+import { createCloudApiClient } from "../../../shared/cloudApiClient";
+import type { CloudRemoteSignInStatus } from "../../../shared/accountCloudLaunches";
 import { readCloudSignInEnd, type CloudSignInEndList, type CloudSignInSettingRead } from "./cloudSignInEndWarning";
 import type { CloudSignInEnd } from "../../../shared/cloudSignIns";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
@@ -231,6 +233,20 @@ export function registerCloudIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudGitPreflight)) return null;
     const originUrl = typeof arg?.originUrl === "string" && arg.originUrl.length <= 2_048 ? arg.originUrl : null;
     return await gitPreflight(originUrl);
+  });
+  // The code from a provider's sign-in page (Claude's pasted code) for the
+  // sign-in job of one ADE Cloud computer: the account server runs it on that
+  // computer (`POST /cloud/instances/:id/sign-ins/:job/code`), so it never
+  // goes to this window's machine and needs no connection to the computer.
+  ipcMain.handle(IPC.cloudLaunchSignInCode, async (event, arg?: { instanceId?: unknown; jobId?: unknown; code?: unknown }): Promise<CloudRemoteSignInStatus> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.cloudLaunchSignInCode)) throw new Error("ADE can't do that from here.");
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    const jobId = typeof arg?.jobId === "string" ? arg.jobId.trim() : "";
+    const code = typeof arg?.code === "string" ? arg.code.trim() : "";
+    if (!instanceId || !jobId || !code) throw new Error("A sign-in code needs its computer, its sign-in and the code.");
+    const baseUrl = directoryBaseUrl();
+    if (!baseUrl) throw new Error("ADE's account service isn't set up on this computer.");
+    return await createCloudApiClient({ baseUrl, accessToken: () => getAccountToken() }).sendSignInCode(instanceId, jobId, code);
   });
   for (const [channel, action, toArgs] of cloudSignInHandlers) {
     ipcMain.handle(channel, async (event, arg?: Record<string, unknown>): Promise<CloudSignInStatus | null> => {

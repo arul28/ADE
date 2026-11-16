@@ -1,27 +1,21 @@
 import { useState } from "react";
-import type { OpenProjectBinding } from "../../../../shared/types";
 import { extractError } from "../../../lib/format";
 
 /**
  * The code from a provider's sign-in page (Claude's `url_paste`: the page
  * shows a code that goes back to the computer's sign-in job). It goes to the
- * ADE Cloud computer the launch made, never this window's machine:
- * - the desktop sends `providers.remoteSignInCode` to that computer's pin
- *   (`cloud.binding`, its own connection);
- * - the web has no direct line to a machine's brain, so it sends the code
- *   through the account server, which runs the same call on that computer
- *   (`POST /cloud/instances/:id/sign-ins/:job/code`).
+ * ADE Cloud computer the launch made, never this window's machine: the
+ * account server runs it on that computer, chosen by its instance id
+ * (`POST /cloud/instances/:id/sign-ins/:job/code`), on desktop and web alike.
  * A refused code shows the provider's reason, and the field stays.
  */
 export function CloudSignInCodeField({
   jobId,
-  pin,
   instanceId,
   className,
 }: {
   jobId: string;
-  /** The cloud computer's pin, once its project is there. */
-  pin: (OpenProjectBinding & { kind: "remote" }) | null;
+  /** The ADE Cloud computer the launch made. */
   instanceId: string | null;
   className?: string;
 }) {
@@ -36,20 +30,11 @@ export function CloudSignInCodeField({
     setBusy(true);
     setError(null);
     try {
-      const direct = window.ade?.remoteRuntime?.submitProviderSignInCode;
-      const viaAccount = window.ade?.cloudLaunches?.sendSignInCode;
-      let refusal: string | null = null;
-      if (direct && pin) {
-        const answer = await direct(pin.targetId, { jobId, code });
-        refusal = answer.state === "failed" ? answer.reason ?? "The code didn't work. Open the page again for a new one." : null;
-      } else if (viaAccount && instanceId) {
-        const answer = await viaAccount(instanceId, jobId, code);
-        refusal = answer.state === "failed" ? answer.reason ?? "The code didn't work. Open the page again for a new one." : null;
-      } else {
-        throw new Error("The computer isn't ready for the code yet. Try again in a moment.");
-      }
-      if (refusal) {
-        setError(refusal);
+      const sendCode = window.ade?.cloud?.sendLaunchSignInCode;
+      if (!sendCode || !instanceId) throw new Error("The computer isn't ready for the code yet. Try again in a moment.");
+      const answer = await sendCode({ instanceId, jobId, code });
+      if (answer.state === "failed") {
+        setError(answer.reason ?? "The code didn't work. Open the sign-in page again for a new one.");
         return;
       }
       setValue("");

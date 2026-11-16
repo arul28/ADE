@@ -224,6 +224,12 @@ export function createWebCloudNamespace(
     getStatus,
     listMachines,
     machineAction,
+    // The account server runs the code on that computer; no machine connection needed.
+    sendLaunchSignInCode: async ({ instanceId, jobId, code }) => {
+      const api = accountClient.cloudApi?.() ?? null;
+      if (!api) throw new Error("Account sign-in isn't configured for this web client.");
+      return await api.sendSignInCode(instanceId, jobId, code);
+    },
     savedChats: {
       list: async (args) => await savedChatRead<CloudSavedChatList>("saved_chats_list", { ...args }),
       read: async (args) => await savedChatRead<CloudSavedChatPage>("saved_chats_read", { ...args }),

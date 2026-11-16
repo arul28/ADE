@@ -261,8 +261,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeChooseProjectIcon:
     case IPC.remoteRuntimeRemoveProjectIcon:
     case IPC.remoteRuntimeGetDefaultParentDir:
-    // The provider checks the code on that machine.
-    case IPC.remoteRuntimeSubmitProviderSignInCode:
     case IPC.remoteRuntimeCreateProject:
     case IPC.remoteRuntimeCloneProject:
     case IPC.remoteRuntimeListMyGitHubRepos:
@@ -281,6 +279,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // this sits just above it, like the local twin's poll budget.
     case IPC.remoteRuntimeStreamEvents:
       return REMOTE_RUNTIME_EVENT_SETUP_IPC_TIMEOUT_MS;
+    // The account server runs the code on the cloud computer: its own request waits 90 s.
+    case IPC.cloudLaunchSignInCode:
+      return 100_000;
     case IPC.lanesArchive:
       return 4 * 60_000;
     // The state read runs git in every lane of the project; the removal can
