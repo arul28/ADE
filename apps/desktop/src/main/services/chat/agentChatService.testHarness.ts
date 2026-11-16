@@ -108,7 +108,12 @@ async function settleSteppingTimeouts<T>(work: () => Promise<T>): Promise<T> {
     let settled = false;
     const pending = work().finally(() => { settled = true; });
     pending.catch(() => {});
-    while (!settled) await vi.advanceTimersByTimeAsync(250);
+    // At most 60 s of fake time (past any turn timeout these tests pass), so
+    // a turn that never settles fails here instead of spinning to the test timeout.
+    for (let elapsedMs = 0; !settled && elapsedMs < 60_000; elapsedMs += 250) {
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    if (!settled) throw new Error("settleSteppingTimeouts: the work did not settle within 60 s of fake time");
     return await pending;
   } finally {
     vi.useRealTimers();

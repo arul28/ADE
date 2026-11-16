@@ -660,12 +660,14 @@ describe("createSyncService", () => {
     });
 
     try {
-      // Fake timeouts, stepped until the read returns, stand in for its bounded wait.
+      // Fake timeouts stand in for its bounded wait: the read must return within
+      // a fixed 3 s of fake time (the bound is 2 s), not merely eventually.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       let settled = false;
       const read = service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true })
         .finally(() => { settled = true; });
-      while (!settled) await vi.advanceTimersByTimeAsync(250);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(settled).toBe(true);
       const snapshot = await read;
       expect(snapshot.transferReadiness.ready).toBe(false);
       expect(snapshot.transferReadiness.blockers).toEqual([]);
