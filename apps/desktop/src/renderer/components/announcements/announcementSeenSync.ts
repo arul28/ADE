@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { captureError } from "../../../shared/sentry/capture";
 import {
+  accountCreatedAtFromUserId,
   ANNOUNCEMENTS_SEEN_SETTING_KEY,
   normalizeSeenAnnouncements,
   seenAnnouncementsCover,
@@ -12,6 +13,7 @@ import { createLocalStore, storedRecord } from "../../onboarding/localStore";
 import {
   mergeSeenAnnouncementsFromAccount,
   readSeenAnnouncements,
+  setAnnouncementsAccountCreatedAt,
   subscribeSeenAnnouncements,
 } from "./announcementSeen";
 
@@ -76,10 +78,13 @@ function accountMarkFor(userId: string): AccountMark {
 }
 
 async function onePass(): Promise<void> {
-  const api = window.ade?.accountSettings;
-  if (!api?.get || !api.set) return;
   const status = await fetchAccountStatus().catch(() => null);
   const userId = status?.signedIn ? status.userId?.trim() || null : null;
+  // Read before anything else can fail: the showing waits for this pass, and
+  // a page from before the account was created must not show to a new one.
+  setAnnouncementsAccountCreatedAt(accountCreatedAtFromUserId(userId));
+  const api = window.ade?.accountSettings;
+  if (!api?.get || !api.set) return;
   if (!userId) return;
   const mark = accountMarkFor(userId);
   // The desktop brain's copy can be older than the account (another computer
