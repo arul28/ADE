@@ -37,6 +37,16 @@ html.caret-resting * {
   caret-animation: manual;
 }
 
+/* The same quiet spell rests a looping signal that only asks for attention
+   (a pending update, a usage warning). It stays drawn, solid, at full
+   opacity, and loops again on the first input. One small looping pulse keeps
+   the compositor drawing frames: a 16 px duty-cycled pulse cost about 1.3 %
+   of a core in Chromium at rest, more than the rest of an idle window. Not
+   for signs of work that runs (spinners of a turn, a working row). */
+html.caret-resting .ade-rests-when-idle {
+  animation: none !important;
+}
+
 /* The app's text selection color. Chromium inherits ::selection from the
    parent's ::selection, so one rule on the app root colors every descendant,
    and a nested `selection:` class still wins for its own subtree. Tailwind's

@@ -7,7 +7,8 @@
  * key, pointer, wheel or focus change, the root gets `caret-resting` and
  * index.css sets `caret-animation: manual`: the caret stays drawn, solid, and
  * stops blinking. The terminal cursor clock (`xtermCursorBlink.ts`) rests on
- * the same signal. The first input brings the blink back at once.
+ * the same signal, and so does any looping attention signal marked
+ * `ade-rests-when-idle` (index.css). The first input brings them back at once.
  */
 const REST_AFTER_MS = 10_000;
 const RESTING_CLASS = "caret-resting";

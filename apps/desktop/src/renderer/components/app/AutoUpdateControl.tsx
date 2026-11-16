@@ -347,7 +347,7 @@ export function AutoUpdateControl() {
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
             "text-[11px] font-medium transition-colors duration-150",
             isReadyOrInstalling
-              ? "animate-pulse border border-fuchsia-200/70 bg-fuchsia-500/30 text-white shadow-[0_0_20px_rgba(217,70,239,0.38)] hover:bg-fuchsia-400/40 [animation-duration:2.8s]"
+              ? "animate-pulse ade-rests-when-idle border border-fuchsia-200/70 bg-fuchsia-500/30 text-white shadow-[0_0_20px_rgba(217,70,239,0.38)] hover:bg-fuchsia-400/40 [animation-duration:2.8s]"
               : "border border-border/60 bg-card/90 text-muted-fg",
             effectiveStatus !== "ready" && "cursor-default",
           )}
