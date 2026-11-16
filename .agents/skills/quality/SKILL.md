@@ -295,10 +295,11 @@ Cite the doc section in the finding.
    **Capability-claim check.** Treat prose about permissions, timing, provider
    support, lifecycle, or automatic notifications as a claim to verify, not as
    evidence. Find the implementation path and the test that pins it. If the
-   behavior is load-bearing and no test pins it, list it for `/test` as a
-   coverage gap. Do not add the test in `/quality`. `/test` adds one only when
-   it can name the behavior, the failure that turns the test red, and why no
-   existing test already catches that.
+   behavior is on a critical path (see **Writing tests** in `AGENTS.md`) and
+   no test pins it, list it for `/test` as a coverage gap. Otherwise validate
+   it by hand or with an agent and list no gap. Do not add the test in
+   `/quality`. `/test` adds one only when it can name the critical path, the
+   failure that turns the test red, and why no existing test catches that.
 5. **Sweep the bug class.** When an accepted finding is a repeated pattern, scan
    the diff scope for sibling instances and fix them together — stop at touched
    surfaces and owner boundaries; no refactor beyond the class.
@@ -437,7 +438,8 @@ cell must state the capability, the OS-level reason, macOS/Linux status, and the
 hide / disable-with-reason / remove options with your recommendation.
 
 Next: /test (pass it the "For /test" list and the accepted correctness
-findings; it adds a test only where no existing test would catch the bug).
+findings; it adds a test only for a critical path that no existing test
+catches — most branches get none).
 
 **Before you print this:** every accepted finding is in "Auto-applied", the
 Gate section, or (an unfixable Low from the last capped check only, with its reason) Leftovers. If one is in neither, go back to step 6 and fix it.

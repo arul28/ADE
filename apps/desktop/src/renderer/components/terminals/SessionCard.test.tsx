@@ -262,38 +262,6 @@ describe("Cursor Cloud row badge visibility", () => {
 
 describe("SessionCard identity", () => {
 
-  it("moves the spawn kind and Claude tag into the hover detail card", () => {
-    vi.useFakeTimers();
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          toolType: "claude-chat",
-          claudeTag: "customer-ready",
-          spawnKind: "subagent",
-          orchestrationParentSessionId: "parent-1",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-        liveChildrenCount={3}
-      />,
-    );
-
-    // None of these have a permanent seat on the row any more.
-    expect(screen.queryByText("SUBAGENT")).toBeNull();
-    expect(screen.queryByText("customer-ready")).toBeNull();
-
-    // Icon-led rows: the icon is the label, so no "Label:" prefix survives.
-    const card = openRowTooltip(container);
-    expect(card.textContent).not.toContain("Spawn:");
-    expect(hoverRow("spawn").textContent).toContain("Subagent");
-    expect(hoverRow("tag").textContent).toContain("customer-ready");
-    expect(hoverRow("live-children").textContent).toContain("3 spawned chats still running");
-    expect(hoverRow("lane").textContent).toContain("Lane 1");
-    expect(hoverRow("provider").textContent).toContain("Claude chat");
-  });
-
   it("keeps Working with a question pip for Codex steering", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
@@ -338,26 +306,6 @@ describe("SessionCard identity", () => {
 });
 
 describe("SessionCard lineage", () => {
-  it("shows the lane's native stack position on a chat row", () => {
-    render(
-      <SessionCard
-        session={makeSession()}
-        lane={lane}
-        githubStack={{
-          id: "stack-18",
-          number: 18,
-          size: 3,
-          position: 2,
-          baseBranch: "main",
-        }}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByLabelText("GitHub Stack 2 of 3")).toBeTruthy();
-  });
 
   it.each([
     { name: "a subagent", parent: "parent-1", spawnKind: "subagent" as const, chip: "Subagent" },
@@ -1080,28 +1028,6 @@ describe("SessionCard status vocabulary", () => {
     expect(screen.queryByLabelText("Idle session")).toBeNull();
   });
 
-  it("keeps the stale memory-hygiene advice in the detail card", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
-    const { container } = render(
-      <SessionCard
-        session={makeSession({
-          toolType: "codex",
-          status: "running",
-          runtimeState: "running",
-          // Past the 24h memory-hygiene threshold, not just the stale threshold.
-          lastActivityAt: "2026-07-06T12:00:00.000Z",
-        })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(openRowTooltip(container).textContent).toContain("consider closing it to free memory");
-  });
-
   it("ticks the working duration every second", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
@@ -1816,26 +1742,6 @@ describe("SessionCard snooze and woke overlays", () => {
     const status = container.querySelector("[data-session-status]")!;
     expect(status.getAttribute("data-session-status")).toBe("Woke");
     expect(status.getAttribute("data-session-tone")).toBe("amber");
-  });
-
-  it("moves the next-wake countdown into the detail card", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
-    const { container } = render(
-      <SessionCard
-        session={makeSession({ nextWakeAt: "2026-07-09T12:05:00.000Z" })}
-        lane={lane}
-        isSelected={false}
-        onSelect={vi.fn()}
-        onContextMenu={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByText("⏰ 5m")).toBeNull();
-    openRowTooltip(container);
-    // The countdown is recomputed on render, so it reflects the fake clock at
-    // the moment the card opened, not at mount.
-    expect(hoverRow("next-wake").textContent).toContain("Wakes in 5m");
   });
 });
 

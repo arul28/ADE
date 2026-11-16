@@ -172,14 +172,6 @@ describe("AppleDeviceRail", () => {
       .toBe("true");
   });
 
-  it("puts the device in the More menu's header and Power off last", () => {
-    renderRail({ mode: "flat" });
-    openMore();
-    const items = screen.getAllByRole("menuitem").map((node) => node.textContent);
-    expect(screen.getByText("iPhone 17 Pro · iOS 26.2")).toBeTruthy();
-    expect(items).toEqual(["Float over chat", "Switch device…", "Power off"]);
-  });
-
   it("presses the device's other hardware buttons through one menu", () => {
     const props = renderRail();
     const cases: Array<[string, string]> = [

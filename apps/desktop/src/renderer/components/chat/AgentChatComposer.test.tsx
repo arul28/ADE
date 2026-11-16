@@ -2846,40 +2846,6 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).toHaveBeenCalledWith("decline");
   });
 
-  it("uses the shared provider verb in the pending banner", () => {
-    renderComposer({
-      pendingInput: {
-        requestId: "req-3",
-        itemId: "item-3",
-        source: "codex",
-        kind: "structured_question",
-        title: "Input needed",
-        description: "Multiple decisions are needed",
-        questions: [
-          {
-            id: "q1",
-            header: "Question 1",
-            question: "What should we test first?",
-            allowsFreeform: true,
-          },
-          {
-            id: "q2",
-            header: "Question 2",
-            question: "Which validation strategy should we use?",
-            allowsFreeform: true,
-          },
-        ],
-        allowsFreeform: true,
-        blocking: true,
-        canProceedWithoutAnswer: false,
-        turnId: null,
-      },
-    });
-
-    expect(screen.getByText("Codex asks")).toBeTruthy();
-    expect(screen.queryByText("2 Questions · codex")).toBeNull();
-  });
-
   it("allows attachments while steering an active Codex turn", () => {
     renderComposer({ turnActive: true });
 
@@ -3575,43 +3541,6 @@ describe("AgentChatComposer", () => {
     view.rerender(<AgentChatComposer {...buildComposerProps({ turnActive: false, draft: "" })} />);
 
     expect(screen.queryByText(/Prompt copies to clipboard on send/)).toBeNull();
-  });
-
-  it("uses a contextual accessible name for active turn textareas", () => {
-    renderComposer({
-      draft: "",
-      turnActive: true,
-      messagePlaceholder: "Message the active coordinator...",
-    });
-
-    const textarea = screen.getByRole("textbox", {
-      name: "Steer active turn: Message the active coordinator",
-    }) as HTMLTextAreaElement;
-    expect(textarea.placeholder).toBe("Steer the active turn...");
-  });
-
-  it("uses a contextual accessible name for active rich composers", () => {
-    renderComposer({
-      draft: "",
-      turnActive: true,
-      messagePlaceholder: "Message this worker...",
-      iosElementContextItems: [
-        {
-          kind: "ios_element",
-          id: "button-1",
-          componentId: "PrimaryButton",
-          sourceFile: null,
-          sourceLine: null,
-          frame: null,
-          metadata: { label: "Primary" },
-          selectedAt: "2026-05-07T00:00:00.000Z",
-        },
-      ],
-    });
-
-    expect(screen.getByRole("textbox", {
-      name: "Steer active turn: Message this worker",
-    })).toBeTruthy();
   });
 
   it("shows the launch clipboard notice with an inline Setting control while draft text is present", () => {

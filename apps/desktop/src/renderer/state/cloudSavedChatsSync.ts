@@ -227,8 +227,23 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
         || (cloudBoxes != null ? !box : !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }
-    replaceCloudConnectionTargets([...machineFacts.entries()]
-      .flatMap(([machineKey, facts]) => (facts.connection && !facts.gone ? [[facts.connection.target.id, machineKey] as const] : [])));
+    const cloudTargets = new Map<string, string>();
+    for (const [machineKey, facts] of machineFacts) {
+      if (facts.connection && !facts.gone) cloudTargets.set(facts.connection.target.id, machineKey);
+    }
+    // A cloud computer with no saved chat of this project yet (its first chat
+    // runs now) is a cloud connection too: its sleep shows, and a send wakes it.
+    const knownCloudComputers: Array<{ machineKey: string | null; instanceId: string | null }> = [
+      ...(cloudBoxes ?? []),
+      ...adeCloudLaneComputersNow(),
+    ];
+    for (const computer of knownCloudComputers) {
+      const machineKey = computer.machineKey;
+      if (!machineKey || machineFacts.has(machineKey) || goneMachineKeys.has(machineKey.toLowerCase())) continue;
+      const connection = connectionFor(context.connections, machineKey, computer.instanceId);
+      if (connection && !cloudTargets.has(connection.target.id)) cloudTargets.set(connection.target.id, machineKey);
+    }
+    replaceCloudConnectionTargets(cloudTargets);
     // One computer shows each chat. After a move, the new computer saves the
     // same chats (same ids) as the old one. A computer that still exists wins
     // over a deleted one; between two that exist, a connected one, then the

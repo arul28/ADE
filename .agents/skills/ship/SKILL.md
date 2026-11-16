@@ -248,8 +248,12 @@ PR #1469 nearly merged over a CodeRabbit finding and seven unanswered threads.
   `addressedCommentIds` and each review-body finding key in
   `addressedReviewFindings`.
 - `next: resolve-threads` — the code is fixed but the thread is unanswered.
-  Reply with the fix commit and the test that pins it, or the reason it is
-  rejected, then resolve the thread.
+  Reply with the fix commit (and the test that pins it, if one exists), or
+  the reason it is rejected, then resolve the thread.
+- **A request for a test is not a reason for a test.** When a bot or a
+  reviewer asks for "tests for this", ask the critical-path question in
+  **Writing tests** (`AGENTS.md`). If it fails, reply "No test: <reason>;
+  validated by <how>." and resolve the thread.
 - `next: merge` — the only state in which Phase 3c may merge.
 - `botNotices` — a bot that could not run reviewed nothing. Name it in the
   final summary; never report it as clean.

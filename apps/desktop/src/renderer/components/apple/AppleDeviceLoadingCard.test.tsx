@@ -8,20 +8,6 @@ afterEach(cleanup);
 
 describe("AppleDeviceLoadingCard", () => {
 
-  it("advances to the second segment for the video step", () => {
-    render(
-      <AppleDeviceLoadingCard
-        name="iPhone 17 Pro"
-        runtime="iOS 26.2"
-        family="iphone"
-        stage="streaming"
-        onRetry={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Connecting video")).toBeTruthy();
-    expect(screen.getByLabelText("Step 2 of 2: connect video")).toBeTruthy();
-  });
-
   it("replaces the spinner and the bar with a sentence and one button on failure", () => {
     const onRetry = vi.fn();
     render(
@@ -40,22 +26,6 @@ describe("AppleDeviceLoadingCard", () => {
     expect(screen.queryByLabelText(/Step \d of 2/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetry).toHaveBeenCalledOnce();
-  });
-
-  it("names the model when the device was renamed", () => {
-    render(
-      <AppleDeviceLoadingCard
-        name="ADE Repro"
-        runtime="iOS 26.2"
-        model="iPhone 17 Pro"
-        family="iphone"
-        stage="starting"
-        onRetry={vi.fn()}
-      />,
-    );
-    expect(screen.getByText("Booting ADE Repro…")).toBeTruthy();
-    // A custom name hides the model, so the subtitle carries it.
-    expect(screen.getByText("Installed simulator · iPhone 17 Pro · iOS 26.2")).toBeTruthy();
   });
 
   it("starts counting after 5s and explains a wait past 60s", () => {

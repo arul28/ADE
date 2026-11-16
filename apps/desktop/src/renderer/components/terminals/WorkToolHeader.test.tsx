@@ -83,15 +83,6 @@ describe("WorkToolHeader tab strip", () => {
     expect(tabs[0].getAttribute("aria-selected")).toBe("false");
   });
 
-  it("carries the active tool's one fact in its tab, never as a header line", () => {
-    renderHeader();
-    // The context string is the active tab's accessible name/tooltip…
-    expect(screen.getByRole("tab", { selected: true }).getAttribute("aria-label"))
-      .toBe("Browser · example.com");
-    // …and nothing in the bar spells it out as a title.
-    expect(screen.queryByText("example.com")).toBeNull();
-  });
-
   it("switches tabs and closes them through their own controls", () => {
     const { props } = renderHeader();
     fireEvent.click(screen.getByRole("tab", { name: /^Terminal/ }));

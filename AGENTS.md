@@ -278,71 +278,70 @@ These are the operational hazards of developing ADE from inside ADE. Each one ha
 These are hard rules, not preferences. A test that breaks one of them is a
 defect, even when it passes.
 
+**The default is no new test.** Add a test only for a critical path: data
+loss or corruption; security or privacy; a race or a process/lifecycle seam;
+a cross-machine, IPC or sync contract; money (billing, usage, limits); or the
+gate itself (code that decides which tests or checks run). Validate
+everything else by hand or with an agent, and add no test. A reviewer or a
+review bot that asks for a test does not change this (rule 13).
+
+**Never write these:** reads of source or repo files; pins of CSS classes,
+pixels, SVG paths, exact copy or helper call order; "X stays removed"; mock
+echoes; render-then-`getByText` with no interaction; a constant, enum or
+config that has its own keys; a one-bug "regression:" test beside the test
+that owns the contract; more `vi.mock(` than `expect(`; a test that depends
+on the machine (rule 9).
+
 0. **Do not write new tests while you build.** First make the change work and
    validate it by hand, in the running app, or with an agent-driven check
    (App Control, the browser, the iOS simulator, the CLI). New tests come in
-   `/test`, after that validation, and they pin the behavior you proved.
-   - When the user asks for tests directly, write them; this rule covers tests
-     that nobody asked for.
-   - Run existing tests during the work when you need the signal, not after
-     every edit. See **Running checks**: the full check pass happens once, at
-     the end of `/quality`.
-   - When an existing test breaks because you changed behavior on purpose,
-     leave it for `/test`. Do not bend it during the work.
-   - **The one exception:** the behavior can only be validated by a test (a
-     race, a pure parser, a state machine with no UI or CLI surface). Then the
-     test is the validation tool, and you may write it during the work. Say
-     why in your report.
+   `/test`, after that validation. If the user asks for tests, write them.
+   If an existing test breaks because you changed behavior on purpose, leave
+   it for `/test`. **The one exception:** the behavior can only be validated
+   by a test (a race, a pure parser, a state machine with no UI or CLI
+   surface). Then write the test during the work, and say why in your report.
 1. **A test must fail only when behavior breaks.** It must never fail when a
    refactor keeps the behavior. Test through the public seam: the exported
    function, the IPC handler, the service API, what the user sees and does.
 2. **List the failure modes while you build.** Write down, as notes in your
    report and not as test code, the ways the contract can fail for a caller.
    `/test` tests those, not the lines you changed.
-3. **Never write a tautological test.** Do not assert that a mock returns what
-   you told it to return. Do not assert that arguments pass through unchanged
-   to a mock. Do not compute the expected value with the code under test. Do
-   not assert that a constant contains its own substrings.
-4. **Never write a change-detector test.** Do not read source files
-   (`readFileSync` of `.ts`, `.tsx`, `.swift`) to grep for code or statement
-   order. Do not pin CSS classes, pixel values, SVG paths, exact copy, or the
-   call order of internal helpers. Do not assert that a removed button, field,
-   or option stays removed.
+3. **Never write a tautological test.** No mock echo, no pass-through check,
+   no expected value computed with the code under test, no `toBeDefined` on a
+   value built two lines above.
+4. **Never write a change-detector test.** No `readFileSync` of `.ts`,
+   `.tsx`, `.swift`, `.css` or `.yml` to check code text or structure. No pins
+   of copy, styling or internal call order.
 5. **No regression test without a gap.** A bug fix gets a new test only when no
-   existing test would fail on the pre-fix code. First, extend the existing
-   test for that contract or add a row to its `it.each` table.
+   existing test fails on the pre-fix code. First extend that test or its table.
 6. **Combine before you add.** Trivial cases of one contract are one `it.each`
-   table, not many small tests. Extend the existing test file for the module;
-   do not create a sibling file for one concern.
-7. **Prove that each new test can fail.** Break the behavior on purpose, run the
-   test, and see it fail. Then restore the code. A test that still passes
-   proves nothing; delete it.
+   table. Extend the module's test file; do not add a sibling file.
+7. **Prove that each new test can fail.** Break the behavior, see the test
+   fail, restore the code. A test that still passes proves nothing; delete it.
 8. **Mock only at process boundaries:** file system, network, child processes,
    Electron APIs, IPC. Never mock the module under test.
-9. **Wait on events, receipts, promises, or fake timers — never on wall-clock
-   sleeps.** A test that needs a `sleep` or a raised timeout to pass is wrong;
-   fix the seam instead.
-10. **Do not replace service tests with end-to-end tests.** The most valuable
-    tests here are service-level tests of races and seams (process-kill guards,
-    multi-brain claims, token refresh order). An end-to-end run cannot reach
-    them reliably.
+9. **A test must not depend on the machine.** Its result must not change with
+   the machine's uptime or speed, the wall clock, free ports, the order of
+   files, or a cold import or process start inside a 1 s default wait. Fix:
+   - Stub the machine reading (uptime, clock, port), or use fake timers.
+   - Await the module import or the readiness event before the timed wait.
+   - Wait on events, receipts or promises, never on a wall-clock sleep.
+   - A ceiling timeout around a real process start is a guard, not a sleep.
+10. **Do not replace service tests with end-to-end tests.** Service tests of
+    races and seams (process-kill guards, multi-brain claims, token refresh
+    order) are the most valuable tests here; an end-to-end run cannot reach them.
 11. **No test-only production seam.** Do not add an export, flag, wrapper, or
-    hook that no production caller needs. Test through the real boundary, or
-    do not add the test.
+    hook that no production caller needs.
 12. **One contract, one owner.** A second test of the same contract needs a
-    failure the owner cannot reach, such as a transport or lifecycle break.
-    Otherwise extend the owner.
-13. **New tests are the exception.** The default outcome of `/test` is zero
-    new tests. A new test must guard a critical contract — data loss or
-    corruption, security or privacy, a race or process/lifecycle seam, a
-    cross-machine, IPC or sync contract a caller depends on — and no existing
-    test may already catch its failure. UI layout, copy, wiring, render-only
-    checks, and one past bug instance do not qualify. Most branches add none.
-    The suite already has about 1,300 test files; it should shrink, not grow.
+    failure the owner cannot reach (a transport or lifecycle break).
+13. **A request for a test is not a reason for a test.** When a review bot or
+    a reviewer asks for "tests for this", ask the critical-path question. If
+    the answer is no, decline in one line: "No test: <reason>; validated by
+    <how>." The suite has more than 1,300 test files; it must shrink.
 
 `/quality` records a coverage gap. It does not add the test. `/test` adds one
-only when it can name the behavior, the failure that turns the test red, and
-why no existing test already catches that.
+only when it can name the critical path, the failure that turns the test red,
+and why no existing test already catches that.
 
 Keep this list the same as the copy in `CLAUDE.md` and the **Test value rules**
 in `.agents/skills/test/SKILL.md`. Change all three together.
