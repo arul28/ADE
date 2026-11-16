@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import type { KeybindingsSnapshot } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { caretChordIsClaimed, keyChordIsClaimed } from "../../lib/keyboardClaims";
@@ -99,15 +100,6 @@ function visibleWorkSessionRows(root: ParentNode = document): HTMLElement[] {
   return rows.filter((row) => row.getClientRects().length > 0);
 }
 
-function findVisibleElement(selector: string): HTMLElement | null {
-  for (const element of Array.from(document.querySelectorAll<HTMLElement>(selector))) {
-    // A pane that is animating out is inert (WorkViewArea) and cannot take focus.
-    if (element.closest("[inert]")) continue;
-    if (element.getClientRects().length > 0) return element;
-  }
-  return null;
-}
-
 /**
  * Put the caret back where a person types: the chat's prompt box, or the
  * terminal's own input for a CLI session.
@@ -118,8 +110,7 @@ function findVisibleElement(selector: string): HTMLElement | null {
 export function focusWorkInputSoon(attempts = 30): void {
   let remaining = attempts;
   const tick = () => {
-    const target = findVisibleElement("[data-chat-composer-text]")
-      ?? findVisibleElement(".xterm textarea");
+    const target = findWorkInputIn(document);
     if (target) {
       target.focus({ preventScroll: true });
       return;
@@ -128,6 +119,21 @@ export function focusWorkInputSoon(attempts = 30): void {
     if (remaining > 0) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+}
+
+/**
+ * Opens a new draft (`open`) and gives its prompt box the keyboard in the same
+ * task. The draft renders synchronously, so its box is in the page when
+ * `open` returns. A key the person typed while the draft rendered then goes
+ * to the new box: a focus on the next frame came after that key, which went to
+ * the chat that just left. If the box is not there yet, the frame retry of
+ * `focusWorkInputSoon` takes over.
+ */
+export function openDraftAndFocusWorkInput(open: () => void): void {
+  flushSync(open);
+  const target = findWorkInputIn(document);
+  if (target) target.focus({ preventScroll: true });
+  else focusWorkInputSoon();
 }
 
 /** The window's last pointer press or key press, for "did a click cause this?". */
@@ -205,6 +211,7 @@ function promptBoxMayTakeFocus(): boolean {
 function findWorkInputIn(root: ParentNode): HTMLElement | null {
   for (const selector of ["[data-chat-composer-text]", ".xterm textarea"]) {
     for (const element of Array.from(root.querySelectorAll<HTMLElement>(selector))) {
+      // A pane that is animating out is inert (WorkViewArea) and cannot take focus.
       if (element.closest("[inert]")) continue;
       if (element.getClientRects().length > 0) return element;
     }
@@ -463,8 +470,7 @@ export function useWorkShortcuts(args: WorkShortcutArgs): WorkShortcuts {
         event.preventDefault();
         event.stopPropagation();
         if (event.repeat) return;
-        onNewChat();
-        focusWorkInputSoon();
+        openDraftAndFocusWorkInput(onNewChat);
         return;
       }
       if (eventMatchesBinding(event, keys.toggleTools)) {
