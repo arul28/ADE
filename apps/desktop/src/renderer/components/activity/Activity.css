@@ -216,7 +216,7 @@ button.activity-pane-freshness {
 }
 
 .activity-pane-spin {
-  animation: activity-spin 1.1s steps(33) infinite;
+  animation: activity-spin 1.1s steps(22) infinite;
 }
 
 @keyframes activity-spin {
@@ -1420,7 +1420,7 @@ button.activity-pane-freshness {
   border: 2px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
   border-top-color: var(--color-accent);
   border-radius: 50%;
-  animation: activity-spin 700ms steps(21) infinite;
+  animation: activity-spin 700ms steps(14) infinite;
 }
 
 .activity-settings-popover > footer {

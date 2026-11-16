@@ -11143,7 +11143,7 @@ export function AgentChatPane({
   // frame, so the first streamed text shows in the first frame after it
   // arrives (the 16 ms timer is the fallback for a window that draws no
   // frames). While a stream runs, a flush waits for the next work beat
-  // instead (at most 1/30 s), so the growing text and its scroll change in the
+  // instead (at most 50 ms), so the growing text and its scroll change in the
   // frame the thinking indicator already draws: on macOS each frame is a
   // whole-window composite, and words that land between beats would each
   // cost one more.

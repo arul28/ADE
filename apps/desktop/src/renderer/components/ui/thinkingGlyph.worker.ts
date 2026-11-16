@@ -1,7 +1,7 @@
 /**
  * The thinking indicator's glyph painter, run as a worker by
  * `thinkingGlyphPainter.ts`: it draws the glyph and the twinkle into each
- * attached canvas on the 1/30 s steps of the page's timeline, so the page runs
+ * attached canvas on the 50 ms steps of the page's timeline, so the page runs
  * no animation for them.
  */
 
@@ -29,13 +29,15 @@ const scope = self as unknown as {
   clearTimeout: typeof clearTimeout;
 };
 
-const STEP_MS = 1000 / 30;
+const STEP_MS = 1000 / 20;
 const LOOP_MS = 4000;
+/** The shapes in one loop (ThinkingIndicator's GLYPH_FRAMES). */
+const LOOP_STEPS = Math.round(LOOP_MS / STEP_MS);
 const TWINKLE = "M 19 2.5 C 19.18 4.32 19.68 4.82 21.5 5 C 19.68 5.18 19.18 5.68 19 7.5 C 18.82 5.68 18.32 5.18 16.5 5 C 18.32 4.82 18.82 4.32 19 2.5 Z";
 // index.css `ade-thinking-glyph-turn`: [offset, rotate deg, scale, steps of the segment that starts here].
-const TURN: Array<[number, number, number, number]> = [[0, 0, 1, 36], [0.3, 108, 0.9, 24], [0.5, 180, 0.78, 24], [0.7, 252, 0.9, 36], [1, 360, 1, 0]];
+const TURN: Array<[number, number, number, number]> = [[0, 0, 1, 24], [0.3, 108, 0.9, 16], [0.5, 180, 0.78, 16], [0.7, 252, 0.9, 24], [1, 360, 1, 0]];
 // index.css `ade-thinking-twinkle`: [offset, opacity, rotate deg, scale, steps].
-const TWINKLE_KEYS: Array<[number, number, number, number, number]> = [[0, 0, 0, 0.2, 0], [0.3, 0, 0, 0.2, 24], [0.5, 1, 90, 1, 24], [0.7, 0, 0, 0.2, 0], [1, 0, 0, 0.2, 0]];
+const TWINKLE_KEYS: Array<[number, number, number, number, number]> = [[0, 0, 0, 0.2, 0], [0.3, 0, 0, 0.2, 16], [0.5, 1, 90, 1, 16], [0.7, 0, 0, 0.2, 0], [1, 0, 0, 0.2, 0]];
 
 /** The value CSS shows for a `steps(n, jump-none)` segment at `progress` in [0, 1). */
 const jumpNone = (progress: number, steps: number) => (steps <= 1 ? 0 : Math.min(1, Math.floor(progress * steps + 1e-9) / (steps - 1)));
@@ -51,7 +53,7 @@ function draw(entry: Entry, pageMs: number): void {
   const { ctx, canvas, state } = entry;
   const moving = !state.resting && !state.still;
   const local = ((pageMs % LOOP_MS) + LOOP_MS) % LOOP_MS;
-  const step = moving ? Math.floor(local / STEP_MS + 1e-6) % 120 : 0;
+  const step = moving ? Math.floor(local / STEP_MS + 1e-6) % LOOP_STEPS : 0;
   // One drawing per step and state: the worker wakes on step edges only, but a state change redraws now.
   const key = `${step}|${state.color}|${state.sizePx}|${state.resting}|${state.still}`;
   if (key === entry.drawnKey) return;

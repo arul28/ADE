@@ -10,9 +10,9 @@
  * with running CSS animations keeps scheduling main-thread frames at idle. A
  * canvas the worker draws into reaches the compositor without the main thread.
  *
- * The worker draws exactly what the CSS drew: the same 120 shapes
+ * The worker draws exactly what the CSS drew: the same 80 shapes
  * (ThinkingIndicator's GLYPH_STRIP), the same stepped turn and twinkle
- * keyframes, at the same 1/30 s instants of the page's timeline (time 0 of the
+ * keyframes, at the same 50 ms instants of the page's timeline (time 0 of the
  * document timeline, where `animationPhaseAlignment` starts every CSS loop), so
  * it stays in step with the label's CSS sheen.
  */

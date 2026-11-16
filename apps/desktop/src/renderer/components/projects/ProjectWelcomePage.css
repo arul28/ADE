@@ -888,9 +888,9 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
     transparent
   );
   /* steps = 2.4s x 30; see `ade-launch-rail-sheen` in index.css. */
-  animation: ade-recent-shimmer 2.4s steps(72) infinite;
+  animation: ade-recent-shimmer 2.4s steps(48) infinite;
 }
-.ade-welcome-spin { animation: ade-recent-spin 0.9s steps(27) infinite; }
+.ade-welcome-spin { animation: ade-recent-spin 0.9s steps(18) infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   .ade-welcome [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }

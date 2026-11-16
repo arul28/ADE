@@ -5,22 +5,23 @@ import { attachThinkingGlyph, canPaintThinkingGlyph, type ThinkingGlyphHandle } 
 
 /**
  * The glyph's shape loop: a sparkle that melts into a circle and back over 4 s.
- * Each segment steps 30 times a second (`steps(n, jump-none)`, n = 30 x the
- * segment's seconds), so the loop shows 120 shapes, one every 1/30 s.
+ * Each segment steps 20 times a second (`steps(n, jump-none)`, n = 20 x the
+ * segment's seconds), so the loop shows 80 shapes, one every 50 ms: the work
+ * beat (lib/workBeat.ts).
  */
 const GLYPH_KEYFRAMES = [
-  { at: 0, steps: 36, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
-  { at: 0.3, steps: 24, d: "M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z" },
-  { at: 0.5, steps: 24, d: "M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z" },
-  { at: 0.7, steps: 36, d: "M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z" },
+  { at: 0, steps: 24, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
+  { at: 0.3, steps: 16, d: "M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z" },
+  { at: 0.5, steps: 16, d: "M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z" },
+  { at: 0.7, steps: 24, d: "M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z" },
   { at: 1, steps: 0, d: "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" },
 ];
 const GLYPH_LOOP_SECONDS = 4;
-const GLYPH_FRAMES = GLYPH_LOOP_SECONDS * 30;
+const GLYPH_FRAMES = GLYPH_LOOP_SECONDS * 20;
 
 /**
- * The 120 shapes the loop shows, in order: what CSS would draw for a `d:`
- * animation over `GLYPH_KEYFRAMES` at each 1/30 s. Every step edge of every
+ * The 80 shapes the loop shows, in order: what CSS would draw for a `d:`
+ * animation over `GLYPH_KEYFRAMES` at each 50 ms. Every step edge of every
  * segment falls on one of those instants, so sampling there misses none.
  */
 function glyphFrames(): string[] {

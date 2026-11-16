@@ -7,7 +7,8 @@
  * thinking glyph and sheen, the "working for 12s" timers, the context dial
  * pulse, and the streamed text would each take frames of their own.
  *
- * The beat is every 1/30 s of the document timeline, counted from its time 0.
+ * The beat is every 50 ms (20 a second) of the document timeline, counted
+ * from its time 0.
  * The thinking indicator's sheen (a CSS loop that `animationPhaseAlignment`
  * starts at time 0) and its glyph (`thinkingGlyph.worker.ts`) step on it, and
  * so do the stepped loops the step clock runs (`steppedLoopClock.ts`). A
@@ -19,7 +20,7 @@
  */
 
 /** One beat, in ms. */
-export const WORK_BEAT_MS = 1000 / 30;
+export const WORK_BEAT_MS = 1000 / 20;
 
 /**
  * Milliseconds from `nowMs` (document timeline) to just past the next whole

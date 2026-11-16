@@ -20,9 +20,8 @@
  *
  * A loop is adopted only when every segment that changes a value uses a step
  * timing function and it changes at most `MAX_CHANGES_PER_SECOND` times a
- * second. A fast compositor loop (the Lanes working mark, 60 steps a second) is
- * cheaper left to the compositor than woken from the main thread 60 times a
- * second, so it keeps running as plain CSS. So does any loop inside an element
+ * second. A faster compositor loop is cheaper left to the compositor than
+ * woken from the main thread that often, so it keeps running as plain CSS. So does any loop inside an element
  * marked `data-loop-clock="off"`: one that only moves transform and opacity on
  * its own layer costs the main thread nothing as plain CSS, while each seek
  * from the clock is a main-thread frame.
