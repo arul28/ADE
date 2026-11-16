@@ -635,7 +635,10 @@ Browser `window.ade` adapter:
   `cloudAccess` member) go to a connected computer when the displayed adapter
   is a disconnected fallback, and their subscriptions move with the adapter
   that serves those reads. So the Connections panel keeps the cloud status and
-  Wake while the computer that dropped is still the displayed one.
+  Wake while the computer that dropped is still the displayed one. With no
+  computer connected at all, `cloudAccess` and the ADE Cloud plan and hours
+  are read from the account server instead (`adapter/cloud.ts`), and the top
+  bar's Settings opens Settings on its own, so ADE Cloud needs no machine.
 - `apps/desktop/src/renderer/webclient/adapter/reconnectHold.ts` - keeps a
   machine that was connected reading as connected for up to 30 s of time in
   front while its connection comes back, so Work keeps the open chat after a
@@ -1528,8 +1531,10 @@ URL contract.
   `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
   uses (`/lanes`, `/work`, `/prs`).
 - The arriving target is kept in localStorage for 10 minutes
-  (`shell/pendingTarget.ts`), like the sign-in stash, so it survives a sign-in
-  round trip that loses session storage.
+  (`shell/pendingTarget.ts`, on the shared `shell/linkStash.ts`), like the
+  sign-in stash, so it survives a sign-in round trip that loses session
+  storage. The stash also reads the field an older build wrote, so a link
+  saved just before a deploy still restores.
 - **Owned links** (chat, lane or PR links carrying `accountMachineKey` +
   `projectId`) are resolved by `shell/ownedLinkResolution.ts` after sign-in,
   instead of restoring the last project: find the account machine by key,
@@ -1552,6 +1557,25 @@ URL contract.
 - Links reach the web client from the website's `/open` page ("Open in your
   browser", or a remembered browser choice), which forwards the query
   unchanged; see [Deeplinks](../deeplinks/README.md).
+- **ADE Cloud plan links** (`shell/cloudPlanLink.ts`, `WebCloudPlanLink.tsx`,
+  kept with `shell/linkStash.ts`).
+  `https://app.ade-app.dev/?cloudPlan=<free|plus|pro|max>` comes from the
+  website's plan buttons; `/?cloudReturn=<done|cancelled|portal|card|card_cancelled>`
+  is where Stripe sends the person back (the account server builds it from
+  its `WEB_CLIENT_ORIGIN`). The value must be exactly one of those, once;
+  anything else is ignored. On load the request is kept in localStorage for
+  10 minutes (so it survives the sign-in, and the sign-in card says a link
+  is waiting) and both parameters leave the address bar at once. Once
+  signed in, the app opens Settings › ADE Cloud at Plans (on its own, as the
+  top bar's Settings opens it, when no project came back) instead of the
+  restored route; this works with no computer online. A paid plan then starts Stripe's checkout in this tab, but
+  only when `GET /cloud/access` says ADE Cloud lets the account in and `GET
+  /cloud/account` shows no paid plan (a paid account would otherwise change
+  plans with no question; it sees the page and a toast instead). Both reads
+  go to the account server with the browser's own token, so a person with no
+  computer online can still buy. Free only shows the page. A return shows a
+  toast saying how Stripe ended. An owned link in the same boot wins and the
+  plan link is dropped. The link never starts a sign-in itself.
 
 Entry points:
 
@@ -1633,6 +1657,15 @@ Ops checks after deploy:
 - No native directory picker.
 - No local shell process. Terminal creation and IO go through the paired
   machine runtime.
+- Settings › ADE Cloud with none of the account's computers online shows
+  the plan, hours, disk, Plans, Manage billing, extra hours and extra disk
+  (read and paid straight through the account server,
+  `adapter/cloudBilling.ts`), but not the list of cloud lanes and computers:
+  that list comes from a computer's brain, so the page says it shows once
+  one is online (`computersUnread`). What agents may do and the sign-ins
+  card need a computer too. A lane's size, its delete, freeing its computer,
+  Clear caches, Keep it on an idle notice and the invite code box stay in
+  the desktop app.
 - No ADE Browser, computer use, or iOS Simulator surface. App Control is
   watch-only: the Work tool shows the lane's live frames and session state, and
   no driving action runs from the web. Projectless Chats therefore shows its

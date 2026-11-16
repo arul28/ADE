@@ -20,7 +20,7 @@ import {
   type CloudServerLaunchRequest,
   type CloudTierId,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { githubOriginOf, startServerLaunch, type LaunchRouteDeps } from "./launches";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
@@ -1001,7 +1001,6 @@ async function fireSchedule(env: RelayEnv, row: CronRow, deps: AutomationDeps): 
   const claimed = await env.DB.prepare("update cloud_automations set next_fire_at = ? where user_id = ? and rule_id = ? and next_fire_at = ?")
     .bind(next, rule.user_id, rule.rule_id, rule.next_fire_at).run();
   if ((claimed.meta?.changes ?? 0) !== 1) return;
-  if (!cloudAccessAllows(env, rule.user_id)) return;
   const due = rule.next_fire_at;
   if (due < rule.starts_at) return;
   if (now - due >= CATCH_UP_MS) {
@@ -1094,7 +1093,6 @@ export async function handleAutomationDelivery(request: Request, env: RelayEnv, 
   }
   const { now } = deps;
   if (Math.abs(now - timestamp) > HOOK_MAX_SKEW_MS) return fail("stale_signature", "This delivery's signature is too old. Send it again.", 401);
-  if (!cloudAccessAllows(env, rule.user_id)) return fail("gone", "This webhook doesn't run on ADE Cloud any more.", 410);
   let delivery: Record<string, unknown>;
   try {
     const parsed = JSON.parse(text) as unknown;

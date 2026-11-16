@@ -51,8 +51,10 @@ carries the provider's own explanation, cleaned: `cloudRefusalMessage` in
 
 `getCloudProvider(deps)` returns ADE Cloud for this account, or null. It needs a
 signed-in ADE account. The bearer is the account token; no provider key exists
-on any desktop or brain. `/cloud/access` is read at most every 10 minutes per
-account (a cached yes survives a failed check). The `signedOut`, `no_access` and
+on any desktop or brain. ADE Cloud is open to every signed-in account: the
+server has no access list, and `/cloud/access` always answers `{ enabled: true }`
+for builds that ask. It is read at most every 10 minutes per account (a cached
+yes survives a failed check). The `signedOut`, `no_access` and
 `unreadable` states keep their sentences (`requireCloudProvider`,
 `readCloudStatus`).
 
@@ -114,6 +116,23 @@ that stops (see Sleep and busy rules).
   Sizes, Invite friends, Sign-ins and what agents may do alone, with the
   80% / 95% / out-of-hours banners and computers due for deletion. Settings
   entries are `integrations.ade-cloud*`.
+- **The web app:** the same page (`web: "account"` in the manifest), reached
+  from the top bar's Settings with no project or computer, as on the desktop.
+  Whether ADE Cloud is on comes from `GET /cloud/access` (kept a minute). The
+  computers come from a connected computer's brain; with none online the
+  page reads the plan and hours from `GET /cloud/account` and says the
+  computers show once one is online (`CloudMachinesResult.computersUnread`).
+  The plan and billing calls go from the
+  browser to the account server with the browser's own account token
+  (`webclient/adapter/cloudBilling.ts`, `BrowserAccountClient.cloudRequest`,
+  only `GET /cloud/access`, `GET /cloud/account` and the `/cloud/billing/*`
+  routes). Stripe opens in the same tab with `returnTo: "web"`, so it sends
+  the person back to the web app's Settings › ADE Cloud, not the server's
+  "go back to ADE" page. The billing routes ask for no recent sign-in. A
+  browser whose sign-in ended signs in again from the click and comes back
+  to the page (a checkout to its plan's checkout). The website's plan
+  buttons link to `app.ade-app.dev/?cloudPlan=<plan>`; see
+  [Web client deeplinks](../web-client/README.md#deeplinks).
 - **Add a computer:** a new lane on ADE Cloud makes its own computer. The old
   "New ADE Cloud computer" form and the ready machines are gone (Cloud 5);
   `ade cloud create` and the phone still make a bare computer.

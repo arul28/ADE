@@ -133,6 +133,12 @@
  * success the repository's setup is remembered as needing Medium.
  * The checkout and portal URLs open in the person's browser and come back to
  * a plain page; read `GET /cloud/account` again to see what changed.
+ * `POST /cloud/billing/checkout`, `/portal` and `/free-unlock` take an
+ * optional `returnTo: "web"` (`CloudBillingReturnTarget`): Stripe then sends
+ * the person back to the hosted web client (`WEB_CLIENT_ORIGIN`) at
+ * `/?cloudReturn=<to>` (`CLOUD_WEB_BILLING_RETURN_PARAM`) instead of the
+ * plain page. The request names no address: the server builds it from its
+ * own setting. Any other `returnTo`, or a server with no web client, is a 400.
  */
 
 /** "$1", "$2.50": cents as people read money, on the server and in ADE. */
@@ -384,6 +390,25 @@ export type CloudPlanChangeTiming = "now" | "next_period";
  * pick over the cheaper plan's limits answers what goes over (`cleanup`).
  */
 export type CloudCheckoutResult = { url: string } | { url: null; change: CloudPlanChangeTiming; cleanup?: CloudPlanCleanup | null; freeing?: string[] };
+
+/**
+ * Where Stripe sends the person back from a checkout, the billing portal or
+ * the free plan's card page. Left out: this server's own page
+ * (`/billing/return`), which says to go back to ADE. `web`: the hosted web
+ * client, which opens Settings › ADE Cloud.
+ */
+export type CloudBillingReturnTarget = "web";
+
+/** The query parameter the web client reads when Stripe sends the person back to it. */
+export const CLOUD_WEB_BILLING_RETURN_PARAM = "cloudReturn";
+
+/** How a Stripe page ended: a plan bought or left, the billing portal closed, a card saved or left. */
+export const CLOUD_BILLING_RETURN_OUTCOMES = ["done", "cancelled", "portal", "card", "card_cancelled"] as const;
+export type CloudBillingReturnOutcome = (typeof CLOUD_BILLING_RETURN_OUTCOMES)[number];
+
+export function isCloudBillingReturnOutcome(value: unknown): value is CloudBillingReturnOutcome {
+  return (CLOUD_BILLING_RETURN_OUTCOMES as readonly unknown[]).includes(value);
+}
 
 export type CloudExecResult = { exitCode: number; stdout: string; stderr: string };
 

@@ -5109,7 +5109,9 @@ declare global {
          * other plan changes it in place: nothing opens and `change` says when
          * it applies (`now` for Pro, `next_period` for Plus). A downgrade over
          * Plus's limits carries the person's pick (`cleanup`): the server
-         * frees exactly those computers once the plan changed.
+         * frees exactly those computers once the plan changed. The desktop
+         * opens Stripe in the browser; the web app opens it in its own tab,
+         * and Stripe sends the person back to Settings › ADE Cloud there.
          */
         openCheckout?: (plan?: CloudPaidPlanId, cleanup?: CloudPlanCleanupPick) => Promise<CloudOpenCheckoutResult>;
         /**

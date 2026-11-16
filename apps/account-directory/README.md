@@ -815,10 +815,8 @@ The server holds the provider key and owns every ADE Cloud computer
 and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
 their shapes for a client to mirror. Every route takes the account bearer.
 
-- `CLOUD_ACCESS_ACCOUNTS` is a comma list of Clerk user ids, or `*`. Unset means
-  nobody. `GET /cloud/access` answers `{ enabled }` for the bearer; every other
-  `/cloud/*` route, including `/cloud/wake`, answers 404 `not_found` to a caller
-  not on the list.
+- ADE Cloud is open to every signed-in account. `GET /cloud/access` still
+  answers `{ enabled: true }` for builds that ask.
 - `cloud_computers` records each computer's owner. Every call by instance id
   checks it, and not yours or unknown is 404. Provider errors become one plain
   sentence.
@@ -869,9 +867,14 @@ separate products, so Checkout names each line and shows its one-line
 description (Managed Payments refuses `custom_text`); the customer
 is made with the account's email from Clerk, so Checkout shows it filled in. `POST /cloud/billing/checkout` and `/portal` answer
 a URL for the person's browser, which comes back to `/billing/return`.
+With `returnTo: "web"` (the hosted web client; `/free-unlock` too) Stripe
+sends the person back to `WEB_CLIENT_ORIGIN` at `/?cloudReturn=<outcome>`
+instead, and the web app opens Settings › ADE Cloud. The address comes from
+this server's own `WEB_CLIENT_ORIGIN`, never from the request, so it is not
+an open redirect; any other `returnTo`, or no web client set, is a 400.
 `POST /cloud/billing/extra-hours` takes `{ enabled }`, paid plan only.
 
-`POST /webhooks/stripe` is outside the access list and is checked with the
+`POST /webhooks/stripe` takes no account bearer and is checked with the
 signature instead. `cloud_stripe_events` makes each event run once. A handler
 uses its event only to find the subscription and re-reads it from Stripe, so
 late or reordered events land in the same place. Checkout completing sets the

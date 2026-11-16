@@ -24,6 +24,14 @@ import { createAccountNamespace } from "../adapter/account";
 import { parseOpenTarget, parseWebPath } from "./webRoutes";
 import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
 import {
+  WEB_CLOUD_SETTINGS_PATH,
+  cloudLinkFromSearch,
+  peekCloudLink,
+  stashCloudLink,
+  stripCloudLinkParams,
+  takeCloudLink,
+} from "./cloudPlanLink";
+import {
   isOwnedOrAccountLink,
   matchOwnedProject,
   navigateMountedApp,
@@ -78,24 +86,32 @@ function loadTargetPaths(): Promise<typeof import("./webTargetPaths")> {
   return import("./webTargetPaths");
 }
 
-async function loadAppRoot(): Promise<React.ComponentType> {
-  const [, { App }, { RendererErrorBoundary }, { useAppStore }, { WebOwnedLinkBanner }] = await Promise.all([
+async function loadAppRoot(
+  accountClient: BrowserAccountClient,
+  options: { standaloneSettings?: boolean } = {},
+): Promise<React.ComponentType> {
+  const [, { App }, { RendererErrorBoundary }, { useAppStore }, { WebOwnedLinkBanner }, { WebCloudPlanLink }] = await Promise.all([
     loadAppStylesheet(),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
     import("../../state/appStore"),
     import("./WebOwnedLinkBanner"),
+    import("./WebCloudPlanLink"),
   ]);
   try {
     useAppStore.getState().applyAutoSizeChatFontOnLargeScreenIfNotOverridden();
   } catch {
     // The persisted/default font size remains usable in hardened browsers.
   }
+  // With no project open, /settings shows only when Settings is open on its own
+  // (as the top bar's Settings button opens it); otherwise the welcome page stays in front.
+  if (options.standaloneSettings) useAppStore.getState().setStandaloneSettingsOpen(true);
   return function MountedApp() {
     return (
       <RendererErrorBoundary>
         <WebOwnedLinkBanner />
         <App />
+        <WebCloudPlanLink accountClient={accountClient} />
       </RendererErrorBoundary>
     );
   };
@@ -561,6 +577,11 @@ export function WebClientRoot({
     let disposed = false;
 
     void (async () => {
+      // A plan picked on ADE's website (`?cloudPlan=`) or a return from Stripe
+      // (`?cloudReturn=`): kept through the sign-in, then out of the address bar.
+      const cloudLinkInUrl = cloudLinkFromSearch(window.location.search);
+      if (cloudLinkInUrl) stashCloudLink(cloudLinkInUrl);
+      stripCloudLinkParams();
       if (LEGACY_PATHS.has(window.location.pathname)) {
         window.history.replaceState(null, "", "/");
       }
@@ -613,7 +634,7 @@ export function WebClientRoot({
         Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
         window.history.replaceState(null, "", WELCOME_PATH);
         // A link waits for the sign-in; the card says so.
-        const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null;
+        const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null || peekCloudLink() != null;
         setPhase({
           kind: "signed-out",
           SignIn: linkWaiting ? function SignInForLink() { return <WebSignInScreen linkWaiting />; } : WebSignInScreen,
@@ -633,6 +654,9 @@ export function WebClientRoot({
       targetPathRef.current = targetToWebPath;
       let restored = installed.restored;
       let initialPath: string;
+      // A chat, lane or PR link goes first: a plan link waiting beside it would start a checkout away from it.
+      if (ownedLinkTarget) takeCloudLink();
+      const cloudLink = ownedLinkTarget ? null : peekCloudLink();
       if (ownedLinkTarget) {
         // A chat, lane or PR link names its machine and project: go there, not
         // to whatever this browser had open last.
@@ -656,6 +680,11 @@ export function WebClientRoot({
           if (disposed) return;
           initialPath = WELCOME_PATH;
         }
+      } else if (cloudLink) {
+        // ADE's website or Stripe sent the person to ADE Cloud: Settings ›
+        // ADE Cloud, over whatever project came back. `WebCloudPlanLink`
+        // finishes the link once the app is up. A pending link stays pending.
+        initialPath = WEB_CLOUD_SETTINGS_PATH;
       } else {
         const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
         // A lane shared with this account needs no machine of its own.
@@ -670,7 +699,7 @@ export function WebClientRoot({
         if (restored || machineFreeTarget) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
-      const AppRoot = await loadAppRoot();
+      const AppRoot = await loadAppRoot(accountClient, { standaloneSettings: cloudLink != null && restored !== "project" });
       if (!disposed) setPhase({ kind: "ready", AppRoot });
       // The Sentry session starts with the workspace, not on the signed-out page.
       if (!disposed) void import("../sentry").then((module) => module.startWebClientSentrySession()).catch(() => undefined);

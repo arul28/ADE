@@ -32,7 +32,7 @@ import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
-import { createWebCloudNamespace } from "./cloud";
+import { createWebCloudAccessNamespace, createWebCloudNamespace } from "./cloud";
 import { createWebProviderLoginsNamespace } from "./providerLogins";
 import { createGithubAccountAppWebMethods } from "./githubStub";
 import { createWebGithubDirectNamespace } from "../github/directAdapter";
@@ -168,9 +168,11 @@ export function createAdeWebAdapter(
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
     cloudAgents: misc.cloudAgents,
-    cloudAccess: misc.cloudAccess,
-    // Settings › ADE Cloud and the machine lists read the account through the connected machine.
-    cloud: createWebCloudNamespace(infra),
+    // Whether ADE Cloud is on comes from the account server itself: no computer needed.
+    cloudAccess: createWebCloudAccessNamespace(infra, accountClient),
+    // Settings › ADE Cloud and the machine lists read the account through the connected machine;
+    // the plan and billing calls go to the account server with this browser's own sign-in.
+    cloud: createWebCloudNamespace(infra, accountClient),
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

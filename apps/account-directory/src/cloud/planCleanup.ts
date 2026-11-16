@@ -11,7 +11,6 @@ import {
   type CloudPlanId,
 } from "./contract";
 import { sendCloudEmail } from "./email";
-import { cloudAccessAllows } from "./http";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { AWAKE_COMPUTER_CAP, CLOUD_PLANS, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudSizeFor, extraDiskMonthMaxGb, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
@@ -508,8 +507,6 @@ export async function runPlanLimitChecks(env: CloudEnv, computers: ComputerRow[]
   const accounts = await env.DB.prepare("select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?))")
     .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
   for (const account of accounts.results ?? []) {
-    // An account ADE Cloud no longer lets in is left as it is.
-    if (!cloudAccessAllows(env, account.user_id)) continue;
     try {
       await warnOldTermsEnding(env, account, byUser.get(account.user_id) ?? [], now);
       const over = overPlanInForce(env, account, byUser.get(account.user_id) ?? []);
@@ -574,8 +571,6 @@ export async function runPlanCleanupPicks(env: CloudEnv, provider: CloudProvider
         await clearChoice(env, account);
         continue;
       }
-      // An account ADE Cloud no longer lets in is left as it is.
-      if (!cloudAccessAllows(env, account.user_id)) continue;
       if (!choiceApplies(account, choice)) {
         // A pick made with a downgrade can land before the plan change is saved
         // (a failed save waits for Stripe's webhook): give it time to catch up.
@@ -677,13 +672,11 @@ async function recordOutcome(env: CloudEnv, userId: string, choice: PlanCleanupC
 const nameOf = (computer: ComputerRow): string => computer.lane_name ?? computer.name ?? computer.instance_id;
 
 /**
- * Whether `instanceId` is still to be freed, read fresh: the account is still
- * let in, the same pick still stands and names it, and its plan still
- * applies. The run's snapshot can be minutes old by the delete: the person
+ * Whether `instanceId` is still to be freed, read fresh: the same pick still
+ * stands and names it, and its plan still applies. The run's snapshot can be minutes old by the delete: the person
  * may have stayed on Pro meanwhile.
  */
 async function stillPicked(env: CloudEnv, userId: string, instanceId: string, choice: PlanCleanupChoice): Promise<boolean> {
-  if (!cloudAccessAllows(env, userId)) return false;
   const account = await env.DB.prepare("select * from cloud_accounts where user_id = ? and deleted_at is null").bind(userId).first<AccountRow>();
   const current = account ? choiceOf(account) : null;
   if (!(account != null && current != null && current.at === choice.at && current.instanceIds.includes(instanceId) && choiceApplies(account, current))) return false;

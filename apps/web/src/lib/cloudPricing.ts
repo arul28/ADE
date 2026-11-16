@@ -18,7 +18,10 @@ import {
   type CloudPlanId,
   type CloudTierId,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_PLANS, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudCatalog } from "../../../account-directory/src/cloud/plans";
+import { CLOUD_PLANS, DISK_ON_CREATE_GB, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudCatalog } from "../../../account-directory/src/cloud/plans";
+
+/** The disk each new computer takes from the plan's shared disk. */
+export const COMPUTER_START_DISK_GB = DISK_ON_CREATE_GB;
 
 /** Hours are kept in thousandths of a Small-hour. */
 const hoursOf = (milli: number): number => Math.round(milli / 1000);
@@ -61,8 +64,6 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
   };
 });
 
-/** The plan the page points people to. */
-export const HIGHLIGHTED_PLAN: CloudPlanId = "pro";
 
 export const FREE_PLAN = PRICING_PLANS[0]!;
 
@@ -127,3 +128,83 @@ export const formatCents = (cents: number): string => `${Number(cents.toFixed(2)
 
 /** "1,600". */
 export const formatCount = (value: number): string => value.toLocaleString("en-US");
+
+/** The month the plan finder counts in. */
+export const FINDER_DAYS_A_MONTH = 30;
+
+export type PlanCost = {
+  plan: PricingPlan;
+  /** What the month costs on this plan, extra hours included. */
+  costUsd: number;
+  /** Hours past the plan's own that the month needs. */
+  extraHours: number;
+  /** Hours of the plan left unused. */
+  spareHours: number;
+  /** GB past the plan's shared disk that the computers need, bought as extra disk. */
+  extraDiskGb: number;
+};
+
+/**
+ * What a month of `hours` costs on each plan that can run it, cheapest
+ * first. Free can run it only inside its own hours (work stops there); a
+ * paid plan runs past its hours with extra hours turned on.
+ */
+export function planCostsFor(hours: number, diskGb = 0): PlanCost[] {
+  const needed = Math.max(0, hours);
+  return PRICING_PLANS.flatMap((plan): PlanCost[] => {
+    const extraHours = Math.max(0, needed - plan.hours);
+    // Free can buy neither: past its hours or its disk, it doesn't run the month.
+    if (extraHours > 0 && plan.extraHourCents == null) return [];
+    const extraDiskGb = Math.max(0, diskGb - plan.diskGb);
+    if (extraDiskGb > 0 && plan.extraHourCents == null) return [];
+    // Extra disk bills by the GB, at its price for each 10 GB.
+    const extraDiskUsd = (extraDiskGb / 10) * EXTRA_DISK_USD_PER_10GB_MONTH;
+    const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100 + extraDiskUsd;
+    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed), extraDiskGb }];
+  }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
+}
+
+/** "$5", "$13.40". Rounded to the cent first, so plan arithmetic's float noise never shows. */
+export const formatUsd = (usd: number): string => {
+  const cents = Math.round(usd * 100) / 100;
+  return Number.isInteger(cents) ? `$${cents}` : `$${cents.toFixed(2)}`;
+};
+
+/**
+ * The plan the finder suggests for a month of `hours`, and the other plan
+ * worth naming. A plan that covers the month with its own hours wins over a
+ * cheaper one that runs on extra hours, unless it costs more than $5 or 30%
+ * more: a person rarely wants a bill that grows with every hour to save a
+ * dollar or two.
+ */
+export function suggestPlan(hours: number, diskGb = 0): { pick: PlanCost; other: PlanCost | null } | null {
+  const costs = planCostsFor(hours, diskGb);
+  const cheapest = costs[0];
+  if (!cheapest) return null;
+  const covered = costs.find((cost) => cost.extraHours === 0) ?? null;
+  if (cheapest.extraHours === 0 || !covered) return { pick: cheapest, other: null };
+  const gap = covered.costUsd - cheapest.costUsd;
+  return gap <= Math.max(5, cheapest.costUsd * 0.3)
+    ? { pick: covered, other: cheapest }
+    : { pick: cheapest, other: covered };
+}
+
+/** What one included hour costs on a paid plan, in cents: "1.7¢". Null on Free. */
+export function centsPerIncludedHour(plan: PricingPlan): string | null {
+  if (plan.priceUsd === 0 || plan.hours === 0) return null;
+  return `${Number(((plan.priceUsd * 100) / plan.hours).toFixed(1))}¢`;
+}
+
+/**
+ * A month of the plan's hours as a day of work: "3 hours a day" while one
+ * computer could do it, then "7 agents, day and night".
+ */
+export function planDayLine(plan: PricingPlan): string {
+  const perDay = plan.hours / FINDER_DAYS_A_MONTH;
+  if (perDay <= 24) {
+    const rounded = Math.max(1, Math.round(perDay));
+    return `${rounded} ${rounded === 1 ? "hour" : "hours"} a day`;
+  }
+  const agents = Math.round(perDay / 24);
+  return `${agents} ${agents === 1 ? "agent" : "agents"}, day and night`;
+}

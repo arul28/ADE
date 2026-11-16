@@ -8,6 +8,7 @@ import {
   type CloudIdleCleanupEntry,
 } from "../../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../../lib/format";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import { Banner } from "../../ui/notice";
 
@@ -72,7 +73,7 @@ export function CloudIdleCleanupNotices({ account, now, onChanged }: { account: 
   if (!entries.length) return null;
   const keep = async (entry: CloudIdleCleanupEntry) => {
     const bridge = window.ade.cloud?.keepIdleComputer;
-    if (!bridge) {
+    if (!isAdeAvailable(bridge)) {
       showToast({ tone: "error", title: "This version of ADE can't keep it from here", message: "Open the lane or send a message in it to keep it." });
       return;
     }

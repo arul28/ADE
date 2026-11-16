@@ -26,7 +26,10 @@ export function CloudAgentLimitsCard() {
   const load = useCallback(async () => {
     if (!bridge?.getAgentLimits) return;
     try {
-      setLimits(await bridge.getAgentLimits());
+      const read = await bridge.getAgentLimits();
+      setLimits(read);
+      // No answer: no computer could read them (the web app with every computer offline, or an older ADE on it).
+      setError(read ? null : "ADE couldn't read what agents may do on their own. Connect a computer, or update ADE on it.");
     } catch (loadError) {
       setError(ipcErrorMessage(loadError) || "Couldn't read what agents may do.");
     }
