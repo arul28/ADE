@@ -11,6 +11,7 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 type RendererSendMark =
   | "bubbleSet"
   | "bubblePainted"
+  | "createCalled"
   | "sessionCreated"
   | "sendCalled"
   | "sendResolved"
@@ -62,11 +63,15 @@ function finish(send: OpenSend): void {
   });
 }
 
-export function beginChatSendTiming(): ChatSendTimingHandle {
-  const startedAt = performance.now();
+/**
+ * Starts timing a send at the Enter press: now, or `enterAtMs` (wall clock)
+ * for a send that a draft launch makes after the press.
+ */
+export function beginChatSendTiming(enterAtMs?: number): ChatSendTimingHandle {
+  const startedAt = enterAtMs != null ? enterAtMs - performance.timeOrigin : performance.now();
   const send: OpenSend = {
     startedAt,
-    enterAtMs: Math.round(performance.timeOrigin + startedAt),
+    enterAtMs: enterAtMs != null ? Math.round(enterAtMs) : Math.round(performance.timeOrigin + startedAt),
     sessionId: null,
     marks: {},
   };

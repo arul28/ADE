@@ -1493,7 +1493,8 @@ function draftLaunchRequestKey(args: {
     kind: args.kind,
     mode: args.mode,
     autoCreate: args.autoCreate,
-    snapshot: args.snapshot,
+    // The Enter time differs on each press; a double press is still one launch.
+    snapshot: { ...args.snapshot, submittedAtMs: undefined },
   });
 }
 
@@ -1628,6 +1629,7 @@ function buildDraftChatMessageArgs(
     executionMode: prepared.executionMode,
     interactionMode: provider === "claude" ? interactionMode ?? null : null,
     ...(provider === "cursor" ? { runtime: "local" as const } : {}),
+    ...(prepared.submittedAtMs != null ? { clientSubmittedAtMs: prepared.submittedAtMs } : {}),
   };
 }
 
@@ -5427,6 +5429,8 @@ export function AgentChatPane({
   const submitInFlightRef = useRef(false);
   const latestForegroundDraftLaunchJobIdRef = useRef<string | null>(null);
   const draftLaunchInFlightKeysRef = useRef<Set<string>>(new Set());
+  /** The Enter time of the submit that is starting a draft launch now (send timing). */
+  const draftLaunchSubmittedAtRef = useRef<number | null>(null);
   const createSessionPromiseRef = useRef<Promise<string | null> | null>(null);
   const pendingNativeControlUpdateRef = useRef<{
     sessionId: string;
@@ -12561,6 +12565,15 @@ export function AgentChatPane({
       assertActive?: () => void;
       // Originating project binding.
       pin?: OpenProjectBinding | null;
+      /**
+       * The caller sends the first message at once and refreshes the list
+       * after it. Then no warmup and no list refresh go out here: the send
+       * starts the provider itself, and each extra call would reach the
+       * chat's machine ahead of the send.
+       */
+      sendFollows?: boolean;
+      /** Marked when the create call goes out (send timing). */
+      onCreateCalled?: () => void;
     } = {},
   ): Promise<AgentChatSession> => {
       if (constrainedModelSelectionError) {
@@ -12584,6 +12597,7 @@ export function AgentChatPane({
         ...(reservedSessionId ? { sessionId: reservedSessionId } : {}),
       };
       // No pin given: the pane's own lane, on the chat's machine.
+      options.onCreateCalled?.();
       const created = await agentChatApiRef.current.create(
         createArgs,
         requireChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current)),
@@ -12611,7 +12625,7 @@ export function AgentChatPane({
         draftSelectionLockedRef.current = false;
         setSelectedSessionId(created.id);
       }
-      if (desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
+      if (!options.sendFollows && desc?.isCliWrapped && (desc.family === "anthropic" || desc.family === "cursor")) {
         withChatPin(chatApiPin(options.pin ?? chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
           sessionId: created.id,
           modelId: launchModelId,
@@ -12620,7 +12634,9 @@ export function AgentChatPane({
         }).catch(() => { /* warmup is best-effort */ });
       }
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
-      if (targetLaneId === laneId && canRefreshPinnedProject(options.pin)) void refreshSessions({ force: true }).catch(() => {});
+      if (!options.sendFollows && targetLaneId === laneId && canRefreshPinnedProject(options.pin)) {
+        void refreshSessions({ force: true }).catch(() => {});
+      }
       return created;
   }, [buildChatCreateArgs, canRefreshPinnedProject, constrainedModelSelectionError, initialNativeControls, laneId, lastLaunchConfigStorageKey, notifySessionCreated, refreshSessions, touchSession, setSelectedSessionId]);
 
@@ -13367,12 +13383,23 @@ export function AgentChatPane({
     assertActive?: () => void,
   ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
+    // Send timing from the Enter press that started this launch (`chatSendTiming.ts`).
+    const sendTiming = prepared.submittedAtMs != null ? beginChatSendTiming(prepared.submittedAtMs) : null;
     try {
       // Re-assert immediately before each mutating call (not just once up the
       // stack): a timed-out launch can keep its IPC work alive, so each step
       // checks that the renderer-side launch is still valid before continuing.
       assertActive?.();
-      createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared, assertActive, pin });
+      createdSession = await createSessionForLane(targetLane.laneId, {
+        select: false,
+        launchState: prepared,
+        assertActive,
+        pin,
+        // `runRendererOwnedDraftLaunch` refreshes the list after the send.
+        sendFollows: true,
+        onCreateCalled: () => sendTiming?.mark("createCalled"),
+      });
+      sendTiming?.mark("sessionCreated");
       // Re-assert after creation: if the launch timed out while the session was
       // being created, abort now so the catch tears the session down rather
       // than sending into a stale launch.
@@ -13386,7 +13413,10 @@ export function AgentChatPane({
           createdSession.interactionMode ?? prepared.interactionMode,
         ),
       };
+      sendTiming?.attach(createdSession.id);
+      sendTiming?.mark("sendCalled");
       await agentChatApiRef.current.send(sendArgs, requireChatPin(pin));
+      sendTiming?.mark("sendResolved");
       // If the launch timed out while the prompt was in flight, tear the
       // session down rather than leaving a started-but-orphaned chat.
       assertActive?.();
@@ -13759,6 +13789,9 @@ export function AgentChatPane({
   }, [buildDraftLaunchSnapshotForCurrentState, copyPromptForLaunch, launchDraftIntoNewLane, modelId]);
 
   const launchDraftSession = useCallback(async (kind: DraftLaunchKind, mode: DraftLaunchMode) => {
+    // Taken at once, so a launch that returns early leaves no stale time behind.
+    const submittedAtMs = draftLaunchSubmittedAtRef.current;
+    draftLaunchSubmittedAtRef.current = null;
     // Machine selection starts the store transition synchronously, before React
     // can publish a fresh `projectTransitionBlocksChat` render. Read the store
     // at the mutation boundary too so foreground and background launches cannot
@@ -13819,7 +13852,10 @@ export function AgentChatPane({
       setError({ message: "Select a model first", kind: "hint" });
       return;
     }
-    const snapshot = buildDraftLaunchSnapshotForCurrentState();
+    const builtSnapshot = buildDraftLaunchSnapshotForCurrentState();
+    const snapshot = builtSnapshot && kind === "chat" && submittedAtMs != null
+      ? { ...builtSnapshot, submittedAtMs }
+      : builtSnapshot;
     if (!snapshot) {
       setError({ message: kind === "cli"
         ? "Enter a prompt or attach context before launching a CLI session."
@@ -15744,6 +15780,7 @@ export function AgentChatPane({
     }
 
     if (draftLaunchTargetIsAutoCreate && selectedSessionId == null && workDraftKind === "chat") {
+      draftLaunchSubmittedAtRef.current = sendTiming.enterAtMs;
       await launchDraftChat("foreground");
       return;
     }
@@ -15756,6 +15793,7 @@ export function AgentChatPane({
       && !lockSessionId
       && !draftLaunchTargetIsAutoCreate
     ) {
+      draftLaunchSubmittedAtRef.current = sendTiming.enterAtMs;
       await launchDraftChat("foreground");
       return;
     }

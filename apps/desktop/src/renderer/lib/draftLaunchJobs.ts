@@ -93,6 +93,11 @@ export type DraftLaunchSnapshot = {
   visualContextPrefix: string;
   visualContextDisplayChips: string;
   isLiteralSlashCommand: boolean;
+  /**
+   * Wall-clock ms of the Enter press that started this launch, for the send
+   * timing (`clientSubmittedAtMs`). Absent for a launch with no Enter.
+   */
+  submittedAtMs?: number;
 };
 
 export type PreparedDraftLaunch = DraftLaunchSnapshot & {

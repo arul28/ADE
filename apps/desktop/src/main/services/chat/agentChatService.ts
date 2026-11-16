@@ -53422,7 +53422,18 @@ export function createAgentChatService(args: {
       && actor?.kind === "agent"
       ? actor.chatSessionId?.trim() || null
       : null;
-    return createSessionInternal({ ...publicArgs, launchedBySessionId });
+    const receivedAtMs = Date.now();
+    const created = await createSessionInternal({ ...publicArgs, launchedBySessionId });
+    // Send timing for a new chat (Enter to first word): when the create came
+    // in and how long it took, next to `agent_chat.send_timing`.
+    logger.info("agent_chat.create_timing", {
+      sessionId: created.id,
+      provider: created.provider,
+      receivedAtMs,
+      durationMs: Date.now() - receivedAtMs,
+      reservedSessionId: Boolean(publicArgs.sessionId),
+    });
+    return created;
   };
 
   /**
