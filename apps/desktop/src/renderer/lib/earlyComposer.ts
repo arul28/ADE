@@ -162,16 +162,27 @@ function hashString(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-// A colour value of a root custom property (`#rrggbb`, `rgb()`, `color-mix()`, ...).
-const COLOUR_VALUE = /^(#[0-9a-f]{3,8}|(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\()/i;
+/**
+ * Root inline variables that move the early box's layout: the interface and
+ * code faces (`--font-sans`, `--font-mono`, any other font variable) and the
+ * web client's zoom factor.
+ */
+function movesLayout(name: string): boolean {
+  return name.includes("font") || name === "--ade-web-zoom-factor";
+}
 
 /**
  * The theme the window paints now, as far as it moves things: `data-theme`
- * plus a hash of the root's inline theme variables that are not colours
- * (fonts, corners, sizes). A layout from another key is not used. Colours are
- * left out because the copy takes them from the live variables, and with
- * "match app colours" each launch's scene picture tints them, later than the
- * early box shows.
+ * plus a hash of the root's inline variables that change the layout (fonts,
+ * zoom). A layout from another key is not used.
+ *
+ * Everything else a theme writes on the root only paints: colours, shadows,
+ * gradients, blurs, the backdrop. Those are left out because the copy takes
+ * them from the live variables, and with "match app colours" each launch's
+ * scene picture tints them all (shadows and gradients carry tinted colours
+ * too), later than the early box shows. Hashing them changed the key on every
+ * launch, so the box was never used. The route width, the font size and the
+ * pixel ratio have checks of their own.
  */
 export function currentEarlyComposerThemeKey(): string {
   if (typeof document === "undefined") return "";
@@ -180,9 +191,9 @@ export function currentEarlyComposerThemeKey(): string {
   const shape: string[] = [];
   for (let index = 0; index < style.length; index += 1) {
     const name = style.item(index);
-    const value = style.getPropertyValue(name).trim();
-    if (!COLOUR_VALUE.test(value)) shape.push(`${name}:${value}`);
+    if (movesLayout(name)) shape.push(`${name}:${style.getPropertyValue(name).trim()}`);
   }
+  shape.sort();
   return `${root.getAttribute("data-theme") ?? ""}|${hashString(shape.join(";"))}`;
 }
 
