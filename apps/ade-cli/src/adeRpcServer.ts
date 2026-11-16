@@ -103,7 +103,6 @@ import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveL
 import { crossMachineMoveRelation, withoutCrossMachineCallerFields } from "../../desktop/src/shared/crossMachineHandoff";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
-import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../../desktop/src/shared/adeActionAccess";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
@@ -185,7 +184,9 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { assertActionModelNames, assertFullModelName, savedRuleModelNames } from "./modelNameGuard";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { resolveMachineAdeDir } from "./services/projects/machineLayout";
+import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModels, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -421,7 +422,7 @@ const NEW_LANE_SETUP_TOOL_PROPERTIES = {
 const TOOL_SPECS: ToolSpec[] = [
   {
     name: "spawn_agent",
-    description: "Spawn a Codex or Claude CLI session in a lane-scoped tracked terminal.",
+    description: "Old: starts a Codex or Claude CLI session in a lane. start_cli_session starts any provider; use it instead.",
     inputSchema: {
       type: "object",
       required: ["laneId"],
@@ -473,7 +474,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_lane",
-    description: "Create a new lane/worktree for task execution, then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
+    description: "Create a new lane (a git worktree on a new branch), then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
     inputSchema: {
       type: "object",
       required: ["name"],
@@ -526,7 +527,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "start_cli_session",
-    description: "Start a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    description: "Start a tracked ADE Work CLI session for a provider in a lane. Pass model (not for shell).",
     inputSchema: {
       type: "object",
       required: ["laneId", "provider"],
@@ -556,12 +557,12 @@ const TOOL_SPECS: ToolSpec[] = [
         // Which of this machine's provider accounts the session signs in as.
         // Claude and Codex only; omit it to use the provider's default account.
         instanceId: { type: "string", minLength: 1 },
-        // Saved harness preset (body + brain + model) this CLI launches under.
+        // The Custom provider (harness + where it runs + model) this CLI
+        // launches under, by id (the CLI resolves `--custom-provider <name>`).
         // Ignored for grok/cursor/copilot/kimi, whose CLIs take no outside key
         // and therefore launch on their own sign-in.
         presetId: { type: "string", minLength: 1 },
-        // A stored API credential, for a model chosen from a provider key
-        // rather than from a preset.
+        // A stored API key, for a model chosen from a provider key.
         credentialId: { type: "string", minLength: 1 },
         tracked: { type: "boolean", default: true }
       }
@@ -1521,13 +1522,14 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "spawnChat",
-    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt.",
+    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt. modelId is required: ADE never picks a model (`ade chat models --text` lists the ids).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      required: ["modelId"],
       properties: {
         laneId: { type: "string" },
-        modelId: { type: "string" },
+        modelId: { type: "string", description: "The model the chat runs, e.g. anthropic/claude-opus-5-5." },
         reasoningEffort: { type: "string" },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES] },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
@@ -1839,18 +1841,35 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The model names the rule an `automations.saveRule` edit replaces already holds. */
-function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
-  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+/**
+ * What the rule an `automations.saveRule` edit replaces already holds: its
+ * model names (an unchanged old shorthand passes) and the places it already
+ * left without a model (an edit, such as a rename, may keep those; a model
+ * removed now is refused).
+ */
+function savedRuleKeptBy(
+  domain: string,
+  action: string,
+  input: unknown,
+  service: Record<string, unknown>,
+): { modelNames: Set<string>; missingModels: Set<string> } {
+  const none = { modelNames: new Set<string>(), missingModels: new Set<string>() };
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return none;
   const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
-  if (!id || typeof service.get !== "function") return new Set();
+  if (!id || typeof service.get !== "function") return none;
   try {
-    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+    const saved = (service.get as (args: { id: string }) => unknown)({ id });
+    if (!isRecord(saved)) return none;
+    return {
+      modelNames: savedRuleModelNames(saved),
+      missingModels: new Set(automationDraftMissingModels(saved).map((place) => place.key)),
+    };
   } catch (error) {
     // The save itself reports a missing or unreadable rule; without the saved
-    // names an unchanged old name is refused, which the caller can correct.
+    // rule an unchanged old name or missing model is refused, which the
+    // caller can correct.
     captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
-    return new Set();
+    return none;
   }
 }
 
@@ -3712,7 +3731,7 @@ function ptyAccessDenied(method: string, session?: SessionState): never {
     nextStep: foreignCaller
       ? "A caller on another machine owns no lane here, including a lane it created. "
         + "Run `ade shell start --machine <this machine>` without --lane to use your code there, "
-        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane>` and open the terminal from it."
+        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane> --provider <p> --model <id>` and open the terminal from it."
       : null,
   });
 }
@@ -5846,23 +5865,9 @@ async function runCtoOperatorBridgeTool(
   // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
   // only when a create or update actually runs.
   const bridgeActor = async () => (await callerRuntimeActor(runtime, session, false)) ?? undefined;
-  const ctoIdentity = runtime.ctoStateService.getIdentity();
-  // Null until the user picks a model the CTO can steer live; the Claude/Codex
-  // fallback below already covers "nothing chosen yet".
-  const ctoModelPreferences = ctoIdentity.modelPreferences;
-  const preferredProvider = (ctoModelPreferences?.provider ?? "").trim().toLowerCase();
-  const fallbackModelId = preferredProvider.includes("claude")
-    ? (getDefaultModelDescriptor("claude")?.id ?? null)
-    : (getDefaultModelDescriptor("codex")?.id ?? null);
-  const defaultModelId =
-    (typeof ctoModelPreferences?.modelId === "string" && ctoModelPreferences.modelId.trim().length
-      ? ctoModelPreferences.modelId.trim()
-      : null)
-    ?? fallbackModelId;
   const tools = createCtoOperatorTools({
     currentSessionId: session.identity.callerId || "ade-cli-cto",
     defaultLaneId,
-    defaultModelId,
     sessionService: runtime.sessionService,
     resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
@@ -6826,7 +6831,12 @@ async function runTool(args: {
       // The input the action receives: the first positional argument, a scalar
       // `arg` (an object there reaches the action too), or `args`.
       const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
-      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
+      const savedRule = savedRuleKeptBy(domain, action, actionInput, service);
+      assertActionModelNames(domain, action, actionInput, savedRule.modelNames);
+      assertLaunchModels(domain, action, actionInput, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+        keptMissingModels: savedRule.missingModels,
+      });
     }
     if (
       domain === "cto_state"
@@ -7986,7 +7996,15 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
+    if (!mayUseUserOnlyActions(session)) {
+      assertCliLaunchModelNamed(model, provider);
+      assertFullModelName(model, provider);
+      // A Custom provider or route runs its own model; a different one named here
+      // would be replaced silently, so it is refused as on `chat.launchCli`.
+      assertLaunchModels("chat", "launchCli", { provider, model, presetId }, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+      });
+    }
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
@@ -9823,7 +9841,10 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
+    if (!mayUseUserOnlyActions(session)) {
+      assertCliLaunchModelNamed(model, provider);
+      assertFullModelName(model, provider);
+    }
     const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
     const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
     const permissionMode = spawnCeiling

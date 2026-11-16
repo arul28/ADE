@@ -927,9 +927,9 @@ ade cloud work-state --json                       # ADE Cloud: the lanes of this
 ade cloud push-work --check --json                # the same check; without --check it commits and pushes every lane (ADE's server runs it before a free)
 ade cloud resize --request --size large --reason "…"  # ask the person to change this computer's size: a card in the chat, nothing changes; an agent with nobody there cannot resize
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
-ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
+ade usage stats --range 7d --text                  # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account
-ade usage stats --scope project --preset 30d --text
+ade usage stats --scope project --range 30d --text
 ade usage stats --scope account --force --text     # skip the account fan-out rate floor (explicit refresh)
 ade usage stats --since 2026-08-01T00:00:00Z --until 2026-08-08T00:00:00Z --text
 ade usage turns --days 14 --text                   # per-turn ledger (action usage.getTurnUsageSummary): cost and cache by provider, account, model, plus quota burn rates
@@ -1391,10 +1391,10 @@ A webhook automation gives a service (GitHub, Stripe, Linear, Sentry, anything t
 
 ```bash
 # GitHub issues opened → triage, every delivery as a new turn in this chat
-ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text
+ade automations webhook create --service github --filter body.action=opened --in-this-chat --text
 
 # Anything else; no signature; a custom prompt with request fields
-ade automations webhook create --preset generic --no-signature \
+ade automations webhook create --service generic --no-signature \
   --name "Deploy failures" --filter body.status=failed \
   --prompt "The {{trigger.body.service}} deploy failed: {{trigger.body.url}}. Find out why." --text
 ```

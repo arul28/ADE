@@ -1,3 +1,4 @@
+import { unknownModelHint } from "../../../shared/launchModelRule";
 import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 import { createHash, randomUUID } from "node:crypto";
 import { automationCloudHomeProblem, automationCloudProblem, automationCloudTarget, localTimeZone, parseAutomationCloudTarget } from "../../../shared/automationCloud";
@@ -4346,12 +4347,12 @@ export function createAutomationService({
   const resolveAutomationModelDescriptor = (rule: AutomationRule, action?: AutomationAction | null) => {
     const requestedModelId = action?.modelConfig?.modelId ?? rule.modelConfig?.modelId;
     if (requestedModelId && !getModelById(requestedModelId)) {
-      throw new Error(`Unknown model '${requestedModelId}'.`);
+      throw new Error(`Unknown model '${requestedModelId}'. ${unknownModelHint()}`);
     }
     const modelId = requestedModelId ?? defaultAutomationChatModelId();
     const modelDescriptor = getModelById(modelId) ?? getDefaultModelDescriptor("opencode");
     if (!modelDescriptor) {
-      throw new Error(`Unknown model '${modelId}'.`);
+      throw new Error(`Unknown model '${modelId}'. ${unknownModelHint()}`);
     }
     const providerGroup = resolveProviderGroupForModel(modelDescriptor);
     return {

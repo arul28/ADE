@@ -20,15 +20,15 @@ export const REMOTE_MCP_HELP = `
   ADE MCP
 
   Lets AI apps you choose (claude.ai, ChatGPT, Cursor, Claude Code, VS Code,
-  Grok, or anything that speaks remote MCP) run ade on the computers of your
+  Grok, or anything that speaks remote MCP) run ade on the machines of your
   ADE account through ADE Relay: one server URL for the account, and an app
-  can name the computer each call runs on. Off until you turn it on. Each app
+  can name the machine each call runs on. Off until you turn it on. Each app
   or token is read only or read & write (full access), and you can change or
   remove it any time.
 
-    $ ade mcp status --text                  On or off, the server URL, the computers and every connection
+    $ ade mcp status --text                  On or off, the server URL, the machines and every connection
     $ ade mcp on | off                       Turn ADE MCP on or off for your ADE account
-    $ ade mcp machine exclude "Mac mini"     Leave a computer out (include brings it back)
+    $ ade mcp machine exclude "Mac mini"     Leave a machine out (include brings it back)
     $ ade mcp machine include "Mac mini"
     $ ade mcp token create --label "Grok" --read-only --text
     $ ade mcp token create --label "Grok" --full-access --text
@@ -37,7 +37,7 @@ export const REMOTE_MCP_HELP = `
     $ ade mcp scope <connection-id> read|write
                                              Change what a connection may do
     $ ade mcp remove <connection-id>         Disconnect an app or revoke a token
-    $ ade mcp activity [--limit 50] --text   What connected apps ran on this computer, newest first
+    $ ade mcp activity [--limit 50] --text   What connected apps ran on this machine, newest first
 
   The MCP servers your agents get are a different list: 'ade mcp servers --help'.
   'ade mcp remove' does not touch them; 'ade mcp servers remove <name>' does.
@@ -143,7 +143,7 @@ function scopeLabel(value: unknown): string {
 
 function machineLine(machine: Record<string, unknown>): string {
   const isThisMachine = machine.isThisMachine === true;
-  const name = `${String(machine.name)}${isThisMachine ? " (this computer)" : ""}`;
+  const name = `${String(machine.name)}${isThisMachine ? " (this machine)" : ""}`;
   const online = machine.online === true ? "online" : machine.online === false ? "offline" : "online unknown";
   const row = {
     isThisMachine,
@@ -219,7 +219,7 @@ export function formatRemoteMcpResult(value: unknown): string {
     ];
     const machines = Array.isArray(result.machines) ? result.machines.filter(isRecord) : [];
     if (machines.length) {
-      lines.push(`Computers (${machines.length}):`);
+      lines.push(`Machines (${machines.length}):`);
       for (const machine of machines) lines.push(machineLine(machine));
     }
     const connections = result.connections.filter(isRecord);

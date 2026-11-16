@@ -28,6 +28,7 @@ import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout, resolvePersonalChatsStateRoot } from "../projects/machineLayout";
 import { asObject, requiredString, type ObjectArgs } from "./rpcArgs";
 import { credentialStoreProviderForHarness } from "../../../../desktop/src/shared/harnessCredentialProviders";
+import { decodeRoutePresetId, isRoutePresetId } from "../../../../desktop/src/shared/harnessRoutes";
 import { EmbeddedHostSettings } from "./embeddedHostSettings";
 import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
 import { isProviderInstanceProvider } from "../../../../desktop/src/shared/types/providerInstances";
@@ -414,8 +415,10 @@ export class PersonalChatScope {
           const storedPresets = runtime.accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, HARNESS_PRESETS_SETTING_KEY);
           const snapshot = normalizeHarnessPreset(args.presetSnapshot);
           const stored = Array.isArray(storedPresets) && normalizeHarnessPresetList(storedPresets).some((preset) => preset.id === presetId);
-          if (!stored && snapshot?.id !== presetId) {
-            throw new Error(`Harness preset '${presetId}' was not found.`);
+          // A `--via` route id carries its setup in itself; the launch decodes it.
+          const route = isRoutePresetId(presetId) && decodeRoutePresetId(presetId) !== null;
+          if (!stored && !route && snapshot?.id !== presetId) {
+            throw new Error(`Custom provider '${presetId}' is not on this machine. \`ade harness providers --text\` lists them.`);
           }
         }
         if (args.reasoningEffort !== undefined && args.reasoningEffort !== null) {

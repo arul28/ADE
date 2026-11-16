@@ -1324,13 +1324,13 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // The id and anchor keep the old word: they are storage and deeplinks, and
     // renaming them would break every saved link. Only the label is copy.
     id: "agents.harnesses",
-    label: "Custom",
-    // "harness"/"harnesses" stay as keywords: the label is Custom now, but
-    // that is the word in the docs, the CLI flags and every older screenshot.
+    label: "Custom providers",
+    // "harness"/"harnesses"/"preset" stay as keywords: older docs and
+    // screenshots used them, and someone may still search for them.
     // "body"/"brain" were internal shorthand that leaked into the wizard copy
     // and have been removed from it; searching for them should not teach a
     // vocabulary the product no longer speaks.
-    keywords: ["custom", "harness", "harnesses", "preset", "model", "account", "profile", "combination", "subagent", "launch", "logo"],
+    keywords: ["custom", "custom provider", "harness", "harnesses", "preset", "model", "account", "profile", "combination", "subagent", "launch", "logo"],
     tab: "agents",
     anchor: "ai-harnesses",
     scope: "account",

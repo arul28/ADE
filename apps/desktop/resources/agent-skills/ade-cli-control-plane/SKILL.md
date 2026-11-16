@@ -101,7 +101,7 @@ when the user asks, or when they ask another model to do part of the work
 
 ```
 ade new chat --mode chat --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --prompt "Fix the issue"
-ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"     # only when the user asks for a new lane
+ade new chat --mode chat --lane auto --lane-name fix-issue --provider codex --model <m> --prompt "Fix the issue"   # only when the user asks for a new lane
 ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --model <m>   # a lane for an issue, when asked
 ```
 
@@ -158,7 +158,7 @@ it until the running turn ends.
 
 ### Chats and CLI sessions
 
-Every `ade chat` command takes either kind of session id. A chat is ADE's own
+Every `ade chat` command takes a chat id or a CLI-session id. A chat is ADE's own
 agent runtime; a CLI session is a provider's CLI (Claude Code, Codex, Cursor,
 ...) running in an ADE terminal, which ADE drives by typing into it. You can
 be either: `$ADE_CHAT_SESSION_ID` names yours.

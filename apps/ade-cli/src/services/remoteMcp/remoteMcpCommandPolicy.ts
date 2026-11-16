@@ -137,6 +137,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["providers", new Set(["actions"])],
   ["providers accounts", new Set(["list"])],
   ["router", new Set(["routes"])],
+  // Where each model can run, and the saved Custom providers: what a launch
+  // needs to name its model. `harness env` (prints a token) and `test` stay out.
+  ["harness", new Set(["routes", "list", "providers"])],
   ["models", new Set(["catalog", "sheet"])],
   ["proxy", new Set(["status"])],
   ["actions", new Set(["list"])],
@@ -241,7 +244,7 @@ export function checkRemoteAdeCommand(
   if (command === "machines" && !MACHINE_READ_SUBCOMMANDS.has(words[0] ?? "list")) {
     return {
       ok: false,
-      reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a machine itself.`,
+      reason: `\`ade machines ${words[0]}\` is not available remotely. Change the machines on your ADE account in ADE on that machine.`,
     };
   }
   if (command === "android") {
@@ -264,7 +267,7 @@ export function checkRemoteAdeCommand(
     return {
       ok: false,
       reason: "Opening Simulator.app is not available through ADE MCP: the simulator runs inside ADE. "
-        + "Drop --window/--foreground; `ade apple screenshot --lane <lane>` shows the screen.",
+        + "Drop --window, --foreground and --open-simulator; `ade apple screenshot --lane <lane>` shows the screen.",
     };
   }
   if (command === "actions") {

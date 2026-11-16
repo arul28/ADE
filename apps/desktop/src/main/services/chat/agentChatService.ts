@@ -1506,6 +1506,7 @@ import {
   type OpenCodeTurnMapper,
 } from "./openCodeEventMapper";
 import { lastOpenCodeDiscoveredLocalModels, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { launchModelRequiredMessage, unknownModelHint } from "../../../shared/launchModelRule";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import { PI_ROUTE_PROVIDER_ID } from "./harnessRouteLaunch";
@@ -12138,6 +12139,9 @@ type TrackedCliTurnSignals = {
   onTrackedCliTurnStarted?: (listener: (event: TrackedCliTurnStartedEvent) => void) => () => void;
 };
 
+/** How often a launch whose OpenCode model is unknown may force a fresh inventory read. */
+const OPENCODE_LAUNCH_REFRESH_FLOOR_MS = 30_000;
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -15826,7 +15830,6 @@ export function createAgentChatService(args: {
   const buildCtoOperatorToolDeps = (args: {
     sessionId: string;
     laneId: string;
-    modelId: string | null;
     reasoningEffort: string | null;
     /**
      * The live session, when there is one. `previewSessionToolNames` builds the
@@ -15835,7 +15838,7 @@ export function createAgentChatService(args: {
      */
     managed?: ManagedChatSession | null;
   }): Parameters<typeof createCtoOperatorTools>[0] => {
-    const { sessionId, laneId, modelId, reasoningEffort, managed = null } = args;
+    const { sessionId, laneId, reasoningEffort, managed = null } = args;
     const automationService = getAutomationService?.() ?? null;
     // Hoisted out of the object literal below: TypeScript cannot carry a
     // `typeof automationService.get === "function"` narrowing across the arrow
@@ -15847,7 +15850,6 @@ export function createAgentChatService(args: {
     return {
         currentSessionId: sessionId,
         defaultLaneId: laneId,
-        defaultModelId: modelId,
         defaultReasoningEffort: reasoningEffort,
         resolveExecutionLane: resolveCtoExecutionLane,
         laneService,
@@ -15996,7 +15998,6 @@ export function createAgentChatService(args: {
     return createCtoOperatorTools(buildCtoOperatorToolDeps({
       sessionId: managed.session.id,
       laneId: managed.session.laneId,
-      modelId: managed.session.modelId ?? null,
       reasoningEffort: managed.session.reasoningEffort ?? null,
       managed,
     }));
@@ -52235,9 +52236,15 @@ export function createAgentChatService(args: {
     }
     const presetSpec = trimmedPresetId ? readPresetLaunchTarget(trimmedPresetId, resolveMachineAdeDir()) : null;
     const callerModel = typeof model === "string" ? model : "";
-    const rawModelId = typeof modelId === "string" ? modelId.trim() : "";
-    const rawModel = !callerModel.trim() && !rawModelId && presetSpec?.model ? presetSpec.model : callerModel;
-    const requestedModelDescriptor = rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined;
+    // A Custom provider or a `--via` route runs its own model, spelled the way
+    // its harness launches it (OpenCode's `opencode/<provider>/<model>`). An
+    // agent or script that named a different one was refused by the CLI, the
+    // MCP tool or the RPC agent guard; this spelling only replaces a short one.
+    const presetModel = presetSpec?.model?.trim() ?? "";
+    const rawModelId = presetModel || (typeof modelId === "string" ? modelId.trim() : "");
+    const rawModel = presetModel || callerModel;
+    const lookUpRequestedModel = () => (rawModelId ? getModelById(rawModelId) ?? resolveModelAlias(rawModelId) : undefined);
+    let requestedModelDescriptor = lookUpRequestedModel();
     const modelFromModelId = requestedModelDescriptor
       ? requestedModelDescriptor.isCliWrapped
         ? requestedModelDescriptor.providerModelId
@@ -52258,8 +52265,14 @@ export function createAgentChatService(args: {
               : provider === "pi"
                 ? getDynamicPiModelDescriptors()[0]?.id ?? "pi/default"
                 : "");
-    const resolvedModelId = requestedModelDescriptor?.id
+    let resolvedModelId = requestedModelDescriptor?.id
       ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
+    // The providers above have a default for internal callers (automations,
+    // side chats); agents, scripts and ADE MCP were refused a missing model
+    // before reaching here. This catches a provider with no default at all.
+    if (!normalizedInputModel.trim()) {
+      throw new AdeExpectedError(launchModelRequiredMessage(presetSpec?.harness ?? provider, "model"), "user");
+    }
 
     // Refusing beats delivering a chat that quietly lacks the tools it was
     // asked for. A caller that wired an MCP server into a thread depends on it;
@@ -52307,22 +52320,30 @@ export function createAgentChatService(args: {
     const presetSuppliesModel = Boolean(presetSpec?.model);
     const launchingProvider: AgentChatProvider = presetSpec?.harness ?? provider;
     if (launchingProvider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
-      throw new AdeExpectedError("OpenCode chat requires a known model ID. Select a model from the registry.", "user");
+      // OpenCode's models are known only after its inventory is read, which a
+      // brain that just started (or just saw a key change) has not done yet:
+      // read it once before calling a listed model unknown.
+      await refreshOpenCodeModelsForLaunch();
+      requestedModelDescriptor = lookUpRequestedModel();
+      resolvedModelId = requestedModelDescriptor?.id ?? resolveModelIdFromStoredValue(normalizedInputModel, provider);
+      if (!resolvedModelId) {
+        throw new AdeExpectedError(`OpenCode has no model '${normalizedInputModel}'. ${unknownModelHint("opencode")}`, "user");
+      }
     }
 
     if (launchingProvider === "cursor" && !resolvedModelId) {
-      throw new AdeExpectedError("Cursor chat requires a known model. Pick a Cursor model from the model list.", "user");
+      throw new AdeExpectedError(`Cursor has no model '${normalizedInputModel}'. ${unknownModelHint("cursor")}`, "user");
     }
     if (launchingProvider === "droid" && !resolvedModelId && !presetSuppliesModel) {
-      throw new AdeExpectedError("Droid chat requires a known model. Pick a Droid model from the model list.", "user");
+      throw new AdeExpectedError(`Droid has no model '${normalizedInputModel}'. ${unknownModelHint("droid")}`, "user");
     }
     if (launchingProvider === "pi" && !resolvedModelId && !presetSuppliesModel) {
-      throw new AdeExpectedError("Pi chat requires a known model. Refresh the Pi model list and select a model.", "user");
+      throw new AdeExpectedError(`Pi has no model '${normalizedInputModel}' (its list may need a refresh in Settings › Providers). ${unknownModelHint("pi")}`, "user");
     }
 
     const resolvedDescriptor = requestedModelDescriptor ?? (resolvedModelId ? getModelById(resolvedModelId) : undefined);
     if (resolvedModelId && !resolvedDescriptor) {
-      throw new Error(`Unknown model '${resolvedModelId}'.`);
+      throw new AdeExpectedError(`Unknown model '${resolvedModelId}'. ${unknownModelHint(launchingProvider)}`, "user");
     }
 
     if (launchingProvider === "cursor") {
@@ -53234,7 +53255,7 @@ export function createAgentChatService(args: {
         ?? (context.provider ? getDefaultModelDescriptor(context.provider) : null)
         ?? getAppDefaultModelDescriptor();
     if (!targetDescriptor || targetDescriptor.deprecated) {
-      throw new Error(requestedModelId ? `Unknown model '${requestedModelId}'.` : "Select a target model before handing off this CLI session.");
+      throw new Error(requestedModelId ? `Unknown model '${requestedModelId}'. ${unknownModelHint()}` : `Pass the model to hand this CLI session to (--model <id>). ${unknownModelHint()}`);
     }
     const requestedTargetLaneId = typeof args.targetLaneId === "string" ? args.targetLaneId.trim() : "";
     const targetLaneId = requestedTargetLaneId || row.laneId;
@@ -53349,7 +53370,7 @@ export function createAgentChatService(args: {
       throw new Error("A source session is required to hand off a chat.");
     }
     if (!targetId.length) {
-      throw new Error("Select a target model before handing off this chat.");
+      throw new Error(`Pass the model to hand this chat to (--model <id>). ${unknownModelHint()}`);
     }
     assertChatRuntimeOwnedHere(sourceId, "hand off");
 
@@ -53368,7 +53389,7 @@ export function createAgentChatService(args: {
 
     const targetDescriptor = getModelById(targetId) ?? resolveModelAlias(targetId);
     if (!targetDescriptor || targetDescriptor.deprecated) {
-      throw new Error(`Unknown model '${targetId}'.`);
+      throw new Error(`Unknown model '${targetId}'. ${unknownModelHint()}`);
     }
 
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
@@ -54491,7 +54512,7 @@ export function createAgentChatService(args: {
     const targetId = args.targetModelId?.trim();
     const targetDescriptor = targetId ? getModelById(targetId) ?? resolveModelAlias(targetId) : undefined;
     if (!targetDescriptor || targetDescriptor.deprecated) {
-      throw new Error("Select an available destination model before sending this chat.");
+      throw new Error(`Pass a model the other machine has (--model <id>). ${unknownModelHint()}`);
     }
     const targetProvider = resolveProviderGroupForModel(targetDescriptor);
     // Cross-machine fork supports every provider now: when the destination
@@ -58135,7 +58156,7 @@ export function createAgentChatService(args: {
       ? getModelById(requestedModelId) ?? resolveModelAlias(requestedModelId)
       : null;
     if (requestedModelId && (!targetDescriptor || targetDescriptor.deprecated)) {
-      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'.`);
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'. ${unknownModelHint()}`);
     }
     const launchContext = resolveLaneLaunchContext({
       laneService,
@@ -75155,6 +75176,34 @@ export function createAgentChatService(args: {
     return modelCatalogContainsRefreshProvider(catalog, refreshProvider, cursorSource);
   };
 
+  /** Read OpenCode's provider inventory (cached unless `force`), local models included. */
+  const probeOpenCodeInventory = async (force: boolean) => probeOpenCodeProviderInventory({
+    projectRoot,
+    projectConfig: projectConfigService.get().effective,
+    logger,
+    force,
+    discoveredLocalModels: await discoverOpenCodeLocalModels(),
+  });
+
+  /**
+   * Read OpenCode's inventory so a model the registry misses is known to a
+   * launch. Forced, because a cached inventory can predate a model OpenCode now
+   * offers, but at most once per OPENCODE_LAUNCH_REFRESH_FLOOR_MS: a typo or an
+   * agent retrying it reads the cache instead of restarting the probe. A
+   * failed read leaves the list as it was.
+   */
+  let lastForcedOpenCodeLaunchProbeAt = 0;
+  const refreshOpenCodeModelsForLaunch = async (): Promise<void> => {
+    const now = Date.now();
+    const force = now - lastForcedOpenCodeLaunchProbeAt >= OPENCODE_LAUNCH_REFRESH_FLOOR_MS;
+    if (force) lastForcedOpenCodeLaunchProbeAt = now;
+    try {
+      await probeOpenCodeInventory(force);
+    } catch (error) {
+      logger.warn("agent_chat.opencode_inventory_refresh_failed", { error: getErrorMessage(error) });
+    }
+  };
+
   const discoverOpenCodeLocalModels = async (
     knownAuth?: Awaited<ReturnType<typeof detectAuth>>,
   ): Promise<DiscoveredLocalModelEntry[]> => {
@@ -75441,14 +75490,7 @@ export function createAgentChatService(args: {
         let modelIds: string[];
         let error: string | null;
         if (args.activateRuntime) {
-          const discoveredLocalModels = await discoverOpenCodeLocalModels();
-          const inventory = await probeOpenCodeProviderInventory({
-            projectRoot,
-            projectConfig: effectiveConfig,
-            logger,
-            force: false,
-            discoveredLocalModels,
-          });
+          const inventory = await probeOpenCodeInventory(false);
           modelIds = inventory.modelIds;
           error = inventory.error;
         } else {
@@ -75674,15 +75716,7 @@ export function createAgentChatService(args: {
 
     const effectiveConfig = projectConfigService.get().effective;
     const opencodeInventory = await (async () => {
-      if (shouldRefreshOpenCode) {
-        return await probeOpenCodeProviderInventory({
-          projectRoot,
-          projectConfig: effectiveConfig,
-          logger,
-          force: mode === "force",
-          discoveredLocalModels: await discoverOpenCodeLocalModels(),
-        });
-      }
+      if (shouldRefreshOpenCode) return await probeOpenCodeInventory(mode === "force");
       const peeked = peekOpenCodeInventoryCache({
         projectRoot,
         projectConfig: effectiveConfig,
@@ -77376,10 +77410,10 @@ export function createAgentChatService(args: {
     const requestedPresetId = typeof requestedPresetIdArg === "string" ? requestedPresetIdArg.trim() : "";
     const requestedPreset = requestedPresetId ? readPresetLaunchTarget(requestedPresetId, resolveMachineAdeDir()) : null;
     if (requestedPresetId && !requestedPreset?.model) {
-      throw new Error(`Preset '${requestedPresetId}' is not on this machine.`);
+      throw new Error(`Custom provider '${requestedPresetId}' is not on this machine. \`ade harness providers --text\` lists them.`);
     }
     if (requestedPresetIdArg === null && modelId === undefined) {
-      throw new Error("Pick a model to leave the preset for.");
+      throw new Error("Pick a model to switch to from the Custom provider.");
     }
     // An agent can only lower permissions, never raise them past its own
     // chat's level or the target's parent. Checked only when the update can
@@ -77526,7 +77560,7 @@ export function createAgentChatService(args: {
 
       const descriptor = getModelById(nextModelId) ?? resolveModelAlias(nextModelId);
       if (!descriptor) {
-        throw new Error(`Unknown model '${nextModelId}'.`);
+        throw new Error(`Unknown model '${nextModelId}'. ${unknownModelHint()}`);
       }
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);

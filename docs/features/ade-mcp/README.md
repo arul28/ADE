@@ -219,8 +219,9 @@ Reads: `projects_list`, `lanes_list`, `lanes_show`, `files_tree`, `files_read`,
 `chat_wait`, `proof_review`, `usage_limits`, `machines_list`, and `inbox`,
 the attention loop. Without `project`, `inbox` reads each project opened on the computer in
 the last 30 days (at most six, two at a time, in one run slot) and tags every
-item with its project; `chat_start` without `provider` or `model` starts on the
-model the computer last launched a chat with (`chat-launch-defaults.json`). A model
+item with its project. `chat_start` requires `model`: ADE never picks one for
+an outside app, and the refusal names `ade chat models` and `ade harness
+routes`, which a read-only connection can also run. A model
 is named in full (`claude-opus-5-5`, `anthropic/claude-opus-5-5`); a short
 name like `opus` or a retired id is refused with the full names it could mean.
 

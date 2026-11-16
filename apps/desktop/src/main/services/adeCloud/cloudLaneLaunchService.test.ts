@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCloudLaneLaunchService, type CloudLaneLaunchDeps, type CloudLaneLaunchService } from "./cloudLaneLaunchService";
 import { COMPUTER_DELETED_SENTENCE } from "./cloudLaneLaunchSteps";
 import HANDED_OFF_RECORD from "./__fixtures__/handedOffCloudLaunch.json";
-import { getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
 
 const LAUNCH_ID = HANDED_OFF_RECORD.snapshot.launchId;
@@ -90,8 +89,6 @@ describe("a cloud lane launch whose computer is gone", () => {
 });
 
 describe("a cloud chat launch's model", () => {
-  const CODEX_DEFAULT = getDefaultModelDescriptor("codex")?.id;
-
   /** Starts a chat launch with these create fields and returns the model its saved record carries to the server and the computer. */
   async function savedModel(create: Record<string, unknown>) {
     const recordsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cloud-lane-launch-"));
@@ -123,29 +120,21 @@ describe("a cloud chat launch's model", () => {
   }
 
   it.each([
-    // ADE Cloud refuses a chat launch with no model: one named nothing takes the provider's default.
-    ["no model", { model: "" }, { model: CODEX_DEFAULT, modelId: CODEX_DEFAULT }],
-    ["a blank model", { model: "  ", modelId: " " }, { model: CODEX_DEFAULT, modelId: CODEX_DEFAULT }],
-    ["a model", { model: "gpt-6-luna" }, { model: "gpt-6-luna", modelId: null }],
-    ["a model id", { model: "", modelId: "openai/gpt-6-luna" }, { model: "", modelId: "openai/gpt-6-luna" }],
-  ])("%s", async (_label, create, expected) => {
-    expect(CODEX_DEFAULT).toBeTruthy();
-    expect(await savedModel(create)).toEqual(expected);
+    ["no model", { model: "" }],
+    ["a blank model", { model: "  ", modelId: " " }],
+    // A Custom provider (or route) says where the model runs; the launch still names the model.
+    ["a preset with no model", {
+      model: "",
+      presetId: encodeRoutePresetId({ harness: "codex", source: { kind: "subscription", provider: "codex" }, model: "openai/gpt-6-luna" }),
+    }],
+  ])("refuses %s: ADE never picks one", async (_label, create) => {
+    await expect(savedModel(create)).rejects.toThrow(/Send model/);
   });
 
-  it("a preset with no model runs the preset's model, and one this computer doesn't know is refused", async () => {
-    const presetId = encodeRoutePresetId({ harness: "codex", source: { kind: "subscription", provider: "codex" }, model: "openai/gpt-6-luna" });
-    const { model } = await savedModel({ model: "", presetId });
-    expect(model).toBeTruthy();
-    expect(model).not.toBe(CODEX_DEFAULT);
-    expect(model).toContain("gpt-6-luna");
-
-    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-home-"));
-    vi.stubEnv("ADE_HOME", emptyHome);
-    try {
-      await expect(savedModel({ model: "", presetId: "no-such-preset" })).rejects.toThrow("can't find the preset");
-    } finally {
-      vi.unstubAllEnvs();
-    }
+  it.each([
+    ["a model", { model: "gpt-6-luna" }, { model: "gpt-6-luna", modelId: null }],
+    ["a model id", { model: "", modelId: "openai/gpt-6-luna" }, { model: "", modelId: "openai/gpt-6-luna" }],
+  ])("keeps %s as given", async (_label, create, expected) => {
+    expect(await savedModel(create)).toEqual(expected);
   });
 });

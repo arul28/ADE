@@ -71,7 +71,7 @@ them to the provider adapter:
 - **Spawned helpers:** there is no separate orchestration mode. A
   coordinating agent spawns its own helpers from any thread with
   `ade chat create --type subagent --provider <p> --model <m>
-  [--instance <id>] [--preset <id>]`, and each child is an ordinary agent
+  [--instance <id>] [--custom-provider <name>]`, and each child is an ordinary agent
   with the same runtime, permissions, and tools.
 
 ### ADE CLI path

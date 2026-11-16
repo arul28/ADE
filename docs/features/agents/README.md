@@ -25,7 +25,7 @@ The former worker/hiring agents were removed. There is one persistent identity â
 | `apps/ade-cli/src/services/builtInBrowser/remoteBrowserTabHosts.ts`, `remoteBrowserBroadcast.ts`, `remoteBrowserReceivedFiles.ts`, `remoteBrowserOwnerNames.ts` | The forwarder's parts: which machine's browser holds each tab and browser session (so a task's commands follow its tab); broadcasts to every desktop (`listTabsForAgent` for `ade browser status`, `releaseLaneTabs` for a deleted or archived lane); writing the screenshot bytes a desktop's reply carries; chat titles and lane names for the owners `status` lists. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
-| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for discovering, selecting, and launching saved harness presets. |
+| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for launching on a specific setup: `--via` routes, saved Custom providers (`--custom-provider`), accounts and stored keys; every launch names its model. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, reporting session activity when a provider has trusted session-scoped CLI access, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, the CTO, and mobile-started runtime work. |
@@ -293,7 +293,7 @@ path.
 
 There is no separate orchestration mode: a coordinating agent spawns its own
 helpers from any thread with
-`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--preset <id>]`,
+`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--custom-provider <name>]`,
 and reads their results back through the same spawn lineage.
 
 The runtime mechanics â€” provider-native mid-turn completion steering, the
