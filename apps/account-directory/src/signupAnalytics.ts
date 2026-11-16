@@ -27,7 +27,7 @@
  */
 
 import type { RelayAccountPurgeEnv } from "./activityRelay";
-import { recordSignupIp, signupClientIp } from "./cloud/abuseSignals";
+import { alertSignupBurst, recordSignupIp, signupClientIp } from "./cloud/abuseSignals";
 import { deleteCloudAccount } from "./cloud/accountDeletion";
 import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { deleteAccountProjects } from "./accountProjects/store";
@@ -47,6 +47,10 @@ export type SignupAnalyticsEnv = RelayAccountPurgeEnv & Partial<Omit<GithubAppEn
   STRIPE_SECRET_KEY?: string;
   /** Keys the hashed sign-up address (`cloud/abuseSignals.ts`). */
   CLOUD_CHAT_MASTER_KEY?: string;
+  /** The owner's sign-up burst alert (`cloud/abuseSignals.ts` `alertSignupBurst`). */
+  RESEND_API_KEY?: string;
+  CLOUD_ALERT_EMAIL?: string;
+  BILLING_RETURN_ORIGIN?: string;
 };
 
 const ROUTE = "/webhooks/clerk";
@@ -265,7 +269,9 @@ export async function handleSignupAnalyticsRequest(
   // The sign-up's address, hashed, for the daily report's burst alarm (`cloud/abuseSignals.ts`). Never fails the webhook.
   if (payload.type === "user.created" && env.DB) {
     const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : Date.now();
-    await recordSignupIp({ DB: env.DB, CLOUD_CHAT_MASTER_KEY: env.CLOUD_CHAT_MASTER_KEY }, userId, signupClientIp(payload), createdAtMs);
+    const ipHash = await recordSignupIp({ DB: env.DB, CLOUD_CHAT_MASTER_KEY: env.CLOUD_CHAT_MASTER_KEY }, userId, signupClientIp(payload), createdAtMs);
+    // The owner hears of a burst from one address at once (alert only, nobody is held).
+    if (ipHash) await alertSignupBurst({ ...env, DB: env.DB }, userId, ipHash, Date.now());
   }
   if (!analyticsToken) return payload.type === "user.deleted" ? json(200, { deleted: true }) : json(503, { error: "not_configured" });
 

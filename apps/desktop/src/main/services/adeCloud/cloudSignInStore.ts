@@ -11,9 +11,14 @@
  */
 
 import {
+  CLAUDE_TOKEN_PATTERN,
   CLOUD_SIGN_INS,
+  cloudSignInVaultKey,
+  encodeCloudSignIn,
+  parseCloudSignIn,
   type CloudSignInId,
   type CloudSignInStatus,
+  type StoredCloudSignIn,
 } from "../../../shared/cloudSignIns";
 import type { CloudVault } from "./cloudAccess";
 
@@ -22,44 +27,11 @@ type Logger = { warn?(event: string, meta?: Record<string, unknown>): void } | n
 /** The account vault, one item per sign-in key; null when signed out of ADE. */
 export type CloudSignInVaults = (vaultKey: string) => CloudVault | null;
 
-/** Claude's item keeps the name it had when it was the only one. */
-export function cloudSignInVaultKey(id: CloudSignInId): string {
-  return id === "claude" ? "cloud-claude-token" : `cloud-key-${id}`;
-}
+// The stored form (vault keys, values, the token pattern) is shared with the account server (shared/cloudSignIns.ts).
 
-/** Claude Code's subscription token: `sk-ant-oat01-…`. */
-export const CLAUDE_TOKEN_PATTERN = /\bsk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}/;
-/**
- * The same, only once something follows it: output arrives in chunks, and a
- * token cut at a chunk's end must not be saved half. Claude Code ends the
- * line after it; at exit the plain pattern reads a token printed last.
- */
-export const COMPLETE_CLAUDE_TOKEN_PATTERN = /\bsk-ant-oat\d{2}-[A-Za-z0-9_-]{20,}(?=[^A-Za-z0-9_-])/;
-
-type StoredSignIn = { v: 1; token: string; savedAt: number };
-
-function parseStored(id: CloudSignInId, raw: string | null): StoredSignIn | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredSignIn>;
-    if (parsed?.v !== 1 || typeof parsed.token !== "string" || !parsed.token) return null;
-    if (id === "claude" && !CLAUDE_TOKEN_PATTERN.test(parsed.token)) return null;
-    return { v: 1, token: parsed.token, savedAt: typeof parsed.savedAt === "number" ? parsed.savedAt : 0 };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * A pasted key, trimmed, or why it can't be one. Formats change, so only what
- * can never be a key is refused: nothing, spaces inside, or a whole file.
- */
-export function cleanCloudCloudKey(raw: unknown): { ok: true; key: string } | { ok: false; message: string } {
-  const key = typeof raw === "string" ? raw.trim() : "";
-  if (!key) return { ok: false, message: "Paste the key first." };
-  if (/\s/.test(key)) return { ok: false, message: "That has spaces in it. Paste only the key." };
-  if (key.length < 8 || key.length > 4096) return { ok: false, message: "That doesn't look like a key. Paste only the key." };
-  return { ok: true, key };
+function parseStored(id: CloudSignInId, raw: string | null): StoredCloudSignIn | null {
+  const parsed = parseCloudSignIn(raw, (token) => id !== "claude" || CLAUDE_TOKEN_PATTERN.test(token));
+  return parsed ? { v: 1, token: parsed.token, savedAt: parsed.savedAt ?? 0 } : null;
 }
 
 /** Keeps one sign-in. False when the account refused it. */
@@ -71,8 +43,7 @@ export async function saveCloudSignIn(
 ): Promise<boolean> {
   const vault = vaults(cloudSignInVaultKey(id));
   if (!vault) return false;
-  const stored: StoredSignIn = { v: 1, token, savedAt: Date.now() };
-  const ok = await vault.set(JSON.stringify(stored)).catch(() => {
+  const ok = await vault.set(encodeCloudSignIn(token, Date.now())).catch(() => {
     logger?.warn?.("cloud.cloud_sign_in_save_threw", { id, reason: "vault_write_threw" });
     return false;
   });
@@ -94,7 +65,7 @@ export async function removeCloudSignIn(
   });
 }
 
-type ReadResult = { id: CloudSignInId; stored: StoredSignIn | null; readable: boolean };
+type ReadResult = { id: CloudSignInId; stored: StoredCloudSignIn | null; readable: boolean };
 
 async function readAll(vaults: CloudSignInVaults | null, logger: Logger): Promise<ReadResult[] | null> {
   // Signed out of ADE: there is no account to read.

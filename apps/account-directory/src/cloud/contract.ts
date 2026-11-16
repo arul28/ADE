@@ -52,6 +52,15 @@
  *   GET    /cloud/launches/:launch/files/:file          the file's bytes   (from the computer)
  *   DELETE /cloud/launches/:launch                      CloudLaunchRecord   (cancel; deletes the computer before the agent starts)
  *   POST   /cloud/launches/:launch/join                 CloudLaunchJoinResult   NO account token: the computer's join code (CloudLaunchJoinRequest)
+ *   GET    /cloud/launches?active=1                     CloudLaunchList   (the caller's launches still in progress, and failures of the last day)
+ *   GET    /cloud/launches/:launch/messages             { messages: CloudLaunchMessage[] }
+ *   POST   /cloud/launches/:launch/messages             CloudLaunchMessage   (CloudLaunchMessageRequest; 201 new, 200 the same id again; 409 `chat_ready` once the chat exists)
+ *   POST   /cloud/launches/:launch/messages/:msg/claim  CloudLaunchMessage   (from the computer: { claimId }; 409 `message_taken`)
+ *   PUT    /cloud/launches/:launch/messages/:msg        CloudLaunchMessage   (from the computer: CloudLaunchMessageReport)
+ *   GET    /cloud/sign-ins                              CloudAccountSignIns   (what the account vault holds for ADE Cloud, never a value)
+ *   PUT    /cloud/sign-ins/:id                          CloudAccountSignIns   ({ key }: saved to the account vault)
+ *   DELETE /cloud/sign-ins/:id                          CloudAccountSignIns
+ *   GET    /cloud/models                                CloudModelCatalog   (models per provider, for a client with no computer)
  *   POST   /cloud/instances/:id/sign-ins                CloudRemoteSignInStart   ({ provider })
  *   POST   /cloud/instances/:id/sign-ins/:job/code      CloudRemoteSignInStatus   ({ code })
  *   GET    /cloud/instances/:id/sign-ins/:job           CloudRemoteSignInStatus
@@ -172,6 +181,10 @@ export const CLOUD_PATHS = {
   referralsRedeem: "/cloud/referrals/redeem",
   /** The server launcher (`launches.ts`): a lane on a new computer for a caller with no computer. */
   launches: "/cloud/launches",
+  /** The account vault's ADE Cloud sign-ins, for the web (`accountSignIns.ts`): status only, never a value. */
+  signIns: "/cloud/sign-ins",
+  /** Models per provider for a client with no computer (`models.ts`). */
+  models: "/cloud/models",
   /** Delete the cloud computers of one project (`projectComputers.ts`). */
   projectComputersDelete: "/cloud/projects/computers/delete",
   /** Automations whose home is ADE Cloud (`automations.ts`, C9). */
@@ -1121,6 +1134,12 @@ export type CloudServerLaunchRequest = {
     fast?: boolean;
     prompt: string;
     attachments?: CloudLaunchAttachment[];
+    /**
+     * The client's id for the first message (`CloudLaunchMessage.messageId`).
+     * Left out, the launch id is used. The message is row 1 of the launch's
+     * messages and is sent once, as the chat's first message.
+     */
+    messageId?: string;
   };
   /**
    * Who asked: a person on the web or the phone (the default), or an
@@ -1163,15 +1182,45 @@ export type CloudServerLaunchRequest = {
 };
 
 /**
+ * `POST /cloud/launches` as the web and the phone may send it: the same as
+ * `CloudServerLaunchRequest`, with less to fill in.
+ * - `project`: a GitHub origin, or the id of one of the account's projects
+ *   (`accountProjectId`, from `/account/projects`), or both (they must agree).
+ * - `lane`: left out, the lane is new, its id comes from the launch id, and
+ *   its name from the first message (renamed by the computer, `autoName`).
+ * - `sizeId`: left out is Small, chosen by ADE (`sizeChoice: "default"`).
+ * The record's `request` always holds the filled-in `CloudServerLaunchRequest`.
+ */
+export type CloudLaunchStartRequest = Omit<CloudServerLaunchRequest, "project" | "lane" | "sizeId"> & {
+  sizeId?: CloudTierId;
+  project: { origin?: string; accountProjectId?: string };
+  lane?: Partial<CloudServerLaunchRequest["lane"]>;
+};
+
+/**
  * - `draft`: files uploaded, not started.
  * - `making`: the server is making the computer.
  * - `joining`: the computer exists and signs itself in with its join code.
  * - `needs_approval`: its headless sign-in stopped on a page a person must
  *   confirm; `approval` names it (one tap in the person's own browser).
  * - `joined`: signed in; it reads the facts and starts the lane.
+ * - `waiting_for_sign_in`: the lane is set up, but the chat's provider isn't
+ *   signed in on the account; `signIn` says what the person does. The
+ *   computer goes on by itself once the sign-in lands, and sends the
+ *   queued messages then.
  * - `running`, `done`, `failed`, `cancelled`: the computer's own launch.
  */
-export type CloudLaunchState = "draft" | "making" | "joining" | "needs_approval" | "joined" | "running" | "done" | "failed" | "cancelled";
+export type CloudLaunchState =
+  | "draft"
+  | "making"
+  | "joining"
+  | "needs_approval"
+  | "joined"
+  | "waiting_for_sign_in"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
 export type CloudLaunchStageStatus = "pending" | "running" | "done" | "failed" | "skipped" | "warning";
 /** One stage row, as the computer's launch shows it (`computer`, `join`, `clone`, `fetch`, `checkout`, `environment`, `agent`). */
 export type CloudLaunchStage = { id: string; status: CloudLaunchStageStatus; detail?: string | null; error?: string | null };
@@ -1198,10 +1247,89 @@ export type CloudLaunchRecord = {
   sessionId: string | null;
   /** One plain sentence when it failed. */
   error: string | null;
+  /** While `waiting_for_sign_in`: the provider sign-in the launch waits on. Absent from an older server. */
+  signIn?: CloudLaunchSignIn | null;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
 };
+
+/**
+ * What a launch waiting on a provider sign-in shows (`waiting_for_sign_in`).
+ * By `kind` (`CloudRemoteSignInKind`):
+ * - `device`: open `url` and enter `userCode`; the computer sees it finish.
+ * - `url_paste`: open `url`, then paste the code the page shows with
+ *   `POST /cloud/instances/:instanceId/sign-ins/:jobId/code` (`{ code }`).
+ *   Claude is this one: `claude setup-token` on the computer, and the pass
+ *   it makes is saved to the account vault for every later computer.
+ * - `api_key`: save the key with `PUT /cloud/sign-ins/:signInId`; the
+ *   computer reads it from the account vault.
+ * - `desktop`: this provider signs in only in ADE desktop (`reason` says why).
+ */
+export type CloudLaunchSignIn = {
+  provider: string;
+  label: string;
+  kind: CloudRemoteSignInKind;
+  /** The computer's sign-in job (`device`, `url_paste`). */
+  jobId: string | null;
+  url: string | null;
+  userCode: string | null;
+  needsPastedCode: boolean;
+  /** For `api_key`: the account sign-in to save (`CloudAccountSignInId`). */
+  signInId: string | null;
+  /** One plain sentence: what to do, or why it can't be done here. */
+  reason: string | null;
+};
+
+/** `GET /cloud/launches?active=1`: newest first, at most 50. */
+export type CloudLaunchList = { launches: CloudLaunchSummary[] };
+export type CloudLaunchSummary = Pick<
+  CloudLaunchRecord,
+  "launchId" | "state" | "kind" | "projectOrigin" | "laneId" | "laneName" | "instanceId" | "approval" | "sessionId" | "error" | "createdAt" | "updatedAt"
+> & {
+  /** The stage running now, or the last one (`CloudLaunchStage.id`). */
+  stage: CloudLaunchStage | null;
+  signIn: CloudLaunchSignIn | null;
+  /** The chat's provider and model, for a chat launch. */
+  provider: string | null;
+  modelId: string | null;
+};
+
+/* ---- The launch's messages: sent before the chat exists ---- */
+
+/** The most messages one launch keeps (its first message included). */
+export const CLOUD_LAUNCH_MAX_MESSAGES = 20;
+/**
+ * - `queued`: kept here, not sent yet.
+ * - `sending`: the computer claimed it to send it to the chat.
+ * - `delivered`: in the chat (`sessionId`).
+ * - `failed`: not sent (`error`); a message the computer may have sent but
+ *   couldn't confirm is `failed` too, never sent twice.
+ */
+export type CloudLaunchMessageState = "queued" | "sending" | "delivered" | "failed";
+export type CloudLaunchMessage = {
+  messageId: string;
+  /** 1 is the first message (the start's `chat.prompt`). */
+  seq: number;
+  text: string;
+  provider: string | null;
+  modelId: string | null;
+  state: CloudLaunchMessageState;
+  sessionId: string | null;
+  error: string | null;
+  createdAt: number;
+  updatedAt: number;
+};
+/**
+ * `POST /cloud/launches/:launch/messages`: a message for a chat launch whose
+ * chat doesn't exist yet. `messageId` is the client's (1 to 64 of
+ * `A-Za-z0-9_-`); the same id answers the same message. Text only.
+ * Once the chat exists the answer is 409 `chat_ready` with `sessionId`:
+ * send to the chat itself.
+ */
+export type CloudLaunchMessageRequest = { messageId: string; text: string };
+/** `PUT .../messages/:msg`, from the computer that claimed it. */
+export type CloudLaunchMessageReport = { claimId: string; state: "delivered" | "failed"; sessionId?: string | null; error?: string | null };
 
 /**
  * `POST /cloud/launches/:launch/join`, from the new computer with no account
@@ -1226,10 +1354,12 @@ export type CloudLaunchJoinResult =
 
 /** `PUT /cloud/launches/:launch/stages`, from the computer once signed in: a handful of writes per launch. */
 export type CloudLaunchStagesUpdate = {
-  state?: "joined" | "running" | "done" | "failed";
+  state?: "joined" | "waiting_for_sign_in" | "running" | "done" | "failed";
   stages?: CloudLaunchStage[];
   sessionId?: string | null;
   error?: string | null;
+  /** With `waiting_for_sign_in`: what the person does. Any other state clears it. */
+  signIn?: CloudLaunchSignIn | null;
 };
 
 /* ---- Provider sign-ins on a cloud computer from a phone or the web (C8) ---- */
@@ -1238,44 +1368,68 @@ export type CloudLaunchStagesUpdate = {
  * How a provider's own sign-in can be done from another screen:
  * - `device`: the CLI shows a link and a code; the person approves on any device.
  * - `url_paste`: the person opens a link, then pastes the code it shows back.
- * - `none`: it can't move (`reason` says why); the person signs in on one of
- *   their computers and the sign-in reaches ADE Cloud from there.
+ *   Claude is one: `claude setup-token` on the cloud computer, and the pass
+ *   it makes goes to the account vault.
+ * - `api_key`: the provider reads a key the account vault keeps
+ *   (`accountSignIn`, saved with `PUT /cloud/sign-ins/:id`).
+ * - `desktop`: it can't move (`reason` says why); the person signs in in ADE
+ *   desktop and the sign-in reaches ADE Cloud from there.
  * The person always signs in themselves; ADE never signs a provider in for them.
  */
-export type CloudRemoteSignInKind = "device" | "url_paste" | "none";
-export type CloudRemoteSignInRow = { provider: string; label: string; remoteSignIn: CloudRemoteSignInKind; reason: string | null };
+export const CLOUD_REMOTE_SIGN_IN_KINDS = ["device", "url_paste", "api_key", "desktop"] as const;
+export type CloudRemoteSignInKind = (typeof CLOUD_REMOTE_SIGN_IN_KINDS)[number];
+/** The sign-ins the account vault keeps for ADE Cloud (the desktop's `CloudSignInId`). OpenRouter's key serves OpenCode and Pi. */
+export type CloudAccountSignInId = "claude" | "codex" | "cursor" | "droid" | "grok" | "copilot" | "devin" | "muse" | "openrouter";
+export type CloudRemoteSignInRow = {
+  provider: string;
+  label: string;
+  remoteSignIn: CloudRemoteSignInKind;
+  reason: string | null;
+  /** The account vault sign-in that also signs this provider in, if one does. */
+  accountSignIn: CloudAccountSignInId | null;
+};
+
+/**
+ * A launch that waited on a provider sign-in too long fails with exactly this
+ * error, whether the computer or the server gave up first, so the server's
+ * cleanup knows it and deletes the unused computer.
+ */
+export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */
-export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in on one of your computers; it reaches ADE Cloud.";
+export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from ADE desktop; it reaches ADE Cloud.";
 
 /**
  * One row per provider ADE runs (machine-agnostic data: nothing here knows
  * the computer's OS or who runs it). The CLI picks the provider's own sign-in
- * runner from it, the server refuses a `none` before it wakes anything, and
- * the phone and the web show `reason`.
+ * runner from it, the server refuses an `api_key` or `desktop` sign-in on a
+ * computer before it wakes anything, and the phone and the web show `reason`.
  */
 export const CLOUD_REMOTE_SIGN_IN: readonly CloudRemoteSignInRow[] = [
-  { provider: "codex", label: "Codex", remoteSignIn: "device", reason: null },
-  { provider: "copilot", label: "GitHub Copilot", remoteSignIn: "device", reason: null },
-  { provider: "grok", label: "Grok", remoteSignIn: "device", reason: null },
-  { provider: "kimi", label: "Kimi Code", remoteSignIn: "device", reason: null },
-  { provider: "muse", label: "Muse", remoteSignIn: "device", reason: null },
-  { provider: "droid", label: "Droid", remoteSignIn: "device", reason: null },
-  { provider: "devin", label: "Devin", remoteSignIn: "url_paste", reason: null },
-  { provider: "claude", label: "Claude", remoteSignIn: "none", reason: "Claude on ADE Cloud uses your Claude pass: add it in Settings › ADE Cloud." },
-  { provider: "cursor", label: "Cursor", remoteSignIn: "none", reason: "Cursor's sign-in finishes in a browser on the same computer." },
-  { provider: "antigravity", label: "Antigravity", remoteSignIn: "none", reason: "Antigravity's sign-in returns to a page on the same computer, which the phone and the web can't reach yet." },
-  { provider: "qwen", label: "Qwen Code", remoteSignIn: "none", reason: "ADE doesn't run Qwen Code's sign-in on another computer." },
-  { provider: "opencode", label: "OpenCode", remoteSignIn: "none", reason: "OpenCode uses each model provider's own key or sign-in: set it on one of your computers." },
-  { provider: "pi", label: "Pi", remoteSignIn: "none", reason: "Pi uses each model provider's own key or sign-in: set it on one of your computers." },
+  { provider: "codex", label: "Codex", remoteSignIn: "device", reason: null, accountSignIn: "codex" },
+  { provider: "copilot", label: "GitHub Copilot", remoteSignIn: "device", reason: null, accountSignIn: "copilot" },
+  { provider: "grok", label: "Grok", remoteSignIn: "device", reason: null, accountSignIn: "grok" },
+  { provider: "kimi", label: "Kimi Code", remoteSignIn: "device", reason: null, accountSignIn: null },
+  { provider: "muse", label: "Muse", remoteSignIn: "device", reason: null, accountSignIn: "muse" },
+  { provider: "droid", label: "Droid", remoteSignIn: "device", reason: null, accountSignIn: "droid" },
+  { provider: "devin", label: "Devin", remoteSignIn: "url_paste", reason: null, accountSignIn: "devin" },
+  { provider: "claude", label: "Claude", remoteSignIn: "url_paste", reason: null, accountSignIn: "claude" },
+  { provider: "cursor", label: "Cursor", remoteSignIn: "api_key", reason: "Cursor on ADE Cloud uses your Cursor API key: add it in ADE Cloud's sign-ins.", accountSignIn: "cursor" },
+  { provider: "opencode", label: "OpenCode", remoteSignIn: "api_key", reason: "OpenCode on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
+  { provider: "pi", label: "Pi", remoteSignIn: "api_key", reason: "Pi on ADE Cloud uses your OpenRouter key: add it in ADE Cloud's sign-ins.", accountSignIn: "openrouter" },
+  { provider: "antigravity", label: "Antigravity", remoteSignIn: "desktop", reason: "Antigravity signs in with Google in a browser on the same computer.", accountSignIn: null },
+  { provider: "qwen", label: "Qwen Code", remoteSignIn: "desktop", reason: "ADE doesn't run Qwen Code's sign-in on another computer.", accountSignIn: null },
 ];
 
-/** Why a provider can't be signed in from here, with one way to do it: a reason that already says where adds nothing. */
+/** Why a provider can't be signed in on a computer from here, with one way to do it: only a `desktop` row adds where. */
 export function cloudRemoteSignInRefusal(row: CloudRemoteSignInRow): string {
   const reason = row.reason?.trim() ?? "";
-  if (/Settings ›|one of your computers/.test(reason)) return reason;
+  if (row.remoteSignIn !== "desktop") return reason;
   return `${reason} ${CLOUD_REMOTE_SIGN_IN_ELSEWHERE}`.trim();
 }
+
+/** Whether the provider's own sign-in runs on a cloud computer for another screen (`device`, `url_paste`). */
+export const cloudRemoteSignInRuns = (row: CloudRemoteSignInRow): boolean => row.remoteSignIn === "device" || row.remoteSignIn === "url_paste";
 
 export function cloudRemoteSignInOf(provider: unknown): CloudRemoteSignInRow | null {
   if (typeof provider !== "string") return null;
@@ -1295,6 +1449,56 @@ export type CloudRemoteSignInStatus = {
   needsPastedCode: boolean;
   reason: string | null;
 };
+
+/* ---- The account's ADE Cloud sign-ins, from the web (`/cloud/sign-ins`) ---- */
+
+/** One sign-in the account vault keeps for ADE Cloud. Never its value. */
+export type CloudAccountSignIn = {
+  id: CloudAccountSignInId;
+  label: string;
+  /** The providers it signs in. */
+  providers: string[];
+  /** `claude-token`: a Claude pass (`sk-ant-oat…`, from `claude setup-token`). `key`: an API key. */
+  method: "claude-token" | "key";
+  /** What the key is called where the person makes it, and where that is. */
+  keyName: string;
+  keyUrl: string | null;
+  saved: boolean;
+  /** When it was saved (epoch ms), when known. */
+  savedAt: number | null;
+};
+/**
+ * `GET /cloud/sign-ins`, and the answer to a save or a removal. `unknown`:
+ * the vault didn't answer, so `saved` may be wrong (never shows "not saved"
+ * as a fact). `claudePasses`: how many Claude passes the account keeps.
+ */
+export type CloudAccountSignIns = { signIns: CloudAccountSignIn[]; claudePasses: number; unknown: boolean };
+/** `PUT /cloud/sign-ins/:id`: the key (or, for `claude`, a Claude pass). Kept in the account vault; never sent back. */
+export type CloudAccountSignInSave = { key: string };
+
+/* ---- Models per provider, for a client with no computer (`/cloud/models`) ---- */
+
+export type CloudCatalogModel = {
+  /** The ADE model id a launch's `chat.modelId` names. */
+  id: string;
+  displayName: string;
+  reasoningTiers: string[];
+  defaultReasoningEffort: string | null;
+  /** The model has a fast mode (`chat.fast`). */
+  fast: boolean;
+};
+export type CloudCatalogProvider = {
+  /** The launch's `chat.provider`. */
+  provider: string;
+  label: string;
+  /** How the provider signs in on a computer for a person on another screen. */
+  remoteSignIn: CloudRemoteSignInKind;
+  defaultModelId: string | null;
+  /** ADE's own list for this provider. Some providers list more once a computer runs them. */
+  models: CloudCatalogModel[];
+};
+/** `GET /cloud/models`. The same answer for every account; `version` changes with the list. */
+export type CloudModelCatalog = { version: string; providers: CloudCatalogProvider[] };
 
 /* ---- Delete the cloud computers of one project (C10) ---- */
 

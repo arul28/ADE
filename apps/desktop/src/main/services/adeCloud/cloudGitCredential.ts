@@ -13,9 +13,10 @@
  *   PR #2186 writes. Nothing writes it yet, so today only a PAT answers; the
  *   check reads the item already, so it passes unchanged once #2186 lands.
  *
- * A tombstone, a missing item and a `removed` value are "none". The ADE
- * GitHub App sign-in is not git-capable and stays on its machine, so it is
- * never an answer.
+ * A tombstone, a missing item and a `removed` value are "none". With
+ * neither, the ADE account's GitHub App sign-in answers: a cloud computer's
+ * git credential helper falls back to the App's token, which the account
+ * serves to every machine (`accountApp`, one status read).
  *
  * The check does not ask GitHub whether the token still works: a revoked
  * token passes here and the clone says so.
@@ -33,6 +34,7 @@ import {
   type AccountGitCredentialSource,
   type CloudGitPreflight,
 } from "../../../shared/cloudGitCredential";
+import { createAccountAppTokenClient } from "../../../shared/github/accountAppTokenClient";
 import { GITHUB_CLI_VAULT_KEY, GITHUB_PAT_VAULT_KEY, decodeAccountGithubToken } from "../github/accountGithubTokenItem";
 import type { CloudVault } from "./cloudAccess";
 
@@ -49,13 +51,65 @@ export type AccountGitCredentialDeps = {
    * process has no signed-in account.
    */
   vault: (key: string) => CloudVault | null;
+  /** Whether the account's ADE GitHub App sign-in is connected (`accountAppConnection`). Left out: not asked. */
+  accountApp?: () => Promise<AccountAppConnection>;
 };
+
+export type AccountAppConnection = "connected" | "not_connected" | "unknown";
+
+/**
+ * Whether the ADE account's GitHub App sign-in is connected: one status read
+ * (`GET /github/app/status`) through the account App client, with the
+ * account token. No GitHub token is read or kept. Never throws; anything
+ * unclear is `unknown`, and a read that fails is logged.
+ */
+export async function accountAppConnection(deps: {
+  baseUrl: string | null;
+  accessToken: () => Promise<string | null>;
+  fetch?: typeof fetch;
+  logger?: { warn?: (event: string, data?: Record<string, unknown>) => void } | null;
+}): Promise<AccountAppConnection> {
+  if (!deps.baseUrl) return "unknown";
+  const client = createAccountAppTokenClient({
+    ...(deps.fetch ? { fetchImpl: deps.fetch } : {}),
+    getAccountAccessToken: async () => await deps.accessToken().catch((error: unknown) => {
+      deps.logger?.warn?.("cloud.git_preflight_app_token_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }),
+    // A status read only: no cached token, so no account to key one by.
+    getAccountUserId: () => null,
+    getDirectoryBaseUrl: () => deps.baseUrl,
+    store: null,
+    holderId: "cloud-git-preflight",
+    // Names the client for a sign-in, which this read never starts.
+    clientKind: "desktop",
+  });
+  const answer = await client.status().catch((error: unknown) => {
+    deps.logger?.warn?.("cloud.git_preflight_app_status_failed", { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  });
+  if (!answer) return "unknown";
+  if (!answer.ok) {
+    if (answer.error !== "signed_out") deps.logger?.warn?.("cloud.git_preflight_app_status_failed", { error: answer.error });
+    return "unknown";
+  }
+  if (answer.status.connected && answer.status.state === "active") return "connected";
+  return !answer.status.connected || answer.status.state === "needs_reauth" ? "not_connected" : "unknown";
+}
 
 const UNREADABLE_MESSAGE = `ADE couldn't read your account's GitHub sign-in on this computer. ${CONNECT_GITHUB_HINT}`;
 const NONE_MESSAGE = `Your ADE account has no GitHub sign-in a cloud computer can clone with. ${CONNECT_GITHUB_HINT}`;
 
 /** Whether the account has a credential git can use on a new cloud computer. Never throws. */
 async function accountGitCredential(deps: AccountGitCredentialDeps): Promise<AccountGitCredential> {
+  const fromVault = await vaultGitCredential(deps);
+  if (fromVault.ok || !deps.accountApp) return fromVault;
+  // The App's sign-in follows the account too: the computer's git uses its token.
+  const app = await deps.accountApp().catch((): AccountAppConnection => "unknown");
+  return app === "connected" ? { ok: true, source: "app" } : fromVault;
+}
+
+async function vaultGitCredential(deps: AccountGitCredentialDeps): Promise<AccountGitCredential> {
   let unreadable = false;
   for (const item of ACCOUNT_GIT_CREDENTIAL_ITEMS) {
     let vault: CloudVault | null;

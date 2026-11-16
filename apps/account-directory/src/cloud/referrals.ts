@@ -18,6 +18,7 @@ import {
 } from "./contract";
 import { readClerkUser } from "./email";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { isCloudBlocked } from "./blocks";
 import { checkDeviceRateLimit } from "../deviceAuthorization";
 import { loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
@@ -198,8 +199,8 @@ async function redeem(request: Request, env: CloudEnv, userId: string, ctx: Ctx)
   const code = parseCloudInviteCode(body.code);
   if (!code) return refused(env, userId, "invalid_code", ctx);
   const owner = await env.DB.prepare("select user_id from cloud_invite_codes where code = ?").bind(code).first<{ user_id: string }>();
-  // An inviter without ADE Cloud has no code to give: the same answer as no code at all.
-  if (!owner) return refused(env, userId, "unknown_code", ctx);
+  // A blocked inviter has no code to give: the same answer as no code at all.
+  if (!owner || await isCloudBlocked(env, owner.user_id)) return refused(env, userId, "unknown_code", ctx);
   if (owner.user_id === userId) return refused(env, userId, "own_code", ctx);
   const account = await loadAccount(env, userId, ctx.now);
   if (await env.DB.prepare("select 1 as taken from cloud_referrals where friend_user_id = ?").bind(userId).first()) {
@@ -383,8 +384,8 @@ export function isInviteLookupRequest(url: URL): boolean {
 
 /**
  * `GET /invites/<code>`: the inviter's first name for the invite page, and
- * nothing else. "Not found" for a code nobody has and for an inviter without
- * ADE Cloud access, so the page can't tell the two apart.
+ * nothing else. "Not found" for a code nobody has and for an inviter the
+ * owner blocked, so the page can't tell the two apart.
  */
 export async function handleInviteLookup(request: Request, env: CloudEnv): Promise<Response> {
   const url = new URL(request.url);
@@ -407,7 +408,7 @@ export async function handleInviteLookup(request: Request, env: CloudEnv): Promi
   }
   const code = parseCloudInviteCode(raw);
   const owner = code ? await env.DB.prepare("select user_id from cloud_invite_codes where code = ?").bind(code).first<{ user_id: string }>() : null;
-  if (!owner) return answer(404, { error: { code: "not_found", message: "That invite isn't valid." } });
+  if (!owner || await isCloudBlocked(env, owner.user_id)) return answer(404, { error: { code: "not_found", message: "That invite isn't valid." } });
   let cached = firstNames.get(owner.user_id);
   if (!cached || now - cached.at > FIRST_NAME_TTL_MS) {
     const facts = await readClerkUser(env, owner.user_id).catch((error: unknown) => {

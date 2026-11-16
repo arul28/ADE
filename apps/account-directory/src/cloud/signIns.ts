@@ -1,11 +1,12 @@
 import {
   cloudRemoteSignInRefusal,
   cloudRemoteSignInOf,
+  cloudRemoteSignInRuns,
   type CloudRemoteSignInStart,
   type CloudRemoteSignInState,
   type CloudRemoteSignInStatus,
 } from "./contract";
-import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, badRequest, fail, json, readJson } from "./http";
 import { commandWith, readResult } from "./planCleanup";
 import type { CloudProvider } from "./provider";
 import type { ComputerRow } from "./store";
@@ -27,7 +28,6 @@ const JOB_ID = /^[A-Za-z0-9_-]{8,80}$/;
 const SIGN_IN_EXEC_TIMEOUT_MS = 60_000;
 const MAX_CODE_CHARS = 2_000;
 
-const badRequest = (message: string) => fail("bad_request", message, 400);
 const unreadable = () => fail("sign_in_unreadable", "ADE on the computer didn't answer the sign-in. Try again in a moment.", 502);
 
 /** Single-quoted for the computer's shell; only ever used on values this file already checked. */
@@ -89,8 +89,8 @@ export async function routeSignIns(request: Request, computer: ComputerRow, rest
     if (!body) return badRequest(UNREADABLE_REQUEST_MESSAGE);
     const row = cloudRemoteSignInOf(body.provider);
     if (!row) return badRequest("ADE doesn't know that provider.");
-    // Refused before anything wakes: this one can only be signed in on a computer the person sits at.
-    if (row.remoteSignIn === "none") return fail("sign_in_elsewhere", cloudRemoteSignInRefusal(row), 409);
+    // Refused before anything wakes: an API key the account keeps, or a sign-in only ADE desktop runs.
+    if (!cloudRemoteSignInRuns(row)) return fail("sign_in_elsewhere", cloudRemoteSignInRefusal(row), 409);
     const ran = await exec(`ade providers sign-in ${row.provider} --remote --json`);
     if (ran instanceof Response) return ran;
     const result = readResult(ran.stdout);
