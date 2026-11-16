@@ -19042,8 +19042,7 @@ final class ADETests: XCTestCase {
 
   func testCtoMemoryDecodesV2PayloadAndIgnoresV1Keys() throws {
     let payload: [String: Any] = [
-      "memory": "- Prefers monochrome UI
-- Ships mac-only releases",
+      "memory": "- Prefers monochrome UI\n- Ships mac-only releases",
       "memoryBytes": 46,
       "memoryLimitBytes": 4096,
       "userNotes": "- Short answers",
