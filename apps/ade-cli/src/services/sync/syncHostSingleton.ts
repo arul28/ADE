@@ -519,7 +519,9 @@ function currentOwner(
 function parseLsofListeners(output: string): Array<{ pid: number; port: number; processName: string }> {
   const listeners: Array<{ pid: number; port: number; processName: string }> = [];
   for (const line of output.split(/\r?\n/)) {
-    const match = line.match(/^(\S+)\s+(\d+)\s+.*\bTCP\s+\S+:(\d+)\s+\(LISTEN\)/);
+    // lsof's COMMAND column can hold a space: the brain runs as `ADE Brain`
+    // (`brainExecutable.ts`), so the name is everything before the PID.
+    const match = line.match(/^(.+?)\s+(\d+)\s+.*\bTCP\s+\S+:(\d+)\s+\(LISTEN\)/);
     if (!match) continue;
     const pid = Number(match[2]);
     const port = Number(match[3]);
@@ -574,7 +576,10 @@ function looksLikeAdeSyncHostProcess(commandLine: string): boolean {
 }
 
 function looksLikeAdeProcessName(processName: string): boolean {
-  return /^ADE(?:\s+Beta|\s+Alpha)?$/i.test(processName)
+  // `ADE Brain` is the copy the brain service runs as (`brainExecutable.ts`,
+  // mode `brain-copy`); `ADE Helper` is the `helper` mode. Without them the
+  // lockless scan cannot see the service that holds the sync port.
+  return /^ADE(?:\s+Beta|\s+Alpha)?(?:\s+(?:Brain|Helper))?$/i.test(processName)
     || /^ade(?:-beta|-alpha)?$/i.test(processName);
 }
 
