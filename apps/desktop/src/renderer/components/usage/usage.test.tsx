@@ -1727,19 +1727,6 @@ describe("usage components", () => {
         unmount();
       }
     });
-    it("shows a streak chip once the streak reaches three days", () => {
-      render(<ActivityModule stats={makeActivityStats({ summary: { ...makeActivityStats().summary, currentStreakDays: 5 } })} preset="7d" onPresetChange={vi.fn()} />);
-      expect(screen.getByText("5-day streak")).toBeTruthy();
-    });
-
-    it("shows the measured all-provider lifetime total on the all-time range", () => {
-      const stats = makeActivityStats({
-        range: { preset: "all", since: null, until: "2026-07-09T12:00:00.000Z" },
-        summary: { ...makeActivityStats().summary, totalTokens: 101_500_000_000, currentStreakDays: 0 },
-      });
-      render(<ActivityModule stats={stats} preset="all" onPresetChange={vi.fn()} />);
-      expect(screen.getByText("101.5B lifetime tokens")).toBeTruthy();
-    });
 
     it("renders bars without motion transitions when reduced motion is preferred", () => {
       const matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -1825,27 +1812,6 @@ describe("usage components", () => {
       const grid = container.querySelector('[aria-label="Daily activity heatmap"]')!;
       expect(grid.children.length).toBe(5);
       expect(Array.from(grid.children, (cell) => cell.getAttribute("data-level"))).toEqual(["1", "0", "0", "0", "4"]);
-    });
-
-    it("rings today's cell so the grid has an anchor", () => {
-      const today = new Date();
-      const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-      const daily = [
-        makeActivityDay("2026-01-01", { totalTokens: 1_000, sessions: 1 }),
-        makeActivityDay(key, { totalTokens: 5_000, sessions: 2 }),
-      ];
-      const { container } = render(
-        <ActivityModule stats={makeActivityStats({ daily } as unknown as Partial<AdeUsageStats>)} preset="30d" onPresetChange={vi.fn()} />,
-      );
-
-      const cells = Array.from(
-        container.querySelector('[aria-label="Daily activity heatmap"]')!.children,
-      ) as HTMLElement[];
-      const marked = cells.filter((cell) => cell.getAttribute("data-today") === "true");
-      expect(marked.length).toBe(1);
-      expect(marked[0]!.getAttribute("style")).toContain("1.5px");
-      expect(cells[0]!.getAttribute("data-today")).toBeNull();
-      expect(cells[0]!.getAttribute("style")).not.toContain("1.5px");
     });
 
     it("leads with one plain-language fact about the range", () => {

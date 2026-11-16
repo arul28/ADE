@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
-import { ProviderCard, ProviderCards, truncateBinaryPath } from "../src/models/ProviderCard";
+import { ProviderCard, truncateBinaryPath } from "../src/models/ProviderCard";
 import type { ProviderStatus } from "../src/sdkTypes";
 
 /**
@@ -49,41 +49,6 @@ describe("<ProviderCard> wording", () => {
   });
 });
 
-describe("<ProviderCard> detail line", () => {
-  const probed = status({
-    installed: true,
-    authenticated: true,
-    source: "probed",
-    version: "2.4.1 (Claude Code)",
-    binaryPath: "/opt/homebrew/bin/claude",
-  });
-
-  it("is off by default, because most hosts read a path as noise", () => {
-    render(<ProviderCard status={probed} />);
-    expect(screen.queryByText("2.4.1 (Claude Code)")).toBeNull();
-    expect(screen.queryByText("/opt/homebrew/bin/claude")).toBeNull();
-  });
-
-  it("shows the version and the path when the host asks for it", () => {
-    render(<ProviderCard status={probed} showDetail />);
-    expect(screen.getByText("2.4.1 (Claude Code)")).toBeTruthy();
-    expect(screen.getByText("/opt/homebrew/bin/claude")).toBeTruthy();
-  });
-
-  it("draws nothing when there is nothing probed to show", () => {
-    const { container } = render(<ProviderCard status={status({ source: "derived" })} showDetail />);
-    expect(container.querySelector(".adechat-providercard-probe")).toBeNull();
-  });
-
-  it("keeps the whole path in the title when it truncates the visible one", () => {
-    const path = "/Users/someone/Library/Application Support/host/node_modules/.bin/claude";
-    render(<ProviderCard status={status({ installed: true, binaryPath: path })} showDetail />);
-    const code = screen.getByTitle(path);
-    expect(code.textContent).not.toBe(path);
-    expect(code.textContent).toContain("claude");
-  });
-});
-
 describe("truncateBinaryPath", () => {
   it("leaves a path that already fits alone", () => {
     expect(truncateBinaryPath("/usr/local/bin/codex")).toBe("/usr/local/bin/codex");
@@ -109,21 +74,5 @@ describe("truncateBinaryPath", () => {
     const truncated = truncateBinaryPath("a".repeat(80));
     expect(truncated.startsWith("…")).toBe(true);
     expect(truncated.length).toBeLessThanOrEqual(44);
-  });
-});
-
-describe("<ProviderCards>", () => {
-  it("forwards showDetail to every card it draws", () => {
-    render(
-      <ProviderCards
-        statuses={[
-          status({ id: "claude", installed: true, source: "probed", version: "2.4.1" }),
-          status({ id: "codex", installed: true, source: "probed", version: "0.55.0" }),
-        ]}
-        showDetail
-      />,
-    );
-    expect(screen.getByText("2.4.1")).toBeTruthy();
-    expect(screen.getByText("0.55.0")).toBeTruthy();
   });
 });

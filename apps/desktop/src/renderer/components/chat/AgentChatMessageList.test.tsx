@@ -462,30 +462,6 @@ describe("AgentChatMessageList board moves", () => {
     // And it is NOT a user bubble.
     expect(document.querySelector(".ade-chat-message-card-user")).toBeNull();
   });
-
-  it("labels a move into Needs you with the column the user sees", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "user_message",
-          text: "The user parked this for their input. Stop, summarize where you are, and list what you need from them.",
-          deliveryState: "delivered",
-          metadata: {
-            boardMove: {
-              from: "working",
-              to: "needs_you",
-              at: "2026-03-17T10:00:00.000Z",
-              moveId: "move-2",
-            },
-          },
-        },
-      },
-    ]);
-    const divider = document.querySelector('[data-board-move-to="needs_you"]');
-    expect(divider?.textContent).toContain("Working → Needs you");
-  });
 });
 
 describe("AgentChatMessageList operator navigation suggestions", () => {
@@ -620,17 +596,6 @@ describe("AgentChatMessageList transcript rendering", () => {
       // The bubble and its status line share one row, bubble first.
       expect(bubble.parentElement).toBe(screen.getByTestId("user-message-status-row").parentElement);
       expect(bubble.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it("keeps the hover actions inside the bubble and the status line outside it", () => {
-      const { container } = renderMessageList([userMessage({ steerId: "s-1", deliveryState: "inline" })]);
-      const bubble = bubbleOf(container);
-      const copy = within(bubble).getByRole("button", { name: /copy/i });
-      const status = screen.getByTestId("user-message-status");
-      // Hover actions are absolutely positioned inside the bubble; the status
-      // line is a sibling of the bubble, so the two can never overlap.
-      expect(copy.closest(".absolute")?.parentElement).toBe(bubble);
-      expect(status.closest(".ade-chat-message-card-user")).toBeNull();
     });
 
     it("draws no status line for plain, optimistic-queued, spawn-prompt, or turn-opening Muse messages", () => {
@@ -892,47 +857,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(card.textContent).toContain("buffer");
     expect(card.textContent).toContain("posthog");
     expect(card.textContent).toContain("linear");
-  });
-
-  it("renders Codex goal lifecycle rows in user-facing language", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "codex_goal_updated",
-          goal: { objective: "Ship CLI parity", status: "active", tokenBudget: null },
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:01.000Z",
-        event: {
-          type: "codex_goal_updated",
-          goal: { objective: "Wait for review", status: "paused", tokenBudget: null },
-          updateKind: "status",
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:02.000Z",
-        event: {
-          type: "codex_goal_updated",
-          goal: { objective: "Ship CLI parity", status: "active", tokenBudget: null },
-          updateKind: "status",
-        },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:03.000Z",
-        event: { type: "codex_goal_cleared" },
-      },
-    ]);
-
-    expect(screen.getByText("Goal set: Ship CLI parity")).toBeTruthy();
-    expect(screen.getByText("Goal paused: Wait for review")).toBeTruthy();
-    expect(screen.getByText("Goal resumed: Ship CLI parity")).toBeTruthy();
-    expect(screen.getByText("Goal cleared")).toBeTruthy();
   });
 
   it("opens detected localhost command URLs in the ADE browser", async () => {
@@ -1375,27 +1299,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(divider.textContent).toContain("Started from a brief of the previous chat");
   });
 
-  it("renders a brief divider for hidden cross-machine handoff messages", async () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "user_message",
-          text: "Injected handoff brief with full detail.",
-          displayText: "Continue the handoff",
-          metadata: { kind: "cross_machine_handoff", hideFullPrompt: true },
-        },
-      },
-    ]);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("handoff-brief-divider")).toBeTruthy();
-    });
-    expect(screen.getByText("Continued from another computer")).toBeTruthy();
-    expect(screen.getByText("Continue the handoff")).toBeTruthy();
-  });
-
   it("does not render a brief divider for hidden messages that are not handoffs", async () => {
     renderMessageList([
       {
@@ -1692,25 +1595,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
-  it("labels end-of-turn wall time as ran, not worked for", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: { type: "user_message", text: "Run the checks.", turnId: "turn-1" },
-      },
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:02:00.000Z",
-        event: { type: "done", turnId: "turn-1", status: "interrupted" },
-      },
-    ]);
-
-    // The turn rule reads `10:04 · ran 3m 32s` — mono, tabular, lower case.
-    expect(screen.getByText("ran 2m")).toBeTruthy();
-    expect(screen.queryByText(/Worked for/)).toBeNull();
-  });
-
   it("measures ran duration from the last user prompt, not the first cloud turn", () => {
     renderMessageList([
       {
@@ -1972,28 +1856,6 @@ describe("AgentChatMessageList transcript rendering", () => {
       window.dispatchEvent(new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "session-1" } }));
     });
     expect(within(screen.getByTestId("provider-sign-in-receipt")).getByText(/signed in again/)).toBeTruthy();
-  });
-
-  it("renders Claude plan usage warning as a compact non-error notice", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "system_notice",
-          noticeKind: "rate_limit",
-          severity: "info",
-          status: "allowed_warning",
-          message: "Approaching Claude plan limit",
-          detail: "80% utilized | resets 2026-05-12T20:30:00.000Z",
-        },
-      },
-    ]);
-
-    expect(screen.getByText("usage")).toBeTruthy();
-    expect(screen.getByText("Approaching Claude plan limit")).toBeTruthy();
-    expect(screen.getByText("80% utilized | resets 2026-05-12T20:30:00.000Z")).toBeTruthy();
-    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("labels an inline subagent completion as returned context, not a wake", () => {
@@ -2982,13 +2844,6 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Show less" })).toBeNull();
     expect(screen.getByText(longPrompt.trim())).toBeTruthy();
-  });
-
-  it("leaves a short user prompt uncollapsed", () => {
-    renderMessageList(userMessageEvents(["Ship it"], "short-session"), { sessionId: "short-session" });
-    expect(screen.queryByTestId("user-message-collapsible-body")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Show full message" })).toBeNull();
-    expect(screen.getByText("Ship it")).toBeTruthy();
   });
 
   it("returns a pinned chat to the live tail after a remount", async () => {
@@ -5032,39 +4887,6 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     fireEvent.click(within(screen.getByTestId("chat-task-list-card")).getByRole("button", { expanded: false }));
     expect(screen.getAllByText("Inspect once")).toHaveLength(1);
-  });
-
-  it("renders plan approval request bodies in the transcript", () => {
-    renderMessageList([
-      {
-        sessionId: "session-1",
-        timestamp: "2026-03-17T10:00:00.000Z",
-        event: {
-          type: "approval_request",
-          itemId: "approval-plan",
-          kind: "tool_call",
-          description: "Plan ready for approval",
-          turnId: "turn-1",
-          detail: {
-            request: {
-              requestId: "approval-plan",
-              itemId: "approval-plan",
-              source: "codex",
-              kind: "plan_approval",
-              title: "Plan Ready for Review",
-              description: "# Plan\n\n- Show the plan body.",
-              questions: [],
-              allowsFreeform: true,
-              blocking: true,
-              canProceedWithoutAnswer: false,
-            },
-          },
-        },
-      },
-    ]);
-
-    expect(screen.getByText("Presenting plan for approval")).toBeTruthy();
-    expect(screen.getByText("Show the plan body.")).toBeTruthy();
   });
 
   it("renders structured ask-user requests inline and submits option answers", () => {

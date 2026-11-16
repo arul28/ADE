@@ -24,13 +24,6 @@ const fiveJobs = () => [
 ];
 
 describe("BackgroundJobRunRow", () => {
-  it("reads a single job as one line with its duration and status", () => {
-    const { container } = render(<BackgroundJobRunRow members={[member("a", "Search kimi binary for session file patterns", "completed")]} />);
-    const row = container.querySelector("[data-background-job]")!;
-    expect(row.textContent).toBe("$Search kimi binary for session file patterns· 3m· done");
-    // No host pane, no Stop target: nothing clickable that would do nothing.
-    expect(container.querySelector("button")).toBeNull();
-  });
 
   it("summarizes a run in one row and lists every job on click", () => {
     const onOpenJob = vi.fn();

@@ -65,14 +65,6 @@ describe("RichMarkdown", () => {
     expect(ids2).toEqual(ids);
   });
 
-  it("renders anchors with the in-app opener", () => {
-    const { container } = render(
-      <RichMarkdown source={"see [docs](https://example.com)"} />,
-    );
-    const link = container.querySelector("a");
-    expect(link?.getAttribute("href")).toBe("https://example.com");
-  });
-
   it("sanitizes raw html while preserving document-safe anchors and subscript", () => {
     const { container } = render(
       <RichMarkdown

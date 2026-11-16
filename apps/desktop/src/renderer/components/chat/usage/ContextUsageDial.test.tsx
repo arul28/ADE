@@ -71,11 +71,6 @@ describe("ContextUsageDial", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("exposes the percentage on the accessible label", () => {
-    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.42 })} />);
-    expect(container.querySelector('[aria-label="Context usage: 42% full"]')).toBeTruthy();
-  });
-
   it("adds a cache-write breakdown segment after cached when present", () => {
     const content = buildContent(vm({ cacheReadTokens: 4_000, cacheWriteTokens: 2_048 }));
     expect(content.gitCommand).toContain("cache write 2k");

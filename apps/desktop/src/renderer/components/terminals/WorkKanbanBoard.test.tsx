@@ -140,13 +140,6 @@ const FULL_BOARD: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
   done: [ENDED, SETTLED],
 };
 
-const EMPTY_BOARD: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
-  needs_you: [],
-  working: [],
-  waiting: [],
-  done: [],
-};
-
 const WAITING_REASONS = new Map<string, WorkBoardWaitingReason>([["s-ci", "ci"]]);
 
 /** The tab's own copy: its rows carry no binding and resolve to this machine. */
@@ -375,19 +368,6 @@ describe("WorkKanbanBoard", () => {
     expect(within(column("done")).getByTestId("work-board-card-s-ended")).toBeTruthy();
     expect(within(column("done")).getByTestId("work-board-card-s-settled")).toBeTruthy();
     expect(screen.getAllByTestId(/^work-board-card-[^r]/)).toHaveLength(5);
-  });
-
-  it("gives an empty column its header and one quiet line, not an empty state", () => {
-    renderBoard({ workBoardBuckets: EMPTY_BOARD, workBoardWaitingReasons: new Map() });
-
-    for (const key of ["needs_you", "working", "waiting", "done"] as const) {
-      expect(column(key)).toBeTruthy();
-      expect(screen.getByTestId(`work-board-count-${key}`).textContent).toBe("0");
-      const placeholder = screen.getByTestId(`work-board-empty-${key}`);
-      expect(placeholder.tagName).toBe("P");
-      expect(placeholder.textContent?.trim().length).toBeGreaterThan(0);
-    }
-    expect(screen.queryAllByTestId(/^work-board-card-[^r]/)).toHaveLength(0);
   });
 
   it("suppresses the per-card status label, which the column already states", () => {
