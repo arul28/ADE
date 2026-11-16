@@ -1842,8 +1842,8 @@ describe("createAgentChatService", () => {
 
       expect(result.sessionId).toBe(session.id);
       expect(send).toHaveBeenCalledTimes(1);
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("User: What lane should frontend use?"));
-      expect(send).toHaveBeenCalledWith(expect.stringContaining("Assistant: Use the primary-hosted coordinator first."));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Person: What lane should frontend use?"));
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("CTO: Use the primary-hosted coordinator first."));
     });
 
     it("reconstructs recent conversation tail for non-identity Claude sessions after resume", async () => {

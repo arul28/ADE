@@ -46,6 +46,17 @@ export type CtoAccountCopy = {
   routines: CtoAccountCopyRoutine[];
   /** The last turns, as the CTO's own conversation tail renders them. */
   tail: string;
+  /**
+   * The story so far: the helper's summary of the conversation older than the
+   * tail (`main/services/cto/ctoStory.ts`). Missing in copies from older builds.
+   */
+  story?: CtoAccountCopyStory | null;
+};
+
+export type CtoAccountCopyStory = {
+  summary: string;
+  startsAt: string;
+  coveredThrough: string;
 };
 
 /** What the CTO page shows about the copy. */

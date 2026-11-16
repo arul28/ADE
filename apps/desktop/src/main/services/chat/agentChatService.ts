@@ -214,6 +214,13 @@ import {
 } from "./ctoThreadFallback";
 import { createCtoHistoryReader } from "../cto/ctoHistoryReader";
 import {
+  buildCtoHistoryBlock,
+  countUncoveredBeforeTail,
+  selectCtoTail,
+  type CtoStoryRecord,
+} from "../cto/ctoStory";
+import { createCtoStoryUpdater, type CtoStorySession, type CtoStoryUpdateRequest } from "../cto/ctoStoryUpdater";
+import {
   drainRunningClaudeWorkflowAgents,
   finalizeClaudeWorkflowProgress,
   parseClaudeWorkflowProgress,
@@ -5522,7 +5529,7 @@ type EpochDirective =
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 const CTO_REFRESH_REASONS: ReadonlySet<string> = new Set<CtoProviderThreadRefreshReason>([
-  "occupancy", "compaction", "overflow", "model_fallback", "manual",
+  "occupancy", "compaction", "overflow", "model_fallback", "manual", "cold_cache",
 ]);
 const CTO_NO_HANDOFF_MESSAGE =
   "The CTO keeps its one thread, so ADE does not start a new chat on the other account. It tries the CTO's backup models instead.";
@@ -5868,6 +5875,12 @@ type ManagedChatSession = {
   ctoRefreshPending?: CtoProviderThreadRefreshReason | null;
   /** CTO only: a refresh is tearing down and restaging right now. */
   ctoRefreshInFlight?: boolean;
+  /**
+   * CTO only: the provider thread is fresh and no turn has completed on it.
+   * Its cache has nothing to go cold, so a cold-cache refresh skips it (a
+   * failed first turn must not refresh again on every send).
+   */
+  ctoFreshThreadUnused?: boolean;
   /**
    * CTO only: the message key (`turnId` or text) ADE already re-sent after an
    * overflow or a model fallback, so the same message is never re-sent twice
@@ -14150,6 +14163,75 @@ export function createAgentChatService(args: {
     });
   };
 
+  // ── The CTO's story so far (`cto/ctoStory.ts`, `cto/ctoStoryUpdater.ts`) ──
+  //
+  // Written in the background by the helper model that names chats (same
+  // picker, same account), or the CTO's own model when that account has no
+  // helper: the story must keep up even where the cheap model is missing.
+  const ctoPersonTimeZone = (): string | null => {
+    try {
+      const zone = ctoStateService?.getIdentity().timeZone ?? null;
+      return zone && isKnownTimeZone(zone) ? zone : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const ctoStoryUpdater = ctoMemoryService
+    ? createCtoStoryUpdater({
+      readStory: () => ctoMemoryService.readStory(),
+      writeStory: (record) => ctoMemoryService.writeStory(record),
+      timeZone: ctoPersonTimeZone,
+      logger,
+    })
+    : null;
+
+  /** The story for a fresh thread's history block: none when it can't be read (logged). */
+  const readCtoStorySafely = (): CtoStoryRecord | null => {
+    try {
+      return ctoMemoryService?.readStory() ?? null;
+    } catch (error) {
+      logger.warn("cto.story_unreadable", { error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
+  const ctoStorySession = (managed: ManagedChatSession): CtoStorySession => ({
+    id: managed.session.id,
+    isGone: () => Boolean(managed.closed || managed.deleted),
+    readEntries: () => collectConversationEntries(managed),
+    pickModel: async () => {
+      const auth = await detectAuth();
+      const availableModels = await getAvailableRegistryModels(auth);
+      return buildSessionIntelligenceModelCandidates({
+        availableModels,
+        provider: managed.session.provider,
+        sessionModelId: managed.session.modelId,
+        sessionModel: managed.session.model,
+      })[0] ?? managed.session.modelId ?? null;
+    },
+    runPrompt: ({ modelId, systemPrompt, prompt, timeoutMs }) => runSessionIntelligencePrompt({
+      cwd: managed.laneWorktreePath,
+      modelId,
+      systemPrompt,
+      prompt,
+      timeoutMs,
+      taskType: "continuity_summary",
+      providerAccount: sessionProviderAccount(managed),
+    }),
+  });
+
+  const updateCtoStory = (managed: ManagedChatSession, request: CtoStoryUpdateRequest): void => {
+    if (managed.session.identityKey !== "cto" || !ctoStoryUpdater) return;
+    void ctoStoryUpdater.update(ctoStorySession(managed), request);
+  };
+
+  /** After a completed CTO turn. */
+  const noteCtoTurnForStory = (managed: ManagedChatSession): void => {
+    if (managed.session.identityKey !== "cto" || !ctoStoryUpdater) return;
+    ctoStoryUpdater.noteTurn(ctoStorySession(managed));
+  };
+
   /**
    * A `hydrate: false` attachment on Codex: no staged copy (staging reads every
    * byte, which on macOS downloads a File Provider placeholder), just the
@@ -18143,28 +18225,31 @@ export function createAgentChatService(args: {
   const collectConversationEntries = (
     managed: ManagedChatSession,
     options?: { sinceIso?: string | null },
-  ): Array<SessionMetadataConversationEntry & { displayText?: string }> => {
+  ): Array<SessionMetadataConversationEntry & { displayText?: string; at?: string }> => {
     const sinceIso = options?.sinceIso ?? null;
     // Assistant replies are stored as streamed chunks ("raises a", " Windows
     // admin"), so one reply is many `text` events: join each turn's chunks
     // with `joinAssistantChunk`, the same rule the live ring uses. Only the
     // transcript's recent tail is read, plus events still on their way to
     // disk, so a refresh right after a turn ends sees that turn's last words.
-    const fromTranscript: Array<SessionMetadataConversationEntry & { displayText?: string; turnId?: string; messageId?: string }> = [];
+    // `at` is when the message ended (a reply's last chunk), so a story that
+    // covers through it covers all of it.
+    const fromTranscript: Array<SessionMetadataConversationEntry & { displayText?: string; turnId?: string; messageId?: string; at?: string }> = [];
     try {
       for (const { event, timestamp } of readRecentTranscriptEnvelopes(managed)) {
         if (sinceIso && timestamp < sinceIso) continue;
         if (event.type === "user_message") {
           const text = event.text.trim();
           const displayText = event.displayText?.trim();
-          if (text) fromTranscript.push({ role: "user", text, ...(displayText ? { displayText } : {}) });
+          if (text) fromTranscript.push({ role: "user", text, at: timestamp, ...(displayText ? { displayText } : {}) });
         } else if (event.type === "text") {
           const last = fromTranscript[fromTranscript.length - 1];
           if (last?.role === "assistant" && last.turnId === event.turnId) {
             last.text = joinAssistantChunk(last, event);
+            last.at = timestamp;
             if (event.messageId) last.messageId = event.messageId;
           } else if (event.text.trim()) {
-            fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId });
+            fromTranscript.push({ role: "assistant", text: event.text, turnId: event.turnId, messageId: event.messageId, at: timestamp });
           }
         }
       }
@@ -18183,6 +18268,7 @@ export function createAgentChatService(args: {
         role: entry.role,
         text: entry.text.trim(),
         ...(entry.displayText?.trim() ? { displayText: entry.displayText.trim() } : {}),
+        ...("at" in entry && typeof entry.at === "string" ? { at: entry.at } : {}),
       }))
       .filter((entry) => entry.text.length > 0);
   };
@@ -18447,7 +18533,7 @@ export function createAgentChatService(args: {
     // account copy. They come first, then only this thread's turns since the
     // move (older turns here, from an earlier stay, are older than the
     // carried ones), until it has as many of its own.
-    let carriedConversation = "";
+    let carriedTurns: { fromName: string; text: string } | null = null;
     let sinceMove: ReturnType<typeof collectConversationEntries> | null = null;
     if (isCto && managed.conversationTail.pending && ctoAccountCopyHooks) {
       const carried = ctoAccountCopyHooks.carriedTail();
@@ -18457,23 +18543,31 @@ export function createAgentChatService(args: {
           ctoAccountCopyHooks.dropCarriedTail();
         } else {
           sinceMove = own;
-          carriedConversation = [
-            `Earlier, on ${carried.fromName} (your previous home; ADE moved you to this computer and kept your notes):`,
-            carried.tail,
-          ].join("\n");
+          carriedTurns = { fromName: carried.fromName, text: carried.tail };
         }
       }
     }
-    const recentConversation = !managed.conversationTail.pending
-      ? ""
-      : sinceMove
-        ? formatConversationTranscript(sinceMove.slice(-40))
-        : buildRecentConversationContext(managed, isCto ? 40 : 20);
-    if (recentConversation.length || carriedConversation.length) {
-      sections.push({
-        id: "tail",
-        text: [RECENT_CONVERSATION_TAIL_TITLE, carriedConversation, recentConversation].filter((part) => part.length > 0).join("\n"),
+    if (managed.conversationTail.pending && isCto) {
+      // The CTO's history (`ctoStory.ts`): the story so far, then the newest
+      // messages that fit a size budget, tagged as history so nothing in them
+      // reads as a new instruction.
+      const entries = sinceMove ?? collectConversationEntries(managed);
+      const story = readCtoStorySafely();
+      const { kept: tailEntries, firstKeptIndex } = selectCtoTail(entries);
+      const block = buildCtoHistoryBlock({
+        title: RECENT_CONVERSATION_TAIL_TITLE,
+        story,
+        carried: carriedTurns,
+        tail: tailEntries,
+        omitted: countUncoveredBeforeTail(entries, firstKeptIndex, story),
+        timeZone: ctoPersonTimeZone(),
       });
+      if (block.length) sections.push({ id: "tail", text: block });
+    } else if (managed.conversationTail.pending) {
+      const recentConversation = buildRecentConversationContext(managed, 20);
+      if (recentConversation.length) {
+        sections.push({ id: "tail", text: [RECENT_CONVERSATION_TAIL_TITLE, recentConversation].join("\n") });
+      }
     }
 
     const kept = sections
@@ -24901,6 +24995,10 @@ export function createAgentChatService(args: {
           occupancyPct: readTurnOccupancyPct(managed, storedEvent),
           errorText: turnErrorText,
         });
+        if (storedEvent.status === "completed") {
+          managed.ctoFreshThreadUnused = false;
+          noteCtoTurnForStory(managed);
+        }
       }
     }
 
@@ -65770,6 +65868,12 @@ export function createAgentChatService(args: {
     }
     args = withSideChatRole(managed, args);
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
+    // The CTO has no Compact first offer: when its cache has gone cold and
+    // this send would re-read a big thread at full price, it moves to a fresh
+    // thread first (notes, open work and recent turns carried over).
+    if (managed.session.identityKey === "cto" && isIdleForCompactFirst(managed)) {
+      await refreshCtoForColdCache(managed);
+    }
     const reviewed = takeThreadReviewForSend(args);
     // Only an explicit `compactFirst: true` compacts first. The pill sends it,
     // already on in "always" mode; automation and CLI sends never carry it. A
@@ -65974,6 +66078,37 @@ export function createAgentChatService(args: {
       minTokens: compactFirstMinTokens,
       mode: compactionIdleModeFor(managed.session),
     } as const;
+  }
+
+  /**
+   * A CTO send after its prompt cache expired, on a thread big enough that
+   * Compact first would offer to compact: start a fresh provider thread
+   * instead. The same size and idle rules as the offer, in "always" mode for
+   * every provider the offer covers. Never throws; on a failure the message
+   * goes out on the current thread.
+   */
+  async function refreshCtoForColdCache(managed: ManagedChatSession): Promise<void> {
+    if (managed.ctoFreshThreadUnused || !compactFirstSupportedProvider(managed.session.provider ?? "")) return;
+    // Cheap first: a cache can't be cold before its idle window has passed
+    // since the chat's last event (a turn's end and the cache's last read
+    // are no later). Persisted, so it holds across a restart. Only then read
+    // the history for the measured size.
+    const idleMs = compactFirstIdleMs({
+      provider: managed.session.provider ?? "",
+      model: managed.session.model,
+      cache: managed.session.promptCache,
+      idleMs: compactFirstIdleMsOverride,
+    });
+    const lastActivityMs = Date.parse(managed.session.lastActivityAt ?? "");
+    if (Number.isFinite(lastActivityMs) && Date.now() - lastActivityMs < idleMs) return;
+    try {
+      const offer = compactFirstOffer({ ...(await compactFirstArgs(managed)), mode: "always" });
+      // Checked again: a turn may have started while the history loaded.
+      if (!offer || !isIdleForCompactFirst(managed)) return;
+      refreshCtoProviderThread(managed, "cold_cache");
+    } catch (error) {
+      logger.warn("agent_chat.cto_cold_cache_refresh_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
+    }
   }
 
   function emitCompactFirstFallbackNotice(managed: ManagedChatSession): void {
@@ -73990,6 +74125,7 @@ export function createAgentChatService(args: {
       );
       restageSectionsForNewProviderThread(managed);
       refreshReconstructionContext(managed);
+      managed.ctoFreshThreadUnused = true;
       // Two writes: the metadata file keeps a previous copy, and that copy
       // must not hold the forgotten pointer either.
       persistChatState(managed, { fsync: true });
@@ -73999,12 +74135,16 @@ export function createAgentChatService(args: {
         provider: managed.session.provider,
         reason,
       });
+      // Fold what fell out of the tail into the story now, however little, so
+      // the next fresh thread (and the first send here, which rebuilds the
+      // block) gets it. In the background: the send never waits on the helper.
+      updateCtoStory(managed, { force: true, reason: `refresh_${reason}` });
       if (options.notice !== false) {
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
           status: CTO_CONTEXT_REFRESHED_STATUS,
-          message: "Fresh context — notes, open work and the last 40 messages carried over.",
+          message: "Fresh context — notes, open work, the story so far and the newest messages carried over.",
         });
       }
       return { refreshed: true };

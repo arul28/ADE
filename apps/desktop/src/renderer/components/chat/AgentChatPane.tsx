@@ -19522,7 +19522,10 @@ export function AgentChatPane({
   // Below the early return, so no hook here. The idle check keeps the event scan off hot renders:
   // it only runs once a chat has sat its cache window out, when no deltas stream.
   // A queued message is about to send on its own; the offer would only flash.
-  const idleCompactOffer = compactionOfferable && compactFirst.idleWindowOpen && !turnActive && !pendingInput && pendingSteers.length === 0 && measuredContextTokens != null
+  // The CTO never offers: its brain starts it on a fresh thread on its own
+  // (notes, open work and recent turns carried over) when a cold send would
+  // re-read a big chat.
+  const idleCompactOffer = compactionOfferable && !isPersistentIdentitySurface && compactFirst.idleWindowOpen && !turnActive && !pendingInput && pendingSteers.length === 0 && measuredContextTokens != null
     ? compactFirstOffer({ provider: selectedProvider, model: selectedSession?.model, events: selectedEvents, contextTokens: measuredContextTokens, cache: selectedSession?.promptCache, idleMs: selectedSession?.compactFirstIdleMs, minTokens: selectedSession?.compactFirstMinTokens, mode: compactionIdleMode, now: compactFirst.now })
     : null;
   const compactFirstChoice = compactFirst.choice?.sessionId === selectedSessionId ? compactFirst.choice : null;

@@ -1002,6 +1002,7 @@ struct WorkChatSessionView: View {
   /// changes instead of the turn-end line, one working line while it runs.
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
+  /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1089,6 +1090,9 @@ struct WorkChatSessionView: View {
   /// The sign-in card to show, keyed so a dismissed one stays hidden until a
   /// new reason brings it back: the failed turn whose signed-out agent it is
   /// for, else the machine's word that the agent has no login yet.
+  /// The CTO greeting's starters need a prompt box on screen to land in.
+  var ctoStartersEnabled: Bool { canComposeMessages && shownProviderSignIn == nil }
+
   var shownProviderSignIn: (key: String, reason: WorkProviderSignInReason)? {
     guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat else { return nil }
     let shown: (key: String, reason: WorkProviderSignInReason)
@@ -1356,7 +1360,18 @@ struct WorkChatSessionView: View {
   }
 
   var visibleTimelineRenderEntries: [WorkTimelineRenderEntry] {
-    timelinePresentation.renderEntries
+    let entries = timelinePresentation.renderEntries
+    guard ctoLive != nil else { return entries }
+    // The CTO thread hides its plumbing cards: drop them here, not in the row
+    // view, so they leave no empty row (and its spacing) behind.
+    return entries.filter { entry in
+      if case .entry(let timelineEntry) = entry.payload,
+         case .eventCard(let card) = timelineEntry.payload,
+         ctoThreadHidesCard(card) {
+        return false
+      }
+      return true
+    }
   }
 
   var latestScrollTargetId: String {
@@ -1721,6 +1736,7 @@ struct WorkChatSessionView: View {
       var hasher = Hasher()
       hasher.combine(transcriptLoadState)
       hasher.combine(isLive)
+      hasher.combine(ctoLive != nil && ctoStartersEnabled)
       rows.append(
         WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
       )
@@ -1744,6 +1760,15 @@ struct WorkChatSessionView: View {
     if isStreamingTurn {
       var hasher = Hasher()
       hasher.combine(turnToolActivity.active?.count ?? 0)
+      // A step finishing changes the working line's step words without
+      // changing the count.
+      for member in turnToolActivity.active?.members ?? [] {
+        switch member {
+        case .tool(let card): hasher.combine(card.status)
+        case .command(let card): hasher.combine(card.status)
+        case .fileChange(let card): hasher.combine(card.status)
+        }
+      }
       hasher.combine(frame?.activityPresentation?.label)
       hasher.combine(frame?.activityPresentation?.detail)
       rows.append(
@@ -1893,6 +1918,17 @@ struct WorkChatSessionView: View {
       }
       .adeInspectable("Work.Chat.Transcript.LoadFailed")
     case .idle:
+      // Offline, the empty thread means "not loaded", not "no history": the
+      // reconnect copy below says so, not the greeting.
+      if let ctoLive, isLive {
+        // The CTO's empty thread: it says hi and offers a start.
+        // A starter goes into the prompt box once, like a scene's reply: an
+        // event, not held state, so a composer that remounts later (after a
+        // sign-in card) keeps whatever the person typed since.
+        CtoGreetingView(live: ctoLive, onPick: ctoStartersEnabled ? { [sessionId = session.id] text in
+          WorkSceneReplyCenter.replies.send(WorkSceneReplyRequest(sessionId: sessionId, text: text))
+        } : nil)
+      } else {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
         title: "No chat messages yet",
@@ -1900,6 +1936,7 @@ struct WorkChatSessionView: View {
           ? "Send a message to start streaming the transcript."
           : "Reconnect to load the latest chat history from the machine."
       )
+      }
     }
   }
 
@@ -1972,7 +2009,9 @@ struct WorkChatSessionView: View {
   }
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
-    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
+    // The CTO never offers: its brain moves it to a fresh thread on its own.
+    guard ctoLive == nil,
+          chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
           // OpenCode only offers `/compact` when its server lists the command, Cursor only on local chats.
           !workManualCompactDependsOnChat(chatSummaryContext.provider) || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",

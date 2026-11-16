@@ -106,6 +106,9 @@ extension WorkChatSessionView {
       .equatable()
     case .toolCard(let toolCard):
       timelineToolCard(toolCard, entryId: entry.id)
+    case .eventCard(let card) where ctoLive != nil && ctoThreadHidesCard(card):
+      // The CTO thread keeps its plumbing out of sight (as on desktop).
+      EmptyView()
     case .eventCard(let card):
       timelineEventCard(card, entryId: entry.id)
     case .adeCard(let card):
