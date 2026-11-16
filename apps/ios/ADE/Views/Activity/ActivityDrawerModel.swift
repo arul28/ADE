@@ -355,6 +355,8 @@ public final class ActivityDrawerModel: ObservableObject {
     public func forgetSeenAndDismissed() {
         dismissedItemIDs = []
         seenItemIDs = []
+        // The last account's "all seen" time must not mark the next account's rows as read.
+        lastSeenAt = .distantPast
         for key in [Self.lastSeenAtKey, Self.dismissedItemIDsKey, Self.seenItemIDsKey] {
             defaults.removeObject(forKey: key)
         }

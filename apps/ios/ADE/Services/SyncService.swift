@@ -21035,7 +21035,11 @@ final class SyncService: ObservableObject {
       "ADE_SYNC_TRACE candidate hello auth=probe host=\(url.host ?? "", privacy: .public) port=\(url.port ?? 0) swept=true"
     )
     try await probe.send(.string(try encodedCandidateEnvelope(type: "hello", requestId: requestId, payload: payload)))
-    let responding: String? = try await withThrowingTaskGroup(of: String?.self) { group in
+    // A port that accepts the socket and never answers: the read ends when the
+    // socket closes, so the probe is closed when the time is up and when this
+    // candidate is cancelled. A silent port then cannot hold up the connect.
+    let responding: String? = try await withTaskCancellationHandler {
+     try await withThrowingTaskGroup(of: String?.self) { group in
       group.addTask {
         while true {
           let message = try await probe.receive()
@@ -21057,7 +21061,11 @@ final class SyncService: ObservableObject {
       }
       let first = try await group.next() ?? nil
       group.cancelAll()
+      probe.cancel(with: .goingAway, reason: nil)
       return first
+     }
+    } onCancel: {
+      probe.cancel(with: .goingAway, reason: nil)
     }
     guard syncNonEmpty(responding) == expected else {
       syncConnectLog.notice(
@@ -30130,11 +30138,21 @@ extension SyncService {
     // A wake still on its way belongs to the last account: a new open does
     // not wait on it. Its own opens still get its (dropped) answer.
     cloudWakeRequests = [:]
+    // Its waking marks go too: the next open of the same computer sends its
+    // own wake and does not take the old mark for a wake on its way.
+    wakingCloudMachineKeys = []
+    cloudWakeWaiters = [:]
   }
 
   /// One open that waited on a waking ADE Cloud computer is done.
   func endCloudWake(fleetKey: String) {
-    let left = (cloudWakeWaiters[fleetKey] ?? 1) - 1
+    // No open waits on this computer (an account change cleared the marks):
+    // a late end from the last account changes nothing.
+    guard let waiting = cloudWakeWaiters[fleetKey] else {
+      wakingCloudMachineKeys.remove(fleetKey)
+      return
+    }
+    let left = waiting - 1
     if left > 0 {
       cloudWakeWaiters[fleetKey] = left
     } else {

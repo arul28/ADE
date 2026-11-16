@@ -1275,9 +1275,9 @@ struct HubScreen: View {
     for card in cards {
       let chats = card.roster?.chats ?? []
       for chat in chats where !listed.contains(chat.id) { hiddenChats.insert(chat.id) }
-      let cardHidden = chats.isEmpty
-        ? !shownCardIds.contains(card.id)
-        : !chats.contains { listed.contains($0.id) }
+      // A shown card is never hidden, also when each of its chats is
+      // archived: a new chat in it belongs in Activity.
+      let cardHidden = !shownCardIds.contains(card.id) && !chats.contains { listed.contains($0.id) }
       guard cardHidden else { continue }
       if card.isFocused {
         hiddenProjects.insert(SyncService.activityProjectKey(machineKey: syncService.focusedMachineKey, projectId: card.id))
