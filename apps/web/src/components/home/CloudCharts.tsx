@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { ADE_MACHINE, CHECKED_ON, NO_CLOUD, NO_PUBLISHED_PRICE, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
+import { ADE_MACHINE, CHECKED_ON, NO_CLOUD, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
 import { FREE_PLAN, PRICING_PLANS, formatCount, formatUsd, planCostsFor } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 
@@ -31,8 +31,8 @@ export function CloudSources() {
   return (
     <p className="mt-6 max-w-[82ch] text-[13px] leading-relaxed text-white/45">
       Prices from each vendor's own pricing page on {CHECKED_ON}, for the computer only; model use is extra, except that Capy's
-      credits also pay for tokens. Values marked ≈ are our arithmetic from that page. {NO_PUBLISHED_PRICE.join(", ")} have a cloud
-      but no computer price to compare. Apps from{" "}
+      credits also pay for tokens. Values marked ≈ are our arithmetic from that page. Free hours count only hours that come back every
+      month, so one-time credits (Replicas, Superconductor) count as none. Apps with a cloud but no published price are left out. Apps from{" "}
       <a href="https://ademark.dev" target="_blank" rel="noreferrer" className="underline decoration-white/25 underline-offset-2 hover:text-white/75">
         ademark.dev
       </a>
@@ -64,20 +64,16 @@ function Mark({ src, name, size = 28, className }: { src: string; name: string; 
   );
 }
 
-type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number | null; label: string; ade: boolean };
+type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number; label: string; ade: boolean };
 
-/** Best first: ascending for prices, descending for free hours; rows with no published value go last. */
+/** Best first: ascending for prices, descending for free hours; ADE wins a tie. */
 function sortBars(bars: Bar[], higherIsBetter = false): Bar[] {
-  return [...bars].sort((a, b) => {
-    if (a.value == null) return 1;
-    if (b.value == null) return -1;
-    return higherIsBetter ? b.value - a.value || Number(b.ade) - Number(a.ade) : a.value - b.value || Number(b.ade) - Number(a.ade);
-  });
+  return [...bars].sort((a, b) => (higherIsBetter ? b.value - a.value : a.value - b.value) || Number(b.ade) - Number(a.ade));
 }
 
 /** One vendor on one line. The bar stops at 82% of the track so the value always fits after it. */
 function BarRow({ bar, max, compact }: { bar: Bar; max: number; compact?: boolean }) {
-  const width = bar.value == null ? 0 : Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
+  const width = Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
   if (compact) {
     return (
       <div className="flex flex-col gap-1.5">
@@ -134,27 +130,30 @@ function BillChart({ className }: { className?: string }) {
   const adePlan = planCostsFor(hours)[0]?.plan;
   const bars = sortBars([
     { id: "ade", name: "ADE Cloud", sub: `${ADE_MACHINE} · ${adePlan?.name ?? ""} plan`, logo: ADE_LOGO, value: adeBill, label: money(adeBill), ade: true },
-    ...RIVALS.filter((rival) => rival.monthlyUsd).map((rival): Bar => {
-      const value = rival.monthlyUsd!(hours);
-      return {
-        id: rival.id,
-        name: rival.name,
-        sub: `${rival.machine} · ${rival.plan}`,
-        logo: rival.logo!,
-        source: rival.source,
-        value,
-        label: value == null ? "not published" : `${rival.estimate ? "≈" : ""}${money(value)}`,
-        ade: false,
-      };
+    ...RIVALS.flatMap((rival): Bar[] => {
+      const value = rival.monthlyUsd?.(hours);
+      if (value == null) return [];
+      return [
+        {
+          id: rival.id,
+          name: rival.name,
+          sub: [rival.machine, rival.plan].filter(Boolean).join(" · "),
+          logo: rival.logo!,
+          source: rival.source,
+          value,
+          label: `${rival.estimate ? "≈" : ""}${money(value)}`,
+          ade: false,
+        },
+      ];
     }),
   ]);
-  const max = Math.max(...bars.map((bar) => bar.value ?? 0), 1);
+  const max = Math.max(...bars.map((bar) => bar.value), 1);
 
   return (
     <Chart
       className={className}
       title="Monthly bill"
-      metric={`${formatCount(hours)} hours in a month, on the cheapest plan that runs them. Lower is better.`}
+      metric={`${formatCount(hours)} hours in a month, on each app's cheapest plan for them. Lower is better.`}
       control={
         <div role="radiogroup" aria-label="Hours a month" className="inline-flex rounded-full border border-white/10 p-0.5">
           {WORKLOADS.map((value) => (
@@ -182,29 +181,43 @@ function BillChart({ className }: { className?: string }) {
   );
 }
 
-/** 2. Cloud hours a month that cost nothing, most first. */
+/** 2. Cloud hours a month that cost nothing, most first; the apps with none share one line. */
 function FreeHoursChart() {
   const bars = sortBars(
     [
       { id: "ade", name: "ADE Cloud", sub: "No card", logo: ADE_LOGO, value: FREE_PLAN.hours, label: `${FREE_PLAN.hours} h`, ade: true },
-      ...RIVALS.filter((rival) => rival.freeHours !== null).map((rival): Bar => ({
+      ...RIVALS.filter((rival) => rival.freeHours).map((rival): Bar => ({
         id: rival.id,
         name: rival.name,
-        sub: rival.freeHours ? "Its own estimate" : "None",
+        sub: "Its own estimate",
         logo: rival.logo!,
         source: rival.source,
-        value: rival.freeHours ?? 0,
-        label: `${rival.estimate && rival.freeHours ? "≈" : ""}${rival.freeHours ?? 0} h`,
+        value: rival.freeHours!,
+        label: `${rival.estimate ? "≈" : ""}${rival.freeHours} h`,
         ade: false,
       })),
     ],
     true,
   );
+  const none = RIVALS.filter((rival) => rival.freeHours === 0);
   return (
     <Chart title="Free hours" metric="Every month. Higher is better.">
       {bars.map((bar) => (
         <BarRow key={bar.id} bar={bar} max={FREE_PLAN.hours} compact />
       ))}
+      {none.length > 0 && (
+        <div className="mt-2 border-t border-white/[0.06] pt-4">
+          <p className="font-mono text-[13px] text-white/45">0 h</p>
+          <ul className="mt-2.5 flex flex-col gap-2">
+            {none.map((rival) => (
+              <li key={rival.id} className="flex items-center gap-2.5 text-[14px] text-white/70">
+                <Mark src={rival.logo!} name={rival.name} size={22} />
+                {rival.name}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Chart>
   );
 }
@@ -220,7 +233,7 @@ function PerHourChart({ className }: { className?: string }) {
     ...RIVALS.filter((rival) => rival.perHourCents != null).map((rival): Bar => ({
       id: rival.id,
       name: rival.name,
-      sub: `${rival.rateKind[0]!.toUpperCase()}${rival.rateKind.slice(1)} · ${rival.machine}`,
+      sub: [`${rival.rateKind[0]!.toUpperCase()}${rival.rateKind.slice(1)}`, rival.machine].filter(Boolean).join(" · "),
       logo: rival.logo!,
       source: rival.source,
       value: rival.perHourCents!,
@@ -228,7 +241,7 @@ function PerHourChart({ className }: { className?: string }) {
       ade: false,
     })),
   ]);
-  const max = Math.max(...bars.map((bar) => bar.value ?? 0));
+  const max = Math.max(...bars.map((bar) => bar.value));
   return (
     <Chart className={className} title="Price per hour" metric="One hour of the plan's computer. Lower is better.">
       {bars.map((bar) => (

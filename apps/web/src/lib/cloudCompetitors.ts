@@ -2,22 +2,22 @@ import { planCostsFor } from "./cloudPricing";
 
 /**
  * What other agent apps charge for a cloud computer, for the home page's
- * charts. The roster is every app ademark.dev measures. Only apps that
- * publish a compute price are charted; the rest are named as bundled,
- * unclear or without a cloud. Every number was read from the vendor's own
+ * charts: the apps ademark.dev measures, plus Replicas. Only apps that
+ * publish a compute price are charted, and a chart drops any row whose
+ * value the vendor's page does not give. Every number was read from the vendor's own
  * pricing page on `CHECKED_ON`; an `estimate` is our arithmetic from that
  * page and is drawn with "≈". Re-check before changing copy around them.
  */
 
-export const CHECKED_ON = "November 14, 2026";
+export const CHECKED_ON = "November 16, 2026";
 
 export type Rival = {
   id: string;
   name: string;
   logo?: string;
-  /** The machine compared, as the vendor names it. */
-  machine: string;
-  /** What `hours` of that machine costs in a month, in dollars, with the plan the vendor requires; null where the page does not say. */
+  /** The machine compared, as the vendor names it; omitted when the vendor does not say. */
+  machine?: string;
+  /** What `hours` of that machine costs in a month, in dollars, with the plan the vendor requires; null where the page does not say (the row is left out). */
   monthlyUsd?: (hours: number) => number | null;
   /** What one hour of that machine costs, in cents. */
   perHourCents?: number;
@@ -39,6 +39,14 @@ export const ADE_MACHINE = "2 CPUs · 4 GB";
 
 export function adeMonthlyUsd(hours: number): number {
   return planCostsFor(hours)[0]?.costUsd ?? 0;
+}
+
+/** Replicas' cheapest plan for `hours` of Small: Developer ($50) or a Team step ($200, $300, ...), each billing 1.5x past its usage. */
+function replicasMonthlyUsd(hours: number): number {
+  const usage = hours * 0.24;
+  let best = 50 + Math.max(0, usage - 50) * 1.5;
+  for (let plan = 200; plan < usage + 100; plan += 100) best = Math.min(best, plan + Math.max(0, usage - plan) * 1.5);
+  return best;
 }
 
 export const RIVALS: Rival[] = [
@@ -76,7 +84,6 @@ export const RIVALS: Rival[] = [
     id: "cloudroom",
     name: "Cloudroom",
     logo: "/images/competitors/logo-cloudroom.webp",
-    machine: "Size unpublished",
     plan: "$50 Pro plan",
     rateKind: "plan average",
     // Free: 3,000 credits each 30 days; Pro: $50 for 50,000 credits; the page puts a typical agent hour at about 100 credits.
@@ -88,6 +95,21 @@ export const RIVALS: Rival[] = [
     source: "https://cloudroom.dev/pricing",
   },
   {
+    id: "replicas",
+    name: "Replicas",
+    logo: "/images/competitors/logo-replicas.svg",
+    machine: "2 vCPU · 8 GB",
+    plan: "$50 Developer plan",
+    rateKind: "usage rate",
+    // Small is $0.004 a minute ($0.24 an hour) inside a plan, 1.5x past it. Developer is $50 with $50 of usage;
+    // Team is $200 and up in $100 steps, usage equal to the price. Its $100 free credit comes once, not monthly.
+    monthlyUsd: replicasMonthlyUsd,
+    perHourCents: 24,
+    freeHours: 0,
+    note: "Usage rate inside a plan; 36¢ an hour past it",
+    source: "https://replicas.dev/pricing",
+  },
+  {
     id: "superconductor",
     name: "Superconductor",
     logo: "/images/competitors/logo-superconductor.webp",
@@ -95,8 +117,7 @@ export const RIVALS: Rival[] = [
     plan: "$100 Pro plan",
     rateKind: "overage",
     // 200 credits an hour; Pro ($100) overage is $25 per 10,000 credits. Free is 20,000 starting credits, once.
-    // Pro's credit allowance at $100 is not stated, so no monthly bill can be worked out.
-    monthlyUsd: () => null,
+    // Pro's credit allowance at $100 is not stated, so it has no monthly bill and stays out of that chart.
     perHourCents: 50,
     freeHours: 0,
     estimate: true,
@@ -104,9 +125,6 @@ export const RIVALS: Rival[] = [
     source: "https://www.superconductor.com/pricing",
   },
 ];
-
-/** Agent apps with a cloud but no computer price to compare: Claude bundles it into its plans; the rest print no price. */
-export const NO_PUBLISHED_PRICE = ["Claude", "Traycer", "Emdash", "Zeron"] as const;
 
 /**
  * The agent apps ademark.dev measures that host no cloud computer at all.
