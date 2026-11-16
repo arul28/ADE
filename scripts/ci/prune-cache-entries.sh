@@ -35,6 +35,21 @@ case "$keep" in
   *) echo "::warning::$keep does not start with $prefix; nothing deleted."; exit 0 ;;
 esac
 
+# Runs on main overlap (a push does not cancel the run before it), so an older
+# commit's slower run could delete the entry a newer lockfile just saved. Only
+# the run of main's newest commit prunes; an older one leaves the cleanup to
+# it. A pull request needs no check: its newer push cancels the older run.
+if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+  if ! tip="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"; then
+    echo "::warning::Could not read main's newest commit; nothing deleted."
+    exit 0
+  fi
+  if [ "$tip" != "${GITHUB_SHA:-}" ]; then
+    echo "main has moved on to ${tip:0:9}; its run prunes. Nothing deleted."
+    exit 0
+  fi
+fi
+
 # The list endpoint's `key` filter is a prefix match.
 if ! stale="$(PREFIX="$prefix" KEEP="$keep" REF="$GITHUB_REF" gh api --paginate \
   "repos/$GITHUB_REPOSITORY/actions/caches?per_page=100&ref=$GITHUB_REF&key=$prefix" \
