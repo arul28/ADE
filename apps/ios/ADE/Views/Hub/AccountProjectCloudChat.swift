@@ -316,6 +316,8 @@ struct AccountProjectCloudSignInDetail: View {
   @State private var busy = false
   @State private var error: String?
   @State private var sent = false
+  /// Dropped on send: the keyboard would hide the answer under the field.
+  @FocusState private var fieldFocused: Bool
 
   private var needsInput: Bool { signIn.kind == "api_key" || signIn.kind == "url_paste" || signIn.needsPastedCode }
 
@@ -353,7 +355,7 @@ struct AccountProjectCloudSignInDetail: View {
           Button {
             openURL(link)
           } label: {
-            Label(signIn.kind == "device" ? "Open the sign-in page" : "Open \(signIn.label)", systemImage: "arrow.up.right.square")
+            Label("Open sign-in", systemImage: "arrow.up.right.square")
           }
           .buttonStyle(ADEKitButtonStyle())
         }
@@ -366,6 +368,7 @@ struct AccountProjectCloudSignInDetail: View {
               .padding(.horizontal, 10)
               .frame(minHeight: 36)
               .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+              .focused($fieldFocused)
               .onSubmit(submit)
             Button(signIn.kind == "api_key" ? "Save" : "Send code", action: submit)
               .buttonStyle(ADEKitButtonStyle(prominent: true))
@@ -373,7 +376,7 @@ struct AccountProjectCloudSignInDetail: View {
           }
         }
         if sent {
-          Text("Sent. The computer goes on when the sign-in lands.")
+          Text(signIn.kind == "api_key" ? "Key saved. The chat starts when the computer reads it." : "Code sent. The chat starts when the sign-in is done.")
             .font(.system(size: 12.5))
             .foregroundStyle(ADEColor.textSecondary)
         }
@@ -392,6 +395,7 @@ struct AccountProjectCloudSignInDetail: View {
     guard !text.isEmpty, !busy else { return }
     busy = true
     error = nil
+    fieldFocused = false
     Task {
       defer { busy = false }
       guard let client = await syncService.cloudServerClient() else {

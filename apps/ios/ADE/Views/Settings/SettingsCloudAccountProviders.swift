@@ -70,6 +70,8 @@ private struct SettingsCloudProviderRow: View {
   @State private var value = ""
   @State private var busy = false
   @State private var error: String?
+  /// Dropped on save: the keyboard would hide the answer under the field.
+  @FocusState private var fieldFocused: Bool
 
   private var saved: Bool { signIn?.saved == true }
 
@@ -118,6 +120,7 @@ private struct SettingsCloudProviderRow: View {
               .frame(minHeight: 36)
               .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
               .accessibilityLabel("\(signIn.keyName) for \(provider.label)")
+              .focused($fieldFocused)
               .onSubmit(save)
             Button(busy ? "Saving…" : "Save", action: save)
               .buttonStyle(ADEKitButtonStyle(prominent: true))
@@ -176,6 +179,7 @@ private struct SettingsCloudProviderRow: View {
   private func run(_ call: @escaping (CloudServerClient) async throws -> CloudAccountSignIns, then done: @escaping () -> Void) {
     busy = true
     error = nil
+    fieldFocused = false
     Task {
       defer { busy = false }
       guard let client = await syncService.cloudServerClient() else {

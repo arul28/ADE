@@ -132,7 +132,7 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
         {signIn.url ? (
           <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => openPage(signIn.url!)}>
             <ArrowSquareOut size={13} aria-hidden />
-            Open sign-in page
+            Open sign-in
           </button>
         ) : null}
         {needsInput ? (
