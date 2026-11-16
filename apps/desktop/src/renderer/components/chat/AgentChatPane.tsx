@@ -5429,6 +5429,12 @@ export function AgentChatPane({
   // measured before the create round trip, played on the commit that swaps the
   // empty state for the thread.
   const inPlaceFirstSendHandoffRef = useRef<ComposerHandoff | null>(null);
+  /**
+   * The first send in place swaps the empty state's composer for the thread's
+   * own. When the empty state's prompt held the keyboard, the thread's prompt
+   * takes it on (see the effect after `composerFocusRequest`).
+   */
+  const inPlaceSendKeepsKeyboardRef = useRef(false);
   useLayoutEffect(() => {
     const handoff = inPlaceFirstSendHandoffRef.current;
     if (!handoff || !selectedSessionId) return;
@@ -6143,6 +6149,18 @@ export function AgentChatPane({
   }, []);
   const [composerCaretToEndRequest, setComposerCaretToEndRequest] = useState(0);
   const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+  useEffect(() => {
+    if (!selectedSessionId || !inPlaceSendKeepsKeyboardRef.current) return;
+    inPlaceSendKeepsKeyboardRef.current = false;
+    // Only when nobody holds the keyboard now: the empty state's prompt left
+    // (removed, hidden or fading out) and the person did not move elsewhere.
+    const active = typeof document === "undefined" ? null : document.activeElement;
+    const keyboardIsFree = !active
+      || active === document.body
+      || !active.isConnected
+      || active.closest("[inert], [data-chat-empty-state]") != null;
+    if (keyboardIsFree) setComposerFocusRequest((current) => current + 1);
+  }, [selectedSessionId]);
   // A browser tab attached from the Browser panel, for the composer to insert
   // at its caret (the pane cannot see the caret, only the draft).
   const [browserTabInsertRequest, setBrowserTabInsertRequest] = useState<{ id: number; token: string } | null>(null);
@@ -16467,6 +16485,10 @@ export function AgentChatPane({
         inPlaceFirstSendHandoffRef.current = suppressOptimisticOutgoing
           ? null
           : captureComposerHandoff(findDraftComposerHandoffElement(shellRef.current));
+        const sendFocus = typeof document === "undefined" ? null : document.activeElement;
+        inPlaceSendKeepsKeyboardRef.current = Boolean(
+          sendFocus?.closest("[data-chat-composer-text]") && shellRef.current?.contains(sendFocus),
+        );
         sessionId = await createSession();
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
@@ -16693,6 +16715,7 @@ export function AgentChatPane({
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
       inPlaceFirstSendHandoffRef.current = null;
+      inPlaceSendKeepsKeyboardRef.current = false;
       setError(message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
