@@ -127,8 +127,10 @@ h6 {
   padding-right: var(--shell-header-inset-end, var(--shell-header-padding-end));
   color: var(--shell-header-fg);
   background: var(--shell-header-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  /* No backdrop-filter: behind the bar is only the shell's solid --color-bg,
+     so a blur showed nothing. It was still a blur pass on every frame, and
+     on macOS a backdrop-filter that is on screen makes Chromium draw the
+     whole window again for each change anywhere (a streaming chat, a caret). */
   /* No bottom hairline: the top bar sits on its part of the window gradient
      (see TopBar), and a line would cut it off from the new chat pane below. */
 }
