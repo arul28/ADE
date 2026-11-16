@@ -9,6 +9,7 @@ import type {
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
 import {
   PUBLISH_FAILING_ALARM_MS,
+  accountMachineForTarget,
   accountMachineMatchesTarget,
   assignMachineSections,
   autoConnectOffReason,
@@ -274,6 +275,20 @@ describe("assignMachineSections — account machines", () => {
     ).toBe(false);
   });
 
+  it("gives a paired target its own account machine, never another home on the same computer", () => {
+    // Two ADE homes on one computer publish the same routes.
+    const otherHome = accountMachine({ machineKey: "mk_other_home", deviceId: "dev_other_home" });
+    const ownHome = accountMachine({ machineKey: "mk_own_home", deviceId: "dev_own_home" });
+    const paired = (machineKey: string) => savedTarget({
+      transport: "paired",
+      pairedMachine: { hostIdentity: "host_not_in_directory", machineKey },
+    });
+
+    expect(accountMachineForTarget([otherHome, ownHome], paired("mk_own_home"))).toBe(ownHome);
+    expect(accountMachineForTarget([otherHome], paired("mk_own_home"))).toBeNull();
+    expect(accountMachineForTarget([otherHome, ownHome], savedTarget())).toBe(otherHome);
+  });
+
   it("matches a saved SSH target even when the account endpoint advertises the ADE service port", () => {
     // Real account-directory endpoints advertise the ADE service port (8787),
     // not the SSH port — matching/dedup must ignore it and key on the host.
@@ -426,7 +441,7 @@ describe("autoConnectOffReason", () => {
       autoConnect: false,
       lastConnectedAt: 1_700_000_000,
       manuallyDisconnectedAt: 1_700_000_100_000,
-    })).toMatch(/^you disconnected it on /);
+    })).toMatch(/^You disconnected it on /);
   });
 });
 

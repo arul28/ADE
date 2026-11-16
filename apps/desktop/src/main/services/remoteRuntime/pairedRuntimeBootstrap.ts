@@ -431,7 +431,9 @@ export async function bootstrapPairedRuntime(args: {
     );
   }
   throw new PairedRuntimeTransportUnavailableError(
-    pairedRuntimeFailureMessage(failure, credentials.hostIdentity.name, accountHelloCode, { handshakeTimedOut }),
+    // The message names the computer as ADE shows it (its ADE name), not
+    // the host name of its operating system.
+    pairedRuntimeFailureMessage(failure, args.target.name.trim() || credentials.hostIdentity.name, accountHelloCode, { handshakeTimedOut }),
     undefined,
     diagnostic,
   );

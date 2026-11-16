@@ -3699,6 +3699,8 @@ export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", Sync
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
 /** Host to the person's devices: the provider sign-ins changed; read `providerLogins.status` again. Older clients ignore it. */
 export type SyncProviderLoginsChangedEnvelope = SyncEnvelopeWithPayload<"provider_logins_changed", { changedAt: string }>;
+/** Host to the person's devices: the account's project list changed; read it again. Older clients ignore it. */
+export type SyncAccountProjectsChangedEnvelope = SyncEnvelopeWithPayload<"account_projects_changed", { changedAt: string }>;
 /**
  * Host to a lane share guest only: its presence, rights or limits changed.
  * Only the grant id; the guest reads `laneShare.getGuestState` again.
@@ -3800,6 +3802,7 @@ export type SyncEnvelope =
   | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
   | SyncProviderLoginsChangedEnvelope
+  | SyncAccountProjectsChangedEnvelope
   | SyncLaneShareGuestChangedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope

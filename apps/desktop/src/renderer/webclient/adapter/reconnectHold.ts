@@ -29,8 +29,9 @@ const RECONNECTING_CLIENT_STATES: ReadonlySet<string> = new Set([
  * second later brought it back as a fresh page. Held, the pages keep their
  * state and re-sync quietly when the connection is back.
  *
- * Only a reconnect is held, never a first connect or a refusal, and only for
- * RECONNECT_HOLD_MS of time in front: a machine that stays unreachable still
+ * Only a reconnect is held, never a first connect, a refusal or the person's
+ * own Disconnect, and only for RECONNECT_HOLD_MS of time in front: a machine
+ * that stays unreachable still
  * turns offline, with its Connect action. Time in the background does not
  * count, since the client does not dial while the page is hidden.
  */
@@ -47,10 +48,10 @@ export function createReconnectHold(
    * (null while the page is hidden). A hold spends its time only in front, and
    * once spent it is gone until the machine connects again.
    */
-  const holds = new Map<string, { leftMs: number; runningSince: number | null }>();
+  const holds = new Map<string, { leftMs: number; runningSince: number | null; since: number }>();
   let timer: ReturnType<typeof setTimeout> | null = null;
   const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
-  const timeLeft = (hold: { leftMs: number; runningSince: number | null }, now: number) =>
+  const timeLeft = (hold: { leftMs: number; runningSince: number | null; since: number }, now: number) =>
     hold.runningSince == null ? hold.leftMs : hold.leftMs - (now - hold.runningSince);
   const onVisibility = () => {
     if (holds.size === 0) return;
@@ -92,7 +93,14 @@ export function createReconnectHold(
           return connection;
         }
         const state = clientState(targetId);
-        if (connection.state === "parked" || !wasConnected.has(targetId) || !state || !RECONNECTING_CLIENT_STATES.has(state)) {
+        if (
+          // The person's own Disconnect is not a lost connection: no window.
+          connection.reconnectBlocked === "disconnected"
+          || connection.state === "parked"
+          || !wasConnected.has(targetId)
+          || !state
+          || !RECONNECTING_CLIENT_STATES.has(state)
+        ) {
           // Parked, failed (sign-in, refused) or never connected: nothing to hold.
           wasConnected.delete(targetId);
           holds.delete(targetId);
@@ -100,7 +108,7 @@ export function createReconnectHold(
         }
         let hold = holds.get(targetId);
         if (!hold) {
-          hold = { leftMs: RECONNECT_HOLD_MS, runningSince: hidden() ? null : now };
+          hold = { leftMs: RECONNECT_HOLD_MS, runningSince: hidden() ? null : now, since: now };
           holds.set(targetId, hold);
         }
         const leftMs = timeLeft(hold, now);
@@ -113,7 +121,7 @@ export function createReconnectHold(
         }
         if (hold.runningSince != null) nextExpiryMs = Math.min(nextExpiryMs, leftMs);
         held = true;
-        return { ...connection, state: "connected" as const };
+        return { ...connection, state: "connected" as const, reconnectingSinceMs: hold.since };
       });
       for (const targetId of [...wasConnected]) {
         if (!present.has(targetId)) wasConnected.delete(targetId);

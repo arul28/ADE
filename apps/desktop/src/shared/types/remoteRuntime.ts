@@ -372,6 +372,24 @@ export type RemoteRuntimeConnectionStatus = {
    */
   reconnectBlocked?: "disconnected" | null;
   /**
+   * When the last connection to this machine ended, in this app's run. Null
+   * while it is connected, and before it ever connected here. "Last seen"
+   * counts from this, not from when that connection started.
+   */
+  disconnectedAt?: number | null;
+  /**
+   * ADE Web: this machine is not connected only because the tab already holds
+   * its limit of connections. It is not disconnected and not known offline;
+   * it connects when a connection frees up or when someone opens it.
+   */
+  waitingForSlot?: boolean;
+  /**
+   * Set only while a client shows a dropped connection as `connected` during
+   * its short reconnect window: when the connection dropped. Lists that hide
+   * an unreachable machine count from this time, not from the window's end.
+   */
+  reconnectingSinceMs?: number | null;
+  /**
    * Who brings a failed connection back; only set while `state` is "error".
    * `reconnecting`: this app retries on its own. `waiting_for_user`: ADE on
    * the machine went away and this app waits for Reconnect (a dev app after
@@ -389,6 +407,10 @@ export const REMOTE_TARGET_NOT_FOUND_MESSAGE = "Remote target was not found.";
 /** What a call to a machine the person disconnected is told. */
 export const REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE =
   "Remote machine was manually disconnected. Connect again to use this remote project.";
+
+/** What a development ADE says when it would dial a machine the person did not connect in it. */
+export const REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE =
+  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
 
 export type RemoteRuntimeParsedPairingInput = {
   hostIdentity: SyncPairingHostIdentity;

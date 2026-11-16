@@ -194,7 +194,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
     },
 
     async getAccount(): Promise<CloudAccountState> {
-      return await request("GET", "/cloud/account") as CloudAccountState;
+      const account = await request("GET", "/cloud/account");
+      // Every surface reads the plan's period; an answer without it is a failed read, not a crash.
+      if (!record(record(account)?.billing)) throw new Error("ADE Cloud sent account details without billing.");
+      return account as CloudAccountState;
     },
 
     async listInstances(): Promise<CloudInstance[]> {

@@ -196,7 +196,7 @@ export function useCloudMachineGroup(args: {
   }
 
   // Rows that are cloud boxes leave their section for the ADE Cloud group,
-  // which keeps the order Connected, Ready to connect, Not reachable.
+  // which keeps the order Connected, Not connected, Not reachable.
   const cloudRows: Array<{ row: MachineRow; section: MachineSection; box: CloudMachine }> = [];
   const listedSections: Record<MachineSection, MachineRow[]> = { connected: [], available: [], unavailable: [] };
   const matchedBoxIds = new Set<string>();

@@ -51,6 +51,7 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import {
   capRemoteRuntimeErrorDetail,
+  REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE,
   REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE,
   REMOTE_TARGET_NOT_FOUND_MESSAGE,
   RemoteRuntimeConnectError,
@@ -185,8 +186,7 @@ const CLOUD_ASLEEP_RECHECK_MS = 5 * 60_000;
 /** After a link dropped and the computer still read as awake: when to ask again. */
 const CLOUD_ASLEEP_FOLLOW_UP_MS = [45_000, 90_000];
 
-const EXPLICIT_CONNECT_ONLY_MESSAGE =
-  "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
+const EXPLICIT_CONNECT_ONLY_MESSAGE = REMOTE_RUNTIME_EXPLICIT_CONNECT_ONLY_MESSAGE;
 
 export type AccountMachineReconciliationResult = {
   removedTargetIds: string[];
@@ -211,6 +211,12 @@ type RemoteConnectionDisconnectOptions = {
 
 type RemoteConnectionConnectOptions = {
   explicit?: boolean;
+  /**
+   * With `explicit`: a window asked for the machine, but no person did (a
+   * project tab joining every computer with a copy). It neither wakes a
+   * sleeping cloud computer nor starts the machine's brain.
+   */
+  background?: boolean;
 };
 
 // A machine that restarts for an update is back in one to two minutes; a
@@ -992,6 +998,7 @@ export class RemoteConnectionService {
           // Live state, so only while connected: an old wait must not linger on a dropped machine.
           ...(status.hostStorageWait && status.state === "connected" ? { hostStorageWait: status.hostStorageWait } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
+          ...(status.disconnectedAt != null ? { disconnectedAt: status.disconnectedAt } : {}),
           ...(status.recovery && status.state === "error" ? { recovery: status.recovery } : {}),
         };
       });
@@ -1056,7 +1063,16 @@ export class RemoteConnectionService {
     }
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
-    if (explicit) {
+    const unattended = explicit && options.background === true;
+    if (unattended) {
+      // Nobody asked: the person's Disconnect stands, and a build that dials
+      // only what the person connected here (`explicitConnectOnly`) does not
+      // take a machine on its own.
+      if (this.options.explicitConnectOnly && !this.explicitlyConnectedTargetIds.has(target.id)) {
+        throw new Error(EXPLICIT_CONNECT_ONLY_MESSAGE);
+      }
+      if (this.isManuallyDisconnected(target)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
+    } else if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
       this.clearAutomaticReconnectState(target.id);
     } else {
@@ -1070,7 +1086,7 @@ export class RemoteConnectionService {
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only cloud boxes cost a lookup.
-      const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
+      const woke = explicit && !unattended && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
       // An explicit connect counts as the person asking for this machine
       // (Connect, Test, Try again, and opening or switching to one of its
       // projects), so it may start the machine's brain. Unattended
@@ -1078,7 +1094,7 @@ export class RemoteConnectionService {
       const result = woke
         ? await this.connectWokenMachine(target)
         : explicit
-          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: "user" })
+          ? await this.pool.connect(target, { bypassFailureBackoff: true, initiatedBy: unattended ? "background" : "user" })
           : await this.pool.connect(target, { initiatedBy: "background" });
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         if (this.manuallyDisconnectedTargetIds.has(target.id)) {
@@ -1123,7 +1139,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectState(connectedResult.target.id);
       this.hostReturnWatches.stop(connectedResult.target.id);
       this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
-      if (explicit) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
+      if (explicit && !unattended) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
       return connectedResult;
     } catch (error) {
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
@@ -2504,6 +2520,10 @@ export class RemoteConnectionService {
     // Who brings a failed link back means nothing once it is up or idle, and
     // must not come back with a later, unrelated failure.
     if (next.state === "connected" || next.state === "idle") next.recovery = null;
+    // "Last seen" is when the link ended, so stamp the moment it leaves
+    // `connected`; a live link has no end yet.
+    if (next.state === "connected") next.disconnectedAt = null;
+    else if (current.state === "connected") next.disconnectedAt = Date.now();
     this.statusById.set(targetId, next);
     // Every successful call re-stamps `lastAttemptedAt` on a healthy machine.
     // Broadcasting that told every window "the connections changed", and the

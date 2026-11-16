@@ -36,15 +36,15 @@ An ADE child is a full session — its own lane-scoped context, its own tools, i
 ade new chat --mode chat --lane auto --parent <session> --type subagent --prompt "Run the auth tests and report failures"
 ```
 
-Two spawn types make the coordination contract explicit:
+A child either reports back or does not:
 
-- **`subagent`** — the parent needs the result. The child wakes the parent when it finishes, with a bounded summary, and the parent can join, read, or review the work.
-- **`peer`** — fire-and-forget. The child leaves a quiet completion note and never wakes the parent.
+- **Reports back** (the default) — the parent needs the result. The child wakes the parent when it finishes, with a bounded summary, and the parent can join, read, or review the work.
+- **Does not report back** (`--no-report`) — a side task. The child stays linked to the parent, but nothing is posted to the parent when it finishes, and it never wakes the parent.
 
 The child can run a **different provider and model** from the parent. That is the cross-product case: a Claude parent can hand a mechanical refactor to a fast model, visual review to a model with vision, and a second opinion to a different vendor — then reconcile all three.
 
 <Note>
-The child is a normal agent, not a restricted helper. It gets the same runtime, tools, and permissions as any other chat in that lane. The spawn type is a coordination contract, not a permission ceiling.
+The child is a normal agent, not a restricted helper. It gets the same runtime, tools, and permissions as any other chat in that lane. Reporting back is a coordination contract, not a permission ceiling.
 </Note>
 
 ## What the parent sees
@@ -53,7 +53,7 @@ The child is a normal agent, not a restricted helper. It gets the same runtime, 
 - A **card in the transcript** for each child, with its status and latest summary.
 - A **wake** when a `subagent` finishes, so the parent continues rather than polling.
 
-Demoting a subagent to a peer is an explicit action — from the composer banner, the session menu, or `ade chat demote`. Demoting stops the report channel; promoting restores it while the parent still exists. A later dispatch from the parent promotes a peer back automatically.
+Stopping a subagent's reports is an explicit action: **Take over** in the composer banner, **Stop reports to** in the session menu, or `ade chat demote`. **Report back to** in the session menu, or `ade chat promote`, starts the reports again while the parent still exists. A later message from the parent also starts them again.
 
 ## Choosing between them
 
@@ -62,7 +62,7 @@ Demoting a subagent to a peer is an explicit action — from the composer banner
 | Short parallel research inside one provider | Provider-native |
 | Work that must survive a restart or be inspected on its own | ADE child |
 | A different model or vendor should do it | ADE child |
-| Fire-and-forget side task | ADE child with `--type peer` |
+| Side task nobody waits on | ADE child with `--no-report` |
 | Deep, provider-specific delegation the runtime optimizes | Provider-native |
 
 <Tip>

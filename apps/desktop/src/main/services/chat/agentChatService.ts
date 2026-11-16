@@ -343,7 +343,7 @@ import {
   recordChatTextFlush,
   type ChatTextFlushReason,
 } from "../perf/chatTextProbe";
-import { chatEventsPage, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
+import { chatEventsPage, chatLifecycleEvents, transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
@@ -974,6 +974,11 @@ import {
 import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { describePendingInputForAgent, pendingInputIsAnswerable, pendingInputItemId as pendingInputRequestItemId } from "../../../shared/pendingInputCommand";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
+import {
+  deriveOrphanChildChatState,
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+} from "../../../shared/chatOrphanRunReconcile";
 import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import {
@@ -10100,6 +10105,12 @@ import {
   mapPermissionToCodex
 } from "./permissionMapping";
 
+/** The stale-run sweep's notes for a spawned chat that only went quiet: its card says done. */
+const SWEEP_STOP_SUMMARIES: ReadonlySet<string> = new Set([
+  ORPHAN_SUBAGENT_NO_REPORT_SUMMARY,
+  ORPHAN_SUBAGENT_CHAT_ENDED_SUMMARY,
+]);
+
 function codexSandboxPolicyType(sandbox: AgentChatCodexSandbox): string {
   switch (sandbox) {
     case "read-only":
@@ -11038,8 +11049,9 @@ function buildSpawnSelfReportGuidance(
   if (session.spawnKind === "subagent") {
     return `You are a subagent of another chat. Your final reply each turn is sent to that parent chat automatically, so end each turn with a clear report. If you need a decision, put the question and your recommendation in that report instead of asking the user; the parent asks the user when it cannot decide. Only an approval or consent that the user alone can give goes to the user. To send something mid-turn, or if a report failed to arrive: ${selfReportCommandGuidance} Do not read the parent's transcript to coordinate.`;
   }
+  // `peer` is the stored name of a chat that does not report back.
   if (session.spawnKind === "peer") {
-    return `You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: ${selfReportCommandGuidance}`;
+    return `Chat ${session.orchestrationParentSessionId.trim()} started you. Nobody waits for your result. If that chat needs it, report it with \`ade chat message\`. ${selfReportCommandGuidance}`;
   }
   return "This chat has a parent chat but no spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`.";
 }
@@ -12012,18 +12024,6 @@ export function listMachineProviderAccountChatLoad(): Map<string, ProviderAccoun
     }
   }
   return merged;
-}
-
-/**
- * The quiet line a peer's parent gets when the peer waits on a card only the
- * user can answer. No wake, the same as for the peer's finished turns.
- */
-function awaitingUserQuietNotice(childTitle: string, summary: string): Extract<AgentChatEvent, { type: "system_notice" }> {
-  return {
-    type: "system_notice",
-    noticeKind: "info",
-    message: `"${childTitle}": ${summary}`,
-  };
 }
 
 /**
@@ -26139,8 +26139,9 @@ export function createAgentChatService(args: {
 
     if (normalizedEvent.type === "done") {
       // Parented chats report every completed turn. Parent-dispatched subagent
-      // turns wake the parent; human-dispatched turns and peers leave a quiet
-      // completion notice. Causality and dedupe are derived from persisted
+      // turns wake the parent; human-dispatched turns leave a quiet completion
+      // notice; a chat that does not report back (`peer`) only closes its card.
+      // Causality and dedupe are derived from persisted
       // transcript metadata, so process restarts do not sever the channel.
       reportChildSpawnEnded(managed.session.id, normalizedEvent.status, "done", normalizedEvent.turnId);
       if (managed.session.sideChatParentSessionId && normalizedEvent.status === "completed") {
@@ -50937,7 +50938,7 @@ export function createAgentChatService(args: {
 
   const setSpawnKind = ({ sessionId, spawnKind }: AgentChatSetSpawnKindArgs): AgentChatSession => {
     if (spawnKind !== "subagent" && spawnKind !== "peer") {
-      throw new Error("Spawn type must be subagent or peer.");
+      throw new Error(`Spawn type must be "subagent" (reports back) or "peer" (does not report back).`);
     }
     return applySpawnKindChange({
       sessionId,
@@ -50959,7 +50960,7 @@ export function createAgentChatService(args: {
     actingAgentSessionId,
   }: AgentChatSetParentArgs): AgentChatSession => {
     if (spawnKind !== undefined && spawnKind !== "subagent" && spawnKind !== "peer") {
-      throw new Error("Spawn type must be subagent or peer.");
+      throw new Error(`Spawn type must be "subagent" (reports back) or "peer" (does not report back).`);
     }
     const managed = ensureManagedSession(sessionId);
     const childId = managed.session.id;
@@ -51256,8 +51257,8 @@ export function createAgentChatService(args: {
 
   /**
    * Route one child completion into its parent: the `subagent_result` that
-   * closes the parent's card, then a wake (subagent) or a quiet notice (peer),
-   * or the one-line CTO report. Shared by chat children (per finished turn) and
+   * closes the parent's card, then a wake (subagent), nothing more for a chat
+   * that does not report back (`peer`), or the one-line CTO report. Shared by chat children (per finished turn) and
    * tracked CLI children (per PTY exit), so both close the same card the same
    * way. Deduped in flight by key and durably by `spawnCompletion.childTurnId`
    * in the parent transcript.
@@ -51279,8 +51280,8 @@ export function createAgentChatService(args: {
 
     // A tracked agent CLI parent has no transcript: no card to close and no
     // quiet line to leave. A subagent's finished turn is typed at its prompt
-    // at its next turn boundary; a peer's, or one found again after a
-    // restart, stays quiet, as it would for a chat parent.
+    // at its next turn boundary; one that does not report back (`peer`), or
+    // one found again after a restart, stays quiet, as for a chat parent.
     if (!parentChatStillExists(parentSessionId) && isTrackedAgentCliSession(parentSessionId)) {
       if (!parentShouldWake) {
         logger.info("agent_chat.spawn_completion_routed", {
@@ -51364,7 +51365,7 @@ export function createAgentChatService(args: {
             return;
           }
           if (getCrossMachineMoveLock(parentSessionId, "subagent_report")) {
-            noteCompletionOnMovedAwayParent(parent);
+            if (spawnKind !== "peer") noteCompletionOnMovedAwayParent(parent);
             delivery.onDelivered?.();
             return;
           }
@@ -51426,7 +51427,10 @@ export function createAgentChatService(args: {
             }
           } else if (parentShouldWake) {
             await parentWakes.wake(parent.session.id, childSessionId, delivery.wakeText, spawnCompletion);
-          } else {
+          } else if (spawnKind !== "peer") {
+            // A subagent routed quietly (stopped by the parent's own Stop) gets
+            // the line. A chat that does not report back (`peer`) gets none:
+            // the `subagent_result` above closes its card, and nobody waits.
             emitChatEvent(parent, {
               type: "system_notice",
               noticeKind: "info",
@@ -51446,14 +51450,14 @@ export function createAgentChatService(args: {
             childTurnId,
             spawnKind,
             status: resultStatus,
-            routedTo: parentShouldWake ? "wake" : "quiet_notice",
+            routedTo: parentShouldWake ? "wake" : spawnKind === "peer" ? "card_only" : "quiet_notice",
           });
           delivery.onDelivered?.();
           return;
         } catch (error) {
           if (isMovedAwayChatError(error)) {
             const parent = ensureManagedSession(parentSessionId);
-            if (!parentAlreadyHasCompletion(parent)) noteCompletionOnMovedAwayParent(parent);
+            if (spawnKind !== "peer" && !parentAlreadyHasCompletion(parent)) noteCompletionOnMovedAwayParent(parent);
             delivery.onDelivered?.();
             return;
           }
@@ -51496,8 +51500,8 @@ export function createAgentChatService(args: {
    * Secret questions and user-only consent cards stay too, but the parent is
    * told the child waits on the user (`relayChildAwaitingUserToParent`), so it
    * does not read the silence as "stuck" and start a second chat for the same
-   * work. A peer gets that fact as a quiet line, as it gets its finished
-   * turns, and no question: a peer's questions are the user's. A parent that
+   * work. A chat that does not report back (`peer`) tells its parent neither:
+   * its questions are the user's, and nobody waits for it. A parent that
    * is not a chat here (a CLI terminal, another project or machine) has no
    * agent this service can message a question to.
    */
@@ -51530,7 +51534,10 @@ export function createAgentChatService(args: {
       request.questions.some((question) => question.isSecret)
       || isUserOnlyConsentCard(request.providerMetadata ?? null)
     ) {
-      if (relayChildAwaitingUserToParent(child, parentSessionId, request, itemId, spawnKind)) rememberRelayed();
+      // Nobody waits for a chat that does not report back (`peer`), so its
+      // parent is not told either.
+      if (spawnKind !== "subagent") return;
+      if (relayChildAwaitingUserToParent(child, parentSessionId, request, itemId)) rememberRelayed();
       return;
     }
     if (spawnKind !== "subagent") return;
@@ -51576,17 +51583,17 @@ export function createAgentChatService(args: {
    * Unlike a question, this also reaches a parent in another project or on
    * another machine, through the brain's router (`notice: "awaiting_user"`):
    * a coordinator there can only poll otherwise, and a poll that sees a quiet
-   * child reads it as stuck. A peer's parent gets a quiet line and is not
-   * woken, the same as for the peer's finished turns. True when the notice
-   * went out (or was queued).
+   * child reads it as stuck. Subagents only: nobody waits for a chat that does
+   * not report back, so its parent is not told. True when the notice went out
+   * (or was queued).
    */
   const relayChildAwaitingUserToParent = (
     child: ManagedChatSession,
     parentSessionId: string,
     request: PendingInputRequest,
     itemId: string,
-    spawnKind: "subagent" | "peer",
   ): boolean => {
+    const spawnKind = "subagent" as const;
     const childTitle = sessionService.get(child.session.id)?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const what = request.questions.some((question) => question.isSecret)
@@ -51594,29 +51601,11 @@ export function createAgentChatService(args: {
       : (request.title?.trim() || request.questions[0]?.question?.trim() || "a permission only the user can give");
     const summary = `Waiting on the user: ${what}. It has not finished; it continues when the user answers in that chat.`;
     const text = [
-      `Your ${spawnKind === "peer" ? "chat" : "subagent"} "${childTitle}" (${child.session.id}) is waiting on the user: ${what}.`,
-      `Only the user can answer this card; an agent cannot answer or decline it. The ${spawnKind === "peer" ? "chat" : "subagent"} stops until they do.`,
+      `Your subagent "${childTitle}" (${child.session.id}) is waiting on the user: ${what}.`,
+      "Only the user can answer this card; an agent cannot answer or decline it. The subagent stops until they do.",
       "Do not start another chat for the same work. Tell the user if it is urgent, then carry on with other work.",
     ].join(" ");
     if (parentChatStillExists(parentSessionId)) {
-      if (spawnKind === "peer") {
-        try {
-          // The quiet line is written into the parent's transcript, so it must
-          // not do that behind a live brain that runs the parent.
-          assertChatRuntimeOwnedHere(parentSessionId, "deliver an awaiting-user notice");
-          emitChatEvent(ensureManagedSession(parentSessionId), awaitingUserQuietNotice(childTitle, summary));
-          return true;
-        } catch (error) {
-          // A parent row that exists but cannot be rehydrated is not a reason
-          // to fail the child's card; the next event may still reach it.
-          logger.warn("agent_chat.peer_awaiting_user_notice_failed", {
-            parentSessionId,
-            childSessionId: child.session.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return false;
-        }
-      }
       void messageSession({
         sessionId: parentSessionId,
         kind: "wake",
@@ -51826,8 +51815,8 @@ export function createAgentChatService(args: {
     const cliParent = !parentChatStillExists(wake.parentSessionId) && isTrackedAgentCliSession(wake.parentSessionId);
     if (!cliParent && !parentChatStillExists(wake.parentSessionId)) return Promise.resolve("parent_gone");
     if (cliParent && wake.notice === "awaiting_user") {
-      // A CLI has no transcript for the quiet line a peer's parent gets, so a
-      // peer's notice is dropped; a subagent's is typed at its prompt.
+      // Nobody waits for a chat that does not report back (`peer`), so its
+      // notice is dropped; a subagent's is typed at its prompt.
       if (wake.spawnKind === "peer") return Promise.resolve("delivered");
       return wakeAgentCliParent(wake.parentSessionId, wake.wakeText)
         .then((): ExternalWakeDeliveryResult => "delivered")
@@ -51841,27 +51830,11 @@ export function createAgentChatService(args: {
         });
     }
     // Not a finished turn: a child elsewhere waits on its user. A message, no
-    // completion, so the parent's card for the child stays open. A peer's
-    // parent gets the quiet line and is not woken.
+    // completion, so the parent's card for the child stays open. A chat that
+    // does not report back (`peer`, which an older brain may still route)
+    // tells its parent nothing: nobody waits for it.
     if (wake.notice === "awaiting_user") {
-      if (wake.spawnKind === "peer") {
-        try {
-          // As above: never write into a chat another live brain runs.
-          assertChatRuntimeOwnedHere(wake.parentSessionId, "deliver an awaiting-user notice");
-          emitChatEvent(
-            ensureManagedSession(wake.parentSessionId),
-            awaitingUserQuietNotice(wake.childTitle, wake.summary),
-          );
-          return Promise.resolve("delivered");
-        } catch (error) {
-          logger.warn("agent_chat.external_awaiting_user_delivery_failed", {
-            parentSessionId: wake.parentSessionId,
-            childSessionId: wake.childSessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          return Promise.resolve("failed");
-        }
-      }
+      if (wake.spawnKind === "peer") return Promise.resolve("delivered");
       return messageSession({
         sessionId: wake.parentSessionId,
         kind: "wake",
@@ -71494,9 +71467,9 @@ export function createAgentChatService(args: {
     },
     whenReady: () => scheduledWorkReady,
     // A subagent tells its own parent (`relayChildAwaitingUserToParent`), so a
-    // waiter would repeat it. A peer's relay is a quiet line that does not
-    // wake, so the waiter is how its parent hears it while asleep and must
-    // still speak. `pendingInputUserOnly` only exists for a chat this brain
+    // waiter would repeat it. A chat that does not report back (`peer`) tells
+    // its parent nothing, so the waiter is how a caller waiting on it hears it
+    // and must still speak. `pendingInputUserOnly` only exists for a chat this brain
     // manages (see `isUserOnlyPendingInput`), so `managedSessions` is the whole
     // set the relay can have told.
     // The relay only reaches a chat parent, so a CLI caller is told here.
@@ -71585,6 +71558,96 @@ export function createAgentChatService(args: {
     return lineage?.orchestrationParentSessionId?.trim() || null;
   };
 
+  /**
+   * The parent's subagent rows for `ade chat status`, with each spawned chat's
+   * row told by that chat itself, as its card is. A spawn's row says "running"
+   * until a report or the stale-run sweep closes it, so a child that never ran,
+   * or whose turn ended without a report, read as running. Older sweeps closed
+   * such a row under the bare child id: a second row for one child, which the
+   * merge folds onto the first or not depending on what is live. One row per
+   * child, keyed `chat:<id>`, either way.
+   */
+  const settleSpawnedChatRows = (
+    parentSessionId: string,
+    snapshots: AgentChatSubagentSnapshot[],
+  ): AgentChatSubagentSnapshot[] => {
+    const out: AgentChatSubagentSnapshot[] = [];
+    const indexByChild = new Map<string, number>();
+    for (const snapshot of snapshots) {
+      const childId = snapshot.taskId.startsWith("chat:")
+        ? snapshot.taskId.slice("chat:".length)
+        : snapshot.agentId?.trim() || snapshot.taskId;
+      // An id that names a chat on this machine is that chat, as the stale-run
+      // sweep reads it (`orphanRowChildSessionCandidate`); SDK task ids never do.
+      const row = childId && childId !== parentSessionId ? sessionService.get(childId) : null;
+      if (!row || !isChatToolType(row.toolType)) {
+        out.push(snapshot);
+        continue;
+      }
+      const child = managedSessions.get(childId);
+      // A child that another live brain runs is that brain's to report, so its
+      // row stays as written; this brain cannot see that child's turn.
+      const heldElsewhere = child == null && chatOwnedByAnotherBrain(childId);
+      const working = child?.session.status === "active" || (child != null && collectPendingInputRequests(child).length > 0);
+      const note = snapshot.finalSummary ?? snapshot.summary ?? snapshot.description;
+      const status: AgentChatSubagentSnapshot["status"] = heldElsewhere
+        ? snapshot.status
+        : working
+          ? "running"
+          : deriveOrphanChildChatState(row, false) === "failed"
+            ? "failed"
+            : snapshot.status === "stopped" && !SWEEP_STOP_SUMMARIES.has(note ?? "")
+              ? "stopped"
+              : "completed";
+      const isSpawnRow = snapshot.taskId.startsWith("chat:");
+      const settled: AgentChatSubagentSnapshot = {
+        ...snapshot,
+        taskId: `chat:${childId}`,
+        agentId: childId,
+        // A bare row carries the sweep's note as its description.
+        description: isSpawnRow ? snapshot.description : row.title?.trim() || snapshot.description,
+        status,
+      };
+      const at = indexByChild.get(childId);
+      if (at == null) {
+        indexByChild.set(childId, out.length);
+        out.push(settled);
+      } else if (isSpawnRow) {
+        out[at] = settled;
+      }
+    }
+    return out;
+  };
+
+  /**
+   * Whether the last turn of a chat that another brain runs is still open, from
+   * the chat's transcript, which both brains share: the owner writes each
+   * turn's start and end there. The list (`subagent` rows, `chat list`) settles
+   * from the same file. Null when the tail holds no turn or cannot be read.
+   */
+  const foreignChatTurnOpen = async (sessionId: string): Promise<boolean | null> => {
+    let envelopes: readonly AgentChatEventEnvelope[];
+    try {
+      const transcriptPath = await resolveTranscriptPathForSessionId(sessionId);
+      if (!transcriptPath) return null;
+      ({ envelopes } = await readEnvelopesBackToSequence({
+        transcriptPath,
+        sessionId,
+        since: null,
+        onPageError: (error) => logger.warn("agent_chat.foreign_turn_read_failed", { sessionId, error: getErrorMessage(error) }),
+      }));
+    } catch (error) {
+      logger.warn("agent_chat.foreign_turn_read_failed", { sessionId, error: getErrorMessage(error) });
+      return null;
+    }
+    let open: boolean | null = null;
+    for (const event of chatLifecycleEvents(envelopes)) {
+      if (event.kind === "turn_started") open = true;
+      else if (event.kind === "turn_completed" || event.kind === "turn_failed" || event.kind === "turn_interrupted") open = false;
+    }
+    return open;
+  };
+
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
     // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
@@ -71596,7 +71659,7 @@ export function createAgentChatService(args: {
     const queuedMessageCount = managed?.runtime && "pendingSteers" in managed.runtime
       ? managed.runtime.pendingSteers.length
       : 0;
-    const snapshots = await getTrackedSubagents(trimmed);
+    const snapshots = settleSpawnedChatRows(trimmed, await getTrackedSubagents(trimmed));
     const runningWithTool = snapshots.find((snapshot) => snapshot.status === "running" && snapshot.lastToolName?.trim());
     // The account is extra: an unreadable registry leaves it off, logged.
     let instanceId: string | null = null;
@@ -71619,6 +71682,7 @@ export function createAgentChatService(args: {
       instanceId,
       sessionStatus: summary.status,
       ownedElsewhere: summary.runtimeOwnedElsewhere ?? null,
+      ownerTurnOpen: summary.runtimeOwnedElsewhere ? await foreignChatTurnOpen(summary.sessionId) : null,
       currentTurnStartedAt: summary.currentTurnStartedAt ?? null,
       lastActivityAt: summary.lastActivityAt ?? null,
       awaitingInput: summary.awaitingInput === true,

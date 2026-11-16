@@ -22,7 +22,7 @@ import {
   type RepositoryTab,
 } from "../../shared/repositoryTab";
 import type { OpenProjectBinding } from "../../shared/types";
-import { useAppStore } from "./appStore";
+import { useAppStore, type NoMachineRepositoryTab } from "./appStore";
 import { originUrlForBinding, subscribeProjectOriginMemory } from "../components/lanes/laneMachines";
 import { useStableBinding } from "./laneMachineRouting";
 import { useRemoteTargetState, withMachineTimeout } from "./projectMachines";
@@ -95,6 +95,45 @@ export function useActiveRepositoryTab(): RepositoryTab | null {
   const held = useRef(tab);
   if (tabIdentity(held.current) !== tabIdentity(tab)) held.current = tab;
   return held.current;
+}
+
+/** The repository tab of a no-machine tab: the account project when the account knows it. */
+export function repositoryTabOfNoMachineTab(tab: NoMachineRepositoryTab, list: AccountProjectListState): RepositoryTab {
+  // A second folder of a repository on one computer keys its tab by that
+  // folder; the repository is named apart.
+  const repositoryId = tab.repositoryId ?? tab.id;
+  const project = list.state === "ready" ? list.projects.find((entry) => entry.id === repositoryId) : undefined;
+  if (project) return repositoryTabFromAccountProject(project, { displayName: tab.displayName, iconDataUrl: tab.iconDataUrl });
+  const address = repositoryId.startsWith("repo:") ? repositoryId.slice("repo:".length) : repositoryId;
+  return {
+    kind: "account",
+    id: repositoryId,
+    displayName: tab.displayName,
+    iconDataUrl: tab.iconDataUrl,
+    host: address.split("/")[0]?.toLowerCase() || "github.com",
+    repoKeys: [repositoryId.startsWith("repo:") ? repositoryId : `repo:${address}`],
+  };
+}
+
+/**
+ * The repository tab on screen: the no-machine tab while one is in front
+ * (it keeps the project tab's binding behind it), else the project tab.
+ */
+export function useVisibleRepositoryTab(): RepositoryTab | null {
+  const boundTab = useActiveRepositoryTab();
+  const noMachineTab = useAppStore((state) => (
+    state.activeNoMachineTabId
+      ? state.noMachineTabs.find((entry) => entry.id === state.activeNoMachineTabId) ?? null
+      : null
+  ));
+  const list = useAccountProjectList();
+  const noMachineRepositoryTab = useMemo(
+    () => (noMachineTab ? repositoryTabOfNoMachineTab(noMachineTab, list) : null),
+    [list, noMachineTab],
+  );
+  const held = useRef(noMachineRepositoryTab);
+  if (tabIdentity(held.current) !== tabIdentity(noMachineRepositoryTab)) held.current = noMachineRepositoryTab;
+  return held.current ?? boundTab;
 }
 
 /**

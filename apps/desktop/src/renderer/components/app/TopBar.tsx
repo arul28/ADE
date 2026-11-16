@@ -58,7 +58,7 @@ import { useActiveRepositoryReader, useTabCopyPin } from "../../state/repository
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { findMachineProject, remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { captureError } from "../../../shared/sentry/capture";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
 import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
@@ -78,6 +78,7 @@ import { closeMusicTab, MusicTabContent } from "../music/MusicTabContent";
 import {
   activeMachineForGroup,
   groupProjectTabs,
+  ownTabKeysOf,
   recentProjectLocationKey,
   remoteBindingFromRecent,
   resolveProjectTabFallback,
@@ -101,6 +102,7 @@ import {
 } from "./useRepositoryTabs";
 import { NoMachineRepositoryTabs } from "./NoMachineRepositoryTabs";
 import { useAccountProjectListClient } from "../../state/accountProjectListClient";
+import { useConnectRepositoryCopies } from "../../state/connectRepositoryCopies";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
@@ -152,6 +154,8 @@ import { machineLabelForMachine } from "../../state/adeCloudLaneIndex";
 const RECENT_PROJECTS_CACHE_TTL_MS = 2_500;
 const PHONE_SYNC_STARTUP_DELAY_MS = 5_000;
 const RESOURCE_PRESSURE_SAMPLE_MS = 2_000;
+/** How long a connected computer's list must lack an open tab's copy before the tab moves off it. */
+const COPY_REMOVED_SETTLE_MS = 3_000;
 // While the indicator is hidden, a sample only decides whether to show it.
 // Each one runs a machine-wide `ps` in Electron main (about 17 ms of CPU), so a
 // calm app checks every 10 s and speeds up once there is load to track.
@@ -608,14 +612,6 @@ function HeaderActionPill({
     </SmartTooltip>
   );
 }
-
-const REMOTE_TAB_STATUS_LABEL: Record<RemoteRuntimeConnectionState, string> = {
-  connected: "Connected",
-  connecting: "Reconnecting",
-  parked: "Parked",
-  idle: "Disconnected",
-  error: "Disconnected",
-};
 
 function ProjectTabIcon({
   rootPath,
@@ -1104,17 +1100,10 @@ export function TopBar({
     });
   }, [remoteBinding]);
 
-  useEffect(() => {
-    if (project || remoteBinding) return;
-    // ADE Web: the binding goes away when a computer is forgotten in this
-    // browser; its tabs move to another copy or wait with no machine
-    // (`moveWebTabsOffGoneTargets`). A tab the person closes leaves on its own.
-    if (webMode) return;
-    // Same guard as above: only wipe remote tabs on a true close, not while a
-    // transition is in flight or before the welcome screen is shown.
-    if (projectTransition != null || showWelcome !== true) return;
-    setOpenRemoteProjectTabs([]);
-  }, [project, remoteBinding, projectTransition, showWelcome, webMode]);
+  // No effect empties the remote tabs when the window has no project: main can
+  // close the front project for a moment ("Start fresh", "Use this copy"), and
+  // tabs of other computers must stay. A real close empties both tab lists in
+  // the store's `closeProject`.
 
   const projectTabs = useMemo<RecentProjectSummary[]>(
     () =>
@@ -1194,7 +1183,85 @@ export function TopBar({
   // one tab, keyed by the account project. The tab is the repo: its machines
   // are not picked here, every tab shows all of them.
   useAccountProjectListClient();
+  // Every online computer with a copy of the tab's repository joins the tab.
+  useConnectRepositoryCopies();
   const repositoryIdentity = useRepositoryIdentity();
+  // A move: a tab's copy is replaced by another copy of its repository (the
+  // copy in front changed to one on another computer that no tab had open, or
+  // a fallback, a clone or a removal put one in its place). The new copy stays
+  // in the tab the move was made in (`joinTabOf`) while the old copy is open;
+  // once it closes, a copy that replaced a tab of its own keeps a tab of its
+  // own. A second checkout on the same computer is not a move: it opens in a
+  // tab of its own.
+  const lastTabsRef = useRef<{
+    activeKey: string | null;
+    activeMachine: string | null;
+    openKeys: ReadonlySet<string>;
+    tabPage: boolean;
+  }>({
+    activeKey: null,
+    activeMachine: null,
+    openKeys: new Set(),
+    tabPage: false,
+  });
+  const joinTabOfRef = useRef(new Map<string, string>());
+  const inheritedOwnTabsRef = useRef(new Set<string>());
+  /** Records that `to` takes the place of `from` in its tab; call before the open lists change. */
+  const noteTabMove = useCallback((from: string, to: string) => {
+    if (from === to) return;
+    const moves = joinTabOfRef.current;
+    moves.set(to, moves.get(from) ?? from);
+    // A tab that moved while another tab is in front opens the new copy on
+    // its next click, not the copy it left.
+    setPreferredBindingKeyByGroup((current) => {
+      let next: Record<string, string> | null = null;
+      for (const [groupId, key] of Object.entries(current)) {
+        if (key !== from) continue;
+        next ??= { ...current };
+        next[groupId] = to;
+      }
+      return next ?? current;
+    });
+  }, []);
+  const projectTabPageInFront = !isNewTabOpen && activeNoMachineTabId == null;
+  const tabMoves = useMemo(() => {
+    const openKeys = new Set([...openProjectTabRoots, ...openRemoteProjectTabs.map((entry) => entry.key)]);
+    const last = lastTabsRef.current;
+    const moves = joinTabOfRef.current;
+    const inheritedOwn = inheritedOwnTabsRef.current;
+    const activeMachine = activeTabBindingKey ? remoteBinding?.targetId ?? "local" : null;
+    if (
+      activeTabBindingKey
+      && last.tabPage
+      && last.activeKey
+      && last.activeKey !== activeTabBindingKey
+      && last.activeMachine !== activeMachine
+      && last.openKeys.has(last.activeKey)
+      && !last.openKeys.has(activeTabBindingKey)
+    ) {
+      moves.set(activeTabBindingKey, moves.get(last.activeKey) ?? last.activeKey);
+    }
+    const ownBefore = ownTabKeysOf(tabGroupsRef.current);
+    // The copy in front may join the open list a render later.
+    const gone = (key: string) => key !== activeTabBindingKey && !openKeys.has(key);
+    // Until the window session is back, the open lists are the empty first
+    // paint: the own tabs restored from it must not be dropped as gone.
+    if (!windowSessionRestored) {
+      lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
+      return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
+    }
+    for (const [key, from] of moves) {
+      if (gone(key)) {
+        moves.delete(key);
+      } else if (!openKeys.has(from)) {
+        if (ownBefore.has(from) || inheritedOwn.has(from)) inheritedOwn.add(key);
+        moves.delete(key);
+      }
+    }
+    for (const key of inheritedOwn) if (gone(key)) inheritedOwn.delete(key);
+    lastTabsRef.current = { activeKey: activeTabBindingKey, activeMachine, openKeys, tabPage: projectTabPageInFront };
+    return { joinTabOf: new Map(moves), inheritedOwn: new Set(inheritedOwn) };
+  }, [activeTabBindingKey, openProjectTabRoots, openRemoteProjectTabs, projectTabPageInFront, remoteBinding?.targetId, windowSessionRestored]);
   const tabGroups = useMemo(
     () =>
       groupProjectTabs({
@@ -1208,9 +1275,13 @@ export function TopBar({
         order: tabOrder,
         canonicalOrigin: repositoryIdentity.canonicalOrigin,
         repositoryIdForOrigin: repositoryIdentity.repositoryIdForOrigin,
+        // The last grouping: a second clone that has its own tab keeps it.
+        ownTabKeys: new Set([...ownTabKeysOf(tabGroupsRef.current), ...tabMoves.inheritedOwn]),
+        joinTabOf: tabMoves.joinTabOf,
       }),
     [
       activeTabBindingKey,
+      tabMoves,
       knownRemoteProjectTabs,
       localRecentProjects,
       openRemoteProjectTabs,
@@ -1283,6 +1354,12 @@ export function TopBar({
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
 
+  // The open copies in a tab of their own, for the window's memory: a reload
+  // or a launch brings each back as its own tab.
+  const ownTabKeysNow = useMemo(() => {
+    const open = new Set([...openProjectTabRoots, ...openRemoteProjectTabs.map((entry) => entry.key)]);
+    return [...ownTabKeysOf(tabGroups)].filter((key) => open.has(key)).sort();
+  }, [openProjectTabRoots, openRemoteProjectTabs, tabGroups]);
   // One tab and one open copy per repository, kept across a reload and a launch.
   useRepositoryTabStrip({
     windowSessionRestored,
@@ -1301,6 +1378,7 @@ export function TopBar({
     activeNoMachineTabId,
     noTabInFront: showWelcome === true || isNewTabOpen === true,
     recordNameFor,
+    ownTabKeys: ownTabKeysNow,
   });
 
   useEffect(() => {
@@ -1322,6 +1400,9 @@ export function TopBar({
         const launchStrip = !strip && session.repositoryTabs && session.repositoryTabs.tabs.length > 0
           ? restoredStripFromSaved(session.repositoryTabs)
           : null;
+        // Each copy that had a tab of its own gets it back, before the
+        // grouping first sees both copies of its repository open.
+        for (const key of strip?.ownTabKeys ?? launchStrip?.ownTabKeys ?? []) inheritedOwnTabsRef.current.add(key);
         if (launchStrip) {
           setTabOrder((current) => (current.length > 0 ? current : launchStrip.tabOrder));
           for (const tab of launchStrip.noMachineTabs) {
@@ -1651,6 +1732,29 @@ export function TopBar({
     ],
   );
 
+  // The no-machine tab a repository tab turns into when its computer is gone
+  // (S4). Null for a folder with no repository: it has no other copy to wait for.
+  const noMachineTabFor = useCallback((tab: RemoteOpenProjectBinding) => {
+    const group = tabGroupsRef.current.find((entry) =>
+      entry.machines.some((machine) => machine.bindingKey === tab.key));
+    if (!group?.origin) return null;
+    // A group keyed by a folder (a second clone's tab) names its
+    // repository apart.
+    const keyedByFolder = group.machines.some((machine) => machine.bindingKey === group.id);
+    const repositoryId = keyedByFolder
+      ? tabGroupsRef.current.find((entry) => (
+          entry.origin === group.origin && !entry.machines.some((machine) => machine.bindingKey === entry.id)
+        ))?.id ?? `repo:${group.origin}`
+      : group.id;
+    return {
+      id: group.id,
+      displayName: recordNameForRef.current(group) ?? tab.displayName,
+      iconDataUrl: tab.iconDataUrl ?? null,
+      lastCopyKey: tab.key,
+      repositoryId: keyedByFolder ? repositoryId : null,
+    };
+  }, []);
+
   const handleSwitchRemoteProject = useCallback(
     (binding: RemoteOpenProjectBinding): Promise<void> => {
       if (isProjectBusy) return Promise.resolve();
@@ -1660,15 +1764,38 @@ export function TopBar({
         return Promise.resolve();
       }
       carryRouteToCopy(remoteBinding?.key ?? project?.rootPath ?? null, binding.key, tabGroupsRef.current);
-      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {});
+      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {
+        // The tab's computer did not answer: the tab still comes to the
+        // front, as its no-machine page (the copies, Wake or Connect), and
+        // opens its copy when the computer is back. A connected computer that
+        // refused the open keeps the error banner instead.
+        const connected = (remoteSnapshotRef.current?.connections ?? []).some((connection) => (
+          connection.target.id === binding.targetId && connection.state === "connected"
+        ));
+        if (connected) return;
+        const noMachine = noMachineTabFor(binding);
+        if (!noMachine) return;
+        const store = useAppStore.getState();
+        // Another switch started since this one: it owns the front.
+        if (store.projectTransition) return;
+        const nextRemoteTabs = openRemoteProjectTabsRef.current.filter((entry) => entry.key !== binding.key);
+        openRemoteProjectTabsRef.current = nextRemoteTabs;
+        setOpenRemoteProjectTabs(nextRemoteTabs);
+        // Keep the tab's view (its chat and draft) for when the computer is back.
+        store.evictProjectDataCaches(binding.key);
+        useAppStore.setState({ projectTransitionError: null });
+        store.showNoMachineTab(noMachine);
+      });
     },
     [
       cancelNewTab,
       hubRouteActive,
       isProjectBusy,
       leaveMachineRoute,
+      noMachineTabFor,
       project?.rootPath,
       remoteBinding?.key,
+      setOpenRemoteProjectTabs,
       switchRemoteProject,
     ],
   );
@@ -1693,6 +1820,7 @@ export function TopBar({
     checkForActiveWorkloads,
     isProjectBusy,
     tabSwitchRef,
+    noteTabMove,
   });
 
   // A project tab comes to the front on the press, as a browser tab does, so a
@@ -1767,16 +1895,6 @@ export function TopBar({
       // A repository tab with no other copy stays open with no machine (S4):
       // a machine going away never closes a repository. A folder with no
       // repository (no origin) has no other copy to wait for, and closes.
-      const noMachineTabFor = (tab: RemoteOpenProjectBinding) => {
-        const group = tabGroupsRef.current.find((entry) =>
-          entry.machines.some((machine) => machine.bindingKey === tab.key));
-        if (!group?.origin) return null;
-        return {
-          id: group.id,
-          displayName: recordNameForRef.current(group) ?? tab.displayName,
-          iconDataUrl: tab.iconDataUrl ?? null,
-        };
-      };
       const waitingTabs = plans.flatMap((plan) => {
         if (plan.fallback) return [];
         const noMachine = noMachineTabFor(plan.tab);
@@ -1881,6 +1999,8 @@ export function TopBar({
         const target = plan.fallback?.kind === "remote" ? plan.fallback.binding.key : plan.fallback?.kind === "local" ? plan.fallback.rootPath : null;
         if (target) renamed.set(plan.tab.key, target);
       }
+      // Each fallback copy takes the place of the copy that left, in its own tab.
+      for (const [from, to] of renamed) noteTabMove(from, to);
       const shownBeforeClose = {
         groups: tabGroupsRef.current,
         openLocal: new Set(openProjectTabRootsRef.current),
@@ -1927,11 +2047,12 @@ export function TopBar({
         waitingTabs.find((plan) => plan.tab.key === latestRemoteBinding.key) ?? null;
       try {
         if (activePlan?.fallback?.kind === "local") {
-          await latestState.switchProjectToPath(activePlan.fallback.rootPath);
+          await latestState.switchProjectToPath(activePlan.fallback.rootPath, { carryWorkView: true });
         } else if (activePlan?.fallback?.kind === "remote") {
           await latestState.switchRemoteProject(
             activePlan.fallback.binding.targetId,
             activePlan.fallback.binding.projectId,
+            { carryWorkView: true },
           );
         } else {
           const nextRemoteTab = nextRemoteTabs[0] ?? null;
@@ -1976,6 +2097,8 @@ export function TopBar({
       return true;
     },
     [
+      noMachineTabFor,
+      noteTabMove,
       setOpenProjectTabRoots,
       setOpenRemoteProjectTabs,
       setTabOrder,
@@ -1991,6 +2114,7 @@ export function TopBar({
     setOpenRemoteProjectTabs,
     setTabOrder,
     setPreferredBindingKeyByGroup,
+    noteTabMove,
   });
 
   const handleRemoteTargetDisconnectRequested = useCallback(
@@ -2061,11 +2185,9 @@ export function TopBar({
     openRemoveNoMachineDialog,
     openRemoveDialogWithTarget,
     closeRemoveDialog,
-    handleCopiesMenuSwitch,
     copiesMenuView,
     copiesMenuRows,
     copiesMenuComputers,
-    copiesSubmenuFor,
   } = useProjectCopiesMenu({
     tabGroups,
     remoteSnapshot,
@@ -2075,12 +2197,8 @@ export function TopBar({
     projectRootPath: project?.rootPath ?? null,
     hasOrigin,
     recentProjects,
-    knownRemoteProjectTabs,
     activeTabBindingKey,
-    isProjectBusy,
     handleClonedLocally,
-    handleSwitchProject,
-    handleSwitchRemoteProject,
   });
 
   // The Location page and a no-machine tab's page ask for the dialog here.
@@ -2178,16 +2296,71 @@ export function TopBar({
         connectedTargetIds,
         excludeTargetId: "",
       });
-      if (!fallback) {
-        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+      // A second folder's own tab whose folder is gone: it joins the
+      // repository's tab, which comes to the front in its place.
+      const repositoryGroup = !fallback && remaining.length === 0 && group.origin
+        ? tabGroupsRef.current.find((entry) => entry.id !== group.id && entry.origin === group.origin) ?? null
+        : null;
+      const repositoryOpen = repositoryGroup?.machines.find((machine) => (
+        machine.isLocal ? openLocal.includes(machine.rootPath) : openRemote.some((entry) => entry.key === machine.bindingKey)
+      )) ?? null;
+      if (repositoryOpen) {
+        const store = useAppStore.getState();
+        const frontKey = store.projectBinding?.kind === "remote" ? store.projectBinding.key : store.project?.rootPath ?? null;
+        try {
+          // That tab is already open: it comes back with its own chats and
+          // grid, not the removed checkout's view.
+          if (frontKey && removed.has(frontKey)) {
+            if (repositoryOpen.isLocal) await store.switchProjectToPath(repositoryOpen.rootPath);
+            else if (repositoryOpen.binding?.kind === "remote") {
+              await store.switchRemoteProject(repositoryOpen.binding.targetId, repositoryOpen.binding.projectId);
+            }
+          }
+        } catch (error) {
+          captureError(error, { fingerprint: ["repository-tabs", "remove-join-open"], level: "warning", handled: true });
+        }
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs(nextRemote);
+        setOpenProjectTabRoots((prev) => prev.filter((root) => !removed.has(root)));
+        for (const key of removed) {
+          if (!key.startsWith("remote:")) continue;
+          useAppStore.getState().evictProjectState(key);
+          removeStoredProjectRoute(key);
+        }
         return;
       }
+      if (!fallback) {
+        // Other copies of the repository exist, on no computer that is online:
+        // the tab stays, with no computer, until one is (S4). Only a project
+        // with no copy left closes.
+        const removedRemote = openRemote.find((entry) => removedOpen.some((machine) => machine.bindingKey === entry.key)) ?? null;
+        const noMachine = remaining.length > 0 && removedRemote ? noMachineTabFor(removedRemote) : null;
+        if (!noMachine) {
+          await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+          return;
+        }
+        const store = useAppStore.getState();
+        const wasInFront = store.projectBinding?.kind === "remote" && removed.has(store.projectBinding.key);
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => !removed.has(entry.key));
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs(nextRemote);
+        for (const key of removed) {
+          if (!key.startsWith("remote:")) continue;
+          store.evictProjectState(key);
+          removeStoredProjectRoute(key);
+        }
+        store.showNoMachineTab(noMachine, { activate: wasInFront });
+        return;
+      }
+      // The fallback copy takes the removed copy's place, in its own tab.
+      noteTabMove(removedOpen[0]!.bindingKey, fallback.kind === "local" ? fallback.rootPath : fallback.binding.key);
       const state = useAppStore.getState();
       const activeKey = state.projectBinding?.kind === "remote" ? state.projectBinding.key : state.project?.rootPath ?? null;
       try {
         if (activeKey && removed.has(activeKey)) {
-          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath);
-          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId);
+          if (fallback.kind === "local") await state.switchProjectToPath(fallback.rootPath, { carryWorkView: true });
+          else await state.switchRemoteProject(fallback.binding.targetId, fallback.binding.projectId, { carryWorkView: true });
         }
       } catch (error) {
         // The switch failed: the tab closes rather than pointing at a removed copy.
@@ -2214,8 +2387,56 @@ export function TopBar({
         removeStoredProjectRoute(key);
       }
     },
-    [closeTabGroups, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
+    [closeTabGroups, noMachineTabFor, noteTabMove, setOpenProjectTabRoots, setOpenRemoteProjectTabs],
   );
+
+  // A copy removed outside this window (on its computer, or from another
+  // window or the phone): its computer stays connected and its project list
+  // no longer has it. The tab moves as it does after a removal made here.
+  // An empty list proves nothing (it has not arrived after a reconnect), and
+  // the list must say so for a few seconds first.
+  const missingCopySinceRef = useRef(new Map<string, number>());
+  const followedCopyRemovalsRef = useRef(new Set<string>());
+  const [missingCopyTick, setMissingCopyTick] = useState(0);
+  useEffect(() => {
+    const nowMs = Date.now();
+    const missingSince = missingCopySinceRef.current;
+    const stillMissing = new Set<string>();
+    for (const tab of openRemoteProjectTabsRef.current) {
+      const connection = remoteSnapshot?.connections.find((entry) => entry.target.id === tab.targetId) ?? null;
+      const projects = connection?.projects ?? [];
+      if (connection?.state !== "connected" || typeof connection.reconnectingSinceMs === "number" || projects.length === 0) continue;
+      const present = projects.filter((entry) => entry.exists !== false);
+      if (findMachineProject(present, { projectId: tab.projectId, rootPath: tab.rootPath })) continue;
+      stillMissing.add(tab.key);
+    }
+    for (const key of [...missingSince.keys()]) if (!stillMissing.has(key)) missingSince.delete(key);
+    for (const key of [...followedCopyRemovalsRef.current]) if (!stillMissing.has(key)) followedCopyRemovalsRef.current.delete(key);
+    let nextCheckMs: number | null = null;
+    for (const key of stillMissing) {
+      if (followedCopyRemovalsRef.current.has(key)) continue;
+      const since = missingSince.get(key) ?? nowMs;
+      missingSince.set(key, since);
+      const dueMs = since + COPY_REMOVED_SETTLE_MS;
+      if (nowMs < dueMs) {
+        nextCheckMs = Math.min(nextCheckMs ?? dueMs, dueMs);
+        continue;
+      }
+      const group = tabGroupsRef.current.find((entry) => entry.machines.some((machine) => machine.bindingKey === key));
+      if (!group) continue;
+      followedCopyRemovalsRef.current.add(key);
+      void handleProjectCopiesRemoved(group.id, null, null, {
+        scope: "this",
+        accountRemoved: false,
+        removedBindingKeys: [key],
+        unknownBindingKeys: [],
+        cloneRunning: false,
+      });
+    }
+    if (nextCheckMs == null) return undefined;
+    const timer = window.setTimeout(() => setMissingCopyTick((tick) => tick + 1), Math.max(0, nextCheckMs - nowMs));
+    return () => window.clearTimeout(timer);
+  }, [handleProjectCopiesRemoved, missingCopyTick, remoteSnapshot]);
 
   const recentForMachine = useCallback(
     (machine: ProjectTabMachine): RecentProjectSummary | null => {
@@ -2291,7 +2512,6 @@ export function TopBar({
         : null,
       ...sections.open,
       { kind: "separator", key: "sep-project" },
-      copiesSubmenuFor(group, { x: tabMenu.x, y: tabMenu.y }),
       ...sections.project,
       { kind: "separator", key: "sep-copy" },
       ...sections.copy,
@@ -2347,7 +2567,6 @@ export function TopBar({
     addLocalCopyFromTab,
     closeTabGroups,
     cloneTargetForGroup,
-    copiesSubmenuFor,
     openRemoveDialog,
     handleMoveTabToNewWindow,
     hostIconByKey,
@@ -2553,7 +2772,6 @@ export function TopBar({
                   const remoteTabConnecting = remoteTabState === "connecting";
                   const remoteTabDisconnected =
                     remoteTabState === "error" || remoteTabState === "idle";
-                  const remoteTabStatusLabel = REMOTE_TAB_STATUS_LABEL[remoteTabState];
                   const remoteTabKey = tabOrderKey(group);
                   return (
                     <div
@@ -2569,8 +2787,8 @@ export function TopBar({
                       data-remote-state={remoteTabState}
                       aria-current={isCurrentRemote && !isNewTabOpen ? "true" : undefined}
                       // A project tab looks the same wherever its checkout
-                      // lives. The machine is in the tooltip; only a connection
-                      // problem, which stops the tab from loading, is marked.
+                      // lives. Only a connection problem, which stops the tab
+                      // from loading, is marked.
                       className={cn(
                         "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[260px] items-center gap-1.5 px-2.5",
                         "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
@@ -2583,7 +2801,9 @@ export function TopBar({
                           ...projectTabDrag.tabDragStyle(remoteTabKey),
                         } as React.CSSProperties
                       }
-                      title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
+                      // The tab is the project: its tooltip is its name, never
+                      // one computer or the folder of one copy.
+                      title={recordNameFor(group) ?? remoteTab.displayName}
                       onClick={() => {
                         if (projectTabDrag.isDragClick()) return;
                         handleSwitchRemoteProject(remoteTab);
@@ -2612,14 +2832,14 @@ export function TopBar({
                           size={11}
                           weight="bold"
                           className="shrink-0 animate-spin text-amber-300"
-                          aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                          aria-label="Reconnecting"
                         />
                       ) : remoteTabDisconnected ? (
                         <WarningCircle
                           size={11}
                           weight="fill"
                           className="shrink-0 text-red-300"
-                          aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                          aria-label="Not connected"
                         />
                       ) : null}
                       <button
@@ -2716,7 +2936,7 @@ export function TopBar({
                         handleSwitchProject(rp.rootPath);
                       }
                     }}
-                    title={isMissing ? `Missing: ${rp.rootPath}` : rp.rootPath}
+                    title={isMissing ? `Missing: ${rp.rootPath}` : recordNameFor(group) ?? rp.displayName}
                   >
                     <ProjectTabIcon
                       rootPath={rp.rootPath}
@@ -3140,7 +3360,6 @@ export function TopBar({
         onlyOneMachine={copiesMenuView?.onlyOneMachine ?? null}
         // The clone call takes only GitHub repositories, on every machine.
         canAddCopies={!webMode && Boolean(copiesMenuView?.repoKey?.startsWith("github.com/"))}
-        onSwitch={handleCopiesMenuSwitch}
         onAddCopy={(machine) => {
           if (!copiesMenuView?.repoKey) return;
           startCopyForRepo(copiesMenuView.repoKey, copiesMenuView.projectName, machine);

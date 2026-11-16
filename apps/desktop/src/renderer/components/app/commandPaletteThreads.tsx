@@ -30,11 +30,9 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
-import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { parentsWithBusySubagents } from "../../../shared/sessionSpawnNesting";
 import { useTurnStallClock } from "../../lib/useTurnStallClock";
-import { LaneMachineMarker } from "../terminals/LaneMachineMarker";
 import {
   SESSION_TONE_DOT_CLASS,
   SESSION_TONE_TEXT_CLASS,
@@ -514,33 +512,14 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
   const time = relativeTimeCompact(
     session.lastActivityAt ?? session.settledAt ?? session.startedAt,
   );
-  // Rows that are not on this Mac carry the same marker the sidebar puts on a
-  // foreign lane, which draws only while that machine is offline. It lives in
-  // the context line and never in the status slot above.
-  //
-  // `mode: "name"` is a deliberate exception to the sidebar's glyph-only rule:
-  // there, a badge is read against neighbouring rows under a lane header that
-  // groups them. A palette result has neither, so a bare glyph would raise the
-  // question it exists to answer.
-  //
-  // Gated on the MACHINE, not on whether the entry knows its name: every entry
-  // knows that now, including the ones on this Mac, which must stay unmarked.
-  const machineMarker: CrossMachineLaneMarker | null =
-    entry.machineId !== THIS_MACHINE_ID
-      ? {
-          machineId: entry.machineId,
-          machineName: entry.machineName,
-          online: entry.machineOnline,
-          mode: "name",
-          title: entry.machineName,
-          sameBranchElsewhere: false,
-        }
-      : null;
+  // A row never names a computer: the thread is the project's, wherever it
+  // runs. A row on another machine that is unreachable recedes instead.
+  const foreign = entry.machineId !== THIS_MACHINE_ID;
   // An unreachable machine's rows stay findable but recede, matching the
   // sidebar's `dimmed` group treatment. Its status is the LAST THING REPORTED,
   // not a live claim — a dropped machine's chat can still read "Working" hours
   // after the machine went away, so the row must not look equally trustworthy.
-  const offline = machineMarker != null && !entry.machineOnline;
+  const offline = foreign && !entry.machineOnline;
   // Secondary line: where the thread lives. Project first (it is the coarser
   // scope and the one the user names out loud), then branch, then the
   // current-thread marker.
@@ -565,7 +544,7 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
         data-thread-id={session.id}
         data-machine-id={entry.machineId}
         data-machine-online={
-          machineMarker ? (entry.machineOnline ? "true" : "false") : undefined
+          foreign ? (entry.machineOnline ? "true" : "false") : undefined
         }
         // Same attribute the sidebar puts on a receded cross-machine group
         // (`SessionListPane`), so "this row is last-reported, not live" is one
@@ -618,7 +597,6 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
               </span>
             </div>
             <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-[var(--color-muted-fg)]">
-              {machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
               <span className="min-w-0 truncate">
                 {contextCaption}
                 {isCurrent ? (
