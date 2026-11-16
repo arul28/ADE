@@ -2010,7 +2010,11 @@ when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
 `desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it
 move there; a Retry that fixes a failure counts the failure, then the
 completion. `cloud_lane_freed`: Keep the lane and free its computer from the
-desktop, `completed` or `failed`. `cloud_clear_caches`: the computer's own
+desktop, `completed` or `failed`. `cloud_lane_deleted`: a person deleted a
+lane and its computer from the desktop: `completed` (its saved chats went
+too), `kept` (they ticked "Keep its chats"), `partial` (ADE couldn't delete
+all its chats) or `failed`; it tells whether deleting the chats is the right
+default. `cloud_clear_caches`: the computer's own
 brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
 declined or unanswered). `cloud_default_size`: the person picked another size
 for new lanes, `size_small` to `size_xlarge` (a value another computer synced

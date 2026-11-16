@@ -2,11 +2,13 @@ import {
   CLOUD_CHAT_MAX_ACCOUNT_BYTES,
   CLOUD_CHAT_MAX_PAGE_PARTS,
   CLOUD_CHAT_MAX_PART_BYTES,
+  type CloudChatComputer,
   type CloudChatPartResponse,
   type CloudChatRow,
   type CloudChatRowInput,
   CLOUD_PATHS,
   type CloudChatTranscriptPage,
+  type CloudComputerDeleteReason,
 } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json } from "./http";
 import { rewardAfterCloudChat } from "./referrals";
@@ -436,6 +438,99 @@ function clampedInt(raw: string | null, fallback: number, max: number): number {
   return Number.isInteger(value) && value > 0 ? Math.min(value, max) : fallback;
 }
 
+/** A delete log reason (`deleteComputer`'s `reason`) as a person reads it. */
+function computerDeleteReason(reason: string | null | undefined): CloudComputerDeleteReason {
+  switch (reason) {
+    case "user":
+      return "you";
+    case "freed":
+      return "freed";
+    case "idle_cleanup":
+      return "idle";
+    case "plan_limit":
+      return "plan";
+    case "automation_run_done":
+      return "automation";
+    case "project_delete":
+      return "project";
+    case "lane_launch_cancelled":
+    case "create_failed":
+      return "launch";
+    default:
+      return reason?.startsWith("launch_") ? "launch" : "other";
+  }
+}
+
+/** D1 refuses a statement with too many bound values; `in (…)` reads go in chunks. */
+const D1_IN_CHUNK = 90;
+
+type ComputerRow = { instance_id: string; machine_key: string | null; deleted_at: number | null };
+
+/** The rows of `select … where user_id = ? and <column> in (values)`, read in chunks. */
+async function rowsIn<T>(env: CloudEnv, select: string, column: string, userId: string, values: readonly string[]): Promise<T[]> {
+  const rows: T[] = [];
+  for (let start = 0; start < values.length; start += D1_IN_CHUNK) {
+    const chunk = values.slice(start, start + D1_IN_CHUNK);
+    const read = await env.DB.prepare(`${select} where user_id = ? and ${column} in (${chunk.map(() => "?").join(", ")})`).bind(userId, ...chunk).all<T>();
+    rows.push(...(read.results ?? []));
+  }
+  return rows;
+}
+
+/**
+ * Whether each listed chat's computer still exists, from the account's own
+ * computer rows (deleted rows stay, marked `deleted_at`) and the delete log.
+ * One live computer with the chat's machine key means it exists: the key is
+ * the ADE on that computer, whichever computer row saved the chat. Else the
+ * chat is matched by the computer that saved it, else by the newest deleted
+ * computer with its key.
+ */
+async function savedChatComputers(
+  env: CloudEnv,
+  userId: string,
+  page: readonly CopyRow[],
+): Promise<(row: CopyRow) => CloudChatComputer | null> {
+  if (page.length === 0) return () => null;
+  // Only the computers this page names, by id or by key: an account keeps every deleted computer's row.
+  const select = "select instance_id, machine_key, deleted_at from cloud_computers";
+  const [byId, byKey] = await Promise.all([
+    rowsIn<ComputerRow>(env, select, "instance_id", userId, [...new Set(page.flatMap((row) => (row.instance_id ? [row.instance_id] : [])))]),
+    rowsIn<ComputerRow>(env, select, "lower(machine_key)", userId, [...new Set(page.map((row) => row.machine_key.toLowerCase()))]),
+  ]);
+  const byInstance = new Map([...byId, ...byKey].map((computer) => [computer.instance_id, computer]));
+  const computers = [...byInstance.values()];
+  const byMachineKey = new Map<string, ComputerRow[]>();
+  for (const computer of computers) {
+    const key = computer.machine_key?.toLowerCase();
+    if (!key) continue;
+    const list = byMachineKey.get(key);
+    if (list) list.push(computer);
+    else byMachineKey.set(key, [computer]);
+  }
+  const matchOf = (row: CopyRow) => {
+    const sameKey = byMachineKey.get(row.machine_key.toLowerCase()) ?? [];
+    const live = sameKey.find((computer) => computer.deleted_at == null);
+    if (live) return live;
+    const own = row.instance_id ? byInstance.get(row.instance_id) : undefined;
+    return own
+      ?? sameKey.reduce<ComputerRow | undefined>((newest, computer) => (!newest || (computer.deleted_at ?? 0) > (newest.deleted_at ?? 0) ? computer : newest), undefined);
+  };
+  const gone = [...new Set(page.map(matchOf).filter((computer) => computer && computer.deleted_at != null).map((computer) => computer!.instance_id))];
+  const logged = await rowsIn<{ instance_id: string; reason: string; created_at: number }>(
+    env, "select instance_id, reason, created_at from cloud_delete_log", "instance_id", userId, gone,
+  );
+  // The oldest entry wins: the delete is logged first, so a later close (the tick finding it gone) never hides its reason.
+  logged.sort((a, b) => a.created_at - b.created_at);
+  const reasons = new Map<string, string>();
+  for (const entry of logged) if (!reasons.has(entry.instance_id)) reasons.set(entry.instance_id, entry.reason);
+  return (row) => {
+    const computer = matchOf(row);
+    if (!computer) return null;
+    if (computer.deleted_at == null) return { state: "exists" };
+    return { state: "deleted", deletedAt: computer.deleted_at, reason: computerDeleteReason(reasons.get(computer.instance_id)) };
+  };
+}
+
 /** `GET /cloud/chats?machine&project&limit&cursor`: newest activity first. */
 async function handleList(url: URL, env: CloudEnv, userId: string, now: number): Promise<Response> {
   const machine = url.searchParams.get("machine")?.trim() || null;
@@ -464,8 +559,11 @@ async function handleList(url: URL, env: CloudEnv, userId: string, now: number):
     .bind(...binds, limit + 1).all<CopyRow>();
   const results = rows.results ?? [];
   const page = results.slice(0, limit);
-  const chats: CloudChatRow[] = [];
-  for (const row of page) chats.push(rowToJson(row, await openSummary(keys, row)));
+  const [summaries, computerOf] = await Promise.all([
+    Promise.all(page.map((row) => openSummary(keys, row))),
+    savedChatComputers(env, userId, page),
+  ]);
+  const chats: CloudChatRow[] = page.map((row, index) => ({ ...rowToJson(row, summaries[index] ?? null), computer: computerOf(row) }));
   const last = page[page.length - 1];
   return json({ chats, nextCursor: results.length > limit && last ? `${last.updated_at}:${last.chat_id}` : null });
 }

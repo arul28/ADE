@@ -143,7 +143,7 @@ import { openPrInChatToolsPane } from "../chat/chatPrPaneRequests";
 import { useMachineLabelForMachine } from "../cloudLane/useMachineLabelForMachine";
 import { groupByMachine, useTabCopyPin } from "../../state/repositoryScope";
 import { withChatPin } from "../chat/chatMachinePin";
-import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
+import { CloudLanesWithoutComputerBlock } from "../cloudLane/CloudLanesWithoutComputerBlock";
 import { openDraftAndFocusWorkInput } from "../work/workShortcuts";
 
 
@@ -1299,8 +1299,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     workLaneOrder,
   );
   // Lanes of ADE Cloud computers that are really gone (`computerGone`, from the
-  // account's computer list) are listed once, in the deleted-computers place
-  // above the list (`CloudLanesOnDeletedComputers`), never among live lanes.
+  // account's computer list) are listed once, in the lanes without a computer
+  // above the list (`CloudLanesWithoutComputerBlock`), never among live lanes.
   // Each of their saved chats is listed under its lane there, newest first, and
   // opens from the roster, which still holds them.
   const goneMachineIds = useRootAppStore((state) => {
@@ -4423,7 +4423,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         </div>
       ))}
 
-      <CloudLanesOnDeletedComputers className="mx-2 mt-1.5" />
+      <CloudLanesWithoutComputerBlock className="mx-2 mt-1.5" />
 
       {/* Session list */}
       <div

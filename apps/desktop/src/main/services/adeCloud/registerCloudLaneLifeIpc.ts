@@ -67,8 +67,16 @@ export function registerCloudLaneLifeIpc(args: {
     switch (request.method) {
       case "workState":
         return await life.workState({ instanceId: textArg(callArgs, "instanceId") });
-      case "deleteLane":
-        return await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true });
+      case "deleteLane": {
+        const keepChats = callArgs.keepChats === true;
+        const deleted = await life.deleteLane({ instanceId: textArg(callArgs, "instanceId"), skipCheck: callArgs.skipCheck === true, keepChats }).catch((error: unknown) => {
+          captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_deleted", "failed");
+          throw error;
+        });
+        // Whether people keep a deleted lane's chats tells whether "delete them" is the right default.
+        captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_deleted", !deleted.ok ? "failed" : keepChats ? "kept" : deleted.chatsKept ? "partial" : "completed");
+        return deleted;
+      }
       case "freeLane": {
         const freed = await life.freeLane({ instanceId: textArg(callArgs, "instanceId") }).catch((error: unknown) => {
           captureCloudLaneAnalytics(args.analytics, "desktop", "cloud_lane_freed", "failed");

@@ -88,9 +88,7 @@ import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLin
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { deleteCloudLaneWithCheck, useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { RestingCloudLaneDetail } from "./RestingCloudLaneDetail";
-import { CloudLanesWithoutComputerList } from "../cloudLane/CloudLaneWithoutComputer";
-import { CloudLanesOnDeletedComputers } from "../cloudLane/CloudLanesOnDeletedComputers";
-import { originUrlForBinding } from "./laneMachines";
+import { CloudLanesWithoutComputerBlock } from "../cloudLane/CloudLanesWithoutComputerBlock";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -114,6 +112,7 @@ import { pickPrimaryPr } from "../../../shared/primaryPr";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { historyCommitsPath } from "../history/historyUrlHydration";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
 
 export function shouldRetryLaneGithubSnapshotForceRefresh({
   currentProjectRoot,
@@ -1388,7 +1387,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     };
   }, [active, activeProjectRoot, appStore, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
-  const deleteManagedLanes = async () => {
+  const deleteManagedLanes = async (options?: CloudLaneDeleteOptions) => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     // ADE Cloud lanes go with their computers (one account-level delete each, warned only when
     // work isn't on GitHub), split off before the local rules: no Force gate, no branch picks.
@@ -1421,6 +1420,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             instanceId: entry.cloudLane.instanceId,
             laneName: entry.lane.name,
             askFirst: false,
+            keepChats: options?.keepChats,
             onDeleted: () => {
               if (entry.machineId) requestCrossMachineLanesForMachine(entry.machineId);
               else void refreshLanes({ includeStatus: false });
@@ -2081,7 +2081,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     (row) => window.ade.lanes.archive({ laneId: row.lane.id }, row.pin),
   ), [runForeignLaneAction]);
 
-  const deleteForeignLane = useCallback(() => {
+  const deleteForeignLane = useCallback((options?: CloudLaneDeleteOptions) => {
     const key = foreignManageKey;
     const row = key ? foreignRowByKeyRef.current.get(key) ?? null : null;
     if (!row || row.lane.laneType === "primary") return;
@@ -2097,6 +2097,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       laneId: target.lane.id,
       laneName: target.lane.name,
       machineId: target.machineId,
+      keepChats: options?.keepChats,
       onDeleted: () => clearForeignSelection(target.key),
     })) {
       setForeignManageKey(null);
@@ -2209,14 +2210,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // Row keys across machines; batch manage splits them per machine.
   const multiSelectedList = useMemo(() => [...multiSelectedLaneIds], [multiSelectedLaneIds]);
 
-  // This project's ADE Cloud lanes whose computer was freed or removed: each says so and offers a new one.
-  // Then the lanes whose computer was deleted: one place, apart from the live lanes.
-  const laneListToolbar = (
-    <>
-      <CloudLanesWithoutComputerList originUrl={originUrlForBinding(projectBinding)} />
-      <CloudLanesOnDeletedComputers />
-    </>
-  );
+  // This project's ADE Cloud lanes without a computer: one folded block, apart from the live lanes.
+  const laneListToolbar = <CloudLanesWithoutComputerBlock className="mx-1.5 mb-2" />;
 
   /* ---- Render ---- */
 
@@ -2507,7 +2502,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         laneActionError={laneActionError}
         laneActionKind={laneActionKind}
         onArchive={() => archiveManagedLanes().catch(() => false)}
-        onDelete={() => { deleteManagedLanes().catch(() => {}); }}
+        onDelete={(options) => { deleteManagedLanes(options).catch(() => {}); }}
         onAppearanceChanged={refreshLaneAppearance}
         initialTab={manageInitialTab}
         runtimePin={tabLanePin}
@@ -2531,7 +2526,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           laneActionError={laneActionError}
           laneActionKind={laneActionKind}
           onArchive={archiveForeignLane}
-          onDelete={() => { void deleteForeignLane(); }}
+          onDelete={(options) => { void deleteForeignLane(options); }}
           onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
           initialTab={manageInitialTab}
           runtimePin={foreignManageRow.pin}
