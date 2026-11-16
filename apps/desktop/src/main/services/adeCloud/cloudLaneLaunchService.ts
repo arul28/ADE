@@ -946,7 +946,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const record = recordFor(args);
     if (!record) return null;
     // Nothing is left to retry on: the prompt starts again on a new computer.
-    if (record.snapshot.cloud.computerGone) throw new AdeExpectedError(COMPUTER_DELETED_SENTENCE);
+    if (record.snapshot.cloud.computerGone) throw new AdeExpectedError(COMPUTER_DELETED_SENTENCE, "user");
     if (isHandedOff(record)) {
       const brain = await deps.callChatAction(record.snapshot.cloud.binding!, "retryLaunch", { args: { launchId: record.snapshot.launchId } }) as ChatLaunchSnapshot | null;
       if (brain) {
