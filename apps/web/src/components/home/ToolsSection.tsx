@@ -1,298 +1,175 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useReducedMotion } from "framer-motion";
-import { AppWindow, Cloud, GitPullRequest, Globe, Monitor, Users } from "lucide-react";
-import { cn } from "../../lib/cn";
-import { AndroidMark, AppleMark, GithubMark, LinearMark, WindowsMark } from "./marks";
+import type { ReactNode } from "react";
+import { AppWindow, Cloud, Globe, Monitor, Terminal } from "lucide-react";
+import { AndroidMark, AppleMark, WindowsMark } from "./marks";
 
 /*
- * Everything an agent can reach, as tabs beside one large stage (the feature
- * tabs Linear and Raycast use) instead of a scroll-pinned film or a wall of
- * tiles. The tabs advance on their own while the section is on screen, until
- * the visitor picks one. Every picture is the real ADE app with real agents
- * at work; the layered shots are transparent so they float on the stage. The
- * Android phone is a 1080×2400 frame of ade-app.dev in Chrome on an emulator
- * ADE started.
+ * The devices agents get, as one lineup on the page itself: a Mac display
+ * with an iPhone and an Android phone in front of it. No cards and no
+ * screenshots of ADE's chat: each screen is what the agent drove, captured
+ * by ADE on November 16, 2026. The iPhone is a simulator on a Mac Studio and
+ * the Mac is that Mac Studio's private lane screen, both driven from a
+ * Windows PC; the Android phone is an emulator on that PC. The rings mark
+ * where an agent is tapping or clicking.
  */
 
-const ROTATE_MS = 7000;
+type Device = { icon: ReactNode; name: string; cloud?: boolean };
 
-type Where = { label: string; cloud?: boolean; soon?: boolean };
-
-type Tab = {
-  id: string;
-  icons: ReactNode[];
-  name: string;
-  line: string;
-  chips: string[];
-  where: Where[];
-  /** Tints the stage while the tab shows. */
-  glow: string;
-  stage: (active: boolean) => ReactNode;
-};
-
-const iconClass = "h-[17px] w-[17px]";
-
-const TABS: Tab[] = [
-  {
-    id: "phones",
-    icons: [<AppleMark key="a" className={cn(iconClass, "text-white")} />, <AndroidMark key="g" className={cn(iconClass, "text-[#3ddc84]")} />],
-    name: "iPhone and Android",
-    line: "Agents build your app, run it on a simulator or emulator, tap through it and send you the recording.",
-    chips: ["iOS Simulator", "Android emulator", "SwiftUI and Compose previews", "Foldables"],
-    where: [{ label: "Any of your computers" }, { label: "Android on ADE Cloud", cloud: true }, { label: "iOS on ADE Cloud", soon: true }],
-    glow: "rgba(61,220,132,0.16)",
-    stage: () => (
-      <>
-        <Shot src="/images/home/tools/slide-apple.webp" alt="An agent's report in ADE beside a live iPhone simulator, with its private Mac desktop showing the same site in Safari" place={[2, 5, 120]} />
-        <figure className="absolute bottom-[7%] left-[4%] w-[19%] overflow-hidden rounded-[22px] border-[5px] border-[#1d1d24] bg-black shadow-[0_30px_80px_-20px_rgba(0,0,0,0.9),0_0_0_1px_rgba(255,255,255,0.08)]">
-          <img src="/images/home/tools/android-chrome.webp" alt="ade-app.dev open in Chrome on an Android emulator ADE started" width={540} height={1200} loading="lazy" decoding="async" className="block h-auto w-full" />
-        </figure>
-      </>
-    ),
-  },
-  {
-    id: "desktops",
-    icons: [<Monitor key="m" className={cn(iconClass, "text-white")} strokeWidth={1.8} />, <WindowsMark key="w" className="h-[15px] w-[15px] text-[#3ea6ff]" />],
-    name: "Private desktops",
-    line: "Each agent gets its own Mac, Windows or Linux screen to click around in. Yours stays free.",
-    chips: ["macOS", "Windows", "Linux", "Screenshots and video"],
-    where: [{ label: "Any of your computers" }, { label: "Linux on ADE Cloud", cloud: true }],
-    glow: "rgba(59,130,246,0.2)",
-    stage: () => <Shot src="/images/home/tools/slide-windows.webp" alt="An agent's screenshot of its private Windows desktop in ADE, beside the live Windows Desktop pane" place={[2, 5, 118]} />,
-  },
-  {
-    id: "browser",
-    icons: [<Globe key="b" className={cn(iconClass, "text-[#22d3ee]")} strokeWidth={1.8} />],
-    name: "ADE Browser",
-    line: "Agents open your site in a browser that is signed in as you, click through it and screenshot what they find.",
-    chips: ["Your sign-ins", "Clicks and forms", "Page reads", "Screenshots"],
-    where: [{ label: "Any of your computers" }, { label: "ADE Cloud", cloud: true }],
-    glow: "rgba(34,211,238,0.16)",
-    stage: () => <Shot src="/images/home/tools/slide-browser.webp" alt="An agent's steps in ADE beside ADE's browser, showing the download dialog it opened on ade-app.dev" bright={1.45} place={[-76, -6, 170]} />,
-  },
-  {
-    id: "app",
-    icons: [<AppWindow key="e" className={cn(iconClass, "text-[#9feaf9]")} strokeWidth={1.8} />],
-    name: "Your own app",
-    line: "App Control launches your Electron or desktop app, drives it, reads its logs and records it.",
-    chips: ["Launch or attach", "Click and type", "Logs", "Video"],
-    where: [{ label: "Any of your computers" }],
-    glow: "rgba(159,234,249,0.14)",
-    stage: () => <Shot src="/images/home/tools/slide-appc.webp" alt="ADE's App Control pane driving a small Electron app that shows ADE's v1.2.112 release notes" place={[-77, -5, 170]} />,
-  },
-  {
-    id: "ship",
-    icons: [<GithubMark key="g" className={cn(iconClass, "text-white")} />, <LinearMark key="l" className="h-[15px] w-[15px] text-[#8b93ff]" />],
-    name: "PRs and issues",
-    line: "Open, review, fix failing checks and merge, next to the chat that wrote the code.",
-    chips: ["Pull requests", "Stacked PRs", "Checks and reviews", "Linear, Jira, GitHub issues"],
-    where: [{ label: "Any of your computers" }, { label: "ADE Cloud", cloud: true }],
-    glow: "rgba(16,185,129,0.16)",
-    stage: () => <Shot src="/images/home/tools/slide-work.webp" alt="A real ADE pull request with its checks and merge panel, and a GitHub issue, layered" place={[2, 5, 118]} />,
-  },
-  {
-    id: "team",
-    icons: [<Users key="u" className={cn(iconClass, "text-[#c4b5fd]")} strokeWidth={1.8} />, <GitPullRequest key="p" className={cn(iconClass, "text-white/80")} strokeWidth={1.8} />],
-    name: "Agent teams",
-    line: "One chat hands parts of the job to other agents on other models, then reports back.",
-    chips: ["Subagents", "Mix models", "A CTO that remembers"],
-    where: [{ label: "Any of your computers" }, { label: "ADE Cloud", cloud: true }],
-    glow: "rgba(167,139,250,0.2)",
-    stage: (active) => <TeamFilm active={active} />,
-  },
+const DEVICES: Device[] = [
+  { icon: <AppleMark className="h-[15px] w-[15px]" />, name: "iPhone" },
+  { icon: <AndroidMark className="h-[17px] w-[17px] text-[#3ddc84]" />, name: "Android", cloud: true },
+  { icon: <Monitor className="h-4 w-4" strokeWidth={1.8} />, name: "Mac" },
+  { icon: <WindowsMark className="h-[14px] w-[14px] text-[#3ea6ff]" />, name: "Windows" },
+  { icon: <Terminal className="h-4 w-4 text-[#fbbf24]" strokeWidth={1.8} />, name: "Linux", cloud: true },
+  { icon: <Globe className="h-4 w-4 text-[#22d3ee]" strokeWidth={1.8} />, name: "Browser" },
+  { icon: <AppWindow className="h-4 w-4 text-[#9feaf9]" strokeWidth={1.8} />, name: "Your own app" },
 ];
 
 export function ToolsSection() {
-  const reduceMotion = useReducedMotion();
-  const [active, setActive] = useState(0);
-  const [auto, setAuto] = useState(true);
-  const [inView, setInView] = useState(false);
-  const sectionRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const node = sectionRef.current;
-    if (!node) return;
-    const observer = new IntersectionObserver(([entry]) => setInView(Boolean(entry?.isIntersecting)), { threshold: 0.35 });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  const rotating = auto && inView && !reduceMotion;
-  useEffect(() => {
-    if (!rotating) return;
-    const timer = window.setTimeout(() => setActive((index) => (index + 1) % TABS.length), ROTATE_MS);
-    return () => window.clearTimeout(timer);
-  }, [rotating, active]);
-
-  const pick = (index: number) => {
-    setAuto(false);
-    setActive(index);
-  };
-  const tab = TABS[active]!;
-
   return (
-    <section ref={sectionRef} aria-labelledby="tools-title" className="mx-auto max-w-[1320px] px-5 pt-[clamp(24px,3vw,48px)] sm:px-8">
-      <div className="mx-auto max-w-[780px] text-center">
+    <section aria-labelledby="tools-title" className="relative mx-auto max-w-[1320px] px-5 pt-[clamp(8px,1vw,16px)] sm:px-8">
+      <div className="mx-auto max-w-[820px] text-center">
         <h2 id="tools-title" className="font-display text-white" style={{ fontSize: "clamp(32px, 3.6vw, 52px)", lineHeight: 1.04, letterSpacing: "-0.04em" }}>
-          Everything your agents can reach.
+          Every device, for your agents.
           <br />
           <span className="text-white/45">On your computers, or ours.</span>
         </h2>
-        <p className="mx-auto mt-4 max-w-[44rem] text-[clamp(15px,1.2vw,17px)] leading-[1.6] text-white/60">
-          Phones, desktops, browsers and your own app, on any computer you own or an ADE Cloud one. Any computer can use another's: drive your
-          Mac's iPhone simulator from a Windows laptop.
+        <p className="mx-auto mt-4 max-w-[40rem] text-[clamp(15px,1.2vw,17px)] leading-[1.6] text-white/60">
+          Agents run your app on a real iPhone simulator, an Android emulator and their own private desktop, then show you what they saw.
         </p>
       </div>
 
-      <div className="mt-[clamp(32px,4vw,56px)] grid gap-4 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)]" onMouseEnter={() => setAuto(false)}>
-        <div role="tablist" aria-label="What agents can reach" aria-orientation="vertical" className="-mx-5 flex gap-2 overflow-x-auto px-5 pb-1 lg:mx-0 lg:flex-col lg:overflow-visible lg:px-0 lg:pb-0">
-          {TABS.map((item, index) => {
-            const selected = index === active;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                role="tab"
-                id={`tool-tab-${item.id}`}
-                aria-selected={selected}
-                aria-controls="tool-stage"
-                onClick={() => pick(index)}
-                className={cn(
-                  "focus-ring relative shrink-0 overflow-hidden rounded-[18px] border text-left transition-colors lg:w-full",
-                  selected ? "border-white/[0.12] bg-white/[0.055]" : "border-transparent hover:bg-white/[0.03]",
-                )}
-              >
-                <span className="flex items-center gap-3 px-4 py-3 lg:py-3.5">
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    {item.icons.map((icon, i) => (
-                      <span key={i} className="grid h-8 w-8 place-items-center rounded-[9px] border border-white/10 bg-gradient-to-b from-[#26262e] to-[#15151a]">
-                        {icon}
-                      </span>
-                    ))}
-                  </span>
-                  <span className={cn("whitespace-nowrap text-[15px] font-semibold transition-colors", selected ? "text-white" : "text-white/60")}>{item.name}</span>
-                </span>
-                {selected && (
-                  <span className="hidden px-4 pb-4 lg:block">
-                    <TabDetails tab={item} />
-                  </span>
-                )}
-                {selected && rotating && (
-                  <span key={`${item.id}-${active}`} aria-hidden className="absolute inset-x-0 bottom-0 h-[2px] origin-left bg-white/40" style={{ animation: `ade-tab-progress ${ROTATE_MS}ms linear forwards` }} />
-                )}
-              </button>
-            );
-          })}
-        </div>
-
-        <div
-          id="tool-stage"
-          role="tabpanel"
-          aria-labelledby={`tool-tab-${tab.id}`}
-          className="relative aspect-[16/10] overflow-hidden rounded-[28px] border border-white/[0.08] bg-[linear-gradient(180deg,#15141c,#0d0c12)] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
-        >
-          {TABS.map((item, index) => (
-            <div
-              key={item.id}
-              aria-hidden={index !== active}
-              className={cn("absolute inset-0 transition-opacity duration-500 ease-out", index === active ? "opacity-100" : "pointer-events-none opacity-0")}
-            >
-              <div className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(80% 70% at 70% 100%, ${item.glow}, transparent 70%)` }} />
-              {item.stage(index === active)}
-            </div>
-          ))}
-        </div>
-
-        <div className="lg:hidden">
-          <p className="text-[17px] font-semibold text-white">{tab.name}</p>
-          <div className="mt-2">
-            <TabDetails tab={tab} />
-          </div>
-        </div>
+      <div className="hidden sm:block">
+        <Lineup />
       </div>
+      <MobileLineup />
+
+      <ul className="mx-auto mt-[clamp(28px,3vw,44px)] flex max-w-[980px] flex-wrap items-center justify-center gap-x-7 gap-y-3 text-[15px] text-white/80">
+        {DEVICES.map((device) => (
+          <li key={device.name} className="inline-flex items-center gap-2">
+            <span className="text-white">{device.icon}</span>
+            {device.name}
+            {device.cloud && <Cloud aria-label="also on ADE Cloud" className="h-3.5 w-3.5 text-[#c4b5fd]" />}
+          </li>
+        ))}
+      </ul>
+      <p className="mx-auto mt-3 max-w-[44rem] text-center text-[14px] leading-relaxed text-white/45">
+        Any of your computers can use another's: drive your Mac's iPhone from a Windows laptop. <Cloud className="mb-0.5 inline h-3.5 w-3.5 text-[#c4b5fd]" /> also on ADE
+        Cloud computers.
+      </p>
     </section>
   );
 }
 
-function TabDetails({ tab }: { tab: Tab }) {
+/** On a phone the lineup would shrink the phones to stamps: the two phones side by side, the Mac under them. */
+function MobileLineup() {
   return (
-    <>
-      <span className="block text-[14px] leading-[1.55] text-white/65">{tab.line}</span>
-      <span className="mt-3 flex flex-wrap gap-1.5">
-        {tab.chips.map((chip) => (
-          <span key={chip} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[12.5px] text-white/75">
-            {chip}
-          </span>
-        ))}
-      </span>
-      <span className="mt-3 flex flex-wrap gap-x-3 gap-y-1.5 text-[12.5px]">
-        {tab.where.map((where) => (
-          <span key={where.label} className={cn("inline-flex items-center gap-1.5", where.soon ? "text-white/40" : where.cloud ? "text-[#c4b5fd]" : "text-white/55")}>
-            {where.cloud || where.soon ? <Cloud className="h-3.5 w-3.5" /> : <Monitor className="h-3.5 w-3.5" />}
-            {where.label}
-            {where.soon && <span className="rounded-full bg-white/[0.06] px-1.5 py-px text-[11px] text-white/50">soon</span>}
-          </span>
-        ))}
-      </span>
-    </>
-  );
-}
-
-/**
- * A transparent, layered capture on the stage, large enough to read and
- * bleeding off the stage's edges. `place` is its left and top edge and its
- * width, as percentages of the stage.
- */
-function Shot({ src, alt, bright, place }: { src: string; alt: string; bright?: number; place: [number, number, number] }) {
-  const [left, top, width] = place;
-  return (
-    <img
-      src={src}
-      alt={alt}
-      width={2400}
-      height={1447}
-      loading="lazy"
-      decoding="async"
-      className="absolute h-auto max-w-none"
-      style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, filter: bright ? `brightness(${bright})` : undefined }}
-    />
-  );
-}
-
-/** The orchestration film, looping while its tab shows; a still for reduced motion. */
-function TeamFilm({ active }: { active: boolean }) {
-  const reduceMotion = useReducedMotion();
-  const video = useRef<HTMLVideoElement>(null);
-  useEffect(() => {
-    const node = video.current;
-    if (!node) return;
-    if (active) {
-      node.currentTime = 0;
-      void node.play().catch(() => undefined);
-    } else node.pause();
-  }, [active]);
-
-  const frame = "absolute inset-[5%] overflow-hidden rounded-[16px] border border-white/10 shadow-[0_30px_80px_-24px_rgba(0,0,0,0.9)]";
-  if (reduceMotion) {
-    return (
-      <div className={frame}>
-        <img src="/film/compose-done.jpg" alt="A chat in ADE that split one job across three agents on three models, each reporting back" width={3024} height={1964} loading="lazy" className="h-full w-full object-cover object-top" />
+    <div className="mt-9 sm:hidden">
+      <div className="grid grid-cols-2 gap-4 px-2">
+        <Phone className="relative" src="/images/home/tools/iphone.webp" width={603} height={1311} alt="ade-app.dev in Safari on an iPhone 17 simulator" notch="island" tap={{ x: 33, y: 68.5 }} />
+        <Phone className="relative" src="/images/home/tools/android.webp" width={540} height={1200} alt="ade-app.dev in Chrome on an Android emulator" notch="hole" tap={{ x: 30, y: 67.5 }} />
       </div>
-    );
-  }
+      <div className="mt-5 rounded-[10px] bg-[#0b0b0e] p-1 shadow-[0_0_0_1px_rgba(255,255,255,0.1)]">
+        <img src="/images/home/tools/mac.webp" alt="An agent's private Mac desktop with ade-app.dev open in Safari" width={1920} height={1080} decoding="async" className="block h-auto w-full rounded-[7px]" />
+      </div>
+    </div>
+  );
+}
+
+/** The Mac display at the back, the two phones in front of its lower corners. */
+function Lineup() {
   return (
-    <div className={frame}>
-      <video
-        ref={video}
-        src="/film/compose.mp4"
-        poster="/film/compose-done.jpg"
-        muted
-        loop
-        playsInline
-        preload="none"
-        aria-label="A chat in ADE that splits one job across three agents on three models, each reporting back"
-        className="h-full w-full object-cover object-top"
+    <div className="relative mx-auto mt-[clamp(36px,4vw,64px)] aspect-[1180/700] w-full max-w-[1180px]">
+      <div aria-hidden className="pointer-events-none absolute inset-x-[10%] top-[8%] bottom-[2%] rounded-[50%] opacity-70 blur-[60px]" style={{ background: "radial-gradient(50% 50% at 50% 50%, rgba(124,58,237,0.35), rgba(59,130,246,0.12) 60%, transparent 75%)" }} />
+
+      {/* Mac display */}
+      <figure className="absolute left-1/2 top-0 w-[76%] -translate-x-1/2">
+        <div className="relative rounded-[1.6%/2.8%] bg-[#0b0b0e] p-[0.9%] shadow-[0_40px_120px_-30px_rgba(0,0,0,0.95),0_0_0_1px_rgba(255,255,255,0.1),inset_0_0_0_1px_rgba(255,255,255,0.04)]">
+          <div className="relative overflow-hidden rounded-[0.7%/1.25%]">
+            <img src="/images/home/tools/mac.webp" alt="An agent's private Mac desktop with ade-app.dev open in Safari" width={1920} height={1080} decoding="async" className="block h-auto w-full" />
+            <Pointer x={51.8} y={7.7} />
+          </div>
+        </div>
+        <div aria-hidden className="mx-auto h-[min(6vw,64px)] w-[16%] bg-[linear-gradient(180deg,#26262c,#141418)] [clip-path:polygon(12%_0,88%_0,100%_100%,0_100%)]" />
+        <div aria-hidden className="mx-auto h-[min(0.8vw,8px)] w-[28%] rounded-t-[4px] bg-[linear-gradient(180deg,#2c2c33,#16161a)] shadow-[0_12px_30px_-8px_rgba(0,0,0,0.8)]" />
+        <figcaption className="sr-only">Mac desktop</figcaption>
+      </figure>
+
+      {/* iPhone */}
+      <Phone
+        className="absolute bottom-0 left-[3%] w-[19%]"
+        src="/images/home/tools/iphone.webp"
+        width={603}
+        height={1311}
+        alt="ade-app.dev in Safari on an iPhone 17 simulator"
+        notch="island"
+        tap={{ x: 33, y: 68.5 }}
+      />
+
+      {/* Android */}
+      <Phone
+        className="absolute bottom-0 right-[3%] w-[18%]"
+        src="/images/home/tools/android.webp"
+        width={540}
+        height={1200}
+        alt="ade-app.dev in Chrome on an Android emulator"
+        notch="hole"
+        tap={{ x: 30, y: 67.5 }}
       />
     </div>
+  );
+}
+
+function Phone({
+  className,
+  src,
+  width,
+  height,
+  alt,
+  notch,
+  tap,
+}: {
+  className: string;
+  src: string;
+  width: number;
+  height: number;
+  alt: string;
+  notch: "island" | "hole";
+  tap: { x: number; y: number };
+}) {
+  return (
+    <figure className={className}>
+      <div className="relative rounded-[15%/7%] bg-[#0a0a0c] p-[3.2%] shadow-[0_40px_90px_-20px_rgba(0,0,0,0.95),0_0_0_1.5px_#2c2c33,inset_0_0_0_1px_rgba(255,255,255,0.06)]">
+        <div className="relative overflow-hidden rounded-[12.5%/5.8%]">
+          <img src={src} alt={alt} width={width} height={height} decoding="async" className="block h-auto w-full" />
+          {notch === "island" ? (
+            <span aria-hidden className="absolute left-1/2 top-[1.3%] h-[3.1%] w-[30%] -translate-x-1/2 rounded-full bg-black" />
+          ) : (
+            <span aria-hidden className="absolute left-1/2 top-[1.1%] h-[2.2%] w-[5%] -translate-x-1/2 rounded-full bg-black" />
+          )}
+          <Tap x={tap.x} y={tap.y} />
+        </div>
+      </div>
+    </figure>
+  );
+}
+
+/** Where an agent taps: a ring that pulses. Positions are percentages of the screen. */
+function Tap({ x, y }: { x: number; y: number }) {
+  return (
+    <span aria-hidden className="pointer-events-none absolute" style={{ left: `${x}%`, top: `${y}%` }}>
+      <span className="absolute -left-[14px] -top-[14px] h-7 w-7 rounded-full border-2 border-white/90 bg-white/25 motion-safe:animate-[ade-tap_2.4s_ease-out_infinite]" />
+    </span>
+  );
+}
+
+/** An agent's pointer on the Mac, clicking. */
+function Pointer({ x, y }: { x: number; y: number }) {
+  return (
+    <span aria-hidden className="pointer-events-none absolute" style={{ left: `${x}%`, top: `${y}%` }}>
+      <span className="absolute -left-[12px] -top-[12px] h-6 w-6 rounded-full border-2 border-[#c4b5fd] bg-[#a78bfa]/25 motion-safe:animate-[ade-tap_2.4s_ease-out_infinite]" />
+      <svg viewBox="0 0 24 24" className="absolute left-0 top-0 h-5 w-5 drop-shadow-[0_2px_4px_rgba(0,0,0,0.6)]">
+        <path d="M4 2.5v17l4.6-4.3 3 6.6 2.8-1.3-3-6.5H18L4 2.5Z" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round" />
+      </svg>
+    </span>
   );
 }
