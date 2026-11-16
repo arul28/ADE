@@ -1044,6 +1044,39 @@ Still over: JS (1,084 KB, ceiling 950). The Sentry SDK chunk is 445 KB of it
 and loads at idle, so errors before sign-in still report. Without it, JS is
 about 640 KB. Requests and heap are now at or under their ceilings.
 
+### ADE with no computer (web), 2026-11-16
+
+Same Mac Studio, Chrome headless, `npm run bench:webclient -- --skip-chat
+--runs 3`, medians. The A/B compares the branch base `b6eeec271` (the merge of
+`ade/logged-out-page-and-sign-in`) with `ade/cloud-for-everyone-apps`
+`5a26d72c8`, built and run one after the other in the same worktree.
+
+| Metric | Base `b6eeec271` | `5a26d72c8` | Ceiling |
+| --- | ---: | ---: | ---: |
+| Requests | 81 | 81 | 60 |
+| Transfer (KB) | 1,566 | 1,576 | 2,000 |
+| JS (KB) | 1,215 | 1,225 | 950 |
+| Eager JS (KB, raw) | 513 | 522 | — |
+| Images (KB) | 171 | 171 | 200 |
+| Heap after GC (MB) | 3.8 | 3.8 | 3.5 |
+| Gate visible (ms) | 109 | 104 | 190 |
+| Long-task total (ms) | 0 | 0 | 10 |
+
+The no-computer work adds 10 KB of signed-out JS (+0.8%) and no requests.
+Requests, JS and heap are over their ceilings on the base already: the base
+went from 60 to 81 requests after the earlier fixes above. That growth comes
+from the merged base, not from this branch, and needs its own pass.
+
+New surfaces, signed in with a new account against a local account server
+(wrangler dev, local D1):
+
+| Surface / metric | Baseline | Ceiling | How |
+| --- | ---: | ---: | --- |
+| Web Home with no computer: account-server requests per idle minute | 0 | 0 | Network log, 2 min idle on Home with the Get started card |
+| Web account project page: account-server requests per idle minute | 0 | 1 | Network log, 2 min idle; the GitHub reads refresh every 60 s only while shown and only when GitHub is connected |
+| Web account project page chunk (KB raw / gzip) | 35.9 / 10.8 | 45 / 13.5 | `ProjectWelcomeNoMachine-*.js` in `dist/web-client/assets`; loads only when the tab opens |
+| Setup card: launch reads while a launch runs | 1 per 3–10 s | 1 per 3 s | Backoff from 3 s to 10 s in `renderer/state/accountCloudLaunches.ts`; paused while the page is hidden, stopped when no launch is in progress. From the code, not measured live (the local server has no cloud computer provider) |
+
 ## Mac Studio (M4 Max), ADE-175 pass
 
 A second machine, so a second set of columns and not new values for the tables
