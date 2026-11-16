@@ -38,7 +38,7 @@ import {
 import { UNREADABLE_REQUEST_MESSAGE, UUID_PATTERN, badRequest, clippedText, fail, json, readJson, shortString } from "./http";
 import { WAKE_PORT, cloudSizeForTier } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
-import { deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
+import { LAUNCH_COMPUTER_DELETED, deleteComputer, logCloud, ownedComputer, parseJsonColumn, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 import { createAnswerOf, type CreateComputerExtras, type CreateComputerOutcome } from "./createOutcome";
 import type { ServerGitCheck } from "./accountVault";
 import {
@@ -912,7 +912,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
       sign_in_json = case when ? is not null then ? else sign_in_json end,
       updated_at = ?
     where launch_id = ? and instance_id = ? and state not in ('cancelled', 'retrying') and (state <> 'done' or ? = 'done')
-      and (state <> 'failed' or coalesce(error, '') not in (?, ?) or ? = 'failed')
+      and (state <> 'failed' or coalesce(error, '') not in (?, ?, ?) or ? = 'failed')
   `).bind(
     state, stages ? JSON.stringify(stages) : null,
     sessionId !== undefined ? 1 : 0, sessionId ?? null,
@@ -920,7 +920,7 @@ async function handleStages(request: Request, env: CloudEnv, row: LaunchRow, now
     state,
     state, signInJson,
     now, row.launch_id, row.instance_id, state,
-    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, state,
+    JOIN_NEVER_FINISHED, SIGN_IN_NEVER_FINISHED, LAUNCH_COMPUTER_DELETED, state,
   ).run();
   // Only the computer this report was checked against, and never into a Retry
   // that claimed the launch since this request read it.
@@ -1036,6 +1036,10 @@ async function handleActiveList(env: CloudEnv, userId: string, now: number): Pro
   const rows = (await env.DB.prepare(`
     select * from cloud_launches
     where user_id = ? and state not in ('draft', 'done', 'cancelled') and (state <> 'failed' or updated_at > ?)
+      -- A launch still "in progress" on a deleted computer is not (one left from before the delete closed it).
+      -- A failure stays for its window with its error and Retry; a Retry in flight stays too.
+      and (state in ('failed', 'retrying')
+        or not exists (select 1 from cloud_computers c where c.instance_id = cloud_launches.instance_id and c.deleted_at is not null))
     order by created_at desc limit ?
   `).bind(userId, now - ACTIVE_FAILED_MS, ACTIVE_LIST_LIMIT).all<LaunchRow>()).results ?? [];
   const answer: CloudLaunchList = { launches: rows.map((row) => summaryOf(row, now)) };
@@ -1220,8 +1224,8 @@ const UNJOINED_PER_TICK = 20;
 const SIGN_IN_WAIT_MS = 45 * 60_000;
 /** The computer's own timeout reports the same error, so both end the same way. */
 const SIGN_IN_NEVER_FINISHED = CLOUD_LAUNCH_SIGN_IN_TIMED_OUT;
-/** The server's own endings: the computer is deleted after them, so no report brings the launch back. */
-const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED;
+/** The server's own endings: the computer is deleted with or after them, so no report brings the launch back. */
+const serverEnded = (error: string | null): boolean => error === JOIN_NEVER_FINISHED || error === SIGN_IN_NEVER_FINISHED || error === LAUNCH_COMPUTER_DELETED;
 
 /**
  * Launches whose computer never signed in, past the join window and a grace:
