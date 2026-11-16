@@ -157,7 +157,8 @@ export function planCostsFor(hours: number, diskGb = 0): PlanCost[] {
     if (extraHours > 0 && plan.extraHourCents == null) return [];
     const extraDiskGb = Math.max(0, diskGb - plan.diskGb);
     if (extraDiskGb > 0 && plan.extraHourCents == null) return [];
-    const extraDiskUsd = Math.ceil(extraDiskGb / 10) * EXTRA_DISK_USD_PER_10GB_MONTH;
+    // Extra disk bills by the GB, at its price for each 10 GB.
+    const extraDiskUsd = (extraDiskGb / 10) * EXTRA_DISK_USD_PER_10GB_MONTH;
     const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100 + extraDiskUsd;
     return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed), extraDiskGb }];
   }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
