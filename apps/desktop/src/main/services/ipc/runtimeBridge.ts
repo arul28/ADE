@@ -468,6 +468,11 @@ function resolveAuthorizedLocalRuntimeRootPath(
 
 // A window bound to the same local project shares that binding's key; any other
 // authorized root gets a root-scoped key of its own.
+/** The binding's kind for a log line; the key itself can hold a local path. */
+function runtimeEventBindingKind(bindingKey: string): "local" | "remote" {
+  return bindingKey.startsWith("remote:") ? "remote" : "local";
+}
+
 function localRuntimeEventBindingKey(
   binding: WindowRuntimeSession["binding"] | null | undefined,
   rootPath: string,
@@ -1037,7 +1042,9 @@ export function registerRuntimeBridge({
   const forwardedUserMessages = new Map<string, { atMs: number; commitToMainMs: number | null }>();
   const noteChatEventForward = (event: RemoteRuntimeBufferedEvent): void => {
     const payload = event.payload;
-    if (payload.type !== "agent_chat_event") return;
+    // The brain pushes a chat event as the bare envelope
+    // (`{ sessionId, timestamp, event }`), with no `type` of its own.
+    if (payload.type !== undefined) return;
     const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
     const inner = isObjectRecord(payload.event) ? payload.event : null;
     if (!sessionId || !inner) return;
@@ -1141,6 +1148,13 @@ export function registerRuntimeBridge({
       cleanup: null,
     });
     const subscribedAtMs = Date.now();
+    // Rare (a pump's first poll, or one after a release or a stream end), so
+    // the log shows when a window's push stream started and stopped.
+    getMachineMainLogger().info("runtime_events.subscribed", {
+      webContentsId: sender.id,
+      kind: runtimeEventBindingKind(bindingKey),
+      request: requestKey.slice(bindingKey.length + 1),
+    });
     const onEnded = () => {
       // False when the window already released it or it was replaced: then
       // no pump waits on this stream.
@@ -2352,6 +2366,14 @@ export function registerRuntimeBridge({
         event.sender.id,
         (subscription) => subscription.requestKey.startsWith(prefix),
       );
+      if (released > 0) {
+        getMachineMainLogger().info("runtime_events.released", {
+          webContentsId: event.sender.id,
+          kind: runtimeEventBindingKind(bindingKey),
+          category: prefix.slice(bindingKey.length + 1, -1),
+          released,
+        });
+      }
       return { released };
     },
   );

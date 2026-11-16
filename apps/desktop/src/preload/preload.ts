@@ -3726,6 +3726,7 @@ const pinnedRuntimeEvents = createPinnedRuntimeEvents({
   syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
   isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
   isRemoteTargetOffline: (targetId) => remoteTargetGate.isOffline(targetId),
+  activePumpKeepsSubscription: (pin) => activeRuntimeEventPumpKeepsSubscription(pin),
 });
 const startPinnedRuntimeEventPump =
   pinnedRuntimeEvents.startPinnedRuntimeEventPump;
@@ -3861,6 +3862,24 @@ function releaseRuntimeEventSubscriptionForPreviousBinding(
   remoteRuntimeEventBinding = nextBinding;
   if (!previous || previous.key === nextBinding?.key) return;
   pinnedRuntimeEvents.releaseRuntimeEventSubscriptionIfUnpinned(previous);
+}
+
+/**
+ * Asked when the last pinned pump on `pin` lets go of main's uncategorized
+ * subscription, which the active pump shares when it reads the same binding.
+ * True keeps it: the active pump still has listeners. With none, the release
+ * goes ahead, and the pending keep-alive is dropped so the next listener
+ * subscribes again at once (`ensureRemoteRuntimeEventPump` waits on a pending
+ * timer, which on this computer is up to 45 s).
+ */
+function activeRuntimeEventPumpKeepsSubscription(pin: OpenProjectBinding): boolean {
+  if (remoteRuntimeEventBindingKey !== pin.key) return false;
+  if (hasRemoteRuntimeEventSubscribers()) return true;
+  if (remoteRuntimeEventTimer) {
+    clearTimeout(remoteRuntimeEventTimer);
+    remoteRuntimeEventTimer = null;
+  }
+  return false;
 }
 
 function scheduleRemoteRuntimeEventPoll(delayMs: number): void {

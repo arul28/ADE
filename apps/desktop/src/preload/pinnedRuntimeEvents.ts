@@ -170,6 +170,15 @@ type PinnedRuntimeEventsDeps = {
    * `resumePinnedRuntimeEventPumps` when the machine is back.
    */
   isRemoteTargetOffline: (targetId: string) => Promise<boolean>;
+  /**
+   * True while the window's active pump still reads `pin`'s uncategorized
+   * stream. Main keys that subscription by binding and category alone, so the
+   * active pump and a pinned pump on the bound copy share it, and only the
+   * pinned side holds a ref here. Releasing it under a live active pump cut
+   * off the window's pushes until the active pump polled again (45 s on this
+   * computer): a new chat's first words came about 20 s late.
+   */
+  activePumpKeepsSubscription: (pin: OpenProjectBinding) => boolean;
 };
 
 /**
@@ -242,6 +251,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
       return;
     }
     pinnedSubscriptionRefs.delete(key);
+    if (!category && deps.activePumpKeepsSubscription(pin)) return;
     sendRuntimeEventRelease(pin, category);
   };
 
@@ -438,10 +448,8 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     const pushHandlers = pinnedPumpPushHandlers.get(state.pin.key);
     pushHandlers?.delete(state.onPush);
     if (pushHandlers && pushHandlers.size === 0) pinnedPumpPushHandlers.delete(state.pin.key);
-    // This release can also tear down the active pump's shared main-side
-    // subscription after a tab switch. Its next poll re-subscribes from the
-    // active cursor, so only push latency (750ms–5s) is lost; buffered events
-    // are not.
+    // Kept while the active pump still reads the same binding: main's
+    // subscription is shared (see `activePumpKeepsSubscription`).
     releaseRuntimeEventSubscription(state.pin);
   };
 
