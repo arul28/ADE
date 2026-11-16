@@ -5,8 +5,10 @@
 // so a single dropped connection to the notary or ticket service failed the
 // whole signed build: the app was notarized, and then the staple lost its
 // connection to CloudKit. `mac.notarize` is therefore `false` in package.json
-// and this hook does the work instead. electron-builder only calls `afterSign`
-// when it actually signed the app, so unsigned `dist:mac:dir` builds skip it.
+// and this hook does the work instead. electron-builder 26 calls `afterSign`
+// even when it signed nothing (`mac.identity: null`: `dist:mac:dir`, the local
+// channel build). The brain-copy step skips such an unsealed app, and an
+// unsigned build has no notarization credentials, so the hook does nothing then.
 //
 // Credentials are read exactly as electron-builder reads them: an app-specific
 // password, an App Store Connect API key, or a keychain profile. With none set

@@ -14,7 +14,8 @@
 //    local channel build's own `codesign --deep`): re-sign the copy with the
 //    app's identifier, then re-seal the app with its own metadata kept, so the
 //    seal records the copy's new signature. Both do nothing without a copy,
-//    so a build with the mode off is unchanged.
+//    so a build with the mode off is unchanged. Step 2 also does nothing on
+//    an ad-hoc app that is not sealed yet (an afterSign with no signing).
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -136,8 +137,30 @@ function signBrainCopyIfPresent(appPath, { keychain = null, log = console.log } 
   if (process.platform !== "darwin") return false;
   const copy = brainCopyPath(appPath);
   if (!fs.existsSync(copy)) return false;
+  // An unsigned x64 build has no signature at all (arm64 gets the linker's
+  // ad-hoc one). Same case as an unsealed ad-hoc app below.
+  const display = run("/usr/bin/codesign", ["-d", appPath], { allowFailure: true });
+  if (display.status !== 0 && /not signed at all/.test(`${display.stderr || ""}${display.stdout || ""}`)) {
+    log(`[brain-copy] ${path.basename(appPath)} is not signed yet; the copy is signed when the app is.`);
+    return false;
+  }
   const signature = readAppSignature(appPath);
   if (!signature.identifier) throw new Error(`[brain-copy] Cannot read the signing identifier of ${appPath}.`);
+  // electron-builder 26 calls afterSign even when it signed nothing
+  // (`mac.identity: null`, the local channel build): the app then carries only
+  // the linker's ad-hoc signature and is not sealed, so no deep check can pass
+  // yet, with or without a copy. The step that signs that app (package-channel)
+  // calls this again afterwards. An app signed with a real identity must
+  // already be sealed: a failure there is an error.
+  const baseline = run("/usr/bin/codesign", ["--verify", "--deep", "--strict", appPath], { allowFailure: true });
+  if (baseline.status !== 0) {
+    const reason = `${baseline.stderr || ""}${baseline.stdout || ""}`.trim().split("\n").slice(0, 2).join(" ");
+    if (!signature.adhoc) {
+      throw new Error(`[brain-copy] ${appPath} is signed but does not verify before the brain copy is signed: ${reason}`);
+    }
+    log(`[brain-copy] ${path.basename(appPath)} is not sealed yet (${reason}); the copy is signed when the app is.`);
+    return false;
+  }
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-brain-copy-"));
   try {
     const identity = signature.adhoc ? "-" : signingIdentityHash(appPath, tempDir);
