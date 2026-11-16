@@ -528,7 +528,11 @@ import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
 import { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
-import { blockPackagedLaunchForCrossChannelSyncConflict, resolveLaunchingDesktopAppName } from "./services/sync/packagedSyncHostLaunchGate";
+import {
+  blockPackagedLaunchForCrossChannelSyncConflict,
+  resolveLaunchingDesktopAppName,
+  startCrossChannelSyncHostConflictCheck,
+} from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice, WINDOWS_PREPARE_WATCHDOG_MS } from "./services/updates/autoUpdateService";
 import { createLatestByTrackReader } from "./services/updates/latestByTrack";
 import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
@@ -1915,6 +1919,12 @@ if (process.platform !== "darwin") {
 // report, and the usage tracker publishes it in the header meter.
 const museQuota = createMuseQuotaStore();
 
+// The cross-channel phone-sync check reads a lock file and lists listeners with
+// `lsof` and `ps`. It needs no Electron API, so it starts here and runs while
+// Chromium starts; the gate at the top of `whenReady` reads the answer. A lock
+// loser has exited by now, and the channel defaults are set.
+const crossChannelSyncHostConflictCheck = startCrossChannelSyncHostConflictCheck({ isPackaged: app.isPackaged });
+
 app.whenReady().then(async () => {
   // Asks the OS credential store for the safeStorage key off the main thread
   // (`secureStorage.ts`). A Keychain prompt then never holds main; the secrets
@@ -1930,6 +1940,7 @@ app.whenReady().then(async () => {
   if (await blockPackagedLaunchForCrossChannelSyncConflict({
     isPackaged: app.isPackaged,
     channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    pendingConflict: crossChannelSyncHostConflictCheck,
   })) {
     return;
   }
