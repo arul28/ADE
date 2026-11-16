@@ -68,24 +68,32 @@ async function cursorApiGet<T>(path: string, apiKey: string, query?: Record<stri
         .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
         .join("&")
     : "";
-  let response: Response;
-  try {
-    response = await fetch(`${cursorApiBaseUrl()}${path}${search ? `?${search}` : ""}`, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(CURSOR_API_TIMEOUT_MS),
-    });
-  } catch (cause) {
-    const timedOut = cause instanceof Error && cause.name === "TimeoutError";
+  const signal = AbortSignal.timeout(CURSOR_API_TIMEOUT_MS);
+  const failure = (cause: unknown): CursorCloudApiError => {
+    const timedOut = cause instanceof Error && (cause.name === "TimeoutError" || cause.name === "AbortError");
     const error = new CursorCloudApiError(
       timedOut ? `Request timed out after ${CURSOR_API_TIMEOUT_MS} ms` : "Network request failed",
       null,
       "network",
     );
     (error as { cause?: unknown }).cause = cause;
-    throw error;
+    return error;
+  };
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetch(`${cursorApiBaseUrl()}${path}${search ? `?${search}` : ""}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal,
+    });
+    // A 200's headers can arrive inside the deadline and its body after it, so
+    // the body read carries the same deadline and a failure here is a timeout,
+    // not an empty answer the caller would cache.
+    text = await response.text();
+  } catch (cause) {
+    throw failure(cause);
   }
-  const text = await response.text().catch(() => "");
   if (!response.ok) {
     const body = readErrorBody(text);
     const code = body.code ?? "unknown";
