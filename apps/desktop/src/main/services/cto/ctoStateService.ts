@@ -60,6 +60,8 @@ export type CtoLiveStateSources = Pick<
 
 type CtoStateServiceArgs = {
   db: AdeDb;
+  /** After the identity (name, look, models) changes, e.g. so the account copy is saved again. */
+  onIdentityChanged?: (() => void) | null;
   projectId: string;
   adeDir: string;
   /**
@@ -1352,6 +1354,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     }
     writeIdentityToFile(next);
     writeIdentityToDb(next);
+    args.onIdentityChanged?.();
     return getSnapshot();
   };
 

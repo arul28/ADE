@@ -334,12 +334,22 @@ export function createCtoCloudHomeService(deps: Deps) {
     const done = (async () => {
       let current: ChatLaunchCloudStageId = "computer";
       try {
-        if (stageOf(job, "join")?.status !== "done" || !job.machineKey) {
-          current = "computer";
-          await runComputerAndJoin(job, controller.signal);
+        // Every run (a Retry too) brings the computer in again: a sleeping one
+        // wakes, and one the idle cleanup deleted is made anew, so nothing
+        // after this step talks to a computer that is gone.
+        const before = job.instanceId;
+        current = "computer";
+        await runComputerAndJoin(job, controller.signal);
+        if (job.instanceId !== before) {
+          // Another computer: its pairing and checkout are not this one's.
+          job.targetId = null;
+          job.binding = null;
+          setStage(job, "clone", "pending");
         }
         current = "clone";
         if (stageOf(job, "clone")?.status !== "done" || !job.binding) await runClone(job, controller.signal);
+        // A Cancel that landed as the clone finished wins over "ready".
+        assertActive(job, controller.signal);
         job.phase = "completed";
         publish(job);
         logger.info("cto_cloud_home.ready", { instanceId: job.instanceId, reused: job.reused });
@@ -485,12 +495,14 @@ export function createCtoCloudHomeService(deps: Deps) {
   const cancel = async (args: { jobId: string }): Promise<CtoCloudHomeSnapshot | null> => {
     const job = byJobId(args.jobId);
     if (!job) return null;
+    const wasReady = job.phase === "completed";
     job.phase = "cancelled";
     const active = running.get(job.identity);
     active?.controller.abort();
     await active?.done.catch(() => undefined);
-    if (job.reused) {
-      // A computer found from an earlier home stays.
+    if (job.reused || wasReady) {
+      // A computer found from an earlier home stays, and so does one that is
+      // set up and ready: it may already be the CTO's home.
       job.cleanupDone = true;
     } else {
       const couldnt = `ADE couldn't delete the computer "${job.computerName}". Delete it in Settings › ADE Cloud.`;

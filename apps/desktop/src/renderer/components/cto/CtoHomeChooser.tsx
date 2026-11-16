@@ -237,7 +237,7 @@ export function CtoHomeChooser({
                 disabled={cloud.busy || (cloud.linking && !cloud.linkStalled)}
                 onClick={() => void cloud.cancel()}
                 className="kit-btn kit-btn-ghost"
-                title={job.reused ? "Stops here. The computer stays." : "Stops and deletes the computer ADE made."}
+                title={job.reused || cloud.linking ? "Stops here. The computer stays." : "Stops and deletes the computer ADE made."}
               >
                 Cancel
               </button>

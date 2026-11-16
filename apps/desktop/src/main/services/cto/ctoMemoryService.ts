@@ -30,6 +30,8 @@ type CtoMemoryServiceArgs = {
    */
   userNotesDir?: string | null;
   logger?: Logger | null;
+  /** After notes or open work change, e.g. so the account copy is saved again. */
+  onChanged?: (() => void) | null;
 };
 
 /*
@@ -279,6 +281,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const writeNoteLines = (scope: CtoNotesScope, lines: readonly string[]): number => {
     const rendered = renderNotes(lines);
     writeTextAtomic(notesPath(scope), rendered);
+    args.onChanged?.();
     return utf8Bytes(rendered);
   };
 
@@ -399,6 +402,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     const open = ordered.filter((item) => !item.doneAt);
     const done = ordered.filter((item) => item.doneAt).slice(0, CTO_OPEN_WORK_MAX_DONE);
     writeTextAtomic(openWorkPath, `${JSON.stringify({ version: 1, items: [...open, ...done] }, null, 2)}\n`);
+    args.onChanged?.();
   };
 
   /** The open-work file as it is on disk, for the account copy; null when there is none. */

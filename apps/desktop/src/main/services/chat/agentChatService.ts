@@ -71756,6 +71756,13 @@ export function createAgentChatService(args: {
     logger.info("agent_chat.cto_fresh_thread_for_move", { sessionId: cto.sessionId, provider: managed.session.provider });
   };
 
+  /** Is the CTO's thread running anything now? A move's restore waits while it is. */
+  const isCtoThreadBusy = async (): Promise<boolean> => {
+    const cto = (await listIdentitySessions("cto"))[0];
+    const managed = cto ? managedSessions.get(cto.sessionId) : null;
+    return managed ? ctoThreadIsBusy(managed) : false;
+  };
+
   const setCtoAccountCopyHooks = (hooks: CtoAccountCopyHooks | null): void => {
     ctoAccountCopyHooks = hooks;
   };
@@ -82940,6 +82947,7 @@ ${schedule.prompt}`
     getCtoAttention,
     setCtoAccountCopyHooks,
     startFreshCtoThread,
+    isCtoThreadBusy,
     readCtoAccountCopySources,
     replaceCtoRoutines,
     sessionIdentityKeyNow,

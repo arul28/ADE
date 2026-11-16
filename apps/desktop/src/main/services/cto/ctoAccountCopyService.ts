@@ -40,6 +40,9 @@ import type { CtoMemoryService } from "./ctoMemoryService";
 const ENCODED_PREFIX = "gz1:";
 const SAVE_DEBOUNCE_MS = 3_000;
 const SYNC_TIMEOUT_MS = 10_000;
+/** After a move that couldn't read the account: how often, and how many times, to ask again. */
+const ADOPT_RETRY_MS = 30_000;
+const ADOPT_RETRY_ATTEMPTS = 20;
 /** How fresh this machine's copy of the home record must be before it refuses a CTO turn. */
 const HOME_RECHECK_MAX_AGE_MS = 15_000;
 
@@ -99,6 +102,8 @@ export type CtoAccountCopyServiceArgs = {
   replaceRoutines: (routines: CtoAccountCopyRoutine[]) => Promise<boolean>;
   /** The CTO's thread here, if any, opens a new provider thread on its next turn. */
   startFreshThread?: () => Promise<void>;
+  /** Is the CTO's thread running anything? A late restore waits for it to settle. */
+  threadIsBusy?: () => Promise<boolean>;
   logger: Logger;
   now?: () => number;
 };
@@ -217,10 +222,15 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     }
   };
 
-  /** No home chosen, a home with no account identity (an SSH machine), or this one. */
+  /**
+   * No home chosen, a home with no account identity (an SSH machine), or this
+   * one. A machine that doesn't know its own device id yet can't be the named
+   * home: it would save over the home's copy.
+   */
   const homeIsHere = (record: CtoHomeMachineRecord | null): boolean => {
+    if (!record || !record.deviceId) return true;
     const self = me();
-    if (!record || !record.deviceId || !self) return true;
+    if (!self) return false;
     return sameDevice(record.deviceId, self);
   };
 
@@ -228,9 +238,10 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     const scope = args.repoScope();
     if (!scope || !args.vault) return { copy: null, revision: null };
     try {
+      // A removed copy still has a revision, and a write must name it.
       const row = args.vault.list(scope).find((item) =>
-        item.kind === CTO_ACCOUNT_COPY_VAULT_KIND && item.key === CTO_ACCOUNT_COPY_VAULT_KEY && !item.deleted);
-      const value = args.vault.get(scope, CTO_ACCOUNT_COPY_VAULT_KIND, CTO_ACCOUNT_COPY_VAULT_KEY);
+        item.kind === CTO_ACCOUNT_COPY_VAULT_KIND && item.key === CTO_ACCOUNT_COPY_VAULT_KEY);
+      const value = row && !row.deleted ? args.vault.get(scope, CTO_ACCOUNT_COPY_VAULT_KIND, CTO_ACCOUNT_COPY_VAULT_KEY) : null;
       return { copy: decodeCtoAccountCopy(value), revision: row?.revision ?? null };
     } catch (error) {
       logger.warn("cto.account_copy_read_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -271,15 +282,18 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       // With no home chosen yet, two machines could each think they are it:
       // write only over our own copy, never over another machine's.
       if (!home?.deviceId) return;
-      // The home writes over another machine's copy only once it has taken
-      // it, or when that machine wrote it after this one became the home (an
-      // old home that had not heard of the move). Otherwise the copy is the
-      // CTO the old home handed over, and this machine missed it when it
-      // moved in (its account could not be reached then): take it now.
-      const writtenAfterMove = Date.parse(existing.copy.savedAt) > Date.parse(home.chosenAt);
-      if (!writtenAfterMove && !isTaken(existing.copy)) {
+      // The home writes over another machine's copy only once it has taken a
+      // copy since it became the home. Until then the copy is the CTO the old
+      // home handed over (or kept saving before it heard of the move), and
+      // this machine missed it when it moved in because its account couldn't
+      // be reached: take it now, once the CTO isn't in the middle of a turn.
+      if (!takenForMove(home)) {
+        if (await args.threadIsBusy?.().catch(() => false)) {
+          logger.info?.("cto.account_copy_late_restore_waits", { reason });
+          return;
+        }
         logger.info?.("cto.account_copy_late_restore", { reason, savedAt: existing.copy.savedAt });
-        await restore(existing.copy);
+        await restore(existing.copy, home);
         lastWrittenHash = null;
       }
     }
@@ -398,13 +412,20 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     if (applied) fs.rmSync(carriedRoutinesPath, { force: true });
   };
 
-  const isTaken = (copy: CtoAccountCopy): boolean => {
-    const taken = readJson<{ ownerDeviceId?: string; savedAt?: string }>(takenCopyPath);
-    return Boolean(taken && taken.savedAt === copy.savedAt && sameDevice(taken.ownerDeviceId ?? null, copy.ownerDeviceId));
+  /** Has this machine taken a copy since it became the home in `home`? */
+  const takenForMove = (home: CtoHomeMachineRecord): boolean => {
+    const taken = readJson<{ forChosenAt?: string }>(takenCopyPath);
+    return Boolean(taken && taken.forChosenAt === home.chosenAt);
   };
 
-  const restore = async (copy: CtoAccountCopy): Promise<void> => {
-    writeJson(takenCopyPath, { ownerDeviceId: copy.ownerDeviceId, savedAt: copy.savedAt });
+  const restore = async (copy: CtoAccountCopy, home: CtoHomeMachineRecord | null): Promise<void> => {
+    // Written first, so a restore that fails part-way is never run twice.
+    writeJson(takenCopyPath, {
+      ownerDeviceId: copy.ownerDeviceId,
+      savedAt: copy.savedAt,
+      forChosenAt: home?.chosenAt ?? null,
+      takenAt: new Date(now()).toISOString(),
+    });
     const identity = { ...copy.identity } as Partial<Omit<CtoIdentity, "version" | "updatedAt">>;
     // Account ids are this machine's own: keep the account it already picked
     // for the same provider, instead of falling back to the default one.
@@ -430,8 +451,12 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     } catch (error) {
       logger.warn("cto.account_copy_notes_failed", { scope: "user", error: error instanceof Error ? error.message : String(error) });
     }
-    // No open work in the copy: this machine's list is from an earlier stay, and goes.
-    args.ctoMemory.replaceOpenWorkText(copy.openWork);
+    try {
+      // No open work in the copy: this machine's list is from an earlier stay, and goes.
+      args.ctoMemory.replaceOpenWorkText(copy.openWork);
+    } catch (error) {
+      logger.warn("cto.account_copy_open_work_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
     writeJson(carriedTailPath, {
       fromName: copy.ownerName,
       savedAt: copy.savedAt,
@@ -443,6 +468,26 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     await args.startFreshThread?.().catch((error: unknown) => {
       logger.warn("cto.account_copy_fresh_thread_failed", { error: error instanceof Error ? error.message : String(error) });
     });
+  };
+
+  /**
+   * After a move whose account read failed: ask the account again now and
+   * then, and save (which takes the old home's copy) once it answers, rather
+   * than waiting for the first turn to end here.
+   */
+  let adoptRetry: ReturnType<typeof setTimeout> | null = null;
+  const retryAdoptLater = (attempt = 1): void => {
+    if (disposed || adoptRetry || attempt > ADOPT_RETRY_ATTEMPTS || !args.vault) return;
+    const vault = args.vault;
+    adoptRetry = setTimeout(() => {
+      adoptRetry = null;
+      void withTimeout(vault.sync(), SYNC_TIMEOUT_MS).then((synced) => {
+        if (disposed) return;
+        if (synced === "ready") void save("adopt_retry");
+        else retryAdoptLater(attempt + 1);
+      });
+    }, ADOPT_RETRY_MS);
+    adoptRetry.unref?.();
   };
 
   /**
@@ -469,6 +514,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       // with this machine's older one. The first save after the account
       // answers takes that copy instead (`saveNow`).
       logger.warn("cto.account_copy_adopt_unsynced", { status: synced ?? "timeout" });
+      retryAdoptLater();
       return { restored: false, fromName: null, savedAt: null };
     }
     const { copy } = readCopyRow();
@@ -476,7 +522,7 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       await save("adopt");
       return { restored: false, fromName: null, savedAt: copy?.savedAt ?? null };
     }
-    await restore(copy);
+    await restore(copy, readHome());
     lastWrittenHash = null;
     logger.info?.("cto.account_copy_restored", { savedAt: copy.savedAt, routines: copy.routines.length, tailChars: copy.tail.length });
     await save("adopt");
@@ -510,10 +556,16 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
     fs.rmSync(carriedTailPath, { force: true });
   };
 
-  const dispose = (): void => {
-    disposed = true;
+  /** Saves a change still waiting on the debounce and waits for a save in flight, then stops. */
+  const dispose = async (): Promise<void> => {
+    const pending = saveTimer != null;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null;
+    if (adoptRetry) clearTimeout(adoptRetry);
+    adoptRetry = null;
+    if (pending && !disposed) await save("shutdown");
+    else if (saving) await saving;
+    disposed = true;
   };
 
   return {

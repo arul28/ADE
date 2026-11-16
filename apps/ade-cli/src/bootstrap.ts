@@ -2182,6 +2182,9 @@ export async function createAdeRuntime(args: {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
+      // Edits made while no turn runs (Settings, the side panel, another
+      // device) reach the account copy too, not only at a turn's end.
+      onChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
     });
     const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
     // The CTO's generic actions on this machine run through the same RPC
@@ -2215,6 +2218,7 @@ export async function createAdeRuntime(args: {
     };
     const ctoStateService = createCtoStateService({
       db,
+      onIdentityChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
@@ -3295,7 +3299,8 @@ export async function createAdeRuntime(args: {
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId);
-          if (event.event.type === "done" && ctoAccountCopyRef.current && agentChatServiceHolder.current?.sessionIdentityKeyNow(event.sessionId) === "cto") {
+          // A routine added, changed or removed between turns is part of the copy too.
+          if ((event.event.type === "done" || event.event.type === "scheduled_work_update") && ctoAccountCopyRef.current && agentChatServiceHolder.current?.sessionIdentityKeyNow(event.sessionId) === "cto") {
             ctoAccountCopyRef.current.noteTurnEnded();
           }
           if (event.event.type === "done") chatBrowserLifecycleHolder.current?.(event.sessionId, "idle");
@@ -3438,6 +3443,7 @@ export async function createAdeRuntime(args: {
           readSources: () => chatServiceForCtoCopy.readCtoAccountCopySources(),
           replaceRoutines: (routines) => chatServiceForCtoCopy.replaceCtoRoutines(routines),
           startFreshThread: () => chatServiceForCtoCopy.startFreshCtoThread(),
+          threadIsBusy: () => chatServiceForCtoCopy.isCtoThreadBusy(),
           logger,
         })
       : null;

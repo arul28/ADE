@@ -953,8 +953,9 @@ export function createChatScheduledWorkScheduler(
         arm(current);
         return { fired: true };
       }
-      // A one-shot that did not finish stays armed for its own time.
-      if (!complete) releaseUnusedClaim(current);
+      // A one-shot run now was its one run. Like a timer fire, it keeps its
+      // claim until its turn settles: another brain that still has the row as
+      // scheduled must not deliver it a second time.
       if (complete) {
         markTerminal(current, "done");
         pruneTerminalHistory();

@@ -195,7 +195,8 @@ export function useCtoCloudHome(args: {
     error,
     busy,
     linking: job?.phase === "ready",
-    linkStalled,
+    // A move-in that failed (the error says why) is stalled too: Cancel comes back.
+    linkStalled: linkStalled || (job?.phase === "ready" && error != null),
     start,
     retry,
     cancel,
