@@ -1,4 +1,4 @@
-import { memo, useId, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { useWindowFocused } from "../../lib/windowFocus";
 import { cn } from "./cn";
 import { attachThinkingGlyph, canPaintThinkingGlyph, type ThinkingGlyphHandle } from "./thinkingGlyphPainter";
@@ -67,22 +67,29 @@ const GLYPH_STRIP = glyphFrames();
  * `currentColor`; the label is the theme's foreground at rest with a full
  * foreground sheen. Reduced motion leaves a still glyph and label.
  *
- * While ADE is not the focused app the loops are taken off (`data-resting`):
- * nobody is watching, so a long turn in the background costs no frames. The
- * glyph rests as a still sparkle and starts again on focus.
+ * While ADE is not the focused app, or the indicator is off screen (the
+ * transcript scrolled up, a hidden surface), the loops are taken off
+ * (`data-resting`): nobody is watching, so a long turn costs no frames. The
+ * compositor would otherwise keep stepping the sheen's infinite loops and the
+ * worker would keep painting the glyph. The glyph rests as a still sparkle
+ * and starts again on focus or when it comes back into view.
  */
 export const ThinkingIndicator = memo(function ThinkingIndicator({ label, className }: { label: string; className?: string }) {
   const focused = useWindowFocused();
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const onScreen = useOnScreen(rootRef);
+  const resting = !focused || !onScreen;
   // Decided once per indicator: a renderer without OffscreenCanvas, or a worker
   // that would not start, keeps the CSS glyph.
   const [painted, setPainted] = useState(canPaintThinkingGlyph);
   return (
     <span
+      ref={rootRef}
       className={cn("ade-thinking-indicator inline-flex min-w-0 items-center gap-[0.5em]", className)}
-      data-resting={focused ? undefined : "true"}
+      data-resting={resting ? "true" : undefined}
       data-loop-clock="off"
     >
-      {painted ? <PaintedGlyph resting={!focused} onUnavailable={() => setPainted(false)} /> : <CssGlyph />}
+      {painted ? <PaintedGlyph resting={resting} onUnavailable={() => setPainted(false)} /> : <CssGlyph />}
       <span key={label} className="ade-thinking-label relative min-w-0 truncate font-medium">
         {label}
         {/* The bright copy is the window's `::before` (`content: attr(data-label)`), so the label's text is in the DOM once. */}
@@ -91,6 +98,27 @@ export const ThinkingIndicator = memo(function ThinkingIndicator({ label, classN
     </span>
   );
 });
+
+/**
+ * False while the element is outside the viewport or clipped away by a
+ * scroller, and inside a `display: none` or `content-visibility: hidden`
+ * surface. True until the first answer, and always where the browser has no
+ * IntersectionObserver, so the loops never start late.
+ */
+function useOnScreen(ref: RefObject<Element | null>): boolean {
+  const [onScreen, setOnScreen] = useState(true);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof IntersectionObserver !== "function") return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      const latest = entries[entries.length - 1];
+      if (latest) setOnScreen(latest.isIntersecting);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+  return onScreen;
+}
 
 const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
 

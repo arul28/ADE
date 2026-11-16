@@ -29,6 +29,14 @@ import type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader
  */
 const pendingContextReleases = new WeakMap<HTMLCanvasElement, number>();
 
+/**
+ * The context each canvas holds, from the moment a renderer creates it until
+ * it is released. `releaseBackdropCanvas` and the canvas pool read it here, so
+ * neither has to call `getContext` (which would create a context on a fresh
+ * canvas).
+ */
+const liveContexts = new WeakMap<HTMLCanvasElement, WebGLRenderingContext>();
+
 /** The shared clock of every `field: "window"` canvas. */
 const WINDOW_FIELD_CLOCK_ORIGIN = typeof performance !== "undefined" ? performance.now() : 0;
 
@@ -45,6 +53,7 @@ const WINDOW_FIELD_CLOCK_ORIGIN = typeof performance !== "undefined" ? performan
  * missing.
  */
 function releaseContext(gl: WebGLRenderingContext, canvas: HTMLCanvasElement): void {
+  liveContexts.delete(canvas);
   try {
     gl.getExtension("WEBGL_lose_context")?.loseContext();
   } catch {
@@ -64,7 +73,12 @@ function matches(query: string): boolean {
 }
 
 export type BackdropRenderer = {
-  dispose: () => void;
+  /**
+   * Stop and let go of the canvas. `keepContext` leaves the WebGL context alive
+   * on the canvas for the next renderer to reuse (the canvas pool); otherwise
+   * the context is released.
+   */
+  dispose: (options?: { keepContext?: boolean }) => void;
   /** Pause the 30 fps loop without dropping the context or the last frame. */
   setPlaying: (playing: boolean) => void;
 };
@@ -133,6 +147,7 @@ export function createBackdropRenderer(options: {
     return null;
   }
   const context = gl;
+  liveContexts.set(canvas, context);
 
   const debugInfo = context.getExtension("WEBGL_debug_renderer_info") as
     | { UNMASKED_RENDERER_WEBGL: number }
@@ -652,7 +667,7 @@ export function createBackdropRenderer(options: {
       if (playing) wake();
       else stop();
     },
-    dispose: () => {
+    dispose: (disposeOptions) => {
       disposed = true;
       stop();
       if (layoutRaf !== 0) {
@@ -675,6 +690,7 @@ export function createBackdropRenderer(options: {
       }
       context.deleteBuffer(buffer);
       context.deleteProgram(program);
+      if (disposeOptions?.keepContext) return;
       const releaseTimer = window.setTimeout(() => {
         if (pendingContextReleases.get(canvas) !== releaseTimer) return;
         pendingContextReleases.delete(canvas);
@@ -683,4 +699,21 @@ export function createBackdropRenderer(options: {
       pendingContextReleases.set(canvas, releaseTimer);
     },
   };
+}
+
+/** Whether `canvas` holds a WebGL context that a new renderer can use. */
+export function hasLiveBackdropContext(canvas: HTMLCanvasElement): boolean {
+  const gl = liveContexts.get(canvas);
+  if (!gl) return false;
+  try {
+    return !gl.isContextLost();
+  } catch {
+    return false;
+  }
+}
+
+/** Release the context a disposed renderer left on `canvas` (`dispose({ keepContext: true })`). */
+export function releaseBackdropCanvas(canvas: HTMLCanvasElement): void {
+  const gl = liveContexts.get(canvas);
+  if (gl) releaseContext(gl, canvas);
 }

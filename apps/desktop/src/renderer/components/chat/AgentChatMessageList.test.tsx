@@ -6053,13 +6053,15 @@ describe("AgentChatMessageList — paced assistant text", () => {
     // off screen, and the first sight after scrolling back would show a
     // truncated message that then types out the whole accumulated backlog.
     const originalIntersectionObserver = globalThis.IntersectionObserver;
-    let intersectionCallback: IntersectionObserverCallback | null = null;
+    // Every observer on the row, the working indicator's included: the whole
+    // turn is scrolled out of view.
+    const intersectionCallbacks: IntersectionObserverCallback[] = [];
     globalThis.IntersectionObserver = class {
       root = null;
       rootMargin = "";
       thresholds = [];
       constructor(callback: IntersectionObserverCallback) {
-        intersectionCallback = callback;
+        intersectionCallbacks.push(callback);
       }
       observe(): void {}
       unobserve(): void {}
@@ -6069,13 +6071,14 @@ describe("AgentChatMessageList — paced assistant text", () => {
 
     try {
       const view = renderMessageList(streamingText("Alpha."), { showStreamingIndicator: true });
-      const observed = intersectionCallback as IntersectionObserverCallback | null;
-      expect(observed).toBeTruthy();
+      expect(intersectionCallbacks.length).toBeGreaterThan(0);
       act(() => {
-        observed!(
-          [{ isIntersecting: false } as IntersectionObserverEntry],
-          {} as IntersectionObserver,
-        );
+        for (const observed of intersectionCallbacks) {
+          observed(
+            [{ isIntersecting: false } as IntersectionObserverEntry],
+            {} as IntersectionObserver,
+          );
+        }
       });
 
       act(() => {
