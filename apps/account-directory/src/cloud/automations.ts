@@ -17,12 +17,11 @@ import {
   type CloudAutomationSummary,
   type CloudAutomationTrigger,
   type CloudLaunchRecord,
-  type CloudServerLaunchRequest,
   type CloudTierId,
 } from "./contract";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { isCloudBlocked } from "./blocks";
-import { githubOriginOf, startServerLaunch, type LaunchRouteDeps } from "./launches";
+import { githubOriginOf, startServerLaunch, type LaunchRouteDeps, type ParsedLaunchRequest } from "./launches";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
 import { cloudSizeForTier } from "./plans";
@@ -752,7 +751,7 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
     }
   }
   const laneId = run.lane_id ?? crypto.randomUUID();
-  const request: CloudServerLaunchRequest = {
+  const request: ParsedLaunchRequest = {
     launchId: run.run_id,
     kind: "chat",
     sizeId: spec.sizeId,
@@ -765,6 +764,8 @@ async function startRunLaunch(env: RelayEnv, rule: RuleRow, run: RunRow, deps: A
       permissions: spec.chat.permissions,
       ...(spec.chat.fast ? { fast: true } : {}),
       prompt: runPrompt(spec, trigger, now),
+      // The first message's id is the run's (the launch id), as a client that leaves it out gets.
+      messageId: run.run_id,
     },
     madeBy: { kind: "automation", ruleId: rule.rule_id },
     // The registering ADE's track: a Beta ADE's rule runs on the Beta image, which knows the join.
@@ -1018,6 +1019,10 @@ async function moveRunOn(env: RelayEnv, row: CronRow, deps: AutomationDeps): Pro
   const run = row.run_id ? await readRun(env, row.run_id) : null;
   if (!run) return;
   const rule = await readRule(env, run.user_id, run.rule_id);
+  // A blocked account's waiting or starting run never makes a computer. No email: the account is blocked.
+  if ((run.state === "queued" || run.state === "starting") && await isCloudBlocked(env, run.user_id)) {
+    return failRun(env, { run }, run.run_id, "ADE Cloud is turned off for this account.", now, { unclaimDay: true });
+  }
   if (run.state === "queued") {
     if (!rule) {
       await env.DB.prepare("delete from cloud_automation_runs where run_id = ? and state = 'queued'").bind(run.run_id).run();

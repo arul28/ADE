@@ -28,6 +28,7 @@ import {
   isAgentCliLoginProvider,
   type AgentCliLoginStartArgs,
 } from "../../../../desktop/src/shared/types/agentCliLogin";
+import type { CloudSignInStatus } from "../../../../desktop/src/shared/cloudSignIns";
 import type { ProviderLoginState } from "../../../../desktop/src/shared/types/providerInstances";
 
 /** The slice of a login runner's status this needs (the provider account runner and the agent CLI runner share it). */
@@ -69,16 +70,15 @@ const AGENT_CLI = "c_";
 /** Claude's pass sign-in: one per machine, so its job id names no login. */
 const CLAUDE_PASS = "k_claudepass";
 
-/** The cloud Claude sign-in's state, as `cloud_sign_in_status` reads it (`CloudSignInStatus["claude"]`). */
-type ClaudePassState = { state: string; url: string | null; awaitingCode: boolean; message: string | null } | null;
+/** The cloud Claude sign-in's actions; each answers its state, as `cloud_sign_in_status` reads it. */
 export type ClaudePassRunner = {
-  start: () => Promise<ClaudePassState>;
-  status: () => Promise<ClaudePassState>;
-  submitCode: (code: string) => Promise<ClaudePassState>;
+  start: () => Promise<CloudSignInStatus["claude"]>;
+  status: () => Promise<CloudSignInStatus["claude"]>;
+  submitCode: (code: string) => Promise<CloudSignInStatus["claude"]>;
 };
 
 /** The pass sign-in's state as the phone and the web read it: saved (here or in the account) is done. */
-function claudeAnswerOf(status: ClaudePassState): CloudRemoteSignInStatus {
+function claudeAnswerOf(status: CloudSignInStatus["claude"]): CloudRemoteSignInStatus {
   const state: CloudRemoteSignInState = !status ? "failed"
     : status.state === "succeeded" || status.state === "saved_here" ? "done"
       : status.state === "failed" || status.state === "cancelled" || status.state === "mismatch" ? "failed"

@@ -61,7 +61,7 @@ export function cloudModelCatalog(): CloudModelCatalog {
     providers.push({
       provider,
       label: row.label,
-      signIn: row.remoteSignIn,
+      remoteSignIn: row.remoteSignIn,
       defaultModelId: usableFallback?.id ?? models[0]?.id ?? null,
       models,
     });

@@ -50,7 +50,10 @@ const CAPTURE_TIMEOUT_MS = 2_000;
 const HOUR_MS = 60 * 60_000;
 const MINUTE_MS = 60_000;
 
-async function send(env: CloudEnv, body: Record<string, unknown>): Promise<void> {
+/** What a capture reads: PostHog's token and host. */
+type AnalyticsEnv = Pick<CloudEnv, "POSTHOG_PROJECT_TOKEN" | "POSTHOG_HOST">;
+
+async function send(env: AnalyticsEnv, body: Record<string, unknown>): Promise<void> {
   const token = env.POSTHOG_PROJECT_TOKEN?.trim();
   if (!token) return;
   const host = (env.POSTHOG_HOST?.trim() || "https://us.i.posthog.com").replace(/\/+$/, "");
@@ -310,7 +313,7 @@ export type CloudSafetyStep =
 const SERVER_DISTINCT_ID = "ade-cloud-server";
 
 /** One `ade_cloud_safety` per account (or the server), step, `key` (hashed into the uuid, never sent) and hour. */
-export function captureCloudSafety(env: CloudEnv, waitUntil: CloudWaitUntil, userId: string | null, step: CloudSafetyStep, key: string, now: number): void {
+export function captureCloudSafety(env: AnalyticsEnv, waitUntil: CloudWaitUntil, userId: string | null, step: CloudSafetyStep, key: string, now: number): void {
   if (!env.POSTHOG_PROJECT_TOKEN?.trim()) return;
   const bucket = Math.floor(now / HOUR_MS) * HOUR_MS;
   hold(waitUntil, (async () => {

@@ -1,4 +1,5 @@
 import { trustedHttpsOrigin } from "../trustedOrigin";
+import { ADE_GITHUB_APP_INSTALL_URL } from "../../../desktop/src/shared/github/githubDirectStateCopy";
 import { githubAppRuntime, serveToken, type GithubAppEnv } from "../githubApp/grants";
 import { sendCloudEmail } from "./email";
 import { logCloud, reportCloudFailure, type CloudEnv } from "./store";
@@ -155,9 +156,6 @@ export function connectGitHubSentence(origin: string): string {
   return `${name} isn't public on GitHub, and your ADE account has no GitHub sign-in a cloud computer can clone it with. Connect GitHub in Settings › GitHub so your sign-in follows your ADE account, then send again.`;
 }
 
-/** Where a person installs the ADE GitHub App on an owner (`ADE_GITHUB_APP_INSTALL_URL` in the desktop). */
-export const GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
-
 /** The plain sentence a launch refused for a missing App installation gives. */
 export function giveAdeAccessSentence(origin: string): string {
   const [, owner = "", repo = ""] = origin.split("/");
@@ -205,15 +203,16 @@ async function githubAppRepoAccess(env: GithubAppEnv, userId: string, origin: st
  * the account and GitHub says the repository isn't public. Anything unknown
  * goes on, with a log line.
  */
-export async function serverGitCheck(env: RelayEnv, authorization: string | null, origin: string, userId?: string): Promise<ServerGitCheck> {
+export async function serverGitCheck(env: RelayEnv & GithubAppEnv, authorization: string | null, origin: string, userId: string): Promise<ServerGitCheck> {
   const facts = await readVaultFacts(env, authorization);
   if (facts.git === "ok") return { ok: true };
-  const app = userId ? await githubAppRepoAccess(env as RelayEnv & GithubAppEnv, userId, origin) : "unknown";
+  const app = await githubAppRepoAccess(env, userId, origin);
   if (app === "ok") return { ok: true };
-  if (app === "not_installed") {
+  // Refused only when the vault surely has no git credential: an unreadable vault may hold one.
+  if (app === "not_installed" && facts.git === "none") {
     const visibility = await githubRepoVisibility(origin);
     if (visibility !== "public") {
-      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: GITHUB_APP_INSTALL_URL };
+      return { ok: false, code: "github_app_not_installed", message: giveAdeAccessSentence(origin), installUrl: ADE_GITHUB_APP_INSTALL_URL };
     }
     // A public repository clones without the App; only a push would need it.
     logCloud("cloud.git_check_app_not_installed_public", {});

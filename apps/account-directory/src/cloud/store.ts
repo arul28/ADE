@@ -116,6 +116,10 @@ export type ComputerRow = {
   deleted_at: number | null;
   /** While a move runs: the computer it moves (see `MOVE_GRACE_MS`). */
   moving_from: string | null;
+  /** When an owner's block cut it off the internet (migration 0037, `safety.ts`); null again on unblock. */
+  network_denied_at?: number | null;
+  /** The last try at that policy, landed or not (migration 0037). */
+  network_deny_tried_at?: number | null;
   cold_storage: number;
   free_wake_started_at: number | null;
   free_wake_until: number | null;
@@ -263,6 +267,17 @@ const lastFailureReport = new Map<string, number>();
  * {@link logCloud} for a failure that's ADE's to fix: the line stays local, the event name reaches Sentry.
  * `area` tags the Sentry issue (`cloud`, `cloud-referrals`, `cloud-free-plan`) so alert rules can pick one.
  */
+/** A JSON column of a launch row, or `fallback` when it is empty or unreadable (reported). */
+export function parseJsonColumn<T>(text: string | null, fallback: T, where: { launchId: string; column: string }): T {
+  if (!text) return fallback;
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    reportCloudFailure("cloud.launch_column_unreadable", { ...where, message: error instanceof Error ? error.message : "unknown" });
+    return fallback;
+  }
+}
+
 export function reportCloudFailure(event: string, meta: Record<string, unknown> = {}, area = "cloud"): void {
   logCloud(event, meta);
   const now = Date.now();
@@ -360,7 +375,7 @@ export function settleStatements(env: CloudDb, computer: ComputerRow, upTo: numb
     // The stretch is stamped with the account's plan as it is now: run on free-plan rules, its cost also counts as free use (the owner's cap).
     statements.push(env.DB.prepare(`
       insert into cloud_computer_days (instance_id, day, user_id, metered_ms, metered_milli, multiplier_milli, cost_micros, free_cost_micros)
-      select ?, ?, ?, ?, ?, ?, ?, case when exists (select 1 from cloud_accounts where user_id = ? and ${PAID_RULES_SQL}) then 0 else ? end
+      select ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
       where ${guard ? guard.sql : "1"}
       on conflict (instance_id, day) do update set
         metered_ms = metered_ms + excluded.metered_ms,
@@ -679,6 +694,15 @@ export function planDiskGb(account: Pick<AccountRow, "plan" | "stripe_status" | 
 export const MOVE_GRACE_MS = 2 * 60 * 60_000;
 
 /**
+ * SQL for the free share of a cost: `costSql` when the account named by
+ * `userIdSql` (a `?` or a column) is on free-plan rules now, else 0. Stamps
+ * each stretch with the plan it ran on, for the owner's cap on free use.
+ */
+export function freeShareSql(userIdSql: string, costSql: string): string {
+  return `case when exists (select 1 from cloud_accounts where user_id = ${userIdSql} and ${PAID_RULES_SQL}) then 0 else ${costSql} end`;
+}
+
+/**
  * SQL for the disk an account's computers hold now, as a scalar subquery for
  * the account named by `userIdSql` (a `?` or a column). A move's source is
  * left out while its move runs (`moving_from`). With `except`, it takes one
@@ -724,7 +748,9 @@ export type DiskDayAccount = Pick<AccountRow, "user_id" | "plan" | "paid_plan" |
  * row. Extra disk is billed from these rows
  * only. A day keeps the most plan disk it saw (an upgrade raises it) and is
  * billable only if it was billable all day (a `past_due` moment, or extra
- * disk off, makes the whole day free).
+ * disk off, makes the whole day free). It counts as free use (`free`) only if
+ * the account was on free rules at every write, so a paid account that drops
+ * to free mid-day doesn't charge its paid peak to free use.
  */
 export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: number): D1PreparedStatement {
   return env.DB.prepare(`
@@ -734,7 +760,7 @@ export function diskDayStatement(env: CloudDb, account: DiskDayAccount, now: num
       peak_gb = max(peak_gb, excluded.peak_gb),
       plan_gb = max(plan_gb, excluded.plan_gb),
       billable = min(billable, excluded.billable),
-      free = max(free, excluded.free)
+      free = min(free, excluded.free)
   `).bind(account.user_id, utcDay(now), account.user_id, planDiskGbOf(account, boughtPlanIdOf(account)), diskDayBillable(account) ? 1 : 0, accountRules(account) === "free" ? 1 : 0);
 }
 

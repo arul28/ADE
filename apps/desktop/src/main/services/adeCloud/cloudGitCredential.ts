@@ -34,6 +34,7 @@ import {
   type AccountGitCredentialSource,
   type CloudGitPreflight,
 } from "../../../shared/cloudGitCredential";
+import { createAccountAppTokenClient } from "../../../shared/github/accountAppTokenClient";
 import { GITHUB_CLI_VAULT_KEY, GITHUB_PAT_VAULT_KEY, decodeAccountGithubToken } from "../github/accountGithubTokenItem";
 import type { CloudVault } from "./cloudAccess";
 
@@ -57,37 +58,43 @@ export type AccountGitCredentialDeps = {
 export type AccountAppConnection = "connected" | "not_connected" | "unknown";
 
 /**
- * Whether the ADE account's GitHub App sign-in is connected: one
- * `GET /github/app/status` with the account token. No token is read or
- * kept. Never throws; anything unclear is `unknown`.
+ * Whether the ADE account's GitHub App sign-in is connected: one status read
+ * (`GET /github/app/status`) through the account App client, with the
+ * account token. No GitHub token is read or kept. Never throws; anything
+ * unclear is `unknown`, and a read that fails is logged.
  */
 export async function accountAppConnection(deps: {
   baseUrl: string | null;
   accessToken: () => Promise<string | null>;
   fetch?: typeof fetch;
-  timeoutMs?: number;
+  logger?: { warn?: (event: string, data?: Record<string, unknown>) => void } | null;
 }): Promise<AccountAppConnection> {
-  const doFetch = deps.fetch ?? globalThis.fetch;
-  if (!deps.baseUrl || typeof doFetch !== "function") return "unknown";
-  const token = await deps.accessToken().catch(() => null);
-  if (!token) return "unknown";
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? VISIBILITY_TIMEOUT_MS);
-  timer.unref?.();
-  try {
-    const response = await doFetch(`${deps.baseUrl.replace(/\/+$/, "")}/github/app/status`, {
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      signal: controller.signal,
-    });
-    if (!response.ok) return "unknown";
-    const body = await response.json().catch(() => null) as { connected?: unknown; state?: unknown } | null;
-    if (body?.connected === true && body.state === "active") return "connected";
-    return body?.connected === false || body?.state === "needs_reauth" ? "not_connected" : "unknown";
-  } catch {
+  if (!deps.baseUrl) return "unknown";
+  const client = createAccountAppTokenClient({
+    ...(deps.fetch ? { fetchImpl: deps.fetch } : {}),
+    getAccountAccessToken: async () => await deps.accessToken().catch((error: unknown) => {
+      deps.logger?.warn?.("cloud.git_preflight_app_token_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    }),
+    // A status read only: no cached token, so no account to key one by.
+    getAccountUserId: () => null,
+    getDirectoryBaseUrl: () => deps.baseUrl,
+    store: null,
+    holderId: "cloud-git-preflight",
+    // Names the client for a sign-in, which this read never starts.
+    clientKind: "desktop",
+  });
+  const answer = await client.status().catch((error: unknown) => {
+    deps.logger?.warn?.("cloud.git_preflight_app_status_failed", { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  });
+  if (!answer) return "unknown";
+  if (!answer.ok) {
+    if (answer.error !== "signed_out") deps.logger?.warn?.("cloud.git_preflight_app_status_failed", { error: answer.error });
     return "unknown";
-  } finally {
-    clearTimeout(timer);
   }
+  if (answer.status.connected && answer.status.state === "active") return "connected";
+  return !answer.status.connected || answer.status.state === "needs_reauth" ? "not_connected" : "unknown";
 }
 
 const UNREADABLE_MESSAGE = `ADE couldn't read your account's GitHub sign-in on this computer. ${CONNECT_GITHUB_HINT}`;

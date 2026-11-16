@@ -34,10 +34,9 @@ import { ignoredFilesStatement, keepIdleComputer, parseIgnoredFiles, recordIdleU
 import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLimitsSentence, type CloudDiskRefusalReason, type CloudInstance, type CloudPlanId } from "./contract";
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { freeCapRefuses } from "./costReport";
-import { accountBlocked, createRateRefusal, createsPaused, createsPausedRefusal, isCloudBlockedForRequest, launchRateRefusal } from "./blocks";
+import { accountBlocked, isCloudBlocked, isCloudBlockedForRequest, newWorkRefusal } from "./blocks";
 import { enforceBlockAfterCreate, handleCloudOwnerRequest, isCloudOwnerRequest } from "./safety";
 import { INSTANCE_LIST_TTL_S, listInstancesCached } from "./instanceListCache";
-import { captureCloudSafety } from "./analytics";
 import { boundedDisplayText } from "../displayText";
 import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import {
@@ -362,6 +361,17 @@ async function wakeBlocker(env: CloudEnv, userId: string, now: number): Promise<
   return { account, blocked: empty ? { response: outOfHours(), refusal: "out_of_hours" } : overPlanDisk(account, computers) };
 }
 
+/**
+ * A start or wake of an existing computer reads the block fresh: the request
+ * check's answer can be 30 s old (`isCloudBlockedForRequest`).
+ */
+async function blockedNow(env: CloudEnv, userId: string): Promise<Response | null> {
+  return await isCloudBlocked(env, userId) ? accountBlocked() : null;
+}
+
+/** The instance actions that start, restart or wake the computer. */
+const WAKING_ACTIONS: ReadonlySet<string> = new Set(["POST start", "POST update", "POST resize"]);
+
 /** Writes the status from a provider answer, on change only. */
 async function recordStatus(env: CloudEnv, computer: ComputerRow, status: string, now: number, reason: string): Promise<void> {
   const statements = statusChangeStatements(env, computer, status, now, reason);
@@ -574,14 +584,10 @@ export async function createComputer(env: CloudEnv, userId: string, provider: Cl
   const action = isMove ? "move" : "create";
   const { metadata, requestId } = withRequestId(clientMetadata);
   const { track, refuse } = cloudActionTracker({ env, waitUntil, userId, plan: planIdOf(account), origin: originOf(clientMetadata), key: requestId, refusedAction: action, now });
-  // The owner's kill switch stops new computers; a move replaces one, so it still runs.
-  if (!isMove && createsPaused(env)) {
-    captureCloudSafety(env, waitUntil, userId, "creates_paused", "create", now);
-    return refused(createsPausedRefusal());
-  }
+  // The owner's kill switch (a move replaces a computer, so it still runs) and the hourly limit.
+  const newWork = await newWorkRefusal(env, userId, isMove ? "move" : "create", now, waitUntil);
+  if (newWork) return refused(newWork);
   if (empty) return refused(refuse({ response: outOfHours(), refusal: "out_of_hours" }));
-  const tooMany = await createRateRefusal(env, userId, now, waitUntil);
-  if (tooMany) return refused(tooMany);
   // The owner's cap limits free use only: a paid account is never refused here.
   if (await freeCapRefuses(env, account, now, waitUntil)) return refused(refuse({ response: cantMakeComputer(), refusal: "owner_limit" }));
   // A move replaces its computer, so it adds nothing: only a new computer waits for the account to fit.
@@ -666,13 +672,9 @@ async function handleFork(request: Request, env: CloudEnv, computer: ComputerRow
   const { track, refuse } = cloudActionTracker({
     env, waitUntil, userId: computer.user_id, plan: planIdOf(account), origin: originOf(metadataIn), key: computer.instance_id, refusedAction: "copy", now,
   });
-  if (createsPaused(env)) {
-    captureCloudSafety(env, waitUntil, computer.user_id, "creates_paused", "copy", now);
-    return createsPausedRefusal();
-  }
+  const newWork = await newWorkRefusal(env, computer.user_id, "copy", now, waitUntil);
+  if (newWork) return newWork;
   if (empty) return refuse({ response: outOfHours(), refusal: "out_of_hours" });
-  const tooMany = await createRateRefusal(env, computer.user_id, now, waitUntil);
-  if (tooMany) return tooMany;
   if (await freeCapRefuses(env, account, now, waitUntil)) return refuse({ response: cantMakeComputer(), refusal: "owner_limit" });
   const over = overPlanLimits(env, account, computers);
   if (over) return refuse(over);
@@ -1086,6 +1088,8 @@ async function handleExec(request: Request, env: CloudEnv, computer: ComputerRow
     : undefined;
   const asleep = !isMeteredStatus(computer.status);
   if (asleep) {
+    const accountBlock = await blockedNow(env, computer.user_id);
+    if (accountBlock) return accountBlock;
     const { blocked } = await wakeBlocker(env, computer.user_id, now);
     if (blocked) return blocked.response;
     const capped = await awakeRoom(env, computer, now, AWAKE_CAP_WAIT_MS);
@@ -1260,8 +1264,14 @@ async function routeInstance(request: Request, env: CloudEnv, provider: CloudPro
     if (request.method === "DELETE") return handleDelete(request, env, computer, provider, ctx);
     return notFound();
   }
-  const handler = instanceRoutes[`${request.method} ${action}`];
-  return handler ? handler(request, env, computer, provider, ctx) : notFound();
+  const key = `${request.method} ${action}`;
+  const handler = instanceRoutes[key];
+  if (!handler) return notFound();
+  if (WAKING_ACTIONS.has(key)) {
+    const blocked = await blockedNow(env, userId);
+    if (blocked) return blocked;
+  }
+  return handler(request, env, computer, provider, ctx);
 }
 
 /** A timed wake must name the caller's own computer and that computer's own wake address. */
@@ -1482,6 +1492,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.
     if (request.method === "PUT") {
+      const accountBlock = await blockedNow(env, caller.userId);
+      if (accountBlock) return accountBlock;
       const { blocked } = await wakeBlocker(env, caller.userId, Date.now());
       if (blocked) return blocked.response;
       const refused = await refuseForeignWake(request.clone(), env, caller.userId);
@@ -1509,7 +1521,7 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (billing) return billing;
   // Saved chats need no provider: they stay readable when the computer can't be.
   if (path === CLOUD_PATHS.chats || path.startsWith(`${CLOUD_PATHS.chats}/`)) {
-    return routeSavedChats(request, url, path, env, caller.userId, now);
+    return routeSavedChats(request, url, path, env, caller.userId, now, waitUntil);
   }
   // Lanes without a computer are rows only: readable with no provider, like saved chats.
   if (path === CLOUD_PATHS.lanesWithoutComputer || path.startsWith(`${CLOUD_PATHS.lanesWithoutComputer}/`)) {
@@ -1520,21 +1532,14 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
   if (path === CLOUD_PATHS.models) return handleCloudModels(request);
   // The server launcher: a launch's record reads with no provider; only the start and a cancel need it.
   if (path === CLOUD_PATHS.launches || path.startsWith(`${CLOUD_PATHS.launches}/`)) {
-    // A launch's start makes a computer: the owner's kill switch and the hourly limit come first.
-    if (request.method === "POST" && path === CLOUD_PATHS.launches) {
-      if (createsPaused(env)) {
-        captureCloudSafety(env, waitUntil, caller.userId, "creates_paused", "launch", now);
-        return createsPausedRefusal();
-      }
-      const tooMany = await launchRateRefusal(env, caller.userId, now, waitUntil);
-      if (tooMany) return tooMany;
-    }
     const authorization = request.headers.get("authorization");
     return providerCall(() => routeLaunches(request, path, env, caller.userId, {
       provider,
       now,
       createComputer: (userId, launchProvider, extras) => createComputer(env, userId, launchProvider, extras, ctx),
       gitCheck: (origin) => serverGitCheck(env, authorization, origin, caller.userId),
+      // A new launch makes a computer: the owner's kill switch and the hourly limit (never a replay of one).
+      refuseNewLaunch: () => newWorkRefusal(env, caller.userId, "launch", now, waitUntil),
       onProgress: (record) => noteAutomationLaunchProgress(env, record, { now }),
     }));
   }
@@ -1575,7 +1580,8 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
           isAwake: isMeteredStatus(computer.status),
           isStopped: computer.status === "stopped",
           startStopped: async () => recordStatus(env, computer, await provider.startInstance(computer.instance_id), now, "sign_in"),
-          wakeBlocked: async () => (await wakeBlocker(env, caller.userId, now)).blocked?.response
+          wakeBlocked: async () => (await blockedNow(env, caller.userId))
+            ?? (await wakeBlocker(env, caller.userId, now)).blocked?.response
             ?? (await awakeRoom(env, computer, now))?.response ?? null,
         });
       }

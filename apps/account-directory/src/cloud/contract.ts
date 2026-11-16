@@ -1376,7 +1376,8 @@ export type CloudLaunchStagesUpdate = {
  *   desktop and the sign-in reaches ADE Cloud from there.
  * The person always signs in themselves; ADE never signs a provider in for them.
  */
-export type CloudRemoteSignInKind = "device" | "url_paste" | "api_key" | "desktop";
+export const CLOUD_REMOTE_SIGN_IN_KINDS = ["device", "url_paste", "api_key", "desktop"] as const;
+export type CloudRemoteSignInKind = (typeof CLOUD_REMOTE_SIGN_IN_KINDS)[number];
 /** The sign-ins the account vault keeps for ADE Cloud (the desktop's `CloudSignInId`). OpenRouter's key serves OpenCode and Pi. */
 export type CloudAccountSignInId = "claude" | "codex" | "cursor" | "droid" | "grok" | "copilot" | "devin" | "muse" | "openrouter";
 export type CloudRemoteSignInRow = {
@@ -1387,6 +1388,13 @@ export type CloudRemoteSignInRow = {
   /** The account vault sign-in that also signs this provider in, if one does. */
   accountSignIn: CloudAccountSignInId | null;
 };
+
+/**
+ * A launch that waited on a provider sign-in too long fails with exactly this
+ * error, whether the computer or the server gave up first, so the server's
+ * cleanup knows it and deletes the unused computer.
+ */
+export const CLOUD_LAUNCH_SIGN_IN_TIMED_OUT = "The provider sign-in didn't finish in time. Start the chat again after you sign in.";
 
 /** What the phone and the web show for a provider whose sign-in can't move. */
 export const CLOUD_REMOTE_SIGN_IN_ELSEWHERE = "Sign in from ADE desktop; it reaches ADE Cloud.";
@@ -1413,10 +1421,10 @@ export const CLOUD_REMOTE_SIGN_IN: readonly CloudRemoteSignInRow[] = [
   { provider: "qwen", label: "Qwen Code", remoteSignIn: "desktop", reason: "ADE doesn't run Qwen Code's sign-in on another computer.", accountSignIn: null },
 ];
 
-/** Why a provider can't be signed in on a computer from here, with one way to do it: a reason that already says where adds nothing. */
+/** Why a provider can't be signed in on a computer from here, with one way to do it: only a `desktop` row adds where. */
 export function cloudRemoteSignInRefusal(row: CloudRemoteSignInRow): string {
   const reason = row.reason?.trim() ?? "";
-  if (row.remoteSignIn === "api_key" || /ADE desktop/.test(reason)) return reason;
+  if (row.remoteSignIn !== "desktop") return reason;
   return `${reason} ${CLOUD_REMOTE_SIGN_IN_ELSEWHERE}`.trim();
 }
 
@@ -1483,7 +1491,8 @@ export type CloudCatalogProvider = {
   /** The launch's `chat.provider`. */
   provider: string;
   label: string;
-  signIn: CloudRemoteSignInKind;
+  /** How the provider signs in on a computer for a person on another screen. */
+  remoteSignIn: CloudRemoteSignInKind;
   defaultModelId: string | null;
   /** ADE's own list for this provider. Some providers list more once a computer runs them. */
   models: CloudCatalogModel[];

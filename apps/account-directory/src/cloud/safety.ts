@@ -1,6 +1,8 @@
 import { captureCloudSafety, type CloudWaitUntil } from "./analytics";
 import { cancelAccountSubscription, savedCardFingerprints } from "./billing";
 import { blockedUsersAmong, forgetNotBlocked, isCloudBlocked } from "./blocks";
+import { constantTimeEqual } from "../githubApp/seal";
+import { sha256Hex } from "../sinkUtils";
 import { fail, json, readJson } from "./http";
 import { CloudProviderError, TRY_AGAIN_CODE, type CloudProvider } from "./provider";
 import {
@@ -39,24 +41,34 @@ const OWNER_BLOCK_PATH = "/cloud/owner/block";
 const OWNER_UNBLOCK_PATH = "/cloud/owner/unblock";
 /** Computers of blocked accounts the minute tick stops at most, so one tick stays short. */
 const TICK_ENFORCE_LIMIT = 10;
+/** A stopped computer whose network policy didn't land is tried again this often, not every minute. */
+const STOPPED_DENY_RETRY_MS = 60 * 60_000;
 const MAX_REASON = 200;
 
-export type BlockSummary = { computers: number; stopped: number; failed: number; subscriptionCancelled: boolean; alreadyBlocked: boolean };
+type BlockSummary = { computers: number; stopped: number; failed: number; subscriptionCancelled: boolean; alreadyBlocked: boolean };
 
 /**
  * Cuts one computer off the internet, then stops it. A pending reservation
  * (no provider computer yet) is left to the create's own check. Throws when
- * the provider refuses; the tick tries again a minute later.
+ * the stop fails; the tick tries again a minute later. A policy that didn't
+ * land leaves `network_denied_at` empty, so the tick tries that again too.
  */
 export async function enforceBlockOnComputer(env: CloudEnv, provider: CloudProvider, computer: ComputerRow, now: number): Promise<void> {
   if (isPendingId(computer.instance_id)) return;
-  try {
-    await provider.setNetworkPolicy(computer.instance_id, "deny-all");
-  } catch (error) {
-    // `try_again`: the policy is saved and lands within two minutes. Anything else: the stop below still runs.
-    if (!(error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE)) {
-      reportCloudFailure("cloud.block_network_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  if (computer.network_denied_at == null) {
+    let denied = false;
+    try {
+      await provider.setNetworkPolicy(computer.instance_id, "deny-all");
+      denied = true;
+    } catch (error) {
+      // `try_again`: the policy is saved and lands within two minutes. Anything else: the stop below still runs.
+      if (error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE) denied = true;
+      else reportCloudFailure("cloud.block_network_failed", { instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
+    await env.DB.prepare("update cloud_computers set network_deny_tried_at = ?, network_denied_at = ? where instance_id = ?")
+      .bind(now, denied ? now : null, computer.instance_id).run();
+    computer.network_deny_tried_at = now;
+    if (denied) computer.network_denied_at = now;
   }
   if (computer.status === "stopped") return;
   let status: string;
@@ -88,11 +100,19 @@ export async function enforceBlockAfterCreate(env: CloudEnv, provider: CloudProv
   }
 }
 
-/** The minute tick's sweep: computers of blocked accounts that aren't stopped, a few a tick. */
+/**
+ * The minute tick's sweep, a few a tick: computers of blocked accounts that
+ * aren't stopped first, then stopped ones whose network policy didn't land
+ * (each tried again at most every `STOPPED_DENY_RETRY_MS`).
+ */
 export async function enforceBlocksInTick(env: CloudEnv, provider: CloudProvider, computers: ComputerRow[], now: number): Promise<void> {
   const blocked = await blockedUsersAmong(env, computers.map((computer) => computer.user_id));
   if (blocked.size === 0) return;
-  const due = computers.filter((computer) => blocked.has(computer.user_id) && !isPendingId(computer.instance_id) && computer.status !== "stopped");
+  const mine = computers.filter((computer) => blocked.has(computer.user_id) && !isPendingId(computer.instance_id));
+  const running = mine.filter((computer) => computer.status !== "stopped");
+  const stoppedOpen = mine.filter((computer) => computer.status === "stopped" && computer.network_denied_at == null
+    && (computer.network_deny_tried_at == null || now - computer.network_deny_tried_at >= STOPPED_DENY_RETRY_MS));
+  const due = [...running, ...stoppedOpen];
   for (const computer of due.slice(0, TICK_ENFORCE_LIMIT)) {
     try {
       await enforceBlockOnComputer(env, provider, computer, now);
@@ -125,23 +145,27 @@ async function identityOf(env: CloudEnv, userId: string): Promise<{ githubUserId
   return { githubUserId: github?.github_user_id ?? null, cards };
 }
 
+/** One block list row: an account, a GitHub account, a card, or several of them. */
+function blockRowStatement(env: CloudEnv, row: { userId: string | null; githubUserId: number | null; card: string | null; reason: string; now: number }): D1PreparedStatement {
+  return env.DB.prepare("insert into cloud_blocks (user_id, github_user_id, card_fingerprint, reason, created_at) values (?, ?, ?, ?, ?)")
+    .bind(row.userId, row.githubUserId, row.card, row.reason, row.now);
+}
+
 /**
  * Blocks an account (see the top of this file). Safe to repeat: a second
  * block adds no rows and stops whatever still runs. A provider failure on one
- * computer is counted and left to the tick; a Stripe failure throws after the
- * computers are stopped, so the owner can send the block again.
+ * computer is counted and left to the tick. The block rows, the abuse row and
+ * the safety event are written before Stripe is called, so a Stripe failure
+ * loses none of them; it throws, and the owner can send the block again.
  */
 export async function blockAccount(env: CloudEnv, provider: CloudProvider | null, userId: string, reason: string, now: number, waitUntil?: CloudWaitUntil): Promise<BlockSummary> {
   const alreadyBlocked = await isCloudBlocked(env, userId);
   if (!alreadyBlocked) {
     const { githubUserId, cards } = await identityOf(env, userId);
-    const rows = [
-      env.DB.prepare("insert into cloud_blocks (user_id, github_user_id, card_fingerprint, reason, created_at) values (?, ?, ?, ?, ?)")
-        .bind(userId, githubUserId, cards[0] ?? null, reason, now),
-      ...cards.slice(1).map((card) => env.DB.prepare("insert into cloud_blocks (user_id, github_user_id, card_fingerprint, reason, created_at) values (?, null, ?, ?, ?)")
-        .bind(userId, card, reason, now)),
-    ];
-    await env.DB.batch(rows);
+    await env.DB.batch([
+      blockRowStatement(env, { userId, githubUserId, card: cards[0] ?? null, reason, now }),
+      ...cards.slice(1).map((card) => blockRowStatement(env, { userId, githubUserId: null, card, reason, now })),
+    ]);
   }
   forgetNotBlocked(userId);
   // Timed wakes would only knock on stopped computers; they go.
@@ -154,25 +178,27 @@ export async function blockAccount(env: CloudEnv, provider: CloudProvider | null
     failed = computers.length;
     reportCloudFailure("cloud.block_no_provider", { userId });
   }
-  for (const computer of provider ? computers : []) {
-    try {
-      await enforceBlockOnComputer(env, provider!, computer, now);
-      stopped += 1;
-    } catch (error) {
-      failed += 1;
-      reportCloudFailure("cloud.block_stop_failed", { userId, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+  if (provider) {
+    for (const computer of computers) {
+      try {
+        await enforceBlockOnComputer(env, provider, computer, now);
+        stopped += 1;
+      } catch (error) {
+        failed += 1;
+        reportCloudFailure("cloud.block_stop_failed", { userId, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+      }
     }
   }
 
   const account = await env.DB.prepare("select user_id, stripe_subscription_id from cloud_accounts where user_id = ?")
     .bind(userId).first<Pick<AccountRow, "user_id" | "stripe_subscription_id">>();
   const subscriptionCancelled = Boolean(account?.stripe_subscription_id);
-  if (account) await cancelAccountSubscription(env, account, now, "blocked_account");
-
   if (!alreadyBlocked) {
     await reportCloudAbuse(env, "account_blocked", userId, { reason, computers: computers.length, stopped, failed, subscriptionCancelled }, now);
     captureCloudSafety(env, waitUntil, userId, "blocked", "block", now);
   }
+  // Last: a Stripe failure throws, and the block sent again only retries the cancel.
+  if (account) await cancelAccountSubscription(env, account, now, "blocked_account");
   return { computers: computers.length, stopped, failed, subscriptionCancelled, alreadyBlocked };
 }
 
@@ -183,12 +209,19 @@ export async function blockAccount(env: CloudEnv, provider: CloudProvider | null
 export async function unblockAccount(env: CloudEnv, provider: CloudProvider | null, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<{ removed: number; reopened: number }> {
   const removed = await env.DB.prepare("delete from cloud_blocks where user_id = ?").bind(userId).run();
   let reopened = 0;
-  for (const computer of provider ? (await listComputers(env, userId)).filter((row) => !isPendingId(row.instance_id)) : []) {
-    try {
-      await provider!.setNetworkPolicy(computer.instance_id, "allow-all");
+  if (provider) {
+    for (const computer of (await listComputers(env, userId)).filter((row) => !isPendingId(row.instance_id))) {
+      try {
+        await provider.setNetworkPolicy(computer.instance_id, "allow-all");
+      } catch (error) {
+        // `try_again`: the policy is saved and lands within two minutes, as with the block's deny.
+        if (!(error instanceof CloudProviderError && error.code === TRY_AGAIN_CODE)) {
+          reportCloudFailure("cloud.unblock_network_failed", { userId, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
+          continue;
+        }
+      }
+      await env.DB.prepare("update cloud_computers set network_denied_at = null, network_deny_tried_at = null where instance_id = ?").bind(computer.instance_id).run();
       reopened += 1;
-    } catch (error) {
-      reportCloudFailure("cloud.unblock_network_failed", { userId, instanceId: computer.instance_id, code: error instanceof CloudProviderError ? error.code : "unknown" });
     }
   }
   logCloud("cloud.account_unblocked", { userId, removed: removed.meta.changes ?? 0, reopened });
@@ -207,16 +240,21 @@ async function ownerTokenMatches(env: Pick<CloudEnv, "CLOUD_OWNER_TOKEN">, reque
   const header = request.headers.get("authorization") ?? "";
   const given = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
   if (!given) return false;
-  const encoder = new TextEncoder();
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(given)),
-    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  const [left, right] = await Promise.all([sha256Hex(given), sha256Hex(expected)]);
+  return constantTimeEqual(left, right);
+}
+
+/**
+ * Takes one GitHub account or card off the block list. A blocked account's
+ * own row only loses that column (the account stays blocked); a row that
+ * blocked identities alone goes once it names none. How many rows changed.
+ */
+async function unblockIdentity(env: CloudEnv, column: "github_user_id" | "card_fingerprint", value: number | string): Promise<number> {
+  const [cleared] = await env.DB.batch([
+    env.DB.prepare(`update cloud_blocks set ${column} = null where ${column} = ?`).bind(value),
+    env.DB.prepare("delete from cloud_blocks where user_id is null and github_user_id is null and card_fingerprint is null"),
   ]);
-  const left = new Uint8Array(a);
-  const right = new Uint8Array(b);
-  let diff = 0;
-  for (let i = 0; i < left.length; i += 1) diff |= left[i]! ^ right[i]!;
-  return diff === 0;
+  return cleared?.meta.changes ?? 0;
 }
 
 const textField = (value: unknown, max: number): string | null =>
@@ -246,8 +284,8 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   if (path === OWNER_UNBLOCK_PATH) {
     const account = userId ? await unblockAccount(env, provider, userId, now, waitUntil) : null;
     let identities = 0;
-    if (githubUserId != null) identities += (await env.DB.prepare("delete from cloud_blocks where github_user_id = ?").bind(githubUserId).run()).meta.changes ?? 0;
-    if (cardFingerprint) identities += (await env.DB.prepare("delete from cloud_blocks where card_fingerprint = ?").bind(cardFingerprint).run()).meta.changes ?? 0;
+    if (githubUserId != null) identities += await unblockIdentity(env, "github_user_id", githubUserId);
+    if (cardFingerprint) identities += await unblockIdentity(env, "card_fingerprint", cardFingerprint);
     return json({ ok: true, account, identitiesRemoved: identities });
   }
 
@@ -255,8 +293,7 @@ export async function handleCloudOwnerRequest(request: Request, env: CloudEnv, p
   const account = userId ? await blockAccount(env, provider, userId, reason, now, waitUntil) : null;
   // A GitHub account or card alone: refused on any account that brings it from now on.
   if (githubUserId != null || cardFingerprint) {
-    await env.DB.prepare("insert into cloud_blocks (user_id, github_user_id, card_fingerprint, reason, created_at) values (null, ?, ?, ?, ?)")
-      .bind(githubUserId, cardFingerprint, reason, now).run();
+    await blockRowStatement(env, { userId: null, githubUserId, card: cardFingerprint, reason, now }).run();
     await reportCloudAbuse(env, "identity_blocked", null, { github: githubUserId != null, card: cardFingerprint != null, reason }, now);
   }
   return json({ ok: true, account });

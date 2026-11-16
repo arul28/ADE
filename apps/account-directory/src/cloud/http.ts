@@ -9,6 +9,23 @@ export const fail = (code: string, message: string, status: number, extra?: Reco
 
 export const UNREADABLE_REQUEST_MESSAGE = "That request could not be read.";
 
+export const badRequest = (message: string): Response => fail("bad_request", message, 400);
+
+/** A short value (an id, a name) on one line, or null when it is missing or too long. */
+export function shortString(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.replace(/[\u0000-\u001f]/g, " ").trim();
+  return trimmed && trimmed.length <= max ? trimmed : null;
+}
+
+/** Words for a person (a stage's detail or error, a launch's error): a long one is cut, never dropped. */
+export function clippedText(value: unknown, max: number): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.replace(/[\u0000-\u001f]/g, " ").trim();
+  if (!trimmed) return null;
+  return trimmed.length <= max ? trimmed : `${trimmed.slice(0, max - 1).trimEnd()}…`;
+}
+
 /** A lowercase 8-4-4-4-12 UUID: a launch, a lane on a launch, a delete job. Callers lowercase first. */
 export const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

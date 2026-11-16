@@ -11,7 +11,7 @@ import {
   type CloudPlanId,
 } from "./contract";
 import { sendCloudEmail } from "./email";
-import { blockedUsersAmong, isCloudBlocked } from "./blocks";
+import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { AWAKE_COMPUTER_CAP, CLOUD_PLANS, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudSizeFor, extraDiskMonthMaxGb, isMeteredStatus, tierOf } from "./plans";
 import { CloudProviderError, type CloudProvider } from "./provider";
@@ -505,12 +505,10 @@ export async function runPlanLimitChecks(env: CloudEnv, computers: ComputerRow[]
   await env.DB.prepare("update cloud_accounts set plan_over_told_at = null where plan_over_told_at is not null and user_id not in (select value from json_each(?))")
     .bind(JSON.stringify([...byUser.keys()])).run();
   if (byUser.size === 0) return;
-  const accounts = await env.DB.prepare("select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?))")
+  // An account the owner blocked is left as it is.
+  const accounts = await env.DB.prepare(`select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?)) and ${notBlockedSql("cloud_accounts.user_id")}`)
     .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
-  const blocked = await blockedUsersAmong(env, byUser.keys());
   for (const account of accounts.results ?? []) {
-    // An account the owner blocked is left as it is.
-    if (blocked.has(account.user_id)) continue;
     try {
       await warnOldTermsEnding(env, account, byUser.get(account.user_id) ?? [], now);
       const over = overPlanInForce(env, account, byUser.get(account.user_id) ?? []);
@@ -564,9 +562,9 @@ async function tellOver(env: CloudEnv, account: AccountRow, over: Omit<CloudPlan
  * one indexed read.
  */
 export async function runPlanCleanupPicks(env: CloudEnv, provider: CloudProvider, now = Date.now()): Promise<void> {
-  const accounts = (await env.DB.prepare("select * from cloud_accounts where plan_cleanup_choice_json is not null and deleted_at is null")
+  // An account the owner blocked is left as it is (freeing would wake its computers).
+  const accounts = (await env.DB.prepare(`select * from cloud_accounts where plan_cleanup_choice_json is not null and deleted_at is null and ${notBlockedSql("cloud_accounts.user_id")}`)
     .all<AccountRow>()).results ?? [];
-  const blocked = await blockedUsersAmong(env, accounts.map((account) => account.user_id));
   let budget = CLEANUPS_PER_TICK;
   const runs: Promise<void>[] = [];
   for (const account of accounts) {
@@ -576,8 +574,6 @@ export async function runPlanCleanupPicks(env: CloudEnv, provider: CloudProvider
         await clearChoice(env, account);
         continue;
       }
-      // An account the owner blocked is left as it is (freeing would wake its computers).
-      if (blocked.has(account.user_id)) continue;
       if (!choiceApplies(account, choice)) {
         // A pick made with a downgrade can land before the plan change is saved
         // (a failed save waits for Stripe's webhook): give it time to catch up.

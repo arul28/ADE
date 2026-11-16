@@ -49,7 +49,7 @@ create table if not exists cloud_free_card_claims (
 create index if not exists idx_cloud_free_card_claims_user on cloud_free_card_claims (user_id);
 
 -- One row per owner alert sent: the key names the event (`signup_burst:<ip
--- hash>:<hour>`, `free_cap:<month>:<percent>`, ...), so one event sends one
+-- hash>:<hour>`, `free_cap:<month>:<cap>:<percent>`, ...), so one event sends one
 -- email. The daily report counts the day's rows.
 create table if not exists cloud_owner_alerts (
   alert_key text primary key,
@@ -63,8 +63,16 @@ create index if not exists idx_cloud_owner_alerts_time on cloud_owner_alerts (cr
 -- The part of a computer-day's cost run while its account was on free-plan
 -- rules (stamped with each stretch), for the owner's cap on free use.
 alter table cloud_computer_days add column free_cost_micros integer not null default 0;
--- 1 when the account was on free-plan rules at any write of that disk-day.
+-- 1 when the account was on free-plan rules at every write of that disk-day.
 alter table cloud_disk_days add column free integer not null default 0;
+-- When a block's deny-all network policy landed on the computer (`safety.ts`);
+-- null until it did, and again after an unblock. The minute tick retries a
+-- blocked account's computers until it is set, stopped ones too.
+alter table cloud_computers add column network_denied_at integer;
+-- The last try at that policy, landed or not: a stopped computer's try is
+-- repeated at most hourly, so a provider that keeps refusing isn't asked
+-- (and reported) every minute.
+alter table cloud_computers add column network_deny_tried_at integer;
 -- When the account's first saved cloud chat part arrived (once, for analytics).
 alter table cloud_accounts add column first_chat_at integer;
 

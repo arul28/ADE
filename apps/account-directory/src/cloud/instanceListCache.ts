@@ -19,17 +19,28 @@ const CACHE_URL = "https://ade-cloud-cache.invalid/provider/instances-v1";
 /** How long a list is kept, in seconds. */
 export const INSTANCE_LIST_TTL_S = 5;
 
+const errorName = (error: unknown): string => (error instanceof Error ? error.name : "unknown");
+
 async function openCache(): Promise<Cache | null> {
   if (typeof caches === "undefined") return null;
-  return caches.open(CACHE_NAME).catch(() => null);
+  return caches.open(CACHE_NAME).catch((error: unknown) => {
+    logCloud("cloud.instance_list_cache_open_failed", { message: errorName(error) });
+    return null;
+  });
 }
 
 export async function listInstancesCached(provider: Pick<CloudProvider, "listInstances">, fresh: boolean): Promise<CloudInstance[]> {
   const cache = await openCache();
   if (cache && !fresh) {
-    const hit = await cache.match(CACHE_URL).catch(() => undefined);
+    const hit = await cache.match(CACHE_URL).catch((error: unknown) => {
+      logCloud("cloud.instance_list_cache_read_failed", { message: errorName(error) });
+      return undefined;
+    });
     if (hit) {
-      const list = await hit.json().catch(() => null) as CloudInstance[] | null;
+      const list = await hit.json().catch((error: unknown) => {
+        logCloud("cloud.instance_list_cache_unreadable", { message: errorName(error) });
+        return null;
+      }) as CloudInstance[] | null;
       if (Array.isArray(list)) return list;
     }
   }
@@ -38,7 +49,7 @@ export async function listInstancesCached(provider: Pick<CloudProvider, "listIns
     await cache.put(CACHE_URL, new Response(JSON.stringify(list), {
       headers: { "content-type": "application/json", "cache-control": `max-age=${INSTANCE_LIST_TTL_S}` },
     })).catch((error: unknown) => {
-      logCloud("cloud.instance_list_cache_put_failed", { message: error instanceof Error ? error.name : "unknown" });
+      logCloud("cloud.instance_list_cache_put_failed", { message: errorName(error) });
     });
   }
   return list;

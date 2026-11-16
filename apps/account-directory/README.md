@@ -902,7 +902,8 @@ at least 30 days old, one free plan per GitHub account).
 
 - **Kill switch.** `CLOUD_CREATES_PAUSED=1` refuses every new computer, copy
   and launch start with 503 `creates_paused` and a plain message. Existing
-  computers keep working: wakes, moves, chats.
+  computers keep working: wakes, moves, chats. A start sent again for a
+  launch that already exists (a lost answer) is never refused.
 - **Block list** (`cloud_blocks`: `user_id`, `github_user_id`,
   `card_fingerprint`, `reason`, `created_at`). The owner routes take
   `Authorization: Bearer <CLOUD_OWNER_TOKEN>` (secret; unset answers 503),
@@ -916,10 +917,16 @@ at least 30 days old, one free plan per GitHub account).
     list. `{ "githubUserId": 123 }` or `{ "cardFingerprint": "…" }` blocks an
     identity alone. Safe to send again.
   - `POST /cloud/owner/unblock` with the same keys takes them off the list.
-    The computers get `allow-all` back and stay stopped.
+    The computers get `allow-all` back and stay stopped. Unblocking only a
+    `githubUserId` or `cardFingerprint` never unblocks an account that stored
+    it: that account stays blocked until its `userId` is unblocked.
   A computer made while a block lands (a launch mid-create) is stopped when
   its row becomes a real computer, and the minute tick stops any computer of
-  a blocked account that isn't stopped (10 a tick). A blocked GitHub account
+  a blocked account that isn't stopped, and sets `deny-all` again on any whose
+  policy didn't land (`cloud_computers.network_denied_at` empty): running ones
+  first, stopped ones at most hourly (`network_deny_tried_at`), 10 a tick. A start, update, resize, exec wake, sign-in start or
+  timed wake request (`PUT /cloud/wake`) reads the block fresh, not the
+  routes' 30-second cache. A blocked GitHub account
   on a new ADE account is held as `github_used` (the person isn't told about
   the block); a blocked card can't unlock free hours. Both alert the owner.
 - **One card, one free unlock** (`cloud_free_card_claims`, unique on the
@@ -928,7 +935,9 @@ at least 30 days old, one free plan per GitHub account).
   webhook reads the card's fingerprint from the SetupIntent. A card that
   already unlocked another account, or a blocked one, is refused (the person
   gets an email for a used card) and the owner is alerted. A card already on
-  the Stripe customer goes through the same claim. Paid plans take any card.
+  the Stripe customer goes through the same claim. A refused card is detached
+  from the Stripe customer, so the next try opens Checkout for another card.
+  Paid plans take any card.
 - **Rate limits.** 10 new computers an hour per account (`cloud_computers`
   rows made in the last hour: creates, moves, copies, a launch's or an
   automation's) and 15 launch starts an hour (`cloud_launches`). Over it:
@@ -937,9 +946,20 @@ at least 30 days old, one free plan per GitHub account).
   is compared with this month's cost of accounts on free-plan rules
   (`free_cost_mtd_micros`): each stretch stamps the plan it ran on
   (`cloud_computer_days.free_cost_micros`, `cloud_disk_days.free`; the daily
-  reconcile scales the free share with the correction). At the cap, free
+  reconcile scales the free share with the correction). A disk-day counts as
+  free only if the account was on free rules at every write that day, so a
+  plan change mid-day leaves that day's disk as paid. At the cap, free
   accounts get no new computer, copy or disk grow (503, never says why); paid
   accounts are never refused.
+  Free use made between applying `0037` and deploying the Worker that writes
+  `free_cost_micros` is counted as paid (the Worker before it doesn't stamp
+  it). To count that gap, run the migration's two backfill `update`s again
+  once the Worker is deployed, with
+  `npx wrangler d1 execute DB --remote --env production --command "<update>"`
+  (the two `update cloud_computer_days …` and `update cloud_disk_days …`
+  statements at the end of `migrations/0037_cloud_safety.sql`). They use the
+  same rule as the migration (an account not on paid rules now counts its
+  month as free), so running them again is safe.
 - **Owner alerts, at once** (`sendOwnerAlert`, Resend to `CLOUD_ALERT_EMAIL`).
   Never throttled; `cloud_owner_alerts` keys each event so one event sends one
   email (a failed send gives the key back). Each names the account, its plan,
@@ -947,7 +967,8 @@ at least 30 days old, one free plan per GitHub account).
   `curl` that blocks it. Alerts: a sign-up burst (sign-ups from one hashed IP
   in the last 60 minutes reach `SIGNUP_BURST_PER_IP_HOUR`, checked on each
   Clerk `user.created`; alert only), free use at 50%, 80% and 100% of the
-  cap (once each a month, with the free accounts that cost the most), a card
+  cap (once each a month for each cap value, so a raised cap alerts again,
+  with the free accounts that cost the most), a card
   used again for a free unlock, and a blocked GitHub account or card on a new
   account. Sustained CPU stays in the daily report only.
 - **Logging.** `reportCloudAbuse` (`store.ts`) logs, sends a Sentry error

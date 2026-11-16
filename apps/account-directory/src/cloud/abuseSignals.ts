@@ -1,6 +1,6 @@
 import type { CloudSustainedCpuReport } from "./contract";
 import { workerKeyedHash } from "./freePlan";
-import { alertedSince, sendOwnerAlert } from "./blocks";
+import { alertedSince, sendOwnerAlert, type OwnerAlertEnv } from "./blocks";
 import { logCloud, reportCloudFailure, type CloudEnv, type ComputerRow } from "./store";
 
 /**
@@ -127,7 +127,7 @@ export async function recordSignupIp(env: Pick<CloudEnv, "DB" | "CLOUD_CHAT_MAST
  * went out in the last hour, and the hour's key stops two webhooks at once
  * from both sending. Never throws.
  */
-export async function alertSignupBurst(env: CloudEnv, userId: string, ipHash: string, now: number): Promise<void> {
+export async function alertSignupBurst(env: OwnerAlertEnv, userId: string, ipHash: string, now: number): Promise<void> {
   try {
     const rows = await env.DB.prepare("select user_id from cloud_signup_ips where ip_hash = ? and signed_up_at > ? order by signed_up_at")
       .bind(ipHash, now - SIGNUP_BURST_WINDOW_MS).all<{ user_id: string }>();

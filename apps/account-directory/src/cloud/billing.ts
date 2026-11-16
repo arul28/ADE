@@ -2,8 +2,7 @@ import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
 import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
-import { claimFreeCard, sendOwnerAlert, type FreeCardClaim } from "./blocks";
-import { sha256Hex } from "../sinkUtils";
+import { claimCardForFreeUnlock } from "./blocks";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
 import { cloudReturnPageHtml } from "./returnPage";
@@ -281,56 +280,38 @@ export async function createCheckoutUrl(
 /** `metadata[ade_purpose]` of the setup-mode Checkout that unlocks the free hours early. */
 const FREE_UNLOCK_PURPOSE = "free_unlock";
 
-/** The fingerprint of a card saved on the Stripe customer (a former paid customer, a card added before), or null when none is saved. */
-async function customerCardFingerprint(env: CloudEnv, customerId: string): Promise<string | null> {
-  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=1`);
-  const first = Array.isArray(cards.data) ? objectOf(cards.data[0]) : null;
-  return textOf(objectOf(first?.card)?.fingerprint);
+/** The cards saved on a Stripe customer (at most 10), newest first: each one's id and fingerprint. */
+async function savedCards(env: Pick<CloudEnv, "STRIPE_SECRET_KEY">, customerId: string): Promise<Array<{ id: string; fingerprint: string }>> {
+  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=10`);
+  const list = Array.isArray(cards.data) ? cards.data : [];
+  return list.flatMap((entry) => {
+    const card = objectOf(entry);
+    const id = textOf(card?.id);
+    const fingerprint = textOf(objectOf(card?.card)?.fingerprint);
+    return id && fingerprint ? [{ id, fingerprint }] : [];
+  });
 }
 
 /** The fingerprints of the cards saved on a Stripe customer (at most 10), for the block list. */
 export async function savedCardFingerprints(env: Pick<CloudEnv, "STRIPE_SECRET_KEY">, customerId: string): Promise<string[]> {
-  const cards = await stripeRequest(env, "GET", `/customers/${encodeURIComponent(customerId)}/payment_methods?type=card&limit=10`);
-  const list = Array.isArray(cards.data) ? cards.data : [];
-  return [...new Set(list.map((entry) => textOf(objectOf(objectOf(entry)?.card)?.fingerprint)).filter((value): value is string => value != null))];
+  return [...new Set((await savedCards(env, customerId)).map((card) => card.fingerprint))];
+}
+
+/**
+ * Takes a card that can't unlock free hours off the Stripe customer, so the
+ * next try goes through Checkout with another card. Best effort: a failure
+ * is reported and the refusal stands.
+ */
+async function detachRefusedCard(env: CloudEnv, userId: string, paymentMethodId: string): Promise<void> {
+  try {
+    await stripeRequest(env, "POST", `/payment_methods/${encodeURIComponent(paymentMethodId)}/detach`);
+  } catch (error) {
+    reportCloudFailure("cloud.free_unlock_card_detach_failed", { userId, status: error instanceof StripeRequestError ? error.status : 0 });
+  }
 }
 
 const CARD_USED_MESSAGE = "This card already unlocked free hours on another ADE account. Pick a plan, or wait until your GitHub account is 30 days old.";
 const CARD_REFUSED_MESSAGE = "This card can't unlock free hours. Pick a plan, or wait until your GitHub account is 30 days old.";
-
-/**
- * One card unlocks the free hours on one account (`cloud_free_card_claims`).
- * True when this account holds the card's claim now. A card that unlocked
- * another account, or one on the block list, is refused, and the owner is
- * alerted once per account and card.
- */
-async function claimCardForFreeUnlock(env: CloudEnv, userId: string, fingerprint: string, ctx: { now: number; waitUntil: CloudWaitUntil }): Promise<FreeCardClaim> {
-  const { claim, holder } = await claimFreeCard(env, userId, fingerprint, ctx.now);
-  if (claim === "claimed") return claim;
-  // The fingerprint stays out of the email: a hash of it names the event.
-  const cardKey = (await sha256Hex(fingerprint)).slice(0, 16);
-  await sendOwnerAlert(env, claim === "taken"
-    ? {
-      key: `card_reused:${userId}:${cardKey}`,
-      kind: "card_reused",
-      userId,
-      subject: "ADE Cloud: a card was used again for free hours",
-      reason: `A card that already unlocked free hours on account ${holder ?? "(unknown)"} was tried again for account ${userId}. The unlock was refused.`,
-      counts: { "Account that holds the card": holder ?? "(unknown)" },
-      step: "card_reused",
-      abuse: true,
-    }
-    : {
-      key: `blocked_card:${userId}:${cardKey}`,
-      kind: "blocked_card_returned",
-      userId,
-      subject: "ADE Cloud: a blocked card came back",
-      reason: `A card on the block list was used to unlock free hours for account ${userId}. The unlock was refused.`,
-      step: "blocked_returned",
-      abuse: true,
-    }, ctx.now, ctx.waitUntil);
-  return claim;
-}
 
 /**
  * `POST /cloud/billing/free-unlock`: a card saved with no charge starts the
@@ -351,10 +332,14 @@ export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: B
     throw unavailable();
   }
   try {
-    const savedCard = account.stripe_customer_id ? await customerCardFingerprint(env, account.stripe_customer_id) : null;
+    const savedCard = account.stripe_customer_id ? (await savedCards(env, account.stripe_customer_id))[0] ?? null : null;
     if (savedCard) {
-      const claim = await claimCardForFreeUnlock(env, userId, savedCard, { now: ctx.now, waitUntil });
-      if (claim !== "claimed") throw new CloudBillingError("card_refused", claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE, 409);
+      const claim = await claimCardForFreeUnlock(env, userId, savedCard.fingerprint, { now: ctx.now, waitUntil });
+      if (claim !== "claimed") {
+        // Off the customer, so the next try can pick another card in Checkout.
+        await detachRefusedCard(env, userId, savedCard.id);
+        throw new CloudBillingError("card_refused", claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE, 409);
+      }
       await unlockFreePlanWithCard(env, account, "card_on_file", { now: ctx.now, waitUntil });
       return { url: null, unlocked: true };
     }
@@ -412,7 +397,8 @@ async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: 
     logCloud("cloud.free_unlock_not_succeeded", { userId, status: textOf(intent.status) });
     return;
   }
-  const fingerprint = textOf(objectOf(objectOf(intent.payment_method)?.card)?.fingerprint);
+  const paymentMethod = objectOf(intent.payment_method);
+  const fingerprint = textOf(objectOf(paymentMethod?.card)?.fingerprint);
   if (!fingerprint) {
     // Checkout takes cards only, so this is Stripe answering something new: nothing unlocks until a person looks.
     reportCloudFailure("cloud.free_unlock_no_fingerprint", { userId });
@@ -421,6 +407,9 @@ async function onFreeUnlockCompleted(env: CloudEnv, session: StripeObject, now: 
   const claim = await claimCardForFreeUnlock(env, userId, fingerprint, { now, waitUntil });
   if (claim !== "claimed") {
     logCloud("cloud.free_unlock_card_refused", { userId, claim });
+    // Off the customer, so the next try can pick another card in Checkout.
+    const paymentMethodId = textOf(paymentMethod?.id);
+    if (paymentMethodId) await detachRefusedCard(env, userId, paymentMethodId);
     // Told why only when the card is another account's: a blocked card is never named as blocked.
     await sendCloudEmail(env, { userId, subject: "Your card didn't unlock ADE Cloud free hours", text: claim === "taken" ? CARD_USED_MESSAGE : CARD_REFUSED_MESSAGE });
     return;
@@ -904,7 +893,7 @@ export async function cancelAccountSubscription(
   }
   await env.DB.prepare("update cloud_accounts set plan = 'free', stripe_subscription_id = null, stripe_status = null, extra_enabled = 0, extra_owed_milli = 0, extra_disk_state = 'off', cancel_at_period_end = 0, updated_at = ? where user_id = ?")
     .bind(now, account.user_id).run();
-  logCloud(`cloud.subscription_cancelled_for_${reason}`, { userId: account.user_id });
+  logCloud(reason === "blocked_account" ? "cloud.subscription_cancelled_for_blocked_account" : "cloud.subscription_cancelled_for_deleted_account", { userId: account.user_id });
 }
 
 /* ---- Webhook ---- */

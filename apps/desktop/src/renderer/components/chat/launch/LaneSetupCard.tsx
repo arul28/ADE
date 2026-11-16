@@ -519,6 +519,9 @@ export function LaneSetupCard({
     && snapshot.stages.some((stage) => stage.id === "join" && stage.status === "running")
     ? snapshot.cloud?.approvalUrl ?? null
     : null;
+  // The new computer waits for the chat's provider sign-in (the server launcher's `waiting_for_sign_in`).
+  const signIn = snapshot.phase === "running" ? snapshot.cloud?.signIn ?? null : null;
+  const signInDetail = signIn ? [signIn.userCode ? `Enter the code ${signIn.userCode}.` : null, signIn.reason].filter(Boolean).join(" ") : "";
   const textSize = compact ? "text-[11.5px]" : "text-[length:calc(var(--chat-font-size)*12/14)]";
   const metaSize = compact ? "text-[10.5px]" : "text-[length:calc(var(--chat-font-size)*11/14)]";
   const showActions = hasDetails || (envStage?.steps?.length ?? 0) > 0 || Boolean(onOpen) || Boolean(approvalUrl)
@@ -564,6 +567,21 @@ export function LaneSetupCard({
           ))}
         </ul>
       )}
+
+      {signIn ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          testId="lane-setup-sign-in"
+          model={{
+            id: "lane-setup-sign-in",
+            tone: "info",
+            title: `Sign in to ${signIn.label} to start the chat`,
+            ...(signInDetail ? { detail: signInDetail } : {}),
+            ...(signIn.url ? { actions: [{ label: "Open sign-in", href: signIn.url }] } : {}),
+          }}
+        />
+      ) : null}
 
       {gitWarning ? (
         <Banner

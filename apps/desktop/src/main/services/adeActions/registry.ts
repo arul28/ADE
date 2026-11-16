@@ -4494,6 +4494,7 @@ function cloudLaneLaunchHostFor(runtime: AccountDomainRuntime, machines: ReturnT
         accessToken: async () => (runtime.accountAuthService?.getStatus().signedIn === true
           ? await runtime.accountAuthService.getAccessToken().catch(() => null)
           : null),
+        logger: runtime.logger,
       }),
     }, originUrl),
   });

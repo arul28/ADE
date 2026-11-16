@@ -7,8 +7,7 @@
  * Every item is scope `all`, kind `integration`.
  */
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import { CLOUD_SIGN_INS } from "../../../shared/cloudSignIns";
-import { cloudSignInVaultKey } from "./cloudSignInStore";
+import { CLOUD_SIGN_INS, cloudSignInVaultKey } from "../../../shared/cloudSignIns";
 import { CLOUD_VAULT_KIND } from "./cloudAccess";
 import { CLOUD_AGENT_LIMITS_VAULT_KEY } from "./cloudSleep";
 

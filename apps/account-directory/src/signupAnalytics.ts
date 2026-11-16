@@ -32,7 +32,7 @@ import { deleteCloudAccount } from "./cloud/accountDeletion";
 import { closeLaneSharesForAccount } from "./laneShares/routes";
 import { deleteAccountProjects } from "./accountProjects/store";
 import { deleteGithubAppAccount, type GithubAppEnv } from "./githubApp/grants";
-import { reportCloudFailure, type CloudEnv } from "./cloud/store";
+import { reportCloudFailure } from "./cloud/store";
 import { accountDistinctId, uuidFromSeed } from "./sinkUtils";
 
 /** `RelayAccountPurgeEnv`: a `user.deleted` also removes the account's vault and settings on the push relay. */
@@ -271,7 +271,7 @@ export async function handleSignupAnalyticsRequest(
     const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : Date.now();
     const ipHash = await recordSignupIp({ DB: env.DB, CLOUD_CHAT_MASTER_KEY: env.CLOUD_CHAT_MASTER_KEY }, userId, signupClientIp(payload), createdAtMs);
     // The owner hears of a burst from one address at once (alert only, nobody is held).
-    if (ipHash) await alertSignupBurst({ ...env, DB: env.DB } as CloudEnv, userId, ipHash, Date.now());
+    if (ipHash) await alertSignupBurst({ ...env, DB: env.DB }, userId, ipHash, Date.now());
   }
   if (!analyticsToken) return payload.type === "user.deleted" ? json(200, { deleted: true }) : json(503, { error: "not_configured" });
 

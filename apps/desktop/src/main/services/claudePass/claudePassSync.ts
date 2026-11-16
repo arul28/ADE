@@ -42,7 +42,7 @@ import {
   sameClaudeEmail,
   type ClaudePassVaultStoreLike,
 } from "../adeCloud/claudePassStore";
-import { cloudSignInVaultKey } from "../adeCloud/cloudSignInStore";
+import { cloudSignInVaultKey } from "../../../shared/cloudSignIns";
 import { claudeConfigHome } from "../shared/providerConfigHomes";
 import { setClaudePassLaunchState } from "./claudePassLaunch";
 import { claudePassUseOf, flushClaudePassUse, keepClaudePassUse } from "./claudePassUse";

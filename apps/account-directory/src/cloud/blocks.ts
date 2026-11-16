@@ -1,6 +1,7 @@
+import { sha256Hex } from "../sinkUtils";
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudSafety, type CloudSafetyStep, type CloudWaitUntil } from "./analytics";
-import { sendCloudEmail } from "./email";
+import { sendCloudEmail, type CloudEmailEnv } from "./email";
 import { fail } from "./http";
 import { planIdOf, reportCloudAbuse, reportCloudFailure, type AccountRow, type CloudDb, type CloudEnv } from "./store";
 
@@ -21,17 +22,16 @@ import { planIdOf, reportCloudAbuse, reportCloudFailure, type AccountRow, type C
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
 /** New computers (creates, moves, copies, a launch's or an automation's) one account may make in an hour. */
-export const CREATES_PER_HOUR = 10;
+const CREATES_PER_HOUR = 10;
 /** Server launches one account may start in an hour. */
-export const LAUNCHES_PER_HOUR = 15;
+const LAUNCHES_PER_HOUR = 15;
 
-export const ACCOUNT_BLOCKED_MESSAGE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
-export const CREATES_PAUSED_MESSAGE = "ADE Cloud isn't making new computers right now. Your computers keep working. Try again later.";
+const ACCOUNT_BLOCKED_MESSAGE = "ADE Cloud is turned off for this account. Contact ADE support if you think this is a mistake.";
+const CREATES_PAUSED_MESSAGE = "ADE Cloud isn't making new computers right now. Your computers keep working. Try again later.";
 const TOO_MANY_CREATES_MESSAGE = `You made ${CREATES_PER_HOUR} computers in the last hour. Wait a little, then try again.`;
 const TOO_MANY_LAUNCHES_MESSAGE = `You started ${LAUNCHES_PER_HOUR} cloud launches in the last hour. Wait a little, then try again.`;
 
 export const accountBlocked = (): Response => fail("account_blocked", ACCOUNT_BLOCKED_MESSAGE, 403);
-export const createsPausedRefusal = (): Response => fail("creates_paused", CREATES_PAUSED_MESSAGE, 503);
 
 /* ---- The block list ---- */
 
@@ -69,6 +69,9 @@ export function forgetNotBlocked(userId: string): void {
   notBlockedUntil.delete(userId);
 }
 
+/** SQL that is true when the account in `userIdSql` is not on the block list, for an account select. */
+export const notBlockedSql = (userIdSql: string): string => `not exists (select 1 from cloud_blocks where cloud_blocks.user_id = ${userIdSql})`;
+
 /** The accounts of `userIds` on the block list, in one read. */
 export async function blockedUsersAmong(env: CloudDb, userIds: Iterable<string>): Promise<Set<string>> {
   const ids = [...new Set(userIds)];
@@ -79,7 +82,7 @@ export async function blockedUsersAmong(env: CloudDb, userIds: Iterable<string>)
 }
 
 /** Whether a card is on the block list. */
-export async function isCardBlocked(env: CloudDb, fingerprint: string): Promise<boolean> {
+async function isCardBlocked(env: CloudDb, fingerprint: string): Promise<boolean> {
   const row = await env.DB.prepare("select 1 as one from cloud_blocks where card_fingerprint = ? limit 1").bind(fingerprint).first<{ one: number }>();
   return row != null;
 }
@@ -87,14 +90,31 @@ export async function isCardBlocked(env: CloudDb, fingerprint: string): Promise<
 /* ---- The kill switch and the rate limits ---- */
 
 /** `CLOUD_CREATES_PAUSED=1`: no new computers or launches; existing computers keep working. */
-export const createsPaused = (env: Pick<CloudEnv, "CLOUD_CREATES_PAUSED">): boolean => env.CLOUD_CREATES_PAUSED?.trim() === "1";
+const createsPaused = (env: Pick<CloudEnv, "CLOUD_CREATES_PAUSED">): boolean => env.CLOUD_CREATES_PAUSED?.trim() === "1";
+
+/** What asks for new work: a new computer (a create, a move, a copy) or a server launch. */
+export type NewWork = "create" | "move" | "copy" | "launch";
+
+/**
+ * The owner's kill switch, then the account's hourly limit, for new work.
+ * A move replaces a computer, so the kill switch lets it through; it still
+ * counts against the hourly limit of new computers. Null when the work may
+ * go on, else the refusal to answer.
+ */
+export async function newWorkRefusal(env: CloudEnv, userId: string, what: NewWork, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
+  if (what !== "move" && createsPaused(env)) {
+    captureCloudSafety(env, waitUntil, userId, "creates_paused", what, now);
+    return fail("creates_paused", CREATES_PAUSED_MESSAGE, 503);
+  }
+  return what === "launch" ? await launchRateRefusal(env, userId, now, waitUntil) : await createRateRefusal(env, userId, now, waitUntil);
+}
 
 /**
  * A 429 when the account made {@link CREATES_PER_HOUR} computers in the last
  * hour (deleted ones count; a reservation the provider refused is released
  * and doesn't), else null.
  */
-export async function createRateRefusal(env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
+async function createRateRefusal(env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   const row = await env.DB.prepare("select count(*) as n from cloud_computers where user_id = ? and created_at > ?")
     .bind(userId, now - HOUR_MS).first<{ n: number }>();
   if ((row?.n ?? 0) < CREATES_PER_HOUR) return null;
@@ -103,7 +123,7 @@ export async function createRateRefusal(env: CloudEnv, userId: string, now: numb
 }
 
 /** A 429 when the account started {@link LAUNCHES_PER_HOUR} server launches in the last hour, else null. */
-export async function launchRateRefusal(env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
+async function launchRateRefusal(env: CloudEnv, userId: string, now: number, waitUntil?: CloudWaitUntil): Promise<Response | null> {
   const row = await env.DB.prepare("select count(*) as n from cloud_launches where user_id = ? and created_at > ? and state <> 'draft'")
     .bind(userId, now - HOUR_MS).first<{ n: number }>();
   if ((row?.n ?? 0) < LAUNCHES_PER_HOUR) return null;
@@ -127,13 +147,47 @@ export type FreeCardClaim = "claimed" | "taken" | "blocked";
  * unlocked another account. `blocked`: the card is on the block list.
  * Two accounts racing with one card settle to one claim (the primary key).
  */
-export async function claimFreeCard(env: CloudDb, userId: string, fingerprint: string, now: number): Promise<{ claim: FreeCardClaim; holder: string | null }> {
+async function claimFreeCard(env: CloudDb, userId: string, fingerprint: string, now: number): Promise<{ claim: FreeCardClaim; holder: string | null }> {
   if (await isCardBlocked(env, fingerprint)) return { claim: "blocked", holder: null };
   await env.DB.prepare("insert into cloud_free_card_claims (card_fingerprint, user_id, claimed_at) values (?, ?, ?) on conflict do nothing")
     .bind(fingerprint, userId, now).run();
   const row = await env.DB.prepare("select user_id from cloud_free_card_claims where card_fingerprint = ?").bind(fingerprint).first<{ user_id: string }>();
   const holder = row?.user_id ?? null;
   return { claim: holder === userId ? "claimed" : "taken", holder };
+}
+
+/**
+ * One card unlocks the free hours on one account (`cloud_free_card_claims`).
+ * `claimed` when this account holds the card's claim now. A card that
+ * unlocked another account, or one on the block list, is refused, and the
+ * owner is alerted once per account and card.
+ */
+export async function claimCardForFreeUnlock(env: CloudEnv, userId: string, fingerprint: string, ctx: { now: number; waitUntil: CloudWaitUntil }): Promise<FreeCardClaim> {
+  const { claim, holder } = await claimFreeCard(env, userId, fingerprint, ctx.now);
+  if (claim === "claimed") return claim;
+  // The fingerprint stays out of the email: a hash of it names the event.
+  const cardKey = (await sha256Hex(fingerprint)).slice(0, 16);
+  await sendOwnerAlert(env, claim === "taken"
+    ? {
+      key: `card_reused:${userId}:${cardKey}`,
+      kind: "card_reused",
+      userId,
+      subject: "ADE Cloud: a card was used again for free hours",
+      reason: `A card that already unlocked free hours on account ${holder ?? "(unknown)"} was tried again for account ${userId}. The unlock was refused.`,
+      counts: { "Account that holds the card": holder ?? "(unknown)" },
+      step: "card_reused",
+      abuse: true,
+    }
+    : {
+      key: `blocked_card:${userId}:${cardKey}`,
+      kind: "blocked_card_returned",
+      userId,
+      subject: "ADE Cloud: a blocked card came back",
+      reason: `A card on the block list was used to unlock free hours for account ${userId}. The unlock was refused.`,
+      step: "blocked_returned",
+      abuse: true,
+    }, ctx.now, ctx.waitUntil);
+  return claim;
 }
 
 /* ---- Owner alerts ---- */
@@ -158,7 +212,7 @@ const ageText = (ms: number): string => {
 };
 
 /** The facts every owner alert carries about an account: id, plan, ADE account age, GitHub login and its age. Never an email address. */
-export async function accountAlertLines(env: CloudDb, userId: string, now: number): Promise<string[]> {
+async function accountAlertLines(env: CloudDb, userId: string, now: number): Promise<string[]> {
   const row = await env.DB.prepare(`
     select a.plan, a.paid_plan, a.stripe_status, coalesce(a.account_created_at, a.created_at) as created_at,
       g.github_login, g.github_user_id, ga.github_created_at
@@ -193,6 +247,9 @@ export function blockCommand(env: Pick<CloudEnv, "BILLING_RETURN_ORIGIN">, userI
   return `curl -X POST ${ownerRouteOrigin(env)}/cloud/owner/block -H "Authorization: Bearer $CLOUD_OWNER_TOKEN" -H "content-type: application/json" -d '${body}'`;
 }
 
+/** What an owner alert reads: the database, the email keys, the owner routes' origin and analytics. */
+export type OwnerAlertEnv = CloudDb & CloudEmailEnv & Pick<CloudEnv, "BILLING_RETURN_ORIGIN" | "POSTHOG_PROJECT_TOKEN" | "POSTHOG_HOST">;
+
 export type OwnerAlert = {
   /** Names the event: one key sends one email, ever. */
   key: string;
@@ -213,16 +270,40 @@ export type OwnerAlert = {
   abuse?: boolean;
 };
 
+/** Gives an alert's key back, so the next time the event is seen it is tried again. */
+async function giveBackAlertKey(env: CloudDb, key: string): Promise<void> {
+  await env.DB.prepare("delete from cloud_owner_alerts where alert_key = ? and sent_at is null").bind(key).run();
+}
+
+/**
+ * Whether an abuse row was already saved for this alert, by an earlier try
+ * whose key was given back. The row keeps a hash of the key, never the key.
+ */
+async function abuseAlreadySaved(env: CloudDb, alert: OwnerAlert, keyHash: string): Promise<boolean> {
+  const row = await env.DB.prepare(`
+    select 1 as one from cloud_abuse_events where user_id is ? and kind = ? and json_extract(detail_json, '$.alert') = ? limit 1
+  `).bind(alert.userId, alert.kind, keyHash).first<{ one: number }>();
+  return row != null;
+}
+
 /**
  * Sends an owner alert at once, unless this event (its key) was already
- * alerted: never throttled, one email per event. A send that fails gives the
- * key back, so the next time the event is seen it is tried again. Never throws.
+ * alerted: never throttled, one email per event. A send that fails, or an
+ * error after the key was taken, gives the key back, so the next time the
+ * event is seen it is tried again; that try saves no second abuse row or
+ * Sentry event. Never throws.
  */
-export async function sendOwnerAlert(env: CloudEnv, alert: OwnerAlert, now: number, waitUntil?: CloudWaitUntil): Promise<"sent" | "duplicate" | "skipped" | "failed"> {
+export async function sendOwnerAlert(env: OwnerAlertEnv, alert: OwnerAlert, now: number, waitUntil?: CloudWaitUntil): Promise<void> {
+  let claimed = false;
   try {
-    if (!(await claimAlertKey(env, alert.key, alert.kind, alert.userId, now))) return "duplicate";
-    if (alert.abuse) await reportCloudAbuse(env, alert.kind, alert.userId, { reason: alert.reason, ...alert.counts }, now);
-    if (alert.step) captureCloudSafety(env, waitUntil, alert.userId, alert.step, alert.key, now);
+    claimed = await claimAlertKey(env, alert.key, alert.kind, alert.userId, now);
+    if (!claimed) return;
+    if (alert.abuse) {
+      const keyHash = (await sha256Hex(alert.key)).slice(0, 16);
+      if (!(await abuseAlreadySaved(env, alert, keyHash))) {
+        await reportCloudAbuse(env, alert.kind, alert.userId, { reason: alert.reason, ...alert.counts, alert: keyHash }, now);
+      }
+    }
     const facts = alert.userId ? await accountAlertLines(env, alert.userId, now) : [];
     const counts = Object.entries(alert.counts ?? {}).map(([name, value]) => `${name}: ${value}`);
     const text = [
@@ -234,13 +315,20 @@ export async function sendOwnerAlert(env: CloudEnv, alert: OwnerAlert, now: numb
     ].join("\n");
     const result = await sendCloudEmail(env, { owner: true, subject: alert.subject, text });
     if (result === "failed") {
-      await env.DB.prepare("delete from cloud_owner_alerts where alert_key = ?").bind(alert.key).run();
-      return "failed";
+      claimed = false;
+      await giveBackAlertKey(env, alert.key);
+      return;
     }
     await env.DB.prepare("update cloud_owner_alerts set sent_at = ? where alert_key = ?").bind(now, alert.key).run();
-    return result;
+    claimed = false;
+    // Once the key is kept, so a retried send never counts the step twice.
+    if (alert.step) captureCloudSafety(env, waitUntil, alert.userId, alert.step, alert.key, now);
   } catch (error) {
     reportCloudFailure("cloud.owner_alert_failed", { kind: alert.kind, message: error instanceof Error ? error.message : "unknown" });
-    return "failed";
+    if (claimed) {
+      await giveBackAlertKey(env, alert.key).catch((giveBackError: unknown) => {
+        reportCloudFailure("cloud.owner_alert_give_back_failed", { kind: alert.kind, message: giveBackError instanceof Error ? giveBackError.message : "unknown" });
+      });
+    }
   }
 }

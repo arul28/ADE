@@ -12,13 +12,13 @@ import { enforceBlocksInTick } from "./safety";
 import { computersJoiningLaunches } from "./launches";
 import { runCloudAutoUpdates, updateBootStatements } from "./updates";
 import {
-  PAID_RULES_SQL,
   PENDING_TIMEOUT_MS,
   adoptionStatements,
   countedDiskGb,
   deleteComputer,
   diskDayStatement,
   freePlanOverDisk,
+  freeShareSql,
   goneFromProviderStatements,
   groupByUser,
   hoursState,
@@ -650,7 +650,7 @@ async function reconcileDays(env: CloudEnv, provider: CloudProvider, last: strin
       // The free share of the day's cost follows the correction in proportion; a day with no metered cost takes the plan the account is on now.
       statements.push(env.DB.prepare(`
         insert into cloud_computer_days (instance_id, day, user_id, multiplier_milli, provider_minutes, corrected_milli, reconciled_at, cost_micros, free_cost_micros)
-        select ?, ?, ?, ?, ?, ?, ?, ?, case when exists (select 1 from cloud_accounts where user_id = ? and ${PAID_RULES_SQL}) then 0 else ? end
+        select ?, ?, ?, ?, ?, ?, ?, ?, ${freeShareSql("?", "?")}
         where 1
         on conflict (instance_id, day) do update set provider_minutes = excluded.provider_minutes,
           corrected_milli = excluded.corrected_milli, reconciled_at = excluded.reconciled_at, cost_micros = excluded.cost_micros,

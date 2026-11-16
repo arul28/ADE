@@ -219,7 +219,11 @@ export function registerCloudIpc(args: {
     cloudGitPreflight({
       vault: (key) => (credentials.signedIn() ? cloudVaultFromBridge(args.vaultBridge, key) : null),
       // The account's GitHub App sign-in also lets the new computer's git clone.
-      accountApp: () => accountAppConnection({ baseUrl: directoryBaseUrl() || null, accessToken: async () => (credentials.signedIn() ? await getAccountToken() : null) }),
+      accountApp: () => accountAppConnection({
+        baseUrl: directoryBaseUrl() || null,
+        accessToken: async () => (credentials.signedIn() ? await getAccountToken() : null),
+        logger,
+      }),
     }, originUrl);
   // The same check as a published call (`window.ade.cloud.gitPreflight`). The
   // launch runs it itself; no renderer surface calls it yet.

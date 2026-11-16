@@ -27,6 +27,7 @@ import {
   type CloudLaunchList,
   type CloudLaunchMessage,
   type CloudLaunchMessageReport,
+  type CloudLaunchMessageRequest,
   type CloudLaunchRecord,
   type CloudLaunchStagesUpdate,
   type CloudProjectComputersDeleteStarted,
@@ -146,7 +147,7 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
     /** The launch's messages, in order (row 1 is the first message). */
     launchMessages: (launchId: string) => request<{ messages: CloudLaunchMessage[] }>("GET", `${launchPath(launchId)}/messages`),
     /** A message for a chat launch whose chat doesn't exist yet; the same `messageId` is the same message. */
-    addLaunchMessage: (launchId: string, message: { messageId: string; text: string }) =>
+    addLaunchMessage: (launchId: string, message: CloudLaunchMessageRequest) =>
       request<CloudLaunchMessage>("POST", `${launchPath(launchId)}/messages`, { body: message }),
     /** Before the agent starts it deletes the computer; after, the server refuses with `launch_started`. */
     cancelLaunch: (launchId: string) => request<CloudLaunchRecord>("DELETE", launchPath(launchId)),

@@ -10,7 +10,7 @@ import {
   type CloudIgnoredFiles,
 } from "./contract";
 import { sendCloudEmail } from "./email";
-import { blockedUsersAmong, isCloudBlocked } from "./blocks";
+import { isCloudBlocked, notBlockedSql } from "./blocks";
 import { laneFactsOf, laneFactsOfRow, markKeepLaneStatement, mergeLaneFacts, namesLane, unmarkKeepLaneStatement } from "./lanesWithoutComputer";
 import { cloudSizeFor, isRestingStatus, tierOf } from "./plans";
 import { pushAllWork, putBackToRest, type WakeRecord } from "./planCleanup";
@@ -508,16 +508,15 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
   const byUser = groupByUser(candidates);
   const userIds = JSON.stringify([...byUser.keys()]);
   const [accounts, owned] = await Promise.all([
-    env.DB.prepare("select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?))").bind(userIds).all<AccountRow>(),
+    // An account the owner blocked is left as it is: a save would wake its stopped computers.
+    env.DB.prepare(`select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?)) and ${notBlockedSql("cloud_accounts.user_id")}`)
+      .bind(userIds).all<AccountRow>(),
     env.DB.prepare("select * from cloud_computers where deleted_at is null and user_id in (select value from json_each(?))").bind(userIds).all<ComputerRow>(),
   ]);
   const ownedBy = groupByUser(owned.results ?? []);
-  const blocked = await blockedUsersAmong(env, byUser.keys());
   let budget = SAVES_PER_TICK;
   const runs: Promise<void>[] = [];
   for (const account of accounts.results ?? []) {
-    // An account the owner blocked is left as it is: a save would wake its stopped computers.
-    if (blocked.has(account.user_id)) continue;
     try {
       const all = ownedBy.get(account.user_id) ?? [];
       const liveUsed = liveUsedMilli(account, all, now);

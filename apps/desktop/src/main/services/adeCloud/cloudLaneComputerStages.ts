@@ -338,6 +338,14 @@ export function createCloudLaneComputerStages(
     show("join", "done", null);
     const clone = reported.get("clone");
     show("clone", clone?.status === "done" ? "done" : "running", clone?.detail?.trim() || repository);
+    // The computer waits for the chat's provider sign-in: the card shows the link and code.
+    const waiting = state === "waiting_for_sign_in" ? server.signIn ?? null : null;
+    const signIn = waiting ? { label: waiting.label, url: waiting.url, userCode: waiting.userCode, reason: waiting.reason } : null;
+    if (JSON.stringify(record.snapshot.cloud.signIn ?? null) !== JSON.stringify(signIn)) {
+      if (signIn) record.snapshot.cloud.signIn = signIn;
+      else delete record.snapshot.cloud.signIn;
+      publish(record, { persist: false });
+    }
   };
 
   /** The sentence for a launch the server or its computer ended, from the computer's own words when it has them. */

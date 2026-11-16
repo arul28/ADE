@@ -57,8 +57,9 @@ export const OWNER_LIMIT_KEY = "owner_cost_limit_usd";
 const COST_MTD_KEY = "cost_mtd_micros";
 /** This month's estimated cost of free use only: what the cap is compared with. */
 const FREE_COST_MTD_KEY = "free_cost_mtd_micros";
-/** Shares of the cap at which the owner is emailed, once each a month. */
-const FREE_CAP_ALERT_PERCENTS = [50, 80, 100] as const;
+/** Shares of the cap at which the owner is emailed, once each a month and cap, with each one's analytics step. */
+const FREE_CAP_ALERT_STEPS = { 50: "free_cap_50", 80: "free_cap_80", 100: "free_cap_100" } as const satisfies Record<number, CloudSafetyStep>;
+const FREE_CAP_ALERT_PERCENTS = [50, 80, 100] as const satisfies ReadonlyArray<keyof typeof FREE_CAP_ALERT_STEPS>;
 const FREE_CAP_TOP_ACCOUNTS = 5;
 /** An owner email each time this month's estimate passes another step of this many dollars. */
 export const OWNER_COST_STEP_USD = 50;
@@ -82,6 +83,27 @@ function monthStartDay(now: number): string {
 function daysInMonthOf(day: string): number {
   const date = new Date(`${day}T00:00:00Z`);
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+}
+
+/**
+ * The accounts that cost the most this month so far (awake time plus peak
+ * disk): all accounts, or only use on free-plan rules. Best effort: a failed
+ * read is reported and answers none, so the email it feeds still goes.
+ */
+async function topAccountsThisMonth(env: CloudEnv, monthStart: string, limit: number, use: "all" | "free"): Promise<Array<{ user_id: string; cost: number }>> {
+  const sql = use === "free"
+    ? `select user_id, free_cost_micros as cost from cloud_computer_days where day >= ? and free_cost_micros > 0
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1`
+    : `select user_id, cost_micros as cost from cloud_computer_days where day >= ?
+      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?`;
+  try {
+    const rows = await env.DB.prepare(`select user_id, sum(cost) as cost from (${sql}) group by user_id order by cost desc limit ?`)
+      .bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, limit).all<{ user_id: string; cost: number }>();
+    return rows.results ?? [];
+  } catch (error) {
+    reportCloudFailure(use === "free" ? "cloud.free_cap_top_accounts_failed" : "cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
+    return [];
+  }
 }
 
 function readLimitUsd(value: string | null): number | null {
@@ -155,20 +177,12 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
   logCloud("cloud.free_cap_step", { limitUsd, freeCostMtdMicros: Math.round(freeMicros), percent: Math.round(percent) });
   const month = monthStart.slice(0, 7);
   // The free accounts that cost the most this month, each with its block command. Best effort.
-  const top = await env.DB.prepare(`
-    select user_id, sum(cost) as cost from (
-      select user_id, free_cost_micros as cost from cloud_computer_days where day >= ? and free_cost_micros > 0
-      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ? and free = 1
-    ) group by user_id order by cost desc limit ?
-  `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, FREE_CAP_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>()
-    .catch((error: unknown) => {
-      reportCloudFailure("cloud.free_cap_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
-      return { results: [] as Array<{ user_id: string; cost: number }> };
-    });
-  const topLines = (top.results ?? []).flatMap((entry) => [`${entry.user_id}: ${usd(entry.cost)}`, `  Block it: ${blockCommand(env, entry.user_id, "free_cap")}`]);
+  const top = await topAccountsThisMonth(env, monthStart, FREE_CAP_TOP_ACCOUNTS, "free");
+  const topLines = top.flatMap((entry) => [`${entry.user_id}: ${usd(entry.cost)}`, `  Block it: ${blockCommand(env, entry.user_id, "free_cap")}`]);
   for (const step of reached) {
     await sendOwnerAlert(env, {
-      key: `free_cap:${month}:${step}`,
+      // The cap is in the key: a raised cap alerts again at its own steps.
+      key: `free_cap:${month}:${limitUsd}:${step}`,
       kind: "free_cap",
       userId: null,
       subject: step >= 100 ? `ADE Cloud free use reached your $${limitUsd} cap` : `ADE Cloud free use passed ${step}% of your cap`,
@@ -177,7 +191,7 @@ export async function refreshCostEstimate(env: CloudEnv, awake: ComputerRow[], n
         : `Free use this month is ${usd(freeMicros)}, ${Math.round(percent)}% of your $${limitUsd} cap. At the cap, free accounts get no new computers or disk growth; paid accounts never are refused.`,
       counts: { "Free use this month": usd(freeMicros), "All use this month": usd(micros), Cap: `$${limitUsd}`, "Raise it": `update cloud_settings set value = '<dollars>' where key = '${OWNER_LIMIT_KEY}'` },
       more: topLines.length ? ["Free accounts that cost the most this month:", ...topLines] : undefined,
-      step: `free_cap_${step}` as CloudSafetyStep,
+      step: FREE_CAP_ALERT_STEPS[step],
     }, now);
   }
 }
@@ -208,20 +222,11 @@ async function alertCostStep(env: CloudEnv, micros: number, limitUsd: number | n
   const monthStart = monthStartDay(now);
   // The daily report's cost per account (awake time plus peak disk), summed over the month so far.
   // Best effort: the step is claimed now, so a failed read must not stop its email.
-  const top = await env.DB.prepare(`
-    select user_id, sum(cost) as cost from (
-      select user_id, cost_micros as cost from cloud_computer_days where day >= ?
-      union all select user_id, peak_gb * ? as cost from cloud_disk_days where day >= ?
-    ) group by user_id order by cost desc limit ?
-  `).bind(monthStart, DISK_COST_MICROS_PER_GB_DAY, monthStart, STEP_ALERT_TOP_ACCOUNTS).all<{ user_id: string; cost: number }>()
-    .catch((error: unknown) => {
-      reportCloudFailure("cloud.owner_cost_top_accounts_failed", { message: error instanceof Error ? error.name : "unknown" });
-      return { results: [] as Array<{ user_id: string; cost: number }> };
-    });
+  const top = await topAccountsThisMonth(env, monthStart, STEP_ALERT_TOP_ACCOUNTS, "all");
   const limitLine = limitUsd == null
     ? "No free-use cap is set."
     : `Your free-use cap is $${limitUsd}; it counts free use only and has its own alerts.`;
-  const topLines = (top.results ?? []).map((row) => `${row.user_id}: ${usd(row.cost)}`);
+  const topLines = top.map((row) => `${row.user_id}: ${usd(row.cost)}`);
   const result = await sendCloudEmail(env, {
     owner: true,
     subject: `ADE Cloud passed $${step} this month`,
