@@ -71,26 +71,28 @@ function sortBars(bars: Bar[], higherIsBetter = false): Bar[] {
   return [...bars].sort((a, b) => (higherIsBetter ? b.value - a.value : a.value - b.value) || Number(b.ade) - Number(a.ade));
 }
 
-/** One vendor on one line. The bar stops at 82% of the track so the value always fits after it. */
-function BarRow({ bar, max, compact }: { bar: Bar; max: number; compact?: boolean }) {
-  const width = Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
-  if (compact) {
-    return (
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center gap-2.5">
-          <Mark src={bar.logo} name={bar.name} size={22} />
-          <span className={cn("min-w-0 flex-1 truncate text-[14px]", bar.ade ? "font-semibold text-white" : "text-white/85")}>{bar.name}</span>
-          <span className={cn("font-mono text-[14px] tabular-nums", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/75")}>{bar.label}</span>
-        </div>
-        <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
-          <div
-            className={cn("h-full rounded-full transition-[width] duration-500 ease-out", bar.ade ? "bg-[#ffc861]" : "bg-white/[0.24]")}
-            style={{ width: `${bar.value ? Math.max(2, (bar.value / max) * 100) : 0}%` }}
-          />
-        </div>
+/** One vendor in a narrow card: name and value on one line, a thin bar under them, on the full track. */
+function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2.5">
+        <Mark src={bar.logo} name={bar.name} size={22} />
+        <span className={cn("min-w-0 flex-1 truncate text-[14px]", bar.ade ? "font-semibold text-white" : "text-white/85")}>{bar.name}</span>
+        <span className={cn("font-mono text-[14px] tabular-nums", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/75")}>{bar.label}</span>
       </div>
-    );
-  }
+      <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
+        <div
+          className={cn("h-full rounded-full transition-[width] duration-500 ease-out", bar.ade ? "bg-[#ffc861]" : "bg-white/[0.24]")}
+          style={{ width: `${bar.value ? Math.max(2, (bar.value / max) * 100) : 0}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/** One vendor on one line. The bar stops at 82% of the track so the value always fits after it. */
+function BarRow({ bar, max }: { bar: Bar; max: number }) {
+  const width = Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
   return (
     <div className="grid grid-cols-[28px_minmax(0,210px)_1fr] items-center gap-3">
       <Mark src={bar.logo} name={bar.name} />
@@ -121,7 +123,8 @@ function BarRow({ bar, max, compact }: { bar: Bar; max: number; compact?: boolea
 }
 
 const WORKLOADS = [100, 300, 1000];
-const money = (usd: number) => (usd === 0 ? "$0" : formatUsd(Math.round(usd * 100) / 100));
+/** A bill to the cent: plan arithmetic like 50 + 0.36 × 91.6 leaves float noise. */
+const money = (usd: number) => formatUsd(Math.round(usd * 100) / 100);
 
 /** 1. A month's bill for the hours picked, on each vendor's cheapest plan that runs them. */
 function BillChart({ className }: { className?: string }) {
@@ -138,7 +141,7 @@ function BillChart({ className }: { className?: string }) {
           id: rival.id,
           name: rival.name,
           sub: [rival.machine, rival.plan].filter(Boolean).join(" · "),
-          logo: rival.logo!,
+          logo: rival.logo,
           source: rival.source,
           value,
           label: `${rival.estimate ? "≈" : ""}${money(value)}`,
@@ -190,9 +193,9 @@ function FreeHoursChart() {
         id: rival.id,
         name: rival.name,
         sub: "Its own estimate",
-        logo: rival.logo!,
+        logo: rival.logo,
         source: rival.source,
-        value: rival.freeHours!,
+        value: rival.freeHours,
         label: `${rival.estimate ? "≈" : ""}${rival.freeHours} h`,
         ade: false,
       })),
@@ -203,7 +206,7 @@ function FreeHoursChart() {
   return (
     <Chart title="Free hours" metric="Every month. Higher is better.">
       {bars.map((bar) => (
-        <BarRow key={bar.id} bar={bar} max={FREE_PLAN.hours} compact />
+        <CompactBarRow key={bar.id} bar={bar} max={Math.max(...bars.map((entry) => entry.value))} />
       ))}
       {none.length > 0 && (
         <div className="mt-2 border-t border-white/[0.06] pt-4">
@@ -211,7 +214,7 @@ function FreeHoursChart() {
           <ul className="mt-2.5 flex flex-col gap-2">
             {none.map((rival) => (
               <li key={rival.id} className="flex items-center gap-2.5 text-[14px] text-white/70">
-                <Mark src={rival.logo!} name={rival.name} size={22} />
+                <Mark src={rival.logo} name={rival.name} size={22} />
                 {rival.name}
               </li>
             ))}
@@ -230,14 +233,14 @@ function PerHourChart({ className }: { className?: string }) {
       const value = (plan.priceUsd * 100) / plan.hours;
       return { id: `ade-${plan.id}`, name: `ADE ${plan.name}`, sub: `$${plan.priceUsd} plan average · ${ADE_MACHINE}`, logo: ADE_LOGO, value, label: cents(value), ade: true };
     }),
-    ...RIVALS.filter((rival) => rival.perHourCents != null).map((rival): Bar => ({
+    ...RIVALS.map((rival): Bar => ({
       id: rival.id,
       name: rival.name,
       sub: [`${rival.rateKind[0]!.toUpperCase()}${rival.rateKind.slice(1)}`, rival.machine].filter(Boolean).join(" · "),
-      logo: rival.logo!,
+      logo: rival.logo,
       source: rival.source,
-      value: rival.perHourCents!,
-      label: `${rival.estimate ? "≈" : ""}${cents(rival.perHourCents!)}`,
+      value: rival.perHourCents,
+      label: `${rival.estimate ? "≈" : ""}${cents(rival.perHourCents)}`,
       ade: false,
     })),
   ]);
@@ -263,7 +266,7 @@ function NoCloudCard() {
         {NO_CLOUD.map((app) => (
           <li key={app.name} className="flex min-w-0 items-center gap-2.5 opacity-55 grayscale">
             <Mark src={app.logo} name={app.name} size={26} />
-            <span className="min-w-0 text-[13.5px] leading-tight text-white/75">{app.name.replace(".", ".​")}</span>
+            <span className="min-w-0 text-[13.5px] leading-tight text-white/75 [overflow-wrap:anywhere]">{app.name}</span>
           </li>
         ))}
       </ul>

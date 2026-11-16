@@ -26,22 +26,10 @@ import {
   type PricingPlan,
   type PricingSize,
 } from "../../lib/cloudPricing";
-import {
-  MARKETING_CTA_LABELS,
-  MARKETING_CTA_POSITIONS,
-  MARKETING_FEATURES,
-  MARKETING_SCREENS,
-  type MarketingCtaLabel,
-} from "../../lib/marketingAnalytics";
+import { MARKETING_CTA_POSITIONS, MARKETING_FEATURES, MARKETING_SCREENS } from "../../lib/marketingAnalytics";
 import { captureMarketingFeature } from "../../lib/marketingAnalyticsBrowser";
+import { PLAN_CTAS } from "../../lib/planLinks";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
-
-const PLAN_CTAS: Record<PricingPlan["id"], { label: string; cta: MarketingCtaLabel }> = {
-  free: { label: "Start free", cta: MARKETING_CTA_LABELS.CHOOSE_PLAN_FREE },
-  plus: { label: "Get Plus", cta: MARKETING_CTA_LABELS.CHOOSE_PLAN_PLUS },
-  pro: { label: "Get Pro", cta: MARKETING_CTA_LABELS.CHOOSE_PLAN_PRO },
-  max: { label: "Get Max", cta: MARKETING_CTA_LABELS.CHOOSE_PLAN_MAX },
-};
 
 /** Each plan's tower over its card: more floors and more lights for more hours. */
 const PLAN_TOWERS: Record<PricingPlan["id"], { floors: number; lit: number; seed: number }> = {
@@ -53,7 +41,7 @@ const PLAN_TOWERS: Record<PricingPlan["id"], { floors: number; lit: number; seed
 
 const PAID_PLANS = PRICING_PLANS.filter((plan) => plan.extraHourCents != null);
 const CHEAPEST_PAID = [...PAID_PLANS].sort((a, b) => a.priceUsd - b.priceUsd)[0];
-const SMALL = PRICING_SIZES[0];
+const SMALL = PRICING_SIZES[0]!;
 
 const days = (count: number): string => `${count} ${count === 1 ? "day" : "days"}`;
 const hoursWord = (count: number): string => `${formatCount(count)} ${count === 1 ? "hour" : "hours"}`;
@@ -143,21 +131,25 @@ function PricingHero() {
   );
 }
 
+/** A plan card's look for its accent: Free in lamp gold, the cheapest paid plan in violet, the rest quiet. */
+const PLAN_CARD_TONES: Record<"lamp" | "violet" | "quiet", string> = {
+  lamp: "border-[color:var(--color-lamp)]/45 bg-[linear-gradient(180deg,rgba(255,210,122,0.14),rgba(21,17,47,0.92)_45%)] shadow-[0_30px_80px_-30px_rgba(255,210,122,0.45)]",
+  violet: "border-[color:var(--color-violet-bright)]/45 bg-[linear-gradient(180deg,rgba(167,139,250,0.18),rgba(21,17,47,0.92)_45%)] shadow-[0_30px_80px_-30px_rgba(139,92,246,0.6)]",
+  quiet: "border-white/[0.09] bg-[#15112f]/90",
+};
+
 function PlanCard({ plan }: { plan: PricingPlan }) {
   const tower = PLAN_TOWERS[plan.id];
   const perHour = centsPerIncludedHour(plan);
   const free = plan.priceUsd === 0;
   const cheapest = plan.id === CHEAPEST_PAID?.id;
   const lit = free || cheapest;
+  const tone = free ? "lamp" : cheapest ? "violet" : "quiet";
   return (
     <div
       className={cn(
         "relative flex flex-col rounded-[26px] border p-6",
-        free
-          ? "border-[color:var(--color-lamp)]/45 bg-[linear-gradient(180deg,rgba(255,210,122,0.14),rgba(21,17,47,0.92)_45%)] shadow-[0_30px_80px_-30px_rgba(255,210,122,0.45)]"
-          : cheapest
-            ? "border-[color:var(--color-violet-bright)]/45 bg-[linear-gradient(180deg,rgba(167,139,250,0.18),rgba(21,17,47,0.92)_45%)] shadow-[0_30px_80px_-30px_rgba(139,92,246,0.6)]"
-            : "border-white/[0.09] bg-[#15112f]/90",
+        PLAN_CARD_TONES[tone],
       )}
     >
       <PlanTower
@@ -200,7 +192,7 @@ function PlanCard({ plan }: { plan: PricingPlan }) {
         cta={PLAN_CTAS[plan.id].cta}
         position={MARKETING_CTA_POSITIONS.PRICING_PAGE}
         plan={plan.id}
-        tone={free ? "lamp" : cheapest ? "violet" : "quiet"}
+        tone={tone}
         className="mt-7 w-full"
       >
         {PLAN_CTAS[plan.id].label}
@@ -249,11 +241,11 @@ const HOURS_STEP = 10;
 function PlanFinder() {
   const [computers, setComputers] = useState(2);
   const [hoursEach, setHoursEach] = useState(120);
-  const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL?.id ?? "small");
+  const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL.id);
   const reported = useRef(false);
 
   const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL;
-  const hours = Math.round(computers * hoursEach * (size?.rate ?? 1));
+  const hours = Math.round(computers * hoursEach * size.rate);
   const suggestion = suggestPlan(hours);
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
@@ -476,7 +468,7 @@ function SizesPanel() {
       accent={AMBER}
       icon={Cpu}
       title="Sizes"
-      note={SMALL ? `One hour on ${SMALL.label} is one hour of your plan. Bigger sizes count more.` : "Bigger sizes count more."}
+      note={`One hour on ${SMALL.label} is one hour of your plan. Bigger sizes count more.`}
     >
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {PRICING_SIZES.map((size, index) => (
@@ -637,7 +629,7 @@ function FaqSection() {
             Settings under ADE Cloud. Free needs no credit card.
           </FaqItem>
           <FaqItem question="What is an hour?">
-            One hour of a {SMALL?.label ?? "Small"} computer while it is awake. Bigger sizes count more:{" "}
+            One hour of a {SMALL.label} computer while it is awake. Bigger sizes count more:{" "}
             {PRICING_SIZES.slice(1)
               .map((size) => `${size.label} uses ${size.rate}×`)
               .join(", ")}

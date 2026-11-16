@@ -20,7 +20,6 @@ function seeded(seed: number): () => number {
 }
 
 type Star = { left: number; top: number; size: number; twinkle: boolean; delay: number };
-type Tower = { width: number; height: number; cols: number; windows: Array<{ lit: boolean; delay: number }> };
 
 function makeStars(count: number, seed: number): Star[] {
   const rand = seeded(seed);
@@ -31,31 +30,6 @@ function makeStars(count: number, seed: number): Star[] {
     twinkle: rand() < 0.35,
     delay: rand() * 4.5,
   }));
-}
-
-/** Sizes of one window and the gaps around it, for a city drawn at `scale`. */
-function windowMetrics(scale: number) {
-  const size = Math.max(6, Math.round(10 * scale));
-  return { size, gap: Math.max(4, Math.round(7 * scale)), pad: Math.max(6, Math.round(10 * scale)) };
-}
-
-function makeTowers(count: number, seed: number, scale: number): Tower[] {
-  const rand = seeded(seed);
-  const { size, gap, pad } = windowMetrics(scale);
-  return Array.from({ length: count }, (_, index) => {
-    // Taller in the middle, lower at the edges, like a skyline seen head on.
-    const middle = 1 - Math.abs(index - (count - 1) / 2) / ((count - 1) / 2);
-    const cols = rand() < 0.4 ? 4 : 3;
-    const height = Math.round((120 + middle * 120 + rand() * 90) * scale);
-    const rows = Math.max(3, Math.floor((height - pad * 2) / (size + gap)));
-    const windowWidth = Math.round(size * 1.35);
-    return {
-      width: pad * 2 + cols * windowWidth + (cols - 1) * gap + Math.round(rand() * 6 * scale),
-      height,
-      cols,
-      windows: Array.from({ length: rows * cols }, () => ({ lit: rand() < 0.22, delay: rand() * 7 })),
-    };
-  });
 }
 
 export function NightSky({ className, seed = 7 }: { className?: string; seed?: number }) {
@@ -92,48 +66,6 @@ export function Moon({ className }: { className?: string }) {
     </div>
   );
 }
-
-/**
- * The skyline. On narrow screens the outer towers drop away so the windows
- * stay a readable size.
- */
-export function City({ className, seed = 11, count = 15, scale = 1 }: { className?: string; seed?: number; count?: number; scale?: number }) {
-  const towers = makeTowers(count, seed, scale);
-  const { size, gap, pad } = windowMetrics(scale);
-  const hideFrom = Math.floor((count - 7) / 2);
-  return (
-    <div aria-hidden className={cn("pointer-events-none flex items-end justify-center gap-[clamp(6px,1vw,14px)]", className)}>
-      {towers.map((tower, index) => {
-        const outer = index < hideFrom || index >= count - hideFrom;
-        return (
-          <div
-            key={index}
-            className={cn(
-              "shrink-0 rounded-t-[6px] bg-[#100d2b] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]",
-              outer && "hidden sm:block",
-            )}
-            style={{ width: tower.width, height: tower.height, padding: `${pad}px ${pad}px 0` }}
-          >
-            <div className="grid" style={{ gap, gridTemplateColumns: `repeat(${tower.cols}, minmax(0, 1fr))` }}>
-              {tower.windows.map((window, w) => (
-                <span
-                  key={w}
-                  className={cn("rounded-[2px]", window.lit ? "ade-window bg-[color:var(--color-lamp)]" : "bg-[#211d52]")}
-                  style={
-                    window.lit
-                      ? { height: size, animationDelay: `${window.delay}s`, boxShadow: "0 0 8px rgba(255,210,122,0.65)" }
-                      : { height: size }
-                  }
-                />
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 
 /**
  * One tower for a plan card: more floors and more lit windows for a bigger

@@ -61,8 +61,6 @@ export const PRICING_PLANS: readonly PricingPlan[] = (["free", "plus", "pro", "m
   };
 });
 
-/** The plan the page points people to. */
-export const HIGHLIGHTED_PLAN: CloudPlanId = "pro";
 
 export const FREE_PLAN = PRICING_PLANS[0]!;
 

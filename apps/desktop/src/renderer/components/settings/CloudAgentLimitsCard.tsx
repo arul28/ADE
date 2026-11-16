@@ -26,7 +26,10 @@ export function CloudAgentLimitsCard() {
   const load = useCallback(async () => {
     if (!bridge?.getAgentLimits) return;
     try {
-      setLimits(await bridge.getAgentLimits());
+      const read = await bridge.getAgentLimits();
+      setLimits(read);
+      // No answer means no computer could read them (the web app with every computer offline).
+      setError(read ? null : "Connect a computer to see what agents may do on their own.");
     } catch (loadError) {
       setError(ipcErrorMessage(loadError) || "Couldn't read what agents may do.");
     }

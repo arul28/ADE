@@ -30,7 +30,7 @@ const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
 const OWNER = "user_owner";
 const OTHER = "user_other";
-const OFF_LIST = "user_off_list";
+const NEWCOMER = "user_newcomer";
 const INSTANCE = "abcde12345";
 const SECOND = "fghij67890";
 const WEBHOOK_SECRET = "whsec_cloud_test";
@@ -232,7 +232,6 @@ function buildHarness(): Harness {
     CLERK_ISSUER: ISSUER,
     CLERK_OAUTH_CLIENT_ID: OAUTH_CLIENT_ID,
     AGENT37_API_KEY: "provider-key",
-    CLOUD_ACCESS_ACCOUNTS: `${OWNER},${OTHER}`,
     STRIPE_SECRET_KEY: "stripe-key",
     STRIPE_WEBHOOK_SECRET: WEBHOOK_SECRET,
     STRIPE_PLAN_PRICE_ID: "price_plan",
@@ -297,7 +296,7 @@ const providerCalls = (data: Harness, pattern: RegExp) => data.net.calls.filter(
 beforeEach(async () => {
   clock = NOW;
   // Minted against the real clock: the token check reads it, not the mocked one below.
-  tokens = Object.fromEntries(await Promise.all([OWNER, OTHER, OFF_LIST].map(async (sub) => [sub, await mintToken({ sub })])));
+  tokens = Object.fromEntries(await Promise.all([OWNER, OTHER, NEWCOMER].map(async (sub) => [sub, await mintToken({ sub })])));
   vi.spyOn(Date, "now").mockImplementation(() => clock);
   harness = buildHarness();
 });
@@ -311,7 +310,7 @@ afterEach(() => {
 describe("ADE Cloud account", () => {
   const instancePath = `/cloud/instances/${INSTANCE}`;
   it.each<[string, string, string, string, unknown]>([
-    // Another account on the list: a computer it doesn't own doesn't exist for it.
+    // Another account: a computer it doesn't own doesn't exist for it.
     ["another account reading a computer", OTHER, "GET", instancePath, undefined],
     ["another account deleting a computer", OTHER, "DELETE", instancePath, {}],
     ...["sleep", "idle", "start", "stop", "update", "resize", "fork", "exec", "backups", "signed-url", "public-ports"].map(
@@ -323,15 +322,6 @@ describe("ADE Cloud account", () => {
     ["another account moving from a computer", OTHER, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 }, moveFromInstanceId: INSTANCE }],
     ["another account's timed wake", OTHER, "PUT", "/cloud/wake", { instanceId: INSTANCE, url: "https://wake-abc.agent37.app", at: NOW + HOUR }],
     ["another account saving a chat against a computer", OTHER, "PUT", "/cloud/chats/key-a/chat-a/parts/1", { text: "hello", instanceId: INSTANCE, row: {} }],
-    // Not on the access list: nothing under /cloud answers but the access flag.
-    ["an off-list account listing computers", OFF_LIST, "GET", "/cloud/instances", undefined],
-    ["an off-list account creating a computer", OFF_LIST, "POST", "/cloud/instances", { type: "default", resources: { cpu: 2, memory: 4 } }],
-    ["an off-list account reading the account", OFF_LIST, "GET", "/cloud/account", undefined],
-    ["an off-list account starting checkout", OFF_LIST, "POST", "/cloud/billing/checkout", {}],
-    ["an off-list account turning on extra hours", OFF_LIST, "POST", "/cloud/billing/extra-hours", { enabled: true }],
-    ["an off-list account reading saved chats", OFF_LIST, "GET", "/cloud/chats", undefined],
-    ["an off-list account asking for a timed wake", OFF_LIST, "PUT", "/cloud/wake", { instanceId: INSTANCE, url: "https://wake-abc.agent37.app", at: NOW + HOUR }],
-    ["an off-list account's own computer", OFF_LIST, "POST", `${instancePath}/sleep`, {}],
   ])("%s is refused as if it weren't there", async (_label, caller, method, url, body) => {
     const data = harness;
     data.env.CLOUD_CHATS = {} as R2Bucket;
@@ -353,9 +343,9 @@ describe("ADE Cloud account", () => {
     // The refusal is about this caller: the owner still reaches the same computer.
     const owners = await data.send(OWNER, "GET", instancePath);
     expect(owners.status).toBe(200);
-    // The one route an off-list account gets a real answer from says no.
-    const access = await (await data.send(OFF_LIST, "GET", "/cloud/access")).json() as { enabled: boolean };
-    expect(access.enabled).toBe(false);
+    // ADE Cloud is open to every account: builds that still ask are told yes, even for an account it has never seen.
+    const access = await (await data.send(NEWCOMER, "GET", "/cloud/access")).json() as { enabled: boolean };
+    expect(access.enabled).toBe(true);
   });
 
   it("a computer's new name reaches the provider and the dashboard without control or bidi characters", async () => {

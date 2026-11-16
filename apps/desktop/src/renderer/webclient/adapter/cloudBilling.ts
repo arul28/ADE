@@ -7,6 +7,7 @@ import {
 } from "../../../../../account-directory/src/cloud/contract";
 import { readCloudPlanCleanup, type CloudAccountState, type CloudOpenCheckoutResult } from "../../../shared/adeCloud";
 import { parseCodedErrorMessage } from "../../../shared/codedError";
+import { captureError } from "../../../shared/sentry/capture";
 import type { BrowserAccountClient } from "../account/client";
 import { stashCloudLink, type WebCloudLink } from "../shell/cloudPlanLink";
 
@@ -86,7 +87,10 @@ export function createWebCloudBilling(accountClient: CloudBillingAccountClient) 
       if (parsed.code === "signed_out") {
         if (afterSignIn) {
           stashCloudLink(afterSignIn);
-          void accountClient.startSignIn().catch(() => undefined);
+          void accountClient.startSignIn().catch((error: unknown) => {
+            // The person sees "sign in again" either way; a sign-in that will not start is worth knowing about.
+            captureError(error, { fingerprint: ["web", "cloud_billing_sign_in"], tags: { area: "cloud_billing" }, handled: true });
+          });
         }
         throw new Error(SIGN_IN_AGAIN);
       }

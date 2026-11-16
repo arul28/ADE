@@ -4,6 +4,7 @@ import {
   type CloudBillingReturnOutcome,
   type CloudPlanId,
 } from "../../../../../account-directory/src/cloud/contract";
+import { createLinkStash } from "./linkStash";
 
 // What the web app was asked to do with ADE Cloud when it opened:
 //
@@ -71,51 +72,28 @@ export function stripCloudLinkParams(location: Pick<Location, "pathname" | "sear
   history.replaceState(null, "", `${location.pathname}${search ? `?${search}` : ""}${location.hash}`);
 }
 
-type StoredCloudLink = { link: WebCloudLink; savedAtMs: number };
-
-function readStoredLink(raw: string | null, nowMs: number): WebCloudLink | null {
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<StoredCloudLink> | null;
-    const savedAtMs = typeof parsed?.savedAtMs === "number" ? parsed.savedAtMs : Number.NaN;
-    if (!Number.isFinite(savedAtMs) || nowMs - savedAtMs < 0 || nowMs - savedAtMs > CLOUD_LINK_TTL_MS) return null;
-    const link = parsed?.link as Partial<{ kind: unknown; plan: unknown; outcome: unknown }> | undefined;
-    if (link?.kind === "plan" && isCloudPlanId(link.plan)) return { kind: "plan", plan: link.plan };
-    if (link?.kind === "return" && isCloudBillingReturnOutcome(link.outcome)) return { kind: "return", outcome: link.outcome };
-    if (link?.kind === "page") return { kind: "page" };
-    return null;
-  } catch {
-    return null;
-  }
+function parseCloudLink(value: unknown): WebCloudLink | null {
+  const link = value as Partial<{ kind: unknown; plan: unknown; outcome: unknown }> | null | undefined;
+  if (link?.kind === "plan" && isCloudPlanId(link.plan)) return { kind: "plan", plan: link.plan };
+  if (link?.kind === "return" && isCloudBillingReturnOutcome(link.outcome)) return { kind: "return", outcome: link.outcome };
+  if (link?.kind === "page") return { kind: "page" };
+  return null;
 }
 
+const stash = createLinkStash<WebCloudLink>({ key: CLOUD_LINK_KEY, ttlMs: CLOUD_LINK_TTL_MS, parse: parseCloudLink });
+
 export function stashCloudLink(link: WebCloudLink, nowMs = Date.now()): void {
-  try {
-    const stored: StoredCloudLink = { link, savedAtMs: nowMs };
-    localStorage.setItem(CLOUD_LINK_KEY, JSON.stringify(stored));
-  } catch {
-    // A hardened browser may deny local storage: the request is lost, and the app opens as usual.
-  }
+  stash.write(link, nowMs);
 }
 
 /** The kept request, if one is waiting and still fresh. A read only. */
 export function peekCloudLink(nowMs = Date.now()): WebCloudLink | null {
-  try {
-    const link = readStoredLink(localStorage.getItem(CLOUD_LINK_KEY), nowMs);
-    if (!link) localStorage.removeItem(CLOUD_LINK_KEY);
-    return link;
-  } catch {
-    return null;
-  }
+  return stash.read(nowMs);
 }
 
 /** The kept request, removed as it is read: each request runs once. */
 export function takeCloudLink(nowMs = Date.now()): WebCloudLink | null {
-  const link = peekCloudLink(nowMs);
-  try {
-    localStorage.removeItem(CLOUD_LINK_KEY);
-  } catch {
-    // Nothing kept.
-  }
+  const link = stash.read(nowMs);
+  stash.remove();
   return link;
 }

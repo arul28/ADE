@@ -2,9 +2,8 @@ import type { CSSProperties } from "react";
 
 /**
  * Social link-preview card, rendered at exactly 1200×630 and screenshotted to
- * /og-image.png. Mirrors the site hero — the competitor equation, the headline,
- * and the desktop + iPhone pair, hand-labelled by the machine each one runs
- * on, minus the install CTAs.
+ * /og-image.png. Mirrors the site hero: the headline and the desktop + iPhone
+ * pair, hand-labelled by the machine each one runs on, minus the install CTAs.
  */
 const rainbow: CSSProperties = {
   background:

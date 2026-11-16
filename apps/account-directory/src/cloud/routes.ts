@@ -1,7 +1,7 @@
 import { authenticate } from "../callerToken";
 import { handleCloudWakeRequest, isCloudWakeRequest } from "../cloudWake";
 import { captureCloudAction, cloudActionTracker, type CloudActionOrigin, type CloudRefusal, type CloudRefusedAction, type CloudWaitUntil } from "./analytics";
-import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type CloudBillingReturnUrl } from "./billing";
+import { CloudBillingError, accountReturnUrl, createCheckoutUrl, createFreeUnlockUrl, createPortalUrl, pickPlanCleanup, setExtraDisk, setExtraHours, webReturnUrl, type BillingReturnUrlFor } from "./billing";
 import { parseSustainedCpuReport, recordSustainedCpu } from "./abuseSignals";
 import { buildAccountState } from "./accountState";
 import { routeSavedChats } from "./chats";
@@ -1269,11 +1269,39 @@ const EXTRA_DISK_LIMIT_MAX_USD = 1000;
  * names, so no request can make Stripe send anyone anywhere else. Null for a
  * `returnTo` this server can't honour (an unknown value, or no web client).
  */
-function billingReturnOf(env: CloudEnv, url: URL, returnTo: unknown): CloudBillingReturnUrl | null {
+function billingReturnOf(env: CloudEnv, url: URL, returnTo: unknown): BillingReturnUrlFor | null {
   if (returnTo === undefined) return accountReturnUrl(env, url.origin);
   if (returnTo !== "web") return null;
   const webOrigin = trustedHttpsOrigin(env.WEB_CLIENT_ORIGIN, { requireExactOrigin: true });
   return webOrigin ? webReturnUrl(webOrigin) : null;
+}
+
+/** `POST /cloud/billing/checkout`: buy a plan, or change to another one. */
+async function routeCheckout(
+  env: CloudEnv,
+  userId: string,
+  body: Record<string, unknown>,
+  back: BillingReturnUrlFor,
+  offers: ReturnType<typeof cloudOffers>,
+  { now, waitUntil }: CloudRequestContext,
+): Promise<Response> {
+  // Builds that know one paid plan send no body: that's Plus.
+  if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
+    return badRequest("That plan isn't one ADE Cloud offers.");
+  }
+  // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
+  const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
+  if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
+  // A build from before Max reads a Max plan as Plus, so its "Move to Pro" would be a silent downgrade.
+  // Builds that know Max say so (`knowsMax`); an older one changes a Max plan only in the billing portal.
+  if (body.knowsMax !== true) {
+    const bought = await env.DB.prepare("select plan, paid_plan from cloud_accounts where user_id = ?").bind(userId).first<{ plan: string; paid_plan: string | null }>();
+    if (bought?.plan === "paid" && bought.paid_plan === "max") {
+      logCloud("cloud.plan_change_old_build_refused", { userId });
+      return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
+    }
+  }
+  return json(await createCheckoutUrl(env, userId, back, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
 }
 
 /** The billing routes, or null when `path` isn't one of them. */
@@ -1293,23 +1321,7 @@ async function routeBilling(request: Request, url: URL, path: string, env: Cloud
       if (path === CLOUD_PATHS.billingPortal) return json(await createPortalUrl(env, userId, back, now));
       // A card saved with no charge starts the free hours of a GitHub account younger than 30 days.
       if (path === CLOUD_PATHS.billingFreeUnlock) return json(await createFreeUnlockUrl(env, userId, back, { now, waitUntil }));
-      // Builds that know one paid plan send no body: that's Plus.
-      if (body.plan !== undefined && !(body.plan === "plus" || (body.plan === "pro" && offers.pro) || (body.plan === "max" && offers.max))) {
-        return badRequest("That plan isn't one ADE Cloud offers.");
-      }
-      // A downgrade's pick: the computers ADE frees, and whether their work is pushed first.
-      const cleanup = body.cleanup === undefined ? undefined : readPlanCleanupPick(body.cleanup);
-      if (cleanup === null) return badRequest("Name the computers to free and whether to push their work first.");
-      // A build from before Max reads a Max plan as Plus, so its "Move to Pro" would be a silent downgrade.
-      // Builds that know Max say so (`knowsMax`); an older one changes a Max plan only in the billing portal.
-      if (body.knowsMax !== true) {
-        const bought = await env.DB.prepare("select plan, paid_plan from cloud_accounts where user_id = ?").bind(userId).first<{ plan: string; paid_plan: string | null }>();
-        if (bought?.plan === "paid" && bought.paid_plan === "max") {
-          logCloud("cloud.plan_change_old_build_refused", { userId });
-          return fail("update_needed", "Update ADE to change your Max plan, or change it in Manage billing.", 409);
-        }
-      }
-      return json(await createCheckoutUrl(env, userId, back, now, isPaidPlanId(body.plan) ? body.plan : undefined, waitUntil, cleanup));
+      return await routeCheckout(env, userId, body, back, offers, { now, waitUntil });
     }
     if (path === CLOUD_PATHS.billingPlanCleanup) {
       const pick = readPlanCleanupPick(body);

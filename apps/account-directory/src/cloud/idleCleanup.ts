@@ -514,7 +514,6 @@ export async function runIdleCleanup(env: CloudEnv, provider: CloudProvider, now
   let budget = SAVES_PER_TICK;
   const runs: Promise<void>[] = [];
   for (const account of accounts.results ?? []) {
-    // An account ADE Cloud no longer lets in is left as it is.
     try {
       const all = ownedBy.get(account.user_id) ?? [];
       const liveUsed = liveUsedMilli(account, all, now);

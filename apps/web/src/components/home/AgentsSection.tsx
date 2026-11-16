@@ -19,7 +19,9 @@ const PAIRINGS: Array<{ model: Part; harness: Part; via: string }> = [
   { model: { id: "x-openai", name: "GPT-6 Luna" }, harness: { id: "opencode", name: "OpenCode" }, via: "your ChatGPT plan" },
 ];
 
-const SOURCES = [...MODEL_SOURCES, ...OPENCODE_PROVIDERS].slice(0, 23);
+/** Four full rows of nine: every agent, then providers, then the "200+" tile. */
+const GRID_TILES = 36;
+const SOURCES = [...MODEL_SOURCES, ...OPENCODE_PROVIDERS].slice(0, GRID_TILES - AGENTS.length - 1);
 const TURN_MS = 3200;
 
 export function AgentsSection() {

@@ -14,23 +14,21 @@ export const CHECKED_ON = "November 16, 2026";
 export type Rival = {
   id: string;
   name: string;
-  logo?: string;
+  logo: string;
   /** The machine compared, as the vendor names it; omitted when the vendor does not say. */
   machine?: string;
   /** What `hours` of that machine costs in a month, in dollars, with the plan the vendor requires; null where the page does not say (the row is left out). */
   monthlyUsd?: (hours: number) => number | null;
   /** What one hour of that machine costs, in cents. */
-  perHourCents?: number;
-  /** Cloud hours a month that cost nothing, or null when the vendor does not say. */
-  freeHours: number | null;
+  perHourCents: number;
+  /** Cloud hours a month that cost nothing; 0 for none (a one-time credit counts as none). */
+  freeHours: number;
   /** The plan you must be on to get a cloud computer at all, and what it includes. */
   plan: string;
   /** What the hourly price is: an average over a plan's included hours, a metered usage rate, or the rate past a plan's hours. */
   rateKind: "plan average" | "usage rate" | "overage";
   /** True when the numbers are our arithmetic from the vendor's page, not a price it prints. */
   estimate?: boolean;
-  /** One line: what the price includes or leaves out. */
-  note: string;
   source: string;
 };
 
@@ -63,7 +61,6 @@ export const RIVALS: Rival[] = [
     freeHours: 0,
     // Credits past the plan's $20 are assumed to cost the same $0.20 an hour; the page does not print a top-up rate.
     estimate: true,
-    note: "On a $20 plan; credits also pay for model tokens",
     source: "https://capy.ai/pricing",
   },
   {
@@ -77,7 +74,6 @@ export const RIVALS: Rival[] = [
     monthlyUsd: (hours) => 60 + Math.max(0, hours - 150) * 0.48,
     perHourCents: 48,
     freeHours: 0,
-    note: "Cloud starts on the $60 Team seat",
     source: "https://paradev.com/pricing",
   },
   {
@@ -91,7 +87,6 @@ export const RIVALS: Rival[] = [
     perHourCents: 10,
     freeHours: 30,
     estimate: true,
-    note: "Hours from its own ~100 credits an hour",
     source: "https://cloudroom.dev/pricing",
   },
   {
@@ -106,7 +101,6 @@ export const RIVALS: Rival[] = [
     monthlyUsd: replicasMonthlyUsd,
     perHourCents: 24,
     freeHours: 0,
-    note: "Usage rate inside a plan; 36¢ an hour past it",
     source: "https://replicas.dev/pricing",
   },
   {
@@ -121,7 +115,6 @@ export const RIVALS: Rival[] = [
     perHourCents: 50,
     freeHours: 0,
     estimate: true,
-    note: "Pro overage rate; its free credits come once, not monthly",
     source: "https://www.superconductor.com/pricing",
   },
 ];

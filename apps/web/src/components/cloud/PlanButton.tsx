@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { PricingPlan } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
-import { LINKS } from "../../lib/links";
+import { planHref } from "../../lib/planLinks";
 import type { MarketingCtaLabel, MarketingCtaPosition } from "../../lib/marketingAnalytics";
 import { useInstallDialog } from "../install/InstallDialogProvider";
 import { guessPlatform } from "../home/SiteNav";
@@ -24,7 +24,7 @@ export function PlanButton({
   cta: MarketingCtaLabel;
   position: MarketingCtaPosition;
   plan?: PricingPlan["id"];
-  tone?: "quiet" | "lamp" | "violet" | "white";
+  tone?: "quiet" | "lamp" | "violet";
   className?: string;
 }) {
   const { openInstall } = useInstallDialog();
@@ -33,13 +33,12 @@ export function PlanButton({
     tone === "quiet" && "border border-white/15 bg-white/[0.06] text-white hover:border-white/30 hover:bg-white/[0.1]",
     tone === "lamp" && "bg-[color:var(--color-lamp)] text-[#1a1430] hover:bg-[#ffdd99]",
     tone === "violet" && "bg-[color:var(--color-violet-bright)] text-[#160f33] hover:bg-[#bba6fb]",
-    tone === "white" && "bg-white text-[#0d0b24] hover:bg-white/90",
     className,
   );
   if (plan && plan !== "free") {
     return (
       <a
-        href={`${LINKS.webClient}/?cloudPlan=${plan}`}
+        href={planHref(plan)}
         data-ade-analytics-cta={cta}
         data-ade-analytics-position={position}
         className={classes}

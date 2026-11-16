@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { CloudBillingReturnOutcome } from "../../../../../account-directory/src/cloud/contract";
+import { CLOUD_FREE_GITHUB_MIN_AGE_DAYS, type CloudBillingReturnOutcome } from "../../../../../account-directory/src/cloud/contract";
 import { CLOUD_PLAN_LABELS, cloudCatalogOf, cloudPlanLabelOf, isPaidPlanId } from "../../../shared/adeCloud";
 import { ipcErrorMessage } from "../../lib/format";
 import { READABLE_TOAST_DURATION_MS, showToast, type ToastInput } from "../../components/app/toast/toastStore";
@@ -13,7 +13,7 @@ const RETURN_TOASTS: Record<CloudBillingReturnOutcome, ToastInput> = {
   cancelled: { title: "Nothing changed", message: "You left checkout before paying." },
   portal: { title: "Back from billing", message: "Any changes you made show here in a moment." },
   card: { tone: "success", title: "Card saved", message: "You weren't charged. Your free hours show here in a moment." },
-  card_cancelled: { title: "Nothing changed", message: "You left before saving a card. Your free hours start when your GitHub account is 30 days old." },
+  card_cancelled: { title: "Nothing changed", message: `You left before saving a card. Your free hours start when your GitHub account is ${CLOUD_FREE_GITHUB_MIN_AGE_DAYS} days old.` },
 };
 
 /**

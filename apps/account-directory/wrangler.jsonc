@@ -48,10 +48,6 @@
   // invoice.paid and invoice.payment_failed. Set out of band. Without them the
   // billing routes answer 503, the webhook answers 503, and no hours are reported.
   //
-  // CLOUD_ACCESS_ACCOUNTS (ADE Cloud, deliberately absent below)
-  // A comma list of Clerk user ids, or `*`. Unset means nobody: every /cloud
-  // route answers 404. The owner's id is set at rollout, out of band.
-  //
   // SECRET — CLOUD_CHAT_MASTER_KEY (ADE Cloud, saved chats)
   // 32 random bytes, base64 (`openssl rand -base64 32`). Seals the per-user key
   // that encrypts saved chats. Set out of band. Rotating it makes existing saved

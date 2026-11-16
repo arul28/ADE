@@ -507,7 +507,6 @@ export async function runPlanLimitChecks(env: CloudEnv, computers: ComputerRow[]
   const accounts = await env.DB.prepare("select * from cloud_accounts where deleted_at is null and user_id in (select value from json_each(?))")
     .bind(JSON.stringify([...byUser.keys()])).all<AccountRow>();
   for (const account of accounts.results ?? []) {
-    // An account ADE Cloud no longer lets in is left as it is.
     try {
       await warnOldTermsEnding(env, account, byUser.get(account.user_id) ?? [], now);
       const over = overPlanInForce(env, account, byUser.get(account.user_id) ?? []);
@@ -572,7 +571,6 @@ export async function runPlanCleanupPicks(env: CloudEnv, provider: CloudProvider
         await clearChoice(env, account);
         continue;
       }
-      // An account ADE Cloud no longer lets in is left as it is.
       if (!choiceApplies(account, choice)) {
         // A pick made with a downgrade can land before the plan change is saved
         // (a failed save waits for Stripe's webhook): give it time to catch up.

@@ -1,8 +1,8 @@
 import { ArrowUpRight, Check, Smartphone } from "lucide-react";
 import { FREE_PLAN, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
-import { LINKS } from "../../lib/links";
-import { MARKETING_CTA_LABELS, MARKETING_CTA_POSITIONS, type MarketingCtaLabel } from "../../lib/marketingAnalytics";
+import { MARKETING_CTA_POSITIONS } from "../../lib/marketingAnalytics";
+import { PLAN_CTAS, planHref } from "../../lib/planLinks";
 import { CloudLockup } from "../cloud/CloudMark";
 import { AppleMark } from "./marks";
 import { CloudCharts, CloudSources } from "./CloudCharts";
@@ -46,13 +46,6 @@ export function CloudSection() {
   );
 }
 
-const PLAN_CTA: Record<string, MarketingCtaLabel> = {
-  free: MARKETING_CTA_LABELS.CHOOSE_PLAN_FREE,
-  plus: MARKETING_CTA_LABELS.CHOOSE_PLAN_PLUS,
-  pro: MARKETING_CTA_LABELS.CHOOSE_PLAN_PRO,
-  max: MARKETING_CTA_LABELS.CHOOSE_PLAN_MAX,
-};
-
 /** The four plans in one row; each opens the web app's ADE Cloud settings at that plan. */
 function Plans() {
   return (
@@ -62,8 +55,8 @@ function Plans() {
         return (
           <a
             key={plan.id}
-            href={`${LINKS.webClient}/?cloudPlan=${plan.id}`}
-            data-ade-analytics-cta={PLAN_CTA[plan.id]}
+            href={planHref(plan.id)}
+            data-ade-analytics-cta={PLAN_CTAS[plan.id].cta}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.HOME_CLOUD}
             className={cn(
               "focus-ring group relative flex flex-col rounded-[20px] border bg-[#0f0e16] p-5 transition-colors",

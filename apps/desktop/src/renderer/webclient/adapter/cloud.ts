@@ -77,8 +77,13 @@ async function readCloudAccess(
   const direct = await billing.accessEnabledCached().catch(() => null);
   if (infra.client.getStatus().readiness !== "ready") return { enabled: direct === true };
   // The computer's answer also carries its sign-in end warning; the server decides `enabled`.
-  const answer = await infra.commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
-  return { ...answer, enabled: direct ?? answer?.enabled === true };
+  // A computer that drops mid-read leaves the server's answer standing.
+  try {
+    const answer = await infra.commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
+    return { ...answer, enabled: direct ?? answer?.enabled === true };
+  } catch {
+    return { enabled: direct === true };
+  }
 }
 
 /** `window.ade.cloudAccess` for the web app: the account server's yes or no, no computer needed. */

@@ -106,7 +106,7 @@ export const MARKETING_CTA_POSITIONS = {
   INSTALL_DIALOG: "install_dialog",
   INVITE_PAGE: "invite_page",
   PRICING_PAGE: "pricing_page",
-  // The ADE Cloud section of the home page ("Start free").
+  // The ADE Cloud section of the home page: its four plan tiles.
   HOME_CLOUD: "home_cloud",
   // `/pricing`'s plan finder: the button under the plan it suggests.
   PLAN_FINDER: "plan_finder",

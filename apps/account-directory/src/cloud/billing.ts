@@ -1,6 +1,6 @@
 import { trustedHttpsOrigin } from "../trustedOrigin";
 import { captureCloudAction, captureCloudFreePlan, type CloudWaitUntil } from "./analytics";
-import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, isCloudBillingReturnOutcome, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
+import { CLOUD_WEB_BILLING_RETURN_PARAM, formatCloudCents, type CloudBillingReturnOutcome, type CloudCheckoutResult, type CloudFreeUnlockResult, type CloudPlanCleanupPick } from "./contract";
 import { unlockFreePlanWithCard } from "./freePlanGithub";
 import { accountEmail, sendCloudEmail } from "./email";
 import { json } from "./http";
@@ -57,7 +57,7 @@ const RETURN_PATH = "/billing/return";
 const WEBHOOK_PATH = "/webhooks/stripe";
 
 /** The address Stripe sends the person back to, for each way its page can end; `plan` names what was bought. */
-export type CloudBillingReturnUrl = (outcome: CloudBillingReturnOutcome, plan?: CloudPaidPlanId) => string;
+export type BillingReturnUrlFor = (outcome: CloudBillingReturnOutcome, plan?: CloudPaidPlanId) => string;
 
 /**
  * This server's own page (`returnPage`), which says to go back to ADE. It is on
@@ -66,13 +66,13 @@ export type CloudBillingReturnUrl = (outcome: CloudBillingReturnOutcome, plan?: 
  * on. Only an exact https origin is taken. The plan only picks the page's
  * words, never grants anything.
  */
-export function accountReturnUrl(env: CloudEnv, origin: string): CloudBillingReturnUrl {
+export function accountReturnUrl(env: CloudEnv, origin: string): BillingReturnUrlFor {
   const base = trustedHttpsOrigin(env.BILLING_RETURN_ORIGIN, { requireExactOrigin: true }) ?? origin;
   return (outcome, plan) => `${base}${RETURN_PATH}?to=${outcome}${plan ? `&plan=${plan}` : ""}`;
 }
 
 /** The hosted web client, which opens Settings › ADE Cloud. `webOrigin` is this server's own `WEB_CLIENT_ORIGIN`, never a request's. */
-export function webReturnUrl(webOrigin: string): CloudBillingReturnUrl {
+export function webReturnUrl(webOrigin: string): BillingReturnUrlFor {
   return (outcome) => `${webOrigin}/?${CLOUD_WEB_BILLING_RETURN_PARAM}=${outcome}`;
 }
 
@@ -226,7 +226,7 @@ async function expireOpenCheckouts(env: CloudEnv, customer: string): Promise<voi
 export async function createCheckoutUrl(
   env: CloudEnv,
   userId: string,
-  back: CloudBillingReturnUrl,
+  back: BillingReturnUrlFor,
   now: number,
   requested?: CloudPaidPlanId,
   waitUntil?: CloudWaitUntil,
@@ -291,7 +291,7 @@ async function customerHasCard(env: CloudEnv, customerId: string): Promise<boole
  * Checkout in setup mode (nothing is charged), and its
  * `checkout.session.completed` unlocks.
  */
-export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: CloudBillingReturnUrl, ctx: { now: number; waitUntil?: CloudWaitUntil }): Promise<CloudFreeUnlockResult> {
+export async function createFreeUnlockUrl(env: CloudEnv, userId: string, back: BillingReturnUrlFor, ctx: { now: number; waitUntil?: CloudWaitUntil }): Promise<CloudFreeUnlockResult> {
   const waitUntil: CloudWaitUntil = ctx.waitUntil ?? ((promise) => { void promise; });
   const account = await loadAccount(env, userId, ctx.now);
   if (account.free_card_unlocked_at != null) return { url: null, unlocked: true };
@@ -622,7 +622,7 @@ export async function pickPlanCleanup(env: CloudEnv, userId: string, planId: unk
   }
 }
 
-export async function createPortalUrl(env: CloudEnv, userId: string, back: CloudBillingReturnUrl, now: number): Promise<{ url: string }> {
+export async function createPortalUrl(env: CloudEnv, userId: string, back: BillingReturnUrlFor, now: number): Promise<{ url: string }> {
   const account = await loadAccount(env, userId, now);
   if (!account.stripe_customer_id) throw new CloudBillingError("no_billing", "There's nothing to manage until you've bought a plan.", 409);
   try {
