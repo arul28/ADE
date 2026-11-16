@@ -527,7 +527,13 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       noModel: needsModelPick,
     });
   const avatarState = useCtoAvatarState(baseAvatarState);
-  const statusPhrase = identityLoaded || offline
+  // A home on another machine that can't be reached is away, not asleep;
+  // only an ADE Cloud computer sleeps.
+  const statusPhrase = offline && !awayCloudInstanceId
+    ? "Away"
+    : awayCloudGone
+    ? "Gone"
+    : identityLoaded || offline
     ? ctoStatusPhrase({
       turnActive: live.turnActive,
       streamingText: live.streamingText,
