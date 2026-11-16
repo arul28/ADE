@@ -20,6 +20,13 @@ import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 const cursorApiBaseUrl = (): string =>
   process.env.CURSOR_BACKEND_URL?.trim() || "https://api.cursor.com";
 
+/**
+ * Past this, a request fails as a network error. Without a deadline a stalled
+ * socket never settles, and the in-flight promise a caller keeps (the Work
+ * prompt box's repository list) would be handed to every later read.
+ */
+const CURSOR_API_TIMEOUT_MS = 15_000;
+
 export class CursorCloudApiError extends Error {
   readonly status: number | null;
   readonly code: string;
@@ -66,9 +73,15 @@ async function cursorApiGet<T>(path: string, apiKey: string, query?: Record<stri
     response = await fetch(`${cursorApiBaseUrl()}${path}${search ? `?${search}` : ""}`, {
       method: "GET",
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(CURSOR_API_TIMEOUT_MS),
     });
   } catch (cause) {
-    const error = new CursorCloudApiError("Network request failed", null, "network");
+    const timedOut = cause instanceof Error && cause.name === "TimeoutError";
+    const error = new CursorCloudApiError(
+      timedOut ? `Request timed out after ${CURSOR_API_TIMEOUT_MS} ms` : "Network request failed",
+      null,
+      "network",
+    );
     (error as { cause?: unknown }).cause = cause;
     throw error;
   }

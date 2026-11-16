@@ -51,10 +51,14 @@ export function sharedNodeBuiltins() {
         if (name && args.kind === "import-statement" && args.namespace !== NAMESPACE) {
           return { path: name, namespace: NAMESPACE };
         }
-        // Everything else stays as tsup's own `node:` plugin left it: external,
-        // with the prefix cut. That plugin also cut it from prefix-only modules
-        // (`node:sqlite`), and this keeps the output the same.
-        if (args.path.startsWith("node:")) return { path: args.path.slice("node:".length), external: true };
+        // Everything else stays as it was written: external, and with any
+        // `node:` prefix kept. `node:sqlite` and `node:test` are prefix-only
+        // (not in `builtinModules`), so cutting the prefix would turn
+        // `require("node:sqlite")` into `require("sqlite")`, an npm package
+        // that is not there: `resolveSqliteBackup` then finds no `backup` and
+        // the pre-upgrade database copy is skipped. Node reads `node:` in a
+        // `require` on every supported version.
+        if (args.path.startsWith("node:")) return { path: args.path, external: true };
         return undefined;
       });
       build.onLoad({ filter: /.*/, namespace: NAMESPACE }, (args) => ({
