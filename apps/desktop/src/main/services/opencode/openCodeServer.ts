@@ -1017,6 +1017,22 @@ export function shutdownOpenCodeServers(filter: { key?: string } = {}, logger?: 
   }
 }
 
+/**
+ * Close every server no chat holds now, instead of after its idle window. The
+ * brain calls this (through `releaseUnattendedRuntimes`) while no window and no
+ * other machine is connected; the next OpenCode chat starts a server again.
+ * A server something still holds, or one still starting, is left alone.
+ */
+export function releaseUnusedOpenCodeServers(logger?: Logger | null): number {
+  let closed = 0;
+  for (const entry of [...serverEntries.values()]) {
+    if (entry.closed || entry.refCount > 0) continue;
+    closeEntry(entry, "unattended", logger);
+    closed += 1;
+  }
+  return closed;
+}
+
 export function getOpenCodeRuntimeDiagnostics(): {
   servers: OpenCodeRuntimeDiagnosticsEntry[];
   orphanRecovery: OpenCodeOrphanRecoveryResult;

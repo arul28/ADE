@@ -1447,7 +1447,7 @@ import {
   type DiscoveredLocalModelEntry,
   type OpenCodeAgentProfile,
 } from "../opencode/openCodeConfig";
-import { acquireOpenCodeServer } from "../opencode/openCodeServer";
+import { acquireOpenCodeServer, releaseUnusedOpenCodeServers } from "../opencode/openCodeServer";
 import { isOpenCodeProcessAlive, killOpenCodeShellProcessTree } from "../opencode/openCodeServerOrphans";
 import {
   createOpenCodeBackgroundShells,
@@ -30183,7 +30183,10 @@ export function createAgentChatService(args: {
         // idle teardown set `runtimeInvalidated`, the next persist dropped
         // `providerSessionId`, and each follow-up message started a brand-new
         // OpenCode session that had to rediscover the whole thread.
-        || managed.runtime.kind === "opencode")
+        || managed.runtime.kind === "opencode"
+        // Droid resumes a session by id on a new worker (`resumeSessionId`);
+        // the same loss as OpenCode's applied here until it was listed.
+        || managed.runtime.kind === "droid")
       && reasonAllowsPreservation;
     // Codex keeps its thread id on the session, not in runtime state, and the
     // next send resumes that thread (a failed resume throws rather than opening
@@ -30387,6 +30390,7 @@ export function createAgentChatService(args: {
         rt,
         "Droid tool approval was cancelled because the session closed.",
       );
+      if (preserveProviderResumeState) persistChatState(managed);
       releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
@@ -76843,6 +76847,61 @@ export function createAgentChatService(args: {
     chatLogStateFacts.clear();
   };
 
+  /**
+   * The brain calls this while no desktop window and no other machine is
+   * connected (`brainIdleMemory.ts`). Nobody can read a reply then, so a
+   * finished chat does not need its provider process for the full idle window:
+   * every runtime quiet for `idleMs` goes now, by the same `idle_ttl` teardown
+   * as the timed sweep, and its next send resumes the same conversation. The
+   * sweep's guards hold, and are stricter here: a running turn, a pending
+   * question or approval, and any claimed background work (stale or not) keep
+   * their process. Draft warmups go too: no window is left to send them.
+   * Returns how many went, and how many live runtimes stayed (the caller asks
+   * again while that is more than zero).
+   */
+  const releaseUnattendedRuntimes = (idleMs: number): { released: number; kept: number } => {
+    const now = Date.now();
+    let released = 0;
+    let kept = 0;
+    for (const [, managed] of managedSessions) {
+      if (!managed.runtime || managed.closed) continue;
+      if (
+        managed.session.status !== "idle"
+        || hasLivePendingInput(managed)
+        || hasRuntimeActiveWorkload(managed.runtime)
+        || now - managed.lastActivityTimestamp < idleMs
+      ) {
+        kept += 1;
+        continue;
+      }
+      try {
+        teardownRuntime(managed, "idle_ttl");
+        released += 1;
+      } catch (error) {
+        kept += 1;
+        logger.warn("agent_chat.unattended_teardown_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    for (const sessionId of [...draftWarmups.keys()]) {
+      releaseDraftWarmup(sessionId, "unattended");
+      released += 1;
+    }
+    // Shared provider processes no chat holds any more: OpenCode servers wait
+    // 10 min and ACP agents 60 s after their last chat before they exit. A
+    // hold released above that ends later goes at the next pass, or in its
+    // own window.
+    try {
+      released += releaseUnusedOpenCodeServers(logger);
+      released += (args.acpSessionPool ?? acpSessionPool).disposeIdle(null, "nobody connected");
+    } catch (error) {
+      logger.warn("agent_chat.unattended_pool_release_failed", { error: getErrorMessage(error) });
+    }
+    return { released, kept };
+  };
+
   // --- Session inactivity cleanup ---
   const sessionCleanupTimer = setInterval(() => {
     const now = Date.now();
@@ -83350,6 +83409,7 @@ export function createAgentChatService(args: {
     applyFastModePolicy,
     releaseQuietChatHistory,
     releaseIdleStateCaches,
+    releaseUnattendedRuntimes,
     getPermissionCeiling: resolvePermissionCeiling,
     // A caller's request, never `automatic`: only this service starts those.
     regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => {
