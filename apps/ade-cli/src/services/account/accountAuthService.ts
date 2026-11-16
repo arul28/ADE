@@ -2874,16 +2874,22 @@ export function createAccountAuthService(args: {
   const getAccessToken = async (
     options: AccountAccessTokenOptions = {},
   ): Promise<string> => {
-    const controller = new AbortController();
-    const abortFromCaller = () => controller.abort(options.signal?.reason);
-    options.signal?.throwIfAborted();
-    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const requestedTimeoutMs = options.timeoutMs;
     const timeoutMs = typeof requestedTimeoutMs === "number"
       && Number.isFinite(requestedTimeoutMs)
       && requestedTimeoutMs > 0
       ? Math.trunc(requestedTimeoutMs)
       : null;
+    // With no signal and no timeout nothing can abort the request, so the
+    // controller, its listeners and the race would only cost time. The relay
+    // lease check asks for a token this way every few seconds.
+    if (!options.signal && timeoutMs == null) {
+      return await getAccessTokenWithSignal(options.forceRefresh ? { forceRefresh: true } : {});
+    }
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(options.signal?.reason);
+    options.signal?.throwIfAborted();
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const timeout = timeoutMs == null
       ? null
       : setTimeout(() => {
