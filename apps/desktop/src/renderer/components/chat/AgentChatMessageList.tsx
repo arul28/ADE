@@ -2713,7 +2713,22 @@ function FileChangeEventCard({
 // Tracks which user messages have already played their send-up entrance, so the
 // optimistic→delivered swap (and virtualized re-mounts) don't replay it — that
 // replay read as a flicker once the bubble settled.
+// Bounded, so a long-lived window does not keep a key for every message of
+// every chat it ever showed. Each render moves the key to the newest end, so
+// only messages that no view has rendered for a long time drop out.
+const ANIMATED_USER_MESSAGE_KEY_LIMIT = 1_000;
 const animatedUserMessageKeys = new Set<string>();
+
+/** True the first time a user message renders; later renders get false. */
+function claimUserMessageSendEntrance(key: string): boolean {
+  const first = !animatedUserMessageKeys.delete(key);
+  animatedUserMessageKeys.add(key);
+  if (animatedUserMessageKeys.size > ANIMATED_USER_MESSAGE_KEY_LIMIT) {
+    const oldest = animatedUserMessageKeys.values().next().value;
+    if (oldest !== undefined) animatedUserMessageKeys.delete(oldest);
+  }
+  return first;
+}
 
 /**
  * Whether a row plays its entrance (the fade or send-up its motion wrapper
@@ -3234,8 +3249,7 @@ function renderEvent(
 
   /* ── User message ── */
   if (event.type === "user_message" && userBody) {
-    const playSendEntrance = playEntrance && !animatedUserMessageKeys.has(envelope.key);
-    animatedUserMessageKeys.add(envelope.key);
+    const playSendEntrance = claimUserMessageSendEntrance(envelope.key) && playEntrance;
     const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
     const copyText = event.displayText?.trim() || (
       event.metadata?.hideFullPrompt === true
