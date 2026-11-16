@@ -154,9 +154,11 @@ export function planCostsFor(hours: number): PlanCost[] {
   }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
 }
 
-/** "$5", "$13.40". */
-export const formatUsd = (usd: number): string =>
-  Number.isInteger(usd) ? `$${usd}` : `$${usd.toFixed(2)}`;
+/** "$5", "$13.40". Rounded to the cent first, so plan arithmetic's float noise never shows. */
+export const formatUsd = (usd: number): string => {
+  const cents = Math.round(usd * 100) / 100;
+  return Number.isInteger(cents) ? `$${cents}` : `$${cents.toFixed(2)}`;
+};
 
 /**
  * The plan the finder suggests for a month of `hours`, and the other plan

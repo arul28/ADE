@@ -14,7 +14,8 @@ export type LinkStash<T> = {
   remove(): void;
 };
 
-export function createLinkStash<T>({ key, ttlMs, parse }: { key: string; ttlMs: number; parse: (value: unknown) => T | null }): LinkStash<T> {
+/** `legacyField` names the field an older build wrote the value under, so a link saved just before a deploy still restores. */
+export function createLinkStash<T>({ key, ttlMs, parse, legacyField }: { key: string; ttlMs: number; parse: (value: unknown) => T | null; legacyField?: string }): LinkStash<T> {
   const remove = () => {
     try {
       localStorage.removeItem(key);
@@ -41,10 +42,10 @@ export function createLinkStash<T>({ key, ttlMs, parse }: { key: string; ttlMs: 
       if (!raw) return null;
       let value: T | null = null;
       try {
-        const stored = JSON.parse(raw) as Partial<Stored> | null;
+        const stored = JSON.parse(raw) as (Partial<Stored> & Record<string, unknown>) | null;
         const savedAtMs = typeof stored?.savedAtMs === "number" ? stored.savedAtMs : Number.NaN;
         const age = nowMs - savedAtMs;
-        if (Number.isFinite(age) && age >= 0 && age <= ttlMs) value = parse(stored?.value);
+        if (Number.isFinite(age) && age >= 0 && age <= ttlMs) value = parse(stored?.value ?? (legacyField ? stored?.[legacyField] : undefined));
       } catch {
         value = null;
       }

@@ -81,8 +81,11 @@ async function readCloudAccess(
   try {
     const answer = await infra.commands.call<{ enabled: boolean }>("cloud.read", { action: "access" }, { fallback: { enabled: false }, retainLastRead: false });
     return { ...answer, enabled: direct ?? answer?.enabled === true };
-  } catch {
-    return { enabled: direct === true };
+  } catch (error) {
+    // Nothing learned from either side: let the page say it couldn't check.
+    if (direct == null) throw error;
+    forwardSignalToSentry("web.cloud_access_read_failed", {}, "cloud_access_read_failed", "info");
+    return { enabled: direct };
   }
 }
 

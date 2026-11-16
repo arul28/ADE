@@ -12,6 +12,7 @@ export const PENDING_TARGET_TTL_MS = 10 * 60_000;
 const stash = createLinkStash<DeeplinkTarget>({
   key: PENDING_TARGET_KEY,
   ttlMs: PENDING_TARGET_TTL_MS,
+  legacyField: "target",
   parse: (value) => (value && typeof value === "object" && typeof (value as { kind?: unknown }).kind === "string" ? (value as DeeplinkTarget) : null),
 });
 

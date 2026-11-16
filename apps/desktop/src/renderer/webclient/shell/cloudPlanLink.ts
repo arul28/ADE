@@ -80,7 +80,7 @@ function parseCloudLink(value: unknown): WebCloudLink | null {
   return null;
 }
 
-const stash = createLinkStash<WebCloudLink>({ key: CLOUD_LINK_KEY, ttlMs: CLOUD_LINK_TTL_MS, parse: parseCloudLink });
+const stash = createLinkStash<WebCloudLink>({ key: CLOUD_LINK_KEY, ttlMs: CLOUD_LINK_TTL_MS, parse: parseCloudLink, legacyField: "link" });
 
 export function stashCloudLink(link: WebCloudLink, nowMs = Date.now()): void {
   stash.write(link, nowMs);

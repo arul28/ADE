@@ -131,8 +131,6 @@ function BarRow({ bar, max }: { bar: Bar; max: number }) {
 }
 
 const WORKLOADS = [100, 300, 1000];
-/** A bill to the cent: plan arithmetic like 50 + 0.36 × 91.6 leaves float noise. */
-const money = (usd: number) => formatUsd(Math.round(usd * 100) / 100);
 
 /** 1. A month's bill for the hours picked, on each vendor's cheapest plan that runs them. */
 function BillChart({ className }: { className?: string }) {
@@ -140,7 +138,7 @@ function BillChart({ className }: { className?: string }) {
   const adeBill = adeMonthlyUsd(hours);
   const adePlan = planCostsFor(hours)[0]?.plan;
   const bars = sortBars([
-    { id: "ade", name: "ADE Cloud", sub: `${ADE_MACHINE} · ${adePlan?.name ?? ""} plan`, logo: ADE_LOGO, value: adeBill, label: money(adeBill), ade: true },
+    { id: "ade", name: "ADE Cloud", sub: `${ADE_MACHINE} · ${adePlan?.name ?? ""} plan`, logo: ADE_LOGO, value: adeBill, label: formatUsd(adeBill), ade: true },
     ...RIVALS.flatMap((rival): Bar[] => {
       const value = rival.monthlyUsd?.(hours);
       if (value == null) return [];
@@ -152,7 +150,7 @@ function BillChart({ className }: { className?: string }) {
           logo: rival.logo,
           source: rival.source,
           value,
-          label: `${rival.estimate ? "≈" : ""}${money(value)}`,
+          label: `${rival.estimate ? "≈" : ""}${formatUsd(value)}`,
           ade: false,
         },
       ];

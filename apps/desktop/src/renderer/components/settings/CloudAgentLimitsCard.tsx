@@ -28,8 +28,8 @@ export function CloudAgentLimitsCard() {
     try {
       const read = await bridge.getAgentLimits();
       setLimits(read);
-      // No answer means no computer could read them (the web app with every computer offline).
-      setError(read ? null : "Connect a computer to see what agents may do on their own.");
+      // No answer: no computer could read them (the web app with every computer offline, or an older ADE on it).
+      setError(read ? null : "ADE couldn't read what agents may do on their own. Connect a computer, or update ADE on it.");
     } catch (loadError) {
       setError(ipcErrorMessage(loadError) || "Couldn't read what agents may do.");
     }

@@ -3,8 +3,8 @@ import { planCostsFor } from "./cloudPricing";
 /**
  * What other agent apps charge for a cloud computer, for the home page's
  * charts: the apps ademark.dev measures, plus Replicas. Only apps that
- * publish a compute price are charted, and a chart drops any row whose
- * value the vendor's page does not give. Every number was read from the vendor's own
+ * publish an hourly compute price are charted; the monthly bill drops any
+ * row whose bill the vendor's page does not give. Every number was read from the vendor's own
  * pricing page on `CHECKED_ON`; an `estimate` is our arithmetic from that
  * page and is drawn with "≈". Re-check before changing copy around them.
  */
