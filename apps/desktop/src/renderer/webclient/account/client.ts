@@ -2,7 +2,8 @@ import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 import { captureError } from "../../../shared/sentry/capture";
 // Loaded on the first read, so the signed-out page does not pay for it.
-import type { AccountProjectListResult } from "../../../shared/accountProject";
+import type { AccountProjectChangeResult, AccountProjectListResult } from "../../../shared/accountProject";
+import { createCloudApiClient, type CloudApiClient } from "../../../shared/cloudApiClient";
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
@@ -1041,6 +1042,73 @@ export class BrowserAccountClient {
     // A checkout asks Stripe several things in a row; 8 s is too short for it.
     return await this.allowedDirectoryRequest(request, { timeoutMs: CLOUD_REQUEST_TIMEOUT_MS });
   }
+
+  /**
+   * Adds a GitHub repository to the account's project list (S13), from this
+   * browser with its own account token: the web's Add project, which needs
+   * no computer. The same answer shape as the desktop's `project.accountAdd`.
+   */
+  async addAccountProject(origin: string): Promise<AccountProjectChangeResult> {
+    const { ACCOUNT_PROJECT_PATHS, accountProjectAddRequestForOrigin, coerceAccountProjectView } = await import("../../../shared/accountProject");
+    const request = accountProjectAddRequestForOrigin(origin);
+    if (!request) return { ok: false, code: "invalid_repository", message: "That is not a GitHub repository." };
+    let answer: { status: number; body: unknown };
+    try {
+      answer = await this.allowedDirectoryRequest({ method: "POST", path: ACCOUNT_PROJECT_PATHS.root, body: { ...request } });
+    } catch (error) {
+      const code = parseCodedErrorMessage(error).code === "signed_out" ? "signed_out" : "unavailable";
+      return { ok: false, code, message: code === "signed_out" ? "Sign in to ADE to change your projects." : "ADE couldn't reach your account. Try again." };
+    }
+    const body = answer.body && typeof answer.body === "object" ? answer.body as Record<string, unknown> : {};
+    if (answer.status < 200 || answer.status >= 300) {
+      const error = body.error && typeof body.error === "object" ? body.error as Record<string, unknown> : {};
+      return {
+        ok: false,
+        code: typeof error.code === "string" ? error.code : `http_${answer.status}`,
+        message: typeof error.message === "string" && error.message.trim() ? error.message : "Your account refused the change.",
+      };
+    }
+    const raw = body.project && typeof body.project === "object" ? body.project as Record<string, unknown> : null;
+    const project = raw ? coerceAccountProjectView({ ...raw, removedAt: null, mergedInto: null }) : null;
+    if (!project) return { ok: false, code: "bad_answer", message: "Your account sent an answer ADE can't read." };
+    return { ok: true, project, created: body.created === true, revived: body.revived === true };
+  }
+
+  /**
+   * ADE Cloud's server routes for a browser with no computer (launches, their
+   * queued messages, the account's cloud sign-ins, the model list), with this
+   * browser's own account token. The token goes to the account directory and
+   * nowhere else; null when sign-in isn't configured.
+   */
+  cloudApi(): CloudApiClient | null {
+    const config = this.config;
+    if (!config) return null;
+    if (this.cloudApiClient?.baseUrl === config.directoryBaseUrl) return this.cloudApiClient.client;
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const client = createCloudApiClient({
+      baseUrl: config.directoryBaseUrl,
+      accessToken: async () => {
+        try {
+          return await this.getAccessToken();
+        } catch {
+          return null;
+        }
+      },
+      fetch: (input, init) => fetchImpl(input, {
+        ...init,
+        headers: { ...(init?.headers as Record<string, string> | undefined), "x-ade-correlation-id": createAccountDirectoryCorrelationId() },
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+      }),
+      timeoutMs: CLOUD_REQUEST_TIMEOUT_MS,
+    });
+    this.cloudApiClient = { baseUrl: config.directoryBaseUrl, client };
+    return client;
+  }
+
+  private cloudApiClient: { baseUrl: string; client: CloudApiClient } | null = null;
 
   /** A directory call whose path the caller already checked; one retry after a 401. */
   private async allowedDirectoryRequest(request: {

@@ -698,6 +698,12 @@ export function createFederatedWebAdapter({
     async accountList() {
       return await accountClient.readAccountProjects();
     },
+    // Add project on the web puts a GitHub repository on the account, with
+    // this browser's own account token: no computer needed (S13).
+    // The caller records the added row (`noteAccountProjectChange`).
+    async accountAdd(origin: string) {
+      return await accountClient.addAccountProject(origin);
+    },
     // A connected machine read a changed list from the account: read it too.
     onAccountListChanged(cb: () => void) {
       return manager.subscribeAccountProjectsChanged(cb);

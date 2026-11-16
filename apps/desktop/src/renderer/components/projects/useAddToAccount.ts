@@ -11,11 +11,12 @@ import { showToast } from "../app/toast/toastStore";
  * add runs beside the clones, and a signed-out client or an address only the
  * cloning computer can read is not an error.
  */
-export function useAddToAccount(args: { webMode: boolean; folderName: string; onClose: () => void }) {
-  const { webMode, folderName, onClose } = args;
+export function useAddToAccount(args: { folderName: string; onClose: () => void }) {
+  const { folderName, onClose } = args;
   const [accountError, setAccountError] = useState<string | null>(null);
   const [addingToAccount, setAddingToAccount] = useState(false);
-  const canAddToAccount = !webMode && typeof window.ade?.project?.accountAdd === "function";
+  // ADE Web adds with the browser's own account token (no computer needed).
+  const canAddToAccount = typeof window.ade?.project?.accountAdd === "function";
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -46,7 +47,7 @@ export function useAddToAccount(args: { webMode: boolean; folderName: string; on
     noteAccountProjectChange({ added: answer.project });
     if (options.openTab) {
       useAppStore.getState().showNoMachineTab({ id: answer.project.id, displayName: answer.project.name, iconDataUrl: null });
-      showToast({ tone: "success", title: `Added ${answer.project.name} to your account`, message: "No computer has a copy yet." });
+      showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Send a chat from its page to start work on ADE Cloud." });
       onClose();
     }
     return true;

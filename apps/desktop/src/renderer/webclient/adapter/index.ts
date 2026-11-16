@@ -32,7 +32,7 @@ import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
 import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
-import { createWebCloudAccessNamespace, createWebCloudNamespace } from "./cloud";
+import { createWebCloudAccessNamespace, createWebCloudNamespace, createWebCloudLaunchesNamespace } from "./cloud";
 import { createWebProviderLoginsNamespace } from "./providerLogins";
 import { createGithubAccountAppWebMethods } from "./githubStub";
 import { createWebGithubDirectNamespace } from "../github/directAdapter";
@@ -173,6 +173,8 @@ export function createAdeWebAdapter(
     // Settings › ADE Cloud and the machine lists read the account through the connected machine;
     // the plan and billing calls go to the account server with this browser's own sign-in.
     cloud: createWebCloudNamespace(infra, accountClient),
+    // A chat on ADE Cloud from the account server itself, with no computer of the person's own.
+    cloudLaunches: createWebCloudLaunchesNamespace(accountClient),
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

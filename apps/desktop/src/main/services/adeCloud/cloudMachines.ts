@@ -13,32 +13,20 @@ import {
   CLOUD_MADE_BY_CHAT_METADATA,
   isCloudInstanceId,
   cloudCatalogOf,
-  cloudHoursRate,
-  cloudMachineKindOf,
-  cloudMachineState,
-  cloudMachineType,
   cloudShape,
-  cloudDiskFullMessage,
-  CLOUD_DISK_FULL_METADATA,
-  CLOUD_DISK_FULL_REASON_METADATA,
-  cloudShapeFor,
   cloudStatusAwake,
   type CloudAccountState,
   type CloudMachine,
   type CloudMachineActionArgs,
-  type CloudMachineUpdate,
-  type CloudCatalog,
   type CloudMachineActionResult,
   type CloudMachinesResult,
-  type CloudResources,
   readCloudInviteRefusalReason,
   type CloudInviteRedeemOutcome,
   type CloudReferralSummary,
 } from "../../../shared/adeCloud";
-import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "../../../shared/cloudLaneLaunch";
+import { CLOUD_MACHINE_KEY_METADATA, cloudMachineOfInstance as toCloudMachine, cloudResourcesOfInstance } from "../../../shared/cloudMachineOfInstance";
 import { CLOUD_ACCESS_REFUSED, CloudProviderError, type CloudProvider, type CloudInstance } from "./cloudProvider";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
-import { cloudSleepPolicyOf } from "./cloudSleep";
 import { wakeThroughTransition } from "./cloudInstanceOps";
 import { getErrorMessage } from "../shared/utils";
 import { withDeadline } from "../shared/withTimeout";
@@ -49,7 +37,7 @@ type Logger = {
 };
 
 /** The metadata key ADE writes once a box joins the account: its ADE machine key. */
-export const CLOUD_MACHINE_KEY_METADATA = "ade_machine_key";
+export { CLOUD_MACHINE_KEY_METADATA } from "../../../shared/cloudMachineOfInstance";
 
 /**
  * The machine keys of the computers a move replaced, oldest first, joined by
@@ -104,62 +92,6 @@ export type CloudMachinesDeps = {
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 };
-
-function resourcesOf(instance: CloudInstance): CloudResources | null {
-  const raw = instance.resources;
-  if (!raw || !raw.cpu || !raw.memory) return null;
-  return { cpu: raw.cpu, memoryGb: raw.memory, diskGb: raw.disk };
-}
-
-/**
- * One computer as the list shows it. A lane computer also carries its lane
- * facts from its metadata (`CloudLaneMachine.lane`), so the composer can list
- * a project's ADE Cloud lanes without waking any of them.
- */
-function toCloudMachine(instance: CloudInstance, catalog: CloudCatalog): CloudLaneMachine {
-  const lane = cloudMachineLaneFactsOf(instance.metadata);
-  const resources = resourcesOf(instance);
-  const type = cloudMachineType(instance.type);
-  const shape = cloudShapeFor(resources);
-  return {
-    instanceId: instance.id,
-    name: instance.name,
-    status: instance.status,
-    state: cloudMachineState(instance.status),
-    type,
-    resources,
-    shapeId: shape?.id ?? null,
-    region: instance.region,
-    hoursRate: shape ? cloudHoursRate(cloudMachineKindOf(type), shape.id, catalog) : null,
-    pastDue: instance.pastDue,
-    failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
-    machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
-    createdAtMs: instance.created != null ? instance.created * 1000 : null,
-    sleep: cloudSleepPolicyOf(instance),
-    diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
-    update: updateOf(instance),
-    // Use facts the computer reported while awake: read with the list, no wake.
-    lastActiveAtMs: instance.lastActiveAt ?? null,
-    diskUsage: instance.diskUsage ?? null,
-    laneWork: instance.laneWork ?? null,
-    ...(lane ? { lane } : {}),
-    replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
-  };
-}
-
-/** The server's update facts, or null from a server before updates. */
-function updateOf(instance: CloudInstance): CloudMachineUpdate | null {
-  if (!instance.channel) return null;
-  return {
-    channel: instance.channel === "beta" ? "beta" : "stable",
-    image: instance.templateVersion ?? null,
-    target: instance.targetTemplate ?? null,
-    auto: instance.autoUpdate === true,
-    state: instance.updateState === "updating" || instance.updateState === "failed" ? instance.updateState : "auto",
-    error: instance.updateState === "failed" ? instance.updateError ?? null : null,
-    updatedAtMs: instance.updatedAt ?? null,
-  };
-}
 
 /** The ADE machine keys of the account's computers that still exist. */
 function liveMachineKeys(instances: readonly CloudInstance[]): Set<string> {
@@ -493,7 +425,7 @@ export function createCloudMachines(deps: CloudMachinesDeps) {
           const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
           if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
           const instance = await client.getInstance(instanceId);
-          const current = resourcesOf(instance);
+          const current = cloudResourcesOfInstance(instance);
           if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
           const growDisk = disk != null && disk > current.diskGb;
           if (!shape) {

@@ -183,7 +183,7 @@ export function AddProjectForm({
   const urlValid = isGitHubRepoUrl(repoUrl);
   const repoKey = urlValid ? repoKeyForUrl(repoUrl) : null;
   const folderName = urlValid ? repoNameForUrl(repoUrl) : "";
-  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ webMode, folderName, onClose });
+  const { accountError, addingToAccount, canAddToAccount, addToAccount } = useAddToAccount({ folderName, onClose });
 
   useEffect(() => (repoKey ? watchCopyJobs(repoKey) : undefined), [repoKey]);
   const jobs = useCopyJobs(repoKey);

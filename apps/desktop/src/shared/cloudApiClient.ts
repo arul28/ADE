@@ -16,6 +16,7 @@
 import {
   CLOUD_INSTANCE_HEADER,
   CLOUD_PATHS,
+  type CloudAccountSignIns,
   type CloudAccountState,
   type CloudAutomationRegistered,
   type CloudAutomationRegistration,
@@ -30,6 +31,8 @@ import {
   type CloudLaunchMessageRequest,
   type CloudLaunchRecord,
   type CloudLaunchStagesUpdate,
+  type CloudLaunchStartRequest,
+  type CloudModelCatalog,
   type CloudProjectComputersDeleteStarted,
   type CloudProjectComputersJob,
   type CloudProjectComputersPreview,
@@ -141,6 +144,12 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       }),
     /** 201 for a new launch; the same `launchId` again answers the same launch. */
     startLaunch: (launch: CloudServerLaunchRequest) => request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
+    /**
+     * The web and the phone's start: `project` may be `{ accountProjectId }`,
+     * and `lane` and `sizeId` may be left out (a new lane named from the first
+     * message, Small). The same `launchId` again answers the same launch.
+     */
+    startAccountLaunch: (launch: CloudLaunchStartRequest) => request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
     launchStatus: (launchId: string) => request<CloudLaunchRecord>("GET", launchPath(launchId)),
     /** The caller's launches still in progress (and failures of the last day). */
     activeLaunches: () => request<CloudLaunchList>("GET", `${CLOUD_PATHS.launches}?active=1`),
@@ -169,6 +178,16 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
       request<CloudRemoteSignInStatus>("POST", `${instancePath(instanceId)}/sign-ins/${encodeURIComponent(jobId)}/code`, { body: { code }, timeoutMs: timeoutMs * 3 }),
     signInStatus: (instanceId: string, jobId: string) =>
       request<CloudRemoteSignInStatus>("GET", `${instancePath(instanceId)}/sign-ins/${encodeURIComponent(jobId)}`, { timeoutMs: timeoutMs * 3 }),
+
+    /* ---- The account's ADE Cloud sign-ins (status only, never a value) ---- */
+    accountSignIns: () => request<CloudAccountSignIns>("GET", CLOUD_PATHS.signIns),
+    /** A key, or for `claude` a Claude pass, saved to the account vault. */
+    saveAccountSignIn: (signInId: string, key: string) =>
+      request<CloudAccountSignIns>("PUT", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`, { body: { key } }),
+    removeAccountSignIn: (signInId: string) =>
+      request<CloudAccountSignIns>("DELETE", `${CLOUD_PATHS.signIns}/${encodeURIComponent(signInId)}`),
+    /** Models per provider, for a picker before any computer exists. */
+    modelCatalog: () => request<CloudModelCatalog>("GET", CLOUD_PATHS.models),
 
     /* ---- A project's computers ---- */
     previewProjectComputers: (origin: string) =>

@@ -1,3 +1,5 @@
+import { cloudCatalogOf } from "../../../shared/adeCloud";
+import { cloudMachineOfInstance } from "../../../shared/cloudMachineOfInstance";
 import type {
   CloudAgentLimits,
   CloudMachineActionArgs,
@@ -11,6 +13,8 @@ import type { CloudSavedChatList, CloudSavedChatPage } from "../../../shared/clo
 import type { AdapterInfra } from "./types";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import { UnsupportedRemoteCommandError } from "./infra/commandCaller";
+import type { AccountCloudLaunchesBridge } from "../../../shared/accountCloudLaunches";
+import type { BrowserAccountClient } from "../account/client";
 
 /**
  * `window.ade.cloud` for the web app: enough for Settings › ADE Cloud (the
@@ -112,7 +116,7 @@ export function createWebCloudAccessNamespace(
 
 export function createWebCloudNamespace(
   infra: Pick<AdapterInfra, "client" | "commands">,
-  accountClient: CloudBillingAccountClient,
+  accountClient: CloudBillingAccountClient & Partial<Pick<BrowserAccountClient, "cloudApi">>,
 ): NonNullable<Window["ade"]["cloud"]> {
   const { client, commands } = infra;
   const billing = createWebCloudBilling(accountClient);
@@ -121,17 +125,28 @@ export function createWebCloudNamespace(
 
   const access = async (): Promise<boolean> => (await readCloudAccess(infra, billing)).enabled;
 
-  /** No computer online: the plan and hours straight from the account server; listing computers needs one. */
+  /**
+   * No computer online: the plan, hours and the account's ADE Cloud computers
+   * straight from the account server (`GET /cloud/instances`), so a person
+   * with no computer of their own still sees their cloud lanes. A failed list
+   * leaves the computers unread and the plan standing.
+   */
   const accountOnly = async (): Promise<CloudMachinesResult> => {
     const account = await billing.readAccount();
+    const api = accountClient.cloudApi?.() ?? null;
+    const instances = api ? await api.listComputers().catch(() => null) : null;
+    const catalog = cloudCatalogOf(account);
+    const machines = instances
+      ? instances.filter((instance) => instance.status !== "deleted").map((instance) => cloudMachineOfInstance(instance, catalog))
+      : [];
     return {
       state: "ok",
-      machines: [],
-      instanceCount: account.computers?.total ?? null,
+      machines,
+      instanceCount: account.computers?.total ?? (instances ? machines.length : null),
       runningCount: account.computers?.awake ?? null,
       account,
       message: null,
-      computersUnread: true,
+      ...(instances ? {} : { computersUnread: true }),
     };
   };
 
@@ -248,5 +263,34 @@ export function createWebCloudNamespace(
     setExtraHours: (enabled) => billing.setExtraHours(enabled),
     setExtraDisk: (choice) => billing.setExtraDisk(choice),
     pickPlanCleanup: (input) => billing.pickPlanCleanup(input),
+  };
+}
+
+/**
+ * `window.ade.cloudLaunches` for the web app: a chat on ADE Cloud started
+ * straight from the account server (`POST /cloud/launches`), with no
+ * computer of the person's own. The first message is stored with the launch,
+ * so the tab may close. Account-level: no pin, and never the tab's machine.
+ */
+export function createWebCloudLaunchesNamespace(
+  accountClient: Pick<BrowserAccountClient, "cloudApi">,
+): AccountCloudLaunchesBridge {
+  const api = () => {
+    const client = accountClient.cloudApi();
+    if (!client) throw new Error("Account sign-in isn't configured for this web client.");
+    return client;
+  };
+  return {
+    start: (launch) => api().startAccountLaunch(launch),
+    status: (launchId) => api().launchStatus(launchId),
+    active: () => api().activeLaunches(),
+    cancel: (launchId) => api().cancelLaunch(launchId),
+    messages: (launchId) => api().launchMessages(launchId),
+    addMessage: (launchId, message) => api().addLaunchMessage(launchId, message),
+    sendSignInCode: (instanceId, jobId, code) => api().sendSignInCode(instanceId, jobId, code),
+    signIns: () => api().accountSignIns(),
+    saveSignIn: (signInId, key) => api().saveAccountSignIn(signInId, key),
+    removeSignIn: (signInId) => api().removeAccountSignIn(signInId),
+    models: () => api().modelCatalog(),
   };
 }

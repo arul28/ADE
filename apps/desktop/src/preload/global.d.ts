@@ -2,6 +2,7 @@ import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopy
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
+import type { AccountCloudLaunchesBridge } from "../shared/accountCloudLaunches";
 import type { SavedWindowRepositoryTabs } from "../shared/windowRepositoryTabs";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineAddress, MachineConnectOptions, MachineConnectResult } from "../shared/machineAddress";
@@ -5041,6 +5042,13 @@ declare global {
         read: () => Promise<{ enabled: boolean; signInEnd?: CloudSignInEnd | null }>;
         onChanged: (cb: () => void) => () => void;
       };
+      /**
+       * ADE Cloud launches from the account server, for a client with no
+       * computer of its own (the web app). Account-level: no pin, and never
+       * the tab's machine. Absent on the desktop, whose own launch service
+       * makes a lane's computer.
+       */
+      cloudLaunches?: AccountCloudLaunchesBridge;
       /**
        * ADE Cloud, account-wide: the machines and
        * new machines made on it. No pin: nothing here acts on a lane, chat or

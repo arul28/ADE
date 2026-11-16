@@ -101,3 +101,18 @@ export function useAccountGithubIssue(repo: GithubDirectRepoRef | null, number: 
     refresh,
   };
 }
+
+const REPOSITORIES_REQUEST = { op: "listRepositories" as const, params: { maxPages: 1 } };
+
+/**
+ * The repositories the account's GitHub sign-in can see (one page), newest
+ * push first: the Add a project step's one-tap chips. Off while `enabled` is false.
+ */
+export function useAccountGithubRepositories(enabled: boolean) {
+  const read = useAccountGithubRead<"listRepositories">(enabled ? REPOSITORIES_REQUEST : null);
+  const repositories = useMemo(
+    () => (read.data ?? []).slice().sort((a, b) => Date.parse(b.pushedAt ?? "") - Date.parse(a.pushedAt ?? "") || a.fullName.localeCompare(b.fullName)),
+    [read.data],
+  );
+  return { ...read, repositories };
+}

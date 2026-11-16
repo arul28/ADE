@@ -49,7 +49,6 @@ import { useHomeLayoutStore } from "../home/homeLayout";
 import { useHomePageWiring } from "../home/useHomePageWiring";
 import { useBackgroundContextMenu } from "../../scene/BackgroundContextMenu";
 import {
-  WebAddProjectNotice,
   WebZeroMachines,
   webZeroMachinesNotice,
 } from "./ProjectWelcomeWebNotices";
@@ -62,6 +61,8 @@ import type {
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { useHomeAccountProjects } from "./useHomeAccountProjects";
+import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStartedCard";
+import { useHasOwnComputer } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
 
@@ -72,8 +73,6 @@ const HomeEditTools = lazy(() => import("../home/HomeEditTools"));
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
-/** Where a web user with no computer gets ADE. */
-const ADE_DOWNLOAD_PAGE_URL = "https://ade-app.dev/";
 
 
 export function ProjectWelcomePage() {
@@ -92,7 +91,6 @@ export function ProjectWelcomePage() {
   // The first recents read finished (or failed): Home's catalog read waits for it.
   const [recentsLoaded, setRecentsLoaded] = useState(false);
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
-  const [webAddProjectNoticeOpen, setWebAddProjectNoticeOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -294,7 +292,6 @@ export function ProjectWelcomePage() {
     remoteSnapshot,
     pendingForgetKeys,
   });
-  const accountProjectCount = homeList.accountCount ?? 0;
   const homeRows = useMemo(
     () => [...homeList.accountRows, ...homeList.localGroups.flatMap((group) => group.rows)],
     [homeList],
@@ -338,11 +335,6 @@ export function ProjectWelcomePage() {
           account: workspace.account,
           directoryLoading: workspace.directoryLoading,
           retryError: directoryRetryError,
-          accountProjectCount,
-          sharedLaneCount: sharedRows.length,
-          onGetAde: () => {
-            void window.ade.app.openExternal(ADE_DOWNLOAD_PAGE_URL).catch(() => undefined);
-          },
           onRetry: () => {
             setDirectoryRetryError(null);
             void workspace.retryDirectory().catch((error) => {
@@ -357,7 +349,7 @@ export function ProjectWelcomePage() {
           },
         })
       : null
-  ), [accountProjectCount, directoryRetryError, sharedRows.length, webMachines.length, webMode, workspace]);
+  ), [directoryRetryError, webMachines.length, webMode, workspace]);
 
   const openWebChats = useCallback(() => {
     if (!workspace || !activeWebMachine) return;
@@ -599,7 +591,15 @@ export function ProjectWelcomePage() {
 
   const browserAvailable = !webMode && browserTabAvailable();
   const musicAvailable = !webMode && musicTabAvailable();
-  const showSide = !webMode || webMachines.length > 0;
+  // The normal Home on every client: the widgets show with no computer too.
+  const showSide = true;
+  // A chat with no project runs on a computer of the person's own; with
+  // none it is hidden (nothing says a computer is needed).
+  const hasOwnComputer = useHasOwnComputer();
+  const getStarted = useGetStartedState({
+    priorWork: webMode ? hasOwnComputer && webRecents.length > 0 : !recentsLoaded || recentProjects.length > 0,
+  });
+  const showChatWithoutProject = !webMode || (hasOwnComputer && activeWebMachine != null);
 
 
 
@@ -681,18 +681,18 @@ export function ProjectWelcomePage() {
         key: "add-project",
         label: "Add project…",
         icon: Plus,
-        disabled: webMode && !activeWebMachine,
-        onSelect: () => (webMode ? setWebAddProjectNoticeOpen(true) : setProjectBrowserOpen(true)),
+        onSelect: () => setProjectBrowserOpen(true),
       },
-      {
+    ];
+    if (showChatWithoutProject) {
+      entries.push({
         kind: "item",
         key: "chat",
         label: "Chat without a project",
         icon: ChatCircleDots,
-        disabled: webMode && !activeWebMachine,
         onSelect: () => (webMode ? openWebChats() : navigate("/chats")),
-      },
-    ];
+      });
+    }
     entries.push({
       kind: "item",
       key: "customize-home",
@@ -716,7 +716,7 @@ export function ProjectWelcomePage() {
       });
     }
     return entries;
-  }, [activeWebMachine, browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, webMode]);
+  }, [browserAvailable, musicAvailable, navigate, openWebChats, setEditingHome, showChatWithoutProject, webMode]);
   const backgroundMenu = useBackgroundContextMenu(backgroundPageEntries);
 
   return (
@@ -825,26 +825,15 @@ export function ProjectWelcomePage() {
                 label="Add project"
                 tour="project.welcomeAddButton"
                 onboardingAnchor="add-project"
-                disabled={webMode && !activeWebMachine}
-                title={
-                  webMode && !activeWebMachine
-                    ? "Connect a machine first — projects are added on the machine that hosts them."
-                    : undefined
-                }
-                onClick={() => {
-                  if (!webMode) {
-                    setProjectBrowserOpen(true);
-                    return;
-                  }
-                  setWebAddProjectNoticeOpen(true);
-                }}
+                onClick={() => setProjectBrowserOpen(true)}
               />
-              <HomeAction
-                icon={ChatCircleDots}
-                label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
-                disabled={webMode && !activeWebMachine}
-                onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-              />
+              {showChatWithoutProject ? (
+                <HomeAction
+                  icon={ChatCircleDots}
+                  label={webMode && activeWebMachine ? `Chat on ${activeWebMachine.name}` : "Chat without a project"}
+                  onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+                />
+              ) : null}
               {/* The desktop's own browser and Apple Music, each a tab of its
                   own, as square app-icon buttons beside the text actions. */}
               {browserAvailable ? (
@@ -876,12 +865,10 @@ export function ProjectWelcomePage() {
           )}
         />
 
-        {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
-          <WebAddProjectNotice
-            machineName={activeWebMachine.name}
-            onDismiss={() => setWebAddProjectNoticeOpen(false)}
-          />
+        {getStarted.show && !editingHome ? (
+          <GetStartedCard state={getStarted} onAddProject={() => setProjectBrowserOpen(true)} />
         ) : null}
+        {webMode && !hasOwnComputer && getStarted.finished && !editingHome ? <InstallAdeChip /> : null}
         {/* Above the recents list, not inside it: "Chat without a project"
             reports its failures here too, and that button works with zero
             recents — where a banner scoped to the list rendered nothing. */}
