@@ -81,7 +81,7 @@ function MixCard() {
       <div className="relative flex flex-col items-center gap-6 md:flex-row md:justify-between">
         <div className="min-w-0 text-center md:text-left">
           <p className="text-[12px] font-medium uppercase tracking-[0.14em] text-white/45">Mix your own</p>
-          <p key={index} className="ade-pop-in mt-2 whitespace-nowrap text-[clamp(18px,1.8vw,26px)] font-semibold tracking-[-0.01em] text-white">
+          <p key={index} className="ade-pop-in mt-2 text-[clamp(18px,1.8vw,26px)] md:whitespace-nowrap font-semibold tracking-[-0.01em] text-white">
             Run {pairing.model.name} inside {pairing.harness.name}.
           </p>
           <p className="mt-1 text-[14px] text-white/50">Any model, in any agent, through {pairing.via}.</p>

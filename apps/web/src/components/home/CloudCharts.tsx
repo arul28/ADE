@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { ADE_MACHINE, CHECKED_ON, NO_CLOUD, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
 import { FREE_PLAN, PRICING_PLANS, formatCount, formatUsd, planCostsFor } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
@@ -90,11 +90,18 @@ function CompactBarRow({ bar, max }: { bar: Bar; max: number }) {
   );
 }
 
-/** One vendor on one line. The bar stops at 82% of the track so the value always fits after it. */
+/**
+ * One vendor on one line. The bar stops at 82% of the track so the value always fits after it.
+ * A phone has no room for the name column beside the bar, so it gets the compact row.
+ */
 function BarRow({ bar, max }: { bar: Bar; max: number }) {
   const width = Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
   return (
-    <div className="grid grid-cols-[28px_minmax(0,210px)_1fr] items-center gap-3">
+    <>
+    <div className="sm:hidden">
+      <CompactBarRow bar={bar} max={max} />
+    </div>
+    <div className="hidden grid-cols-[28px_minmax(0,210px)_1fr] items-center gap-3 sm:grid">
       <Mark src={bar.logo} name={bar.name} />
       <div className="min-w-0">
         {bar.source ? (
@@ -119,6 +126,7 @@ function BarRow({ bar, max }: { bar: Bar; max: number }) {
         </span>
       </div>
     </div>
+    </>
   );
 }
 
@@ -266,7 +274,19 @@ function NoCloudCard() {
         {NO_CLOUD.map((app) => (
           <li key={app.name} className="flex min-w-0 items-center gap-2.5 opacity-55 grayscale">
             <Mark src={app.logo} name={app.name} size={26} />
-            <span className="min-w-0 text-[13.5px] leading-tight text-white/75 [overflow-wrap:anywhere]">{app.name}</span>
+            <span className="min-w-0 text-[13.5px] leading-tight text-white/75">
+              {/* A long dotted name may break after its dot, never mid-word. */}
+              {app.name.split(".").map((part, i) => (
+                <Fragment key={i}>
+                  {i > 0 ? (
+                    <>
+                      .<wbr />
+                    </>
+                  ) : null}
+                  {part}
+                </Fragment>
+              ))}
+            </span>
           </li>
         ))}
       </ul>
