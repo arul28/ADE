@@ -1492,8 +1492,8 @@ when it is shown (about 5 ms more per reveal).
 
 ### Brain: file watchers
 
-On macOS every watcher polls (`withMacosSafeChokidarOptions`): each path under
-the watched root is checked once a second on the brain's worker threads.
+Before the native tree watch, every watcher on macOS polled: each path under
+the watched root was checked once a second on the brain's worker threads.
 
 | Metric | How | Before | Baseline | Ceiling |
 |---|---|---:|---:|---:|
@@ -1515,6 +1515,19 @@ is now watched with one recursive native watch (`watchTree`,
 | Time until the watcher is ready, repository root | same | 423-438 ms | 94-97 ms | 250 ms |
 | Longest event-loop block on open and close | same | 30 ms | 2 ms | 20 ms |
 | The same block with chokidar's own native mode (why polling was chosen) | same, `WITH_NATIVE_CHOKIDAR=1` | 13,207 ms | not used | - |
+
+The three config files of each open project (`ade.yaml`, `local.yaml`,
+`local.secret.yaml`) went through the same 1 s poll. They now have one native
+watch each (`watchFileSet`, `services/shared/fileSetWatcher.ts`). A missing
+file is checked every 5 s. A watched file gets a 30 s safety stat, because a
+network volume sends no native event for an edit made on another machine.
+Measured 2026-11-16 on this Mac (Node 26.3) with a Node process that holds
+only the watch, `proc_pid_rusage` over 20 s (before) and 90 s (after):
+
+| Metric | How | Before | Baseline | Ceiling |
+|---|---|---:|---:|---:|
+| Wakeups a second from the config watch of one open project, one file missing | `proc_pid_rusage` wakeups | 2.65 | 0.66 | 1 |
+| The same with all three files present | same | 2.35 | 0.24 | 0.5 |
 
 ### Brain: memory a loaded brain keeps
 

@@ -1,7 +1,6 @@
-import chokidar, { type FSWatcher } from "chokidar";
 import type { Logger } from "../logging/logger";
 import type { AdeProjectEvent, AdeProjectSnapshot } from "../../../shared/types";
-import { withMacosSafeChokidarOptions } from "../shared/chokidarOptions";
+import { watchFileSet, type FileSetWatcher } from "../shared/fileSetWatcher";
 import { nowIso } from "../shared/utils";
 
 type ConfigReloadServiceArgs = {
@@ -27,7 +26,9 @@ type ConfigReloadServiceArgs = {
 };
 
 export function createConfigReloadService(args: ConfigReloadServiceArgs) {
-  let watcher: FSWatcher | null = null;
+  let watcher: FileSetWatcher | null = null;
+  let starting = false;
+  let disposed = false;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingPaths = new Set<string>();
 
@@ -99,37 +100,32 @@ export function createConfigReloadService(args: ConfigReloadServiceArgs) {
 
   return {
     async start(): Promise<void> {
-      if (watcher) return;
-      watcher = chokidar.watch(
-        [args.paths.sharedPath, args.paths.localPath, args.paths.secretPath],
-        withMacosSafeChokidarOptions({
-          ignoreInitial: true,
-          awaitWriteFinish: {
-            stabilityThreshold: 150,
-            pollInterval: 50,
-          },
-        }),
-      );
-
-      watcher.on("error", () => {
-        // EMFILE or other watcher error — close gracefully, config will still work via manual reload
-        if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
-        const w = watcher;
-        watcher = null;
-        void w?.close().catch(() => {});
-      });
-
-      const onFsEvent = (filePath: string) => scheduleChange(filePath);
-      watcher.on("add", onFsEvent);
-      watcher.on("change", onFsEvent);
-      watcher.on("unlink", onFsEvent);
+      if (watcher || starting) return;
+      starting = true;
+      disposed = false;
+      try {
+        // A native watch on each file, with a slow poll only for a file that
+        // is missing or refused a watch (`fileSetWatcher.ts`). The debounce
+        // below waits for a write to go quiet before the reload reads it.
+        const next = await watchFileSet(
+          [args.paths.sharedPath, args.paths.localPath, args.paths.secretPath],
+          scheduleChange,
+        );
+        if (disposed) {
+          next.close();
+          return;
+        }
+        watcher = next;
+      } finally {
+        starting = false;
+      }
     },
 
     async dispose(): Promise<void> {
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
       pendingPaths.clear();
-      if (!watcher) return;
-      await watcher.close();
+      disposed = true;
+      watcher?.close();
       watcher = null;
     },
   };
