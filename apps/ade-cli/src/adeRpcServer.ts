@@ -7256,7 +7256,6 @@ async function runTool(args: {
             || !parseForeignCallerSessionId(row.chatSessionId))
           : value);
       }
-      if (action === "preview") transformScopedResult = agentTerminalPreview;
     } else if (
       !callerIsCto
       && domain === "chat"
@@ -7747,6 +7746,9 @@ async function runTool(args: {
     }
     await rememberCaptureActionResult(runtime, domain, action, result, session);
     if (transformScopedResult) result = transformScopedResult(result);
+    // Any model-driven caller, whatever its role (a CTO, a run, an outside AI
+    // app on ADE MCP), reads the screen as text; a person's client keeps the grid.
+    if (domain === "terminal" && action === "preview" && activityCaller(session) === "agent") result = agentTerminalPreview(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
       const sessionId = typeof result.sessionId === "string"
         ? result.sessionId
