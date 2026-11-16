@@ -101,6 +101,23 @@ export function beginChatSendTiming(enterAtMs?: number): ChatSendTimingHandle {
 }
 
 /**
+ * The pane committed the first bubble of a message in `sessionId`. An open
+ * chat's send marks its bubble itself; a chat that a draft launch opened draws
+ * the bubble from the launch's hand-off, in a pane that never held the send's
+ * handle, so this marks the bubble on the send being timed for that chat.
+ * Once per send, and a no-op when no send of the chat is being timed.
+ */
+export function noteChatSendBubbleShown(sessionId: string): void {
+  if (openBySession.size === 0) return;
+  const send = openBySession.get(sessionId);
+  if (!send || send.marks.bubbleSet !== undefined) return;
+  send.marks.bubbleSet = elapsed(send);
+  afterNextPaint(() => {
+    if (send.marks.bubblePainted === undefined) send.marks.bubblePainted = elapsed(send);
+  });
+}
+
+/**
  * Called for each live chat event the pane takes in. Cheap when no send of
  * that chat is being timed: one map read.
  */

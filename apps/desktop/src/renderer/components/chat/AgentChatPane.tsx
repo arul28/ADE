@@ -243,7 +243,7 @@ import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspa
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
-import { beginChatSendTiming, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
+import { beginChatSendTiming, noteChatSendBubbleShown, noteChatSendTimingEvent, type ChatSendTimingHandle } from "./chatSendTiming";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
@@ -2006,6 +2006,21 @@ function peekAgentChatSessionViewCache(sessionId: string | null | undefined): Ag
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return null;
   if (!sessionId) return null;
   return agentChatSessionViewCacheBySessionId.get(sessionId) ?? null;
+}
+
+/**
+ * `ade:chat-open:history-asked` / `-answered` marks around a transcript read
+ * (`resume`: a delta read after a cached view). Only the latest pair is kept,
+ * so the timeline does not grow.
+ */
+function markChatHistoryRead(step: "asked" | "answered", detail: { resume: boolean; events?: number }): void {
+  const name = `ade:chat-open:history-${step}`;
+  try {
+    performance.clearMarks(name);
+    performance.mark(name, { detail });
+  } catch {
+    // best effort
+  }
 }
 
 function readAgentChatSessionViewCache(sessionId: string | null | undefined): AgentChatSessionViewCache | null {
@@ -9319,7 +9334,11 @@ export function AgentChatPane({
             maxBytes: CHAT_HISTORY_PAGE_MAX_BYTES,
             ...(resumeFrom ? { afterOffset: resumeFrom.offset, historyGeneration: resumeFrom.generation } : {}),
           }, chatPin));
+          // Diagnostics: the last read's ask and answer, for a probe of a chat
+          // open (counts only; each read replaces the previous pair).
+          markChatHistoryRead("asked", { resume: resume !== null });
           let snapshot: AgentChatEventHistorySnapshot = await readSnapshot(resume);
+          markChatHistoryRead("answered", { resume: resume !== null, events: snapshot?.events?.length ?? 0 });
           if (resume && snapshot?.sessionId === sessionId && snapshot.resumedFromOffset === resume.offset) {
             // The delta opens with the last event this pane already had; if that
             // seam is gone (the view was trimmed or replaced meanwhile), read
@@ -10817,6 +10836,12 @@ export function AgentChatPane({
     optimisticOutgoingMessageRef.current = next;
     setOptimisticOutgoingMessage(next);
   }, []);
+  // Send timing: the commit that draws a message's first bubble. A chat a
+  // draft launch opened gets its bubble from the launch's hand-off here, not
+  // from the send path, which marks its own (`chatSendTiming.ts`).
+  useLayoutEffect(() => {
+    if (optimisticOutgoingMessage) noteChatSendBubbleShown(optimisticOutgoingMessage.sessionId);
+  }, [optimisticOutgoingMessage]);
 
   useEffect(() => {
     const optimistic = optimisticOutgoingMessageRef.current;
