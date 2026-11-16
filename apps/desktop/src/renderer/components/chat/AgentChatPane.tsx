@@ -551,6 +551,7 @@ import {
   takeComposerDockOrigin,
   type ComposerHandoff,
 } from "./launch/chatLaunchDock";
+import { noteSentDraftKeepsKeyboard } from "../work/workShortcuts";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import { adeCloudStartBranchReady, startAdeCloudLaunch } from "./launch/adeCloudLaunch";
@@ -13023,6 +13024,9 @@ export function AgentChatPane({
         });
       }
     }
+    // The prompt box the person typed in leaves with the send; the chat's own
+    // prompt box takes the keyboard on, so typing goes on without a click.
+    if (launch.draftKind === "chat") noteSentDraftKeepsKeyboard(launch.sessionId, shellRef.current);
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
         ...prev,

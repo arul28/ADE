@@ -146,8 +146,16 @@ let launchPromptFocus: {
   done: boolean;
   focused: { chatKey: string | null; layerKey: string | null } | null;
 } | null = null;
+/**
+ * A chat that a send from the new-chat box opened while its prompt box held
+ * the keyboard (`noteSentDraftKeepsKeyboard`). The box leaves the screen with
+ * the send, so its focus goes nowhere; the chat's own prompt box takes it on.
+ */
+let sentDraftPromptFocus: { chatKey: string; until: number } | null = null;
 /** A chat switch this soon after a pointer press counts as made by the pointer. */
 const POINTER_SWITCH_WINDOW_MS = 1_000;
+/** How long the opened chat may take to show its prompt box after the send. */
+const SENT_DRAFT_PROMPT_FOCUS_WAIT_MS = 3_000;
 const LAUNCH_PROMPT_FOCUS_WAIT_MS = 5_000;
 const POINTER_PROMPT_FOCUS_WAIT_MS = 1_000;
 
@@ -205,10 +213,23 @@ function findWorkInputIn(root: ParentNode): HTMLElement | null {
 }
 
 /**
+ * The new-chat box sent its prompt and opens `chatKey` now. When the box's
+ * prompt held the keyboard, the chat's prompt box takes it as soon as it
+ * shows, so the person keeps typing where they were. Call before the switch.
+ */
+export function noteSentDraftKeepsKeyboard(chatKey: string, draftRoot: Element | null): void {
+  if (typeof document === "undefined") return;
+  const active = document.activeElement;
+  if (!active || !draftRoot?.contains(active) || !active.closest("[data-chat-composer-text]")) return;
+  sentDraftPromptFocus = { chatKey, until: performance.now() + SENT_DRAFT_PROMPT_FOCUS_WAIT_MS };
+}
+
+/**
  * Gives the visible prompt box (or the CLI terminal) in `root` the keyboard
- * once the Work view shows a chat after launch, and after a pointer click
- * switches the chat. A switch made with the keyboard keeps the focus where it
- * is, and nothing takes the focus from a field, a dialog or a selection.
+ * once the Work view shows a chat after launch, after a send from the new-chat
+ * box opens it, and after a pointer click switches the chat. Any other switch
+ * made with the keyboard keeps the focus where it is, and nothing takes the
+ * focus from a field, a dialog or a selection.
  * `layerKey` names the view layer that shows the chat (the draft, a single
  * chat): at launch the keyboard follows the chat from the draft to its own
  * layer when the restore swaps them.
@@ -234,9 +255,13 @@ export function useWorkInputFocusOnChatSwitch(
       launch.focused == null
       || (launch.focused.chatKey === chatKey && launch.focused.layerKey !== layerKey)
     );
+    const sent = sentDraftPromptFocus;
+    const sendPending = sent != null && sent.chatKey === chatKey && now < sent.until;
     let deadline: number;
     if (launchPending) {
       deadline = launch.until;
+    } else if (sendPending) {
+      deadline = sent.until;
     } else if (
       previous
       && previous.key !== chatKey
@@ -253,6 +278,12 @@ export function useWorkInputFocusOnChatSwitch(
       if (!promptBoxMayTakeFocus()) {
         // The person put the keyboard somewhere first: launch focus is over.
         if (launchPending) launch.done = true;
+        // The new-chat box can stay on screen until the session list has the
+        // chat, with its prompt box still holding the keyboard. The keyboard
+        // moves on when that box leaves (the layer changes and this runs again).
+        const stillInPromptBox = document.activeElement?.closest("[data-chat-composer-text]") != null
+          && rootRef.current?.contains(document.activeElement) === true;
+        if (sendPending && sentDraftPromptFocus === sent && !stillInPromptBox) sentDraftPromptFocus = null;
         return;
       }
       const root = rootRef.current;
@@ -260,6 +291,7 @@ export function useWorkInputFocusOnChatSwitch(
       if (target) {
         target.focus({ preventScroll: true });
         if (launchPending) launch.focused = { chatKey, layerKey };
+        if (sendPending && sentDraftPromptFocus === sent) sentDraftPromptFocus = null;
         return;
       }
       if (performance.now() < deadline) frame = requestAnimationFrame(tick);
