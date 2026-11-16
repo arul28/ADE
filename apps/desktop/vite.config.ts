@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { sceneThreePlugin } from "./vite.sceneThree";
 import { linearPreloadHelperPlugin } from "./vite.preloadHelper";
 import { asciiChunksPlugin } from "./vite.asciiChunks";
+import { bootChunks } from "./vite.bootChunks";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -72,6 +73,9 @@ function vendorChunk(id: string): string | undefined {
   return undefined;
 }
 
+/** The Electron build's startup chunks (`vite.bootChunks.ts`); the demo keeps its own groups. */
+const startupChunks = bootChunks();
+
 export default defineConfig(({ mode }) => ({
   root: "src/renderer",
   base: "./",
@@ -82,6 +86,7 @@ export default defineConfig(({ mode }) => ({
     // The Electron build only: the website demo (`--mode demo`) keeps Vite's helper.
     // `ADE_VITE_PRELOAD_HELPER=vite` builds with Vite's own helper, for an A/B.
     ...(mode !== "demo" && process.env.ADE_VITE_PRELOAD_HELPER !== "vite" ? [linearPreloadHelperPlugin()] : []),
+    ...(mode !== "demo" ? [startupChunks.plugin] : []),
     asciiChunksPlugin(),
   ],
   optimizeDeps: {
@@ -123,7 +128,8 @@ export default defineConfig(({ mode }) => ({
       // host. Automatic chunking puts each small module shared by lazy chunks
       // (one per icon) in its own file, hundreds per page view, so the demo
       // keeps the app's groups and merges those small shared modules into one
-      // chunk. The Electron build keeps `manualChunks`.
+      // chunk. The Electron build keeps the app's groups and puts the startup
+      // modules in two chunks (`vite.bootChunks.ts`).
       output: mode === "demo"
         ? {
             codeSplitting: {
@@ -134,7 +140,12 @@ export default defineConfig(({ mode }) => ({
             },
           }
         : {
-            manualChunks: vendorChunk,
+            codeSplitting: {
+              groups: [
+                { name: (id: string) => vendorChunk(id) ?? null, priority: 3 },
+                ...startupChunks.groups,
+              ],
+            },
           },
     },
   },
