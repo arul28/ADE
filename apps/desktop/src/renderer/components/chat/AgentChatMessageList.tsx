@@ -6015,6 +6015,8 @@ const OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS = 400;
 const OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS = 150;
 /** Longest a page waits for a quiet scroll, so a scroll that never ends (or a lost pointerup) cannot hold it. */
 const OLDER_HISTORY_PREPEND_MAX_HOLD_MS = 2_000;
+/** How often a held page looks again, for the quiet spell or the reader reaching the top. */
+const OLDER_HISTORY_PREPEND_RECHECK_MS = 50;
 function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
   return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
 }
@@ -6696,6 +6698,11 @@ function AgentChatMessageListMain({
   const whenScrollQuiet = useCallback((): Promise<void> | null => {
     const busyFor = () => {
       if (readerPointerHeldRef.current || touchHeldRef.current) return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS;
+      // At the top the wheel has nothing left to move: the reader waits for
+      // this page, and the prepend cannot fight the gesture. Holding it here
+      // kept a reader who scrolled up without a pause at the top for the full
+      // hold (about 1.8 s) on every page.
+      if ((scrollRef.current?.scrollTop ?? Number.POSITIVE_INFINITY) < 1) return 0;
       return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS - (performance.now() - lastReaderScrollAtRef.current);
     };
     if (busyFor() <= 0) return null;
@@ -6707,7 +6714,8 @@ function AgentChatMessageListMain({
           resolve();
           return;
         }
-        setTimeout(check, Math.max(16, Math.min(wait, giveUpAt - performance.now())));
+        // Look at least every 50 ms, so a reader who reaches the top gets the page then.
+        setTimeout(check, Math.max(16, Math.min(wait, OLDER_HISTORY_PREPEND_RECHECK_MS, giveUpAt - performance.now())));
       };
       check();
     });
