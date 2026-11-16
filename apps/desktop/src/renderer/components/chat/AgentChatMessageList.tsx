@@ -7285,8 +7285,8 @@ function AgentChatMessageListMain({
   // What decides that a row draws nothing (`transcriptEventDrawsNothing`):
   // `renderEvent` and the Thought-run merge read the same answer.
   const rowDrawContext = useMemo<TranscriptRowDrawContext>(
-    () => ({ staleInterruptReceipts, usageLimitResumeActive }),
-    [staleInterruptReceipts, usageLimitResumeActive],
+    () => ({ staleInterruptReceipts, usageLimitResumeActive, ctoSurface }),
+    [staleInterruptReceipts, usageLimitResumeActive, ctoSurface],
   );
   // The rows the timeline draws: every fold applied, then Thought rows that
   // ended up next to each other (the rows between them are not drawn: tools,
@@ -7331,10 +7331,14 @@ function AgentChatMessageListMain({
     // The CTO thread's live turn: its thinking stays inside the one working
     // line (`CtoWorkingLine`) until the turn ends and the fold takes over.
     const calmTurnId = ctoSurface && showStreamingIndicator && !sessionEnded ? activeTurnId : null;
+    // A finished CTO turn has no stats line: the reply's hover footer keeps
+    // its time and Copy, and a hidden line still took a row of blank space.
+    // A wake turn's line stays: it is the toggle for that turn's fold.
     const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext)
-      && !(calmTurnId && row.event.type === "reasoning" && row.event.turnId === calmTurnId));
+      && !(calmTurnId && row.event.type === "reasoning" && row.event.turnId === calmTurnId)
+      && !(ctoSurface && row.event.type === "done" && row.event.status === "completed" && !wakeTurnFoldIdByTurnEndKey.has(row.key)));
     return drawn.length === arranged.rows.length ? arranged.rows : drawn;
-  }, [activeTurnId, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, sessionEnded, showStreamingIndicator, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
+  }, [activeTurnId, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, sessionEnded, showStreamingIndicator, turnFolds, unreadSince, wakeChains, wakeTurnFoldIdByTurnEndKey, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.

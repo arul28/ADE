@@ -5,7 +5,7 @@ import { CLAUDE_SESSION_QUOTA_CARD_VARIANT } from "../../../shared/claudeSession
 import { isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { parseTimestampMs } from "../../../shared/timestamps";
-import type { AgentChatEvent } from "../../../shared/types/chat";
+import { CTO_CONTEXT_REFRESHED_STATUS, type AgentChatEvent } from "../../../shared/types/chat";
 import type { ChatTranscriptGroupedEnvelope, RenderReasoningEvent } from "./chatTranscriptRows";
 
 // Thought runs: Thought rows that end up next to each other on screen drawn as
@@ -35,6 +35,11 @@ export type TranscriptRowDrawContext = {
   staleInterruptReceipts?: ReadonlySet<string>;
   /** A usage limit is live: the composer pill owns the quota card's story. */
   usageLimitResumeActive?: boolean;
+  /**
+   * The CTO's own thread. It hides the plumbing: its quiet context refreshes
+   * and the "approaching plan limit" warning (the usage ring says the same).
+   */
+  ctoSurface?: boolean;
 };
 
 const SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW = new Set([
@@ -91,6 +96,8 @@ export function transcriptEventDrawsNothing(
         && event.turnStatus !== "interrupted"
         && !(event.message ?? "").trim().length;
     case "system_notice": {
+      if (context?.ctoSurface && event.status === CTO_CONTEXT_REFRESHED_STATUS) return true;
+      if (context?.ctoSurface && event.noticeKind === "rate_limit" && event.severity !== "error") return true;
       if (event.noticeKind === "info" && event.status === "subagent_spawned") return isInlineCardSpawnNotice(event);
       if (event.status === "model_switched") return false;
       if (event.noticeKind === "info" && SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW.has(event.status ?? "")) return false;

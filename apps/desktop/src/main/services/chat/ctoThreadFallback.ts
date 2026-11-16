@@ -29,7 +29,7 @@ import {
 import { isUsageLimitFailureText, isUsageLimitTurn } from "../../../shared/usageLimitResumePresentation";
 
 /** Why the CTO gets a fresh provider thread. */
-export type CtoProviderThreadRefreshReason = "occupancy" | "compaction" | "overflow" | "model_fallback" | "manual";
+export type CtoProviderThreadRefreshReason = "occupancy" | "compaction" | "overflow" | "model_fallback" | "manual" | "cold_cache";
 
 /** Without a published reset, a CTO on a backup model tries its main model again after this. */
 const CTO_FALLBACK_RETRY_MAIN_MS = 30 * 60_000;

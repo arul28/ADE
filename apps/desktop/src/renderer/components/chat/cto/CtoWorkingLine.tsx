@@ -75,18 +75,34 @@ export function CtoWorkingLine({
   const hasSteps = toolEntries.length > 0;
   const Caret = open ? CaretDown : CaretRight;
 
+  const avatarState = !running && activity === "Thinking" ? "thinking" : "working";
+  const doneCount = toolEntries.filter((entry) => entry.status !== "running").length;
+  // The avatar at work, big enough to move (it holds still at 24 px and
+  // under): it bobs and reads while it works and types while it writes.
   const line = (
     <>
-      <CtoAvatar look={look} state={!running && activity === "Thinking" ? "thinking" : "working"} size={16} motion="lazy" />
-      <span className="ade-cto-working-step" title={step}>{step}</span>
-      <span className="ade-cto-working-sep" aria-hidden>·</span>
-      <span ref={attachTimer} className="ade-cto-working-time">0s</span>
-      {hasSteps ? <Caret size={9} weight="bold" className="ade-cto-working-caret" aria-hidden /> : null}
+      <span className="ade-cto-working-avatar" aria-hidden>
+        <span className="ade-cto-working-glow" />
+        <CtoAvatar look={look} state={avatarState} size={44} motion="live" />
+      </span>
+      <span className="ade-cto-working-text">
+        <span className="ade-cto-working-step" title={step}>{step}</span>
+        <span className="ade-cto-working-meta">
+          <span ref={attachTimer} className="ade-cto-working-time">0s</span>
+          {doneCount > 0 ? (
+            <>
+              <span className="ade-cto-working-sep" aria-hidden>·</span>
+              <span>{doneCount === 1 ? "1 step" : `${doneCount} steps`}</span>
+            </>
+          ) : null}
+          {hasSteps ? <Caret size={9} weight="bold" className="ade-cto-working-caret" aria-hidden /> : null}
+        </span>
+      </span>
     </>
   );
 
   return (
-    <div className="ade-cto-working" data-testid="cto-working-line" data-open={open ? "true" : undefined}>
+    <div className="ade-cto-working" data-testid="cto-working-line" data-open={open ? "true" : undefined} data-state={avatarState}>
       {hasSteps ? (
         <button
           type="button"

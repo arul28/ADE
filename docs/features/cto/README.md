@@ -77,9 +77,9 @@ The model's own thread is disposable. `refreshCtoProviderThread(managed, reason)
 1. Refuses while a turn is running or an account move holds the thread (Smart Balance, an account switch, a move to another machine), and records the reason on `managed.ctoRefreshPending`, persisted with the chat state, so the next settled turn runs it, after a restart too.
 2. Tears the runtime down with a non-preserving reason, then forgets every provider pointer: the thread id, Claude's SDK session (and background-resume id and fork fields), the provider session id and its seeded copy, Cursor's SDK agent and run ids, Droid's, Copilot's and ACP session ids, Pi's session id and file, and Muse's session id. Claude also gets `claudeFreshThreadPending`, because that runtime resumes from a persisted SDK id. Both copies of the chat metadata file are written, so neither can hand the old thread back.
 3. Re-stages the once-per-thread half of the turn context (the static prompt and the conversation tail) and rebuilds the volatile half, so the next send opens a new thread carrying the doctrine, the notes, the open work, the live state and the last 40 messages. The CTO never gets a full transcript replay.
-4. Emits one quiet `system_notice` with status `cto_context_refreshed`: "Fresh context — notes, open work and the last 40 messages carried over." The page draws it as a hairline divider.
+4. Emits one quiet `system_notice` with status `cto_context_refreshed`: "Fresh context — notes, open work and the last 40 messages carried over." The CTO page and the iOS CTO thread draw nothing for it (the thread stays quiet); anywhere else, such as the Work tab, it is a hairline divider.
 
-The reasons are `occupancy`, `compaction`, `overflow`, `model_fallback` and `manual`. A CTO running on a Cursor Cloud agent keeps its cloud agent and refuses the refresh.
+The reasons are `occupancy`, `compaction`, `overflow`, `model_fallback`, `manual` and `cold_cache`. A CTO running on a Cursor Cloud agent keeps its cloud agent and refuses the refresh.
 
 Triggers, all decided on the `done` event in `onCtoTurnSettled()`:
 
@@ -87,6 +87,7 @@ Triggers, all decided on the `done` event in `onCtoTurnSettled()`:
 - **Compaction.** A completed `context_compact` or `codex_context_compaction` refreshes as soon as the turn settles: a compacted thread lost detail anyway.
 - **Overflow.** A turn that failed with `lastTurnFailure.kind === "context_overflow"` gets a fresh thread and the person's failed message is sent once more, as they typed it (never the mid-task wrapper), with its display text, attachments and metadata, marked `metadata.ctoResend`. A per-message key set stops any loop.
 - **A model fallback** refreshes as part of the switch (below).
+- **Cold cache.** Decided on the send, not on `done`: when the CTO's prompt cache has expired and the thread is big enough that Compact first would offer to compact (`compactFirstOffer` in "always" mode, so Claude, Codex, Pi, OpenCode and Cursor), `refreshCtoForColdCache()` moves it to a fresh thread before the message goes out. The CTO has no Compact first pill on desktop or iOS; this replaces it.
 - **Manual.** The settings "Refresh context" button, `cto.refreshContext` over IPC, or `cto_state.refreshContext` as an action. A busy CTO answers that it will refresh when the turn ends.
 
 A person's Stop is not a failure and triggers nothing but a refresh that was already owed.

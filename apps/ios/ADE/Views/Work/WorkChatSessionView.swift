@@ -1002,6 +1002,8 @@ struct WorkChatSessionView: View {
   /// changes instead of the turn-end line, one working line while it runs.
   /// Every other chat leaves it nil and renders exactly as before.
   var ctoLive: CtoLiveModel? = nil
+  /// The CTO greeting's starters: fills the composer with the text.
+  var onCtoStarter: ((String) -> Void)? = nil
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1893,6 +1895,10 @@ struct WorkChatSessionView: View {
       }
       .adeInspectable("Work.Chat.Transcript.LoadFailed")
     case .idle:
+      if let ctoLive {
+        // The CTO's empty thread: it says hi and offers a start.
+        CtoGreetingView(live: ctoLive, onPick: canComposeMessages ? onCtoStarter : nil)
+      } else {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
         title: "No chat messages yet",
@@ -1900,6 +1906,7 @@ struct WorkChatSessionView: View {
           ? "Send a message to start streaming the transcript."
           : "Reconnect to load the latest chat history from the machine."
       )
+      }
     }
   }
 
@@ -1972,7 +1979,9 @@ struct WorkChatSessionView: View {
   }
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
-    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
+    // The CTO never offers: its brain moves it to a fresh thread on its own.
+    guard ctoLive == nil,
+          chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
           // OpenCode only offers `/compact` when its server lists the command, Cursor only on local chats.
           !workManualCompactDependsOnChat(chatSummaryContext.provider) || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",

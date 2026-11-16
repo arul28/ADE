@@ -5522,7 +5522,7 @@ type EpochDirective =
 type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
 
 const CTO_REFRESH_REASONS: ReadonlySet<string> = new Set<CtoProviderThreadRefreshReason>([
-  "occupancy", "compaction", "overflow", "model_fallback", "manual",
+  "occupancy", "compaction", "overflow", "model_fallback", "manual", "cold_cache",
 ]);
 const CTO_NO_HANDOFF_MESSAGE =
   "The CTO keeps its one thread, so ADE does not start a new chat on the other account. It tries the CTO's backup models instead.";
@@ -65770,6 +65770,12 @@ export function createAgentChatService(args: {
     }
     args = withSideChatRole(managed, args);
     await accountSwitchesInFlight.get(args.sessionId)?.catch(() => undefined);
+    // The CTO has no Compact first offer: when its cache has gone cold and
+    // this send would re-read a big thread at full price, it moves to a fresh
+    // thread first (notes, open work and recent turns carried over).
+    if (managed.session.identityKey === "cto" && isIdleForCompactFirst(managed)) {
+      await refreshCtoForColdCache(managed);
+    }
     const reviewed = takeThreadReviewForSend(args);
     // Only an explicit `compactFirst: true` compacts first. The pill sends it,
     // already on in "always" mode; automation and CLI sends never carry it. A
@@ -65974,6 +65980,24 @@ export function createAgentChatService(args: {
       minTokens: compactFirstMinTokens,
       mode: compactionIdleModeFor(managed.session),
     } as const;
+  }
+
+  /**
+   * A CTO send after its prompt cache expired, on a thread big enough that
+   * Compact first would offer to compact: start a fresh provider thread
+   * instead. The same size and idle rules as the offer, in "always" mode for
+   * every provider the offer covers. Never throws; on a failure the message
+   * goes out on the current thread.
+   */
+  async function refreshCtoForColdCache(managed: ManagedChatSession): Promise<void> {
+    try {
+      const offer = compactFirstOffer({ ...(await compactFirstArgs(managed)), mode: "always" });
+      // Checked again: a turn may have started while the history loaded.
+      if (!offer || !isIdleForCompactFirst(managed)) return;
+      refreshCtoProviderThread(managed, "cold_cache");
+    } catch (error) {
+      logger.warn("agent_chat.cto_cold_cache_refresh_failed", { sessionId: managed.session.id, error: getErrorMessage(error) });
+    }
   }
 
   function emitCompactFirstFallbackNotice(managed: ManagedChatSession): void {

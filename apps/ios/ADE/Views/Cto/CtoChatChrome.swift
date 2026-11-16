@@ -425,6 +425,89 @@ struct CtoToolChipView: View {
   }
 }
 
+// MARK: - Greeting
+
+/// What the CTO's empty thread shows: it says hi and offers a start. A
+/// starter fills the composer; the person finishes it. Same words as the
+/// desktop greeting (`CtoGreeting.tsx`).
+struct CtoGreetingView: View {
+  @ObservedObject var live: CtoLiveModel
+  /// Fills the composer. Nil when this chat can't take a message here.
+  var onPick: ((String) -> Void)?
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var shown = false
+
+  private struct Starter: Hashable {
+    let label: String
+    let prefill: String
+  }
+
+  private static let starters: [Starter] = [
+    Starter(label: "What's going on?", prefill: "What's going on in this project right now?"),
+    Starter(label: "Every morning…", prefill: "Every weekday at 9am, "),
+    Starter(label: "Remember that…", prefill: "Remember that "),
+    Starter(label: "Get a chat on it", prefill: "Start a chat to "),
+  ]
+
+  var body: some View {
+    let accent = live.look?.ctoAccent ?? ADEColor.ctoAccent
+    VStack(spacing: 0) {
+      ZStack {
+        CtoAvatarHalo(color: accent, diameter: 220)
+        CtoAvatarView(look: live.look, state: .idle, size: 96, motion: .live, label: "\(live.name), idle", blips: false)
+      }
+      .frame(height: 150)
+      Text("Hey, I'm \(live.name)")
+        .font(.system(.title3, design: .rounded).weight(.bold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      Text("Ask me anything, or give me something to do on a schedule.")
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+        .multilineTextAlignment(.center)
+        .padding(.top, 4)
+        .padding(.horizontal, 32)
+      if let onPick {
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+          ForEach(Self.starters, id: \.label) { starter in
+            Button {
+              ADEHaptics.light()
+              onPick(starter.prefill)
+            } label: {
+              Text(starter.label)
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(ADEColor.textPrimary.opacity(0.85))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .background(accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(accent.opacity(0.2), lineWidth: 0.5))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Starts your message with this")
+          }
+        }
+        .padding(.top, 20)
+        .padding(.horizontal, 24)
+      }
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.top, 36)
+    .padding(.bottom, 12)
+    .opacity(shown ? 1 : 0)
+    .offset(y: shown ? 0 : 10)
+    .onAppear {
+      if reduceMotion {
+        shown = true
+      } else {
+        withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) { shown = true }
+      }
+    }
+    .accessibilityIdentifier("Cto.Greeting")
+  }
+}
+
 // MARK: - Fresh context
 
 /// ADE gave the CTO a fresh provider thread: a hairline, not a card.
@@ -447,8 +530,9 @@ struct CtoFreshContextDivider: View {
 
 // MARK: - Working line
 
-/// The live turn in one line: the CTO's tiny working avatar, the step it is
-/// on in plain words, and how long the turn has run. Tap for the steps.
+/// The live turn: the CTO at work on a soft glow, big enough to move, the
+/// step it is on in plain words, and how long the turn has run. Tap for the
+/// steps.
 struct CtoWorkingLine: View {
   let look: CtoAvatarLook?
   let members: [WorkToolGroupMember]
@@ -456,7 +540,11 @@ struct CtoWorkingLine: View {
   let startedAt: Date?
   var onOpenSteps: (() -> Void)? = nil
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var glowUp = false
+
   private var running: Bool { members.contains { $0.status == .running } }
+  private var doneCount: Int { members.filter { $0.status != .running }.count }
 
   private var step: String {
     if let words = ctoLatestStepWords(members) { return words }
@@ -465,34 +553,59 @@ struct CtoWorkingLine: View {
   }
 
   var body: some View {
-    let row = TimelineView(.periodic(from: .now, by: 1)) { context in
-      HStack(spacing: 8) {
+    let accent = look?.ctoAccent ?? ADEColor.ctoAccent
+    let row = HStack(spacing: 12) {
+      ZStack {
+        Circle()
+          .fill(RadialGradient(colors: [accent.opacity(0.34), accent.opacity(0)], center: .center, startRadius: 0, endRadius: 30))
+          .frame(width: 60, height: 60)
+          .scaleEffect(glowUp ? 1.06 : 0.92)
+          .opacity(glowUp ? 0.85 : 0.45)
         CtoAvatarView(
           look: look,
           state: streamingText && !running ? .thinking : .working,
-          size: 28,
-          motion: .lazy,
+          size: 44,
+          motion: .live,
           blips: false
         )
+      }
+      .frame(width: 48, height: 48)
+      VStack(alignment: .leading, spacing: 2) {
         Text(step)
-          .font(.subheadline.weight(.medium))
-          .foregroundStyle(ADEColor.textSecondary)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary.opacity(0.9))
           .lineLimit(1)
           .truncationMode(.tail)
-        Text(WorkActivityIndicator.formatElapsedSeconds(Int(context.date.timeIntervalSince(startedAt ?? context.date))))
-          .font(.footnote.monospacedDigit())
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .fixedSize()
-        if onOpenSteps != nil, !members.isEmpty {
-          Image(systemName: "chevron.right")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        HStack(spacing: 6) {
+          // Only the time ticks; the avatar is not redrawn every second.
+          TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(WorkActivityIndicator.formatElapsedSeconds(Int(context.date.timeIntervalSince(startedAt ?? context.date))))
+              .monospacedDigit()
+          }
+          if doneCount > 0 {
+            Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.6))
+            Text(doneCount == 1 ? "1 step" : "\(doneCount) steps")
+          }
+          if onOpenSteps != nil, !members.isEmpty {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 9, weight: .bold))
+              .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+          }
         }
-        Spacer(minLength: 0)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
       }
-      .frame(minHeight: 40)
-      .contentShape(Rectangle())
+    }
+    .padding(.vertical, 6)
+    .padding(.leading, 6)
+    .padding(.trailing, 16)
+    .background(accent.opacity(0.07), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(accent.opacity(0.16), lineWidth: 0.5))
+    .contentShape(Rectangle())
+    .onAppear {
+      guard !reduceMotion else { return }
+      withAnimation(.easeInOut(duration: streamingText ? 0.8 : 1.2).repeatForever(autoreverses: true)) { glowUp = true }
     }
     Group {
       if let onOpenSteps, !members.isEmpty {
@@ -503,8 +616,17 @@ struct CtoWorkingLine: View {
         row
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(step)
     .accessibilityIdentifier("Cto.WorkingLine")
   }
+}
+
+/// CTO-thread cards that are plumbing, not news: its quiet context refreshes
+/// and the "approaching plan limit" warning (the composer's usage ring says
+/// the same). Desktop hides the same two.
+func ctoThreadHidesCard(_ card: WorkEventCardModel) -> Bool {
+  if card.kind == "ctoFresh" { return true }
+  return card.noticeKind == "rate_limit" && (card.body ?? "").hasPrefix("Approaching")
 }
