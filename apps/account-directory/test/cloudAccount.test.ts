@@ -1231,6 +1231,42 @@ describe("ADE Cloud account", () => {
  * and the free plan"). Races and hour accounting only: these have no surface
  * but the routes and the stored rows, so a test is how they are proven.
  */
+describe("ADE Cloud saved chats list", () => {
+  it("says whether each chat's computer still exists, and why a deleted one went", async () => {
+    const data = harness;
+    data.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
+    seedAccount(data, OWNER);
+    // Live; deleted by the person (a later provider close must not hide that); deleted by the idle cleanup; a computer whose key a live computer has again (its chat, saved by the deleted one, still exists).
+    seedComputer(data, { instance_id: "live0000001", machine_key: "key-live" });
+    seedComputer(data, { instance_id: "gone0000001", machine_key: "key-mine", status: "deleted", awake_since: null, deleted_at: NOW - DAY });
+    seedComputer(data, { instance_id: "gone0000002", machine_key: "key-idle", status: "deleted", awake_since: null, deleted_at: NOW - 2 * DAY });
+    seedComputer(data, { instance_id: "gone0000003", machine_key: "key-moved", status: "deleted", awake_since: null, deleted_at: NOW - 3 * DAY });
+    seedComputer(data, { instance_id: "live0000002", machine_key: "KEY-MOVED" });
+    data.insert("cloud_delete_log", { instance_id: "gone0000001", user_id: OWNER, who: "Studio", reason: "user", created_at: NOW - DAY });
+    data.insert("cloud_delete_log", { instance_id: "gone0000001", user_id: OWNER, who: null, reason: "gone_from_provider", created_at: NOW - DAY + 60_000 });
+    data.insert("cloud_delete_log", { instance_id: "gone0000002", user_id: OWNER, who: "system", reason: "idle_cleanup", created_at: NOW - 2 * DAY });
+    const chat = (machineKey: string, chatId: string, instanceId: string | null) => data.insert("cloud_chat_copies", {
+      user_id: OWNER, machine_key: machineKey, chat_id: chatId, instance_id: instanceId, r2_key: `chats/${OWNER}/${machineKey}/${chatId}/`, updated_at: NOW - HOUR,
+    });
+    chat("key-live", "chat-live", "live0000001");
+    chat("key-mine", "chat-mine", "gone0000001");
+    chat("key-idle", "chat-idle", "gone0000002");
+    chat("key-moved", "chat-moved", "gone0000003");
+    chat("key-unknown", "chat-unknown", null);
+
+    const response = await data.send(OWNER, "GET", "/cloud/chats");
+    expect(response.status).toBe(200);
+    const { chats } = await response.json() as { chats: Array<{ chatId: string; computer: unknown }> };
+    expect(Object.fromEntries(chats.map((row) => [row.chatId, row.computer]))).toEqual({
+      "chat-live": { state: "exists" },
+      "chat-mine": { state: "deleted", deletedAt: NOW - DAY, reason: "you" },
+      "chat-idle": { state: "deleted", deletedAt: NOW - 2 * DAY, reason: "idle" },
+      "chat-moved": { state: "exists" },
+      "chat-unknown": null,
+    });
+  });
+});
+
 describe("ADE Cloud automatic updates", () => {
   // An update the provider took while the computer was asleep: it boots about a minute later on its own.
   const asleepUpdate = (startedAt: number): Row => ({

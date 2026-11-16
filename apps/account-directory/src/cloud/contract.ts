@@ -927,12 +927,33 @@ export type CloudChatRowInput = {
   lastActivityAt: string | null;
 };
 
+/**
+ * Why a computer was deleted, as a person reads it: `you` (a delete the person
+ * asked for), `freed` (the person kept the lane and freed its computer),
+ * `idle` (unused too long), `plan` (over the plan's limits), `automation` (an
+ * automation run ended), `project` (its project's computers were deleted),
+ * `launch` (a launch that never finished), `other`.
+ */
+export type CloudComputerDeleteReason = "you" | "freed" | "idle" | "plan" | "automation" | "project" | "launch" | "other";
+
+/**
+ * Whether the computer that saved a chat still exists, from the server's own
+ * computer rows. The list answers it so a window never has to guess from a
+ * computer list it may not have read lately. Absent from an older server, and
+ * null when the server has no row for the computer.
+ */
+export type CloudChatComputer =
+  | { state: "exists" }
+  | { state: "deleted"; deletedAt: number; reason: CloudComputerDeleteReason };
+
 export type CloudChatRow = CloudChatRowInput & {
   machineKey: string;
   chatId: string;
   instanceId: string | null;
   lastSeq: number;
   updatedAt: number;
+  /** Set on list rows only. */
+  computer?: CloudChatComputer | null;
 };
 
 /** `lastSeq` is what the server holds now; replay rules are in `chats.ts`. */
