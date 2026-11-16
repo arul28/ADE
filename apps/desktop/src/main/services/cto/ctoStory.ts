@@ -272,9 +272,11 @@ const STORY_HEADINGS = ["where things stand", "decisions and preferences", "open
  */
 export function acceptCtoStoryAnswer(answer: string | null, previousSummary: string | null): string | null {
   if (!answer) return null;
-  const lower = answer.toLowerCase();
-  const headings = STORY_HEADINGS.filter((heading) => lower.includes(heading)).length;
-  if (headings < 1) return null;
+  // A heading is a line of its own (`## Open threads`, `**Earlier**`,
+  // `Earlier:`), not the word inside a sentence ("can't summarize the
+  // earlier conversation").
+  const headingLine = new RegExp(`^\\s*(?:#{1,6}\\s*|\\*\\*)?(?:${STORY_HEADINGS.join("|")})(?:\\*\\*)?:?\\s*$`, "im");
+  if (!headingLine.test(answer)) return null;
   const previous = previousSummary?.trim().length ?? 0;
   if (previous > 0 && answer.length < previous * 0.35) return null;
   return answer;

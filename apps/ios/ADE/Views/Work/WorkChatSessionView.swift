@@ -1360,7 +1360,18 @@ struct WorkChatSessionView: View {
   }
 
   var visibleTimelineRenderEntries: [WorkTimelineRenderEntry] {
-    timelinePresentation.renderEntries
+    let entries = timelinePresentation.renderEntries
+    guard ctoLive != nil else { return entries }
+    // The CTO thread hides its plumbing cards: drop them here, not in the row
+    // view, so they leave no empty row (and its spacing) behind.
+    return entries.filter { entry in
+      if case .entry(let timelineEntry) = entry.payload,
+         case .eventCard(let card) = timelineEntry.payload,
+         ctoThreadHidesCard(card) {
+        return false
+      }
+      return true
+    }
   }
 
   var latestScrollTargetId: String {
@@ -1749,6 +1760,15 @@ struct WorkChatSessionView: View {
     if isStreamingTurn {
       var hasher = Hasher()
       hasher.combine(turnToolActivity.active?.count ?? 0)
+      // A step finishing changes the working line's step words without
+      // changing the count.
+      for member in turnToolActivity.active?.members ?? [] {
+        switch member {
+        case .tool(let card): hasher.combine(card.status)
+        case .command(let card): hasher.combine(card.status)
+        case .fileChange(let card): hasher.combine(card.status)
+        }
+      }
       hasher.combine(frame?.activityPresentation?.label)
       hasher.combine(frame?.activityPresentation?.detail)
       rows.append(

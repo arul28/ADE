@@ -99,7 +99,7 @@ export function transcriptEventDrawsNothing(
       if (context?.ctoSurface && event.status === CTO_CONTEXT_REFRESHED_STATUS) return true;
       // Only the "Approaching … plan limit" heads-up (the usage ring shows it).
       // A reset credit, a continue or a limit hit keeps its row.
-      if (context?.ctoSurface && event.noticeKind === "rate_limit" && /^approaching/i.test((event.message ?? "").trim())) return true;
+      if (context?.ctoSurface && event.noticeKind === "rate_limit" && /^approaching\b/i.test((event.message ?? "").trim())) return true;
       if (event.noticeKind === "info" && event.status === "subagent_spawned") return isInlineCardSpawnNotice(event);
       if (event.status === "model_switched") return false;
       if (event.noticeKind === "info" && SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW.has(event.status ?? "")) return false;

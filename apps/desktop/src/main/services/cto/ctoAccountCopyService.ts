@@ -302,8 +302,10 @@ export function createCtoAccountCopyService(args: CtoAccountCopyServiceArgs) {
       if (!story?.summary.trim()) return null;
       return { summary: story.summary, startsAt: story.startsAt, coveredThrough: story.coveredThrough };
     } catch (error) {
+      // Saving now would replace the account's story with none: skip this
+      // save (the save loop logs it) and let a later one carry the story.
       logger.warn("cto.account_copy_story_unreadable", { error: error instanceof Error ? error.message : String(error) });
-      return null;
+      throw error;
     }
   };
 

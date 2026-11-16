@@ -7499,6 +7499,7 @@ function AgentChatMessageListMain({
       && !wakeChainByAnchorKey.has(row.key)
       && !scheduledWorkByTurnEndKey.has(row.key)
       && !turnProofByRowKey.has(row.key)
+      && !turnProofTimeline.inlineByRowKey.has(row.key)
       && !(transcriptToolActivity.fileEntriesByDoneRowKey.get(row.key)?.length)
       && !(row.event.turnId && (
         checkpointDiffTurnIds.has(row.event.turnId)
@@ -7508,7 +7509,7 @@ function AgentChatMessageListMain({
       && !(calmTurnId && row.event.type === "reasoning" && row.event.turnId === calmTurnId)
       && !quietCtoTurnEnd(row));
     return drawn.length === arranged.rows.length ? arranged.rows : drawn;
-  }, [activeTurnId, checkpointDiffTurnIds, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, scheduledWorkByTurnEndKey, sessionEnded, transcriptToolActivity, turnProofByRowKey, turnSourcesByTurnId, showStreamingIndicator, turnFolds, unreadSince, wakeChainByAnchorKey, wakeChains, wakeTurnFoldIdByTurnEndKey, wakeTurnIds]);
+  }, [activeTurnId, checkpointDiffTurnIds, ctoSurface, openTurnFolds, presentedRows, rowDrawContext, scheduledWorkByTurnEndKey, sessionEnded, transcriptToolActivity, turnProofByRowKey, turnProofTimeline, turnSourcesByTurnId, showStreamingIndicator, turnFolds, unreadSince, wakeChainByAnchorKey, wakeChains, wakeTurnFoldIdByTurnEndKey, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.

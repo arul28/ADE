@@ -109,7 +109,7 @@ export function createCtoStoryUpdater(args: CtoStoryUpdaterArgs) {
             batch: plan?.batch ?? [],
             // After a move: the old home's turns between its story's end and
             // the ones it carried were not in the copy.
-            gap: plan?.gap ?? (carried && story?.movedFrom
+            gap: plan?.gap ?? (story?.movedFrom
               ? { from: story.movedFrom.coveredThrough, to: story.movedAt ?? story.coveredThrough }
               : null),
             timeZone: args.timeZone(),
