@@ -243,6 +243,7 @@ import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspa
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
+import { beginChatSendTiming, noteChatSendTimingEvent } from "./chatSendTiming";
 import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
@@ -11267,6 +11268,8 @@ export function AgentChatPane({
       } else {
         scheduleQueuedEventFlush();
       }
+      // After the flush is scheduled, so its paint mark lands after that frame.
+      noteChatSendTimingEvent(envelope);
 
       if (lockSessionId && envelope.sessionId === lockSessionId) {
         draftSelectionLockedRef.current = false;
@@ -15295,6 +15298,8 @@ export function AgentChatPane({
   }, [projectRoot]);
 
   const submit = useCallback(async (activeTurnDispatchMode?: AgentChatDispatchSteerMode) => {
+    // Logged only for a plain send to a chat (`chatSendTiming.ts`); other branches drop it.
+    const sendTiming = beginChatSendTiming();
     if (queueSendUntilProjectOpens(activeTurnDispatchMode)) return;
     const draft = draftStore.get();
     // A turn is about to run against this worktree — surface the branch-drift
@@ -15947,6 +15952,8 @@ export function AgentChatPane({
       }
     }
     if (selectedSessionId && !turnActiveBySession[selectedSessionId] && !suppressOptimisticOutgoing) {
+      sendTiming.attach(selectedSessionId);
+      sendTiming.markBubblePaintedAfterFrame();
       setOptimisticOutgoingMessageSynced({
         sessionId: selectedSessionId,
         envelope: {
@@ -16030,6 +16037,8 @@ export function AgentChatPane({
       });
       const setOptimisticIfAllowed = (nextSessionId: string) => {
         if (suppressOptimisticOutgoing) return;
+        sendTiming.attach(nextSessionId);
+        sendTiming.markBubblePaintedAfterFrame();
         setOptimisticOutgoingMessageSynced({ sessionId: nextSessionId, envelope: optimisticEnvelope(nextSessionId) });
       };
 
@@ -16087,6 +16096,7 @@ export function AgentChatPane({
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
         }
+        sendTiming.mark("sessionCreated");
         justCreatedSession = true;
         if (isBoundScopePane) {
           // The new chat now owns this text under its own key; the "new chat"
@@ -16155,8 +16165,11 @@ export function AgentChatPane({
           }
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude" ? interactionMode : null;
+          sendTiming.attach(sessionId);
+          sendTiming.mark("sendCalled");
           await withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.send({
             sessionId,
+            clientSubmittedAtMs: sendTiming.enterAtMs,
             text: finalText,
             ...(compactFirst.sendRef.current?.sessionId === sessionId ? { compactFirst: compactFirst.sendRef.current.value } : {}),
             displayText: hasPastedPrompt
@@ -16170,6 +16183,7 @@ export function AgentChatPane({
             interactionMode: sendInteractionMode,
             ...(sessionProvider === "cursor" ? { runtime: cursorRuntime } : {}),
           }, chatPin));
+          sendTiming.mark("sendResolved");
         } catch (sendError) {
           // Race condition: the turn may have started between our state check
           // and the backend call. If so, automatically fall back to steer

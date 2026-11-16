@@ -1028,6 +1028,47 @@ export function registerRuntimeBridge({
     return !ptyId || shouldSendPtyDataToWebContents(sender, ptyId);
   };
 
+  /**
+   * Main's half of the per-turn send timing (the brain logs
+   * `agent_chat.send_timing`): when main passed a chat's user message and then
+   * its first words to a window, and how long after the brain committed each.
+   * One line per turn, ids and numbers only.
+   */
+  const forwardedUserMessages = new Map<string, { atMs: number; commitToMainMs: number | null }>();
+  const noteChatEventForward = (event: RemoteRuntimeBufferedEvent): void => {
+    const payload = event.payload;
+    if (payload.type !== "agent_chat_event") return;
+    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
+    const inner = isObjectRecord(payload.event) ? payload.event : null;
+    if (!sessionId || !inner) return;
+    if (inner.type === "done") {
+      forwardedUserMessages.delete(sessionId);
+      return;
+    }
+    if (inner.type !== "user_message" && inner.type !== "text") return;
+    const nowMs = Date.now();
+    const committedAtMs = typeof payload.timestamp === "string" ? Date.parse(payload.timestamp) : Number.NaN;
+    const commitToMainMs = Number.isFinite(committedAtMs) ? nowMs - committedAtMs : null;
+    if (inner.type === "user_message") {
+      if (!forwardedUserMessages.has(sessionId) && forwardedUserMessages.size >= 64) {
+        const oldest = forwardedUserMessages.keys().next().value;
+        if (oldest !== undefined) forwardedUserMessages.delete(oldest);
+      }
+      forwardedUserMessages.set(sessionId, { atMs: nowMs, commitToMainMs });
+      return;
+    }
+    const userMessage = forwardedUserMessages.get(sessionId);
+    if (!userMessage) return;
+    forwardedUserMessages.delete(sessionId);
+    getMachineMainLogger().info("chat.send_timing.main", {
+      sessionId,
+      userMessageForwardedAtMs: userMessage.atMs,
+      userMessageCommitToMainMs: userMessage.commitToMainMs,
+      firstTextForwardedAtMs: nowMs,
+      firstTextCommitToMainMs: commitToMainMs,
+    });
+  };
+
   const sendRuntimeEvent = (
     subscription: RuntimeEventWindowSubscription,
     event: RemoteRuntimeBufferedEvent,
@@ -1051,6 +1092,7 @@ export function registerRuntimeBridge({
     } catch {
       // Renderer may have gone away between the destroyed check and send.
     }
+    noteChatEventForward(event);
   };
 
   /**

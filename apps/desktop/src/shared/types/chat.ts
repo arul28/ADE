@@ -5848,6 +5848,12 @@ export type AgentChatSendArgs = {
    * Absent (older clients): every call sends.
    */
   clientSendId?: string;
+  /**
+   * Wall-clock ms when the person pressed Enter in the desktop composer. Only
+   * the host's per-turn timing log (`agent_chat.send_timing`) reads it; the
+   * host drops it before the send goes anywhere else.
+   */
+  clientSubmittedAtMs?: number;
 };
 
 export type AgentChatDispatchSteerMode = "inline" | "interrupt";

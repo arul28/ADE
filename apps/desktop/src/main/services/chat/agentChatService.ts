@@ -338,6 +338,7 @@ import {
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
+import { createChatSendTiming, type ChatSendTimingQuery } from "./chatSendTiming";
 import {
   noteChatTextDelta,
   recordChatTextFlush,
@@ -14622,6 +14623,8 @@ export function createAgentChatService(args: {
     ttlMs: CLIENT_SEND_DEDUPE_MS,
     onDuplicate: ({ sessionId }) => logger.info("agent_chat.client_send_duplicate_dropped", { sessionId }),
   });
+  /** One `agent_chat.send_timing` line per turn: where the time to the first words goes (`chatSendTiming.ts`). */
+  const chatSendTiming = createChatSendTiming(logger);
   /**
    * The quiet card for every provider (`chatQuietTurn.ts`): its watchdog
    * (`quietTurns`, fed from `emitChatEvent`), the Restart / Keep waiting card,
@@ -25115,6 +25118,11 @@ export function createAgentChatService(args: {
         });
       }
     }
+    if (chatSendTiming.isOpen(managed.session.id)) {
+      if (liveEvent.type === "user_message") chatSendTiming.mark(managed.session.id, "userMessageCommitted");
+      else if (liveEvent.type === "text") chatSendTiming.mark(managed.session.id, "firstTextCommitted");
+      else if (liveEvent.type === "done") chatSendTiming.finishTurn(managed.session.id);
+    }
 
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
@@ -34069,6 +34077,7 @@ export function createAgentChatService(args: {
       keychainRetry?: boolean;
     },
   ): Promise<void> => {
+    chatSendTiming.mark(managed.session.id, "turnStart");
     const runtime = managed.runtime;
     if (runtime?.kind !== "claude") {
       throw new Error(`Claude runtime is not available for session '${managed.session.id}'.`);
@@ -34382,13 +34391,23 @@ export function createAgentChatService(args: {
       // ── Stable query() session with background pre-warming ──
       // The pre-warm was kicked off in ensureClaudeSessionRuntime. Wait for it.
       await waitForClaudeWarmup(managed, runtime, turnId);
+      chatSendTiming.mark(managed.session.id, "warmupWaited");
       if (timeoutError) {
         throw timeoutError;
       }
       if (runtime.interrupted) {
         throw new Error("Claude turn interrupted during warmup.");
       }
+      if (chatSendTiming.isOpen(managed.session.id)) {
+        const queryKind: ChatSendTimingQuery = runtime.query && runtime.inputPump
+          ? "live"
+          : runtime.queryStartPromise
+            ? "starting"
+            : runtime.warmQuery ? "warm" : "new";
+        chatSendTiming.noteQuery(managed.session.id, queryKind);
+      }
       let sessionQuery = await ensureClaudeQuery(managed, runtime);
+      chatSendTiming.mark(managed.session.id, "queryReady");
 
       const turnPermissionMode = resolveClaudeTurnPermissionMode(managed);
 
@@ -34425,6 +34444,7 @@ export function createAgentChatService(args: {
       } else if (turnPermissionMode === "plan") {
         throw new Error("Claude plan mode is not available in this Claude SDK build.");
       }
+      chatSendTiming.mark(managed.session.id, "permissionModeSet");
 
       // Build the message after permission-mode recovery, because rebuilding a
       // fresh Claude SDK session clears runtime.sdkSessionId.
@@ -34440,6 +34460,7 @@ export function createAgentChatService(args: {
       }) as unknown as SDKUserMessage;
       messageToSend.uuid = userMessageId as NonNullable<SDKUserMessage["uuid"]>;
       messageToSend.timestamp = new Date().toISOString();
+      chatSendTiming.mark(managed.session.id, "promptBuilt");
 
       const pendingPostResultSettledBeforeInput = runtime.pendingPostResultNextSettledAt != null;
       bumpClaudeIdleDeadline();
@@ -34447,6 +34468,7 @@ export function createAgentChatService(args: {
         throw new Error("Claude's live input stream closed before the turn could be dispatched.");
       }
       pushClaudeMessage(managed, runtime, runtime.inputPump, messageToSend);
+      chatSendTiming.mark(managed.session.id, "promptWritten");
       captureTurnBeforeSha(managed);
       settleClaudeInitialInputDispatch(runtime);
       keepClaudeRetainedMedia(managed, retainedSpend);
@@ -34599,6 +34621,13 @@ export function createAgentChatService(args: {
         }
         if (nextMessage.done) break;
         const msg = nextMessage.value;
+        if (chatSendTiming.isOpen(managed.session.id)) {
+          const msgType = (msg as { type?: unknown; subtype?: unknown }).subtype;
+          chatSendTiming.noteFirstSdkMessage(
+            managed.session.id,
+            typeof msgType === "string" ? `${String(msg.type)}:${msgType}` : String(msg.type),
+          );
+        }
         // What a mod draws is no part of the turn. After the result, each read
         // waits one drain window for a tail message; a mod that redraws on a
         // timer would restart that window for ever and the turn would never
@@ -35908,6 +35937,7 @@ export function createAgentChatService(args: {
             if (delta?.type === "text_delta") {
               const text = delta.text ?? "";
                 if (text.length) {
+                  chatSendTiming.mark(managed.session.id, "firstSdkTextDelta");
                   const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
                   if (textKey) streamedClaudeTextContentKeys.add(textKey);
                   recentClaudeTextDeltaBuffer += text;
@@ -49586,14 +49616,24 @@ export function createAgentChatService(args: {
       await claudeDownload;
       assertCurrentStart();
     }
-    await chatUserMcp.prepareClaude({
-      ...chatMcpTarget(managed),
-      // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
-      ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
-    });
-    assertCurrentStart();
-    const options = buildClaudeQueryOptions(managed, runtime);
-    chatUserMcp.applyClaude(options);
+    // A warm query took its options when it started (`prewarmClaudeQuery`),
+    // MCP servers included, and ignores any built here. Building them again
+    // read the MCP configs twice and could wait on the npm registry before
+    // the first message went out. The resume fields below still run, because
+    // they keep the runtime's own state.
+    const startsWarm = Boolean(runtime.warmQuery);
+    if (!startsWarm) {
+      await chatUserMcp.prepareClaude({
+        ...chatMcpTarget(managed),
+        // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
+        ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
+      });
+      assertCurrentStart();
+    }
+    const options: ReturnType<typeof buildClaudeQueryOptions> = startsWarm
+      ? { model: managed.session.model }
+      : buildClaudeQueryOptions(managed, runtime);
+    if (!startsWarm) chatUserMcp.applyClaude(options);
     if (runtime.forkFromSdkSessionId) {
       if (!runtime.sdkSessionId) {
         runtime.sdkSessionId = randomUUID();
@@ -49619,6 +49659,7 @@ export function createAgentChatService(args: {
       ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
       resume: Boolean(options.resume),
       model: options.model,
+      warm: startsWarm,
     });
 
     // Repair a corrupted thinking history before resuming directly (the warm
@@ -65700,7 +65741,10 @@ export function createAgentChatService(args: {
       && (claudeRuntimeBeforeEffort.query || claudeRuntimeBeforeEffort.warmQuery || claudeRuntimeBeforeEffort.warmupDone),
     );
     const claudeEffortMove = applyClaudeSendReasoningEffort(managed, reasoningEffort);
-    if (claudeEffortMove) await claudeEffortMove;
+    if (claudeEffortMove) {
+      await claudeEffortMove;
+      chatSendTiming.mark(managed.session.id, "effortApplied");
+    }
     const claudeEffortMoved = claudeQueryTakesEffort && (managed.session.reasoningEffort ?? null) !== prevClaudeEffort;
     if (!claudeEffortMoved && managed.runtime?.kind === "claude" && managed.runtime.pendingSessionReset) {
       // A reset that waited (on background work, or a turn that has ended):
@@ -66107,6 +66151,10 @@ export function createAgentChatService(args: {
   ): Promise<void | AgentChatSteerResult> {
     assertChatNotMovedAway(args.sessionId, "send_message");
     assertPlainPromptText(args);
+    const { clientSubmittedAtMs, ...argsWithoutTiming } = args;
+    args = argsWithoutTiming;
+    const timedManaged = managedSessions.get(args.sessionId);
+    chatSendTiming.begin(args.sessionId, timedManaged?.session.provider ?? "unknown", clientSubmittedAtMs);
     const takeRuntime = takeChatRuntimeOrRefuse(args.sessionId, "send to");
     if (takeRuntime) await takeRuntime;
     // A retried send (after a sleep, a launch's backoff, a phone's offline
@@ -66589,6 +66637,7 @@ export function createAgentChatService(args: {
       model: prepared.managed.session.model,
       durationMs: Date.now() - dispatchStartedAt,
     });
+    chatSendTiming.mark(prepared.sessionId, "dispatchAck");
 
     // Accepted here, but the provider may still be starting its runtime before
     // the turn flips the chat active. Report it in flight until the turn starts,
