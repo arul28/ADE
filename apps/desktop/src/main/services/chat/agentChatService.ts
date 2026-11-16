@@ -75,20 +75,9 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import {
-  getSessionInfo as getClaudeSdkSessionInfo,
-  forkSession as forkClaudeSdkSession,
-  getSessionMessages as getClaudeSdkSessionMessages,
-  getSubagentMessages as getClaudeSdkSubagentMessages,
-  listSessions as listClaudeSdkSessions,
-  query,
-  renameSession as renameClaudeSession,
-  startup,
-  tagSession as tagClaudeSession,
-  createSdkMcpServer,
-  tool as createClaudeSdkTool,
-  USAGE_LIMIT_ERROR_PREFIXES,
-} from "@anthropic-ai/claude-agent-sdk";
+// The Claude Agent SDK loads on first use (`claudeSdkLoader`), not with this
+// module: every brain loads this module at start, chat or no chat.
+import { claudeSdkIfLoaded, loadClaudeSdk, loadedClaudeSdk, type ClaudeSdkModule } from "../ai/claudeSdkLoader";
 // Types only: the SDK (and the libsodium WebAssembly heap it starts) loads on
 // the first HTTP MCP lease through `loadDroidSdk`, not with this module.
 import type { DroidTool as DroidSdkTool } from "@factory/droid-sdk/node";
@@ -11734,7 +11723,8 @@ function normalizePersistedInteractionMode(value: unknown): AgentChatInteraction
 function isClaudeUsageLimitResultError(value: string | null | undefined): boolean {
   const text = value?.trim() ?? "";
   if (!text) return false;
-  if (USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.startsWith(prefix))) return true;
+  // A result frame comes from a running query, so the SDK is loaded.
+  if (loadedClaudeSdk().USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.startsWith(prefix))) return true;
   return isClaudeSessionQuotaText(text);
 }
 
@@ -19264,7 +19254,7 @@ export function createAgentChatService(args: {
         || sessionService.get(managed.session.id)?.title?.trim() !== title.trim()
       ) return;
       const sdkSessionId = runtime.sdkSessionId;
-      await renameClaudeSession(sdkSessionId, title, { dir: managed.laneWorktreePath }).catch((error) => {
+      await (await loadClaudeSdk()).renameSession(sdkSessionId, title, { dir: managed.laneWorktreePath }).catch((error) => {
         logger.warn("agent_chat.claude_rename_session_failed", {
           sessionId: managed.session.id,
           sdkSessionId,
@@ -19405,7 +19395,7 @@ export function createAgentChatService(args: {
 
     void (async () => {
       try {
-        const info = await getClaudeSdkSessionInfo(sdkSessionId, {
+        const info = await (await loadClaudeSdk()).getSessionInfo(sdkSessionId, {
           dir: managed.laneWorktreePath,
         });
         if (!info) return;
@@ -27295,7 +27285,7 @@ export function createAgentChatService(args: {
     if (!runtime.detachedToolCalls.size || !sdkSessionId) return;
     let messages: ClaudeSdkSessionMessage[];
     try {
-      messages = await getClaudeSdkSessionMessages(sdkSessionId, { dir: managed.laneWorktreePath });
+      messages = await (await loadClaudeSdk()).getSessionMessages(sdkSessionId, { dir: managed.laneWorktreePath });
     } catch (error) {
       // The transcript may not be flushed yet; the next turn result retries.
       logger.warn("agent_chat.claude_detached_tool_read_failed", {
@@ -29583,9 +29573,11 @@ export function createAgentChatService(args: {
   const buildClaudeSdkMcpServer = (
     managed: ManagedChatSession,
     toolSet: HttpMcpToolSet,
-  ): ReturnType<typeof createSdkMcpServer> | null => {
+  ): ReturnType<ClaudeSdkModule["createSdkMcpServer"]> | null => {
     const tools = HTTP_MCP_TOOL_SETS[toolSet].buildTools(managed);
     if (!tools) return null;
+    // Query options are built after the query path loaded the SDK.
+    const { createSdkMcpServer, tool: createClaudeSdkTool } = loadedClaudeSdk();
     const sdkTools = Object.entries(tools).map(([name, toolDefinition]) =>
       createClaudeSdkTool(
         name,
@@ -49490,7 +49482,7 @@ export function createAgentChatService(args: {
 
     let sdkMessages: ClaudeSdkSessionMessage[];
     try {
-      sdkMessages = await getClaudeSdkSessionMessages(sdkSessionId, {
+      sdkMessages = await (await loadClaudeSdk()).getSessionMessages(sdkSessionId, {
         dir: managed.laneWorktreePath,
       });
     } catch (error) {
@@ -49603,6 +49595,10 @@ export function createAgentChatService(args: {
     // background_tasks_changed is per CLI process and emits no startup value.
     // A new process must never inherit the prior process's level set.
     resetClaudeProcessBackgroundLevel(runtime);
+    // Loads beside the download and MCP steps below; awaited before the
+    // options, which build the SDK's MCP servers.
+    const claudeSdkLoad = loadClaudeSdk();
+    claudeSdkLoad.catch(() => {});
     const pump = new ClaudeInputPump();
     const assertCurrentStart = (spawnedQuery?: ClaudeQuery): void => {
       if (runtime.queryGeneration === startGeneration) return;
@@ -49628,6 +49624,12 @@ export function createAgentChatService(args: {
         // The query's own strict decision: it ignores ~/.claude.json, so there is nothing to prepare.
         ignoresUserMcp: resolveClaudeStrictMcpConfig(managed.session, isLightweightSession(managed.session)),
       });
+      assertCurrentStart();
+    }
+    // Once loaded, no await: the start keeps the order it had with a static import.
+    let claudeSdk = claudeSdkIfLoaded();
+    if (!claudeSdk) {
+      claudeSdk = await claudeSdkLoad;
       assertCurrentStart();
     }
     const options: ReturnType<typeof buildClaudeQueryOptions> = startsWarm
@@ -49689,7 +49691,7 @@ export function createAgentChatService(args: {
     try {
       sessionQuery = runtime.warmQuery
         ? runtime.warmQuery.query(pump)
-        : query({ prompt: pump, options });
+        : claudeSdk.query({ prompt: pump, options });
     } catch (error) {
       if (options.sessionId && runtime.sdkSessionId === options.sessionId) {
         runtime.sdkSessionId = null;
@@ -50098,6 +50100,10 @@ export function createAgentChatService(args: {
         }
       };
       try {
+        // Loads beside the download and MCP steps; the first send after a
+        // prewarm finds the SDK loaded.
+        const claudeSdkLoad = loadClaudeSdk();
+        claudeSdkLoad.catch(() => {});
         const claudeDownload = chatPinnedToolDownload(null, "claude-code", "Claude Code");
         if (claudeDownload) await claudeDownload;
         await chatUserMcp.prepareClaude({
@@ -50155,7 +50161,7 @@ export function createAgentChatService(args: {
           clearAssignedSessionId();
           return;
         }
-        const warm = await startup({ options });
+        const warm = await (claudeSdkIfLoaded() ?? await claudeSdkLoad).startup({ options });
         if (warmupStopped()) {
           clearAssignedSessionId();
           try { warm.close(); } catch { /* ignore */ }
@@ -78559,7 +78565,7 @@ export function createAgentChatService(args: {
       if (managed.runtime?.kind !== "claude" || !managed.runtime.sdkSessionId) {
         throw new Error("Tagging a Claude session requires a Claude SDK session id. Send a Claude message first, then try again.");
       }
-      await tagClaudeSession(managed.runtime.sdkSessionId, normalizedTag && normalizedTag.length ? normalizedTag : null, {
+      await (await loadClaudeSdk()).tagSession(managed.runtime.sdkSessionId, normalizedTag && normalizedTag.length ? normalizedTag : null, {
         dir: managed.laneWorktreePath,
       });
       mirrorClaudeSessionPointer(managed, managed.runtime.sdkSessionId, {
@@ -79205,7 +79211,7 @@ export function createAgentChatService(args: {
     const includeWorktrees = typeof args.includeWorktrees === "boolean"
       ? args.includeWorktrees
       : !laneFallback.laneId;
-    const sessions = await listClaudeSdkSessions({
+    const sessions = await (await loadClaudeSdk()).listSessions({
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(limit !== undefined ? { limit } : {}),
       ...(offset !== undefined ? { offset } : {}),
@@ -79222,7 +79228,7 @@ export function createAgentChatService(args: {
     if (!normalizedSessionId.length) throw new Error("sessionId is required.");
     const pointer = sessionService.getClaudeSessionPointer(normalizedSessionId);
     const laneFallback = await resolveClaudeSessionLaneFallback(laneId ?? pointer?.laneId ?? null);
-    const info = await getClaudeSdkSessionInfo(normalizedSessionId, {
+    const info = await (await loadClaudeSdk()).getSessionInfo(normalizedSessionId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
     });
     if (info) return normalizeClaudeSdkSessionInfo(info, laneFallback);
@@ -79314,7 +79320,7 @@ export function createAgentChatService(args: {
     const normalizedOffset = typeof offset === "number" && Number.isFinite(offset) && offset > 0
       ? Math.trunc(offset)
       : undefined;
-    const messages = await getClaudeSdkSessionMessages(normalizedSessionId, {
+    const messages = await (await loadClaudeSdk()).getSessionMessages(normalizedSessionId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
@@ -79674,7 +79680,7 @@ export function createAgentChatService(args: {
     const laneFallback = managed?.laneWorktreePath
       ? { dir: managed.laneWorktreePath }
       : await resolveClaudeSessionLaneFallback(row.laneId);
-    const messages = await getClaudeSdkSessionMessages(claudeSessionId, {
+    const messages = await (await loadClaudeSdk()).getSessionMessages(claudeSessionId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
@@ -80051,7 +80057,7 @@ export function createAgentChatService(args: {
       : await resolveClaudeSessionLaneFallback(
         laneId ?? pointer?.laneId ?? managed?.session.laneId ?? null,
       );
-    const sdkMessages = await getClaudeSdkSubagentMessages(claudeSessionId, normalizedAgentId, {
+    const sdkMessages = await (await loadClaudeSdk()).getSubagentMessages(claudeSessionId, normalizedAgentId, {
       ...(laneFallback.dir ? { dir: laneFallback.dir } : {}),
       ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
       ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
@@ -80726,12 +80732,12 @@ export function createAgentChatService(args: {
   ): Promise<"claude_fork" | "claude_new_session" | "not_delivered"> => {
     const sdkSessionId = runtime.sdkSessionId?.trim();
     if (!sdkSessionId) return "not_delivered";
-    const messages = await getClaudeSdkSessionMessages(sdkSessionId, { dir: managed.laneWorktreePath });
+    const messages = await (await loadClaudeSdk()).getSessionMessages(sdkSessionId, { dir: managed.laneWorktreePath });
     const promptIndex = findClaudePromptIndex(messages, promptText);
     if (promptIndex < 0) return "not_delivered";
     await resetClaudeQuerySession(managed, runtime, "session_reset", { clearSdkSessionId: promptIndex === 0 });
     if (promptIndex === 0) return "claude_new_session";
-    const forked = await forkClaudeSdkSession(sdkSessionId, {
+    const forked = await (await loadClaudeSdk()).forkSession(sdkSessionId, {
       dir: managed.laneWorktreePath,
       upToMessageId: messages[promptIndex - 1]!.uuid,
     });
