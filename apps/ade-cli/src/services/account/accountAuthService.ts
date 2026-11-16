@@ -1365,8 +1365,9 @@ export function createAccountAuthService(args: {
       args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
       try {
         args.credentialStore.deleteSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY);
-      } catch {
+      } catch (error) {
         // Best effort: a marker left behind costs one extra sign-in form.
+        logger.warn("account.signed_out_marker_failed", { op: "clear", error: error instanceof Error ? error.message : String(error) });
       }
       // A successful sign-in is the definitive end of any prior rotation: the
       // journal describes a refresh token that no longer exists.
@@ -3007,7 +3008,8 @@ export function createAccountAuthService(args: {
   const readSignedOutByUser = (): boolean => {
     try {
       return args.credentialStore.getSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY) != null;
-    } catch {
+    } catch (error) {
+      logger.warn("account.signed_out_marker_failed", { op: "read", error: error instanceof Error ? error.message : String(error) });
       return false;
     }
   };
@@ -3016,8 +3018,9 @@ export function createAccountAuthService(args: {
     authEpoch += 1;
     try {
       args.credentialStore.setSync(ACCOUNT_SIGNED_OUT_BY_USER_KEY, "1");
-    } catch {
+    } catch (error) {
       // Best effort: without it the next sign-in may reuse the browser session.
+      logger.warn("account.signed_out_marker_failed", { op: "set", error: error instanceof Error ? error.message : String(error) });
     }
     // A grant belongs to the session that earned it. Signing out ends that
     // session, so anything still holding one is holding a stale claim about a

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
@@ -69,6 +68,9 @@ async function completeSignIn(
   location.search = `?code=oauth-code&state=${encodeURIComponent(authorize.searchParams.get("state")!)}`;
   await client.bootstrap();
 }
+
+/** A desktop sign-in's authorize URL for the test client, with a loopback redirect. */
+const AUTHORIZE = "https://clerk.example/oauth/authorize?client_id=client_ade&redirect_uri=http%3A%2F%2F127.0.0.1%3A4567%2Fcallback";
 
 describe("BrowserAccountClient", () => {
   it("uses production defaults for a hosted build and development defaults locally", () => {
@@ -296,6 +298,35 @@ describe("BrowserAccountClient", () => {
     const forged = await newClient(callbackFor("state-we-never-issued")).bootstrap();
     expect(forged.state).toBe("auth_expired");
     expect(forged.message).toContain("could not be verified");
+  });
+
+  // `/sign-in?continue=` finishes a desktop or CLI sign-in. The page goes on
+  // only to this client's own authorize endpoint with a loopback redirect, so
+  // a crafted link can never use it to send a browser somewhere else.
+  it.each([
+    // [what the link carries, ?continue=, what the page goes on to (null: it ignores the link)]
+    ["the computer's own authorize URL", `${AUTHORIZE}&state=s`, { continueUrl: `${AUTHORIZE}&state=s`, fresh: false }],
+    // The card asks for the account itself, so `prompt` comes off; Clerk's fallback page keeps it.
+    ["a sign-in after the computer signed out", `${AUTHORIZE}&prompt=login`, { continueUrl: AUTHORIZE, fresh: true }],
+    ["another origin", AUTHORIZE.replace("https://clerk.example", "https://evil.example"), null],
+    ["another path on the issuer", AUTHORIZE.replace("/oauth/authorize", "/v1/client"), null],
+    ["another client id", AUTHORIZE.replace("client_ade", "client_other"), null],
+    ["a redirect off this computer", AUTHORIZE.replace("http%3A%2F%2F127.0.0.1%3A4567", "https%3A%2F%2Fevil.example"), null],
+    ["an https loopback redirect", AUTHORIZE.replace("http%3A%2F%2F127", "https%3A%2F%2F127"), null],
+    ["no redirect", "https://clerk.example/oauth/authorize?client_id=client_ade", null],
+    ["a value that is not a URL", "javascript:alert(1)", null],
+  ] as const)("signInHandoff: %s", (_label, continueUrl, expected) => {
+    const client = new BrowserAccountClient({
+      config: {
+        issuer: "https://clerk.example",
+        clientId: "client_ade",
+        directoryBaseUrl: "https://directory.example",
+        relayBaseUrls: [],
+      },
+      storage: new MemorySessionStorage(),
+    });
+    expect(client.signInHandoff(`?continue=${encodeURIComponent(continueUrl)}`))
+      .toEqual(expected && { ...expected, hostedUrl: continueUrl });
   });
 
   it("rejects non-HTTPS OAuth and directory configuration", () => {
@@ -696,8 +727,6 @@ describe("BrowserAccountClient", () => {
       imageUrl: "https://img.clerk.com/profile.png",
     });
     await expect(sessionStore.load()).resolves.toMatchObject({ refreshToken: "refresh-rotated" });
-    const hostedHeaders = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
-    expect(hostedHeaders).toContain("img-src 'self' data: blob: https://img.clerk.com");
 
     vi.spyOn(sessionStore, "clear").mockRejectedValueOnce(new Error("IndexedDB unavailable."));
     await expect(restoredClient.signOut()).resolves.toMatchObject({

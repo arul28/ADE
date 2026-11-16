@@ -8,6 +8,7 @@ import {
   DEVELOPMENT_ADE_CLERK_ISSUER,
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../../../desktop/src/shared/accountDirectory";
+import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
 import {
   CREDENTIAL_STORE_LOCK_TIMEOUT_MS,
   type SyncCredentialStore,
@@ -26,6 +27,13 @@ import {
   type AccountAuthService,
   type AccountSessionRecord,
 } from "./accountAuthService";
+
+/** ADE's production Clerk app signs in on ADE Web's page, with Clerk's authorize URL in `?continue=`. */
+function clerkAuthorizeUrl(signInUrl: string): URL {
+  const page = new URL(signInUrl);
+  expect(page.origin + page.pathname).toBe(`${WEB_CLIENT_BASE_URL}/sign-in`);
+  return new URL(page.searchParams.get("continue") ?? "");
+}
 
 class MemoryCredentialStore implements SyncCredentialStore {
   readonly values = new Map<string, string>();
@@ -664,8 +672,12 @@ describe("AccountAuthService OAuth PKCE login", () => {
       sessionState: "signed_out",
     });
     expect(service.getSessionReadState?.()).toBe("missing");
+    // After "Sign out of this computer" the browser's Clerk session would sign
+    // the same account straight back in, so the next sign-in asks for one.
+    service.signOut();
     const start = await service.startLogin();
     const authorizeUrl = new URL(start.authorizeUrl);
+    expect(authorizeUrl.searchParams.get("prompt")).toBe("login");
     const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
     const state = authorizeUrl.searchParams.get("state")!;
     const callback = await fetch(`${redirectUri}?code=oauth-code-123&state=${encodeURIComponent(state)}`);
@@ -721,6 +733,9 @@ describe("AccountAuthService OAuth PKCE login", () => {
         sessionState: "active",
       },
     });
+    // A completed sign-in clears that: the next one may reuse the browser's session.
+    const next = await service.startLogin();
+    expect(new URL(next.authorizeUrl).searchParams.has("prompt")).toBe(false);
   });
 
   it("rejects a development-issued login response in a packaged build before userinfo or persistence", async () => {
@@ -750,7 +765,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
     activeServices.push(service);
 
     const start = await service.startLogin();
-    const authorizeUrl = new URL(start.authorizeUrl);
+    const authorizeUrl = clerkAuthorizeUrl(start.authorizeUrl);
     const callback = await fetch(
       `${authorizeUrl.searchParams.get("redirect_uri")}?code=development-code&state=${encodeURIComponent(authorizeUrl.searchParams.get("state")!)}`,
     );
@@ -1944,7 +1959,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     await expect(service.getAccessToken()).rejects.toThrow(/not signed in/i);
 
     const loopback = await service.startLogin();
-    expect(new URL(loopback.authorizeUrl).origin).toBe(DEFAULT_ADE_CLERK_ISSUER);
+    expect(clerkAuthorizeUrl(loopback.authorizeUrl).origin).toBe(DEFAULT_ADE_CLERK_ISSUER);
     await expect(service.startDeviceLogin()).resolves.toMatchObject({
       sessionId: "packaged-device-session",
       verificationUri: `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/device`,

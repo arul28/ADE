@@ -866,8 +866,11 @@ Reused desktop renderer (web-mode adaptation):
 - `apps/desktop/src/renderer/components/onboarding/ClerkSignInPanel.tsx` -
   ADE's own Clerk sign-in inside the glass card: "Continue with" Google,
   GitHub and Apple, an email code, sign-up for a new email, and "Continue as"
-  when the browser already holds a Clerk session. When Clerk cannot be reached
-  it hands back to the card's one button, which opens Clerk's hosted page.
+  when the browser already holds a Clerk session. When Clerk cannot be reached,
+  or the sign-in needs a step the card does not show (a second factor), it
+  hands back to the card's one button, which opens Clerk's hosted page. A
+  fallback that is not a second factor is a Sentry warning
+  (`clerk_sign_in_unavailable`).
 - `apps/desktop/src/renderer/components/onboarding/GateBackdrop.tsx` - the
   backdrop behind the card. On ADE Web a visitor who never picked a scene sees
   the shipped "Mountain vista" picture (`useActiveScene({ untouched })`); a
@@ -1277,7 +1280,9 @@ only this client's issuer, `/oauth/authorize`, its own client id, and a
 loopback (`127.0.0.1` / `localhost`) redirect; anything else loads ADE Web as
 usual, so the page never forwards a browser elsewhere. The computer adds
 `prompt=login` after its own sign-out; the page takes it off and treats it as
-`fresh`. This browser's own ADE Web session plays no part. Release order: ADE
+`fresh`. When the card falls back, its one button opens that same authorize
+URL, `prompt` included, on Clerk's own page, so the sign-in still returns to
+the computer. This browser's own ADE Web session plays no part. Release order: ADE
 Web must deploy before a desktop build that opens `/sign-in`, or the old web
 build shows its normal gate there.
 

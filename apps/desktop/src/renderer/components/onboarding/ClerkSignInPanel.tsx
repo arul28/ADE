@@ -240,7 +240,10 @@ export function ClerkSignInPanel({
           <Banner
             layout="inline"
             style={{ marginTop: 12 }}
-            model={{ id: "clerk-sign-in-error", tone: "error", title: error }}
+            // A wrong code or a mistyped email is the person's to fix, not a
+            // defect: `report: false` keeps it out of Sentry Logs. A real
+            // failure of the card is reported where it falls back.
+            model={{ id: "clerk-sign-in-error", tone: "error", title: error, report: false }}
           />
         </Suspense>
       ) : null}
