@@ -262,9 +262,12 @@ function main() {
   };
 
   let stale = false;
-  for (const [relative, content] of Object.entries(outputs)) {
+  for (const [relative, generated] of Object.entries(outputs)) {
+    // Source comments carry CRLF in a Windows checkout; the pages are always LF.
+    const content = generated.replace(/\r\n?/g, "\n");
     const absolute = path.join(ROOT, relative);
-    const current = fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8") : null;
+    // A Windows checkout with core.autocrlf has CRLF on disk for the same committed text: compare without it.
+    const current = fs.existsSync(absolute) ? fs.readFileSync(absolute, "utf8").replace(/\r\n/g, "\n") : null;
     if (check) {
       if (current !== content) {
         console.error(`${relative} is stale; run node scripts/generate-sdk-reference.mjs`);
