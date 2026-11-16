@@ -10,7 +10,7 @@
  */
 import type { HarnessPreset } from "./harnessPresets";
 import { harnessBodyLabel, presetLabel, presetSourceSummary } from "./harnessPresets";
-import { decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "./harnessRoutes";
+import { catalogModelIdFor, decodeRoutePresetId, isRoutePresetId, launchModelIdFor } from "./harnessRoutes";
 import { getModelById, resolveModelAlias } from "./modelRegistry";
 import type { LaunchModelSpelling } from "./launchModelRule";
 
@@ -105,9 +105,10 @@ export function customProviderModelProblem(
   const given = model?.trim() ?? "";
   if (!given) return `${name} runs ${expected}. ${pass(expected)} with it.`;
   const launchId = launchModelIdFor(preset.harness, preset.source, expected);
-  // Through OpenCode, the source's own id (`opencode/<provider>/<model>`, as
-  // `ade chat models` lists it) names the same model in any harness.
-  const sourceId = preset.source.kind === "opencode" ? `opencode/${preset.source.providerId}/${expected}` : "";
+  // Through OpenCode, the source's own catalog id (`opencode/<provider>/<model>`,
+  // a `/` in the model encoded, as `ade chat models` lists it) names the same
+  // model in any harness.
+  const sourceId = preset.source.kind === "opencode" ? catalogModelIdFor(preset.source, expected) : "";
   if (namesProviderModel(given, expected, [launchId, sourceId], preset.source.kind === "opencode")) return null;
   // A route id names its setup in itself: there is nothing else to pick from.
   if (isRoutePresetId(preset.id)) return `${name} runs ${expected}, not ${given}. ${pass(expected)}.`;
