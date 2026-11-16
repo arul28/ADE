@@ -5609,6 +5609,7 @@ export function AgentChatPane({
   });
   const localTouchBySessionRef = useRef<Map<string, string>>(new Map());
   const cursorWarmupKeyRef = useRef<string | null>(null);
+  const claudeTypingWarmupKeyRef = useRef<string | null>(null);
   const draftLaunchConfigHydratedRef = useRef<string | null>(null);
   const draftLaunchConfigTouchedKeyRef = useRef<string | null>(null);
   const recoveredParallelLaunchKeyRef = useRef<string | null>(null);
@@ -9872,6 +9873,30 @@ export function AgentChatPane({
     isTileActive,
     turnActive,
   ]);
+
+  // An open Claude chat: the first keystroke warms it on its machine, as a new
+  // draft's does. The brain loads the Claude SDK, which it no longer loads at
+  // start, and starts the query when the chat is idle, so the first send waits
+  // for neither. The text is read from the draft store, so typing does not
+  // render the pane, and one request per chat and model is enough.
+  useEffect(() => {
+    if (!isTileActive || !selectedSessionId || !selectedSessionModelId || turnActive) return undefined;
+    const desc = getModelById(selectedSessionModelId);
+    if (!desc?.isCliWrapped || desc.family !== "anthropic") return undefined;
+    const warmupKey = `${selectedSessionId}:${selectedSessionModelId}`;
+    if (claudeTypingWarmupKeyRef.current === warmupKey) return undefined;
+    const requestWarm = () => {
+      if (claudeTypingWarmupKeyRef.current === warmupKey) return;
+      if (!draftStore.get().trim()) return;
+      claudeTypingWarmupKeyRef.current = warmupKey;
+      withChatPin(chatApiPin(chatRuntimePinRef.current, isBoundScopePaneRef.current), (chatPin) => agentChatApiRef.current.warmupModel({
+        sessionId: selectedSessionId,
+        modelId: selectedSessionModelId,
+      }, chatPin)).catch(() => { /* best-effort: the send loads what it needs */ });
+    };
+    requestWarm();
+    return draftStore.subscribe(requestWarm);
+  }, [draftStore, isTileActive, selectedSessionId, selectedSessionModelId, turnActive]);
 
   useEffect(() => {
     let cancelled = false;

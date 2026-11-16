@@ -78841,6 +78841,13 @@ export function createAgentChatService(args: {
     sessionId: string;
     modelId: string;
   }): Promise<void> => {
+    const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
+    // The Claude SDK loads on first use. A warm-up (a new chat, or the first
+    // keystroke in an open one) loads it now, even when the query below is not
+    // started, so the first send never waits for the load. It starts no process.
+    if (descriptor?.family === "anthropic" && descriptor.isCliWrapped) {
+      void loadClaudeSdk().catch(() => { /* the send reports a failed load */ });
+    }
     const managed = managedSessions.get(sessionId);
     if (!managed) return;
     // Prewarm starts a provider process with nobody watching, which is the
@@ -78848,7 +78855,6 @@ export function createAgentChatService(args: {
     if (!chatAutoAdoptable(sessionId)) return;
     refreshManagedLaneLaunchContext(managed, { purpose: "warm this chat" });
 
-    const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     if (!descriptor) return;
 
     const isCursorSdk = descriptor.family === "cursor";
