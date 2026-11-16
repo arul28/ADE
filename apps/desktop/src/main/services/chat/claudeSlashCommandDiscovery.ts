@@ -2,7 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
+import {
+  adeWithheldAgentSkills,
+  filterAdeAgentSkillRoots,
+  getAdeAgentSkillRootCandidates,
+  getAgentSkillRootCandidates,
+} from "../../../shared/agentSkillRoots";
 import { isPathInside, pathKey } from "../shared/pathCompare";
 import {
   ancestorConfigRoots,
@@ -54,13 +59,26 @@ function skillRootsByPrecedence(cwd: string): string[] {
     roots.push(resolved);
   };
 
-  for (const root of getAgentSkillRootCandidates({
-    cwd,
-    dirname: moduleDir,
-    home: os.homedir(),
-    includeDeepSourceFallbacks: true,
-  })) addRoot(root);
+  const options = { cwd, dirname: moduleDir, home: os.homedir(), includeDeepSourceFallbacks: true };
+  // ADE's own roots as the agent gets them: with a withheld skill (ADE Cloud
+  // before the account's answer, or without access) the agent's plugin root is
+  // a mirror without it. Read unfiltered, every bundled skill sat outside that
+  // mirror, so the Claude and Droid listings named all of them again by path,
+  // the withheld one included, and the system prompt changed whenever the
+  // answer did (a resume early in a brain's life against its warm turn).
+  const adeRoots = getAdeAgentSkillRootCandidates(options);
+  const filteredAdeRoots = filterAdeAgentSkillRoots(adeRoots);
+  const agentRootFor = new Map(adeRoots.map((root, index) => [root, filteredAdeRoots[index] ?? root]));
+  for (const root of getAgentSkillRootCandidates(options)) addRoot(agentRootFor.get(root) ?? root);
   return roots;
+}
+
+/**
+ * The memo key for one folder: the withheld skills are part of it, because
+ * they decide which ADE roots the walk reads (`skillRootsByPrecedence`).
+ */
+function discoveryKey(cwd: string): string {
+  return `${pathKey(cwd)}\0${adeWithheldAgentSkills().join(",")}`;
 }
 
 /**
@@ -139,7 +157,7 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
   // Keyed on `pathKey`, not the raw cwd: `C:\proj` and `c:\proj` are the same
   // project, and keying on the spelling gives each of them its own entry and
   // its own full walk — the miss this memo exists to prevent.
-  const key = pathKey(cwd);
+  const key = discoveryKey(cwd);
   const now = Date.now();
   const cached = discoveryCache.get(key);
   if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
@@ -162,7 +180,7 @@ export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashC
  * call, and a second ask while a walk is running waits for that walk.
  */
 export async function discoverClaudeSlashCommandsAsync(cwd: string): Promise<DiscoveredClaudeSlashCommand[]> {
-  const key = pathKey(cwd);
+  const key = discoveryKey(cwd);
   const cached = discoveryCache.get(key);
   if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
   let walk = discoveryInFlight.get(key);
