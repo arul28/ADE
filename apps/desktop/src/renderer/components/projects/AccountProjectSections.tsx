@@ -15,7 +15,6 @@ import {
 import { launchInProgress, startAccountCloudChat, type AccountCloudLaunchEntry } from "../../state/accountCloudLaunches";
 import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import {
-  catalogSignInKind,
   defaultCloudModel,
   saveLastCloudModel,
   useCloudModelCatalog,
@@ -121,7 +120,7 @@ export function CloudChatComposer({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const provider = catalog?.providers.find((entry) => entry.provider === current?.provider) ?? null;
-  const desktopOnly = provider ? catalogSignInKind(provider) === "desktop" : false;
+  const desktopOnly = provider ? provider.remoteSignIn === "desktop" : false;
   // The server decides: a public repo clones without GitHub, a private one answers "Give ADE access".
   const needsAccess = access.state === "no_github" || access.state === "no_access";
   const canSend = text.trim().length > 0 && current != null && !sending && !desktopOnly;

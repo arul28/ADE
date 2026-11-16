@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { CloudAccountSignIn, CloudAccountSignIns, CloudCatalogProvider } from "../../../../../shared/accountCloudLaunches";
-import { catalogSignInKind, useCloudModelCatalog } from "../../../../state/cloudModelCatalog";
+import { useCloudModelCatalog } from "../../../../state/cloudModelCatalog";
 import { openExternalUrl } from "../../../../lib/openExternal";
 import { extractError } from "../../../../lib/format";
 import { Banner } from "../../../ui/notice";
@@ -91,7 +91,7 @@ function ProviderRow({
   vaultUnknown: boolean;
   onChanged: (next: CloudAccountSignIns) => void;
 }) {
-  const kind = catalogSignInKind(provider);
+  const kind = provider.remoteSignIn;
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);

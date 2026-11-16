@@ -1,5 +1,5 @@
 import { useEffect, useSyncExternalStore } from "react";
-import type { CloudCatalogProvider, CloudModelCatalog, CloudRemoteSignInKind } from "../../shared/accountCloudLaunches";
+import type { CloudModelCatalog } from "../../shared/accountCloudLaunches";
 import { isAdeAvailable } from "../lib/adeAvailability";
 
 /**
@@ -45,15 +45,6 @@ export function useCloudModelCatalog(enabled: boolean): CatalogState & { retry: 
   return { ...snapshot, retry: () => void load() };
 }
 
-/**
- * How a provider signs in on a cloud computer. PR 1 names the field
- * `remoteSignIn`; an older server sent `signIn`.
- */
-export function catalogSignInKind(provider: CloudCatalogProvider): CloudRemoteSignInKind {
-  const record = provider as unknown as { remoteSignIn?: CloudRemoteSignInKind; signIn?: CloudRemoteSignInKind };
-  return record.remoteSignIn ?? record.signIn ?? "device";
-}
-
 const LAST_MODEL_KEY = "ade.cloudChat.lastModel.v1";
 
 export type CloudModelPick = { provider: string; modelId: string };
@@ -87,7 +78,7 @@ export function defaultCloudModel(catalog: CloudModelCatalog | null): CloudModel
     if (provider?.models.some((model) => model.id === last.modelId)) return last;
   }
   // Providers that sign in on the computer come first; a key or desktop sign-in needs a step before.
-  const first = catalog.providers.find((entry) => catalogSignInKind(entry) === "device" || catalogSignInKind(entry) === "url_paste")
+  const first = catalog.providers.find((entry) => entry.remoteSignIn === "device" || entry.remoteSignIn === "url_paste")
     ?? catalog.providers[0];
   // The default only when the list has it: the picker shows and sends the same model.
   const modelId = (first?.models.some((model) => model.id === first.defaultModelId) ? first.defaultModelId : null)
