@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import SwiftUI
+
+private let cloudLaunchLog = Logger(subsystem: "com.ade.ios", category: "cloud-launches")
 
 // A chat on ADE Cloud started from the phone with no computer of the
 // person's own: `POST /cloud/launches` on the account server, with the
@@ -75,6 +78,8 @@ struct CloudLaunchRecord: Decodable, Equatable {
   let provider: String?
   let modelId: String?
   let prompt: String?
+  /// The start as the server keeps it: a Retry from any device sends it again.
+  let request: RemoteJSONValue?
 
   private enum CodingKeys: String, CodingKey {
     case launchId, state, projectOrigin, laneId, laneName, instanceId, stages, sessionId, error, signIn, provider, modelId, request
@@ -100,10 +105,11 @@ struct CloudLaunchRecord: Decodable, Equatable {
     sessionId = c.lenient(String.self, forKey: .sessionId)
     error = c.lenient(String.self, forKey: .error)
     signIn = c.lenient(CloudLaunchSignIn.self, forKey: .signIn)
-    let request = c.lenient(Request.self, forKey: .request)
-    provider = c.lenient(String.self, forKey: .provider) ?? request?.chat?.provider
-    modelId = c.lenient(String.self, forKey: .modelId) ?? request?.chat?.modelId
-    prompt = request?.chat?.prompt
+    let chatRequest = c.lenient(Request.self, forKey: .request)
+    provider = c.lenient(String.self, forKey: .provider) ?? chatRequest?.chat?.provider
+    modelId = c.lenient(String.self, forKey: .modelId) ?? chatRequest?.chat?.modelId
+    prompt = chatRequest?.chat?.prompt
+    request = c.lenient(RemoteJSONValue.self, forKey: .request)
   }
 
   /// Still on its way to a running chat.
@@ -193,8 +199,8 @@ extension CloudServerClient {
   }
 
   /// 201 for a new launch; the same `launchId` again answers the same launch.
-  func startLaunch(_ body: [String: Any]) async throws -> CloudLaunchRecord {
-    let data = try JSONSerialization.data(withJSONObject: body)
+  func startLaunch(_ body: RemoteJSONValue) async throws -> CloudLaunchRecord {
+    let data = try JSONEncoder().encode(body)
     return try decodeBody(CloudLaunchRecord.self, from: try await send("POST", "cloud/launches", body: data, timeout: 48))
   }
 
@@ -226,7 +232,7 @@ extension CloudServerClient {
     let data = try JSONSerialization.data(withJSONObject: ["code": code])
     let status = try decodeBody(
       CloudSignInCodeStatus.self,
-      from: try await send("POST", "cloud/instances/\(pathSegment(instanceId))/sign-ins/\(pathSegment(jobId))/code", body: data, timeout: 36)
+      from: try await send("POST", "cloud/instances/\(pathSegment(instanceId))/sign-ins/\(pathSegment(jobId))/code", body: data, timeout: 100)
     )
     return status.state == "failed" ? (status.reason ?? "The code didn't work. Open the page again for a new one.") : nil
   }
@@ -322,12 +328,8 @@ final class AccountCloudLaunchStore: ObservableObject {
     var record: CloudLaunchRecord?
     /// The start itself failed (the server refused, or no answer).
     var startError: String?
-    var body: [String: Any]?
-
-    static func == (lhs: Entry, rhs: Entry) -> Bool {
-      lhs.launchId == rhs.launchId && lhs.origin == rhs.origin && lhs.prompt == rhs.prompt
-        && lhs.record == rhs.record && lhs.startError == rhs.startError
-    }
+    /// The start this phone sent; a launch found from another device uses its record's `request`.
+    var body: RemoteJSONValue?
 
     var inProgress: Bool { startError == nil && (record?.inProgress ?? true) }
   }
@@ -337,6 +339,8 @@ final class AccountCloudLaunchStore: ObservableObject {
   @Published private(set) var catalogError: String?
 
   private var pollTask: Task<Void, Never>?
+  /// Bumped for each poll loop and by `reset`: a loop clears the handle only while it is still the current one.
+  private var pollGeneration = 0
   private var activeReadAt: Date?
   private static let lastModelKey = "ade.cloudChat.lastModel.v1"
 
@@ -375,7 +379,16 @@ final class AccountCloudLaunchStore: ObservableObject {
   func refreshActive(using sync: SyncService, force: Bool = false) async {
     if !force, let at = activeReadAt, Date().timeIntervalSince(at) < 20 { return }
     activeReadAt = Date()
-    guard let client = await sync.cloudServerClient(), let list = try? await client.activeLaunches() else { return }
+    guard let client = await sync.cloudServerClient() else { return }
+    let list: [CloudLaunchRecord]
+    do {
+      list = try await client.activeLaunches()
+    } catch {
+      // The next look (a page that opens, or 20 s later) tries again.
+      activeReadAt = nil
+      Self.noteReadFailed("active", error)
+      return
+    }
     for record in list where !entries.contains(where: { $0.launchId == record.launchId }) {
       entries.append(Entry(
         launchId: record.launchId,
@@ -394,20 +407,20 @@ final class AccountCloudLaunchStore: ObservableObject {
     UserDefaults.standard.set(["provider": provider, "modelId": modelId], forKey: Self.lastModelKey)
     let launchId = UUID().uuidString.lowercased()
     let messageId = "msg_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased().prefix(24)
-    let body: [String: Any] = [
-      "launchId": launchId,
-      "kind": "chat",
+    let body: RemoteJSONValue = .object([
+      "launchId": .string(launchId),
+      "kind": .string("chat"),
       // The server reads the origin from the account's project.
-      "project": ["accountProjectId": accountProjectId],
-      "chat": [
-        "provider": provider,
-        "modelId": modelId,
-        "permissions": "default",
-        "prompt": prompt,
-        "messageId": String(messageId),
-      ],
-      "madeBy": ["kind": "person"],
-    ]
+      "project": .object(["accountProjectId": .string(accountProjectId)]),
+      "chat": .object([
+        "provider": .string(provider),
+        "modelId": .string(modelId),
+        "permissions": .string("default"),
+        "prompt": .string(prompt),
+        "messageId": .string(String(messageId)),
+      ]),
+      "madeBy": .object(["kind": .string("person")]),
+    ])
     entries.insert(Entry(
       launchId: launchId,
       origin: origin.lowercased(),
@@ -422,13 +435,14 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// Starts again a launch whose start failed, or whose computer failed
   /// before its agent started (the same id, `retry`).
   func retry(_ launchId: String, using sync: SyncService) async {
-    guard let index = entries.firstIndex(where: { $0.launchId == launchId }), var body = entries[index].body else { return }
-    if entries[index].record != nil { body["retry"] = true }
+    guard let index = entries.firstIndex(where: { $0.launchId == launchId }),
+          case .object(var fields)? = entries[index].body ?? entries[index].record?.request else { return }
+    if entries[index].record != nil { fields["retry"] = .bool(true) }
     entries[index].startError = nil
-    await runStart(launchId, body: body, using: sync)
+    await runStart(launchId, body: .object(fields), using: sync)
   }
 
-  private func runStart(_ launchId: String, body: [String: Any], using sync: SyncService) async {
+  private func runStart(_ launchId: String, body: RemoteJSONValue, using sync: SyncService) async {
     guard let client = await sync.cloudServerClient() else {
       patch(launchId) { $0.startError = "Sign in to ADE to start a chat on ADE Cloud." }
       return
@@ -448,7 +462,14 @@ final class AccountCloudLaunchStore: ObservableObject {
 
   /// Reads one launch again now (after a sign-in step).
   func refresh(_ launchId: String, using sync: SyncService) async {
-    guard let client = await sync.cloudServerClient(), let record = try? await client.launch(launchId) else { return }
+    guard let client = await sync.cloudServerClient() else { return }
+    let record: CloudLaunchRecord
+    do {
+      record = try await client.launch(launchId)
+    } catch {
+      Self.noteReadFailed("status", error)
+      return
+    }
     patch(launchId) { $0.record = record }
     poll(using: sync)
   }
@@ -461,6 +482,8 @@ final class AccountCloudLaunchStore: ObservableObject {
   /// One loop for every launch in progress; it ends when none is left.
   private func poll(using sync: SyncService) {
     guard pollTask == nil, entries.contains(where: { $0.inProgress && $0.record != nil }) else { return }
+    pollGeneration += 1
+    let generation = pollGeneration
     pollTask = Task { @MainActor [weak self] in
       var delay: UInt64 = 3
       while let self, !Task.isCancelled {
@@ -473,7 +496,14 @@ final class AccountCloudLaunchStore: ObservableObject {
         guard let client = await sync.cloudServerClient() else { break }
         var changed = false
         for entry in open {
-          guard let record = try? await client.launch(entry.launchId) else { continue }
+          let record: CloudLaunchRecord
+          do {
+            record = try await client.launch(entry.launchId)
+          } catch {
+            // The last record stays; the next tick reads it again.
+            Self.noteReadFailed("status", error)
+            continue
+          }
           if record != entry.record {
             changed = true
             self.patch(entry.launchId) { $0.record = record }
@@ -481,27 +511,23 @@ final class AccountCloudLaunchStore: ObservableObject {
         }
         delay = changed ? 3 : min(delay + 2, 10)
       }
-      self?.pollTask = nil
+      // After a reset a newer loop may own the handle: clear only this one's.
+      if let self, self.pollGeneration == generation { self.pollTask = nil }
     }
+  }
+
+  /// A read failed; the last record stays and the next read tries again.
+  private static func noteReadFailed(_ read: String, _ error: Error) {
+    cloudLaunchLog.warning("cloud_launch read=\(read, privacy: .public) failed error=\(CrashReporting.redactedErrorDescription(error), privacy: .public)")
+    CrashReporting.breadcrumb("cloud_launch", message: "read_failed", data: ["read": read])
   }
 
   /// An account change: the last account's launches go.
   func reset() {
     pollTask?.cancel()
     pollTask = nil
+    pollGeneration += 1
     entries = []
     activeReadAt = nil
-  }
-}
-
-@MainActor
-extension SyncService {
-  /// Whether the account has a computer of the person's own: an account
-  /// machine that is not one of the account's ADE Cloud computers. A chat
-  /// on ADE Cloud from the phone is offered without one.
-  func accountHasOwnComputer(_ machines: [AccountMachine]) -> Bool {
-    var cloudKeys = Set(cloudServerInstances.compactMap { $0.machineKey?.lowercased() })
-    for key in cloudAccountMachineKeys ?? [] { cloudKeys.insert(key.lowercased()) }
-    return machines.contains { !cloudKeys.contains($0.machineKey.lowercased()) }
   }
 }

@@ -4,6 +4,7 @@ import { useCloudModelCatalog } from "../../../../state/cloudModelCatalog";
 import { openExternalUrl } from "../../../../lib/openExternal";
 import { extractError } from "../../../../lib/format";
 import { Banner } from "../../../ui/notice";
+import { confirmDialog } from "../../../ui/dialog";
 
 /**
  * Settings › Providers in ADE Web for a person with no computer of their own:
@@ -80,6 +81,30 @@ export function AccountCloudProvidersPanel() {
   );
 }
 
+
+/** The tag and the line under a provider, for how it signs in on ADE Cloud. */
+function signInRowCopy(
+  kind: CloudCatalogProvider["remoteSignIn"],
+  facts: { saved: boolean; vaultUnknown: boolean; keyName: string | null },
+): { status: string; line: string } {
+  switch (kind) {
+    case "desktop":
+      return { status: "Sign in from ADE desktop", line: "This provider signs in only in ADE desktop. Sign in there, and cloud chats can use it." };
+    case "api_key":
+      return {
+        status: facts.saved ? "Key saved" : facts.vaultUnknown ? "Couldn't check" : "Needs a key",
+        line: `${facts.keyName ?? "An API key"}, saved to your account.`,
+      };
+    case "url_paste":
+      return {
+        status: facts.saved ? "Pass saved" : "Signs in at your first chat",
+        line: "The cloud computer opens a sign-in page. Paste the code it shows, and ADE keeps the pass for later computers.",
+      };
+    default:
+      return { status: "Signs in at your first chat", line: "The cloud computer shows a code. Enter it on the provider's page." };
+  }
+}
+
 function ProviderRow({
   provider,
   signIn,
@@ -98,20 +123,7 @@ function ProviderRow({
   const [error, setError] = useState<string | null>(null);
   const saved = signIn?.saved === true;
 
-  const status = kind === "desktop"
-    ? "Sign in from ADE desktop"
-    : kind === "api_key"
-      ? saved ? "Key saved" : vaultUnknown ? "Couldn't check" : "Needs a key"
-      : kind === "url_paste"
-        ? saved ? "Pass saved" : "Signs in at your first chat"
-        : "Signs in at your first chat";
-  const line = kind === "desktop"
-    ? "This provider signs in only in ADE desktop. Sign in there, and cloud chats can use it."
-    : kind === "api_key"
-      ? `${signIn?.keyName ?? "An API key"}, saved to your account.`
-      : kind === "url_paste"
-        ? "The cloud computer opens a sign-in page. Paste the code it shows, and ADE keeps the pass for later computers."
-        : "The cloud computer shows a code. Enter it on the provider's page.";
+  const { status, line } = signInRowCopy(kind, { saved, vaultUnknown, keyName: signIn?.keyName ?? null });
 
   const save = () => {
     const api = window.ade?.cloudLaunches;
@@ -127,9 +139,16 @@ function ProviderRow({
       (failure: unknown) => setError(extractError(failure)),
     ).finally(() => setBusy(false));
   };
-  const remove = () => {
+  const remove = async () => {
     const api = window.ade?.cloudLaunches;
     if (!api || !signIn) return;
+    const ok = await confirmDialog({
+      title: `Remove your ${provider.label} key?`,
+      message: "ADE Cloud chats can't use this provider until you add a key again.",
+      confirmLabel: "Remove",
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     void api.removeSignIn(signIn.id).then(onChanged, (failure: unknown) => setError(extractError(failure))).finally(() => setBusy(false));
@@ -144,7 +163,7 @@ function ProviderRow({
           saved ? (
             <>
               <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={() => setEditing(true)}>Replace</button>
-              <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busy} onClick={remove}>Remove</button>
+              <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" data-tone="crit" disabled={busy} onClick={() => void remove()}>Remove</button>
             </>
           ) : (
             <button type="button" className="kit-btn" data-size="sm" disabled={busy} onClick={() => setEditing(true)}>Add key</button>

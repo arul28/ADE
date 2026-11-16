@@ -1,3 +1,4 @@
+import { PRIMARY_LANE_DISPLAY_NAME } from "../../../shared/laneDisplayName";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowSquareOut, Desktop, FolderSimple, GitBranch, WifiSlash } from "@phosphor-icons/react";
@@ -42,6 +43,7 @@ import {
   CloudChatComposer,
   GithubTabsCard,
   ProjectLanesCard,
+  cloudLaneStateWord,
   cloudLanesOfOrigin,
   useGithubAccess,
   type AccountProjectLane,
@@ -129,15 +131,11 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   );
   // A chat on ADE Cloud starts here only where the client talks to the account server for it (ADE Web).
   const cloudChats = accountCloudLaunchesAvailable() && accountProject != null && ACCOUNT_PROJECT_ID_PATTERN.test(tab.id) && origin != null;
-  // The cloud lanes come from the account's computers: read them once when no fresh read is in hand,
-  // and again when a chat here gets its lane.
+  // The cloud lanes come from the account's computers: read them once when no fresh read is in hand.
+  // The launch store reads them again when a chat gets its lane.
   useEffect(() => {
     refreshCloudMachinesIfStale();
   }, []);
-  const readyLaunches = launches.filter((entry) => entry.record?.laneId && entry.record.sessionId).length;
-  useEffect(() => {
-    if (readyLaunches > 0) refreshCloudMachines();
-  }, [readyLaunches]);
 
   // A copy came online: open it. Once per copy, so a copy that fails to open
   // does not loop; the list still offers it.
@@ -347,9 +345,9 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   const copyMachineKeys = new Set(copies.flatMap((copy) => (copy.machineKey ? [copy.machineKey.toLowerCase()] : [])));
   const machinesWithoutCopy = webMode
     ? ownComputers.filter((machine) => {
-      const key = machine.accountMachine?.machineKey?.toLowerCase();
-      if (!key || copyMachineKeys.has(key) || machine.rememberedOnly) return false;
-      const account = machine.accountMachine!;
+      const account = machine.accountMachine;
+      const key = account?.machineKey?.toLowerCase();
+      if (!account || !key || copyMachineKeys.has(key) || machine.rememberedOnly) return false;
       const awake = resolveMachinePresence({
         connected: false,
         online: account.online,
@@ -360,14 +358,20 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
       return machine.status === "live" || machine.status === "parked" || (machine.status === "available" && awake);
     })
     : [];
-  const [cloneTarget, setCloneTarget] = useState<CloneDialogMachine | null>(null);
+  /** The machine the clone dialog clones to, with the folders of its other projects. */
+  const [cloneTarget, setCloneTarget] = useState<(CloneDialogMachine & { otherProjectPaths: string[] }) | null>(null);
   const [cloneConnecting, setCloneConnecting] = useState<string | null>(null);
   const cloneOn = (machine: WebMachineEntry) => {
     if (!workspace) return;
     setOpenError(null);
     setCloneConnecting(machine.key);
     void workspace.connectMachineEntry(machine).then(
-      (targetId) => setCloneTarget({ machineId: targetId, name: machine.name, targetId }),
+      (targetId) => setCloneTarget({
+        machineId: targetId,
+        name: machine.name,
+        targetId,
+        otherProjectPaths: machine.projects.map((project) => project.rootPath).filter((path): path is string => typeof path === "string"),
+      }),
       (error: unknown) => setOpenError({ title: `Couldn't connect to ${machine.name}`, technicalDetail: extractError(error) }),
     ).finally(() => setCloneConnecting(null));
   };
@@ -446,31 +450,26 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
   };
   const laneRows: AccountProjectLane[] = cloudLanesOfOrigin(cloudIndex.computers, launches, origin).map((lane) => {
     const copy = copyOnComputer(lane.computer?.instanceId ?? lane.launch?.record?.instanceId ?? null, lane.computer?.machineKey ?? null);
-    const state = lane.launch && !lane.launch.record?.sessionId
-      ? "Starting"
-      : lane.computer?.state === "asleep" || lane.computer?.state === "stopped"
-        ? "Asleep"
-        : lane.computer?.state === "running" ? "Running" : "Starting";
     return {
       key: `cloud:${lane.laneId}`,
       name: lane.laneName,
       where: "ADE Cloud",
-      state,
+      state: cloudLaneStateWord(lane),
       onOpen: copy ? () => openCloudCopy(copy) : null,
     };
   });
+  const cloudLaneCount = laneRows.length;
   // Copies on the person's own computers are lanes too: each copy's main checkout.
   for (const copy of copies) {
     if (onAdeCloud(copy)) continue;
     laneRows.push({
       key: `copy:${copyKeyOf(copy)}`,
-      name: "Main checkout",
+      name: PRIMARY_LANE_DISPLAY_NAME,
       where: copy.machineName,
       state: copy.online ? "Online" : offlineWord(copy),
       onOpen: null,
     });
   }
-  const cloudLaneCount = laneRows.filter((lane) => lane.key.startsWith("cloud:")).length;
   // Copies on the person's own computers, or a way to add one: the copies card shows only then.
   const ownCopies = copies.filter((copy) => !onAdeCloud(copy));
   const showCopiesCard = ownCopies.length > 0 || canAddLocal || machinesWithoutCopy.length > 0 || opening != null
@@ -727,7 +726,7 @@ export function ProjectWelcomeNoMachine({ tab }: { tab: NoMachineRepositoryTab }
           repoKey={copyRepoKey}
           url={`https://${copyRepoKey}`}
           repoName={copyRepoKey.split("/").pop() ?? tab.displayName}
-          otherProjectPaths={(webMachines.find((machine) => machine.name === cloneTarget.name)?.projects ?? []).map((project) => project.rootPath).filter((path): path is string => typeof path === "string")}
+          otherProjectPaths={cloneTarget.otherProjectPaths}
           confirmLabel="Clone & open"
           sendsMessage={false}
           onCancel={() => setCloneTarget(null)}

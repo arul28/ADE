@@ -44,6 +44,7 @@ import { ResetAdeSection } from "./ResetAdeSection";
 import { DatabaseCopiesSection } from "./DatabaseCopiesSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { AccountCloudProvidersPanel } from "./providers/cloud/AccountCloudProvidersPanel";
+import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
 import { useHasOwnComputer } from "../../state/ownComputers";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
@@ -124,21 +125,17 @@ function providerIdFromHash(hash: string): string | null {
 }
 
 /**
- * Agents & Models. One provider's page is a sub-view of this tab rather than a
- * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
- * manifest entry for each provider deeplinks straight to it. While a provider
- * is open the tab shows only that page — the budget cap below the provider
- * list is not part of the provider you drilled into. Dictation lives
- * on the chat tab; scheduled work lives on notifications.
- */
-/**
  * Settings › ADE Cloud. In ADE Web with no computer of the person's own, the
  * providers' ADE Cloud sign-ins and saved keys show here too: that person has
  * no machine whose Providers page could hold them.
  */
+/** ADE Web with no computer of the person's own: the providers' ADE Cloud sign-ins live in Settings. */
+function useAccountProvidersInSettings(): boolean {
+  return !useHasOwnComputer() && isWebClientMode() && accountCloudLaunchesAvailable();
+}
+
 function AdeCloudSettingsPage() {
-  const hasOwnComputer = useHasOwnComputer();
-  const accountProviders = !hasOwnComputer && Boolean(window.ade?.cloudLaunches);
+  const accountProviders = useAccountProvidersInSettings();
   return (
     <SettingsColumn wide>
       <CloudSection />
@@ -147,8 +144,16 @@ function AdeCloudSettingsPage() {
   );
 }
 
+/**
+ * Agents & Models. One provider's page is a sub-view of this tab rather than a
+ * route of its own: `?provider=<id>`, with `#ai-provider-<id>` accepted so the
+ * manifest entry for each provider deeplinks straight to it. While a provider
+ * is open the tab shows only that page — the budget cap below the provider
+ * list is not part of the provider you drilled into. Dictation lives
+ * on the chat tab; scheduled work lives on notifications.
+ */
 function AgentsTabContent() {
-  const hasOwnComputer = useHasOwnComputer();
+  const accountProviders = useAccountProvidersInSettings();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -173,7 +178,7 @@ function AgentsTabContent() {
     );
   }, [location.pathname, navigate, searchParams]);
 
-  if (isWebClientMode() && !hasOwnComputer && window.ade?.cloudLaunches) {
+  if (accountProviders) {
     return <AccountCloudProvidersPanel />;
   }
 

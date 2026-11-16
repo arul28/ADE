@@ -1,6 +1,5 @@
-import { useEffect, useMemo } from "react";
-import { launchInProgress, launchesForOrigin, useAccountCloudLaunches } from "../../../state/accountCloudLaunches";
-import { refreshCloudMachines } from "../../remoteTargets/useCloudMachines";
+import { useMemo } from "react";
+import { hideAccountCloudLaunch, launchInProgress, launchesForOrigin, useAccountCloudLaunches } from "../../../state/accountCloudLaunches";
 import { CloudSetupCard } from "../../projects/CloudSetupCard";
 import { cn } from "../../ui/cn";
 
@@ -12,7 +11,8 @@ import { cn } from "../../ui/cn";
  * launch in a brain, so the desktop's lane setup card does not apply.
  *
  * Shown: launches in progress, failed ones (for Retry), and the ones this tab
- * started. Its own component, so the launch poll re-renders only the cards.
+ * started, until the person hides a finished one (its chat is in the Work
+ * list). Its own component, so the launch poll re-renders only the cards.
  */
 export function WebCloudSetupCards({ originUrl, className }: { originUrl: string | null; className?: string }) {
   const { entries } = useAccountCloudLaunches();
@@ -23,16 +23,10 @@ export function WebCloudSetupCards({ originUrl, className }: { originUrl: string
     )),
     [entries, originUrl],
   );
-  // A chat that got its lane: read the account's computers again, so the new
-  // lane shows in the Run on lane list and the Work list.
-  const ready = shown.filter((entry) => entry.record?.laneId && entry.record.sessionId).length;
-  useEffect(() => {
-    if (ready > 0) refreshCloudMachines();
-  }, [ready]);
   if (shown.length === 0) return null;
   return (
     <div className={cn("flex flex-col gap-2 text-left", className)} data-testid="web-cloud-setup-cards">
-      {shown.map((entry) => <CloudSetupCard key={entry.launchId} entry={entry} />)}
+      {shown.map((entry) => <CloudSetupCard key={entry.launchId} entry={entry} onHide={() => hideAccountCloudLaunch(entry.launchId)} />)}
     </div>
   );
 }

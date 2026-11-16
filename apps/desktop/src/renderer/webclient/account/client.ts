@@ -1,6 +1,7 @@
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { CLOUD_PATHS } from "../../../../../account-directory/src/cloud/contract";
 import { captureError } from "../../../shared/sentry/capture";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 // Loaded on the first read, so the signed-out page does not pay for it.
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../../../shared/accountProject";
 import { createCloudApiClient, type CloudApiClient } from "../../../shared/cloudApiClient";
@@ -1090,7 +1091,9 @@ export class BrowserAccountClient {
       accessToken: async () => {
         try {
           return await this.getAccessToken();
-        } catch {
+        } catch (error) {
+          // No token: the server answers 401 and the caller says "sign in".
+          forwardSignalToSentry("web.cloud_api_token_failed", { message: error instanceof Error ? error.message : String(error) }, "cloud_api_token_failed", "info");
           return null;
         }
       },

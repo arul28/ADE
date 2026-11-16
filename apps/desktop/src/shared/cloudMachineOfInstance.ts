@@ -18,6 +18,7 @@ import {
   type CloudCatalog,
   type CloudMachineUpdate,
   type CloudResources,
+  type CloudSleepPolicy,
 } from "./adeCloud";
 import { cloudMachineLaneFactsOf, type CloudLaneMachine } from "./cloudLaneLaunch";
 
@@ -54,7 +55,7 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     failure: instance.status === "failed" ? instance.statusReason?.message ?? null : null,
     machineKey: instance.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null,
     createdAtMs: instance.created != null ? instance.created * 1000 : null,
-    sleep: instance.autoSleep ? { state: "auto" } : { state: "pending" },
+    sleep: cloudSleepPolicyOf(instance),
     diskFull: cloudDiskFullMessage(instance.metadata[CLOUD_DISK_FULL_METADATA], catalog, instance.metadata[CLOUD_DISK_FULL_REASON_METADATA]),
     update: updateOf(instance),
     // Use facts the computer reported while awake: read with the list, no wake.
@@ -64,6 +65,11 @@ export function cloudMachineOfInstance(instance: CloudInstance, catalog: CloudCa
     ...(lane ? { lane } : {}),
     replacesInstanceId: instance.metadata.ade_moved_from ?? instance.metadata.ade_copied_from ?? null,
   };
+}
+
+/** How a computer sleeps, read from the provider (the setting lives there, so every app agrees). */
+export function cloudSleepPolicyOf(instance: Pick<CloudInstance, "autoSleep">): CloudSleepPolicy {
+  return instance.autoSleep ? { state: "auto" } : { state: "pending" };
 }
 
 /** The server's update facts, or null from a server before updates. */

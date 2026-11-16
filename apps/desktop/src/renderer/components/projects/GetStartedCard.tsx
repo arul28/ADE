@@ -4,12 +4,13 @@ import { SetupSteps, type SetupStep } from "./SetupSteps";
 import { startGithubAccountAppSignIn, useGithubAccountApp } from "../../lib/useGithubAccountApp";
 import { useAccountGithubRepositories } from "../../lib/useAccountGithubReads";
 import { useAccountProjectList } from "../../state/useRepositoryCopies";
-import { noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { useAccountCloudLaunches } from "../../state/accountCloudLaunches";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
 import { useAppStore } from "../../state/appStore";
 import { showToast } from "../app/toast/toastStore";
 import { extractError } from "../../lib/format";
+import { openExternalUrl } from "../../lib/openExternal";
+import { openAddedAccountProject } from "./useAddToAccount";
 
 const DONE_KEY = "ade.getStarted.done.v1";
 const INSTALL_CHIP_DISMISSED_KEY = "ade.getStarted.installChip.dismissed.v1";
@@ -105,8 +106,7 @@ export function GetStartedCard({
         showToast({ tone: "error", title: `Couldn't add ${repo.name}`, message: answer.message });
         return;
       }
-      noteAccountProjectChange({ added: answer.project });
-      openAccountProject(answer.project);
+      openAddedAccountProject(answer.project);
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't add ${repo.name}`, message: extractError(error) });
     } finally {
@@ -202,7 +202,7 @@ export function InstallAdeChip() {
         type="button"
         className="kit-btn kit-btn-ghost"
         data-size="sm"
-        onClick={() => void window.ade.app.openExternal(ADE_DOWNLOAD_PAGE_URL).catch(() => undefined)}
+        onClick={() => openExternalUrl(ADE_DOWNLOAD_PAGE_URL)}
       >
         Get ADE
       </button>
@@ -219,28 +219,4 @@ export function InstallAdeChip() {
       </button>
     </div>
   );
-}
-
-const DESKTOP_FIRST_TAB_KEY = "ade.desktopFirstAccountTab.v1";
-
-/**
- * The desktop's first sign-in on an account that already has projects (made
- * on the web or the phone) and nothing on this computer: open the newest
- * account project's tab once. It lists its cloud lanes and offers Copy here;
- * nothing is cloned on its own.
- */
-export function useDesktopFirstAccountTab({ enabled, hasLocalProjects }: { enabled: boolean; hasLocalProjects: boolean }): void {
-  const list = useAccountProjectList();
-  const projects = list.state === "ready" ? list.projects : null;
-  useEffect(() => {
-    if (!enabled || hasLocalProjects || !projects || projects.length === 0) return;
-    try {
-      if (window.localStorage.getItem(DESKTOP_FIRST_TAB_KEY)) return;
-      window.localStorage.setItem(DESKTOP_FIRST_TAB_KEY, String(Date.now()));
-    } catch {
-      return;
-    }
-    const newest = projects.slice().sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))[0];
-    if (newest) useAppStore.getState().showNoMachineTab({ id: newest.id, displayName: newest.name, iconDataUrl: null });
-  }, [enabled, hasLocalProjects, projects]);
 }

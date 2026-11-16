@@ -5,6 +5,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
 } from "../../../shared/types";
 import { cachedGitRemoteIdentity } from "../lanes/laneMachines";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 /**
  * The pieces every "copy of a repository on a machine" surface shares: the Add
@@ -332,4 +333,21 @@ export function describeCopyFailure(error: unknown, online: boolean): CopyFailur
 /** A failure the person fixes on their side, so ADE is not told about it. */
 export function isUserFixableCopyFailure(kind: CopyFailureKind): boolean {
   return kind !== "unknown" && kind !== "unsupported";
+}
+
+/**
+ * The folder a clone goes to by default on that machine (`targetId`, or null
+ * for this computer), read on that machine's own connection. Null when it
+ * can't say: the clone then uses that machine's own default.
+ */
+export async function readMachineDefaultParentDir(targetId: string | null): Promise<string | null> {
+  try {
+    const value = targetId
+      ? await window.ade?.remoteRuntime?.getDefaultParentDir?.(targetId)
+      : await window.ade?.project?.getDefaultParentDir?.();
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  } catch (error) {
+    forwardSignalToSentry("renderer.default_parent_dir_failed", { remote: targetId != null, message: error instanceof Error ? error.message : String(error) }, "default_parent_dir_failed", "info");
+    return null;
+  }
 }

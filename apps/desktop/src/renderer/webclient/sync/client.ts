@@ -16,6 +16,11 @@ import type {
   SyncMobileProjectSummary,
   SyncProjectCatalogPayload,
   SyncProjectSwitchResultPayload,
+  SyncProjectActionResultPayload,
+  SyncProjectCloneRequestEnvelope,
+  SyncProjectDefaultParentDirPayload,
+  SyncProjectDefaultParentDirRequestEnvelope,
+  CloneProjectInput,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandAction,
   SyncTerminalDataPayload,
@@ -1090,47 +1095,49 @@ export class AdeSyncClient {
     return await promise;
   }
 
-  private readonly pendingProjectActions = new Map<string, { resultType: string; resolve: (payload: unknown) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly pendingProjectClones = new Map<string, PendingRequest<SyncProjectActionResultPayload>>();
+  private readonly pendingDefaultParentDirs = new Map<string, PendingRequest<SyncProjectDefaultParentDirPayload>>();
 
-  /**
-   * One project action on this machine (`projectActions` over sync, as the
-   * phone sends them): a request envelope and the result with its request id.
-   * The clone of a repository waits up to 10 minutes.
-   */
-  async requestProjectAction<T>(
-    requestType: "project_clone_request" | "project_default_parent_dir_request",
-    resultType: "project_clone_result" | "project_default_parent_dir",
-    payload: Record<string, unknown>,
-    timeoutMs = requestType === "project_clone_request" ? 10 * 60_000 : DEFAULT_REQUEST_TIMEOUT_MS,
+  /** Clones a repository on this machine (`project_clone_request`, as the phone sends it). Waits up to 10 minutes. */
+  async requestProjectClone(input: CloneProjectInput): Promise<SyncProjectActionResultPayload> {
+    return await this.sendProjectAction(this.pendingProjectClones, { type: "project_clone_request", payload: input }, 10 * 60_000);
+  }
+
+  /** The folder this machine clones into by default (`project_default_parent_dir_request`). */
+  async requestDefaultParentDir(): Promise<SyncProjectDefaultParentDirPayload> {
+    return await this.sendProjectAction(this.pendingDefaultParentDirs, { type: "project_default_parent_dir_request", payload: {} }, DEFAULT_REQUEST_TIMEOUT_MS);
+  }
+
+  private async sendProjectAction<T>(
+    requests: Map<string, PendingRequest<T>>,
+    envelope: Omit<SyncProjectCloneRequestEnvelope, "requestId"> | Omit<SyncProjectDefaultParentDirRequestEnvelope, "requestId">,
+    timeoutMs: number,
   ): Promise<T> {
-    this.requireReadyGeneration();
+    const generation = this.requireReadyGeneration();
     const requestId = uuid();
     const promise = new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingProjectActions.delete(requestId);
-        reject(new AdeSyncError("The machine did not answer in time.", "timeout"));
-      }, timeoutMs);
-      this.pendingProjectActions.set(requestId, { resultType, resolve: resolve as (payload: unknown) => void, reject, timer });
+      const pending: PendingRequest<T> = {
+        resolve,
+        reject,
+        generation,
+        timer: setTimeout(() => timeout(pending, requests, requestId), timeoutMs),
+      };
+      requests.set(requestId, pending);
     });
     try {
-      this.connection.send({ type: requestType, requestId, payload } as Parameters<typeof this.connection.send>[0]);
+      this.connection.send({ ...envelope, requestId } as SyncProjectCloneRequestEnvelope | SyncProjectDefaultParentDirRequestEnvelope);
     } catch (error) {
-      const pending = this.pendingProjectActions.get(requestId);
-      if (pending) {
-        clearTimeout(pending.timer);
-        this.pendingProjectActions.delete(requestId);
-      }
-      throw error instanceof Error ? error : new Error(String(error));
+      this.rejectPending(requests, requestId, this.connectionError(error));
     }
     return await promise;
   }
 
-  private handleProjectActionResult(type: string, requestId: string | null, payload: unknown): void {
+  private resolveProjectAction<T>(requests: Map<string, PendingRequest<T>>, requestId: string | null, payload: T): void {
     if (!requestId) return;
-    const pending = this.pendingProjectActions.get(requestId);
-    if (!pending || pending.resultType !== type) return;
+    const pending = requests.get(requestId);
+    if (!pending || pending.generation !== this.clientGeneration) return;
     clearTimeout(pending.timer);
-    this.pendingProjectActions.delete(requestId);
+    requests.delete(requestId);
     pending.resolve(payload);
   }
 
@@ -1496,8 +1503,10 @@ export class AdeSyncClient {
         this.handleProjectSwitchResult(envelope.requestId ?? null, envelope.payload as SyncProjectSwitchResultPayload);
         break;
       case "project_clone_result":
+        this.resolveProjectAction(this.pendingProjectClones, envelope.requestId ?? null, envelope.payload as SyncProjectActionResultPayload);
+        break;
       case "project_default_parent_dir":
-        this.handleProjectActionResult(envelope.type, envelope.requestId ?? null, envelope.payload);
+        this.resolveProjectAction(this.pendingDefaultParentDirs, envelope.requestId ?? null, envelope.payload as SyncProjectDefaultParentDirPayload);
         break;
       case "chat_launch_event": {
         // Typed, but still wire data from a host of any version: validate before fanning out.
@@ -2092,10 +2101,12 @@ export class AdeSyncClient {
       this.pendingProjectSwitches.delete(requestId);
       pending.reject(error);
     }
-    for (const [requestId, pending] of this.pendingProjectActions) {
-      clearTimeout(pending.timer);
-      this.pendingProjectActions.delete(requestId);
-      pending.reject(error);
+    for (const requests of [this.pendingProjectClones, this.pendingDefaultParentDirs] as Map<string, PendingRequest<unknown>>[]) {
+      for (const [requestId, pending] of requests) {
+        clearTimeout(pending.timer);
+        requests.delete(requestId);
+        pending.reject(error);
+      }
     }
     this.rejectPendingProjectCatalog(error);
   }

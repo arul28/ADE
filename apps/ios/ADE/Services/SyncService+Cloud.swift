@@ -1079,3 +1079,15 @@ extension SyncService {
     return .failed(lastFailure ?? "\(name) did not answer. Try again.")
   }
 }
+
+@MainActor
+extension SyncService {
+  /// Whether the account has a computer of the person's own: an account
+  /// machine that is not one of the account's ADE Cloud computers. A chat
+  /// on ADE Cloud from the phone is offered without one.
+  func accountHasOwnComputer(_ machines: [AccountMachine]) -> Bool {
+    var cloudKeys = Set(cloudServerInstances.compactMap { $0.machineKey?.lowercased() })
+    for key in cloudAccountMachineKeys ?? [] { cloudKeys.insert(key.lowercased()) }
+    return machines.contains { !cloudKeys.contains($0.machineKey.lowercased()) }
+  }
+}

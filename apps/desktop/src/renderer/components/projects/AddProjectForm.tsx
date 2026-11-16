@@ -36,6 +36,7 @@ import {
   unconnectedMachinesLabel,
   isGitHubRepoUrl,
   repoKeyForUrl,
+  readMachineDefaultParentDir,
   repoNameForUrl,
   type CopyMachine,
   type CopyOpenTarget,
@@ -210,7 +211,7 @@ export function AddProjectForm({
       if (!machine.online) return { kind: "unconnected" };
       return { kind: "available" };
     },
-    [existing, jobByMachine, webMode],
+    [existing, jobByMachine],
   );
 
   // A long list of machines not connected here collapses into one row, so the folder
@@ -298,22 +299,16 @@ export function AddProjectForm({
       && (machine.isLocal || machine.targetId != null));
     for (const machine of wanted) {
       fetchedDefaultsRef.current.add(machine.machineId);
-      const read = machine.targetId
-        ? window.ade.remoteRuntime.getDefaultParentDir(machine.targetId)
-        : window.ade.project.getDefaultParentDir();
-      void read
-        .then((value) => {
-          if (!mountedRef.current || !value) return;
-          setParentByMachine((current) => (current[machine.machineId] ? current : { ...current, [machine.machineId]: value }));
-        })
-        .catch(() => {
-          // A machine that cannot say uses its own default when it clones.
-        });
+      // A machine that cannot say uses its own default when it clones.
+      void readMachineDefaultParentDir(machine.targetId).then((value) => {
+        if (!mountedRef.current || !value) return;
+        setParentByMachine((current) => (current[machine.machineId] ? current : { ...current, [machine.machineId]: value }));
+      });
     }
     // Keyed on the connected machines, not the list object: a snapshot tick
     // that changes nothing must not read again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onlineTargetsKey, webMode]);
+  }, [onlineTargetsKey]);
 
   const cloneableTicked = machines.filter(
     (machine) => ticked.has(machine.machineId) && rowState(machine).kind === "available",
@@ -610,12 +605,20 @@ export function AddProjectForm({
           disabled={(!canAdd && !openOnlyCopy && !accountOnly) || addingToAccount}
           onClick={handleAdd}
         >
-          {openOnlyCopy ? "Open" : accountOnly ? (addingToAccount ? "Adding…" : machines.length === 0 ? "Add project" : "Add to account") : "Add project"}
+          {addButtonLabel({ openOnlyCopy, accountOnly, adding: addingToAccount, machineCount: machines.length })}
         </button>
       </div>
       {moreActions}
     </div>
   );
+}
+
+/** The Add button: open the one copy, add to the account (no computer needed), or clone. */
+function addButtonLabel(state: { openOnlyCopy: boolean; accountOnly: boolean; adding: boolean; machineCount: number }): string {
+  if (state.openOnlyCopy) return "Open";
+  if (!state.accountOnly) return "Add project";
+  if (state.adding) return "Adding…";
+  return state.machineCount === 0 ? "Add project" : "Add to account";
 }
 
 function MachineRow({

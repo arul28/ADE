@@ -21,7 +21,6 @@ import {
   CLOUD_WAKE_PORT_LABEL,
   cloudShape,
   type CloudAgentLimits,
-  type CloudSleepPolicy,
   type CloudWakeForUseResult,
 } from "../../../shared/adeCloud";
 import { getErrorMessage } from "../shared/utils";
@@ -29,11 +28,7 @@ import { CloudProviderError, type CloudProvider, type CloudInstance, type CloudL
 import type { CloudVault } from "./cloudAccess";
 import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import { wakeThroughTransition } from "./cloudInstanceOps";
-
-/** How a box sleeps, read from the provider (the setting lives there, so every computer agrees). */
-export function cloudSleepPolicyOf(instance: Pick<CloudInstance, "autoSleep">): CloudSleepPolicy {
-  return instance.autoSleep ? { state: "auto" } : { state: "pending" };
-}
+import { cloudSleepPolicyOf } from "../../../shared/cloudMachineOfInstance";
 
 /**
  * Hands the box its wake URL and reads whether its brain keeps it awake:

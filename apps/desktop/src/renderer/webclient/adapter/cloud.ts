@@ -1,5 +1,6 @@
-import { cloudCatalogOf, cloudShape } from "../../../shared/adeCloud";
-import { cloudMachineOfInstance, cloudResourcesOfInstance } from "../../../shared/cloudMachineOfInstance";
+import { cloudCatalogOf, isCloudInstanceId } from "../../../shared/adeCloud";
+import { cloudMachineOfInstance } from "../../../shared/cloudMachineOfInstance";
+import { cloudMachineRefusal, runCloudMachineLifecycleAction } from "../../../shared/cloudMachineActions";
 import { CloudApiError, type CloudApiClient } from "../../../shared/cloudApiClient";
 import type {
   CloudAgentLimits,
@@ -121,93 +122,37 @@ export function createWebCloudAccessNamespace(
   };
 }
 
-/** A refusal from the account server as the card reads it: plans and hours, the backup window, a disk refusal's reason. */
-function machineActionRefusal(error: unknown): CloudMachineActionResult {
-  const message = error instanceof Error ? error.message : String(error);
-  if (!(error instanceof CloudApiError)) return { ok: false, blocker: null, message };
-  if (error.code === "rate_limited") {
-    return {
-      ok: false,
-      blocker: "rate_limited",
-      message: "ADE Cloud takes one backup of a computer every 15 minutes. Try again in a few minutes. It also keeps the last seven nights on its own.",
-    };
-  }
-  if (error.code === "out_of_hours" || error.code === "over_plan_disk" || error.code === "over_plan_limits") {
-    return { ok: false, blocker: error.code, message };
-  }
-  const reason = error.code === "disk_limit" || error.code === "needs_paid_plan"
-    ? error.reason ?? (error.code === "needs_paid_plan" ? "plan_disk" : null)
-    : null;
-  return reason
-    ? { ok: false, blocker: null, message, diskRefusal: { reason } }
-    : { ok: false, blocker: null, message };
-}
-
-/** Sleep, wake, resize, backup and update through the account server, as the desktop's main process runs them. */
+/** Sleep, wake, resize, backup and update through the account server, with the desktop's sentences. */
 async function webMachineAction(api: CloudApiClient, args: CloudMachineActionArgs): Promise<CloudMachineActionResult> {
   const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-  if (!instanceId) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
+  if (!isCloudInstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that computer." };
   try {
-    switch (args.action) {
-      case "sleep":
-        await api.sleep(instanceId);
-        return { ok: true, blocker: null, message: "Asleep. It uses no hours until it wakes." };
-      case "wake": {
-        const { status } = await api.wake(instanceId);
-        return {
-          ok: true,
-          blocker: null,
-          message: status === "running" ? "Awake. ADE on it is starting." : "Waking. ADE Cloud is moving it to a host with room.",
-        };
-      }
-      case "backup":
-        await api.backup(instanceId);
-        return { ok: true, blocker: null, message: "Backed up. ADE Cloud keeps this one until your next backup, plus the last seven nights." };
-      case "update":
-        await api.update(instanceId);
-        return { ok: true, blocker: null, message: "Updating. It restarts and is back in a few minutes." };
-      case "resize": {
-        const shape = args.shape === undefined ? null : cloudShape(args.shape);
-        const disk = typeof args.disk === "number" && Number.isInteger(args.disk) && args.disk > 0 ? args.disk : null;
-        if ((args.shape !== undefined && !shape) || (!shape && disk == null)) return { ok: false, blocker: null, message: "Pick a size." };
-        const current = cloudResourcesOfInstance(await api.computer(instanceId));
-        if (!current) return { ok: false, blocker: null, message: "ADE Cloud didn't say how big this computer is, so ADE can't resize it." };
-        const growDisk = disk != null && disk > current.diskGb;
-        const idle = growDisk && args.computerIdle === true ? { computerIdle: true } : {};
-        if (!shape) {
-          if (!growDisk) return { ok: true, blocker: null, message: "The disk is already that size." };
-          const { status } = await api.resize(instanceId, { cpu: current.cpu, memory: current.memoryGb, disk, ...idle });
-          return {
-            ok: true,
-            blocker: null,
-            message: status === "running"
-              ? `The disk is ${disk} GB now. ADE on it is starting again.`
-              : `Growing the disk to ${disk} GB. The computer restarts and is back in a few minutes.`,
-          };
-        }
-        if (current.cpu === shape.cpu && current.memoryGb === shape.memoryGb && !growDisk) {
-          return { ok: true, blocker: null, message: "It's already that size." };
-        }
-        const { status } = await api.resize(instanceId, { cpu: shape.cpu, memory: shape.memoryGb, ...(growDisk ? { disk } : {}), ...idle });
-        return {
-          ok: true,
-          blocker: null,
-          message: status === "running"
-            ? `Resized to ${shape.label}. ADE on it is starting again.`
-            : `Resizing to ${shape.label}. It is back in a few minutes.`,
-        };
-      }
-      default:
-        return { ok: false, blocker: null, message: "ADE can't do that to a computer." };
-    }
+    const result = await runCloudMachineLifecycleAction({
+      computer: (id) => api.computer(id),
+      sleep: (id) => api.sleep(id),
+      wake: async (id) => (await api.wake(id)).status,
+      resize: async (id, resources, computerIdle) => (await api.resize(id, { ...resources, ...(computerIdle ? { computerIdle: true } : {}) })).status,
+      backup: (id) => api.backup(id),
+      update: (id) => api.update(id),
+    }, instanceId, args);
+    return result ?? { ok: false, blocker: null, message: "ADE can't do that to a computer." };
   } catch (error) {
-    return machineActionRefusal(error);
+    const message = error instanceof Error ? error.message : String(error);
+    // A refusal (plans, hours, the backup window) is an answer, not a failure.
+    if (!(error instanceof CloudApiError)) {
+      forwardSignalToSentry("web.cloud_machine_action_failed", { action: args.action, message }, `cloud_machine_action_failed:${args.action}`);
+    }
+    return cloudMachineRefusal(args.action, {
+      message,
+      code: error instanceof CloudApiError ? error.code : null,
+      reason: error instanceof CloudApiError ? error.reason : null,
+    });
   }
 }
 
 export function createWebCloudNamespace(
   infra: Pick<AdapterInfra, "client" | "commands">,
-  accountClient: CloudBillingAccountClient & Partial<Pick<BrowserAccountClient, "cloudApi">>,
+  accountClient: CloudBillingAccountClient & Pick<BrowserAccountClient, "cloudApi">,
 ): NonNullable<Window["ade"]["cloud"]> {
   const { client, commands } = infra;
   const billing = createWebCloudBilling(accountClient);
@@ -224,8 +169,14 @@ export function createWebCloudNamespace(
    */
   const accountOnly = async (): Promise<CloudMachinesResult> => {
     const account = await billing.readAccount();
-    const api = accountClient.cloudApi?.() ?? null;
-    const instances = api ? await api.listComputers().catch(() => null) : null;
+    const api = accountClient.cloudApi();
+    const instances = api
+      ? await api.listComputers().catch((error: unknown) => {
+        // The page still shows the plan and hours; the computers come on the next read.
+        forwardSignalToSentry("web.cloud_computers_read_failed", { code: error instanceof CloudApiError ? error.code : null }, "cloud_computers_read_failed", "info");
+        return null;
+      })
+      : null;
     const catalog = cloudCatalogOf(account);
     const machines = instances
       ? instances.filter((instance) => instance.status !== "deleted").map((instance) => cloudMachineOfInstance(instance, catalog))
@@ -289,7 +240,7 @@ export function createWebCloudNamespace(
    */
   const machineAction = async (args: CloudMachineActionArgs): Promise<CloudMachineActionResult | null> => {
     if (args.action === "delete") return { ok: false, blocker: null, message: DELETE_ON_DESKTOP };
-    const api = accountClient.cloudApi?.() ?? null;
+    const api = accountClient.cloudApi();
     if (!api) {
       if (args.action !== "sleep" && args.action !== "wake") {
         return { ok: false, blocker: null, message: "Sign in to your ADE account here to change this computer." };
@@ -329,7 +280,7 @@ export function createWebCloudNamespace(
     machineAction,
     // The account server runs the code on that computer; no machine connection needed.
     sendLaunchSignInCode: async ({ instanceId, jobId, code }) => {
-      const api = accountClient.cloudApi?.() ?? null;
+      const api = accountClient.cloudApi();
       if (!api) throw new Error("Account sign-in isn't configured for this web client.");
       return await api.sendSignInCode(instanceId, jobId, code);
     },
@@ -390,13 +341,12 @@ export function createWebCloudLaunchesNamespace(
     return client;
   };
   return {
-    start: (launch) => api().startAccountLaunch(launch),
+    start: (launch) => api().startLaunch(launch),
     status: (launchId) => api().launchStatus(launchId),
     active: () => api().activeLaunches(),
     cancel: (launchId) => api().cancelLaunch(launchId),
     messages: (launchId) => api().launchMessages(launchId),
     addMessage: (launchId, message) => api().addLaunchMessage(launchId, message),
-    sendSignInCode: (instanceId, jobId, code) => api().sendSignInCode(instanceId, jobId, code),
     signIns: () => api().accountSignIns(),
     saveSignIn: (signInId, key) => api().saveAccountSignIn(signInId, key),
     removeSignIn: (signInId) => api().removeAccountSignIn(signInId),

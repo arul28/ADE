@@ -3,6 +3,13 @@ import { extractError } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { noteAccountProjectChange } from "../../state/accountProjectListClient";
 import { showToast } from "../app/toast/toastStore";
+import type { AccountProjectView } from "../../../shared/accountProject";
+
+/** A project just added to the account: the list learns it, and its tab opens (no computer has it yet). */
+export function openAddedAccountProject(project: AccountProjectView): void {
+  noteAccountProjectChange({ added: project });
+  useAppStore.getState().showNoMachineTab({ id: project.id, displayName: project.name, iconDataUrl: null });
+}
 
 /**
  * Adds a repository to the account's project list (S13), for the Add project
@@ -44,9 +51,10 @@ export function useAddToAccount(args: { folderName: string; onClose: () => void 
       else showToast({ tone: "error", title: `Couldn't add ${folderName} to your account`, message: answer.message });
       return false;
     }
-    noteAccountProjectChange({ added: answer.project });
-    if (options.openTab) {
-      useAppStore.getState().showNoMachineTab({ id: answer.project.id, displayName: answer.project.name, iconDataUrl: null });
+    if (!options.openTab) {
+      noteAccountProjectChange({ added: answer.project });
+    } else {
+      openAddedAccountProject(answer.project);
       showToast({ tone: "success", title: `Added ${answer.project.name}`, message: "Send a chat from its page to start work on ADE Cloud." });
       onClose();
     }

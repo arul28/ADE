@@ -8,8 +8,10 @@ import {
   type CloudLaunchStartRequest,
 } from "../../shared/accountCloudLaunches";
 import { normalizeGitRemoteIdentity } from "../../shared/crossMachineHandoff";
+import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import { createBackoffPoller, type BackoffPoller } from "../lib/backoffPoller";
 import { isAdeAvailable } from "../lib/adeAvailability";
+import { refreshCloudMachines } from "../components/remoteTargets/useCloudMachines";
 
 /**
  * Chats started on ADE Cloud from the account server (`window.ade.cloudLaunches`),
@@ -19,7 +21,7 @@ import { isAdeAvailable } from "../lib/adeAvailability";
  *
  * One poll for every launch: a read every 3 s, slowing to 10 s while nothing
  * changes, paused while the page is hidden, and stopped once no launch is in
- * progress. The reads run one at a time, so a page never holds more than one
+ * progress and no message waits for its chat. The reads run one at a time, so a page never holds more than one
  * of the browser's connections to the account server for this.
  */
 
@@ -62,9 +64,37 @@ function setEntries(next: readonly AccountCloudLaunchEntry[], known = snapshot.k
 function patchEntry(launchId: string, patch: Partial<AccountCloudLaunchEntry>): void {
   const index = snapshot.entries.findIndex((entry) => entry.launchId === launchId);
   if (index < 0) return;
+  const before = snapshot.entries[index]!;
   const next = snapshot.entries.slice();
-  next[index] = { ...next[index]!, ...patch };
+  next[index] = { ...before, ...patch };
   setEntries(next);
+  // A chat that got its lane: read the account's computers again, so the new
+  // lane shows in the lane lists and the Work list.
+  if (!before.record?.sessionId && next[index]!.record?.sessionId) refreshCloudMachines();
+}
+
+/** A read the poll or the first look made failed; the next tick tries again. */
+function noteReadFailed(read: string, error: unknown): void {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : null;
+  forwardSignalToSentry("web.cloud_launch_read_failed", { read, code }, `cloud_launch_read_failed:${read}`, "info");
+}
+
+/**
+ * The server's messages, with the ones this tab holds that the server does
+ * not list yet: a send still on its way, or one that failed here ("Not sent").
+ */
+function mergeMessages(local: readonly CloudLaunchMessage[], server: readonly CloudLaunchMessage[]): CloudLaunchMessage[] {
+  const known = new Set(server.map((message) => message.messageId));
+  const localOnly = local.filter((message) => !known.has(message.messageId) && message.state !== "delivered");
+  return localOnly.length ? [...server, ...localOnly].sort((a, b) => a.seq - b.seq) : [...server];
+}
+
+function messagesSignature(messages: readonly CloudLaunchMessage[]): string {
+  return messages.map((message) => `${message.messageId}:${message.state}`).join(",");
+}
+
+function messagesWaiting(entry: AccountCloudLaunchEntry): boolean {
+  return entry.messages.some((message) => message.state === "queued" || message.state === "sending");
 }
 
 function bridge() {
@@ -82,6 +112,16 @@ export function launchInProgress(entry: AccountCloudLaunchEntry): boolean {
   return !entry.record || CLOUD_LAUNCH_IN_PROGRESS.has(entry.record.state);
 }
 
+/**
+ * The poll reads this launch: still in progress, or its chat started while
+ * messages after the first wait for it (the computer takes those after it
+ * reports the chat, so the read that sees the chat still finds them queued).
+ */
+function launchNeedsRead(entry: AccountCloudLaunchEntry): boolean {
+  if (launchInProgress(entry)) return true;
+  return Boolean(entry.record?.sessionId) && entry.record?.state !== "failed" && entry.record?.state !== "cancelled" && messagesWaiting(entry);
+}
+
 function signatureOf(record: CloudLaunchRecord | null): string {
   if (!record) return "";
   return `${record.state}|${record.updatedAt}|${record.stages.map((stage) => `${stage.id}:${stage.status}`).join(",")}|${record.signIn?.jobId ?? ""}`;
@@ -92,34 +132,42 @@ async function readInProgress(): Promise<boolean> {
   const api = bridge();
   if (!api) return false;
   let changed = false;
-  for (const entry of snapshot.entries.filter(launchInProgress)) {
+  for (const entry of snapshot.entries.filter(launchNeedsRead)) {
     // A start still on its way has nothing to read yet.
     if (entry.startedHere && !entry.record) continue;
     try {
-      const record = await api.status(entry.launchId);
-      if (signatureOf(record) !== signatureOf(entry.record)) {
-        changed = true;
-        patchEntry(entry.launchId, { record });
+      if (launchInProgress(entry)) {
+        const record = await api.status(entry.launchId);
+        if (signatureOf(record) !== signatureOf(entry.record)) {
+          changed = true;
+          patchEntry(entry.launchId, { record });
+        }
       }
       // Queued messages move to `delivered` once the chat exists; read them while any wait.
-      if (entry.messages.some((message) => message.state === "queued" || message.state === "sending")) {
+      if (messagesWaiting(entry)) {
         const { messages } = await api.messages(entry.launchId);
-        patchEntry(entry.launchId, { messages });
+        const local = snapshot.entries.find((candidate) => candidate.launchId === entry.launchId)?.messages ?? entry.messages;
+        const merged = mergeMessages(local, messages);
+        if (messagesSignature(merged) !== messagesSignature(local)) {
+          changed = true;
+          patchEntry(entry.launchId, { messages: merged });
+        }
       }
-    } catch {
+    } catch (error) {
       // A failed read keeps the last record; the next tick tries again.
+      noteReadFailed("status", error);
     }
   }
   return changed;
 }
 
 function syncPoller(): void {
-  const wanted = snapshot.entries.some(launchInProgress) && listeners.size > 0;
+  const wanted = snapshot.entries.some(launchNeedsRead) && listeners.size > 0;
   if (wanted && !poller) {
     poller = createBackoffPoller({
       baseMs: 3_000,
       maxMs: 10_000,
-      isActive: () => snapshot.entries.some(launchInProgress),
+      isActive: () => snapshot.entries.some(launchNeedsRead),
       read: readInProgress,
     });
     poller.start();
@@ -147,10 +195,13 @@ async function discover(): Promise<void> {
     setEntries([...snapshot.entries, ...added], true);
     // Fill each found launch's record at once; the poll keeps it current.
     for (const entry of added) {
-      void api.status(entry.launchId).then((record) => patchEntry(entry.launchId, { record }), () => undefined);
-      void api.messages(entry.launchId).then(({ messages }) => patchEntry(entry.launchId, { messages }), () => undefined);
+      void api.status(entry.launchId).then((record) => patchEntry(entry.launchId, { record }), (error: unknown) => noteReadFailed("status", error));
+      void api.messages(entry.launchId).then(({ messages }) => patchEntry(entry.launchId, { messages }), (error: unknown) => noteReadFailed("messages", error));
     }
-  } catch {
+  } catch (error) {
+    noteReadFailed("active", error);
+    // Look again on the next subscriber (a page that opens later).
+    discovered = false;
     setEntries(snapshot.entries, true);
   }
 }
@@ -200,6 +251,8 @@ export type StartAccountCloudChat = {
   sizeChoice?: CloudLaunchStartRequest["sizeChoice"];
   /** Left out, a new lane named from the first message. */
   lane?: CloudLaunchStartRequest["lane"];
+  /** The launch as the app set it up (`cloudLaunchAppArgs`); the launch's own id is added here. */
+  launch?: Record<string, unknown> | null;
 };
 
 /**
@@ -231,6 +284,7 @@ export async function startAccountCloudChat(input: StartAccountCloudChat): Promi
       messageId,
     },
     madeBy: { kind: "person" },
+    ...(input.launch ? { launch: { ...input.launch, launchId } } : {}),
   };
   const now = Date.now();
   const firstMessage: CloudLaunchMessage = {
@@ -313,6 +367,13 @@ export async function cancelAccountCloudLaunch(launchId: string): Promise<void> 
   if (!api) return;
   const record = await api.cancel(launchId);
   patchEntry(launchId, { record });
+}
+
+/** Takes a finished or failed launch off this page's cards. A launch still on its way stays. */
+export function hideAccountCloudLaunch(launchId: string): void {
+  const entry = snapshot.entries.find((candidate) => candidate.launchId === launchId);
+  if (!entry || launchNeedsRead(entry)) return;
+  setEntries(snapshot.entries.filter((candidate) => candidate.launchId !== launchId));
 }
 
 /** Reads now (after a sign-in code was sent, or the person came back). */

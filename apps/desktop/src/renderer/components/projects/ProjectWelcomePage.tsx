@@ -60,8 +60,8 @@ import type {
 } from "../../../shared/types";
 import "./ProjectWelcomePage.css";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
-import { useHomeAccountProjects } from "./useHomeAccountProjects";
-import { GetStartedCard, InstallAdeChip, useDesktopFirstAccountTab, useGetStartedState } from "./GetStartedCard";
+import { useDesktopFirstAccountTab, useHomeAccountProjects } from "./useHomeAccountProjects";
+import { GetStartedCard, InstallAdeChip, useGetStartedState } from "./GetStartedCard";
 import { useHasOwnComputer } from "../../state/ownComputers";
 import type { HomeWebComputer } from "./homeProjectRows";
 import { useHomeRowRemoval } from "./useHomeRowRemoval";
@@ -591,8 +591,6 @@ export function ProjectWelcomePage() {
 
   const browserAvailable = !webMode && browserTabAvailable();
   const musicAvailable = !webMode && musicTabAvailable();
-  // The normal Home on every client: the widgets show with no computer too.
-  const showSide = true;
   // A chat with no project runs on a computer of the person's own; with
   // none it is hidden (nothing says a computer is needed).
   const hasOwnComputer = useHasOwnComputer();
@@ -850,18 +848,16 @@ export function ProjectWelcomePage() {
               ) : null}
               {musicAvailable && !hiddenApps.includes("appleMusic") ? <HomeAppButton app="appleMusic" /> : null}
               {musicAvailable && !hiddenApps.includes("spotify") ? <HomeAppButton app="spotify" /> : null}
-              {showSide ? (
-                <button
-                  type="button"
-                  className="ade-home-action ade-home-customize"
-                  data-onboarding-anchor="home-customize"
-                  aria-label="Customize home page"
-                  title="Customize home page"
-                  onClick={() => setEditingHome(true)}
-                >
-                  <SlidersHorizontal size={15} aria-hidden />
-                </button>
-              ) : null}
+              <button
+                type="button"
+                className="ade-home-action ade-home-customize"
+                data-onboarding-anchor="home-customize"
+                aria-label="Customize home page"
+                title="Customize home page"
+                onClick={() => setEditingHome(true)}
+              >
+                <SlidersHorizontal size={15} aria-hidden />
+              </button>
             </>
           )}
         />
@@ -902,7 +898,7 @@ export function ProjectWelcomePage() {
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
 
         <HomeWidgetGrid
-          single={!showSide}
+          single={false}
           style={appearanceStyle}
           renderWidget={renderWidget}
         />

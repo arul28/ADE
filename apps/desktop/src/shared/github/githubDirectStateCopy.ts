@@ -11,6 +11,9 @@ import type { GithubDirectError, GithubDirectErrorKind } from "../types";
  */
 
 /** Same pages as `githubRelayConfig.ts` and Settings › GitHub. */
+/** What a read lists, for the sentences that name it. */
+export type GithubDirectItems = "pull requests" | "issues" | "branches" | "files";
+
 export const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 export const GITHUB_INSTALLATIONS_SETTINGS_URL = "https://github.com/settings/installations";
 export const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write";
@@ -37,7 +40,7 @@ export type GithubDirectStateContext = {
   /** The read still works through another sign-in (the CLI or a token). */
   changesUseOtherSignIn?: "gh" | "token" | null;
   /** What the list shows, for the body text. Defaults to "pull requests". */
-  items?: "pull requests" | "issues";
+  items?: GithubDirectItems;
 };
 
 const repoLabel = (ctx: GithubDirectStateContext): string =>

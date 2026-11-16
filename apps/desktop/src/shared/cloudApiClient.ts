@@ -67,6 +67,9 @@ export class CloudApiError extends Error {
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
+/** Sleep, wake, resize and update: the server waits on its provider, and a move between hosts takes minutes. */
+const LIFECYCLE_TIMEOUT_MS = 3 * 60_000;
+const BACKUP_TIMEOUT_MS = 15 * 60_000;
 
 type RequestOptions = {
   body?: unknown;
@@ -142,14 +145,14 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
         raw: { bytes: bytes as BodyInit, contentType: contentType || "application/octet-stream" },
         timeoutMs: timeoutMs * 4,
       }),
-    /** 201 for a new launch; the same `launchId` again answers the same launch. */
-    startLaunch: (launch: CloudServerLaunchRequest) => request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
     /**
-     * The web and the phone's start: `project` may be `{ accountProjectId }`,
-     * and `lane` and `sizeId` may be left out (a new lane named from the first
-     * message, Small). The same `launchId` again answers the same launch.
+     * 201 for a new launch; the same `launchId` again answers the same launch.
+     * The web's start (`CloudLaunchStartRequest`) may name `{ accountProjectId }`
+     * and leave out `lane` and `sizeId` (a new lane named from the first
+     * message, Small).
      */
-    startAccountLaunch: (launch: CloudLaunchStartRequest) => request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
+    startLaunch: (launch: CloudServerLaunchRequest | CloudLaunchStartRequest) =>
+      request<CloudLaunchRecord>("POST", CLOUD_PATHS.launches, { body: launch, timeoutMs: timeoutMs * 4 }),
     launchStatus: (launchId: string) => request<CloudLaunchRecord>("GET", launchPath(launchId)),
     /** The caller's launches still in progress (and failures of the last day). */
     activeLaunches: () => request<CloudLaunchList>("GET", `${CLOUD_PATHS.launches}?active=1`),
@@ -163,17 +166,17 @@ export function createCloudApiClient(options: CloudApiClientOptions) {
 
     /* ---- One computer ---- */
     computer: (instanceId: string) => request<CloudInstance>("GET", instancePath(instanceId)),
-    sleep: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/sleep`, { body: {} }),
+    sleep: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/sleep`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server restarts the computer on the newest ADE for its channel. */
-    update: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/update`, { body: {} }),
+    update: (instanceId: string) => request<{ status: string }>("POST", `${instancePath(instanceId)}/update`, { body: {}, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** At most one every 15 minutes (`rate_limited`). */
     backup: (instanceId: string) =>
-      request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: timeoutMs * 4 }),
+      request<{ id?: string | null; created?: number | null; sizeBytes?: number | null }>("POST", `${instancePath(instanceId)}/backups`, { body: {}, timeoutMs: BACKUP_TIMEOUT_MS }),
     wake: (instanceId: string, args: { reason?: "push_work" } = {}) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args }),
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/start`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     /** The server wakes a sleeping computer first. `computerIdle` is needed to grow the disk of a running one. */
     resize: (instanceId: string, args: { cpu: number; memory: number; disk?: number; computerIdle?: boolean }) =>
-      request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args }),
+      request<{ status: string }>("POST", `${instancePath(instanceId)}/resize`, { body: args, timeoutMs: LIFECYCLE_TIMEOUT_MS }),
     deleteComputer: (instanceId: string, args: { who?: string | null; reason?: string | null } = {}) =>
       request<{ deleted: true }>("DELETE", instancePath(instanceId), { body: args }),
 

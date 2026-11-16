@@ -1,7 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ArrowSquareOut, CaretRight, File, FolderSimple, GitBranch, GitPullRequest, Circle } from "@phosphor-icons/react";
 import type { GithubDirectError, GithubDirectRepoRef } from "../../../shared/types";
-import { ADE_GITHUB_APP_INSTALL_URL, githubDirectStateCopy } from "../../../shared/github/githubDirectStateCopy";
+import { ADE_GITHUB_APP_INSTALL_URL, githubDirectStateCopy, type GithubDirectItems } from "../../../shared/github/githubDirectStateCopy";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { openExternalUrl } from "../../lib/openExternal";
 import { startGithubAccountAppSignIn, useGithubAccountApp } from "../../lib/useGithubAccountApp";
@@ -254,6 +254,14 @@ export function cloudLanesOfOrigin(
   return [...rows.values()];
 }
 
+/** The word the Lanes card shows for a cloud lane: a chat still starting, then its computer's state. */
+export function cloudLaneStateWord(lane: Pick<ReturnType<typeof cloudLanesOfOrigin>[number], "computer" | "launch">): string {
+  if (lane.launch && !lane.launch.record?.sessionId) return "Starting";
+  const state = lane.computer?.state;
+  if (state === "asleep" || state === "stopped") return "Asleep";
+  return state === "running" ? "Running" : "Starting";
+}
+
 export function ProjectLanesCard({ lanes }: { lanes: readonly AccountProjectLane[] }) {
   return (
     <section className="kit-card w-full" aria-label="Lanes">
@@ -301,7 +309,7 @@ const GITHUB_TABS: ReadonlyArray<{ id: GithubTab; label: string }> = [
 function GithubReadState({ error, repo, items, loading, empty }: {
   error: GithubDirectError | null;
   repo: GithubDirectRepoRef;
-  items: "pull requests" | "issues";
+  items: GithubDirectItems;
   loading: boolean;
   empty: string | null;
 }): ReactNode {
@@ -378,7 +386,7 @@ function BranchesTab({ repo, defaultBranch, githubUrl }: { repo: GithubDirectRep
     () => branches.slice().sort((a, b) => Number(b.name === defaultBranch) - Number(a.name === defaultBranch) || a.name.localeCompare(b.name)),
     [branches, defaultBranch],
   );
-  if (sorted.length === 0) return <GithubReadState error={error} repo={repo} items="pull requests" loading={loading} empty="No branches." />;
+  if (sorted.length === 0) return <GithubReadState error={error} repo={repo} items="branches" loading={loading} empty="No branches." />;
   return (
     <div role="list" className="flex flex-col">
       {sorted.slice(0, 50).map((branch) => (
@@ -410,7 +418,7 @@ function FilesTab({ repo }: { repo: GithubDirectRepoRef }) {
         ))}
       </nav>
       {entries.length === 0 ? (
-        <GithubReadState error={error} repo={repo} items="pull requests" loading={loading} empty="This folder is empty." />
+        <GithubReadState error={error} repo={repo} items="files" loading={loading} empty="This folder is empty." />
       ) : (
         <div role="list" className="flex flex-col">
           {entries.map((entry) => (

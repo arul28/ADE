@@ -4,17 +4,14 @@ import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { MENU_ITEM_CLASS } from "../ui/MenuSubmenu";
 import { copyJobKey, startCopyJob, useCopyJobs, watchCopyJobs } from "./projectCopyJobs";
-import type { CopyOpenTarget } from "./projectCopies";
-
-/** A path as that machine writes it: a Windows path keeps its backslashes and drive. */
-function isWindowsPath(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") || (path.includes("\\") && !path.includes("/"));
-}
+import { readMachineDefaultParentDir, type CopyOpenTarget } from "./projectCopies";
+import { pathFlavorOf } from "../../../shared/pathCase";
+import { normalizePathForComparison } from "../../lib/pathUtils";
 
 /** The folder that holds `path`, in that machine's own spelling; null at a root. */
-export function parentFolderOf(path: string): string | null {
+function parentFolderOf(path: string): string | null {
   const trimmed = path.replace(/[\\/]+$/, "");
-  const windows = isWindowsPath(trimmed);
+  const windows = pathFlavorOf(trimmed) === "win32";
   const index = Math.max(trimmed.lastIndexOf("/"), windows ? trimmed.lastIndexOf("\\") : -1);
   if (index <= 0) return null;
   const parent = trimmed.slice(0, index);
@@ -23,8 +20,8 @@ export function parentFolderOf(path: string): string | null {
 }
 
 /** `parent` + `name`, joined with that machine's separator. */
-export function joinMachinePath(parent: string, name: string): string {
-  const windows = isWindowsPath(parent);
+function joinMachinePath(parent: string, name: string): string {
+  const windows = pathFlavorOf(parent) === "win32";
   const separator = windows ? "\\" : "/";
   const base = parent.replace(windows ? /[\\/]+$/ : /\/+$/, "");
   return `${base}${separator}${name}`;
@@ -42,7 +39,7 @@ function readLastFolders(): Record<string, string> {
 }
 
 /** The folder a clone on this machine used last, remembered per machine. */
-export function lastCloneFolder(machineId: string): string | null {
+function lastCloneFolder(machineId: string): string | null {
   const value = readLastFolders()[machineId];
   return typeof value === "string" && value.trim() ? value : null;
 }
@@ -111,15 +108,9 @@ export function CloneToMachineDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const read = machine.targetId
-      ? window.ade?.remoteRuntime?.getDefaultParentDir?.(machine.targetId)
-      : window.ade?.project?.getDefaultParentDir?.();
-    void Promise.resolve(read).then(
-      (value) => {
-        if (!cancelled && typeof value === "string" && value.trim()) setDefaultFolder(value.trim());
-      },
-      () => undefined,
-    );
+    void readMachineDefaultParentDir(machine.targetId).then((value) => {
+      if (!cancelled && value) setDefaultFolder(value);
+    });
     return () => {
       cancelled = true;
     };
@@ -130,7 +121,8 @@ export function CloneToMachineDialog({
     const list: Array<{ folder: string; why: string }> = [];
     const add = (folder: string | null, why: string) => {
       if (!folder) return;
-      const key = folder.toLowerCase();
+      // Windows folds case; a Linux folder name is its own.
+      const key = normalizePathForComparison(folder);
       if (seen.has(key)) return;
       seen.add(key);
       list.push({ folder, why });
@@ -220,7 +212,7 @@ export function CloneToMachineDialog({
               data-size="sm"
               autoFocus
               spellCheck={false}
-              placeholder={rows[0]?.folder && isWindowsPath(rows[0].folder) ? "C:\\Users\\you\\code" : "~/code"}
+              placeholder={rows[0]?.folder && pathFlavorOf(rows[0].folder) === "win32" ? "C:\\Users\\you\\code" : "~/code"}
               aria-label="Folder on that machine"
               value={otherValue}
               onChange={(event) => setOtherValue(event.target.value)}

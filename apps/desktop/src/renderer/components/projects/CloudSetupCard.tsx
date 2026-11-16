@@ -3,6 +3,8 @@ import { ArrowSquareOut, Copy, PaperPlaneRight } from "@phosphor-icons/react";
 import { SetupSteps, type SetupStep, type SetupStepState } from "./SetupSteps";
 import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
+import { openExternalUrl } from "../../lib/openExternal";
+import { CloudSignInCodeField } from "../chat/launch/CloudSignInCodeField";
 import {
   cancelAccountCloudLaunch,
   queueAccountCloudMessage,
@@ -29,7 +31,7 @@ function stagesState(stages: readonly CloudLaunchStage[], ids: readonly string[]
 const AFTER_JOIN = new Set(["joined", "waiting_for_sign_in", "running", "done"]);
 
 /** The four steps, from the launch's record. */
-export function cloudSetupStepStates(record: CloudLaunchRecord | null): {
+function cloudSetupStepStates(record: CloudLaunchRecord | null): {
   computer: SetupStepState;
   repo: SetupStepState;
   signIn: SetupStepState;
@@ -65,17 +67,12 @@ function providerLabel(provider: string | null | undefined): string {
   return CLOUD_REMOTE_SIGN_IN.find((row) => row.provider === provider)?.label ?? humanizeProvider(provider);
 }
 
-function openPage(url: string): void {
-  void window.ade.app.openExternal(url).catch(() => undefined);
-}
-
 /** What the person does for a provider sign-in the launch waits on. */
 function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; instanceId: string | null }) {
-  const [value, setValue] = useState("");
+  const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
-  const api = window.ade?.cloudLaunches;
+  const [saved, setSaved] = useState(false);
 
   if (signIn.kind === "desktop") {
     return (
@@ -85,22 +82,17 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
     );
   }
 
-  const submit = async () => {
-    const text = value.trim();
+  const saveKey = async () => {
+    const text = key.trim();
+    const api = window.ade?.cloudLaunches;
     if (!text || !api) return;
     setBusy(true);
     setError(null);
     try {
-      if (signIn.kind === "api_key") {
-        if (!signIn.signInId) throw new Error("ADE Cloud didn't say which key to save.");
-        await api.saveSignIn(signIn.signInId, text);
-      } else {
-        if (!instanceId || !signIn.jobId) throw new Error("The computer isn't ready for the code yet. Try again in a moment.");
-        const status = await api.sendSignInCode(instanceId, signIn.jobId, text);
-        if (status.state === "failed") throw new Error(status.reason ?? "The code didn't work. Open the page again for a new one.");
-      }
-      setValue("");
-      setSent(true);
+      if (!signIn.signInId) throw new Error("ADE Cloud didn't say which key to save.");
+      await api.saveSignIn(signIn.signInId, text);
+      setKey("");
+      setSaved(true);
       refreshAccountCloudLaunches();
     } catch (cause) {
       setError(extractError(cause));
@@ -109,7 +101,7 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
     }
   };
 
-  const needsInput = signIn.kind === "api_key" || signIn.needsPastedCode || signIn.kind === "url_paste";
+  const needsCode = signIn.kind !== "api_key" && (signIn.needsPastedCode || signIn.kind === "url_paste");
   return (
     <div className="mt-1.5 flex flex-col gap-2">
       {signIn.kind === "device" && signIn.userCode ? (
@@ -128,40 +120,43 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
       {signIn.reason && signIn.kind === "api_key" ? (
         <p className="m-0 text-[12px]" style={{ color: "var(--kit-text-2)" }}>{signIn.reason}</p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
-        {signIn.url ? (
-          <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => openPage(signIn.url!)}>
+      {signIn.url ? (
+        <div>
+          <button type="button" className="kit-btn kit-btn-primary" data-size="sm" onClick={() => openExternalUrl(signIn.url)}>
             <ArrowSquareOut size={13} aria-hidden />
             Open sign-in
           </button>
-        ) : null}
-        {needsInput ? (
-          <form
-            className="flex min-w-[220px] flex-1 items-center gap-1.5"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submit();
-            }}
-          >
-            <input
-              className="kit-input min-w-0 flex-1"
-              data-size="sm"
-              type={signIn.kind === "api_key" ? "password" : "text"}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={signIn.kind === "api_key" ? "Paste your key" : "Paste the code from the page"}
-              aria-label={signIn.kind === "api_key" ? "Key" : "Code from the sign-in page"}
-              value={value}
-              onChange={(event) => setValue(event.target.value)}
-            />
-            <button type="submit" className="kit-btn" data-size="sm" disabled={busy || !value.trim()}>
-              {busy ? "Sending…" : signIn.kind === "api_key" ? "Save" : "Send code"}
-            </button>
-          </form>
-        ) : null}
-      </div>
-      {sent && !error ? (
-        <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>Sent. The computer goes on once the sign-in lands.</p>
+        </div>
+      ) : null}
+      {needsCode && signIn.jobId ? (
+        <CloudSignInCodeField jobId={signIn.jobId} instanceId={instanceId} className="text-[12px]" onSent={refreshAccountCloudLaunches} />
+      ) : null}
+      {signIn.kind === "api_key" ? (
+        <form
+          className="flex min-w-[220px] items-center gap-1.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void saveKey();
+          }}
+        >
+          <input
+            className="kit-input min-w-0 flex-1"
+            data-size="sm"
+            type="password"
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="Paste your key"
+            aria-label="Key"
+            value={key}
+            onChange={(event) => setKey(event.target.value)}
+          />
+          <button type="submit" className="kit-btn" data-size="sm" disabled={busy || !key.trim()}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </form>
+      ) : null}
+      {saved && !error ? (
+        <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>Saved. The chat starts when the sign-in is done.</p>
       ) : null}
       {error ? (
         <Banner layout="inline" model={{ id: "cloud-setup-sign-in", tone: "error", title: "The sign-in didn't go through", detail: error }} />
@@ -176,24 +171,58 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
  * computer starts, clones the repository, and signs in to the chat's
  * provider; then the computer sends it. Messages typed now wait with it.
  */
+type CardPhase = "working" | "ready" | "failed" | "cancelled";
+
+const CARD_TITLE: Record<CardPhase, string> = {
+  working: "Getting ADE Cloud ready",
+  ready: "Your chat is on ADE Cloud",
+  failed: "ADE Cloud couldn't start this chat",
+  cancelled: "Chat cancelled",
+};
+
+function cardPhaseOf(entry: AccountCloudLaunchEntry): CardPhase {
+  const record = entry.record;
+  if (entry.startError != null || record?.state === "failed") return "failed";
+  if (record?.state === "cancelled") return "cancelled";
+  if (record?.sessionId && (record.state === "running" || record.state === "done")) return "ready";
+  return "working";
+}
+
 export function CloudSetupCard({
   entry,
   onOpenChat,
+  onHide,
 }: {
   entry: AccountCloudLaunchEntry;
   /** Opens the chat on the cloud computer once it exists. */
   onOpenChat?: (record: CloudLaunchRecord) => void;
+  /** Takes a card whose chat started off the screen ("Hide"). */
+  onHide?: () => void;
 }) {
   const record = entry.record;
   const provider = record?.request?.chat?.provider ?? entry.request?.chat?.provider ?? null;
   const steps = cloudSetupStepStates(record);
   const [draft, setDraft] = useState("");
   const [cancelling, setCancelling] = useState(false);
-  const failed = entry.startError != null || record?.state === "failed";
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const phase = cardPhaseOf(entry);
+  const failed = phase === "failed";
+  const ready = phase === "ready";
+  const working = phase === "working";
   const failureReason = entry.startError?.trim() || record?.error?.trim() || null;
-  const cancelled = record?.state === "cancelled";
-  const ready = Boolean(record?.sessionId) && (record?.state === "running" || record?.state === "done");
   const signIn = record?.signIn ?? null;
+  const cancel = async () => {
+    setCancelling(true);
+    setCancelError(null);
+    try {
+      await cancelAccountCloudLaunch(entry.launchId);
+    } catch (error) {
+      // The server refuses once the agent started (`launch_started`); the card says so.
+      setCancelError(extractError(error));
+    } finally {
+      setCancelling(false);
+    }
+  };
 
   const rows: SetupStep[] = [
     {
@@ -203,7 +232,7 @@ export function CloudSetupCard({
       detail: record?.state === "needs_approval" && record.approval ? (
         <div className="mt-1 flex items-center gap-2">
           <span className="text-[12px]" style={{ color: "var(--kit-text-2)" }}>Confirm the computer's sign-in to your account.</span>
-          <button type="button" className="kit-btn" data-size="sm" onClick={() => openPage(record.approval!.url)}>
+          <button type="button" className="kit-btn" data-size="sm" onClick={() => openExternalUrl(record.approval!.url)}>
             Confirm
           </button>
         </div>
@@ -214,29 +243,29 @@ export function CloudSetupCard({
       id: "sign-in",
       title: `Sign in to ${signIn?.label ?? providerLabel(provider)}`,
       state: steps.signIn,
-      detail: signIn && record?.state === "waiting_for_sign_in" ? <SignInDetail signIn={signIn} instanceId={record.instanceId} /> : undefined,
+      detail: signIn && record?.state === "waiting_for_sign_in"
+        ? <SignInDetail key={signIn.jobId ?? signIn.signInId ?? signIn.kind} signIn={signIn} instanceId={record.instanceId} />
+        : undefined,
     },
     { id: "send", title: "Send your message", state: steps.send },
   ];
 
   const pending = entry.messages.filter((message) => message.state !== "delivered");
-  const canQueue = !ready && !failed && !cancelled && record != null;
+  const messageNotSent = (message: AccountCloudLaunchEntry["messages"][number]) => message.state === "failed" || failed || phase === "cancelled";
+  const canQueue = working && record != null;
 
   return (
     <section className="kit-card w-full" aria-label="Getting ADE Cloud ready" data-testid="ade-cloud-setup-card">
       <header className="kit-card-head">
-        {ready ? "Your chat is on ADE Cloud" : failed ? "ADE Cloud couldn't start this chat" : cancelled ? "Chat cancelled" : "Getting ADE Cloud ready"}
-        {!ready && !failed && !cancelled && record ? (
-          <button
-            type="button"
-            className="kit-card-head-action"
-            disabled={cancelling}
-            onClick={() => {
-              setCancelling(true);
-              void cancelAccountCloudLaunch(entry.launchId).finally(() => setCancelling(false));
-            }}
-          >
+        {CARD_TITLE[phase]}
+        {working && record ? (
+          <button type="button" className="kit-card-head-action" disabled={cancelling} onClick={() => void cancel()}>
             {cancelling ? "Cancelling…" : "Cancel"}
+          </button>
+        ) : null}
+        {(ready || failed) && onHide ? (
+          <button type="button" className="kit-card-head-action" onClick={onHide}>
+            Hide
           </button>
         ) : null}
       </header>
@@ -247,12 +276,15 @@ export function CloudSetupCard({
             {pending.map((message) => (
               <li key={message.messageId} className="kit-panel flex items-start gap-2 px-2.5 py-1.5">
                 <span className="min-w-0 flex-1 whitespace-pre-wrap text-[12.5px]" style={{ overflowWrap: "anywhere" }}>{message.text}</span>
-                <span className="kit-tag shrink-0" data-tone={message.state === "failed" || failed || cancelled ? "crit" : undefined}>
-                  {message.state === "failed" || failed || cancelled ? "Not sent" : message.state === "sending" ? "Sending" : "Waiting"}
+                <span className="kit-tag shrink-0" data-tone={messageNotSent(message) ? "crit" : undefined}>
+                  {messageNotSent(message) ? "Not sent" : message.state === "sending" ? "Sending" : "Waiting"}
                 </span>
               </li>
             ))}
           </ul>
+        ) : null}
+        {cancelError ? (
+          <Banner layout="inline" model={{ id: `cloud-setup-cancel-${entry.launchId}`, tone: "error", title: "The chat wasn't cancelled", detail: cancelError }} />
         ) : null}
         {failed ? (
           <Banner
@@ -306,7 +338,7 @@ export function CloudSetupCard({
             </button>
           </form>
         ) : null}
-        {!ready && !failed && !cancelled ? (
+        {working ? (
           <p className="m-0 text-[11.5px]" style={{ color: "var(--kit-text-3)" }}>
             You can close this tab. ADE Cloud sends your message when the computer is ready.
           </p>

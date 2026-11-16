@@ -233,7 +233,7 @@ struct AccountProjectCloudSetupCard: View {
             if retrying { ProgressView().controlSize(.small) } else { Text("Retry") }
           }
           .buttonStyle(ADEKitButtonStyle(tone: .crit))
-          .disabled(retrying || entry.body == nil)
+          .disabled(retrying || (entry.body == nil && entry.record?.request == nil))
         }
       } else if running {
         Button("Open chat", action: onOpenChat)

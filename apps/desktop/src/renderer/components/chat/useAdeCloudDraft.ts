@@ -15,6 +15,7 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { accountCloudLaunchesAvailable } from "../../state/accountCloudLaunches";
+import { cloudRemoteSignInOf, cloudRemoteSignInRefusal } from "../../../shared/accountCloudLaunches";
 import { useRootAppStore } from "../../state/appStore";
 import { pickCloudDefaultTier } from "../../lib/cloudDefaultTier";
 import { useAdeCloudLaneComputers, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
@@ -190,6 +191,8 @@ export function useAdeCloudComposer(input: {
   showControls: boolean;
   parallelChatMode: boolean;
   isCliDraft: boolean;
+  /** The draft chat's provider: ADE Web can't start one that signs in only from the desktop. */
+  provider: string | null;
   attachments: AgentChatFileRef[];
   newLaneConfig: NewLaneDraftConfig | null;
   /** Stable (module level): the launch's lane config from the "+" lane's draft. */
@@ -315,6 +318,17 @@ export function useAdeCloudComposer(input: {
         actions: [],
       };
     }
+    // The account server can't finish a sign-in that runs only on the desktop
+    // (Antigravity, Qwen Code): the computer would wait on it until it gives up.
+    const remoteSignIn = isWebClientMode() && !input.isCliDraft ? cloudRemoteSignInOf(input.provider) : null;
+    if (remoteSignIn?.remoteSignIn === "desktop") {
+      return {
+        tone: "notice",
+        message: cloudRemoteSignInRefusal(remoteSignIn),
+        short: `${remoteSignIn.label} on ADE Cloud: desktop app only.`,
+        actions: [],
+      };
+    }
     if (isWebClientMode() && input.attachments.length > 0) {
       return {
         tone: "notice",
@@ -358,6 +372,7 @@ export function useAdeCloudComposer(input: {
     input.laneConfigOf,
     input.isCliDraft,
     input.parallelChatMode,
+    input.provider,
     input.showControls,
   ]);
   input.sendRef.current = mode

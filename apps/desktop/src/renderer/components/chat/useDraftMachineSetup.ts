@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CLOUD_WAKE_WAIT_MS, type CloudMachine } from "../../../shared/adeCloud";
 import { githubRepoOf } from "../../../shared/cloudLaneLaunch";
+import type { RemoteRuntimeConnectionStatus } from "../../../shared/types/remoteRuntime";
+import { repoKeyForUrl } from "../projects/projectCopies";
 import { ipcErrorMessage } from "../../lib/format";
 import { useAdeCloudEnabled } from "../../state/cloudAccess";
 import { connectWithRetry } from "./connectWithRetry";
@@ -24,9 +26,12 @@ export function draftCloneRowTargetId(rowId: string): string | null {
 type Busy = { targetId: string; name: string; phase: "waking" | "cloning" | "selecting" };
 
 /** `https://github.com/owner/repo.git` for a GitHub origin, else null: only GitHub repositories are set up on another machine. */
-function githubCloneUrl(originUrl: string | null): { url: string; repo: string } | null {
+function githubCloneUrl(originUrl: string | null): { url: string; repoName: string; repoKey: string } | null {
   const repo = githubRepoOf(originUrl);
-  return repo ? { url: `https://github.com/${repo.owner}/${repo.repo}.git`, repo: repo.repo } : null;
+  if (!repo) return null;
+  const url = `https://github.com/${repo.owner}/${repo.repo}.git`;
+  const repoKey = repoKeyForUrl(url);
+  return repoKey ? { url, repoName: repo.repo, repoKey } : null;
 }
 
 /**
@@ -51,6 +56,7 @@ export function useDraftMachineSetup({
   cloneCandidates,
   offlineMachines,
   selectableMachineIds,
+  connections,
   onMachineReady,
   onNotice,
 }: {
@@ -70,6 +76,8 @@ export function useDraftMachineSetup({
   offlineMachines: readonly OfflineDraftMachine[];
   /** The ids the picker can select right now. */
   selectableMachineIds: readonly string[];
+  /** The connected machines: the clone dialog lists the projects already on its machine. */
+  connections: readonly RemoteRuntimeConnectionStatus[];
   onMachineReady: (machineId: string) => void;
   onNotice: (notice: { message: string; kind: "hint" | "status" } | null) => void;
 }) {
@@ -86,6 +94,13 @@ export function useDraftMachineSetup({
    * machine is selected and, when asked, the draft is sent.
    */
   const [cloneDialog, setCloneDialog] = useState<{ targetId: string; name: string } | null>(null);
+  /** The folders of the projects already on the clone dialog's machine (it suggests one beside them). */
+  const cloneOtherPaths = useMemo(
+    () => (cloneDialog
+      ? connections.find((connection) => connection.target.id === cloneDialog.targetId)?.projects.map((project) => project.rootPath) ?? []
+      : []),
+    [cloneDialog, connections],
+  );
   const sendAfterRef = useRef<string | null>(null);
 
   const cloudOffline = useMemo(() => {
@@ -102,11 +117,11 @@ export function useDraftMachineSetup({
     if (!clone) throw new Error(`${name} doesn't have this repository, and ADE sets up GitHub repositories only. Clone it there by hand.`);
     const remoteRuntime = window.ade.remoteRuntime;
     setBusy({ targetId, name, phase: "cloning" });
-    onNotice({ message: `Cloning ${clone.repo} on ${name}…`, kind: "status" });
+    onNotice({ message: `Cloning ${clone.repoName} on ${name}…`, kind: "status" });
     const parentDir = await remoteRuntime.getDefaultParentDir(targetId);
     if (!stillWanted()) return;
     // That machine's own Git sign-in: no credential from this computer goes with it.
-    await remoteRuntime.cloneProject(targetId, { url: clone.url, parentDir, name: clone.repo }, { credentialMode: "destination_only" });
+    await remoteRuntime.cloneProject(targetId, { url: clone.url, parentDir, name: clone.repoName }, { credentialMode: "destination_only" });
     if (stillWanted()) setBusy({ targetId, name, phase: "selecting" });
   }, [clone, onNotice]);
 
@@ -245,7 +260,7 @@ export function useDraftMachineSetup({
     owns,
     choose,
     /** The clone dialog to show (a machine with no copy yet), with what it clones. */
-    cloneDialog: cloneDialog && clone ? { ...cloneDialog, url: clone.url, repoName: clone.repo } : null,
+    cloneDialog: cloneDialog && clone ? { ...cloneDialog, ...clone, otherProjectPaths: cloneOtherPaths } : null,
     closeCloneDialog: () => setCloneDialog(null),
     cloneDialogReady,
     takeSendAfter,

@@ -12,8 +12,8 @@ import type {
   CloudLaunchMessage,
   CloudLaunchRecord,
   CloudLaunchStartRequest,
+  CloudLaunchState,
   CloudModelCatalog,
-  CloudRemoteSignInStatus,
 } from "../../../account-directory/src/cloud/contract";
 
 export type {
@@ -42,8 +42,6 @@ export type AccountCloudLaunchesBridge = {
   cancel: (launchId: string) => Promise<CloudLaunchRecord>;
   messages: (launchId: string) => Promise<{ messages: CloudLaunchMessage[] }>;
   addMessage: (launchId: string, message: { messageId: string; text: string }) => Promise<CloudLaunchMessage>;
-  /** A code pasted from the provider's page (`url_paste`), for the launch's computer. */
-  sendSignInCode: (instanceId: string, jobId: string, code: string) => Promise<CloudRemoteSignInStatus>;
   signIns: () => Promise<CloudAccountSignIns>;
   saveSignIn: (signInId: string, key: string) => Promise<CloudAccountSignIns>;
   removeSignIn: (signInId: string) => Promise<CloudAccountSignIns>;
@@ -51,7 +49,7 @@ export type AccountCloudLaunchesBridge = {
 };
 
 /** Launch states that are still on their way to a chat. */
-export const CLOUD_LAUNCH_IN_PROGRESS: ReadonlySet<string> = new Set([
+export const CLOUD_LAUNCH_IN_PROGRESS: ReadonlySet<CloudLaunchState> = new Set<CloudLaunchState>([
   "draft",
   "making",
   "joining",

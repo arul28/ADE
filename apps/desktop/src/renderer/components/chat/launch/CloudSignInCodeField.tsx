@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { extractError } from "../../../lib/format";
+import { Banner } from "../../ui/notice";
 
 /**
  * The code from a provider's sign-in page (Claude's `url_paste`: the page
@@ -13,11 +14,14 @@ export function CloudSignInCodeField({
   jobId,
   instanceId,
   className,
+  onSent,
 }: {
   jobId: string;
   /** The ADE Cloud computer the launch made. */
   instanceId: string | null;
   className?: string;
+  /** The computer took the code (the caller reads the launch again). */
+  onSent?: () => void;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,6 +43,7 @@ export function CloudSignInCodeField({
       }
       setValue("");
       setSent(true);
+      onSent?.();
     } catch (cause) {
       setError(extractError(cause));
     } finally {
@@ -76,9 +81,11 @@ export function CloudSignInCodeField({
         </button>
       </div>
       {error ? (
-        <p role="alert" className="m-0 mt-1.5" style={{ color: "var(--color-danger, #ef4444)" }}>
-          {error}
-        </p>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{ id: `cloud-sign-in-code-${jobId}`, tone: "error", title: "The sign-in didn't go through", detail: error }}
+        />
       ) : null}
     </div>
   );

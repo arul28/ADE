@@ -11,8 +11,6 @@ import type {
   RemoteRuntimeDoctorResult,
   RemoteRuntimeProjectRecord,
   CloneProjectInput,
-  SyncProjectActionResultPayload,
-  SyncProjectDefaultParentDirPayload,
 } from "../../../shared/types";
 import { markExpected } from "../../../shared/expectedError";
 import {
@@ -811,7 +809,7 @@ export function createFederatedWebAdapter({
     async cloneProject(targetId: string, input: CloneProjectInput): Promise<RemoteRuntimeProjectRecord> {
       const client = manager.getClient(targetId);
       if (!client) throw new Error("The machine is not connected.");
-      const answer = await client.requestProjectAction<SyncProjectActionResultPayload>("project_clone_request", "project_clone_result", { ...input });
+      const answer = await client.requestProjectClone(input);
       const project = answer?.project ?? null;
       if (!answer?.ok || !project) throw new Error(answer?.message?.trim() || "The machine couldn't clone the repository.");
       const now = Date.now();
@@ -827,7 +825,7 @@ export function createFederatedWebAdapter({
     async getDefaultParentDir(targetId: string): Promise<string> {
       const client = manager.getClient(targetId);
       if (!client) return "";
-      const answer = await client.requestProjectAction<SyncProjectDefaultParentDirPayload>("project_default_parent_dir_request", "project_default_parent_dir", {});
+      const answer = await client.requestDefaultParentDir();
       return answer?.ok ? answer.parentDir ?? "" : "";
     },
     // A web tab reaches a machine through the relay, never over SSH, so there

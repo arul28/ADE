@@ -2,7 +2,6 @@ import { peekLocalSyncStatus } from "../../lib/localSyncStatusReader";
 import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { CloneToMachineDialog } from "../projects/CloneToMachineDialog";
-import { repoKeyForUrl } from "../projects/projectCopies";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
 import { latestCompactionKeyOf, useCompactFirst } from "./useCompactFirst";
@@ -437,7 +436,7 @@ import { autoLaneMachine, isAdeCloudLaneComputer, originUrlForBinding } from "..
 import { draftCloneRowTargetId, useDraftMachineSetup } from "./useDraftMachineSetup";
 import { ADE_CLOUD_MACHINE_ID, useAdeCloudComposer, useAdeCloudDraft, type AdeCloudSend } from "./useAdeCloudDraft";
 import { WebCloudSetupCards } from "./launch/WebCloudSetupCards";
-import { startAccountCloudChat, type StartAccountCloudChat } from "../../state/accountCloudLaunches";
+import { startAccountCloudChat } from "../../state/accountCloudLaunches";
 import { readAccountProjectList } from "../../state/useRepositoryCopies";
 import { useAdeCloudSignInNeed } from "./useAdeCloudSignInNeed";
 import { CloudLaneChatStatus } from "../cloudLane/CloudLaneChatCards";
@@ -448,6 +447,7 @@ import { cloudLaneRestartBranchRef, cloudLaneRestartProblem, cloudLaneRestartTie
 import type { CloudAccountState } from "../../../shared/adeCloud";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { cloudLaneStartBlock } from "../../../shared/cloudLaneLaunch";
+import { accountProjectForOrigin } from "../projects/useHomeAccountProjects";
 import { resolveAdeCloudLaneBinding } from "./adeCloudLaneBinding";
 import { ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
 import { autoPickSummary } from "../lanes/machineLoadText";
@@ -559,7 +559,7 @@ import {
   type ComposerHandoff,
 } from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
-import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
+import { buildAccountCloudDraftStart, buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import { adeCloudStartBranchReady, startAdeCloudLaunch } from "./launch/adeCloudLaunch";
 import { cloudLaunchScope, laneOnLaunchMachine } from "./launch/cloudLaunchScope";
 import { useDraftCloudPick } from "./useDraftCloudPick";
@@ -13925,6 +13925,23 @@ export function AgentChatPane({
   // setup card; background chats and CLI launches stay on the draft and report
   // in the Launches slide-out. Nothing here awaits before the UI moves.
   /**
+   * The chat a draft launch starts, with the same "remember what I launched
+   * with" write the direct create path makes. Throws when the model pick or
+   * the draft can't start a chat.
+   */
+  const buildDraftChatLaunch = useCallback((prepared: Parameters<typeof buildChatCreateArgs>[0]) => {
+    if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
+    const built = buildChatCreateArgs(prepared);
+    if (draftKeepsMachineDefaultsRef.current) {
+      // ADE's pick launched once; the next draft here remembers again.
+      draftKeepsMachineDefaultsRef.current = false;
+    } else {
+      rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
+    }
+    return built;
+  }, [buildChatCreateArgs, constrainedModelSelectionError, initialNativeControls, lastLaunchConfigStorageKey]);
+
+  /**
    * ADE Web's send to a new ADE Cloud lane: the account server starts it
    * (`POST /cloud/launches` with the account's project, the model and the
    * first message), as the project page's composer does. No brain makes this
@@ -13945,57 +13962,35 @@ export function AgentChatPane({
     const prepared = prepareDraftLaunch(snapshot);
     let built: ReturnType<typeof buildChatCreateArgs>;
     try {
-      if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
-      built = buildChatCreateArgs(prepared);
+      built = buildDraftChatLaunch(prepared);
     } catch (buildError) {
       setError(errorMessage(buildError));
       return false;
     }
-    if (draftKeepsMachineDefaultsRef.current) {
-      draftKeepsMachineDefaultsRef.current = false;
-    } else {
-      rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
-    }
-    const create = built.createArgs;
-    const prompt = buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode).text ?? "";
-    const laneConfig = configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null;
     const laneName = configuredLane?.name.trim()
       || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), { genericSuffix: autoLaneGenericSuffix() });
     const list = readAccountProjectList();
-    const accountProject = list.state === "ready"
-      ? list.projects.find((project) => normalizeGitRemoteIdentity(`https://${project.host}/${project.owner}/${project.name}`) === origin) ?? null
-      : null;
-    void startAccountCloudChat({
-      accountProjectId: accountProject?.id ?? null,
+    void startAccountCloudChat(buildAccountCloudDraftStart({
+      prepared,
+      chat: { create: built.createArgs, message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode) },
       origin: `https://${origin}`,
-      provider: create.provider,
-      modelId: create.modelId ?? create.model,
-      effort: create.reasoningEffort ?? null,
-      fast: create.fastMode === true,
-      permissions: create.permissionMode ?? null,
-      prompt,
-      sizeId: cloud.sizeId as NonNullable<StartAccountCloudChat["sizeId"]>,
+      accountProjectId: (list.state === "ready" ? accountProjectForOrigin(list.projects, cloud.originUrl) : null)?.id ?? null,
+      laneName,
+      laneConfig: configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+      sizeId: cloud.sizeId,
       sizeChoice: cloud.sizeChoice,
-      lane: {
-        name: laneName,
-        ...(laneConfig?.mode === "existing" && laneConfig.branchRef ? { existingBranch: laneConfig.branchRef } : {}),
-        ...(laneConfig?.mode !== "existing" && laneConfig?.start?.from === "branch" && laneConfig.start.branch ? { from: laneConfig.start.branch } : {}),
-        ...(!configuredLane || laneConfig?.autoName ? { autoName: true } : {}),
-      },
-    }).catch((startError: unknown) => setError({ message: errorMessage(startError), kind: "status" }));
+    }))
+      .catch((startError: unknown) => setError({ message: errorMessage(startError), kind: "status" }));
     clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
     clearNewLaneConfig();
     clearDraftLaunchComposer(snapshot);
     return true;
   }, [
-    buildChatCreateArgs,
+    buildDraftChatLaunch,
     clearDraftLaunchComposer,
     clearNewLaneConfig,
     clearPromptSuggestionForSession,
-    constrainedModelSelectionError,
-    initialNativeControls,
-    lastLaunchConfigStorageKey,
     selectedSessionId,
   ]);
 
@@ -14030,16 +14025,8 @@ export function AgentChatPane({
         cli = buildDraftCliLaunchParams(prepared);
         provider = cli.profile;
       } else {
-        if (constrainedModelSelectionError) throw new Error(constrainedModelSelectionError);
-        const built = buildChatCreateArgs(prepared);
+        const built = buildDraftChatLaunch(prepared);
         provider = built.provider;
-        // Same "remember what I launched with" write the direct create path makes.
-        if (draftKeepsMachineDefaultsRef.current) {
-          // ADE's pick launched once; the next draft here remembers again.
-          draftKeepsMachineDefaultsRef.current = false;
-        } else {
-          rememberLaunchConfig(lastLaunchConfigStorageKey, built, { model: built.createArgs.model }, initialNativeControls);
-        }
         chat = {
           create: built.createArgs,
           message: buildDraftChatMessageArgs(prepared, built.provider, prepared.interactionMode),
@@ -14137,15 +14124,12 @@ export function AgentChatPane({
     });
     return true;
   }, [
-    buildChatCreateArgs,
+    buildDraftChatLaunch,
     buildDraftCliLaunchParams,
     canRefreshPinnedProject,
     clearDraftLaunchComposer,
     clearNewLaneConfig,
     clearPromptSuggestionForSession,
-    constrainedModelSelectionError,
-    initialNativeControls,
-    lastLaunchConfigStorageKey,
     onLaunchCliSession,
     openLaunchedDraftSession,
     pendingRendererRef,
@@ -17771,6 +17755,7 @@ export function AgentChatPane({
     showControls: showDraftLaunchControls,
     parallelChatMode,
     isCliDraft: isWorkCliLaunchDraft,
+    provider: sessionProvider ?? null,
     attachments,
     newLaneConfig: draftNewLaneConfig,
     laneConfigOf: chatLaunchLaneConfigFromDraft,
@@ -17826,6 +17811,7 @@ export function AgentChatPane({
     cloneCandidates: draftCloneMachineOptions,
     offlineMachines: draftOfflineMachines,
     selectableMachineIds: laneMachineOptionIds,
+    connections: draftConnections,
     onMachineReady: selectReadyMachine,
     onNotice: setError,
   });
@@ -17839,12 +17825,6 @@ export function AgentChatPane({
   // A machine with no copy yet: its clone dialog, and "Clone & send" sends
   // the draft once the clone lands and the machine is the pick.
   const draftCloneDialog = draftMachineSetup.cloneDialog;
-  const draftCloneOtherPaths = useMemo(
-    () => (draftCloneDialog
-      ? draftConnections.find((connection) => connection.target.id === draftCloneDialog.targetId)?.projects.map((project) => project.rootPath) ?? []
-      : []),
-    [draftCloneDialog, draftConnections],
-  );
   const takeDraftSendAfter = draftMachineSetup.takeSendAfter;
   // Read when the dialog opens (the open re-renders the pane); no subscription per keystroke.
   const draftCloneSends = draftCloneDialog != null && draftStore.get().trim().length > 0;
@@ -21941,14 +21921,14 @@ export function AgentChatPane({
           />
         </Suspense>
       ) : null}
-      {draftCloneDialog && repoKeyForUrl(draftCloneDialog.url) ? (
+      {draftCloneDialog ? (
         <CloneToMachineDialog
           open
           machine={{ machineId: draftCloneDialog.targetId, name: draftCloneDialog.name, targetId: draftCloneDialog.targetId }}
-          repoKey={repoKeyForUrl(draftCloneDialog.url)!}
+          repoKey={draftCloneDialog.repoKey}
           url={draftCloneDialog.url}
           repoName={draftCloneDialog.repoName}
-          otherProjectPaths={draftCloneOtherPaths}
+          otherProjectPaths={draftCloneDialog.otherProjectPaths}
           confirmLabel={draftCloneSends ? "Clone & send" : "Clone"}
           sendsMessage={draftCloneSends}
           onCancel={draftMachineSetup.closeCloneDialog}
