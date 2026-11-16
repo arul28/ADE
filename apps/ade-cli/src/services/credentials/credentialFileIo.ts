@@ -149,11 +149,22 @@ export function isSameCredentialFileStat(
     && left.size === right.size;
 }
 
+/**
+ * How often a watcher whose folder watch is running still stats the file, for
+ * the changes a folder watch can miss: a network volume, a folder that was
+ * removed and made again, or events the OS merged or dropped.
+ */
+export const CREDENTIAL_FILE_WATCH_BACKUP_POLL_MS = 5_000;
+
 export class CredentialFileStatWatcher {
   private previous: CredentialFileStatSnapshot | undefined;
   private timer: NodeJS.Timeout | null = null;
-  /** One poll at a time: a stat stalled by a scan must not pile up behind itself. */
+  private folderWatch: fs.FSWatcher | null = null;
+  private disposed = false;
+  /** One stat at a time: a stat stalled by a scan must not pile up behind itself. */
   private polling = false;
+  /** A change was signalled while a stat was running: stat again after it. */
+  private recheck = false;
 
   constructor(
     private readonly filePath: string,
@@ -161,23 +172,84 @@ export class CredentialFileStatWatcher {
     private readonly intervalMs: number | null,
   ) {}
 
+  /**
+   * Watches the file's folder (writes replace the file by a rename, so a
+   * watch on the file itself would end at the first write) and stats the file
+   * on each event for its name, so another process's sign-in is seen at once.
+   * A slow backup poll covers what a folder watch misses. Where the folder
+   * watch cannot start, or stops with an error, the steady poll at
+   * `intervalMs` runs instead, as before.
+   */
   start(): void {
     this.previous = readCredentialFileStatSnapshot(this.filePath);
     if (this.intervalMs === null) return;
-    // The poll stats off the event loop; it runs four times a second for the
-    // life of the brain.
-    this.timer = setInterval(() => {
-      if (this.polling) return;
-      this.polling = true;
-      void readCredentialFileStatSnapshotAsync(this.filePath)
-        .then((current) => {
-          if (this.timer) this.compare(current);
-        })
-        .finally(() => {
-          this.polling = false;
-        });
-    }, this.intervalMs);
+    const watching = this.startFolderWatch();
+    this.startPoll(watching ? Math.max(this.intervalMs, CREDENTIAL_FILE_WATCH_BACKUP_POLL_MS) : this.intervalMs);
+  }
+
+  private startFolderWatch(): boolean {
+    const fileName = path.basename(this.filePath);
+    const caseInsensitive = process.platform === "win32" || process.platform === "darwin";
+    const sameName = (name: string): boolean => (caseInsensitive ? name.toLowerCase() === fileName.toLowerCase() : name === fileName);
+    try {
+      const watcher = fs.watch(path.dirname(this.filePath), { persistent: false }, (_event, changed) => {
+        // Some platforms leave the name out; then any event in the folder is worth a stat.
+        const name = typeof changed === "string" ? changed : changed ? String(changed) : null;
+        if (name === null || sameName(name)) this.statAndCompare();
+      });
+      watcher.on("error", () => this.fallBackToSteadyPoll());
+      this.folderWatch = watcher;
+      return true;
+    } catch {
+      this.folderWatch = null;
+      return false;
+    }
+  }
+
+  /** The folder watch failed after it started: close it and poll at the steady rate, as before. */
+  private fallBackToSteadyPoll(): void {
+    if (this.disposed || this.intervalMs === null) return;
+    this.closeFolderWatch();
+    this.startPoll(this.intervalMs);
+    // Whatever the watch missed while it was failing.
+    this.statAndCompare();
+  }
+
+  private startPoll(intervalMs: number): void {
+    if (this.timer) clearInterval(this.timer);
+    // The poll stats off the event loop.
+    this.timer = setInterval(() => this.statAndCompare(), intervalMs);
     this.timer.unref();
+  }
+
+  private statAndCompare(): void {
+    if (this.disposed) return;
+    if (this.polling) {
+      this.recheck = true;
+      return;
+    }
+    this.polling = true;
+    void readCredentialFileStatSnapshotAsync(this.filePath)
+      .then((current) => {
+        if (!this.disposed) this.compare(current);
+      })
+      .finally(() => {
+        this.polling = false;
+        if (this.recheck) {
+          this.recheck = false;
+          this.statAndCompare();
+        }
+      });
+  }
+
+  private closeFolderWatch(): void {
+    const watcher = this.folderWatch;
+    this.folderWatch = null;
+    try {
+      watcher?.close();
+    } catch {
+      // Already closed.
+    }
   }
 
   checkNow(): void {
@@ -201,8 +273,10 @@ export class CredentialFileStatWatcher {
   }
 
   dispose(): void {
+    this.disposed = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    this.closeFolderWatch();
   }
 }
 

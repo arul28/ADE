@@ -1,5 +1,5 @@
 import React from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useLocation } from "react-router-dom";
 import { selectActiveProjectRoot, selectWorkViewState, useAppStore } from "../../state/appStore";
 import { fgTint } from "../lanes/laneDesignTokens";
@@ -12,6 +12,7 @@ import {
   activateEarlyComposer,
   decideEarlyComposer,
   EARLY_COMPOSER_SLOT_ATTRIBUTE,
+  placeEarlyComposer,
   earlyComposerPendingKey,
   noteEarlyComposerComposing,
   noteEarlyComposerFocus,
@@ -29,9 +30,12 @@ import {
  *
  * Usually it is the chat-shaped skeleton it always was. When the view Work
  * will restore is an empty new chat on this computer and the new-chat screen
- * of an earlier launch was recorded for this window size and theme
+ * of an earlier launch was recorded for this window width and theme
  * (`lib/earlyComposer.ts`), it draws that screen instead, with a real text box
  * in the prompt box: a cold start can type before the composer's code exists.
+ * The route height may differ (notice banners above it come and go): the
+ * parts are placed by the real screen's column rule (`placeEarlyComposer`).
+ * The root carries `data-ade-early-reason` ("shown" or why not) for checks.
  */
 
 type Size = { width: number; height: number };
@@ -84,12 +88,15 @@ function PieceFrame({
   piece,
   offset,
   shiftY = 0,
+  growY = 0,
   fixedHeight = true,
   frameRef,
 }: {
   piece: EarlyComposerPiece;
   offset: Offset;
   shiftY?: number;
+  /** Change of a fixed height (the wordmark gives up height in a short area). */
+  growY?: number;
   fixedHeight?: boolean;
   frameRef?: React.Ref<HTMLDivElement>;
 }) {
@@ -106,7 +113,7 @@ function PieceFrame({
         left: piece.rect.left - offset.left,
         top: piece.rect.top - offset.top + shiftY,
         width: piece.rect.width,
-        ...(fixedHeight ? { height: piece.rect.height } : {}),
+        ...(fixedHeight ? { height: Math.max(0, piece.rect.height + growY) } : {}),
       }}
       dangerouslySetInnerHTML={markup}
     />
@@ -117,18 +124,26 @@ function EarlyNewChatScreen({
   layout,
   projectRoot,
   offset,
+  routeHeight,
 }: {
   layout: EarlyComposerLayout;
   projectRoot: string;
   offset: Offset;
+  /** The live route height: banners above the route come and go. */
+  routeHeight: number;
 }) {
   const composerFrameRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLTextAreaElement>(null);
   const unmountingRef = React.useRef(false);
   const [slot, setSlot] = React.useState<HTMLElement | null>(null);
-  // The new-chat column is centred, so a taller prompt box moves it up by half
-  // of what it grew, as the real one does.
-  const [shiftY, setShiftY] = React.useState(0);
+  // How much taller the text field is than the recorded one (typed lines).
+  const [grown, setGrown] = React.useState(0);
+  // The real screen's rule at the live route height: the same pixels as the
+  // composer that replaces this one (`placeEarlyComposer`).
+  const placement = React.useMemo(
+    () => placeEarlyComposer(layout, routeHeight, grown),
+    [grown, layout, routeHeight],
+  );
 
   React.useLayoutEffect(() => {
     const found = composerFrameRef.current?.querySelector<HTMLElement>(`[${EARLY_COMPOSER_SLOT_ATTRIBUTE}]`) ?? null;
@@ -138,9 +153,8 @@ function EarlyNewChatScreen({
   const measure = React.useCallback(() => {
     const field = textRef.current;
     if (!field) return;
-    const grown = field.getBoundingClientRect().height - layout.text.height;
-    const next = Math.round((-grown / 2) * 100) / 100;
-    setShiftY((current) => (Math.abs(current - next) < 0.01 ? current : next));
+    const next = Math.round((field.getBoundingClientRect().height - layout.text.height) * 100) / 100;
+    setGrown((current) => (Math.abs(current - next) < 0.01 ? current : next));
   }, [layout.text.height]);
 
   const recordText = React.useCallback(() => {
@@ -234,7 +248,7 @@ function EarlyNewChatScreen({
           left: layout.surface.left - offset.left,
           top: layout.surface.top - offset.top,
           width: layout.surface.width,
-          height: layout.surface.height,
+          height: Math.max(0, layout.surface.height + placement.surfaceGrow),
         }}
       >
         {layout.scene === "image" ? (
@@ -248,11 +262,18 @@ function EarlyNewChatScreen({
         )}
       </div>
       {layout.pills ? <PieceFrame piece={layout.pills} offset={offset} /> : null}
-      {layout.wordmark ? <PieceFrame piece={layout.wordmark} offset={offset} shiftY={shiftY} /> : null}
+      {layout.wordmark ? (
+        <PieceFrame
+          piece={layout.wordmark}
+          offset={offset}
+          shiftY={placement.wordmarkShift}
+          growY={placement.wordmarkGrow}
+        />
+      ) : null}
       <PieceFrame
         piece={layout.composer}
         offset={offset}
-        shiftY={shiftY}
+        shiftY={placement.composerShift}
         fixedHeight={false}
         frameRef={composerFrameRef}
       />
@@ -307,9 +328,9 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
   const [heldLayout, setHeldLayout] = React.useState<EarlyComposerLayout | null>(null);
 
   React.useLayoutEffect(() => {
+    const root = rootRef.current;
+    const route = root?.closest(`[${WORK_ROUTE_ATTRIBUTE}]`) ?? null;
     const measure = () => {
-      const root = rootRef.current;
-      const route = root?.closest(`[${WORK_ROUTE_ATTRIBUTE}]`);
       if (!root || !route) return;
       const routeRect = route.getBoundingClientRect();
       const rootRect = root.getBoundingClientRect();
@@ -329,7 +350,18 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
     };
     measure();
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    // A notice banner above the route that comes or goes changes its height
+    // without a window resize. The observer runs after layout and before
+    // paint; the sync render places the early screen in that same frame, as
+    // the real screen moves in it.
+    const observer = route && typeof ResizeObserver !== "undefined"
+      ? new ResizeObserver(() => flushSync(measure))
+      : null;
+    if (route) observer?.observe(route);
+    return () => {
+      window.removeEventListener("resize", measure);
+      observer?.disconnect();
+    };
   }, []);
 
   const decision = React.useMemo(() => decideEarlyComposer({
@@ -368,11 +400,27 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
   React.useEffect(() => {
     if (layout && !heldLayout) setHeldLayout(layout);
   }, [heldLayout, layout]);
+  const showEarly = Boolean(layout && projectRoot && geometry);
+  // Diagnostics only (no visible change): why the early box shows or not, on
+  // the element and as a performance mark that outlives the fallback.
+  const reason = showEarly ? "shown" : decision.ok ? "no-size" : decision.reason;
+  React.useEffect(() => {
+    try {
+      performance.mark(`ade:early-composer:${reason}`);
+    } catch {
+      // best effort
+    }
+  }, [reason]);
 
   return (
-    <div ref={rootRef} className="h-full min-h-0 w-full">
-      {layout && projectRoot && geometry ? (
-        <EarlyNewChatScreen layout={layout} projectRoot={projectRoot} offset={geometry.offset} />
+    <div ref={rootRef} className="h-full min-h-0 w-full" data-ade-early-reason={reason}>
+      {showEarly && layout && projectRoot && geometry ? (
+        <EarlyNewChatScreen
+          layout={layout}
+          projectRoot={projectRoot}
+          offset={geometry.offset}
+          routeHeight={geometry.size.height}
+        />
       ) : (
         <WorkLoadingSkeleton />
       )}

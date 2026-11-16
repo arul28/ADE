@@ -251,9 +251,35 @@ export function recordInstalledDesktopApp(input: {
   }
 }
 
+/**
+ * The last record read, by path and file stamp. The brain reads the record on
+ * every `runtime/info` (each desktop window asks every 15 s); the desktop
+ * rewrites it only when it starts, so a stat answers almost every read.
+ */
+let lastDesktopAppRecordRead: { target: string; platform: NodeJS.Platform; stamp: string; record: DesktopAppRecord | null } | null = null;
+
 export function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): DesktopAppRecord | null {
+  const target = desktopAppRecordPath(env);
+  let stamp: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(desktopAppRecordPath(env), "utf8")) as Partial<DesktopAppRecord>;
+    const stat = fs.statSync(target);
+    // The inode matters: the record is replaced by a rename.
+    stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return null;
+  }
+  const last = lastDesktopAppRecordRead;
+  if (last && last.target === target && last.platform === platform && last.stamp === stamp) {
+    return last.record ? { ...last.record } : null;
+  }
+  const record = parseDesktopAppRecord(target, platform);
+  lastDesktopAppRecordRead = { target, platform, stamp, record: record ? { ...record } : null };
+  return record;
+}
+
+function parseDesktopAppRecord(target: string, platform: NodeJS.Platform): DesktopAppRecord | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(target, "utf8")) as Partial<DesktopAppRecord>;
     if (parsed.platform !== platform || typeof parsed.resourcesPath !== "string" || !parsed.resourcesPath) return null;
     return {
       platform,

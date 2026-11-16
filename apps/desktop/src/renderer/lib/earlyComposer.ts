@@ -41,6 +41,26 @@ export type EarlyComposerPiece = {
   scopeStyle: Record<string, string>;
 };
 
+/**
+ * How the new-chat column sits in its area, so the early screen can place the
+ * prompt box at another route height by the rule the real screen uses.
+ *
+ * The real screen (`AgentChatPane` empty state) centres a column (wordmark,
+ * prompt box, shelf) in an area that fills the route's height below the pills.
+ * Chrome above the route (notice banners) changes only the area's height. The
+ * column is centred while it fits; when it does not, it starts at the area's
+ * top and the wordmark, its one flexible row, gives up height down to a floor.
+ */
+export type EarlyComposerStack = {
+  /** The content height of the area that centres the column, at record time. */
+  areaHeight: number;
+  /** The column's height without the wordmark: the prompt box, the gaps, the shelf. */
+  fixed: number;
+  /** The wordmark's full height and its floor; both 0 when it has no box (scene picture). */
+  wordmarkNatural: number;
+  wordmarkMin: number;
+};
+
 export type EarlyComposerLayout = {
   version: typeof LAYOUT_VERSION;
   projectRoot: string;
@@ -49,6 +69,11 @@ export type EarlyComposerLayout = {
   chatFontSize: string;
   devicePixelRatio: number;
   route: { width: number; height: number };
+  /**
+   * The column rule. Null (or missing, in a record from an older build) when
+   * the screen did not match the rule: only the same route height is served.
+   */
+  stack?: EarlyComposerStack | null;
   routeBackground: string;
   /** The new-chat surface, where the early screen draws the backdrop. */
   surface: EarlyComposerRect;
@@ -272,6 +297,133 @@ function capturePiece(element: Element, route: Element, routeRect: DOMRect, opti
   return { rect: rectWithin(element, routeRect), html, ...scopeOf(element, route) };
 }
 
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/** Where the column starts in its area, and the wordmark's height, for an area and column height. */
+function stackPlacement(stack: EarlyComposerStack, areaHeight: number, fixed: number): { top: number; wordmark: number } {
+  const natural = fixed + stack.wordmarkNatural;
+  if (areaHeight >= natural) return { top: (areaHeight - natural) / 2, wordmark: stack.wordmarkNatural };
+  // Too short: the column fills the area from its top, and the wordmark gives
+  // up height down to its floor (past the floor, the column overflows).
+  return { top: 0, wordmark: Math.min(stack.wordmarkNatural, Math.max(stack.wordmarkMin, areaHeight - fixed)) };
+}
+
+/** `aspect-ratio` as width / height (`560 / 300`, `1.5`, `auto 560 / 300`); null for `auto`. */
+function parseAspectRatio(value: string): number | null {
+  const pair = /([\d.]+)\s*\/\s*([\d.]+)/.exec(value);
+  const ratio = pair ? Number(pair[1]) / Number(pair[2]) : Number(value);
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : null;
+}
+
+function px(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * The column rule for this screen, or null when the screen does not follow it
+ * (a column that overflows its area, a changed layout). The rule is checked
+ * against what the browser laid out: it must give the same column top and
+ * wordmark height, or it is not recorded.
+ */
+function measureStack(wrapper: Element): EarlyComposerStack | null {
+  const column = wrapper.parentElement;
+  const area = column?.parentElement;
+  if (!column || !area) return null;
+  const areaStyle = getComputedStyle(area);
+  const columnStyle = getComputedStyle(column);
+  if (!/flex$/.test(areaStyle.display) || areaStyle.flexDirection !== "row" || areaStyle.alignItems !== "center") return null;
+  if (!/flex$/.test(columnStyle.display) || columnStyle.flexDirection !== "column") return null;
+  if (!["normal", "flex-start", "start"].includes(columnStyle.justifyContent)) return null;
+
+  const areaRect = area.getBoundingClientRect();
+  const contentTop = areaRect.top + px(areaStyle.borderTopWidth) + px(areaStyle.paddingTop);
+  const areaHeight = areaRect.height
+    - px(areaStyle.borderTopWidth) - px(areaStyle.paddingTop)
+    - px(areaStyle.paddingBottom) - px(areaStyle.borderBottomWidth);
+  const columnRect = column.getBoundingClientRect();
+  if (areaHeight <= 0 || columnRect.height <= 0) return null;
+
+  let wordmarkHeight = 0;
+  let wordmarkNatural = 0;
+  let wordmarkMin = 0;
+  const wordmark = Array.from(column.children).find((child) => child.classList.contains("ade-draft-wordmark"));
+  if (wordmark && wordmark.getClientRects().length > 0) {
+    const rect = wordmark.getBoundingClientRect();
+    const style = getComputedStyle(wordmark);
+    const ratio = parseAspectRatio(style.aspectRatio);
+    if (!ratio) return null;
+    const maxHeight = Number.parseFloat(style.maxHeight);
+    wordmarkHeight = rect.height;
+    wordmarkNatural = Math.min(rect.width / ratio, Number.isFinite(maxHeight) ? maxHeight : Number.POSITIVE_INFINITY);
+    wordmarkMin = px(style.minHeight);
+  }
+  const stack: EarlyComposerStack = {
+    areaHeight: round2(areaHeight),
+    fixed: round2(columnRect.height - wordmarkHeight),
+    wordmarkNatural: round2(wordmarkNatural),
+    wordmarkMin: round2(wordmarkMin),
+  };
+  // A column as tall as its area, with no wordmark height left to give, may
+  // overflow: its box is capped, so its fixed part is not known.
+  if (columnRect.height >= areaHeight - 0.5 && wordmarkHeight <= wordmarkMin + 0.5) return null;
+  const expected = stackPlacement(stack, stack.areaHeight, stack.fixed);
+  if (Math.abs(expected.top - (columnRect.top - contentTop)) > 1 || Math.abs(expected.wordmark - wordmarkHeight) > 1) return null;
+  return stack;
+}
+
+/** Where the early screen's parts go at this route height, against where they were recorded. */
+export type EarlyComposerPlacement = {
+  /** Down shift of the prompt box. */
+  composerShift: number;
+  /** Down shift of the wordmark's top, and the change of its height. */
+  wordmarkShift: number;
+  wordmarkGrow: number;
+  /** Change of the new-chat surface's height (it fills the route's height). */
+  surfaceGrow: number;
+};
+
+/**
+ * Place the early screen at the live route height by the real screen's rule.
+ * `composerGrown` is how much taller the early text field is than the recorded
+ * one (typed lines), which the centred column also answers to.
+ */
+export function placeEarlyComposer(layout: EarlyComposerLayout, routeHeight: number, composerGrown: number): EarlyComposerPlacement {
+  const delta = routeHeight - layout.route.height;
+  const stack = layout.stack;
+  if (!stack) {
+    // No rule recorded (a record from an older build): the centred column.
+    const shift = round2((delta - composerGrown) / 2);
+    return { composerShift: shift, wordmarkShift: shift, wordmarkGrow: 0, surfaceGrow: round2(delta) };
+  }
+  const before = stackPlacement(stack, stack.areaHeight, stack.fixed);
+  const after = stackPlacement(stack, stack.areaHeight + delta, stack.fixed + composerGrown);
+  const wordmarkShift = after.top - before.top;
+  const wordmarkGrow = after.wordmark - before.wordmark;
+  return {
+    composerShift: round2(wordmarkShift + wordmarkGrow),
+    wordmarkShift: round2(wordmarkShift),
+    wordmarkGrow: round2(wordmarkGrow),
+    surfaceGrow: round2(delta),
+  };
+}
+
+/**
+ * Null when the layout can be drawn at this route height, or the reason it
+ * cannot. The same height always fits. Another height needs the column rule,
+ * and an area tall enough for the column without overflow.
+ */
+function earlyComposerHeightRefusal(layout: EarlyComposerLayout, routeHeight: number): string | null {
+  const delta = routeHeight - layout.route.height;
+  if (Math.abs(delta) <= 0.5) return null;
+  const stack = layout.stack;
+  if (!stack) return "layout-height-no-rule";
+  if (stack.areaHeight + delta < stack.fixed + stack.wordmarkMin - 0.5) return "layout-too-short";
+  return null;
+}
+
 /**
  * Record the new-chat screen from the real Work page, at the first frame of
  * its draft composer. Returns false when the screen is not at rest or not the
@@ -292,9 +444,10 @@ export function recordEarlyComposerLayout(dock: HTMLElement, projectRoot: string
   const route = dock.closest(`[${WORK_ROUTE_ATTRIBUTE}]`);
   const surface = dock.closest("[data-work-draft-surface]");
   const emptyState = dock.closest("[data-chat-empty-state]");
+  const wrapper = dock.closest("[data-chat-composer-wrapper]");
   const textField = dock.querySelector("[data-chat-composer-text]");
   // Only the inline prompt box of the new-chat screen (no simulator panel beside it).
-  if (!route || !surface || !emptyState || !dock.closest("[data-chat-composer-wrapper]")) return false;
+  if (!route || !surface || !emptyState || !wrapper) return false;
   if (!(textField instanceof HTMLTextAreaElement) || textField.value !== "") return false;
   if (dock.getClientRects().length === 0 || !atRest(dock, route)) return false;
   const backdropKind = surface.querySelector(".ade-tool-picker-backdrop")?.getAttribute("data-backdrop") ?? null;
@@ -331,6 +484,7 @@ export function recordEarlyComposerLayout(dock: HTMLElement, projectRoot: string
     chatFontSize: dock.style.getPropertyValue("--chat-font-size").trim(),
     devicePixelRatio: window.devicePixelRatio || 1,
     route: { width: routeRect.width, height: routeRect.height },
+    stack: measureStack(wrapper),
     routeBackground: routeBackgroundOf(routeChild),
     surface: rectWithin(surface, routeRect),
     scene,
@@ -368,6 +522,13 @@ function isPiece(value: unknown): value is EarlyComposerPiece {
     && Boolean(piece.scopeStyle && typeof piece.scopeStyle === "object");
 }
 
+function isStack(value: unknown): value is EarlyComposerStack {
+  if (!value || typeof value !== "object") return false;
+  const stack = value as Record<string, unknown>;
+  return ["areaHeight", "fixed", "wordmarkNatural", "wordmarkMin"]
+    .every((key) => typeof stack[key] === "number" && Number.isFinite(stack[key]) && (stack[key] as number) >= 0);
+}
+
 export function readEarlyComposerLayout(): EarlyComposerLayout | null {
   if (typeof window === "undefined") return null;
   try {
@@ -381,7 +542,8 @@ export function readEarlyComposerLayout(): EarlyComposerLayout | null {
     if (parsed.wordmark != null && !isPiece(parsed.wordmark)) return null;
     if (parsed.pills != null && !isPiece(parsed.pills)) return null;
     if (!parsed.text || typeof parsed.text.className !== "string" || typeof parsed.text.height !== "number") return null;
-    return parsed as EarlyComposerLayout;
+    if (typeof parsed.route.width !== "number" || typeof parsed.route.height !== "number") return null;
+    return { ...parsed, stack: isStack(parsed.stack) ? parsed.stack : null } as EarlyComposerLayout;
   } catch {
     return null;
   }
@@ -455,12 +617,12 @@ export function decideEarlyComposer(context: EarlyComposerContext): EarlyCompose
   if (layout.themeKey !== currentEarlyComposerThemeKey()) return { ok: false, reason: "layout-theme" };
   if (layout.chatFontSize !== `${context.chatFontSizePx}px`) return { ok: false, reason: "layout-font" };
   if (layout.devicePixelRatio !== (window.devicePixelRatio || 1)) return { ok: false, reason: "layout-scale" };
-  if (
-    Math.abs(layout.route.width - context.route.width) > 0.5
-    || Math.abs(layout.route.height - context.route.height) > 0.5
-  ) {
-    return { ok: false, reason: "layout-size" };
-  }
+  // The width sets the column's width and every line break: it must match.
+  // The height changes with chrome above the route (notice banners that come
+  // and go), and the column rule places the prompt box for it.
+  if (Math.abs(layout.route.width - context.route.width) > 0.5) return { ok: false, reason: "layout-width" };
+  const heightRefusal = earlyComposerHeightRefusal(layout, context.route.height);
+  if (heightRefusal) return { ok: false, reason: heightRefusal };
   if (context.sceneShown === null) return { ok: false, reason: "scene-unknown" };
   if (layout.scene !== (context.sceneShown ? "image" : "flat")) return { ok: false, reason: "layout-scene" };
   if (!newChatDraftIsEmpty(context.projectRoot)) return { ok: false, reason: "saved-draft" };

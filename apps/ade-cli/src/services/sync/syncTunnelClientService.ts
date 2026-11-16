@@ -69,10 +69,19 @@ export type SyncTunnelClientStatus = {
   relayTurnedOff?: boolean;
 };
 
+let lastMcpEndpointKey: { machineKey: string; secret: string; value: string } | null = null;
+
 /** The ADE MCP endpoint key for a relay identity (see SyncTunnelClientStatus). */
 export function mcpEndpointKeyFor(identity: { machineKey: string; secret: string }): string {
-  return signRelayHmacHex(identity.secret, `ade-mcp-endpoint:${identity.machineKey}`).slice(0, 40);
+  // Every tunnel status read asks this (the account publisher reads one every
+  // 2 s) with the same identity; the HMAC is kept for the last identity.
+  const last = lastMcpEndpointKey;
+  if (last && last.machineKey === identity.machineKey && last.secret === identity.secret) return last.value;
+  const value = signRelayHmacHex(identity.secret, `ade-mcp-endpoint:${identity.machineKey}`).slice(0, 40);
+  lastMcpEndpointKey = { machineKey: identity.machineKey, secret: identity.secret, value };
+  return value;
 }
+
 
 export type SyncTunnelClientService = {
   start(): Promise<void>;

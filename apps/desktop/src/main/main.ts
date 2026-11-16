@@ -583,6 +583,9 @@ import { createWebhookRemoteSource } from "./services/automations/webhookAutomat
  * which step took the time. Reading the clock costs nothing.
  */
 const mainBootMarks: Record<string, number> = {
+  // `entryMs` and `mainRequireMs` come from electron.cjs: Electron's own start
+  // ends at the first, and this bundle's load and evaluation start at the second.
+  ...((globalThis as { __adeBootMarks?: Record<string, number> }).__adeBootMarks ?? {}),
   modulesEvaluatedMs: Math.round(process.uptime() * 1000),
 };
 const markMainBoot = (name: string): void => {
@@ -1170,6 +1173,7 @@ async function createWindow(args: {
     },
   });
 
+  markMainBoot("firstBrowserWindowMs");
   if (restoredBounds && restoreState?.maximized && !restoreState.fullScreen && !args.hidden) win.maximize();
   if (args.onWindowStateChange) trackMainWindowState(win, args.onWindowStateChange);
   args.onCreated?.(win);
@@ -1229,7 +1233,11 @@ async function createWindow(args: {
     ).map((base) => new URL(base).origin),
   });
 
-  win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+  // Main-frame responses only: the policy is for the app document, and every
+  // other response passed through unchanged. Without the filter each response
+  // in this session (the ~580 module and style files of the first load among
+  // them) waited for a turn on main's JS thread.
+  win.webContents.session.webRequest.onHeadersReceived({ urls: ["<all_urls>"], types: ["mainFrame"] }, (details, callback) => {
     if (
       !shouldApplyRendererCsp(details, {
         isDevMode,
@@ -1845,6 +1853,27 @@ app.whenReady().then(async () => {
   })) {
     return;
   }
+  markMainBoot("launchGateMs");
+  /**
+   * Launch work the first window does not need: sweeps and cleanups that
+   * spawn processes or scan folders. Each runs right after the first window
+   * starts to load its page, while the renderer process starts up in
+   * parallel, instead of before the window exists. Nothing in the window or
+   * in a project open waits on any of them.
+   */
+  const afterFirstLoadStarts: Array<{ name: string; run: () => void }> = [];
+  const runAfterFirstLoadStarts = (): void => {
+    for (const job of afterFirstLoadStarts.splice(0)) {
+      try {
+        job.run();
+      } catch (error) {
+        logMachineEvent("warn", "startup.deferred_job_failed", {
+          job: job.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
   // A standalone brain (`ade brain update`) has no app resources: this record
   // is how it finds this app, its version and its signed native helpers, and
   // how a brain restart report finds this app's logs.
@@ -2172,6 +2201,7 @@ app.whenReady().then(async () => {
     normalizeProjectPath,
   });
   const shouldOpenStartupProject = startupProject.rootPath != null;
+  markMainBoot("startupStateMs");
 
   const broadcast = (channel: string, payload: unknown) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -2741,6 +2771,7 @@ app.whenReady().then(async () => {
   // it held per folder; a report about an unknown project id also gets the
   // machine's project list and its journal (`shared/sentry/diagnostics.ts`).
   registerSentryDiagnosticContext("brain_connection", () => localRuntimePool.diagnosticSnapshot());
+  markMainBoot("runtimePoolMs");
   // A failure on another machine's brain is about that machine's list.
   const attachProjectRegistry = projectRegistryDiagnosticAttachment(new ProjectRegistry(machineAdeLayout).diagnosticPaths());
   registerSentryDiagnosticAttachment("project-registry", (event) => (isRemoteMachineEvent(event) ? null : attachProjectRegistry(event)));
@@ -3571,9 +3602,14 @@ app.whenReady().then(async () => {
   const updateLogger = createFileLogger(
     path.join(app.getPath("userData"), "ade-update.jsonl"),
   );
-  cleanupStaleTempArtifacts({
-    tempRoot: app.getPath("temp"),
-    logger: updateLogger,
+  // A scan of the whole user temp folder; it removes only entries a day or a
+  // week old, so nothing this launch creates is at stake.
+  afterFirstLoadStarts.push({
+    name: "temp_cleanup",
+    run: () => cleanupStaleTempArtifacts({
+      tempRoot: app.getPath("temp"),
+      logger: updateLogger,
+    }),
   });
   let runtimeServiceUninstalledForUpdate = false;
   let autoUpdateInstallRollbackReason: string | null = null;
@@ -3774,6 +3810,7 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  markMainBoot("updateServiceMs");
   startupRecovery = createDesktopStartupRecovery({
     logger: getMachineMainLogger(),
     runningVersion: app.getVersion(),
@@ -3874,9 +3911,16 @@ app.whenReady().then(async () => {
     // Tools this machine shows no sign of using download when something needs them.
     enablePinnedToolFetch(updateLogger, { downloadOnly: !app.isPackaged });
     if (app.isPackaged) {
-      void agentToolsCacheService.ensureMissing().catch(() => {
-        // Per-tool failures are already recorded on the snapshot and in the log;
-        // a rejected kick must never take down app startup.
+      // Coalesced with any later request, so a renderer retry before this
+      // runs starts the same fetch.
+      afterFirstLoadStarts.push({
+        name: "agent_tools_ensure_missing",
+        run: () => {
+          void agentToolsCacheService.ensureMissing().catch(() => {
+            // Per-tool failures are already recorded on the snapshot and in the log;
+            // a rejected kick must never take down app startup.
+          });
+        },
       });
     }
   }
@@ -8850,7 +8894,9 @@ app.whenReady().then(async () => {
     replaceDormantContext(previousRoot);
   };
 
+  markMainBoot("dormantContextStartMs");
   replaceDormantContext();
+  markMainBoot("dormantContextMs");
   configureBuiltInBrowserWebAuthn({
     getLogger: () => getActiveContext().logger,
   });
@@ -9853,29 +9899,37 @@ app.whenReady().then(async () => {
     recordMainExit(shutdownReason ?? (installQuit ? "update_install" : "will_quit"), null);
   });
 
-  try {
-    const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServer");
-    void recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger }).catch((error: unknown) => {
-      getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
-        error: error instanceof Error ? error.message : String(error),
+  // Orphan sweeps: each one lists processes (`ps`). They touch only processes
+  // whose owner is gone, and a Cursor or OpenCode start in between protects
+  // its own (the Cursor sweep is shared, OpenCode skips active ports).
+  afterFirstLoadStarts.push({
+    name: "orphan_sweeps",
+    run: () => {
+      try {
+        const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServer");
+        void recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger }).catch((error: unknown) => {
+          getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } catch (error) {
+        getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // Cursor SDK workers a dead brain or a crashed main left behind. Only
+      // workers whose owner is dead are touched.
+      void recoverCursorSdkWorkerOrphans({ logger: getActiveContext().logger }).catch((error: unknown) => {
+        getActiveContext().logger.warn("agent_chat.cursor_sdk_worker_orphan_sweep_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
-  } catch (error) {
-    getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  // Cursor SDK workers a dead brain or a crashed main left behind. Only
-  // workers whose owner is dead are touched.
-  void recoverCursorSdkWorkerOrphans({ logger: getActiveContext().logger }).catch((error: unknown) => {
-    getActiveContext().logger.warn("agent_chat.cursor_sdk_worker_orphan_sweep_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
-  void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
-    getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+      void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
+        getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
   });
   autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
@@ -10982,6 +11036,7 @@ app.whenReady().then(async () => {
     void migrateLegacyKeepAwakePreference();
   }
 
+  markMainBoot("registerIpcStartMs");
   ipcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -11103,6 +11158,7 @@ app.whenReady().then(async () => {
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
   remoteArtifactRangeReader = ipcBridge.readRemoteArtifactRange;
+  markMainBoot("registerIpcMs");
 
   // Explicit project launches still bind a project before the renderer boots;
   // normal launches stay on the welcome/recent-project surface.
@@ -11110,6 +11166,7 @@ app.whenReady().then(async () => {
   registerPerfIpcHandlers();
 
   await projectMoveRecovery;
+  markMainBoot("moveRecoveryMs");
   const savedUpdateState = readGlobalState(globalStatePath);
   // A hidden quit-install launch opens no project: it closes once the service
   // is on the new build. The saved workspace stays for the next launch the
@@ -11238,7 +11295,7 @@ app.whenReady().then(async () => {
   const initialRemoteProjectBinding =
     shouldOpenStartupProject || restoresUpdateWorkspace ? null : savedRemoteProjectBinding;
   markMainBoot("firstWindowCreateMs");
-  const initialWindow = await createWindow({
+  const initialWindowLoad = createWindow({
     logger: getActiveContext().logger,
     restoreState: readSavedMainWindowState(),
     onWindowStateChange: saveMainWindowState,
@@ -11253,6 +11310,11 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
+  // `createWindow` has run up to its page load (`firstLoadUrlMs`); the renderer
+  // process starts now, so the deferred launch work runs beside it.
+  runAfterFirstLoadStarts();
+  markMainBoot("deferredJobsMs");
+  const initialWindow = await initialWindowLoad;
   markMainBoot("firstPageLoadedMs");
   getMachineMainLogger().info("startup.main_boot", { ...mainBootMarks });
   if (quitInstallLaunch) {
