@@ -216,8 +216,13 @@ describe("shared sync listener upgrade policy", () => {
   // local-only side door on another port takes 127.0.0.1 traffic (Tailscale
   // Serve) until the other program leaves. A phone that sees its machine's
   // port change redials, so the port stays put.
+  // Every check while the other program holds the address would be a request
+  // to that program, so its answer stands for a while (1, 5, then 15 min).
   it("keeps its port and opens a local side door while another program holds its loopback", async () => {
     let shadowedPort: number | null = null;
+    let probesOfShadowedPort = 0;
+    let nowMs = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     const listener = createSharedSyncListener({
       bindHost: "0.0.0.0",
       logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },
@@ -228,6 +233,7 @@ describe("shared sync listener upgrade policy", () => {
       }),
       loopbackProbe: async (port, expectedNonce) => {
         const shadowed = port === shadowedPort;
+        if (shadowed) probesOfShadowedPort += 1;
         return {
           ok: !shadowed,
           port,
@@ -282,12 +288,30 @@ describe("shared sync listener upgrade policy", () => {
       const [echo] = await once(connectedBefore, "message");
       expect(String(echo)).toBe("echo:still-here");
 
-      // The other program leaves: loopback is the port itself again.
+      // Checks inside the wait ask only the side door, never the program.
+      const probesAfterShadow = probesOfShadowedPort;
+      expect(probesAfterShadow).toBeGreaterThan(0);
+      await listener.healNow();
+      await listener.revalidateLoopback();
+      expect(probesOfShadowedPort).toBe(probesAfterShadow);
+      expect(listener.getLoopbackPort()).toBe(loopbackPort);
+
+      // Still there after 1 min: the next wait is 5 min.
+      nowMs += 60_000;
+      await listener.healNow();
+      expect(probesOfShadowedPort).toBe(probesAfterShadow + 1);
+      nowMs += 4 * 60_000;
+      await listener.healNow();
+      expect(probesOfShadowedPort).toBe(probesAfterShadow + 1);
+
+      // The other program leaves: after the wait, loopback is the port itself again.
       shadowedPort = null;
+      nowMs += 60_000;
       await listener.healNow();
       expect(listener.getLoopbackPort()).toBe(port);
       connectedBefore.close();
     } finally {
+      clock.mockRestore();
       await listener.close();
       if (blocker?.listening) await new Promise<void>((resolve) => blocker!.close(() => resolve()));
     }
