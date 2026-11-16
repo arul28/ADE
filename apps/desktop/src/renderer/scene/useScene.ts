@@ -5,6 +5,8 @@
  *
  * Loading is shared: every backdrop on screen reads the same module cache, so
  * a picture is fetched, decoded and colour-sampled once, not once per surface.
+ * Each draws the file sized for the screen: a bundled picture's copy
+ * (`sceneSrcForScreen`), or a user picture's screen-sized copy (`userSceneUrl`).
  * Shuffle picks once per launch (never the same picture twice in a row) and
  * `reshuffleScene()` picks again on demand.
  */
@@ -41,6 +43,24 @@ export type ActiveScene =
 
 type Entry = { url: string | null; palette: ScenePalette | null; done: boolean };
 
+/**
+ * The cache key of a scene on this screen. A user picture has one entry per
+ * screen size, because each size draws its own copy; a bundled picture picks
+ * its file at render time, so one entry serves every screen.
+ */
+function entryKey(id: string, screen: ScreenPixels): string {
+  return isUserSceneId(id) ? `${id}@${screen.width}x${screen.height}` : id;
+}
+
+function sceneIdOfEntry(key: string): string {
+  const at = key.indexOf("@");
+  return at < 0 ? key : key.slice(0, at);
+}
+
+/** The last URL and colours each scene showed, kept while the copy for a new screen loads. */
+const lastUrlById = new Map<string, string>();
+const lastPaletteById = new Map<string, ScenePalette>();
+
 const SHUFFLE_LAST_KEY = "ade.sceneShuffleLast";
 
 const entries = new Map<string, Entry>();
@@ -65,8 +85,13 @@ function refreshUserScenes(): void {
     userScenes = rows;
     userScenesLoaded = true;
     // A deleted picture must not linger in the cache.
-    for (const id of [...entries.keys()]) {
-      if (isUserSceneId(id) && !rows.some((row) => row.id === id)) entries.delete(id);
+    for (const key of [...entries.keys()]) {
+      const id = sceneIdOfEntry(key);
+      if (isUserSceneId(id) && !rows.some((row) => row.id === id)) {
+        entries.delete(key);
+        lastUrlById.delete(id);
+        lastPaletteById.delete(id);
+      }
     }
     emit();
   });
@@ -79,23 +104,27 @@ function ensureUserScenes(): void {
   refreshUserScenes();
 }
 
-function load(id: string): void {
-  if (entries.has(id)) return;
-  entries.set(id, { url: null, palette: null, done: false });
+function load(id: string, screen: ScreenPixels): void {
+  const key = entryKey(id, screen);
+  if (entries.has(key)) return;
+  entries.set(key, { url: null, palette: null, done: false });
   const bundled = findBundledScene(id);
-  const urlPromise = bundled ? Promise.resolve(bundled.src) : isUserSceneId(id) ? userSceneUrl(id) : Promise.resolve(null);
+  const urlPromise = bundled ? Promise.resolve(bundled.src) : isUserSceneId(id) ? userSceneUrl(id, screen) : Promise.resolve(null);
   // A user picture deleted while this load was in flight must not come back.
-  const stillWanted = () => entries.has(id);
+  const stillWanted = () => entries.has(key);
   void urlPromise.then(async (url) => {
     if (!stillWanted()) return;
-    entries.set(id, { url, palette: null, done: !url });
+    entries.set(key, { url, palette: null, done: !url });
+    if (url) lastUrlById.set(id, url);
     emit();
     if (!url) return;
     // The colours come from a 48px sample, so a bundled picture samples its
-    // thumbnail instead of decoding the full file a second time.
+    // thumbnail and a user picture its copy, instead of decoding the full
+    // file a second time. Colours are kept per picture, not per file.
     const palette = await extractScenePalette(id, bundled?.thumb ?? url);
     if (!stillWanted()) return;
-    entries.set(id, { url, palette, done: true });
+    if (palette) lastPaletteById.set(id, palette);
+    entries.set(key, { url, palette, done: true });
     emit();
   });
 }
@@ -280,15 +309,18 @@ export function useActiveScene(): ActiveScene {
   const waitingForLibrary = prefs.mode === "shuffle" && !userScenesLoaded && !shufflePick;
   const id = waitingForLibrary ? null : sceneIdFor(prefs);
 
+  const key = id ? entryKey(id, screen) : null;
   useEffect(() => {
-    if (id) load(id);
-  }, [id]);
+    if (id) load(id, screen);
+    // `key` covers the screen for the scenes whose file depends on it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   if (!id) {
     if (prefs.mode === "plain") return { kind: "plain" };
     return waitingForLibrary ? { kind: "gradient", pending: true } : { kind: "gradient" };
   }
-  const entry = entries.get(id);
+  const entry = key ? entries.get(key) : undefined;
   // A user picture that no longer exists falls back to the gradient.
   if (entry?.done && !entry.url) return { kind: "gradient" };
   const bundled = findBundledScene(id);
@@ -296,13 +328,15 @@ export function useActiveScene(): ActiveScene {
     kind: "image",
     id,
     name: sceneName(id),
-    url: bundled ? sceneSrcForScreen(bundled, screen) : entry?.url ?? null,
+    // On a move to another screen, a user picture keeps its last file until
+    // the copy for the new screen is ready, so it does not blink out.
+    url: bundled ? sceneSrcForScreen(bundled, screen) : entry?.url ?? lastUrlById.get(id) ?? null,
     position: bundled?.position ?? "50% 50%",
     showImage: prefs.showImage,
     texture: prefs.texture,
     dim: prefs.dim,
     matchTheme: prefs.matchTheme,
-    palette: entry?.palette ?? null,
+    palette: entry?.palette ?? lastPaletteById.get(id) ?? null,
   };
 }
 
