@@ -3,7 +3,9 @@
  * computer can't answer. The shapes are the `/cloud/chats` routes' own.
  */
 
-import type { CloudChatRow, CloudChatRowInput, CloudChatTranscriptPage } from "../../../account-directory/src/cloud/contract";
+import type { CloudChatComputer, CloudChatRow, CloudChatRowInput, CloudChatTranscriptPage, CloudComputerDeleteReason } from "../../../account-directory/src/cloud/contract";
+
+export type { CloudChatComputer, CloudComputerDeleteReason };
 
 /**
  * The machine id (and pin target id) a window gives a saved chat's computer

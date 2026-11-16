@@ -313,12 +313,15 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ADE Cloud lanes (feature "connections"). `cloud_lane_launch`: how a new
   // lane on its own computer ends, once per launch and end (completed |
   // failed | cancelled). `cloud_lane_freed`: a lane's computer freed
-  // (completed | failed). `cloud_clear_caches`: a computer's caches cleared
+  // (completed | failed). `cloud_lane_deleted`: a person deleted a lane and its
+  // computer (completed: its chats went too | kept: they kept its chats |
+  // partial: its chats couldn't all be deleted | failed). `cloud_clear_caches`: a computer's caches cleared
   // (completed | failed | denied, an agent's ask declined). `cloud_default_size`:
   // the person picked another size for new lanes (size_<tier>). Never the
   // lane, project, computer, branch, prompt, size of a computer, or an error.
   "cloud_lane_launch",
   "cloud_lane_freed",
+  "cloud_lane_deleted",
   "cloud_clear_caches",
   "cloud_default_size",
   // One coarse fact per automatic diagnostic send (feature "issue_report"): whether it went, was refused

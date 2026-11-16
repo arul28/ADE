@@ -17,12 +17,14 @@ import {
   type CloudLaneWorkState,
 } from "../../../shared/cloudLaneLife";
 import { cloudTier, cloudTierOfShape, cloudTiers, isCloudTierId, type CloudTier, type CloudTierId } from "../../../shared/cloudTiers";
+import type { CloudSavedChatRow } from "../../../shared/cloudSavedChats";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { sameMachineKey } from "../../../shared/machineAddress";
 import type { ChatLaunchStageStatus, RemoteRuntimeProjectRecord } from "../../../shared/types";
 import { getErrorMessage } from "../shared/utils";
 import { expectedErrorKind } from "../../../shared/expectedError";
 import { moveCloudMachine, type CloudCopyDeps } from "./cloudMachineCopy";
-import { CLOUD_MACHINE_KEY_METADATA, type createCloudMachines } from "./cloudMachines";
+import { CLOUD_MACHINE_KEY_METADATA, formerMachineKeysOf, type createCloudMachines } from "./cloudMachines";
 import { CloudProviderError, type CloudInstance, type CloudLogger, type CloudProvider } from "./cloudProvider";
 
 /**
@@ -76,6 +78,9 @@ const CONNECT_WAIT_MS = 10 * 60_000;
 const CONNECT_RETRY_MS = 5_000;
 /** A finished job's card stays this long, then its record goes. */
 const FINISHED_JOB_KEEP_MS = 24 * 60 * 60_000;
+// A lane's saved chats are read in pages of this size, at most this many pages.
+const SAVED_CHAT_PAGE = 200;
+const SAVED_CHAT_PAGES = 20;
 /** Busy reasons that are not the agent's work: a person watching a tool, a timer due soon. */
 const NOT_AGENT_WORK = new Set(["in_use", "schedule"]);
 
@@ -250,25 +255,78 @@ export function createCloudLaneLife(deps: CloudLaneLifeDeps) {
   };
 
   /**
-   * Deletes the computer and so the lane on it. Never refused: `skipCheck`
-   * leaves out the work check when the person was already warned. Its chats
-   * stay readable from the saved copy, which this does not touch.
+   * Deletes every saved chat the lane left on ADE Cloud: the computer's own,
+   * listed by its key, and the lane's older copies from computers that are
+   * gone (a size change moves a lane to a new computer and key). Deleted one
+   * by one, which every server version answers. Resolves how many went, or
+   * null when a list or a delete failed or chats were left past the page
+   * limit (what was deleted stays deleted).
    */
-  const deleteLane = async (args: { instanceId: string; skipCheck?: boolean }): Promise<CloudLaneDeleteResult> => {
+  const deleteSavedChatsOf = async (lane: { machineKey: string; formerMachineKeys: readonly string[] }): Promise<number | null> => {
+    let deleted = 0;
+    try {
+      const client = await deps.client();
+      /** Deletes the key's chats that `deletable` takes; true when some are left. */
+      const clear = async (machineKey: string, deletable: (chat: CloudSavedChatRow) => boolean): Promise<boolean> => {
+        // Each pass lists what is left, so the next page is the first page again.
+        for (let pass = 0; pass < SAVED_CHAT_PAGES; pass += 1) {
+          const page = await client.listSavedChats({ machineKey, limit: SAVED_CHAT_PAGE });
+          const mine = page.chats.filter((chat) => sameMachineKey(chat.machineKey, machineKey) && deletable(chat));
+          for (const chat of mine) {
+            await client.deleteSavedChat({ machineKey: chat.machineKey, chatId: chat.chatId });
+            deleted += 1;
+          }
+          if (!page.nextCursor || mine.length === 0) return false;
+        }
+        return true;
+      };
+      let left = await clear(lane.machineKey, () => true);
+      // The computers a move replaced, only while the server says they are deleted: a move whose old computer stayed left it its chats.
+      for (const machineKey of lane.formerMachineKeys) {
+        if (sameMachineKey(machineKey, lane.machineKey)) continue;
+        if (await clear(machineKey, (chat) => chat.computer?.state === "deleted")) left = true;
+      }
+      if (left) {
+        logger.warn?.("cloud.lane_saved_chats_left", { deleted });
+        return null;
+      }
+      return deleted;
+    } catch (error) {
+      logger.warn?.("cloud.lane_saved_chats_delete_failed", { deleted, error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
+  /**
+   * Deletes the computer and so the lane on it. Never refused: `skipCheck`
+   * leaves out the work check when the person was already warned. Its saved
+   * chats go too, unless `keepChats`: then they stay readable from ADE Cloud.
+   */
+  const deleteLane = async (args: { instanceId: string; skipCheck?: boolean; keepChats?: boolean }): Promise<CloudLaneDeleteResult> => {
     if (Array.from(jobs.values()).some((record) => isLive(record.job) && record.job.instanceId === args.instanceId)) {
       // A tier change mid-way would make a computer the delete doesn't know.
-      return { ok: false, message: "This lane is changing size. Wait for it to finish, or cancel it, then delete.", unpushed: null, unpushedLanes: [] };
+      return { ok: false, message: "This lane is changing size. Wait for it to finish, or cancel it, then delete.", unpushed: null, unpushedLanes: [], chatsKept: true };
     }
     const instance = await readInstance(args.instanceId);
     const machineKey = instance?.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null;
     const state = args.skipCheck || !instance ? null : await workState({ instanceId: args.instanceId });
     const result = await deps.machines.run({ action: "delete", instanceId: args.instanceId, machineKey });
+    // The chats go after the computer, so a turn that saves a last part can't bring one back.
+    const chatsDeleted = result.ok && !args.keepChats && machineKey
+      ? await deleteSavedChatsOf({ machineKey, formerMachineKeys: formerMachineKeysOf(instance?.metadata) })
+      : null;
     if (result.ok) {
       forgetConnections(machineKey, args.instanceId);
       deps.changed();
     }
-    logger.info?.("cloud.lane_deleted", { instanceId: args.instanceId, ok: result.ok, unpushed: state?.unpushed ?? null });
-    return { ok: result.ok, message: result.message, unpushed: state?.unpushed ?? null, unpushedLanes: state?.unpushedLanes ?? [] };
+    logger.info?.("cloud.lane_deleted", { instanceId: args.instanceId, ok: result.ok, unpushed: state?.unpushed ?? null, keepChats: args.keepChats === true, chatsDeleted });
+    return {
+      ok: result.ok,
+      message: result.message,
+      unpushed: state?.unpushed ?? null,
+      unpushedLanes: state?.unpushedLanes ?? [],
+      chatsKept: result.ok ? args.keepChats === true || chatsDeleted == null : true,
+    };
   };
 
   /**

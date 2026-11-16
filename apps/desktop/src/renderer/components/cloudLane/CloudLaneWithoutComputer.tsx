@@ -14,8 +14,7 @@ import { CloudMark } from "../remoteTargets/cloudBrand";
 import { confirmDialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { CLOUD_LANE_LIFE_UNAVAILABLE, cloudLaneLifeAvailable, forgetCloudLaneWithoutComputer } from "./cloudLaneActions";
-import { refreshCloudLanesWithoutComputer, useCloudLanesWithoutComputer } from "./cloudLaneStores";
-import { useAdeCloudEnabled } from "../../state/cloudAccess";
+import { refreshCloudLanesWithoutComputer } from "./cloudLaneStores";
 import "./cloudLane.css";
 
 /**
@@ -62,13 +61,18 @@ export function cloudLaneRestartProblem(lane: CloudLaneWithoutComputer, binding:
   return null;
 }
 
-function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
+/**
+ * "New computer on the same branch" for a lane kept without one: the problem
+ * that blocks it here, whether a start runs, and the start (a failure shows a toast).
+ */
+export function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: CloudAccountState | null) {
+  const [busy, setBusy] = useState(false);
   const binding = useAppStore((state) => state.projectBinding);
   const defaultTier = useRootAppStore((state) => state.cloudDefaultTier);
   const originUrl = originUrlForBinding(binding);
   const problem = cloudLaneRestartProblem(lane, binding, originUrl);
   const sizeId = useMemo(() => cloudLaneRestartTier(lane, account, defaultTier), [account, defaultTier, lane]);
-  const start = async (): Promise<boolean> => {
+  const launch = async (): Promise<boolean> => {
     if (problem || !binding || !lane.branchRef) return false;
     const outcome = await startAdeCloudLaunch({
       args: {
@@ -94,7 +98,17 @@ function useStartLaneOnNewComputer(lane: CloudLaneWithoutComputer, account: Clou
     showToast({ tone: "success", title: `Making a new computer for ${lane.laneName}`, message: "It starts on the same branch. Its steps show under Launches." });
     return true;
   };
-  return { problem, start, sizeId };
+  const start = async (): Promise<void> => {
+    setBusy(true);
+    try {
+      await launch();
+    } catch (error) {
+      showToast({ tone: "error", title: `Couldn't start ${lane.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment." });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { problem, busy, start, sizeId };
 }
 
 export function CloudLaneWithoutComputerNotice({
@@ -109,20 +123,10 @@ export function CloudLaneWithoutComputerNotice({
   variant?: "strip" | "row";
   className?: string;
 }) {
-  const { problem, start } = useStartLaneOnNewComputer(lane, account);
-  const [busy, setBusy] = useState<"start" | "forget" | null>(null);
+  const { problem, busy: starting, start } = useStartLaneOnNewComputer(lane, account);
+  const [forgetting, setForgetting] = useState(false);
+  const busy = starting || forgetting;
   const problemId = `adecl-nocomp-why-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
-
-  const onStart = async () => {
-    setBusy("start");
-    try {
-      await start();
-    } catch (error) {
-      showToast({ tone: "error", title: `Couldn't start ${lane.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment." });
-    } finally {
-      setBusy(null);
-    }
-  };
 
   const onForget = async () => {
     const ok = await confirmDialog({
@@ -131,14 +135,14 @@ export function CloudLaneWithoutComputerNotice({
       confirmLabel: "Forget lane",
     });
     if (!ok) return;
-    setBusy("forget");
+    setForgetting(true);
     try {
       await forgetCloudLaneWithoutComputer(lane.laneId);
       refreshCloudLanesWithoutComputer();
     } catch (error) {
       showToast({ tone: "error", title: `Couldn't forget ${lane.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment." });
     } finally {
-      setBusy(null);
+      setForgetting(false);
     }
   };
 
@@ -150,42 +154,17 @@ export function CloudLaneWithoutComputerNotice({
         {problem ? <span id={problemId} className="adecl-muted">{problem}</span> : null}
       </div>
       <div className="adecl-nocomp-actions">
-        <button type="button" className="kit-btn adecl-btn-sky" data-size="xs" disabled={Boolean(problem) || busy != null} aria-describedby={problem ? problemId : undefined} onClick={() => void onStart()}>
+        <button type="button" className="kit-btn adecl-btn-sky" data-size="xs" disabled={Boolean(problem) || busy} aria-describedby={problem ? problemId : undefined} onClick={() => void start()}>
           <Plus size={11} />
-          {busy === "start" ? "Starting…" : "New computer on the same branch"}
+          {starting ? "Starting…" : "New computer on the same branch"}
         </button>
         {cloudLaneLifeAvailable() ? (
-          <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={busy != null} onClick={() => void onForget()} aria-label={`Forget ${lane.laneName}`}>
+          <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" disabled={busy} onClick={() => void onForget()} aria-label={`Forget ${lane.laneName}`}>
             <X size={11} />
             Forget
           </button>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-/**
- * The project's ADE Cloud lanes that have no computer now, for a list of
- * lanes (the Lanes tab): one row each with its next step. Nothing when there
- * are none, when ADE Cloud is off, or where this ADE can't ask.
- */
-export function CloudLanesWithoutComputerList({ originUrl, className }: { originUrl: string | null; className?: string }) {
-  const enabled = useAdeCloudEnabled() && cloudLaneLifeAvailable();
-  const { lanes } = useCloudLanesWithoutComputer(enabled);
-  const identity = normalizeGitRemoteIdentity(originUrl);
-  const mine = useMemo(
-    () => (identity ? lanes.filter((lane) => lane.projectOrigin === identity) : []),
-    [identity, lanes],
-  );
-  if (!enabled || !mine.length) return null;
-  return (
-    <div className={cn("adecl-nocomp-list", className)} aria-label="ADE Cloud lanes without a computer">
-      <div className="adecl-nocomp-list-head">
-        <CloudMark size={11} brand />
-        <span>{mine.length === 1 ? "1 ADE Cloud lane has no computer now" : `${mine.length} ADE Cloud lanes have no computer now`}</span>
-      </div>
-      {mine.map((lane) => <CloudLaneWithoutComputerNotice key={lane.laneId} lane={lane} account={null} variant="row" />)}
     </div>
   );
 }
