@@ -28,6 +28,12 @@ import type { ScreenBox } from "../ui/LiquidGlassLogoReveal";
 import { afterBootSplash, bootSplashLogoBox } from "../app/BootSplashReveal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
+import {
+  attachWhatsNewHost,
+  WHATS_NEW_AFTER_UPDATE_EVENT,
+  WHATS_NEW_OPEN_EVENT,
+  type AfterUpdateDetail,
+} from "./whatsNewEvents";
 
 /**
  * The "What's new" modal. It opens three ways:
@@ -57,23 +63,11 @@ import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
  * seconds until it shows, then stops.
  */
 
-const OPEN_EVENT = "ade:open-whats-new";
-const AFTER_UPDATE_EVENT = "ade:open-whats-new-after-update";
 /** The project settles before anything shows over it. */
 const SETTLE_MS = 4_000;
 const CHECK_INTERVAL_MS = 3_000;
 /** The person must not have typed or clicked for this long before the modal may open over their work. */
 const INPUT_QUIET_MS = 8_000;
-
-export type AfterUpdateDetail = {
-  version: string;
-  fromVersion: string | null;
-  resumedChats: readonly UpdateInterruptedChat[];
-  changelogUrl: string | null;
-  githubReleaseUrl: string | null;
-  /** Called once the modal closes, so the update record can be put away. */
-  onClose: () => void;
-};
 
 type NotesPage = {
   digest: ReleaseNotesDigest | null;
@@ -92,16 +86,6 @@ type Showing = {
   /** After an update: the logo flies in, from the splash's last logo box when there is one. */
   arrival?: Arrival;
 };
-
-/** Opens every "What's new" page (Help menu, command palette). */
-export function openWhatsNew(): void {
-  window.dispatchEvent(new Event(OPEN_EVENT));
-}
-
-/** The first launch after this computer installed an update (AutoUpdateControl). */
-export function openWhatsNewAfterUpdate(detail: AfterUpdateDetail): void {
-  window.dispatchEvent(new CustomEvent<AfterUpdateDetail>(AFTER_UPDATE_EVENT, { detail }));
-}
 
 export function AnnouncementsHost() {
   useAnnouncementSeenSync();
@@ -154,11 +138,14 @@ export function AnnouncementsHost() {
         cancelSplash();
       };
     };
-    window.addEventListener(OPEN_EVENT, openAll);
-    window.addEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
+    window.addEventListener(WHATS_NEW_OPEN_EVENT, openAll);
+    window.addEventListener(WHATS_NEW_AFTER_UPDATE_EVENT, openAfterUpdate);
+    // Requests made before this loaded arrive now.
+    const detach = attachWhatsNewHost();
     return () => {
-      window.removeEventListener(OPEN_EVENT, openAll);
-      window.removeEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
+      detach();
+      window.removeEventListener(WHATS_NEW_OPEN_EVENT, openAll);
+      window.removeEventListener(WHATS_NEW_AFTER_UPDATE_EVENT, openAfterUpdate);
       cancelArrival();
     };
   }, []);
@@ -172,6 +159,8 @@ export function AnnouncementsHost() {
     const noteInput = () => { lastInputAt = Date.now(); };
     window.addEventListener("keydown", noteInput, { capture: true, passive: true });
     window.addEventListener("pointerdown", noteInput, { capture: true, passive: true });
+    // An IME composition counts as typing from its first key, before any keydown commits text.
+    window.addEventListener("compositionstart", noteInput, { capture: true, passive: true });
     // Pages seen on another computer or in ADE Web are not due here: the
     // account's copy is read (or given up on) before anything shows.
     let accountRead = false;
@@ -194,6 +183,7 @@ export function AnnouncementsHost() {
       window.clearInterval(interval);
       window.removeEventListener("keydown", noteInput, { capture: true });
       window.removeEventListener("pointerdown", noteInput, { capture: true });
+      window.removeEventListener("compositionstart", noteInput, { capture: true });
     };
   }, [waiting]);
 

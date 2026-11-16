@@ -321,6 +321,8 @@ const AGENT_INPUT_QUIET_MS = 1_500;
  */
 const STALE_AGENT_TAB_MS = 2 * 60 * 60_000;
 const STALE_SWEEP_INTERVAL_MS = 5 * 60_000;
+/** A hidden tab an agent used this recently keeps full speed (see `detachedTabMayThrottle`). */
+const HIDDEN_TAB_AGENT_FULL_SPEED_MS = 2 * 60_000;
 /** A background tab nobody used for this long sleeps (its page is dropped until it is needed). */
 const TAB_SLEEP_AFTER_MS = 30 * 60_000;
 const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
@@ -3255,6 +3257,8 @@ function createBuiltInBrowserWindowService(args: {
   /** Load a sleeping tab's page again, with its history. Returns at once. */
   const wakeTab = (tab: BrowserTabState): Promise<void> | null => {
     tab.lastUsedAtMs = Date.now();
+    // Every agent action and every attach starts here: the page runs at full speed from now.
+    setTabBackgroundThrottling(tab, false);
     const asleep = tab.sleeping;
     if (!asleep || tab.webContents.isDestroyed()) return null;
     tab.sleeping = null;
@@ -4961,6 +4965,8 @@ function createBuiltInBrowserWindowService(args: {
           else syncRecordingViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
+          // Parked means somebody needs its pixels or input: full speed.
+          setTabBackgroundThrottling(tab, false);
           // Still not the active tab: parked means composited, not attended, so
           // it stays muted like any other background tab.
           applyTabLifecycle(tab, false);
@@ -4976,6 +4982,7 @@ function createBuiltInBrowserWindowService(args: {
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
         syncRecordingViewport(tab, null);
+        setTabBackgroundThrottling(tab, detachedTabMayThrottle(tab));
         continue;
       }
       // Parked (off screen) or detached a moment ago: Chromium can present the
@@ -4996,6 +5003,7 @@ function createBuiltInBrowserWindowService(args: {
       tab.view.setBounds(viewRect);
       noteSurfacedSize(tab.id, viewRect);
       syncRecordingViewport(tab, viewRect);
+      setTabBackgroundThrottling(tab, false);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
       if (cameOnScreen) repaintTab(tab);
@@ -5025,6 +5033,55 @@ function createBuiltInBrowserWindowService(args: {
     if (!visible) return;
     const tab = activeTab();
     if (tab?.view) repaintTab(tab);
+  };
+
+  /**
+   * Hidden tabs run at Chromium's background speed (timers batched to once a
+   * second, no animation frames), as in Chrome. Every tab starts with
+   * throttling off (`browserWebPreferences`), because an agent, a recording or
+   * a preview needs a hidden page at full speed. So throttling turns on only
+   * for a tab that is off the window (not on screen, not parked) and that
+   * nothing uses: no agent action, capture hold, recording, sign-in handoff,
+   * DevTools or sound, no live agent lease, and no agent touch in the last
+   * two minutes. A wake (every agent action starts with one), a park and an
+   * attach turn it off again before the page is used.
+   */
+  const throttledTabWebContents = new WeakSet<WebContents>();
+  const setTabBackgroundThrottling = (tab: BrowserTabState, throttle: boolean): void => {
+    const wc = tab.webContents;
+    if (wc.isDestroyed() || throttledTabWebContents.has(wc) === throttle) return;
+    try {
+      if (typeof wc.setBackgroundThrottling !== "function") return;
+      wc.setBackgroundThrottling(throttle);
+    } catch {
+      return;
+    }
+    if (throttle) throttledTabWebContents.add(wc);
+    else throttledTabWebContents.delete(wc);
+  };
+  const detachedTabMayThrottle = (tab: BrowserTabState): boolean => {
+    const wc = tab.webContents;
+    if (wc.isDestroyed() || tab.sleeping) return false;
+    if (tab.agentActionsInFlight > 0 || needsParkedSurface(tab.id)) return false;
+    if (tab.recording || tab.recordingStarting || tab.handoff || tab.devToolsMode) return false;
+    if ((tab.ownerLaneId || tab.ownerChatSessionId) && !isLeaseExpired(tab.ownerLeaseExpiresAt)) return false;
+    const lastAgentTouch = Math.max(
+      tab.ownerLastActiveAt ? Date.parse(tab.ownerLastActiveAt) || 0 : 0,
+      tab.lastAgentInputAtMs ?? 0,
+    );
+    if (Date.now() - lastAgentTouch < HIDDEN_TAB_AGENT_FULL_SPEED_MS) return false;
+    try {
+      if (wc.isCurrentlyAudible() || BACKGROUND_AUDIO_WEB_CONTENTS.has(wc)) return false;
+    } catch {
+      return false;
+    }
+    return true;
+  };
+  /** For the periodic sweep: a detached tab whose agent went quiet slows down now. */
+  const refreshDetachedTabThrottling = (tab: BrowserTabState): void => {
+    if (!tab.view || (visible && tab.id === activeTabId) || parkedTabIds.has(tab.id)) return;
+    if (win && !win.isDestroyed() && win.contentView.children.includes(tab.view)) return;
+    setTabBackgroundThrottling(tab, detachedTabMayThrottle(tab));
   };
 
   const applyTabLifecycle = (tab: BrowserTabState, active: boolean): void => {
@@ -5746,6 +5803,7 @@ function createBuiltInBrowserWindowService(args: {
   );
   const sweepStaleAgentTabs = (): void => {
     if (disposed) return;
+    for (const tab of [...tabs]) refreshDetachedTabThrottling(tab);
     for (const tab of [...tabs]) {
       void maybeSleepTab(tab).catch((error: unknown) => logger()?.warn("built_in_browser.tab_sleep_failed", {
         tabId: tab.id,

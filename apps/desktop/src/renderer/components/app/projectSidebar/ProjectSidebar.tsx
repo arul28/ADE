@@ -5,6 +5,7 @@ import { cn } from "../../ui/cn";
 import { useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
 import { pressActivation } from "../../../lib/pressActivation";
+import { preloadRoute } from "../../../lib/routePreload";
 import { readStoredProjectSettingsRoute } from "../projectRouteStorage";
 import { HelpMenu } from "../../onboarding/HelpMenu";
 import {
@@ -216,6 +217,9 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               aria-current={active ? "page" : undefined}
               aria-label={tab.label}
               title={`${tab.label}${attentionLabel}${shortcut ? `  ${shortcut}` : ""}`}
+              // The page's code starts to load before the press.
+              onPointerEnter={() => preloadRoute(tab.to)}
+              onFocus={() => preloadRoute(tab.to)}
               // A tab opens on the press. The click it replaces fires on mouse-up.
               {...pressActivation(() => openTab(tab.to))}
             >
@@ -256,6 +260,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               data-active={active ? "true" : undefined}
               aria-current={active ? "page" : undefined}
               title={waiting ? "The CTO is waiting on you" : undefined}
+              onPointerEnter={() => preloadRoute(item.to)}
+              onFocus={() => preloadRoute(item.to)}
               // Pressing the open item keeps it open (CTO stays on its thread);
               // the held tab above, or a chat in its list, leads back.
               {...pressActivation(() => {

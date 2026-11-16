@@ -264,7 +264,6 @@ import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatDisplayEvents,
   chatEventDedupKey,
-  estimatedChatEventResidentBytes,
   INITIAL_SELECTED_CHAT_HISTORY_EVENTS,
   MAX_BACKGROUND_CHAT_SESSION_EVENTS,
   MAX_BACKGROUND_CHAT_SESSION_RESIDENT_BYTES,
@@ -274,6 +273,7 @@ import {
   readOlderHistoryBatch,
   resolveMergedSnapshotHistoryCursor,
   resolveSnapshotHistoryCursor,
+  residentChatEventBytes,
   trimChatEventHistory,
 } from "./chatHistoryWindow";
 /** No nesting to resolve in the pane's own shell filter: one hop, the chat. */
@@ -1913,13 +1913,14 @@ function removeAgentChatSessionViewCache(sessionId: string): void {
   agentChatSessionViewCacheBySessionId.delete(sessionId);
 }
 
-function estimateAgentChatSessionViewBytes(events: readonly AgentChatEventEnvelope[]): number {
-  let estimatedBytes = 0;
-  for (const event of events) {
-    estimatedBytes += estimatedChatEventResidentBytes(event);
-    if (estimatedBytes > MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION) break;
-  }
-  return estimatedBytes;
+/**
+ * The list's resident size as the trim keeps it, carried across live appends.
+ * This runs on every flush of the chat on screen and of each retained chat; a
+ * walk over the whole transcript here cost 0.15 ms per flush at 19,000 events,
+ * and the trim had already computed the same number for the same list.
+ */
+function estimateAgentChatSessionViewBytes(events: AgentChatEventEnvelope[]): number {
+  return residentChatEventBytes(events);
 }
 
 /** Read without touching LRU recency — safe to call during render. */
@@ -8956,23 +8957,15 @@ export function AgentChatPane({
     });
   }, [forceDraft, initialSessionId, laneId, lockSessionId, lockedSingleSessionMode, preferDraftStart, refreshLockedSessionSummary, setSelectedSessionId]);
 
+  // The visible pane reads the model list when it shows, when the chat's
+  // provider changes, and when a turn starts and ends (`turnActive` in the
+  // deps). It used to re-read every 5 s for the whole turn; the list rarely
+  // changes mid-turn, and a model a provider adds during a long turn shows
+  // at the turn's end. A hidden pane reads nothing.
   useEffect(() => {
     if (!isTileActive) return;
     void refreshAvailableModels();
-  }, [isTileActive, refreshAvailableModels, selectedSession?.provider]);
-
-  useEffect(() => {
-    // Suspend the 5s model-list poll when this pane is mounted but hidden
-    // (e.g. a background tab/tile). Streaming event subscriptions remain
-    // so background sessions stay in sync, but polling is paused to avoid
-    // wasted IPC for panes the user can't see.
-    if (!turnActive || !selectedSession?.provider) return;
-    if (!isTileActive) return;
-    const timer = window.setInterval(() => {
-      void refreshAvailableModels();
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [refreshAvailableModels, selectedSession?.provider, turnActive, isTileActive]);
+  }, [isTileActive, refreshAvailableModels, selectedSession?.provider, turnActive]);
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,

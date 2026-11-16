@@ -88,7 +88,7 @@ import {
   type ProjectRegistrationIntent,
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
-import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import { ProjectScopeRegistry, type ProjectScope } from "./services/projects/projectScope";
 import type { AdeRuntime } from "./bootstrap";
 import type { AndroidEmulatorEvent } from "../../desktop/src/shared/types/androidEmulator";
 import type { AndroidMachineSettingsService } from "../../desktop/src/main/services/android/androidMachineSettingsService";
@@ -1064,6 +1064,59 @@ const ICON_WRITE_RESOLVE_BUDGET_MS = 8_000;
 let machineUpdateAndRestartInFlight: Promise<unknown> | null = null;
 
 /**
+ * Desktop windows connected to this brain, across every connection.
+ *
+ * The brain keeps history for the windows that read it: each project's
+ * runtime event buffer (up to 16 MB, kept so a window that reconnects can
+ * replay what it missed) and the chat service's event rings and parsed
+ * transcript windows (released after ten quiet minutes). After the last
+ * desktop window disconnects (the app quit), that history has no reader, so
+ * it goes after a short wait instead (`releaseHistoryWithNoDesktop`). Every
+ * piece rebuilds on the next read; a replay from an older cursor reports a
+ * gap, as it does after eviction. A brain no desktop ever connected to
+ * (a headless server, a cloud computer) never runs it.
+ */
+let desktopConnectionCount = 0;
+let desktopGoneReleaseTimer: ReturnType<typeof setTimeout> | null = null;
+const DESKTOP_GONE_RELEASE_DELAY_MS = 15_000;
+
+function noteDesktopConnectionOpened(): void {
+  desktopConnectionCount += 1;
+  if (desktopGoneReleaseTimer) {
+    clearTimeout(desktopGoneReleaseTimer);
+    desktopGoneReleaseTimer = null;
+  }
+}
+
+function noteDesktopConnectionClosed(scopeRegistry: Pick<ProjectScopeRegistry, "listReady"> | null): void {
+  desktopConnectionCount = Math.max(0, desktopConnectionCount - 1);
+  if (desktopConnectionCount > 0 || !scopeRegistry || desktopGoneReleaseTimer) return;
+  desktopGoneReleaseTimer = setTimeout(() => {
+    desktopGoneReleaseTimer = null;
+    if (desktopConnectionCount > 0) return;
+    releaseHistoryWithNoDesktop(scopeRegistry);
+  }, DESKTOP_GONE_RELEASE_DELAY_MS);
+  desktopGoneReleaseTimer.unref?.();
+}
+
+function releaseHistoryWithNoDesktop(scopeRegistry: Pick<ProjectScopeRegistry, "listReady">): void {
+  let scopes: ProjectScope[] = [];
+  try {
+    scopes = typeof scopeRegistry.listReady === "function" ? scopeRegistry.listReady() : [];
+  } catch {
+    return;
+  }
+  for (const scope of scopes) {
+    try {
+      scope.runtime.agentChatService?.releaseQuietChatHistory?.();
+      scope.runtime.eventBuffer.releaseRetained?.();
+    } catch {
+      // Memory only: a scope mid-teardown keeps its history until it is gone.
+    }
+  }
+}
+
+/**
  * What the shared project record asks of one icon resolve (see
  * `RemoteProjectIconRecordMode`), and where a `migrate` answer's shrunk copy
  * of this machine's own icon goes.
@@ -1178,13 +1231,20 @@ function runProjectIconWorker(
  * with it: measured, a dev brain answering a lane list every 3 s started 24
  * such processes a minute. An answer is reused while the same signature the
  * in-process resolver trusts still holds (the folders it scans, the project's
- * `.ade/local.yaml` icon setting, the icon file itself). Past five minutes an
- * answer whose signature still holds is served while one worker re-checks in
- * the background, so a list never waits on a cold worker for an icon it
+ * `.ade/local.yaml` icon setting, the icon file itself). Past its age limit
+ * an answer whose signature still holds is served while one worker re-checks
+ * in the background, so a list never waits on a cold worker for an icon it
  * already has. The stats are async: a project on a dead network mount must
  * not stop the event loop.
+ *
+ * The age limit is an hour, not five minutes. Each re-check is a new node
+ * process that loads the whole CLI bundle (about 0.5 to 1 s of CPU and a
+ * short 60 to 120 MB peak), and a held signature already says that nothing
+ * the scan reads at the top level changed. An icon write drops the answer at
+ * once (`forgetProjectIconAnswer`), so only a new icon file deep in a folder
+ * the signature does not stat waits for the re-check.
  */
-const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
+const PROJECT_ICON_ANSWER_TTL_MS = 60 * 60_000;
 /**
  * How long a worker may run. The list's caller stops waiting at its own
  * budget (750 ms) and shows no icon, as before, but the worker finishes and
@@ -1887,6 +1947,8 @@ export function createMultiProjectRpcRequestHandler(
    * into an already-drained map and never cleaned up.
    */
   let disposed = false;
+  /** This connection is a desktop window (`noteDesktopConnectionOpened`). */
+  let countedAsDesktop = false;
   const frameDemand = createConnectionFrameDemand();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {
     frameDemand.forgetProject(projectId);
@@ -3025,6 +3087,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "ade/initialize") {
       initializedParams = params;
+      if (!countedAsDesktop && !disposed && isDesktopClientName(callerClientName())) {
+        countedAsDesktop = true;
+        noteDesktopConnectionOpened();
+      }
       return {
         protocolVersion:
           typeof params.protocolVersion === "string"
@@ -4940,6 +5006,12 @@ export function createMultiProjectRpcRequestHandler(
 
   handler.dispose = () => {
     disposed = true;
+    if (countedAsDesktop) {
+      countedAsDesktop = false;
+      // Only a brain whose scopes outlive this connection has history to give back.
+      const sharedScopes = options.scopeRegistry && options.disposeScopesOnDispose !== true ? options.scopeRegistry : null;
+      noteDesktopConnectionClosed(sharedScopes);
+    }
     for (const subscription of eventSubscriptions.values()) {
       subscription.unsubscribe();
     }

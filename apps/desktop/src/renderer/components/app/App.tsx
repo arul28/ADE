@@ -55,13 +55,14 @@ import { OnboardingHintHost } from "../onboarding/hints/OnboardingHintHost";
 import { OnboardingTourHost } from "../onboarding/tour/OnboardingTourHost";
 import { AdeTipsDialogHost } from "../onboarding/tips/AdeTipsDialog";
 import { SpotlightHost } from "../onboarding/spotlight/SpotlightHost";
-import { AnnouncementsHost } from "../announcements/AnnouncementsHost";
+import { subscribeWhatsNewRequests, whatsNewRequested } from "../announcements/whatsNewEvents";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { openLaneInLanesTabPath, openLaneOnMachinePath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { whenBootPriorityOpen } from "../../webclient/adapter/infra/bootPriority";
+import { preloadRoute, registerRoutePreload, scheduleQuietRoutePreload } from "../../lib/routePreload";
 import { hydrateFastModeEnabled } from "../../lib/fastModePolicy";
 import { cn } from "../ui/cn";
 import { parkedSurfaceProps, useParkedSurfaceFocus } from "../../lib/parkedSurface";
@@ -97,6 +98,47 @@ function createPreloadableRoute<TProps extends object>(
       : React.createElement(LazyComponent as unknown as React.ComponentType<object>, routeProps);
   };
   return { Component, preload: load };
+}
+
+// "What's new" (its pages and the bundled release notes) loads after the first
+// paint settles, or at once when something asks for it (`whatsNewEvents`).
+const AnnouncementsHost = React.lazy(() =>
+  import("../announcements/AnnouncementsHost").then((m) => ({ default: m.AnnouncementsHost }))
+);
+
+function AnnouncementsHostLoader() {
+  const [load, setLoad] = React.useState(() => whatsNewRequested());
+  React.useEffect(() => {
+    if (load) return undefined;
+    const unsubscribe = subscribeWhatsNewRequests(() => setLoad(true));
+    // A request made between the first render and this subscription.
+    if (whatsNewRequested()) {
+      setLoad(true);
+      return unsubscribe;
+    }
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    let cancelScheduled: () => void;
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      const handle = idleWindow.requestIdleCallback(() => setLoad(true), { timeout: 3_000 });
+      cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
+    } else {
+      const handle = window.setTimeout(() => setLoad(true), 1_500);
+      cancelScheduled = () => window.clearTimeout(handle);
+    }
+    return () => {
+      unsubscribe();
+      cancelScheduled();
+    };
+  }, [load]);
+  if (!load) return null;
+  return (
+    <React.Suspense fallback={null}>
+      <AnnouncementsHost />
+    </React.Suspense>
+  );
 }
 
 const lanesRoute = createPreloadableRoute<{ active?: boolean }>(() =>
@@ -148,6 +190,16 @@ const ctoRoute = createPreloadableRoute<{ active?: boolean }>(() =>
 );
 const CtoPage = ctoRoute.Component;
 const preloadCtoPage = ctoRoute.preload;
+// The tab buttons load these on hover or focus (`preloadRoute`).
+registerRoutePreload("/work", preloadTerminalsPage);
+registerRoutePreload("/lanes", preloadLanesPage);
+registerRoutePreload("/files", preloadFilesTab);
+registerRoutePreload("/prs", preloadPrsPage);
+registerRoutePreload("/cto", preloadCtoPage);
+/** The tabs whose code loads after launch, when the person stops for a moment. */
+const OTHER_TAB_ROUTE_PATHS = ["/lanes", "/files", "/prs", "/cto"] as const;
+/** Once per window: the quiet-time load of `OTHER_TAB_ROUTE_PATHS`. */
+let otherTabRoutesPreload: "waiting" | "scheduled" | "done" = "waiting";
 import {
   AppStoreProvider,
   createProjectAppStore,
@@ -940,12 +992,13 @@ function ProjectTabHost() {
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
-    const preload = () => {
+    // Work is the page a project opens on, so it loads at the first idle
+    // frame. The other tabs (Lanes, Files, PRs, CTO) load when the person
+    // stops for a moment after their first input (`scheduleQuietRoutePreload`),
+    // or at once when the pointer moves onto their tab (`preloadRoute`). Their
+    // parse work then stays out of launch and the first new chat.
+    const preloadWork = () => {
       void preloadTerminalsPage().catch(() => undefined);
-      void preloadLanesPage().catch(() => undefined);
-      void preloadFilesTab().catch(() => undefined);
-      void preloadPrsPage().catch(() => undefined);
-      void preloadCtoPage().catch(() => undefined);
     };
     const idleWindow = window as Window & {
       requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
@@ -953,14 +1006,22 @@ function ProjectTabHost() {
     };
     let cancelled = false;
     let cancelScheduled: (() => void) | null = null;
+    let cancelQuietPreload: (() => void) | null = null;
     const schedule = () => {
       if (cancelled) return;
+      if (otherTabRoutesPreload === "waiting") {
+        otherTabRoutesPreload = "scheduled";
+        cancelQuietPreload = scheduleQuietRoutePreload(() => {
+          otherTabRoutesPreload = "done";
+          for (const path of OTHER_TAB_ROUTE_PATHS) preloadRoute(path);
+        });
+      }
       if (typeof idleWindow.requestIdleCallback === "function") {
-        const handle = idleWindow.requestIdleCallback(preload, { timeout: 900 });
+        const handle = idleWindow.requestIdleCallback(preloadWork, { timeout: 900 });
         cancelScheduled = () => idleWindow.cancelIdleCallback?.(handle);
         return;
       }
-      const handle = window.setTimeout(preload, 150);
+      const handle = window.setTimeout(preloadWork, 150);
       cancelScheduled = () => window.clearTimeout(handle);
     };
     // ADE Web downloads this code over the network: on a page that opens on a
@@ -970,6 +1031,11 @@ function ProjectTabHost() {
     return () => {
       cancelled = true;
       cancelScheduled?.();
+      if (cancelQuietPreload && otherTabRoutesPreload === "scheduled") {
+        // Not run yet: the next surface schedules it again.
+        cancelQuietPreload();
+        otherTabRoutesPreload = "waiting";
+      }
     };
   }, [activeSurfaceKey]);
 
@@ -1878,7 +1944,7 @@ export function App() {
           <OnboardingTourHost />
           <OnboardingHintHost />
           {/* "What's new" pages: once per computer, inside a project, after onboarding. */}
-          <AnnouncementsHost />
+          <AnnouncementsHostLoader />
           {/* ADE Tips, opened from the help menu, the home widget or the palette. */}
           <AdeTipsDialogHost />
           {/* The ring "Try it" leaves around the control it went to. */}

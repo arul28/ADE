@@ -10,7 +10,7 @@ import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { Z_LAYERS } from "../ui/zLayers";
 import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
 import { openAdeTips } from "./tips/AdeTipsDialog";
-import { openWhatsNew } from "../announcements/AnnouncementsHost";
+import { openWhatsNew } from "../announcements/whatsNewEvents";
 
 /**
  * The question-mark menu: docs, ADE Tips, the welcome tour again, and help

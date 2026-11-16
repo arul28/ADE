@@ -6,7 +6,7 @@ import React, {
   useState,
 } from "react";
 import { openAdeTips } from "../onboarding/tips/AdeTipsDialog";
-import { openWhatsNew } from "../announcements/AnnouncementsHost";
+import { openWhatsNew } from "../announcements/whatsNewEvents";
 import { showMeAroundAgain } from "../../onboarding/onboardingProgress";
 import { resetOnboardingTiers } from "../../onboarding/resetOnboardingTiers";
 import { setSuggestionsTestMode, suggestionsTestMode } from "../../onboarding/situationalSuggestions";

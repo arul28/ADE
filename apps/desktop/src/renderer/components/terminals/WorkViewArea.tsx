@@ -75,6 +75,7 @@ import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { isImeComposing } from "../../lib/imeComposition";
 import { noChatMachineError, withChatPin } from "../chat/chatMachinePin";
+import { useWorkInputFocusOnChatSwitch } from "../work/workShortcuts";
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -1486,8 +1487,13 @@ export function WorkViewArea({
   // composer glides down from the draft's position (`chatLaunchDock`), so the
   // surface underneath just swaps quickly instead of blurring the glide away.
   const composerDockTransition = workAreaMode === "single" && hasPendingComposerDock(activeSession?.id);
+  // The prompt box takes the keyboard when the view first shows a chat after
+  // launch, and after a click switches the chat (a new chat included). A grid
+  // focuses its own active tile (`shouldAutofocus`).
+  const workAreaBodyRef = useRef<HTMLDivElement>(null);
+  useWorkInputFocusOnChatSwitch(workAreaBodyRef, activeItemId ?? null, pageActive && workAreaMode !== "grid");
   const tabBody = (
-    <div className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
+    <div ref={workAreaBodyRef} className="relative min-h-0 flex-1" style={{ background: workAreaMode === "empty" ? "transparent" : "var(--chat-canvas-bg)" }}>
       <AnimatePresence initial={false} custom={composerDockTransition}>
         <WorkAreaModeLayer key={workAreaMode} dock={composerDockTransition}>
           {workAreaContent}

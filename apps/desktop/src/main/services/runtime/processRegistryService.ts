@@ -27,11 +27,13 @@ export type ProcessRegistryServiceOptions = {
   role: RuntimeProcessRole;
   projectRoot?: string | null;
   /**
-   * How often we refresh our own row's `last_seen`. Defaults to 5s. Reconcile
+   * How often we refresh our own row's `last_seen`. Defaults to 15 s. Reconcile
    * callers wait for at least one stale interval before treating a peer as
-   * dead, so heartbeat cadence sets the floor on "how fast does a crashed
-   * sibling get cleaned up." Faster = noisier writes; slower = stale rows
-   * linger longer after a crash.
+   * dead, so heartbeat cadence sets the floor on "how fast does a hung
+   * sibling get cleaned up." A crashed sibling does not wait for it: its pid
+   * is gone, which `pidLivenessCheck` and `listDeadProcessIdentities` see at
+   * once, and a clean stop deletes its row. Faster = more SQLite writes at
+   * idle; slower = a hung process's rows linger longer.
    */
   heartbeatIntervalMs?: number;
   /**
@@ -43,7 +45,11 @@ export type ProcessRegistryServiceOptions = {
   pidLivenessCheck?: (pid: number) => boolean;
 };
 
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+// Each beat is a SQLite write in the desktop main process and in the brain,
+// so it runs all day at idle. 15 s keeps the liveness window (3 beats) at 45 s,
+// below the 2-minute fresh-activity grace that the stale-session rescan waits
+// for anyway (`STALE_RUNNING_SESSION_RESCAN_DELAY_MS`).
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 export const DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS = DEFAULT_HEARTBEAT_INTERVAL_MS * 3;
 /** How long a dead owner of `detached` session rows stays in the registry (`pruneStale`). */
 const DETACHED_OWNER_KEEP_MS = 6 * 60 * 60_000;
@@ -97,7 +103,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       heartbeatFailures.clear();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // The tick runs every 5 s; a database that stays paused (its folder
+      // The tick runs every 15 s; a database that stays paused (its folder
       // moved) would log the same line forever. Log each new failure once.
       if (heartbeatFailures.repeated(message)) return;
       logger.warn("process_registry.heartbeat_failed", { pid, role, error: message });

@@ -1936,6 +1936,16 @@ async function refreshProjectBinding(): Promise<OpenProjectBinding | null> {
     .then((session: { binding?: OpenProjectBinding | null } | null) => {
       const binding = session?.binding ?? null;
       if (projectBindingVersion !== refreshVersion) return currentProjectBinding;
+      // A switch to a folder on this computer names its target here before
+      // main binds the window, and main's answer until then is the binding
+      // from before the switch (none, at launch). Adopting it would publish
+      // that old binding and take the window off the folder it is opening
+      // (the launch's saved Work view went to Home). This read still goes to
+      // the project main has open, when there is one; the switch publishes its
+      // settled binding when it ends, on success and on failure.
+      if (projectRuntimeTransitionDepth > 0 && currentProjectBinding?.kind === "local") {
+        return binding ?? currentProjectBinding;
+      }
       rememberProjectBinding(binding);
       return binding;
     })
@@ -5280,8 +5290,8 @@ const adeBridge = {
     // twice must still be two subscriptions.
     onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) =>
       runtimeStatusFanout((status) => cb(status)),
-    getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
-      ipcRenderer.invoke(IPC.appGetResourceUsage),
+    getResourceUsage: async (args?: { fresh?: boolean }): Promise<AppResourceUsageSnapshot> =>
+      ipcRenderer.invoke(IPC.appGetResourceUsage, args ?? null),
     getRuntimeHealth: async (): Promise<RuntimeHealthSnapshot> =>
       ipcRenderer.invoke(IPC.appGetRuntimeHealth),
     restartBackgroundService: async (): Promise<void> =>

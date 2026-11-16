@@ -12854,15 +12854,21 @@ export function createAgentChatService(args: {
       || (policy != null && policyRefusesMcpServer(policy, "computer_use", "codex"));
     // Strict mode turns every config.toml server off, so there is nothing of
     // the user's to add or re-point.
-    const userServers = callerStrict
-      ? null
-      : await chatUserMcp.codexThreadServers(
-        { ...chatMcpTarget(managed), ignoresUserMcp: false },
-        new Set(["computer_use", ...Object.keys(callerServers ?? {})]),
-      );
+    // The two lookups are independent (an npm registry check for the user's
+    // `npx` servers, a code-signature check of the Computer Use client), and
+    // the thread start waits for both, so they run at the same time.
+    const [userServers, computerUse] = await Promise.all([
+      callerStrict
+        ? null
+        : chatUserMcp.codexThreadServers(
+          { ...chatMcpTarget(managed), ignoresUserMcp: false },
+          new Set(["computer_use", ...Object.keys(callerServers ?? {})]),
+        ),
+      policyRefusesComputerUse ? null : resolveCodexComputerUseMcp(),
+    ]);
     const args = codexThreadConfigArgs({
       reasoningEffort,
-      computerUse: policyRefusesComputerUse ? null : await resolveCodexComputerUseMcp(),
+      computerUse,
       callerServers,
       callerStrictAgainstConfiguredServerNames: callerStrict
         ? await resolveCodexConfiguredMcpServerNames()
@@ -59419,10 +59425,14 @@ export function createAgentChatService(args: {
   const resolveCursorSdkLocalModelParams = async (
     managed: ManagedChatSession,
     modelSdkId: string,
-    options: { announce?: boolean } = {},
+    options: {
+      announce?: boolean;
+      /** A lookup the caller started earlier with the same input (`startCursorSdkLocalSelection`). */
+      selection?: ReturnType<typeof resolveCursorSdkLocalSelection>;
+    } = {},
   ): Promise<Array<{ id: string; value: string }> | undefined> => {
     const input = cursorSdkSelectionInputForSession(managed.session, modelSdkId);
-    const selection = await resolveCursorSdkLocalSelection(getCursorSdkApiKey(), input);
+    const selection = await (options.selection ?? resolveCursorSdkLocalSelection(getCursorSdkApiKey(), input));
     if (selection.status === "catalog-unavailable" && hasExplicitCursorSelection(input)) {
       logger.warn("agent_chat.cursor_model_params_unavailable", {
         sessionId: managed.session.id,
@@ -59437,6 +59447,25 @@ export function createAgentChatService(args: {
     // follow-up still tells its gap only once.
     if (!describeUnappliedCursorSelection(input, selection)) noteUnappliedCursorSelection(managed, null);
     return cursorSelectionParams(selection);
+  };
+
+  /**
+   * Start the catalog lookup of `resolveCursorSdkLocalModelParams` now, so it
+   * runs while the turn builds its prompt. Only the lookup moves: the notice
+   * about a catalog that could not load is still decided when the params are
+   * read. A failed lookup is observed here, so it never becomes an unhandled
+   * rejection; the reader still receives the failure.
+   */
+  const startCursorSdkLocalSelection = (
+    managed: ManagedChatSession,
+    modelSdkId: string,
+  ): ReturnType<typeof resolveCursorSdkLocalSelection> => {
+    const pending = resolveCursorSdkLocalSelection(
+      getCursorSdkApiKey(),
+      cursorSdkSelectionInputForSession(managed.session, modelSdkId),
+    );
+    void pending.catch(() => undefined);
+    return pending;
   };
 
   /**
@@ -61756,6 +61785,9 @@ export function createAgentChatService(args: {
     let cursorLaneGuidance: string | null = null;
     const compactOnly = args.compactOnly === true;
     try {
+      // The model params do not depend on the prompt, so their catalog lookup
+      // runs while the prompt is built below.
+      const modelSelection = startCursorSdkLocalSelection(managed, runtime.modelSdkId);
       let composed = args.promptText;
       // Consumes the pending transcript replay and the continuity context in
       // one shot; the parts are kept so a thread recycle can restage each
@@ -61810,7 +61842,10 @@ export function createAgentChatService(args: {
 
       const { promptText, images } = await buildCursorWorkerPrompt(composed, args.resolvedAttachments);
 
-      const modelParams = await resolveCursorSdkLocalModelParams(managed, runtime.modelSdkId, { announce: true });
+      const modelParams = await resolveCursorSdkLocalModelParams(managed, runtime.modelSdkId, {
+        announce: true,
+        selection: modelSelection,
+      });
       persistChatState(managed);
       logger.info("agent_chat.cursor_prompt_start", {
         sessionId: managed.session.id,
@@ -65490,6 +65525,10 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed, { turnImminent: true });
+      // The first turn waits for the skill catalog to settle (`sendCodexMessage`).
+      // Start that wait now, so it runs during the thread start or resume
+      // below instead of after it. It is a `skills/list` poll and needs no thread.
+      runtime.skillCatalogSettle ??= settleCodexSkillCatalog(managed, runtime);
       if (reasoningEffort !== undefined || sessionPresetTiers?.length) {
         managed.session.reasoningEffort = applySessionPresetReasoningEffort("codex", reasoningEffort);
       } else if (!managed.session.reasoningEffort) {
@@ -76591,13 +76630,13 @@ export function createAgentChatService(args: {
    * ring once every event in it is on disk, and parsed transcript windows no
    * read has used lately. Both rebuild from the transcript on the next read.
    */
-  const releaseIdleChatHistory = (now: number): void => {
+  const releaseIdleChatHistory = (now: number, idleMs: number = CHAT_EVENT_HISTORY_IDLE_RELEASE_MS): void => {
     for (const [sessionId, touchedAt] of eventHistoryTouchedAt) {
       if (!eventHistoryBySession.has(sessionId)) {
         eventHistoryTouchedAt.delete(sessionId);
         continue;
       }
-      if (now - touchedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
+      if (now - touchedAt < idleMs) continue;
       const managed = managedSessions.get(sessionId);
       if (managed?.session.status === "active") continue;
       // After a failed append, the ring is the only copy of those events.
@@ -76611,12 +76650,25 @@ export function createAgentChatService(args: {
     // the cache full on a machine nobody is using.
     for (const sessionId of transcriptHistoryCacheBySession.keys()) {
       const usedAt = transcriptHistoryCacheUsedAt.get(sessionId);
-      if (usedAt !== undefined && now - usedAt < CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) continue;
+      if (usedAt !== undefined && now - usedAt < idleMs) continue;
       transcriptHistoryCacheBySession.delete(sessionId);
     }
     for (const [sessionId, usedAt] of transcriptHistoryCacheUsedAt) {
-      if (now - usedAt >= CHAT_EVENT_HISTORY_IDLE_RELEASE_MS) transcriptHistoryCacheUsedAt.delete(sessionId);
+      if (now - usedAt >= idleMs) transcriptHistoryCacheUsedAt.delete(sessionId);
     }
+  };
+
+  /**
+   * The brain calls this when the last desktop window has disconnected: the
+   * event rings and parsed transcript windows it kept for that window's reads
+   * go now instead of after ten quiet minutes. The same rules hold as for the
+   * timed release: a running chat keeps its ring, and so does a chat whose
+   * transcript writes have not all reached disk. Everything rebuilds from the
+   * transcript on the next read.
+   */
+  const releaseQuietChatHistory = (): void => {
+    releaseIdleChatHistory(Date.now(), 0);
+    transcriptSubagentSnapshotCacheBySession.clear();
   };
 
   // --- Session inactivity cleanup ---
@@ -78477,7 +78529,17 @@ export function createAgentChatService(args: {
    * a re-enable cannot revive a choice nobody re-asked for.
    */
   const applyFastModePolicy = (): void => {
-    if (fastModeAllowed({ fresh: true })) return;
+    // Every account settings change from another computer calls this. With
+    // no live chat on Fast there is nothing to drop, so the settings file is
+    // not read and parsed again.
+    let anyFast = false;
+    for (const managed of managedSessions.values()) {
+      if (managed.session.fastMode === true) {
+        anyFast = true;
+        break;
+      }
+    }
+    if (!anyFast || fastModeAllowed({ fresh: true })) return;
     for (const managed of managedSessions.values()) {
       if (managed.session.fastMode !== true) continue;
       delete managed.session.fastMode;
@@ -78508,9 +78570,26 @@ export function createAgentChatService(args: {
         ensureClaudeSessionRuntime(managed);
         prewarmClaudeQuery(managed);
         return;
-      case "codex":
-        await ensureCodexSessionRuntime(managed);
+      case "codex": {
+        const runtime = await ensureCodexSessionRuntime(managed);
+        if (managed.deleted || managed.runtime !== runtime) return;
+        // The first turn waits for these, so do them while the person types.
+        // The skill catalog wait is the turn's own promise (`sendCodexMessage`
+        // reuses it). The two lookups fill the caches that the thread start
+        // reads (`codexThreadConfigArgsFor`: the Computer Use code signature
+        // and the npm registry answers); their results are dropped. None of
+        // them writes or tells the chat anything, and the create does not
+        // wait for them.
+        runtime.skillCatalogSettle ??= settleCodexSkillCatalog(managed, runtime);
+        void Promise.resolve().then(() => resolveCodexComputerUseMcp()).catch(() => null);
+        if (managed.session.strictMcpConfig !== true) {
+          void chatUserMcp.codexThreadServers(
+            { ...chatMcpTarget(managed), ignoresUserMcp: false },
+            new Set(["computer_use"]),
+          ).catch(() => null);
+        }
         return;
+      }
       case "cursor":
         await ensureCursorSdkRuntime(managed);
         return;
@@ -83082,6 +83161,7 @@ export function createAgentChatService(args: {
     },
     getLaunchDefaults,
     applyFastModePolicy,
+    releaseQuietChatHistory,
     getPermissionCeiling: resolvePermissionCeiling,
     // A caller's request, never `automatic`: only this service starts those.
     regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => {

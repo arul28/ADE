@@ -14,7 +14,7 @@ import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { updateRestartAction } from "./updateRestartAction";
 import { showToast } from "./toast/toastStore";
 import { Dialog } from "../ui/dialog";
-import { openWhatsNewAfterUpdate } from "../announcements/AnnouncementsHost";
+import { openWhatsNewAfterUpdate } from "../announcements/whatsNewEvents";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";

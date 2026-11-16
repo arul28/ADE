@@ -884,6 +884,7 @@ import {
 import type {
   AppResourceUsageAttributionSources,
   ProcessMetricRowsCollector,
+  ProcessMetricSample,
   ResourceAttributionRoot,
 } from "../pty/resourceUsageSampling";
 import {
@@ -1165,18 +1166,61 @@ import { buildPublicIssueUrl, osFamilyOf } from "../../../shared/publicIssueLink
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
-let appResourceUsageCache: {
+type AppResourceUsageMode = "fresh" | "calm-ok";
+const appResourceUsageCache = new Map<AppResourceUsageMode, {
   contexts: AppResourceUsageContext[];
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   sampledAtMs: number;
   snapshot: AppResourceUsageSnapshot;
-} | null = null;
-let appResourceUsageInFlight: {
+}>();
+const appResourceUsageInFlight = new Map<AppResourceUsageMode, {
   contexts: AppResourceUsageContext[];
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   promise: Promise<AppResourceUsageSnapshot>;
-} | null = null;
+}>();
 let appProcessMetricRowsCollector: ProcessMetricRowsCollector | null = null;
+
+/**
+ * The machine-wide `ps` behind a resource sample costs Electron main about
+ * 17 ms of CPU (a process spawn plus a parse of every process on the
+ * machine). The top bar's calm check runs every 10 s only to decide whether
+ * to show its pressure chip, so while the last sample's process trees were
+ * far below every pressure line (see `isCalmProcessSample`), a calm-ok caller
+ * reuses that `ps` for this long. Electron's own numbers and system memory
+ * are read fresh on every call; a fresh caller (Settings > Health) always
+ * gets a new `ps`.
+ */
+const CALM_PROCESS_SAMPLE_REUSE_MS = 30_000;
+let lastProcessSample: { sample: ProcessMetricSample; atMs: number; calm: boolean } | null = null;
+
+/**
+ * The process trees (the brain, terminals, agents: the part a reuse keeps)
+ * far below the top bar's first pressure level (30% CPU, 8% of RAM for the
+ * whole app). Electron's own share is read fresh on every call anyway.
+ */
+function isCalmProcessSample(snapshot: AppResourceUsageSnapshot): boolean {
+  if (snapshot.processSample?.status !== "ok") return false;
+  if ((snapshot.ptyCpuPercent ?? 0) >= 10 || (snapshot.cpuPercent ?? 0) >= 20) return false;
+  const total = snapshot.totalMemoryMB ?? 0;
+  if (total <= 0) return false;
+  return (snapshot.ptyMemoryMB ?? 0) / total < 0.03;
+}
+
+function processRowsCollectorFor(mode: AppResourceUsageMode): ProcessMetricRowsCollector {
+  const base = getAppProcessMetricRowsCollector();
+  return {
+    collect: async () => {
+      const kept = lastProcessSample;
+      if (mode === "calm-ok" && kept?.calm && Date.now() - kept.atMs < CALM_PROCESS_SAMPLE_REUSE_MS) {
+        return kept.sample;
+      }
+      const sample = await base.collect();
+      lastProcessSample = { sample, atMs: Date.now(), calm: false };
+      return sample;
+    },
+    dispose: () => base.dispose(),
+  };
+}
 
 /**
  * `runtimeActor` is stamped by the RPC server on an agent's or the CTO's call
@@ -1297,46 +1341,55 @@ function sameAppResourceUsageContexts(
 function getCachedAppResourceUsageSnapshot(
   contexts: AppResourceUsageContext[],
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null,
+  mode: AppResourceUsageMode = "calm-ok",
 ): Promise<AppResourceUsageSnapshot> {
   const now = Date.now();
+  const cached = appResourceUsageCache.get(mode);
   if (
-    appResourceUsageCache
-    && sameAppResourceUsageContexts(appResourceUsageCache.contexts, contexts)
-    && appResourceUsageCache.localRuntimeConnectionPool === localRuntimeConnectionPool
-    && now - appResourceUsageCache.sampledAtMs < APP_RESOURCE_USAGE_CACHE_MS
+    cached
+    && sameAppResourceUsageContexts(cached.contexts, contexts)
+    && cached.localRuntimeConnectionPool === localRuntimeConnectionPool
+    && now - cached.sampledAtMs < APP_RESOURCE_USAGE_CACHE_MS
   ) {
-    return Promise.resolve(appResourceUsageCache.snapshot);
+    return Promise.resolve(cached.snapshot);
   }
+  const inFlight = appResourceUsageInFlight.get(mode);
   if (
-    appResourceUsageInFlight
-    && sameAppResourceUsageContexts(appResourceUsageInFlight.contexts, contexts)
-    && appResourceUsageInFlight.localRuntimeConnectionPool === localRuntimeConnectionPool
+    inFlight
+    && sameAppResourceUsageContexts(inFlight.contexts, contexts)
+    && inFlight.localRuntimeConnectionPool === localRuntimeConnectionPool
   ) {
-    return appResourceUsageInFlight.promise;
+    return inFlight.promise;
   }
   const promise = computeAppResourceUsageSnapshot(
     {
       getElectronMetrics: () => app.getAppMetrics(),
       getSystemMemoryMB,
-      collector: getAppProcessMetricRowsCollector(),
+      collector: processRowsCollectorFor(mode),
     },
     collectAppResourceAttributionSources(contexts, localRuntimeConnectionPool),
   ).then((snapshot) => {
-    appResourceUsageCache = {
+    // Calm is judged on the snapshot the newest `ps` produced, never on one
+    // that reused it, so a reuse window cannot extend itself.
+    const kept = lastProcessSample;
+    if (kept && !kept.calm && snapshot.processSample?.sampledAt === kept.sample.sampledAt) {
+      kept.calm = isCalmProcessSample(snapshot);
+    }
+    appResourceUsageCache.set(mode, {
       contexts: [...contexts],
       localRuntimeConnectionPool,
       sampledAtMs: Date.now(),
       snapshot,
-    };
+    });
     return snapshot;
   }).finally(() => {
-    if (appResourceUsageInFlight?.promise === promise) appResourceUsageInFlight = null;
+    if (appResourceUsageInFlight.get(mode)?.promise === promise) appResourceUsageInFlight.delete(mode);
   });
-  appResourceUsageInFlight = {
+  appResourceUsageInFlight.set(mode, {
     contexts: [...contexts],
     localRuntimeConnectionPool,
     promise,
-  };
+  });
   return promise;
 }
 
@@ -4194,12 +4247,13 @@ export function registerIpc({
     },
   );
 
-  handle(IPC.appGetResourceUsage, async (): Promise<AppResourceUsageSnapshot> => {
+  handle(IPC.appGetResourceUsage, async (_event, arg?: { fresh?: boolean } | null): Promise<AppResourceUsageSnapshot> => {
     const ctx = getCtx();
     const contexts = getResourceUsageContexts?.() ?? [ctx];
     return getCachedAppResourceUsageSnapshot(
       contexts.length > 0 ? contexts : [ctx],
       localRuntimeConnectionPool,
+      arg?.fresh === true ? "fresh" : "calm-ok",
     );
   });
 

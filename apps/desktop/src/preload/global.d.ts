@@ -1308,7 +1308,8 @@ declare global {
         onRuntimeStatusChanged: (
           cb: (status: LocalRuntimeStatus) => void,
         ) => () => void;
-        getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
+        /** `fresh`: always a new process sample (Settings > Health); otherwise a calm sample may be reused for 30 s. */
+        getResourceUsage: (args?: { fresh?: boolean }) => Promise<AppResourceUsageSnapshot>;
         getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;
         /**
          * Restarts this Mac's ADE brain (com.ade.runtime) and resolves once the

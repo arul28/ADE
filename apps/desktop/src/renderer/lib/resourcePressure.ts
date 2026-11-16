@@ -2,7 +2,7 @@ import type { AppResourceRoleUsage, AppResourceUsageSnapshot } from "../../share
 
 export type ResourcePressureLevel = 0 | 1 | 2 | 3 | 4;
 
-let resourceUsageRequest: Promise<AppResourceUsageSnapshot | null> | null = null;
+const resourceUsageRequests = new Map<"fresh" | "calm-ok", Promise<AppResourceUsageSnapshot | null>>();
 let latestPressureLevel: ResourcePressureLevel = 0;
 
 /**
@@ -13,21 +13,28 @@ export function latestAppResourcePressureLevel(): ResourcePressureLevel {
   return latestPressureLevel;
 }
 
-export function getAppResourceUsageCoalesced(): Promise<AppResourceUsageSnapshot | null> {
-  if (resourceUsageRequest) return resourceUsageRequest;
+/**
+ * One request at a time per kind. `fresh` (Settings > Health, which shows the
+ * numbers) always gets a new process sample; the default (the top bar's
+ * pressure check) may get one Electron main reused while the app was calm.
+ */
+export function getAppResourceUsageCoalesced(options?: { fresh?: boolean }): Promise<AppResourceUsageSnapshot | null> {
+  const kind = options?.fresh === true ? "fresh" : "calm-ok";
+  const pending = resourceUsageRequests.get(kind);
+  if (pending) return pending;
   const getResourceUsage = window.ade?.app?.getResourceUsage;
   if (typeof getResourceUsage !== "function") return Promise.resolve(null);
 
-  const request = getResourceUsage()
+  const request = (kind === "fresh" ? getResourceUsage({ fresh: true }) : getResourceUsage())
     .then((usage) => {
       latestPressureLevel = appResourcePressureLevel(usage);
       return usage;
     })
     .catch(() => null)
     .finally(() => {
-      if (resourceUsageRequest === request) resourceUsageRequest = null;
+      if (resourceUsageRequests.get(kind) === request) resourceUsageRequests.delete(kind);
     });
-  resourceUsageRequest = request;
+  resourceUsageRequests.set(kind, request);
   return request;
 }
 

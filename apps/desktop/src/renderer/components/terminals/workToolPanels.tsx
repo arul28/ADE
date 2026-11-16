@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { Suspense, createElement, lazy, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
@@ -18,13 +18,6 @@ import type {
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
-import { ChatPrPane } from "../chat/ChatPrPane";
-import { IssuesToolPanel } from "../issues/IssuesToolPanel";
-import { SideChatToolPanel } from "../chat/SideChatToolPanel";
-import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
-import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
-import { AppleDevicePane } from "../apple/AppleDevicePane";
-import { AndroidDevicePane } from "../android/AndroidDevicePane";
 import type { AppleDriverChat } from "../apple/AppleDevicePane";
 import { RemoteOrLaneTool, RemoteWorkAndroid, RemoteWorkSimulator, useDriverChat } from "./remoteWorkToolPanels";
 import {
@@ -40,9 +33,6 @@ import {
   handoffAndroidMiniPlayer,
   retakeAndroidMiniPlayer,
 } from "../android/androidMiniPlayerStore";
-import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
-import { FilesTab } from "../files/FilesTab";
-import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
 import {
   isReadOnlyWorkTool,
@@ -64,6 +54,57 @@ import { macDesktopWebApi } from "../chat/macDesktopWebStream";
 /** App Control loads when its tool is first opened; the chat pane shares the chunk. */
 const ChatAppControlPanel = lazy(() => import("../chat/ChatAppControlPanel")
   .then((module) => ({ default: module.ChatAppControlPanel })));
+
+/**
+ * A panel whose code loads on first use. Once loaded it renders at once, so a
+ * tool that waited for it up front (`gatedWorkTool`) never suspends while it
+ * is on screen; before that it suspends like `lazy`.
+ */
+function loadOnUse<C extends ComponentType<any>>(load: () => Promise<C>): { Panel: C; preload: () => Promise<C> } {
+  let resolved: C | null = null;
+  let pending: Promise<C> | null = null;
+  const preload = (): Promise<C> => {
+    pending ??= load().then(
+      (component) => {
+        resolved = component;
+        return component;
+      },
+      (error: unknown) => {
+        // A chunk that failed to load may load on the next try.
+        pending = null;
+        throw error;
+      },
+    );
+    return pending;
+  };
+  const Lazy = lazy(() => preload().then((component) => ({ default: component })));
+  const Panel = ((props: object) => createElement((resolved ?? Lazy) as ComponentType<object>, props)) as unknown as C;
+  return { Panel, preload };
+}
+
+// Each tool's panel code loads when the tool is first opened (or hovered), not
+// with the Work page: together they are well over a megabyte of script
+// (the Apple device's 3D model, the diff viewer, the PR view).
+const terminalPanel = loadOnUse(() => import("../chat/ChatTerminalDrawer").then((m) => m.ChatTerminalDrawer));
+const browserPanel = loadOnUse(() => import("../chat/ChatBuiltInBrowserPanel").then((m) => m.ChatBuiltInBrowserPanel));
+const gitPanel = loadOnUse(() => import("../lanes/LaneGitActionsPane").then((m) => m.LaneGitActionsPane));
+const filesPanel = loadOnUse(() => import("../files/FilesTab").then((m) => m.FilesTab));
+const applePanel = loadOnUse(() => import("../apple/AppleDevicePane").then((m) => m.AppleDevicePane));
+const androidPanel = loadOnUse(() => import("../android/AndroidDevicePane").then((m) => m.AndroidDevicePane));
+const desktopPanel = loadOnUse(() => import("../chat/ChatMacDesktopPanel").then((m) => m.ChatMacDesktopPanel));
+const prPanel = loadOnUse(() => import("../chat/ChatPrPane").then((m) => m.ChatPrPane));
+const issuesPanel = loadOnUse(() => import("../issues/IssuesToolPanel").then((m) => m.IssuesToolPanel));
+const sideChatPanel = loadOnUse(() => import("../chat/SideChatToolPanel").then((m) => m.SideChatToolPanel));
+const ChatTerminalDrawer = terminalPanel.Panel;
+const ChatBuiltInBrowserPanel = browserPanel.Panel;
+const LaneGitActionsPane = gitPanel.Panel;
+const FilesTab = filesPanel.Panel;
+const AppleDevicePane = applePanel.Panel;
+const AndroidDevicePane = androidPanel.Panel;
+const ChatMacDesktopPanel = desktopPanel.Panel;
+const ChatPrPane = prPanel.Panel;
+const IssuesToolPanel = issuesPanel.Panel;
+const SideChatToolPanel = sideChatPanel.Panel;
 
 /**
  * One component per Work tool, keyed by tool id.
@@ -957,17 +998,53 @@ function WorkSideChatTool({ laneId, activeSession, panelSessionId, runtimePin }:
   );
 }
 
-export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>> = {
-  terminal: WorkTerminalTool,
-  browser: WorkBrowserTool,
-  git: WorkGitTool,
-  files: WorkFilesTool,
-  ios: WorkIosTool,
-  android: WorkAndroidTool,
-  "app-control": WorkAppControlTool,
-  "mac-desktop": WorkMacDesktopTool,
-  "windows-desktop": WorkWindowsDesktopTool,
-  pr: WorkPrTool,
-  issues: WorkIssuesTool,
-  "side-chat": WorkSideChatTool,
+/**
+ * A tool that mounts only once its panel code is in, so nothing inside it
+ * (the device hand-over effects, the on-screen marks) starts and then hides
+ * for a chunk load. Until then the pane's body stays empty, as it is between
+ * two tools.
+ */
+function gatedWorkTool(
+  Tool: ComponentType<WorkToolPanelProps>,
+  panel: { preload: () => Promise<unknown> } | null,
+): { Component: ComponentType<WorkToolPanelProps>; preload: () => Promise<unknown> } {
+  if (!panel) return { Component: Tool, preload: () => Promise.resolve() };
+  const gate = loadOnUse(() => panel.preload().then(() => Tool));
+  const Gated = gate.Panel;
+  function GatedWorkTool(props: WorkToolPanelProps) {
+    return (
+      <Suspense fallback={<div className="h-full min-h-0" aria-busy="true" />}>
+        <Gated {...props} />
+      </Suspense>
+    );
+  }
+  return { Component: GatedWorkTool, preload: gate.preload };
+}
+
+const appControlPanel = { preload: () => import("../chat/ChatAppControlPanel") };
+
+const GATED_WORK_TOOLS: Record<WorkSidebarTab, ReturnType<typeof gatedWorkTool>> = {
+  terminal: gatedWorkTool(WorkTerminalTool, terminalPanel),
+  browser: gatedWorkTool(WorkBrowserTool, browserPanel),
+  git: gatedWorkTool(WorkGitTool, gitPanel),
+  files: gatedWorkTool(WorkFilesTool, filesPanel),
+  ios: gatedWorkTool(WorkIosTool, applePanel),
+  android: gatedWorkTool(WorkAndroidTool, androidPanel),
+  // App Control keeps its own boundary (its tool body has states that show before the panel).
+  "app-control": { Component: WorkAppControlTool, preload: appControlPanel.preload },
+  "mac-desktop": gatedWorkTool(WorkMacDesktopTool, desktopPanel),
+  "windows-desktop": gatedWorkTool(WorkWindowsDesktopTool, desktopPanel),
+  pr: gatedWorkTool(WorkPrTool, prPanel),
+  issues: gatedWorkTool(WorkIssuesTool, issuesPanel),
+  "side-chat": gatedWorkTool(WorkSideChatTool, sideChatPanel),
 };
+
+export const WORK_TOOL_COMPONENTS = Object.fromEntries(
+  Object.entries(GATED_WORK_TOOLS).map(([tool, gated]) => [tool, gated.Component]),
+) as Record<WorkSidebarTab, ComponentType<WorkToolPanelProps>>;
+
+/** Starts loading a tool's panel code (a pointer over its tab or card), so its first open does not wait. */
+export function preloadWorkToolPanel(tool: string | null | undefined): void {
+  if (!tool || !Object.prototype.hasOwnProperty.call(GATED_WORK_TOOLS, tool)) return;
+  void GATED_WORK_TOOLS[tool as WorkSidebarTab].preload().catch(() => {});
+}

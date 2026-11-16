@@ -33,6 +33,13 @@ export type EventBuffer = {
   epoch(): string;
   latestCursor(): number;
   size(): number;
+  /**
+   * Drop every retained event, as if each had been evicted: a later drain
+   * from an older cursor reports a gap, the same answer eviction gives. Ids,
+   * the epoch and live listeners are kept. Optional so test doubles need not
+   * implement it.
+   */
+  releaseRetained?(): void;
 };
 
 type RetainedBufferedEvent = {
@@ -193,6 +200,10 @@ export function createEventBuffer(
     },
     size() {
       return events.length;
+    },
+    releaseRetained() {
+      while (events.length > 0) evictOldest();
+      retainedBytes = 0;
     },
   };
 }

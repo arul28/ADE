@@ -68,7 +68,6 @@ import { BrainRestartNotice } from "./BrainRestartNotice";
 import { AppFallbackBanner } from "./AppFallbackBanner";
 import { FolderSimpleDashed, ShieldWarning } from "@phosphor-icons/react";
 import { ELEVATED_DESKTOP_MESSAGE, ELEVATED_DESKTOP_TITLE } from "../../../shared/types/builtInBrowser";
-import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { usePrEventToasts } from "./toast/usePrEventToasts";
 import { useStaleCliToast } from "./toast/useStaleCliToast";
 import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveReminderBanner";
@@ -103,6 +102,24 @@ import {
 } from "../music/musicTab";
 import { setMusicTabOpener } from "../music/musicStore";
 import { isImeComposing } from "../../lib/imeComposition";
+
+// The worktree prompt's code loads the first time a folder needs it.
+const WorktreeOpenDialog = React.lazy(() =>
+  import("../projects/WorktreeOpenDialog").then((m) => ({ default: m.WorktreeOpenDialog }))
+);
+
+/** Mounts the worktree prompt once one is first asked for, then keeps it, so its close still animates. */
+function WorktreeOpenDialogHost() {
+  const asked = useAppStore((s) => s.worktreeOpenPrompt != null);
+  const [mounted, setMounted] = useState(asked);
+  if (asked && !mounted) setMounted(true);
+  if (!mounted && !asked) return null;
+  return (
+    <React.Suspense fallback={null}>
+      <WorktreeOpenDialog />
+    </React.Suspense>
+  );
+}
 
 /**
  * A shortcut that opens a machine tab (Browser, Music) from anywhere, project
@@ -667,23 +684,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }
     };
 
+    // The launch's saved Work view is on screen and its open is on its way.
+    // Until the open settles (`switchProjectToPath` hands over or goes Home on
+    // failure), a "no project" push is the window from before that open, not
+    // a move off the folder.
+    const cachedViewOpening = (): boolean => {
+      const state = useAppStore.getState();
+      return state.cachedProjectViewRoot != null
+        && state.project?.rootPath === state.cachedProjectViewRoot;
+    };
+
     const initializeProjectState = async () => {
       setProjectHydrated(false);
       try {
         const session = await window.ade.app.getWindowSession();
         if (cancelled) return;
-        // The launch restore can already show the front tab's saved Work view
-        // while its open runs. A session from before that open names no
-        // project, and applying it would replace the view with Home; the open
-        // settles the view itself.
-        const state = useAppStore.getState();
-        const showsCachedView = !session.project
-          && !session.binding
-          && state.cachedProjectViewRoot != null
-          && state.project?.rootPath === state.cachedProjectViewRoot;
+        // A session read before the launch's open names no project; applying
+        // it would replace the saved Work view with Home.
+        const showsCachedView = !session.project && !session.binding && cachedViewOpening();
         if (!showsCachedView) applyProjectState(session.project, session.binding);
       } catch {
         if (cancelled) return;
+        if (cachedViewOpening()) return;
         setProject(null);
         setProjectMissing(false);
         setShowWelcome(true);
@@ -695,6 +717,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const disposeProjectChanged = window.ade.app.onProjectChanged((nextProject) => {
       const state = useAppStore.getState();
+      if (!nextProject && cachedViewOpening()) return;
       const nextRoot = nextProject?.rootPath ?? null;
       const currentRoot = state.project?.rootPath ?? null;
       const expectedShowWelcome = !nextProject;
@@ -717,6 +740,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
     const disposeProjectBindingChanged = window.ade.app.onProjectBindingChanged((binding) => {
       const state = useAppStore.getState();
+      if (!binding && cachedViewOpening()) return;
       if (state.projectTransition) {
         // A switch to a folder on this computer publishes its local binding
         // before the project arrives. The store action that runs the switch
@@ -1238,7 +1262,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           in the BACKGROUND, so nothing mounted by a tab could be listening
           when it lands. */}
       <GlobalCaptureGestureHost />
-      <WorktreeOpenDialog />
+      <WorktreeOpenDialogHost />
     </div>
   );
 }

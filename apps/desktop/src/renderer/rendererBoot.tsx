@@ -148,20 +148,27 @@ window.addEventListener("unhandledrejection", (event) => {
 let rendererWatchdogLastTick = performance.now();
 let rendererWatchdogIntervalId: number | null = null;
 let rendererWatchdogTicks = 0;
-/** On the first watchdog tick, then every 30th (30 s while visible), main gets what this window holds. */
-const RENDERER_MEMORY_SNAPSHOT_TICKS = 30;
+/**
+ * The watchdog wakes every 5 s, not every second: a stall is measured as the
+ * tick's lateness (drift), so one longer than 1.5 s is still caught, and an
+ * idle window wakes a fifth as often.
+ */
+const RENDERER_WATCHDOG_INTERVAL_MS = 5_000;
+const RENDERER_STALL_DRIFT_MS = 1_500;
+/** On the first watchdog tick, then every 6th (30 s while visible), main gets what this window holds. */
+const RENDERER_MEMORY_SNAPSHOT_TICKS = 6;
 
 function startWatchdog() {
   if (rendererWatchdogIntervalId !== null) return;
   rendererWatchdogLastTick = performance.now();
   rendererWatchdogIntervalId = window.setInterval(() => {
     const now = performance.now();
-    const driftMs = now - rendererWatchdogLastTick - 1000;
+    const driftMs = now - rendererWatchdogLastTick - RENDERER_WATCHDOG_INTERVAL_MS;
     rendererWatchdogLastTick = now;
     rendererWatchdogTicks += 1;
     // The first tick reports too, so a window lost early still left a snapshot.
     if (rendererWatchdogTicks % RENDERER_MEMORY_SNAPSHOT_TICKS === 1) reportRendererMemorySnapshot();
-    if (driftMs < 1500) return;
+    if (driftMs < RENDERER_STALL_DRIFT_MS) return;
     logRendererDebugEvent("renderer.event_loop_stall", {
       driftMs: Math.round(driftMs),
       route: window.location.hash || window.location.pathname,
@@ -174,7 +181,7 @@ function startWatchdog() {
       visibilityState: document.visibilityState,
       memory: readRendererMemory(),
     })}`);
-  }, 1000);
+  }, RENDERER_WATCHDOG_INTERVAL_MS);
 }
 
 function stopWatchdog() {
