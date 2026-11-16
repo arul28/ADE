@@ -3272,7 +3272,7 @@ button, [role="button"] {
   height: 200px;
   border: 2px dashed rgba(249, 115, 22, 0.06);
   border-radius: 50%;
-  animation: ade-gear-spin 20s steps(400) infinite;
+  animation: ade-gear-spin 20s steps(600) infinite;
   opacity: 0.4;
 }
 
@@ -3285,7 +3285,7 @@ button, [role="button"] {
   height: 140px;
   border: 2px dashed rgba(249, 115, 22, 0.05);
   border-radius: 50%;
-  animation: ade-gear-spin-reverse 15s steps(300) infinite;
+  animation: ade-gear-spin-reverse 15s steps(450) infinite;
   opacity: 0.35;
 }
 
@@ -5091,7 +5091,7 @@ button, [role="button"] {
 
 /* Running status indicator spin */
 .ade-timeline-running-spin {
-  animation: ade-running-spin 1.2s steps(24) infinite;
+  animation: ade-running-spin 1.2s steps(36) infinite;
 }
 
 @keyframes ade-running-spin {
@@ -5567,10 +5567,10 @@ button, [role="button"] {
   to { transform: rotate(360deg); }
 }
 
-/* A spinner icon, stepped 20 times a second (the work beat) so the stepped
-   loop clock drives it; still under reduced motion. */
+/* A spinner icon, stepped 30 times a second so the stepped loop clock drives
+   it; still under reduced motion. */
 .ade-icon-spin {
-  animation: ade-icon-spin 1s steps(20) infinite;
+  animation: ade-icon-spin 1s steps(30) infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .ade-icon-spin { animation: none; }
@@ -5654,10 +5654,10 @@ button, [role="button"] {
   width: 40%;
   border-radius: 9999px;
   background: linear-gradient(90deg, transparent 0%, rgba(221, 214, 254, 0.7) 50%, transparent 100%);
-  /* steps = 1.5s x 20. A smooth sweep re-runs full-window paint at the display
+  /* steps = 1.5s x 30. A smooth sweep re-runs full-window paint at the display
      rate; quantized it is ~3x cheaper (traced: 3 sheens over 8s, 206-256ms of
      compositor draw smooth, 65-68ms stepped). The easing is traded for that. */
-  animation: ade-launch-rail-sheen 1.5s steps(30) infinite;
+  animation: ade-launch-rail-sheen 1.5s steps(45) infinite;
   will-change: transform;
   pointer-events: none;
 }
@@ -5901,8 +5901,8 @@ button, [role="button"] {
   pointer-events: none;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
   filter: blur(4px);
-  /* steps = 3.8s x 20; see the note on `ade-launch-rail-sheen`. */
-  animation: ade-workflow-card-sheen 3.8s steps(76) infinite;
+  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
+  animation: ade-workflow-card-sheen 3.8s steps(114) infinite;
 }
 
 .ade-reasoning-slider-track[data-dragging="true"] .ade-reasoning-slider-thumb {
