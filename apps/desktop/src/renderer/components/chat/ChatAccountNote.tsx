@@ -6,7 +6,8 @@ import type { AgentChatEventEnvelope, AgentChatUsageAccount } from "../../../sha
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import {
   isProviderInstanceProvider,
-  providerAccountName,
+  providerAccountCanTakeChats,
+  providerAccountDisplayName,
   type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
@@ -135,7 +136,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
   const email = clean(turn?.email) ?? clean(instance?.account?.email);
   const plan = clean(turn?.plan) ?? clean(instance?.account?.plan);
   // An account is its email; before it has one, it is not signed in.
-  const primary = email ?? (instance ? providerAccountName(instance) : null);
+  const primary = email ?? (instance ? providerAccountDisplayName(instance) : null);
   if (!primary) return null;
   return {
     family: provider,
@@ -172,8 +173,7 @@ function switchTargets(
   return instances.filter((instance) =>
     instance.provider === provider
     && instance.id !== currentId
-    && instance.signedIn
-    && !instance.sameLoginAs);
+    && providerAccountCanTakeChats(instance));
 }
 
 /** The tighter of an account's five-hour and weekly room, in percent, when known. */
@@ -362,8 +362,8 @@ export function ChatAccountNote({
           {isCurrent ? <Check size={12} weight="bold" /> : null}
         </span>
         {/* Truncated in a narrow menu: the full name on hover and focus. */}
-        <span className="min-w-0 flex-1 truncate" title={providerAccountName(instance)}>
-          {providerAccountName(instance)}
+        <span className="min-w-0 flex-1 truncate" title={providerAccountDisplayName(instance)}>
+          {providerAccountDisplayName(instance)}
         </span>
         {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}
       </>

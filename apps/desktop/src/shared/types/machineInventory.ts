@@ -9,8 +9,6 @@
  * accent — never uploaded image bytes.
  */
 
-import { isProviderInstanceProvider } from "./providerInstances";
-
 export type MachineInventoryProviderSummary = {
   provider: string;
   accounts: number;
@@ -34,14 +32,6 @@ export type MachineInventoryProviderDetail = {
   provider: string;
   accounts: MachineInventoryAccount[];
   modelCount: number;
-  /**
-   * True when `accounts` are ADE provider accounts — separate config homes a
-   * launch can pick between (Claude and Codex only). False means the rows are
-   * the provider's own sign-ins (OpenCode's Anthropic / OpenAI logins): they
-   * describe what the machine can reach, and choosing one changes nothing at
-   * launch, so no client may offer them as an account choice.
-   */
-  switchable: boolean;
 };
 
 /**
@@ -273,7 +263,6 @@ export function buildMachineInventoryDetail(args: {
         provider: instance.provider,
         accounts: [],
         modelCount: safeCount(args.modelCounts?.[instance.provider]),
-        switchable: isProviderInstanceProvider(instance.provider),
       };
       providers.set(instance.provider, group);
     }
@@ -297,7 +286,6 @@ export function buildMachineInventoryDetail(args: {
         provider,
         accounts: [],
         modelCount: safeCount(args.modelCounts?.[provider]),
-        switchable: isProviderInstanceProvider(provider),
       };
       providers.set(provider, group);
     }

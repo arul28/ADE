@@ -720,3 +720,21 @@ func chatLaunchNormalizedScope(_ value: String?) -> String? {
   let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return trimmed.isEmpty ? nil : trimmed
 }
+
+/// Desktop's `LaneGitHubIssue`, as `lanes.attachGitHubIssueToSession` reads it.
+struct GitHubIssueLinkPayload: Encodable {
+  var id: String
+  var number: Int
+  var owner: String
+  var repo: String
+  var title: String
+  var body: String?
+  var url: String
+  var state: String
+  var stateReason: String?
+  var labels: [String]
+  var assignees: [String]
+  var authorLogin: String?
+  var createdAt: String
+  var updatedAt: String
+}

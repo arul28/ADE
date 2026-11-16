@@ -254,6 +254,13 @@ export async function attachOpenCodeTerminal(args: {
   const direct = isOpenCodeExecutable(args.directCommand) ? { args: [...args.directArgs] } : null;
   const line = parseOpenCodeCommandLine(args.startupCommand);
   if (!direct && !line) return null;
+  // Refuse before acquiring a lease or creating a session: an unrecognized
+  // shell would otherwise run the untouched line against the personal store,
+  // or leave an empty ADE-owned session behind after the throw.
+  const shellCommandIndex = direct ? -1 : posixShellCommandArgIndex(args.directCommand, args.directArgs);
+  if (line && !direct && args.directCommand && shellCommandIndex < 0) {
+    throw new Error("ADE could not rewrite this OpenCode resume shell; the terminal was not started.");
+  }
   const intent = readOpenCodeLaunchIntent(args.startupCommand, args.env as Record<string, string | undefined>);
   const permissionMode = args.permissionMode ?? intent?.permissionMode ?? null;
   const agent = openCodeAgentFor(permissionMode);
@@ -343,7 +350,6 @@ export async function attachOpenCodeTerminal(args: {
     // A POSIX resume runs `bash -lc '<line>'`, so the invocation is in argv.
     // Rewriting only `startupCommand` leaves that shell line untouched and it
     // launches OpenCode without `--server`, against the user's own store.
-    const shellCommandIndex = direct ? -1 : posixShellCommandArgIndex(args.directCommand, args.directArgs);
     const directArgs = direct
       ? [...attachArgs, ...rest]
       : shellCommandIndex >= 0

@@ -131,7 +131,8 @@ export function parseAgentChatCreateFields(value: Record<string, unknown>): Omit
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
   // The provider account a launch runs on (Claude and Codex only). The id
   // travels; the machine that owns the lane resolves it against its own store.
-  if (asTrimmedString(value.instanceId)) parsed.instanceId = asTrimmedString(value.instanceId)!;
+  const instanceId = asTrimmedString(value.instanceId);
+  if (instanceId) parsed.instanceId = instanceId;
   if ("piProfileId" in value) parsed.piProfileId = value.piProfileId == null ? null : asTrimmedString(value.piProfileId) ?? null;
   if ("piProviderId" in value) parsed.piProviderId = value.piProviderId == null ? null : asTrimmedString(value.piProviderId) ?? null;
   if ("piModelId" in value) parsed.piModelId = value.piModelId == null ? null : asTrimmedString(value.piModelId) ?? null;
@@ -216,7 +217,6 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
   const create: ChatLaunchChatArgs["create"] = {
     ...parseAgentChatCreateFields(rawCreate),
     ...(asTrimmedString(rawCreate.credentialId) ? { credentialId: asTrimmedString(rawCreate.credentialId)! } : {}),
-    ...(asTrimmedString(rawCreate.instanceId) ? { instanceId: asTrimmedString(rawCreate.instanceId)! } : {}),
   };
   const runtime = rawMessage.runtime === "local" || rawMessage.runtime === "cloud" ? rawMessage.runtime : null;
   const remoteMcp = parseRemoteMcpTurnLabel(rawMessage.metadata);

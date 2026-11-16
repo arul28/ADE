@@ -43,6 +43,7 @@ import { PROVIDER_INSTANCE_ENV_KEY } from "../../../shared/types/providerInstanc
 import {
   EXTERNAL_SESSION_PROVIDER_CAPABILITIES,
   EXTERNAL_SESSION_PROVIDERS,
+  EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE,
 } from "../../../shared/types/externalSessions";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
 import { resolveTrackedCliUserMcp } from "../mcp/trackedCliUserMcp";
@@ -827,7 +828,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         // ADE's managed server. Both hold sessions the person expects to see.
         return await EXTERNAL_SESSION_DISCOVERERS[provider]({
           ...discoveryArgs,
-          ...(provider === "opencode" ? { includeAdeOwned: true } : {}),
+          ...(EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE.has(provider) ? { includeAdeOwned: true } : {}),
         });
       } catch (error) {
         args.logger.warn("external_sessions.discovery_failed", {
@@ -982,7 +983,8 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const [session] = await EXTERNAL_SESSION_DISCOVERERS[provider]({
       homeDir: args.homeDir,
       env: args.env,
-      ...(provider === "opencode" ? { cwd: destinationCwd, includeAdeOwned: true } : {}),
+      ...(provider === "opencode" ? { cwd: destinationCwd } : {}),
+      ...(EXTERNAL_SESSION_PROVIDERS_WITH_MANAGED_STORE.has(provider) ? { includeAdeOwned: true } : {}),
       projectRoot: args.projectRoot,
       sessionId,
       limit: 1,

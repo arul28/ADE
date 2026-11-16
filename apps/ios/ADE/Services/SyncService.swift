@@ -12291,7 +12291,7 @@ final class SyncService: ObservableObject {
   /// Records GitHub issues on a chat session (and its lane) through the same
   /// link the desktop composer's attach writes. The payload is the lane-link
   /// shape, not GitHub's REST shape.
-  func attachGitHubIssueToChat(chatSessionId: String, issues: [WorkGitHubIssueLinkPayload]) async throws {
+  func attachGitHubIssueToChat(chatSessionId: String, issues: [GitHubIssueLinkPayload]) async throws {
     guard !issues.isEmpty else { return }
     let action = "lanes.attachGitHubIssueToSession"
     try requireInvokableChatAction(action, sessionId: chatSessionId)
@@ -12306,7 +12306,7 @@ final class SyncService: ObservableObject {
 
   private struct AttachGitHubIssueToSessionPayload: Encodable {
     var chatSessionId: String
-    var issues: [WorkGitHubIssueLinkPayload]
+    var issues: [GitHubIssueLinkPayload]
   }
 
   // MARK: - Linear credential mutations (mobile connect / manage)

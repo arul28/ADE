@@ -2876,7 +2876,7 @@ describe("AgentChatComposer", () => {
     });
 
     openIssueContext();
-    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Linear issue/i }));
 
     await screen.findByText(/Linear token missing/i);
     fireEvent.click(screen.getByRole("button", { name: "Open Linear settings" }));
@@ -2912,7 +2912,7 @@ describe("AgentChatComposer", () => {
     });
 
     openIssueContext();
-    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Linear issue/i }));
 
     await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
     await screen.findByRole("button", { name: /ADE-123/ });
@@ -2979,7 +2979,7 @@ describe("AgentChatComposer", () => {
     });
 
     openIssueContext();
-    fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Linear issue/i }));
 
     await waitFor(() => expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0));
     expect(searchLinearIssues).toHaveBeenCalledTimes(1);

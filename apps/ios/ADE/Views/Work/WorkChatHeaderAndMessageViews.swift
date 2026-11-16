@@ -106,7 +106,6 @@ struct WorkChatHeaderMenuModel: Equatable {
   var showsProof: Bool = true
   var showsPinAction: Bool = true
   var showsSessionLink: Bool = true
-  var canAttachIssue: Bool = false
   /// False for Cursor Cloud chats — Cursor owns the agent name.
   var showsRename: Bool = true
   /// The host has `chat.restartSession`.

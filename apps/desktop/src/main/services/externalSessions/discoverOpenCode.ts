@@ -62,16 +62,25 @@ export async function discoverOpenCodeSessions(
     const requestedLimit = lookupId
       ? 1
       : Math.min(MAX_EXTERNAL_SESSION_LIMIT, args.scopeRoots?.length ? Math.max(limit, 1000) : Math.max(limit * 4, 200));
-    const rows: Array<{ row: OpenCodeStoreSessionRow; adeOwned: boolean }> = [
-      ...(userStore
-        ? listOpenCodeStoreSessions(userStore, { limit: requestedLimit, sessionId: lookupId })
-          .map((row) => ({ row, adeOwned: false }))
-        : []),
-      ...(adeStore
-        ? listOpenCodeStoreSessions(adeStore, { limit: requestedLimit, sessionId: lookupId })
-          .map((row) => ({ row, adeOwned: true }))
-        : []),
-    ];
+    const readStore = (
+      store: typeof userStore,
+      adeOwned: boolean,
+    ): Array<{ row: OpenCodeStoreSessionRow; adeOwned: boolean }> => {
+      if (!store) return [];
+      try {
+        return listOpenCodeStoreSessions(store, { limit: requestedLimit, sessionId: lookupId })
+          .map((row) => ({ row, adeOwned }));
+      } catch (error) {
+        // One malformed or mid-migration store must not take the healthy
+        // store's rows with it (the service would show a false empty list).
+        args.logger?.warn?.("external_sessions.opencode_store_query_failed", {
+          adeOwned,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }
+    };
+    const rows = [...readStore(userStore, false), ...readStore(adeStore, true)];
     // The same id can exist in both stores after an older build copied a
     // session across. The newer row is the one the person last used; on a tie
     // ADE's own store wins.

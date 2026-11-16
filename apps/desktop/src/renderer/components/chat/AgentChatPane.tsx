@@ -12689,6 +12689,7 @@ export function AgentChatPane({
       // The account the composer's ⋯ menu named. A saved preset or stored key
       // carries its own sign-in, so those win.
       ...(draftAccountId && !draftLaunchBrainRef.current.presetId && !draftLaunchBrainRef.current.credentialId
+        && !parallelChatMode
         ? { instanceId: draftAccountId }
         : {}),
       ...nativeControlPayload,
@@ -12707,7 +12708,7 @@ export function AgentChatPane({
       launchControls,
       nativeControlPayload,
     };
-  }, [codexDaybreak, currentNativeControls, draftAccountId, effectiveReasoningEffort, executionMode, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId]);
+  }, [codexDaybreak, currentNativeControls, draftAccountId, effectiveReasoningEffort, executionMode, fastModeAllowedForComposer, fastMode, fastTier, harnessPresets, modelCatalogScopeKey, modelId, parallelChatMode]);
 
   /**
    * The `agentChat.create` args for a chat on `targetLaneId`, with the id a
@@ -20387,6 +20388,7 @@ export function AgentChatPane({
             // model trigger; the model id moves to the trigger's tooltip.
             activeHarnessPresetId={activeHarnessPresetId}
             launchAccountId={draftAccountId}
+            launchAccountDisabled={Boolean(draftCredentialId)}
             onLaunchAccountChange={setDraftAccountId}
             // Custom shows in CLI mode too; the picker lists the CLIs that take
             // no endpoint (`shared/harnessPresetCliGate.ts`) as unavailable.

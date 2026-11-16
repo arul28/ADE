@@ -9,7 +9,9 @@ import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { memoWithLatestHandlers, useLatestCallback, useStateSkippingSameValue } from "../../lib/stableIdentity";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
+import { Z_LAYERS } from "../ui/zLayers";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, UserCircle, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
@@ -69,6 +71,8 @@ import { jiraIssueToLaneIssue } from "../../../shared/laneJiraIssue";
 import type { LaneJiraIssue } from "../../../shared/types/jira";
 import {
   isProviderInstanceProvider,
+  providerAccountCanTakeChats,
+  providerAccountDisplayName,
   type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
@@ -341,14 +345,9 @@ type PromptHistoryArrowKey = "ArrowUp" | "ArrowDown";
 const EMPTY_THREAD_COMMENTS: readonly ChatThreadComment[] = [];
 const ISSUE_CONTEXT_MENU_WIDTH = 180;
 const ISSUE_CONTEXT_MENU_GAP = 8;
-const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const EMPTY_PROVIDER_INSTANCES: readonly ProviderInstance[] = [];
 
-/** What an account is called everywhere: its login's email, never its id. */
-function launchAccountLabel(account: ProviderInstance): string {
-  const email = account.account?.email?.trim();
-  return email || account.label?.trim() || account.id;
-}
+
 /**
  * Shown when cloud mode is on but the draft's model is not one Cursor Cloud runs.
  * The send is blocked, never rerouted to the local runtime.
@@ -1148,6 +1147,73 @@ function handlePortalMenuKeyDown(
 }
 
 /**
+ * The composer's two anchored menus (issue context and account) share one
+ * portal, frame, dismissal and keyboard/focus behaviour. The rows own their
+ * contents; this owns the overlay mechanics.
+ */
+function ComposerAnchorMenu({
+  open,
+  anchorRef,
+  ariaLabel,
+  onClose,
+  onCloseWithFocus,
+  remeasureKey,
+  children,
+}: {
+  open: boolean;
+  anchorRef: React.RefObject<HTMLButtonElement | null>;
+  ariaLabel: string;
+  /** Dismiss without moving focus (outside click, scroll, resize). */
+  onClose: () => void;
+  /** Keyboard/row close: return focus to the trigger. */
+  onCloseWithFocus?: () => void;
+  remeasureKey?: unknown;
+  children: React.ReactNode;
+}) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  // The portal lives at the end of <body>; put the keyboard on the current
+  // choice instead of making the person Tab across the whole app to reach it.
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      const checked = menuRef.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]');
+      const first = menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)');
+      (checked ?? first)?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+  if (!open || !anchorRef.current) return null;
+  const closeFromKeyboard = onCloseWithFocus ?? onClose;
+  return (
+    <AnchoredMenu
+      open={open}
+      anchorRef={anchorRef}
+      onClose={onClose}
+      remeasureKey={remeasureKey}
+      placement="top-end"
+      offset={ISSUE_CONTEXT_MENU_GAP}
+      zIndex={Z_LAYERS.contextMenu}
+      role="menu"
+      aria-label={ariaLabel}
+      className={cn("overflow-hidden", POPOVER_SURFACE_CLASS)}
+      style={{ width: ISSUE_CONTEXT_MENU_WIDTH }}
+      onKeyDown={(event) => {
+        // A menu owns Tab. Close and return to the trigger instead of walking
+        // out of the portal at the end of <body> with the menu still open.
+        if (event.key === "Tab") {
+          event.preventDefault();
+          closeFromKeyboard();
+          return;
+        }
+        handlePortalMenuKeyDown(event, closeFromKeyboard);
+      }}
+    >
+      <div ref={menuRef} role="presentation">{children}</div>
+    </AnchoredMenu>
+  );
+}
+
+/**
  * Idle-state Send, as one split control rather than two buttons.
  *
  * Background launch used to be a second filled circle immediately right of Send
@@ -1351,6 +1417,9 @@ export type ComposerOverflowItem = {
   disabled?: boolean;
   /** Count shown beside the label, and on the inline button when collapsed. */
   badge?: number | undefined;
+  /** The row opens a portal of its own (Account, Issue context). */
+  opensMenu?: boolean;
+  expanded?: boolean;
   onSelect: () => void;
 };
 
@@ -1370,8 +1439,14 @@ export type ComposerOverflowItem = {
 function ComposerOverflowMenu({
   items,
   triggerRef,
+  submenuOpen = false,
+  onCloseSubmenus,
 }: {
   items: ComposerOverflowItem[];
+  /** A row's own portal is open, which this trigger also controls. */
+  submenuOpen?: boolean;
+  /** Close any row-opened portal when the trigger is clicked again. */
+  onCloseSubmenus?: () => void;
   /**
    * Anchor for popovers owned by a row rather than by the menu (issue context
    * opens its own portal). Those popovers position against a live element, and
@@ -1393,6 +1468,14 @@ function ComposerOverflowMenu({
     (preferred ?? (menu ? enabledMenuItems(menu)[0] : null))?.focus();
   }, [open]);
 
+  // A fresh inline ref detaches the node on every render; the anchored menu is
+  // placed in the same commit's layout phase and would see a null anchor. Keep
+  // the callback stable so the trigger is never briefly detached.
+  const setTriggerNode = useCallback((node: HTMLButtonElement | null) => {
+    caretRef.current = node;
+    if (triggerRef) triggerRef.current = node;
+  }, [caretRef, triggerRef]);
+
   if (items.length === 0) return null;
 
   // A "⋯" that opens onto a single row is a menu pretending to be a button.
@@ -1408,6 +1491,8 @@ function ComposerOverflowMenu({
           data-testid="composer-overflow-menu-button"
           aria-label={only.label}
           aria-pressed={only.active ?? false}
+          aria-haspopup={only.opensMenu ? "menu" : undefined}
+          aria-expanded={only.opensMenu ? Boolean(only.expanded) : undefined}
           disabled={only.disabled}
           onClick={only.onSelect}
           className={cn(
@@ -1439,16 +1524,20 @@ function ComposerOverflowMenu({
         }}
       >
         <button
-          ref={(node) => {
-            caretRef.current = node;
-            if (triggerRef) triggerRef.current = node;
-          }}
+          ref={setTriggerNode}
           type="button"
           data-testid="composer-overflow-menu-button"
           aria-haspopup="menu"
-          aria-expanded={open}
+          aria-expanded={open || submenuOpen}
           aria-label="More composer controls"
-          onClick={() => setOpen((current) => !current)}
+          onClick={() => {
+            if (submenuOpen) {
+              setOpen(false);
+              onCloseSubmenus?.();
+              return;
+            }
+            setOpen((current) => !current);
+          }}
           className={cn(
             "relative inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg transition-colors",
             open ? "bg-fg/[0.06] text-fg/70" : "text-muted-fg/35 hover:bg-fg/[0.05] hover:text-fg/60",
@@ -1482,6 +1571,8 @@ function ComposerOverflowMenu({
                     type="button"
                     role="menuitemcheckbox"
                     aria-checked={Boolean(item.active)}
+                    aria-haspopup={item.opensMenu ? "menu" : undefined}
+                    aria-expanded={item.opensMenu ? Boolean(item.expanded) : undefined}
                     disabled={item.disabled}
                     onClick={() => {
                       setOpen(false);
@@ -2339,6 +2430,7 @@ function AgentChatComposerImpl({
   modelEmptyLabel,
   activeHarnessPresetId = null,
   launchAccountId = null,
+  launchAccountDisabled = false,
   onLaunchAccountChange,
   availableModelIds,
   mentionModelIds,
@@ -2563,6 +2655,11 @@ function AgentChatComposerImpl({
    * default, exactly what every launch did before the choice existed.
    */
   launchAccountId?: string | null;
+  /**
+   * The launch already carries its own sign-in (a stored key, or a surface
+   * that cannot send an account). Hide the choice and clear any old pick.
+   */
+  launchAccountDisabled?: boolean;
   /** Sets that account. Absent on surfaces that never choose one (a running chat). */
   onLaunchAccountChange?: (instanceId: string | null) => void;
   availableModelIds?: string[];
@@ -3155,6 +3252,16 @@ function AgentChatComposerImpl({
   }, [sessionId]);
 
   const issueContextButtonRef = useRef<HTMLButtonElement | null>(null);
+  // One close-and-return-to-trigger path for a submenu, shared by Escape, Tab,
+  // outside clicks, and the rows that select a value.
+  const closeIssueContextMenu = useCallback(() => {
+    setIssueContextMenuOpen(false);
+    requestAnimationFrame(() => issueContextButtonRef.current?.focus());
+  }, []);
+  const closeAccountMenu = useCallback(() => {
+    setAccountMenuOpen(false);
+    requestAnimationFrame(() => issueContextButtonRef.current?.focus());
+  }, []);
   const [dragActive, setDragActive] = useState<false | "files" | "reference">(false);
   // Each keystroke without a trigger closes the menu twice (change, then
   // select). A plain `useState` rendered the composer again for that
@@ -3698,22 +3805,31 @@ function AgentChatComposerImpl({
   const [launchAccountsLoadedFor, setLaunchAccountsLoadedFor] = useState<ProviderInstanceProvider | null>(null);
   const [launchAccountsError, setLaunchAccountsError] = useState(false);
   const [launchAccountsReloadKey, setLaunchAccountsReloadKey] = useState(0);
-  const launchAccountsProviderRef = useRef<ProviderInstanceProvider | null>(null);
+  const launchAccountsScopeRef = useRef<string | null>(null);
+  const launchAccountPinRef = useRef(modelRuntimePin?.key ?? null);
   const launchAccountsPinKey = modelRuntimePin?.key ?? null;
+  const launchAccountsScopeKey = `${launchAccountsPinKey ?? "local"}|${launchAccountProvider ?? "none"}`;
+  // An account id names a login on one machine. A pin change is a different
+  // machine (or a different project's runtime), so the old pick is never valid.
+  useEffect(() => {
+    if (launchAccountPinRef.current === launchAccountsPinKey) return;
+    launchAccountPinRef.current = launchAccountsPinKey;
+    if (launchAccountId && onLaunchAccountChange) onLaunchAccountChange(null);
+  }, [launchAccountId, launchAccountsPinKey, onLaunchAccountChange]);
   // The machine that owns the model read owns the accounts: an id from this
   // computer does not resolve on another one.
   useEffect(() => {
     if (!launchAccountProvider) {
-      launchAccountsProviderRef.current = null;
+      launchAccountsScopeRef.current = null;
       setLaunchAccountRows(EMPTY_PROVIDER_INSTANCES);
       setLaunchAccountsLoadedFor(null);
       setLaunchAccountsError(false);
       return;
     }
-    // A new provider must never show the previous provider's rows while its
-    // own read is in flight.
-    if (launchAccountsProviderRef.current !== launchAccountProvider) {
-      launchAccountsProviderRef.current = launchAccountProvider;
+    // A new provider or machine must never show the previous scope's rows while
+    // its own read is in flight.
+    if (launchAccountsScopeRef.current !== launchAccountsScopeKey) {
+      launchAccountsScopeRef.current = launchAccountsScopeKey;
       setLaunchAccountRows(EMPTY_PROVIDER_INSTANCES);
       setLaunchAccountsLoadedFor(null);
     }
@@ -3739,15 +3855,20 @@ function AgentChatComposerImpl({
       },
     );
     return () => { alive = false; };
-  }, [launchAccountProvider, launchAccountsPinKey, launchAccountsReloadKey]);
+  }, [launchAccountProvider, launchAccountsPinKey, launchAccountsReloadKey, launchAccountsScopeKey]);
   const launchAccountChoices = useMemo(
-    () => launchAccountRows.filter((row) => row.signedIn && !row.loginBroken && !row.sameLoginAs),
+    () => launchAccountRows.filter(providerAccountCanTakeChats),
     [launchAccountRows],
   );
   const selectedLaunchAccount = launchAccountChoices.find((row) => row.id === launchAccountId) ?? null;
   const showLaunchAccountMenu = Boolean(
     onLaunchAccountChange
     && launchAccountProvider
+    // The pick is kept while these hide the row, so turning Parallel off or
+    // clearing a stored key brings the same account back; the launch payload
+    // already declines to send it while the key/preset owns the sign-in.
+    && !launchAccountDisabled
+    && !parallelChatMode
     && (
       launchAccountsError
       || launchAccountChoices.length > 1
@@ -3756,6 +3877,11 @@ function AgentChatComposerImpl({
       || (launchAccountChoices.length === 1 && launchAccountChoices.some((row) => !row.isDefault))
     ),
   );
+  // A hidden row must not leave a portal open behind the trigger, nor report an
+  // expanded submenu after it returns.
+  useEffect(() => {
+    if (!showLaunchAccountMenu) setAccountMenuOpen(false);
+  }, [showLaunchAccountMenu]);
   // A pick that no longer names an account here (the provider changed, a preset
   // took over, or the account was removed) goes back to "the machine picks",
   // never a stale id. Waits for this provider's read so a remount keeps a pick,
@@ -6259,45 +6385,6 @@ function AgentChatComposerImpl({
     onCodexSandboxChange,
     parallelControlSlot,
   ]);
-  useEffect(() => {
-    if (!issueContextMenuOpen) return;
-    const handleClick = (event: MouseEvent) => {
-      if (issueContextButtonRef.current?.contains(event.target as Node)) return;
-      const target = event.target as Element | null;
-      if (target?.closest?.("[data-issue-context-menu]")) return;
-      setIssueContextMenuOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIssueContextMenuOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", handleClick);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleClick);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [issueContextMenuOpen]);
-  useEffect(() => {
-    if (!accountMenuOpen) return;
-    const handleClick = (event: MouseEvent) => {
-      if (issueContextButtonRef.current?.contains(event.target as Node)) return;
-      const target = event.target as Element | null;
-      if (target?.closest?.("[data-launch-account-menu]")) return;
-      setAccountMenuOpen(false);
-    };
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAccountMenuOpen(false);
-    };
-    window.addEventListener("mousedown", handleClick);
-    window.addEventListener("keydown", handleKey);
-    return () => {
-      window.removeEventListener("mousedown", handleClick);
-      window.removeEventListener("keydown", handleKey);
-    };
-  }, [accountMenuOpen]);
-
   const codexCustomSummary = useMemo(() => {
     if (sp !== "codex" || codexPreset !== "custom") return null;
     if (ccsUse === "config-toml") {
@@ -7878,31 +7965,26 @@ function AgentChatComposerImpl({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
-    <ViewportOverlayPortal layer="contextMenu">
-      <div
-        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/10 bg-(color:--work-popover-bg) shadow-xl"
-        data-issue-context-menu="true"
-        role="menu"
-        aria-label="Attach issue context"
-        style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
-          width: ISSUE_CONTEXT_MENU_WIDTH,
-          gap: ISSUE_CONTEXT_MENU_GAP,
-          gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-          align: "end",
-        })}
-      >
-        <div className="border-b border-fg/[0.04] px-3 py-2">
+  const issueContextMenu = (
+    <ComposerAnchorMenu
+      open={issueContextMenuOpen}
+      anchorRef={issueContextButtonRef}
+      ariaLabel="Attach issue context"
+      onClose={() => setIssueContextMenuOpen(false)}
+      onCloseWithFocus={closeIssueContextMenu}
+    >
+        <div className="border-b border-fg/[0.04] px-3 py-2" role="presentation">
           <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
         </div>
-        <div className="p-1">
+        <div className="p-1" role="presentation">
           <button
             type="button"
+            role="menuitem"
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
             disabled={!canAttachIssueContext}
             onClick={() => {
               if (!canAttachIssueContext) return;
-              setIssueContextMenuOpen(false);
+              closeIssueContextMenu();
               setLinearIssuePickerOpen(true);
             }}
           >
@@ -7919,11 +8001,12 @@ function AgentChatComposerImpl({
           {githubRepo ? (
             <button
               type="button"
+              role="menuitem"
               className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
               disabled={!canAttachIssueContext}
               onClick={() => {
                 if (!canAttachIssueContext) return;
-                setIssueContextMenuOpen(false);
+                closeIssueContextMenu();
                 setGitHubIssuePickerOpen(true);
               }}
             >
@@ -7940,11 +8023,12 @@ function AgentChatComposerImpl({
           ) : null}
           <button
             type="button"
+            role="menuitem"
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
             disabled={!canAttachIssueContext}
             onClick={() => {
               if (!canAttachIssueContext) return;
-              setIssueContextMenuOpen(false);
+              closeIssueContextMenu();
               setJiraIssuePickerOpen(true);
             }}
           >
@@ -7959,49 +8043,46 @@ function AgentChatComposerImpl({
             </span>
           </button>
         </div>
-      </div>
-    </ViewportOverlayPortal>
-  ) : null;
+    </ComposerAnchorMenu>
+  );
 
   // The account menu. It sits above the same trigger the issue menu uses, and
   // only ever lists accounts this machine can actually launch on — never a
   // provider's own sign-ins dressed up as a choice.
-  const accountMenu = accountMenuOpen && showLaunchAccountMenu && issueContextButtonRef.current && onLaunchAccountChange ? (
-    <ViewportOverlayPortal layer="contextMenu">
-      <div
-        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-fg/10 bg-(color:--work-popover-bg) shadow-xl"
-        data-launch-account-menu="true"
-        role="menu"
-        aria-label="Account for the next launch"
-        style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
-          width: ISSUE_CONTEXT_MENU_WIDTH,
-          gap: ISSUE_CONTEXT_MENU_GAP,
-          gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-          align: "end",
-        })}
-      >
-        <div className="border-b border-fg/[0.04] px-3 py-2">
+  const accountMenu = showLaunchAccountMenu && onLaunchAccountChange ? (
+    <ComposerAnchorMenu
+      open={accountMenuOpen}
+      anchorRef={issueContextButtonRef}
+      ariaLabel="Account for the next launch"
+      onClose={() => setAccountMenuOpen(false)}
+      onCloseWithFocus={closeAccountMenu}
+      remeasureKey={`${launchAccountRows.length}:${launchAccountsError}`}
+    >
+        <div className="border-b border-fg/[0.04] px-3 py-2" role="presentation">
           <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Account</div>
         </div>
-        <div className="p-1">
+        <div className="p-1" role="presentation">
           <button
             type="button"
+            role="menuitemradio"
+            aria-checked={launchAccountId == null}
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
             onClick={() => {
               onLaunchAccountChange(null);
-              setAccountMenuOpen(false);
+              closeAccountMenu();
             }}
           >
             <span className="min-w-0 flex-1">
               <span className="block font-medium">Default (machine picks)</span>
             </span>
-            {launchAccountId == null ? <Check className="h-3 w-3 shrink-0" size={12} weight="bold" /> : null}
+            {launchAccountId == null ? <Check className="h-3 w-3 shrink-0" size={12} weight="bold" aria-hidden /> : null}
           </button>
           {launchAccountsError ? (
             <div className="px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-muted-fg/70">
               <span className="block">Couldn't load accounts for this machine.</span>
               <button
                 type="button"
+                role="menuitem"
                 className="mt-1 font-medium text-fg/80 underline-offset-2 hover:underline"
                 onClick={() => setLaunchAccountsReloadKey((key) => key + 1)}
               >
@@ -8013,22 +8094,22 @@ function AgentChatComposerImpl({
             <button
               key={account.id}
               type="button"
-              data-launch-account={account.id}
+              role="menuitemradio"
+              aria-checked={launchAccountId === account.id}
               className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
               onClick={() => {
                 onLaunchAccountChange(account.id);
-                setAccountMenuOpen(false);
+                closeAccountMenu();
               }}
             >
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{launchAccountLabel(account)}</span>
+                <span className="block truncate font-medium">{providerAccountDisplayName(account)}</span>
               </span>
-              {launchAccountId === account.id ? <Check className="h-3 w-3 shrink-0" size={12} weight="bold" /> : null}
+              {launchAccountId === account.id ? <Check className="h-3 w-3 shrink-0" size={12} weight="bold" aria-hidden /> : null}
             </button>
           ))}
         </div>
-      </div>
-    </ViewportOverlayPortal>
+    </ComposerAnchorMenu>
   ) : null;
 
   const selectedLinearContextIssue = contextAttachments.find(
@@ -8495,6 +8576,11 @@ function AgentChatComposerImpl({
           a control that would not have rendered does not become a row. */}
       <ComposerOverflowMenu
         triggerRef={issueContextButtonRef}
+        submenuOpen={issueContextMenuOpen || accountMenuOpen}
+        onCloseSubmenus={() => {
+          closeIssueContextMenu();
+          closeAccountMenu();
+        }}
         items={[
           ...(showLaunchAccountMenu
             ? [{
@@ -8502,10 +8588,12 @@ function AgentChatComposerImpl({
                 label: launchAccountsError
                   ? "Account: Couldn't load"
                   : selectedLaunchAccount
-                    ? `Account: ${launchAccountLabel(selectedLaunchAccount)}`
+                    ? `Account: ${providerAccountDisplayName(selectedLaunchAccount)}`
                     : "Account: Default",
                 icon: <UserCircle size={14} weight={launchAccountId ? "fill" : "regular"} />,
                 active: Boolean(launchAccountId),
+                opensMenu: true,
+                expanded: accountMenuOpen,
                 onSelect: () => {
                   if (!onLaunchAccountChange) return;
                   setAttachmentPickerOpen(false);
@@ -8522,6 +8610,8 @@ function AgentChatComposerImpl({
             // trigger's dot reports them without needing its own badge.
             active: contextAttachmentCount > 0,
             disabled: !canAttachIssueContext,
+            opensMenu: true,
+            expanded: issueContextMenuOpen,
             badge: contextAttachmentCount || undefined,
             onSelect: () => {
               if (!canAttachIssueContext) return;
@@ -8639,7 +8729,7 @@ function AgentChatComposerImpl({
         ) : null
       ) : null}
     </>
-  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  ), [accountMenuOpen, addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, closeAccountMenu, closeIssueContextMenu, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, issueContextMenuOpen, launchAccountId, launchAccountsError, onHandoffToDevinCloud, onLaunchAccountChange, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, chatRuntimePin, selectedLaunchAccount, showAppControlToggle, showIosSimulatorToggle, showLaunchAccountMenu, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
   const sendControls = useMemo(() => (turnActive ? (
 
         <>

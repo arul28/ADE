@@ -242,8 +242,8 @@ func workChatShouldStageAfterUnsupportedDispatchMode(liveRedirectOnly: Bool) -> 
 /// The CTO chat (and any other caller passing `showsLaneActions: false`) reuses
 /// this destination with a *synthetic* lane id, so resolving that lane would
 /// hand back the project's primary-lane PR and render it as this chat's badge.
-/// `showsLaneActions` only hides the header menu's PR items, so the lookup and
-/// the composer badge read this policy instead.
+/// `showsLaneActions` turns off every lane-owned surface (PR items and issue
+/// attach); the lookup and the composer badge read this policy instead.
 struct WorkChatLanePrPolicy {
   var showsLaneActions: Bool
 
@@ -1466,8 +1466,6 @@ struct WorkSessionDestinationView: View {
       showsPinAction: !personalChat
         || syncService.canInvokeChatRemoteAction("chat.setPinned", sessionId: session.id),
       showsSessionLink: !personalChat,
-      canAttachIssue: !personalChat && !isCrossProject && !isRemoteMachineChat
-        && syncService.canInvokeChatRemoteAction("lanes.attachLinearIssueToSession", sessionId: session.id),
       showsRename: !CursorCloudNaming.ownsName(
         composerChatSummary?.cursorCloudAgentId ?? session.cursorCloudAgentId
       ),
@@ -2550,6 +2548,7 @@ struct WorkSessionDestinationView: View {
       duoPaneOpen: duoPaneOpen,
       toolsRelay: toolsRelay,
       onAttachIssue: personalChat || isCrossProject || isRemoteMachineChat
+        || !showsLaneActions || sideChatParentSessionId != nil
         || !syncService.canInvokeChatRemoteAction("lanes.attachLinearIssueToSession", sessionId: session.id)
         ? nil
         : {
@@ -2558,6 +2557,7 @@ struct WorkSessionDestinationView: View {
           syncService.linearPanePresented = true
         },
       onAttachGitHubIssue: personalChat || isCrossProject || isRemoteMachineChat
+        || !showsLaneActions || sideChatParentSessionId != nil
         || !syncService.canInvokeChatRemoteAction("lanes.attachGitHubIssueToSession", sessionId: session.id)
         || !syncService.supportsGitHubIssuesPane
         ? nil

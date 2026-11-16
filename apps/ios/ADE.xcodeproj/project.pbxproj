@@ -465,6 +465,7 @@
 		E10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */; };
 		E10000000000000000C0A7C1 /* WorkComposerModelChips.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */; };
 		E10000000000000000C0A7C3 /* WorkLaunchIssues.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C3 /* WorkLaunchIssues.swift */; };
+		E10000000000000000C0A7C4 /* WorkLaunchAccountState.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000C0A7C4 /* WorkLaunchAccountState.swift */; };
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000048 /* WorkTerminalEmulatorView.swift */; };
@@ -803,6 +804,7 @@
 		D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerSuggestionStrip.swift; path = ADE/Views/Work/WorkComposerSuggestionStrip.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerModelChips.swift; path = ADE/Views/Work/WorkComposerModelChips.swift; sourceTree = "<group>"; };
 		D10000000000000000C0A7C3 /* WorkLaunchIssues.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaunchIssues.swift; path = ADE/Views/Work/WorkLaunchIssues.swift; sourceTree = "<group>"; };
+		D10000000000000000C0A7C4 /* WorkLaunchAccountState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaunchAccountState.swift; path = ADE/Views/Work/WorkLaunchAccountState.swift; sourceTree = "<group>"; };
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D10000000000000000000048 /* WorkTerminalEmulatorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTerminalEmulatorView.swift; path = ADE/Views/Work/WorkTerminalEmulatorView.swift; sourceTree = "<group>"; };
@@ -1469,6 +1471,7 @@
 				D10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift */,
 				D10000000000000000C0A7C1 /* WorkComposerModelChips.swift */,
 				D10000000000000000C0A7C3 /* WorkLaunchIssues.swift */,
+				D10000000000000000C0A7C4 /* WorkLaunchAccountState.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D10000000000000000000047 /* ADEInspectable.swift */,
@@ -2516,6 +2519,7 @@
 				E10000000000000000C0A7C2 /* WorkComposerSuggestionStrip.swift in Sources */,
 				E10000000000000000C0A7C1 /* WorkComposerModelChips.swift in Sources */,
 				E10000000000000000C0A7C3 /* WorkLaunchIssues.swift in Sources */,
+				E10000000000000000C0A7C4 /* WorkLaunchAccountState.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */,

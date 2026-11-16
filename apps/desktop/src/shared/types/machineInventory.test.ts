@@ -71,7 +71,6 @@ describe("machine inventory builders", () => {
         {
           provider: "claude",
           modelCount: 4,
-          switchable: true,
           accounts: [
             {
               instanceId: "claude-work",
@@ -86,7 +85,6 @@ describe("machine inventory builders", () => {
         {
           provider: "codex",
           modelCount: 2,
-          switchable: true,
           accounts: [
             { instanceId: "codex-default", label: "Default", plan: "Plus", isDefault: true },
           ],
@@ -108,7 +106,7 @@ describe("machine inventory builders", () => {
     expect(JSON.stringify(detail)).not.toMatch(/configHome|apiKey|secret|token/i);
   });
 
-  it("marks a provider's own CLI logins as not switchable", () => {
+  it("lists a provider's own CLI logins as inventory rows", () => {
     const detail = buildMachineInventoryDetail({
       machineKey: "machine-1",
       providerInstances: [],
@@ -124,7 +122,6 @@ describe("machine inventory builders", () => {
     expect(detail.providers).toEqual([{
       provider: "opencode",
       modelCount: 6,
-      switchable: false,
       accounts: [
         { instanceId: "opencode:anthropic", label: "Anthropic", isDefault: false },
         { instanceId: "opencode:openai", label: "OpenAI", isDefault: false },

@@ -64,10 +64,10 @@ enum WorkLaunchIssue: Identifiable, Equatable {
 
   /// The issue in the lane-link shape `lanes.attachGitHubIssueToSession` takes.
   /// `nil` for a Linear issue, which attaches through its own command.
-  var githubIssuePayload: WorkGitHubIssueLinkPayload? {
+  var githubIssuePayload: GitHubIssueLinkPayload? {
     guard let (issue, owner, repo) = githubRef else { return nil }
     let now = Date().ISO8601Format()
-    return WorkGitHubIssueLinkPayload(
+    return GitHubIssueLinkPayload(
       id: "\(owner)/\(repo)#\(issue.number)",
       number: issue.number,
       owner: owner,
@@ -86,24 +86,6 @@ enum WorkLaunchIssue: Identifiable, Equatable {
   }
 }
 
-/// Desktop's `LaneGitHubIssue`, as the attach command reads it.
-struct WorkGitHubIssueLinkPayload: Encodable {
-  var id: String
-  var number: Int
-  var owner: String
-  var repo: String
-  var title: String
-  var body: String?
-  var url: String
-  var state: String
-  var stateReason: String?
-  var labels: [String]
-  var assignees: [String]
-  var authorLogin: String?
-  var createdAt: String
-  var updatedAt: String
-}
-
 /// Text inside an issue is author-controlled, so it is wrapped the way desktop
 /// wraps it: the agent reads the block as data, never as instructions.
 func workLaunchUntrusted(_ value: String, source: String) -> String {
@@ -116,8 +98,8 @@ func workLaunchUntrusted(_ value: String, source: String) -> String {
   return "<untrusted-data source=\"\(source)\">\(escaped)</untrusted-data>"
 }
 
-/// The issue references a launch prompt carries, worded like the desktop
-/// composer's `buildChatContextAttachmentPrompt` for the same trackers.
+/// The issue references a launch prompt carries: a compact subset of the
+/// desktop composer's `buildChatContextAttachmentPrompt` for the same trackers.
 func workLaunchIssuePromptBlock(_ issues: [WorkLaunchIssue]) -> String {
   guard !issues.isEmpty else { return "" }
   let linear = issues.compactMap(\.linearIssue)
@@ -173,35 +155,33 @@ func workLaunchIssuePromptBlock(_ issues: [WorkLaunchIssue]) -> String {
   return sections.joined(separator: "\n\n")
 }
 
-/// A CLI's first input: its attachment manifest, the issue references, then
-/// what the person typed — the desktop order for the same launch.
+/// A CLI's first input: what the person typed, the issue references, then the
+/// attachment manifest. The typed text stays at the front so the host's
+/// initial-input cap can only cut generated context, never the instructions.
 func workLaunchCliInitialInput(
   text: String,
   attachments: [AgentChatFileRef],
   issues: [WorkLaunchIssue]
 ) -> String {
   [
-    workCliInitialInput(text: "", attachments: attachments),
-    workLaunchIssuePromptBlock(issues),
     text.trimmingCharacters(in: .whitespacesAndNewlines),
+    workLaunchIssuePromptBlock(issues),
+    workCliInitialInput(text: "", attachments: attachments),
   ]
   .filter { !$0.isEmpty }
   .joined(separator: "\n\n")
 }
 
-/// A chat's opener with the issue references in front of it. The session link
-/// carries each issue in full (the agent reads the same context file a CLI
-/// does), so the message itself only names them — a readable first bubble
-/// rather than the whole metadata block a CLI has no link to carry.
+/// A chat's opener: what the person typed, then the same wrapped issue block
+/// the CLI gets. The block includes the issue bodies (GitHub links are not
+/// materialized into a session the way Linear ones are) and every author
+/// field is inside `<untrusted-data>`. Keeping the typed text first also
+/// leaves a leading slash command at position 0, where the host executes it.
 func workLaunchChatOpener(_ text: String, issues: [WorkLaunchIssue]) -> String {
   guard !issues.isEmpty else { return text }
-  let lines = issues.map { issue in
-    let url = issue.url.map { " — \($0)" } ?? ""
-    return "- \(issue.providerLabel) \(issue.identifier): \(issue.title)\(url)"
-  }
-  let block = (["Issue context:"] + lines).joined(separator: "\n")
+  let block = workLaunchIssuePromptBlock(issues)
   let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-  return trimmed.isEmpty ? block : "\(block)\n\n\(trimmed)"
+  return [trimmed, block].filter { !$0.isEmpty }.joined(separator: "\n\n")
 }
 
 /// The Linear issue list in pick mode: tapping an issue adds it to the launch
