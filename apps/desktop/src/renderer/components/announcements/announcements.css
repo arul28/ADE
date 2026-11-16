@@ -15,7 +15,19 @@
    (`--wn-glow-1…4`, set from AnnouncementsHost), behind everything in the
    panel. Each page moves them (a transform transition) and each drifts on its
    own slow loop. Transform and opacity only, so it stays on the compositor,
-   and it only runs while the modal is open. */
+   and it only runs while the modal is open.
+
+   The drift moves in steps, 8 a second, all three on the same 125 ms beat
+   (the durations, delays and step counts below are all whole multiples of
+   it). A light moves under 1 px per step, which its soft edge hides. A smooth
+   loop drew a new frame on every display refresh, and the dialog's blurred
+   scrim makes each frame redraw the whole window on macOS; a stepped one
+   draws only at its steps. It stays plain CSS on the compositor
+   (`data-loop-clock="off"`): the step clock (`lib/steppedLoopClock.ts`)
+   would resume a paused loop at the current time, so the lights would jump.
+   The drift holds still, where it is, after 10 s with no input
+   (`caret-resting`) and while the window is not in front (`data-resting`,
+   set by AnnouncementsHost). */
 .ade-whats-new-glow {
   position: absolute;
   inset: 0;
@@ -37,11 +49,16 @@
   inset: 0;
   border-radius: 50%;
   opacity: 0.5;
-  animation: ade-whats-new-drift 16s ease-in-out infinite alternate;
+  /* 8 keyframe segments; steps per segment = segment length / 125 ms. */
+  animation: ade-whats-new-drift 16s steps(16) infinite alternate;
 }
 .ade-whats-new-glow > span:nth-child(1)::before { background: radial-gradient(closest-side, var(--wn-glow-3), transparent); }
-.ade-whats-new-glow > span:nth-child(2)::before { background: radial-gradient(closest-side, var(--wn-glow-2), transparent); animation-duration: 21s; animation-delay: -7s; }
-.ade-whats-new-glow > span:nth-child(3)::before { background: radial-gradient(closest-side, var(--wn-glow-4), transparent); opacity: 0.32; animation-duration: 18s; animation-delay: -12s; }
+.ade-whats-new-glow > span:nth-child(2)::before { background: radial-gradient(closest-side, var(--wn-glow-2), transparent); animation-duration: 21s; animation-timing-function: steps(21); animation-delay: -7s; }
+.ade-whats-new-glow > span:nth-child(3)::before { background: radial-gradient(closest-side, var(--wn-glow-4), transparent); opacity: 0.32; animation-duration: 18s; animation-timing-function: steps(18); animation-delay: -12s; }
+html.caret-resting .ade-whats-new-glow > span::before,
+.ade-whats-new-glow[data-resting] > span::before {
+  animation-play-state: paused;
+}
 [data-theme="light"] .ade-whats-new-glow > span::before { opacity: 0.38; }
 [data-theme="light"] .ade-whats-new-glow > span:nth-child(3)::before { opacity: 0.26; }
 
@@ -56,9 +73,17 @@
 .ade-whats-new-glow[data-page="2"] > span:nth-child(2) { transform: translate(8%, -56%); }
 .ade-whats-new-glow[data-page="2"] > span:nth-child(3) { transform: translate(-34%, 30%) scale(0.75); }
 
+/* translate(7%, -6%) scale(1.08), sampled from ease-in-out at each eighth. */
 @keyframes ade-whats-new-drift {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(7%, -6%) scale(1.08); }
+  0% { transform: translate(0, 0) scale(1); }
+  12.5% { transform: translate(0.22%, -0.19%) scale(1.0025); }
+  25% { transform: translate(0.9%, -0.77%) scale(1.0103); }
+  37.5% { transform: translate(2.05%, -1.76%) scale(1.0234); }
+  50% { transform: translate(3.5%, -3%) scale(1.04); }
+  62.5% { transform: translate(4.95%, -4.24%) scale(1.0566); }
+  75% { transform: translate(6.1%, -5.23%) scale(1.0697); }
+  87.5% { transform: translate(6.78%, -5.81%) scale(1.0775); }
+  100% { transform: translate(7%, -6%) scale(1.08); }
 }
 @media (prefers-reduced-motion: reduce) {
   .ade-whats-new-glow > span { transition: none; }

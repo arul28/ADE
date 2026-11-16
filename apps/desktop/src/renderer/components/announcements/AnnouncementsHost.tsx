@@ -27,6 +27,7 @@ import { AdeWordmark, useAdeWordmarkSrc } from "../ui/AdeWordmark";
 import type { ScreenBox } from "../ui/LiquidGlassLogoReveal";
 import { afterBootSplash, bootSplashLogoBox } from "../app/BootSplashReveal";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { useWindowInFront } from "../../hooks/useWindowInFront";
 import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
 import {
   attachWhatsNewHost,
@@ -244,6 +245,7 @@ function AnnouncementsModal({
   const brandMarkRef = useRef<HTMLSpanElement>(null);
   const version = arrival?.version ?? null;
   const wordmarkSrc = useAdeWordmarkSrc();
+  const windowInFront = useWindowInFront();
   const items = useMemo<ModalItem[]>(() => [
     ...pages.map((page) => ({ key: page.id, title: page.title, page })),
     ...(notes ? [{ key: "and-more", title: pages.length > 0 ? "And more" : "What changed", page: null }] : []),
@@ -330,7 +332,13 @@ function AnnouncementsModal({
         )}
       >
         {/* Colour from the window's background, drifting; each page moves it somewhere new. */}
-        <div className="ade-whats-new-glow" data-page={index % 3} aria-hidden>
+        <div
+          className="ade-whats-new-glow"
+          data-page={index % 3}
+          data-resting={windowInFront ? undefined : "true"}
+          data-loop-clock="off"
+          aria-hidden
+        >
           <span />
           <span />
           <span />
