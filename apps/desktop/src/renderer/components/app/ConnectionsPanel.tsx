@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
+  ArrowSquareOut,
   DesktopTower,
   DeviceMobile,
   Globe,
@@ -344,6 +345,12 @@ function useWebSessionLimitReached(): number | null {
   return reachedLimit;
 }
 
+/**
+ * The landing site. `?home` keeps it from sending a signed-in visitor straight
+ * back here (it reads the `ade_signed_in` cookie on "/").
+ */
+const ADE_WEBSITE_URL = "https://ade-app.dev/?home";
+
 function HostedConnectionsPanel({
   machineId = null,
   onClose,
@@ -379,6 +386,18 @@ function HostedConnectionsPanel({
           accountEmail={accountStatus.email ?? null}
           thisComputerCode={null}
         />
+      </div>
+      <div style={{ borderTop: `1px solid ${COLORS.border}`, padding: "8px 12px" }}>
+        <a
+          href={ADE_WEBSITE_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 transition-colors hover:bg-white/[0.06]"
+          style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, textDecoration: "none" }}
+        >
+          ADE website
+          <ArrowSquareOut size={12} weight="regular" />
+        </a>
       </div>
     </div>
   );

@@ -17,8 +17,8 @@
   --gate-glass-rim-top: color-mix(in srgb, white 42%, transparent);
   --gate-glass-rim-bottom: color-mix(in srgb, white 4%, transparent);
   --gate-glass-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.7), 0 12px 32px -18px rgba(0, 0, 0, 0.5);
-  --gate-text-2: color-mix(in srgb, var(--color-fg) 66%, transparent);
-  --gate-text-3: color-mix(in srgb, var(--color-fg) 46%, transparent);
+  --gate-text-2: color-mix(in srgb, var(--color-fg) 74%, transparent);
+  --gate-text-3: color-mix(in srgb, var(--color-fg) 56%, transparent);
   --gate-rule: color-mix(in srgb, var(--color-fg) 10%, transparent);
   --gate-chip-fill: color-mix(in srgb, var(--color-fg) 7%, transparent);
   --gate-chip-hover: color-mix(in srgb, var(--color-fg) 12%, transparent);
@@ -71,6 +71,9 @@
   flex-direction: column;
   align-items: center;
   gap: 18px;
+  /* The rise moves the card but does not fade it. An opacity animation on
+     the stack makes Chrome stop the card's backdrop blur at the stack, so the
+     picture shows through sharp and the text is hard to read. */
   animation: ade-gate-rise 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -271,41 +274,9 @@
 .ade-glass-primary:focus-visible,
 .ade-glass-secondary:focus-visible,
 .ade-glass-link:focus-visible,
-.ade-glass-help:focus-visible,
 .ade-gate-continue:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
   outline-offset: 2px;
-}
-
-.ade-glass-foot {
-  margin-top: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--gate-text-2);
-}
-
-.ade-glass-help {
-  display: inline-flex;
-  width: 20px;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 1px solid var(--gate-glass-edge);
-  border-radius: 50%;
-  background: var(--gate-chip-fill);
-  color: var(--gate-text-2);
-  cursor: pointer;
-  transition: color 140ms ease, background-color 140ms ease;
-  -webkit-app-region: no-drag;
-}
-
-.ade-glass-help:hover {
-  color: var(--color-fg);
-  background: var(--gate-chip-hover);
 }
 
 .ade-glass-notice {
@@ -403,8 +374,8 @@
 }
 
 @keyframes ade-gate-rise {
-  from { opacity: 0; transform: translateY(12px) scale(0.985); }
-  to { opacity: 1; transform: none; }
+  from { transform: translateY(12px) scale(0.985); }
+  to { transform: none; }
 }
 
 @keyframes ade-gate-pulse {
@@ -426,4 +397,216 @@ html[data-motion="reduced"] .ade-gate *::before,
 html[data-motion="reduced"] .ade-gate *::after {
   animation: none !important;
   transition: none !important;
+}
+
+/* ── ADE's own Clerk sign-in (ClerkSignInPanel) ──────────────── */
+
+.ade-clerk {
+  margin-top: 26px;
+  text-align: left;
+}
+
+.ade-clerk-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ade-clerk-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ade-clerk-provider {
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 0 16px 0 18px;
+}
+
+.ade-clerk-provider:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ade-clerk-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 6px 0 2px;
+  font-size: 12px;
+  color: var(--gate-text-3);
+}
+
+.ade-clerk-divider::before,
+.ade-clerk-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--gate-rule);
+}
+
+.ade-clerk-input {
+  width: 100%;
+  height: 46px;
+  padding: 0 15px;
+  border-radius: 13px;
+  border: 1px solid var(--gate-glass-edge);
+  background: color-mix(in srgb, var(--color-bg) 38%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  outline: none;
+  box-shadow: inset 0 1px 2px color-mix(in srgb, black 18%, transparent);
+  transition: border-color 140ms ease, background-color 140ms ease;
+  -webkit-app-region: no-drag;
+}
+
+.ade-clerk-input::placeholder {
+  color: var(--gate-text-3);
+}
+
+.ade-clerk-input:focus-visible {
+  border-color: color-mix(in srgb, var(--color-accent) 70%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 52%, transparent);
+}
+
+.ade-clerk-input:disabled {
+  opacity: 0.6;
+}
+
+/* The code is the one thing on this step: large, spaced, tabular digits. */
+.ade-clerk-code {
+  height: 58px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.42em;
+  padding-left: calc(15px + 0.42em);
+}
+
+.ade-clerk-code::placeholder {
+  color: color-mix(in srgb, var(--color-fg) 18%, transparent);
+}
+
+.ade-clerk-hint {
+  margin: 0 0 2px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--gate-text-2);
+}
+
+.ade-clerk-hint strong {
+  color: var(--color-fg);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.ade-clerk-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ade-clerk-centered {
+  align-self: center;
+}
+
+.ade-clerk-foot {
+  margin: 4px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--gate-text-3);
+}
+
+.ade-clerk-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 46px;
+  font-size: 13px;
+  color: var(--gate-text-2);
+}
+
+.ade-clerk-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--gate-glass-edge);
+  background: var(--gate-chip-fill);
+}
+
+.ade-clerk-avatar {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.ade-clerk-avatar-initial {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+  color: var(--color-fg);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ade-clerk-account-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--gate-text-2);
+}
+
+.ade-clerk-account-text strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.ade-clerk-account-text span,
+.ade-clerk-account-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ade-clerk-error {
+  margin: 12px 0 0;
+  padding: 9px 12px;
+  border-radius: 11px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-error) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-error) 32%, transparent);
+}
+
+/* Empty until Cloudflare asks for a click, so it takes no room. */
+.ade-clerk-captcha {
+  display: flex;
+  justify-content: center;
+}
+
+.ade-clerk-captcha:not(:empty) {
+  margin-top: 12px;
+}
+
+.ade-clerk-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

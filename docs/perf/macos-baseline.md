@@ -937,7 +937,7 @@ startup reads one at a time, so it varies); after is the median of three
 | Cold signed-out requests | 123 | 47 | 60 | `npm run bench:webclient` in `apps/desktop` |
 | Cold signed-out transfer (KB) | 9,703 | 1,552 | 2,000 | `npm run bench:webclient` in `apps/desktop` |
 | Cold signed-out JS (KB) | 8,455 | 736 | 950 | `npm run bench:webclient` in `apps/desktop` |
-| Cold signed-out images (KB) | 376 | 79 | 100 | `npm run bench:webclient` in `apps/desktop` |
+| Cold signed-out images (KB) | 376 | 79 | 200 | `npm run bench:webclient` in `apps/desktop` (ceiling raised 2026-11-16 for the sign-in picture, owner-approved; see "Sign-in card with a picture") |
 | Cold signed-out heap after GC (MB) | 14.9 | 2.7 | 3.5 | `npm run bench:webclient` in `apps/desktop` |
 | Cold signed-out gate visible (ms) | 305 | 149 | 190 | `npm run bench:webclient` in `apps/desktop` |
 | Cold signed-out long-task total (ms) | 53 | 0 | 10 | `npm run bench:webclient` in `apps/desktop` |
@@ -1350,6 +1350,38 @@ against new, with no difference in either set:
 Not measured: the signed-in client over ADE Relay. The bench cannot sign in,
 and a measurement in ADE's own browser would register a new device on the
 account, so it waits for a go-ahead.
+
+### Sign-in card with a picture
+
+Measured on 2026-11-16 on the same MacBook Pro, load average 11-14, with
+`npm run bench:webclient -- --skip-chat --runs 5`, interleaved. Before is
+`6aafefa5a` (main). After is the sign-in branch (the custom Clerk card and
+the Mountain vista picture for new visitors).
+
+| Metric | Before | After |
+|---|---:|---:|
+| Cold signed-out requests | 79 | 81 |
+| Cold signed-out transfer (KB) | 1,424.9 | 1,555.1 |
+| Cold signed-out JS (KB) | 1,181.5 | 1,207.0 |
+| Eager JS (KB, gzip) | 167.8 | 168.7 |
+| Cold signed-out images (KB) | 71.4 | 171.3 |
+| Cold signed-out heap after GC (MB) | 3.5 | 3.7 |
+| First contentful paint (ms) | 48 | 44 |
+| Sign-in card visible (ms) | 111.2 | 100.5 |
+| Long-task total (ms) | 0 | 0 |
+
+- The image increase is deliberate. A new visitor sees the picture behind the
+  sign-in card: a 73 KB WebP copy (1920 px) plus the 26.5 KB thumbnail that
+  gives the theme its colours. The owner approved the ceiling of 200 KB.
+- The JS increase is the sign-in card and its small Clerk client. The Clerk
+  SDK (about 570 KB) is not used.
+- The bench serves the build from localhost. Production Clerk refuses that
+  origin (CORS), so the two Clerk requests fail there and the card falls back
+  to the one button. On app.ade-app.dev the card also loads the Clerk
+  environment (about 2 KB).
+- Main was already above the requests, transfer and JS ceilings of the table
+  above before this branch (79, 1,424.9 KB and 1,181.5 KB). This branch did
+  not cause that, and it needs its own pass.
 
 ### Under load: four projects open
 

@@ -24,6 +24,12 @@ export type BundledScene = {
   height: number;
   /** Smaller copies of the same picture, smallest first. */
   copies?: readonly SceneCopy[];
+  /**
+   * A light copy for ADE Web's signed-out page (`public/scenes/signin/`), the
+   * one place a picture loads before the person chose one; it keeps that
+   * page's image budget (docs/perf/macos-baseline.md, hosted web client).
+   */
+  signIn?: SceneCopy;
 };
 
 export type SceneCopy = { src: string; width: number; height: number };
@@ -63,7 +69,7 @@ export const BUNDLED_SCENES: readonly BundledScene[] = [
   scene("rooftop-city", "Rooftop city", 5120, 1440),
   scene("tree-village", "Tree village", 5120, 1440),
   // Standard (16:10).
-  withCopies(scene("mountain-vista", "Mountain vista", 3840, 2400)),
+  { ...withCopies(scene("mountain-vista", "Mountain vista", 3840, 2400)), signIn: { src: "./scenes/signin/mountain-vista.webp", width: 1920, height: 1200 } },
   withCopies(scene("alpine-chalet", "Alpine chalet", 3840, 2400)),
   withCopies(scene("blossom-geese", "Blossom geese", 3840, 2400)),
   withCopies(scene("bay-city", "Bay city", 3840, 2400)),
