@@ -10,8 +10,8 @@ import { CloudCharts, CloudSources } from "./CloudCharts";
 
 /**
  * ADE Cloud on the home page, right under the hero. It picks a fight: three
- * benchmark-style charts against every agent app that publishes a cloud
- * price, the roster of apps with no cloud at all, then the four plans, each
+ * benchmark-style charts against the agent apps that publish a cloud price,
+ * a greyed card of the apps with no cloud at all, then the four plans, each
  * opening the web app at that plan. Competitor numbers live in
  * `lib/cloudCompetitors.ts` with their sources.
  */
@@ -20,17 +20,14 @@ export function CloudSection() {
     <section id="ade-cloud" aria-labelledby="ade-cloud-title" className="relative scroll-mt-16 overflow-hidden">
       <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 h-[520px]" style={{ background: "radial-gradient(60% 100% at 50% 0%, rgba(124,58,237,0.16), transparent 70%)" }} />
       <div className="relative mx-auto max-w-[1180px] px-5 pb-[clamp(72px,8vw,112px)] pt-[clamp(72px,8vw,120px)] sm:px-8">
-        <div className="flex flex-col gap-8 lg:flex-row lg:items-end lg:justify-between">
-          <div className="max-w-[820px]">
-            <CloudLockup className="text-[15px] text-white/80" markClassName="h-5" />
-            <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.08 }}>
-              Cloud computers for your agents.{" "}
-              <span className="text-white/45">
-                {formatCount(FREE_PLAN.hours)} hours free every month, then hours from 1¢.
-              </span>
-            </h2>
-          </div>
-          <div className="flex shrink-0 gap-3">
+        <div>
+          <CloudLockup className="text-[15px] text-white/80" markClassName="h-5" />
+          <h2 id="ade-cloud-title" className="mt-5 font-display text-white" style={{ fontSize: "clamp(30px, 3.4vw, 46px)", lineHeight: 1.1 }}>
+            Cloud computers for your agents.
+            <br className="hidden md:block" />{" "}
+            <span className="text-white/45">{formatCount(FREE_PLAN.hours)} free hours a month, then from 1¢ an hour.</span>
+          </h2>
+          <div className="mt-7 flex flex-wrap gap-3">
             <PlanButton cta={MARKETING_CTA_LABELS.GET_STARTED_FREE} position={MARKETING_CTA_POSITIONS.HOME_CLOUD} tone="lamp">
               Start free
             </PlanButton>

@@ -1,32 +1,27 @@
 import { useState, type ReactNode } from "react";
-import { ADE_MACHINE, CHECKED_ON, CLOUD_ROSTER, NO_PUBLISHED_PRICE, RIVALS, adeMonthlyUsd, type CloudStatus } from "../../lib/cloudCompetitors";
+import { ADE_MACHINE, CHECKED_ON, NO_CLOUD, NO_PUBLISHED_PRICE, RIVALS, adeMonthlyUsd } from "../../lib/cloudCompetitors";
 import { FREE_PLAN, PRICING_PLANS, formatCount, formatUsd, planCostsFor } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 
 /*
- * ADE Cloud against every other agent app's cloud, drawn the way benchmark
- * pages draw a speed test: one metric per chart, the metric and its direction
- * under the title, real logos, the value in tabular figures, and ADE as the
- * only coloured bar. The monthly bill leads, larger, because it is the one
- * like-for-like number: what a month of hours costs, with each vendor's
- * required plan. Every row says which machine and which plan its price is
- * for, and each vendor's name links to the page the number came from.
- * Numbers come from `lib/cloudCompetitors.ts`.
+ * ADE Cloud against the other agent apps that sell a cloud computer, drawn
+ * the way benchmark pages draw a speed test: one metric per chart, best
+ * first, one row per vendor on one line (logo, name and machine, a thick bar,
+ * the value at the bar's end), and ADE as the only gold bar. The apps with no
+ * cloud at all sit in one small greyed card instead of a chart. Numbers come
+ * from `lib/cloudCompetitors.ts`.
  */
 
 const ADE_LOGO = "/images/home/ade-icon.png";
-const ACCENT = "bg-[#ffc861]";
-const MUTED = "bg-white/[0.24]";
 const panel = "rounded-[20px] border border-white/[0.08] bg-[#0f0e16]";
-const link = "underline decoration-white/0 underline-offset-[3px] transition-colors hover:decoration-white/40";
 
 export function CloudCharts() {
   return (
     <div className="mt-12 grid gap-3 lg:grid-cols-3">
       <BillChart className="lg:col-span-2" />
       <FreeHoursChart />
-      <PerHourChart />
-      <Roster className="lg:col-span-2" />
+      <PerHourChart className="lg:col-span-2" />
+      <NoCloudCard />
     </div>
   );
 }
@@ -35,13 +30,13 @@ export function CloudCharts() {
 export function CloudSources() {
   return (
     <p className="mt-6 max-w-[82ch] text-[13px] leading-relaxed text-white/45">
-      Prices from each vendor's own pricing page on {CHECKED_ON}, for the computer only; model use is extra everywhere, except
-      that Capy's credits also pay for tokens. Values marked ≈ are our arithmetic from that page. {NO_PUBLISHED_PRICE.join(", ")}{" "}
-      bundle their cloud with model use and publish no computer price. The app list is{" "}
+      Prices from each vendor's own pricing page on {CHECKED_ON}, for the computer only; model use is extra, except that Capy's
+      credits also pay for tokens. Values marked ≈ are our arithmetic from that page. {NO_PUBLISHED_PRICE.join(", ")} have a cloud
+      but no computer price to compare. Apps from{" "}
       <a href="https://ademark.dev" target="_blank" rel="noreferrer" className="underline decoration-white/25 underline-offset-2 hover:text-white/75">
         ademark.dev
       </a>
-      's.
+      .
     </p>
   );
 }
@@ -56,41 +51,74 @@ function Chart({ title, metric, children, control, className }: { title: string;
         </figcaption>
         {control}
       </div>
-      <div className="mt-6 flex flex-1 flex-col justify-between gap-4">{children}</div>
+      <div className="mt-6 flex flex-1 flex-col justify-center gap-2.5">{children}</div>
     </figure>
   );
 }
 
-function Mark({ src, name, size = 26 }: { src?: string; name: string; size?: number }) {
+function Mark({ src, name, size = 28, className }: { src: string; name: string; size?: number; className?: string }) {
   return (
-    <span className="grid shrink-0 place-items-center overflow-hidden rounded-[7px] bg-white/[0.06]" style={{ width: size, height: size }}>
-      {src ? <img src={src} alt="" aria-hidden className="h-full w-full object-contain" /> : <span className="text-[11px] font-semibold text-white/70">{name[0]}</span>}
+    <span className={cn("grid shrink-0 place-items-center overflow-hidden rounded-[8px] bg-white/[0.06]", className)} style={{ width: size, height: size }} title={name}>
+      <img src={src} alt="" aria-hidden className="h-full w-full object-contain" />
     </span>
   );
 }
 
-type Bar = { id: string; name: string; sub: string; logo?: string; source?: string; value: number | null; label: string; ade: boolean };
+type Bar = { id: string; name: string; sub: string; logo: string; source?: string; value: number | null; label: string; ade: boolean };
 
-function BarRow({ bar, max, big }: { bar: Bar; max: number; big?: boolean }) {
+/** Best first: ascending for prices, descending for free hours; rows with no published value go last. */
+function sortBars(bars: Bar[], higherIsBetter = false): Bar[] {
+  return [...bars].sort((a, b) => {
+    if (a.value == null) return 1;
+    if (b.value == null) return -1;
+    return higherIsBetter ? b.value - a.value || Number(b.ade) - Number(a.ade) : a.value - b.value || Number(b.ade) - Number(a.ade);
+  });
+}
+
+/** One vendor on one line. The bar stops at 82% of the track so the value always fits after it. */
+function BarRow({ bar, max, compact }: { bar: Bar; max: number; compact?: boolean }) {
+  const width = bar.value == null ? 0 : Math.max(bar.ade ? 6 : 1.2, (bar.value / max) * 82);
+  if (compact) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2.5">
+          <Mark src={bar.logo} name={bar.name} size={22} />
+          <span className={cn("min-w-0 flex-1 truncate text-[14px]", bar.ade ? "font-semibold text-white" : "text-white/85")}>{bar.name}</span>
+          <span className={cn("font-mono text-[14px] tabular-nums", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/75")}>{bar.label}</span>
+        </div>
+        <div className="h-2.5 overflow-hidden rounded-full bg-white/[0.05]">
+          <div
+            className={cn("h-full rounded-full transition-[width] duration-500 ease-out", bar.ade ? "bg-[#ffc861]" : "bg-white/[0.24]")}
+            style={{ width: `${bar.value ? Math.max(2, (bar.value / max) * 100) : 0}%` }}
+          />
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className="grid grid-cols-[26px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2">
+    <div className="grid grid-cols-[28px_minmax(0,210px)_1fr] items-center gap-3">
       <Mark src={bar.logo} name={bar.name} />
-      <p className="min-w-0 text-[14px] leading-tight">
+      <div className="min-w-0">
         {bar.source ? (
-          <a href={bar.source} target="_blank" rel="noreferrer" className={cn(link, "text-white/90")}>
+          <a href={bar.source} target="_blank" rel="noreferrer" className="block truncate text-[14px] font-medium text-white/90 hover:text-white">
             {bar.name}
           </a>
         ) : (
-          <span className="font-semibold text-white">{bar.name}</span>
+          <span className="block truncate text-[14px] font-semibold text-white">{bar.name}</span>
         )}
-        {bar.sub ? <span className="mt-0.5 block text-[12.5px] text-white/45">{bar.sub}</span> : null}
-      </p>
-      <span className={cn("text-right font-mono tabular-nums", big ? "text-[15px]" : "text-[14px]", bar.ade ? "text-[#ffc861]" : "text-white/85")}>{bar.label}</span>
-      <div className={cn("col-span-3 overflow-hidden rounded-full bg-white/[0.06]", big ? "h-[8px]" : "h-[6px]")}>
+        <span className="block truncate text-[12.5px] text-white/45">{bar.sub}</span>
+      </div>
+      <div className="relative flex h-9 items-center rounded-[8px] bg-white/[0.035]">
         <div
-          className={cn("h-full rounded-full transition-[width] duration-500 ease-out", bar.ade ? ACCENT : MUTED)}
-          style={{ width: bar.value == null ? 0 : `${Math.max(1.5, (bar.value / max) * 100)}%` }}
+          className={cn("absolute inset-y-1 left-1 rounded-[6px] transition-[width] duration-500 ease-out", bar.ade ? "bg-[#ffc861]" : "bg-white/[0.2]")}
+          style={{ width: `calc(${width}% - 4px)` }}
         />
+        <span
+          className={cn("absolute whitespace-nowrap pl-3 font-mono text-[14px] tabular-nums transition-[left] duration-500 ease-out", bar.ade ? "font-semibold text-[#ffc861]" : "text-white/80")}
+          style={{ left: `${width}%` }}
+        >
+          {bar.label}
+        </span>
       </div>
     </div>
   );
@@ -99,42 +127,34 @@ function BarRow({ bar, max, big }: { bar: Bar; max: number; big?: boolean }) {
 const WORKLOADS = [100, 300, 1000];
 const money = (usd: number) => (usd === 0 ? "$0" : formatUsd(Math.round(usd * 100) / 100));
 
-/** 1. A month's bill for the hours picked, with the plan each vendor makes you buy. The lead chart. */
+/** 1. A month's bill for the hours picked, on each vendor's cheapest plan that runs them. */
 function BillChart({ className }: { className?: string }) {
   const [hours, setHours] = useState(300);
   const adeBill = adeMonthlyUsd(hours);
   const adePlan = planCostsFor(hours)[0]?.plan;
-  const bars: Bar[] = [
-    {
-      id: "ade",
-      name: "ADE Cloud",
-      sub: `${ADE_MACHINE} · ${adePlan ? `${adePlan.name} plan` : ""}`,
-      logo: ADE_LOGO,
-      value: adeBill,
-      label: money(adeBill),
-      ade: true,
-    },
+  const bars = sortBars([
+    { id: "ade", name: "ADE Cloud", sub: `${ADE_MACHINE} · ${adePlan?.name ?? ""} plan`, logo: ADE_LOGO, value: adeBill, label: money(adeBill), ade: true },
     ...RIVALS.filter((rival) => rival.monthlyUsd).map((rival): Bar => {
       const value = rival.monthlyUsd!(hours);
       return {
         id: rival.id,
         name: rival.name,
         sub: `${rival.machine} · ${rival.plan}`,
-        logo: rival.logo,
+        logo: rival.logo!,
         source: rival.source,
         value,
-        label: value == null ? "n/a" : `${rival.estimate ? "≈" : ""}${money(value)}`,
+        label: value == null ? "not published" : `${rival.estimate ? "≈" : ""}${money(value)}`,
         ade: false,
       };
     }),
-  ].sort((a, b) => (a.ade ? -1 : b.ade ? 1 : (a.value ?? Infinity) - (b.value ?? Infinity)));
+  ]);
   const max = Math.max(...bars.map((bar) => bar.value ?? 0), 1);
 
   return (
     <Chart
       className={className}
-      title="Your monthly bill"
-      metric={`${formatCount(hours)} hours in a month, on the cheapest plan that runs them. Lower is better. n/a: not published for these hours.`}
+      title="Monthly bill"
+      metric={`${formatCount(hours)} hours in a month, on the cheapest plan that runs them. Lower is better.`}
       control={
         <div role="radiogroup" aria-label="Hours a month" className="inline-flex rounded-full border border-white/10 p-0.5">
           {WORKLOADS.map((value) => (
@@ -155,140 +175,85 @@ function BillChart({ className }: { className?: string }) {
         </div>
       }
     >
-      <p className="font-display text-[clamp(30px,3vw,44px)] leading-none text-white">
-        {money(adeBill)}
-        <span className="ml-3 font-sans text-[15px] font-normal tracking-normal text-white/55">
-          on ADE for the whole month, plan included.
-        </span>
-      </p>
       {bars.map((bar) => (
-        <BarRow key={bar.id} bar={bar} max={max} big />
+        <BarRow key={bar.id} bar={bar} max={max} />
       ))}
     </Chart>
   );
 }
 
-/** 2. Cloud hours a month that cost nothing. */
+/** 2. Cloud hours a month that cost nothing, most first. */
 function FreeHoursChart() {
-  const bars: Bar[] = [
-    { id: "ade", name: "ADE Cloud", sub: "no card", logo: ADE_LOGO, value: FREE_PLAN.hours, label: `${FREE_PLAN.hours} h`, ade: true },
-    ...RIVALS.filter((rival) => rival.freeHours !== null)
-      .sort((a, b) => (b.freeHours ?? 0) - (a.freeHours ?? 0))
-      .map((rival): Bar => ({
+  const bars = sortBars(
+    [
+      { id: "ade", name: "ADE Cloud", sub: "No card", logo: ADE_LOGO, value: FREE_PLAN.hours, label: `${FREE_PLAN.hours} h`, ade: true },
+      ...RIVALS.filter((rival) => rival.freeHours !== null).map((rival): Bar => ({
         id: rival.id,
         name: rival.name,
-        sub: rival.freeHours ? "its own estimate" : "",
-        logo: rival.logo,
+        sub: rival.freeHours ? "Its own estimate" : "None",
+        logo: rival.logo!,
         source: rival.source,
         value: rival.freeHours ?? 0,
         label: `${rival.estimate && rival.freeHours ? "≈" : ""}${rival.freeHours ?? 0} h`,
         ade: false,
       })),
-  ];
+    ],
+    true,
+  );
   return (
-    <Chart title="Free hours" metric="Cloud hours every month that cost nothing. Higher is better.">
-      <p className="font-display text-[clamp(30px,3vw,44px)] leading-none text-white">
-        {FREE_PLAN.hours}
-        <span className="ml-3 font-sans text-[15px] font-normal tracking-normal text-white/55">hours on ADE, every month</span>
-      </p>
+    <Chart title="Free hours" metric="Every month. Higher is better.">
       {bars.map((bar) => (
-        <BarRow key={bar.id} bar={bar} max={FREE_PLAN.hours} big />
+        <BarRow key={bar.id} bar={bar} max={FREE_PLAN.hours} compact />
       ))}
     </Chart>
   );
 }
 
-/** 3. What one cloud hour costs: plan averages, then metered and overage rates, each group sorted. */
-function PerHourChart() {
+/** 3. What one cloud hour costs, cheapest first; each row says what kind of rate it is. */
+function PerHourChart({ className }: { className?: string }) {
   const cents = (value: number) => `${value < 10 ? value.toFixed(1) : Math.round(value)}¢`;
-  const rivalBar = (rival: (typeof RIVALS)[number]): Bar => ({
-    id: rival.id,
-    name: rival.name,
-    sub: rival.machine,
-    logo: rival.logo,
-    source: rival.source,
-    value: rival.perHourCents!,
-    label: `${rival.estimate ? "≈" : ""}${cents(rival.perHourCents!)}`,
-    ade: false,
-  });
-  const averages: Bar[] = [
+  const bars = sortBars([
     ...PRICING_PLANS.filter((plan) => plan.priceUsd > 0).map((plan): Bar => {
       const value = (plan.priceUsd * 100) / plan.hours;
-      return { id: `ade-${plan.id}`, name: `ADE ${plan.name}`, sub: ADE_MACHINE, logo: ADE_LOGO, value, label: cents(value), ade: true };
+      return { id: `ade-${plan.id}`, name: `ADE ${plan.name}`, sub: `$${plan.priceUsd} plan average · ${ADE_MACHINE}`, logo: ADE_LOGO, value, label: cents(value), ade: true };
     }),
-    ...RIVALS.filter((rival) => rival.perHourCents != null && rival.rateKind === "plan average").map(rivalBar),
-  ].sort((a, b) => (a.value ?? 0) - (b.value ?? 0));
-  const metered = RIVALS.filter((rival) => rival.perHourCents != null && rival.rateKind !== "plan average")
-    .map(rivalBar)
-    .sort((a, b) => (a.value ?? 0) - (b.value ?? 0));
-  const max = Math.max(...[...averages, ...metered].map((bar) => bar.value ?? 0));
-  const Group = ({ title, bars }: { title: string; bars: Bar[] }) => (
-    <div className="flex flex-col gap-3.5">
-      <p className="text-[12.5px] text-white/45">{title}</p>
+    ...RIVALS.filter((rival) => rival.perHourCents != null).map((rival): Bar => ({
+      id: rival.id,
+      name: rival.name,
+      sub: `${rival.rateKind[0]!.toUpperCase()}${rival.rateKind.slice(1)} · ${rival.machine}`,
+      logo: rival.logo!,
+      source: rival.source,
+      value: rival.perHourCents!,
+      label: `${rival.estimate ? "≈" : ""}${cents(rival.perHourCents!)}`,
+      ade: false,
+    })),
+  ]);
+  const max = Math.max(...bars.map((bar) => bar.value ?? 0));
+  return (
+    <Chart className={className} title="Price per hour" metric="One hour of the plan's computer. Lower is better.">
       {bars.map((bar) => (
         <BarRow key={bar.id} bar={bar} max={max} />
       ))}
-    </div>
-  );
-  return (
-    <Chart title="Price per hour" metric="One hour of each plan's computer. Lower is better.">
-      <Group title="Plan price divided by its included hours" bars={averages} />
-      <Group title="Metered, or past a plan's hours" bars={metered} />
     </Chart>
   );
 }
 
-const STATUS: Record<CloudStatus, { label: string; dot: string }> = {
-  cloud: { label: "Cloud", dot: "bg-emerald-400" },
-  unpriced: { label: "No public price", dot: "bg-white/45" },
-  closing: { label: "Shutting down", dot: "bg-rose-400" },
-  none: { label: "No cloud", dot: "bg-white/20" },
-};
-
-/** Every app ademark.dev measures, and whether it hosts a computer for your agents. */
-function Roster({ className }: { className?: string }) {
-  const [filter, setFilter] = useState<"all" | "none">("all");
-  const without = CLOUD_ROSTER.filter((app) => app.cloud === "none").length;
-  const apps = filter === "all" ? CLOUD_ROSTER : CLOUD_ROSTER.filter((app) => app.cloud === "none");
+/** 4. The agent apps with no cloud at all, greyed out. */
+function NoCloudCard() {
   return (
-    <Chart
-      className={className}
-      title="Who gives your agents a computer"
-      metric={`${without} of the ${CLOUD_ROSTER.length} agent apps ademark.dev measures have no cloud at all.`}
-      control={
-        <div role="radiogroup" aria-label="Show" className="inline-flex rounded-full border border-white/10 p-0.5 text-[13px]">
-          {([
-            ["all", `All ${CLOUD_ROSTER.length}`],
-            ["none", `No cloud ${without}`],
-          ] as const).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={filter === id}
-              onClick={() => setFilter(id)}
-              className={cn("focus-ring rounded-full px-3.5 py-1.5 transition-colors", filter === id ? "bg-white text-[#0b0a14]" : "text-white/60 hover:text-white")}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      }
-    >
-      <ul className="grid flex-1 auto-rows-fr grid-cols-2 gap-2 sm:grid-cols-4">
-        {apps.map((app) => (
-          <li key={app.name} title={`${app.name}: ${app.detail}`} className="flex items-center gap-2.5 rounded-[12px] border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
+    <figure className={cn(panel, "flex flex-col p-5 sm:p-7")}>
+      <figcaption>
+        <h3 className="text-[16px] font-semibold text-white">No cloud at all</h3>
+        <p className="mt-1 text-[14px] text-white/55">These agent apps run only on your own machines.</p>
+      </figcaption>
+      <ul className="mt-6 grid grid-cols-2 gap-x-4 gap-y-4">
+        {NO_CLOUD.map((app) => (
+          <li key={app.name} className="flex min-w-0 items-center gap-2.5 opacity-55 grayscale">
             <Mark src={app.logo} name={app.name} size={26} />
-            <span className="min-w-0">
-              <span className="block text-[13.5px] leading-tight text-white/90">{app.name.replace(".", ".​")}</span>
-              <span className="mt-0.5 flex items-center gap-1.5 text-[12px] text-white/50">
-                <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", STATUS[app.cloud].dot)} />
-                <span className="truncate">{STATUS[app.cloud].label}</span>
-              </span>
-            </span>
+            <span className="min-w-0 text-[13.5px] leading-tight text-white/75">{app.name.replace(".", ".​")}</span>
           </li>
         ))}
       </ul>
-    </Chart>
+    </figure>
   );
 }
