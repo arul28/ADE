@@ -1490,6 +1490,55 @@ function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
   return progress.overallStatus !== "running";
 }
 
+/** What the host that runs a lane delete adds to it. */
+export type LaneDeleteRuntimeOptions = {
+  teardownEnv?: () => Promise<void>;
+  /** Runs once the lane is deleted, also when the caller stopped waiting (`background`). */
+  onDeleted?: () => void;
+};
+
+/** When a remote branch delete that failed after the local delete tries again. */
+const REMOTE_BRANCH_DELETE_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
+
+/**
+ * Tries a deleted lane's remote branch delete again later, a few times. The
+ * lane is already gone here, so a GitHub outage leaves only a warning.
+ */
+function retryRemoteBranchDeleteInBackground(args: {
+  laneId: string;
+  branch: string;
+  attempt: () => Promise<{ detail: string }>;
+  logger: Logger;
+  retryIndex?: number;
+}): void {
+  const retryIndex = args.retryIndex ?? 0;
+  const delayMs = REMOTE_BRANCH_DELETE_RETRY_DELAYS_MS[retryIndex];
+  if (delayMs == null) {
+    args.logger.warn("lane.delete.remote_branch_retry_gave_up", { laneId: args.laneId, branch: args.branch });
+    return;
+  }
+  const timer = setTimeout(() => {
+    void args.attempt().then(
+      (result) => {
+        args.logger.info("lane.delete.remote_branch_retry_done", { laneId: args.laneId, branch: args.branch, detail: result.detail });
+      },
+      (error: unknown) => {
+        args.logger.warn("lane.delete.remote_branch_retry_failed", {
+          laneId: args.laneId,
+          branch: args.branch,
+          retry: retryIndex + 1,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        // A refusal (the remote moved on, or is gone) is final.
+        if (!(error instanceof AdeExpectedError) && !/stale info|rejected/i.test(error instanceof Error ? error.message : "")) {
+          retryRemoteBranchDeleteInBackground({ ...args, retryIndex: retryIndex + 1 });
+        }
+      },
+    );
+  }, delayMs);
+  timer.unref?.();
+}
+
 /**
  * Caller-side knobs for `laneService.create` that are not part of the public
  * lane-create contract (RPC and IPC callers never pass them). The brain's
@@ -4579,6 +4628,8 @@ export function createLaneService({
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
+  /** The delete running for each lane, so a second call for it waits for that one. */
+  const deleteInFlightByLaneId = new Map<string, Promise<DeleteLaneResult>>();
   /**
    * External folders left behind after a successful lane delete, keyed by the
    * removed lane id. `dev` and `ino` are the directory itself at delete time,
@@ -5673,6 +5724,793 @@ export function createLaneService({
     invalidateLaneListCache,
     broadcastLifecycleEvent,
   });
+
+  /**
+   * The lane delete itself. `onAccepted` runs once its checks passed and it
+   * starts to stop and remove things: a `background` caller answers there.
+   */
+  const runLaneDelete = async (
+    args: DeleteLaneArgs,
+    runtimeOpts: LaneDeleteRuntimeOptions | undefined,
+    onAccepted: () => void,
+  ): Promise<DeleteLaneResult> => {
+    const {
+      laneId,
+      deleteBranch = true,
+      deleteRemoteBranch = false,
+      requireRemoteBranchDelete = false,
+      remoteName = "origin",
+      force = false
+    } = args;
+    const row = getLaneRow(laneId);
+    if (!row) throw new Error(`Lane not found: ${laneId}`);
+    if (laneReclaimInFlight.has(laneId)) {
+      throw new Error("Archive & Reclaim is already running for this lane.");
+    }
+    if (deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
+      throw new Error(`Lane delete is already running: ${laneId}`);
+    }
+    if (row.lane_type === "primary") {
+      throw new Error("Primary lane cannot be deleted");
+    }
+    const deleteOperation = (() => {
+      try {
+        return operationService?.start({
+          laneId: null,
+          kind: "lane_delete",
+          metadata: {
+            laneId,
+            laneName: row.name,
+            laneType: row.lane_type,
+            branchRef: row.branch_ref,
+            deleteBranch,
+            deleteRemoteBranch,
+            force,
+          },
+        }) ?? null;
+      } catch (error) {
+        logger.warn("lane.delete.operation_start_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      }
+    })();
+    const finishDeleteOperation = (
+      status: "succeeded" | "failed",
+      metadataPatch: Record<string, unknown>,
+    ): void => {
+      if (!deleteOperation?.operationId) return;
+      try {
+        operationService?.finish({
+          operationId: deleteOperation.operationId,
+          status,
+          metadataPatch,
+        });
+      } catch (error) {
+        logger.warn("lane.delete.operation_finish_failed", { laneId, status, error: error instanceof Error ? error.message : String(error) });
+      }
+    };
+    const worktreeMetadataPath = row.worktree_path
+      ? path.join(projectRoot, ".git", "worktrees", path.basename(row.worktree_path))
+      : "";
+    const worktreeRegistered = Boolean(worktreeMetadataPath) && fs.existsSync(worktreeMetadataPath);
+    // Every lane owns a real worktree now, wherever it lives — deleting one
+    // removes the checkout. Legacy `attached` rows are no exception; the
+    // safety rails below are what keep an arbitrary path safe to remove, not
+    // the lane type.
+    const hasWorktree =
+      Boolean(row.worktree_path) &&
+      (fs.existsSync(row.worktree_path) || worktreeRegistered);
+    const stepNames: LaneDeleteStepName[] = [];
+    if (hasWorktree) stepNames.push("git_status");
+    stepNames.push("stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
+    if (hasWorktree) stepNames.push("git_worktree_remove");
+    if (deleteBranch && row.branch_ref) stepNames.push("git_branch_delete");
+    // The remote branch is a network call. Unless the caller requires it, it
+    // runs after the local delete, and a failure there retries in the
+    // background instead of holding the lane in the list.
+    const remoteBranchStep = deleteRemoteBranch && Boolean(row.branch_ref);
+    const remoteBranchAfterLocal = !requireRemoteBranchDelete;
+    if (remoteBranchStep && !remoteBranchAfterLocal) stepNames.push("git_remote_branch_delete");
+    stepNames.push("pack_dir_remove", "database_cleanup");
+    if (remoteBranchStep && remoteBranchAfterLocal) stepNames.push("git_remote_branch_delete");
+
+    const progress: LaneDeleteProgress = {
+      laneId,
+      steps: stepNames.map((name): LaneDeleteStep => ({ name, status: "pending" })),
+      startedAt: new Date().toISOString(),
+      overallStatus: "running",
+      cancellable: false
+    };
+    const findStep = (name: LaneDeleteStepName): LaneDeleteStep | undefined =>
+      progress.steps.find((s) => s.name === name);
+
+    const nonFatalFailures: Array<{ step: LaneDeleteStepName; message: string }> = [];
+    const recordNonFatalFailure = (step: LaneDeleteStepName, message: string): void => {
+      nonFatalFailures.push({ step, message });
+      logger.warn("lane.delete.non_fatal_step_failed", { laneId, step, error: message });
+    };
+
+    const runStep = async (
+      name: LaneDeleteStepName,
+      work: () => Promise<{ detail?: string } | void>,
+      options?: { fatal?: boolean },
+    ): Promise<void> => {
+      const step = findStep(name);
+      if (!step) return;
+      const fatal = options?.fatal !== false;
+      step.status = "running";
+      step.startedAt = new Date().toISOString();
+      broadcastDeleteEvent(progress);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const t0 = Date.now();
+      try {
+        const result = await work();
+        step.detail = result?.detail;
+        step.status = "completed";
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        step.status = fatal ? "failed" : "warning";
+        step.errorMessage = errorMessage;
+        step.completedAt = new Date().toISOString();
+        step.durationMs = Date.now() - t0;
+        if (!fatal) {
+          recordNonFatalFailure(name, errorMessage);
+        }
+        broadcastDeleteEvent(progress);
+        if (fatal) throw error;
+        return;
+      }
+      step.completedAt = new Date().toISOString();
+      step.durationMs = Date.now() - t0;
+      if (step.durationMs >= 500) {
+        logger.info("lane.delete.step", { laneId, step: name, durationMs: step.durationMs });
+      }
+      broadcastDeleteEvent(progress);
+    };
+
+    const finalize = (status: LaneDeleteProgress["overallStatus"]): void => {
+      if (status === "failed" || status === "cancelled") {
+        for (const step of progress.steps) {
+          if (step.status === "pending") step.status = "skipped";
+        }
+      }
+      progress.overallStatus = status;
+      progress.completedAt = new Date().toISOString();
+      progress.cancellable = false;
+      broadcastDeleteEvent(progress);
+    };
+
+    let storageLock: ReturnType<typeof acquireStorageLifecycleLock>;
+    try {
+      storageLock = acquireStorageLifecycleLock({
+        laneId,
+        worktreePath: row.worktree_path,
+        ownerLabel: `Delete: ${row.name}`,
+      });
+    } catch (error) {
+      finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+    broadcastDeleteEvent(progress);
+    // `cancelDelete` stops the worktree removal through this. Nothing else
+    // in the delete listens: once the folder is gone, the rest must finish.
+    const deleteGitWrite = beginLaneGitWrite(null, undefined, `delete:${laneId}`);
+    const throwIfDeleteStopped = (): void => {
+      if (deleteGitWrite.signal.aborted) throw new AdeExpectedError(LANE_DELETE_CANCEL_MESSAGE, "user");
+    };
+    // Open only while the queue wait or a `worktree remove` listens for
+    // the stop. The UI reads the broadcast copy, so publish each change.
+    const setDeleteStoppable = (stoppable: boolean): void => {
+      deleteGitWrite.setStoppable(stoppable);
+      if (progress.cancellable === stoppable) return;
+      progress.cancellable = stoppable;
+      broadcastDeleteEvent(progress);
+    };
+
+    try {
+      if (deleteBranch && row.branch_ref) {
+        branchesBeingDeleted.set(laneId, branchNameForDelete(row.branch_ref, remoteName.trim() || "origin"));
+      }
+      const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
+      if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
+        throw new Error("ADE will not delete generated lane data through a symbolic link.");
+      }
+      if (hasWorktree) {
+        await runStep("git_status", async () => {
+          if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
+            return { detail: fs.existsSync(row.worktree_path) ? "stale worktree directory" : "missing worktree directory" };
+          }
+          const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
+          // Force keeps a copy of the lane, but a copy cannot hold another
+          // repository. Refused here, before anything is stopped, and
+          // without offering a force that would refuse too.
+          const otherRepoWork = unsavedWork ? await describeWorkInOtherRepos(row.worktree_path) : null;
+          if (otherRepoWork) throw new AdeExpectedError(`${otherRepoWork} ${NESTED_REPO_WORK_NOT_KEPT}`, "user");
+          if (unsavedWork && !force) {
+            logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork });
+            // An answer for the user, not a defect: keep it out of Sentry issues.
+            throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
+          }
+          return { detail: unsavedWork ? "dirty (force enabled)" : "clean" };
+        });
+      }
+
+      // The checks passed: from here the delete stops and removes things, and
+      // it finishes here even when the caller that started it is gone.
+      onAccepted();
+
+      await runStep("stop_chats", async () => {
+        const svc = teardownDeps?.agentChatService;
+        if (!svc) return { detail: "no service" };
+        // Before the session rows go: what the lane's chats added on other
+        // machines is removed there, save a copy holding work nobody
+        // pushed (kept, as for an archive). Sent, never awaited.
+        try {
+          svc.releaseRemoteWorkForLane?.(laneId, "deleted");
+        } catch (error) {
+          logger.warn("lane.delete.remote_work_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+        }
+        const before = svc.countActiveForLane(laneId);
+        if (before === 0) return { detail: "none active" };
+        const disposed = await svc.disposeForLane(laneId);
+        return { detail: `closed ${disposed} ${disposed === 1 ? "chat" : "chats"}` };
+      }, { fatal: false });
+
+      await runStep("stop_ptys", async () => {
+        const svc = teardownDeps?.ptyService;
+        if (!svc) return { detail: "no service" };
+        const before = svc.countActiveForLane(laneId);
+        if (before === 0) return { detail: "none active" };
+        const disposed = svc.disposeForLane(laneId);
+        return { detail: `closed ${disposed} ${disposed === 1 ? "session" : "sessions"}` };
+      });
+
+      await runStep("stop_watchers", async () => {
+        const svc = teardownDeps?.fileWatcherService;
+        if (!svc) return { detail: "no service" };
+        const before = svc.countActiveForWorkspace(laneId);
+        const stopped = svc.stopAllForWorkspace(laneId);
+        if (before === 0 && stopped === 0) return { detail: "none active" };
+        return { detail: `stopped ${stopped} ${stopped === 1 ? "watcher" : "watchers"}` };
+      });
+
+      await runStep("destroy_mac_desktop", async () => {
+        const svc = teardownDeps?.macDesktopService;
+        if (!svc) return { detail: "no service" };
+        const result = await svc.destroyForLane(laneId);
+        return { detail: result.destroyed ? "display destroyed" : "no display" };
+      }, { fatal: false });
+
+      // Not a named step: the delete dialog's step list is a shared contract
+      // (desktop and phone), and releasing App Control has nothing for the
+      // user to watch. Best-effort, before the worktree goes away under the
+      // app it launched.
+      try {
+        await teardownDeps?.appControlService?.stopForLane(laneId);
+      } catch (error) {
+        logger.warn("lane.delete.stop_app_control_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // The same for the lane's Apple device session, so its stream and
+      // recording end before the device is deleted under them.
+      try {
+        await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
+      } catch (error) {
+        logger.warn("lane.delete.stop_apple_device_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // And the lane's Android emulator, so the AVD is not running when the
+      // release below deletes it.
+      try {
+        await teardownDeps?.androidEmulatorService?.stopForLane(laneId);
+      } catch (error) {
+        logger.warn("lane.delete.stop_android_device_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      await runStep("cleanup_env", async () => {
+        if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
+        try {
+          await runtimeOpts.teardownEnv();
+          return { detail: "env cleaned" };
+        } catch (err) {
+          logger.warn("lane.delete.cleanup_env_failed", { laneId, error: err instanceof Error ? err.message : String(err) });
+          return { detail: `warning: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      });
+
+      // Brief grace period so kernel-level handle releases settle on macOS before
+      // git tries to unlink the worktree directory.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+
+      // Before anything is removed, keep what the delete would lose: the
+      // worktree's uncommitted files (a forced delete) and commits only this
+      // lane's branch holds. Taken after the chats and terminals stopped, so
+      // nothing writes after it. A save that fails stops the step that needed
+      // it: a forced delete never discards work it could not keep.
+      const refreshRemoteTrackingBranch = async (remote: string, branch: string): Promise<void> => {
+        // What the remote holds now, so a push from elsewhere is saved too.
+        const fetched = await runGitWithGithubAuthFallback(
+          ["fetch", "--no-tags", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`],
+          { cwd: projectRoot, timeoutMs: 30_000 },
+        );
+        if (fetched.exitCode !== 0) {
+          logger.warn("lane.delete.remote_refresh_failed", { laneId, remote, error: fetched.stderr.trim().split(/\r?\n/, 1)[0] });
+        }
+      };
+      let savedWorkPromise: Promise<void> | null = null;
+      const ensureWorkSaved = (): Promise<void> => {
+        savedWorkPromise ??= (async () => {
+          const worktreeIsCheckout = hasWorktree
+            && fs.existsSync(row.worktree_path)
+            && await isExpectedGitWorktreeRoot(row.worktree_path);
+          try {
+            const remoteGoes = deleteRemoteBranch && row.branch_ref ? (remoteName.trim() || "origin") : null;
+            if (remoteGoes) await refreshRemoteTrackingBranch(remoteGoes, branchNameForDelete(row.branch_ref, remoteGoes));
+            progress.savedWork = await saveDeletedLaneSnapshot({
+              projectRoot,
+              laneId,
+              laneName: row.name,
+              branchName: row.branch_ref ? branchNameForDelete(row.branch_ref, remoteGoes ?? "origin") : null,
+              worktreePath: worktreeIsCheckout ? row.worktree_path : null,
+              branchGoes: deleteBranch,
+              otherBranchesGoing: [...branchesBeingDeleted.entries()].filter(([otherLaneId]) => otherLaneId !== laneId).map(([, branch]) => branch),
+              remoteGoes,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            logger.error("lane.delete.save_work_failed", { laneId, error: message });
+            throw new Error(`ADE could not save this lane's unsaved work, so it did not delete it: ${message}`);
+          }
+          if (progress.savedWork) {
+            logger.info("lane.delete.work_saved", {
+              laneId,
+              snapshotId: progress.savedWork.id,
+              uncommitted: progress.savedWork.uncommitted,
+            });
+            await laneServiceApi.pruneDeletedLanes();
+          }
+        })();
+        return savedWorkPromise;
+      };
+
+      // Without a folder the branch steps are the first to save, and their
+      // failures are only warnings: a failed save must stop the delete.
+      if (!hasWorktree && (deleteBranch || deleteRemoteBranch)) await ensureWorkSaved();
+
+      if (hasWorktree) {
+        // The one slow step with no progress to watch, so the user can stop
+        // it (see setDeleteStoppable). It also waits here behind other lane
+        // git writes.
+        await runStep("git_worktree_remove", async () => {
+          await ensureWorkSaved();
+          const targetPath = normAbs(row.worktree_path);
+          // Rails that must hold for ANY worktree path, not just the ones ADE
+          // created: never the repository itself, never the worktrees folder,
+          // never through a symlink, and never a directory that is not the
+          // root of a Git worktree.
+          if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
+            throw new Error("ADE will not remove the project's own folder.");
+          }
+          const managedWorktreePath = residualWorktreeCleanup.isDirectManagedWorktreePath(targetPath);
+          if (managedWorktreePath) {
+            // A managed path is a direct child of the worktrees folder under
+            // one of its two spellings. Walking from that same spelling is
+            // what keeps a symlinked project root from reading as a redirect
+            // planted inside the folder.
+            if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
+              throw new Error("ADE will not remove a lane folder through a symbolic link.");
+            }
+          } else {
+            const symlink = await isSymbolicLinkPath(targetPath);
+            const directoryExists = fs.existsSync(targetPath);
+            const recognizedRoot = directoryExists && !symlink && await isExpectedGitWorktreeRoot(targetPath);
+            // A folder ADE did not create is removed only by `git worktree remove`
+            // while Git still claims it. Once Git has forgotten it, the lane row
+            // can go and the directory stays until the user deletes it.
+            if (symlink || (directoryExists && !recognizedRoot)) {
+              const worktrees = await listGitWorktrees();
+              const canonicalTarget = canonicalPath(targetPath);
+              const stillRegistered = worktrees.some((worktree) =>
+                !worktree.isBare && (
+                  worktree.path === targetPath || canonicalPath(worktree.path) === canonicalTarget
+                )
+              );
+              if (!stillRegistered) {
+                progress.leftoverWorktree = {
+                  path: targetPath,
+                  canDelete: !symlink,
+                  laneName: row.name,
+                };
+                return {
+                  detail: symlink
+                    ? `left symlink on disk: ${targetPath}`
+                    : `left on disk: ${targetPath}`,
+                };
+              }
+              if (symlink) {
+                throw new Error("ADE will not remove a lane folder through a symbolic link.");
+              }
+            }
+          }
+          setDeleteStoppable(true);
+          return runGitWorktreeMutation(async () => {
+            setDeleteStoppable(false);
+            const removeArgs = ["worktree", "remove"];
+            if (force) removeArgs.push("--force");
+            removeArgs.push(row.worktree_path);
+            const isStillRegisteredWorktree = async (): Promise<boolean> => {
+              try {
+                const worktrees = await listGitWorktrees();
+                const target = normAbs(row.worktree_path);
+                return worktrees.some((wt) => wt.path === target);
+              } catch {
+                return fs.existsSync(worktreeMetadataPath);
+              }
+            };
+            const pruneWorktreesBestEffort = pruneGitWorktrees;
+            const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
+              try {
+                await removeWorktreeDirectoryWithRecovery(row.worktree_path);
+              } catch (rmError) {
+                const cleanupMessage = `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
+                  rmError instanceof Error ? rmError.message : String(rmError)
+                }`;
+                const pruneFailure = await pruneWorktreesBestEffort();
+                const fullMessage = pruneFailure
+                  ? `${cleanupMessage}; git worktree prune failed: ${pruneFailure}`
+                  : cleanupMessage;
+                if (await isStillRegisteredWorktree()) {
+                  throw new Error(fullMessage);
+                }
+                residualWorktreeCleanup.recordFailure({
+                  laneId,
+                  branchRef: row.branch_ref,
+                  worktreePath: row.worktree_path,
+                  error: fullMessage,
+                });
+                recordNonFatalFailure("git_worktree_remove", fullMessage);
+                return { detail: `${detail}; warning: ${fullMessage}` };
+              }
+              residualWorktreeCleanup.deleteRow(row.worktree_path);
+              const pruneFailure = await pruneWorktreesBestEffort();
+              if (pruneFailure) {
+                const message = `git worktree prune failed: ${pruneFailure}`;
+                if (await isStillRegisteredWorktree()) {
+                  throw new Error(message);
+                }
+                recordNonFatalFailure("git_worktree_remove", message);
+                return { detail: `${detail}; warning: ${message}` };
+              }
+              return { detail };
+            };
+            // Windows: deleting a few hundred thousand node_modules files
+            // one at a time (each scanned by Defender) takes minutes, and
+            // every other lane delete in the project waits behind it in
+            // this queue. Renaming the checkout aside is instant on the
+            // same volume; once Git prunes the now-missing worktree the
+            // lane is gone, and the files are removed after the queue moves
+            // on. The git_status step already refused a dirty tree without
+            // `force`, which is the check `git worktree remove` would make.
+            const renameAsideWorktree = async (): Promise<{ detail: string } | null> => {
+              if (process.platform !== "win32") return null;
+              const target = normAbs(row.worktree_path);
+              if (!fs.existsSync(target) || !(await isExpectedGitWorktreeRoot(target))) return null;
+              // Git refuses to remove a worktree with submodules unless forced.
+              if (!force && fs.existsSync(path.join(target, ".gitmodules"))) return null;
+              // Only a folder Git lists as this worktree is renamed: pruning
+              // the missing entry is what makes the rename a removal.
+              if ((await isListedGitWorktree(target)) !== true) return null;
+              // Git kept the worktree (it is locked, or prune failed): the
+              // folder is back and `git worktree remove` decides.
+              const { trashPath } = await moveWorktreeAsideAndPrune(target, {
+                moveAside: async (folder) => {
+                  const aside = path.join(path.dirname(folder), deletingTrashName(path.basename(folder)));
+                  try {
+                    await fs.promises.rename(folder, aside);
+                    return aside;
+                  } catch (error) {
+                    // A handle still open inside the tree blocks the rename;
+                    // `git worktree remove` gets its usual chance below.
+                    logger.info("lane.delete.rename_aside_skipped", {
+                      laneId,
+                      error: error instanceof Error ? error.message : String(error),
+                    });
+                    return null;
+                  }
+                },
+                prune: pruneWorktreesBestEffort,
+                isListed: () => isListedGitWorktree(target),
+              });
+              if (!trashPath) return null;
+              residualWorktreeCleanup.deleteRow(target);
+              removeLaneTrashInBackground(trashPath, logger);
+              void sweepLaneDeletingTrash(path.dirname(target), logger);
+              return { detail: `${target} (removing files in the background)` };
+            };
+            const renamedAside = await renameAsideWorktree();
+            if (renamedAside) return renamedAside;
+            // A large worktree (node_modules, say) can take minutes to walk, and a
+            // timeout mid-remove leaves a half-deleted worktree that blocks
+            // future deletes.
+            // English messages, so the submodule refusal below matches on any locale.
+            setDeleteStoppable(true);
+            const removeRes = await runGit(removeArgs, {
+              cwd: projectRoot,
+              timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
+              env: GIT_ENGLISH_MESSAGES_ENV,
+              signal: deleteGitWrite.signal,
+            });
+            setDeleteStoppable(false);
+            // Stopped: leave the rest of the folder for the next delete
+            // rather than falling through to the manual cleanup below.
+            if (removeRes.cancelled) throwIfDeleteStopped();
+            if (removeRes.exitCode === 0) {
+              if (!fs.existsSync(row.worktree_path)) {
+                residualWorktreeCleanup.deleteRow(row.worktree_path);
+                return { detail: row.worktree_path };
+              }
+              if (!managedWorktreePath) {
+                // Git unregistered the checkout and left the directory. The
+                // lane row can go; the dialog asks before anything is removed.
+                progress.leftoverWorktree = {
+                  path: normAbs(row.worktree_path),
+                  canDelete: true,
+                  laneName: row.name,
+                };
+                return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
+              }
+              return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
+            }
+            const original = (removeRes.stderr || removeRes.stdout || "").trim();
+            // Git refuses a worktree with initialized submodules unless
+            // forced. The git_status step already checked the submodules for
+            // changes and unpushed commits, so let Git remove it with one
+            // --force instead of deleting the folder by hand.
+            if (!force && /containing submodules/i.test(original)) {
+              // Chats and terminals were still running after the check; a
+              // forced removal would take whatever they wrote since.
+              const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
+              if (unsavedWork) {
+                logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork, stage: "submodule_retry" });
+                throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
+              }
+              setDeleteStoppable(true);
+              const forcedRes = await runGit(
+                ["worktree", "remove", "--force", row.worktree_path],
+                { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS, signal: deleteGitWrite.signal },
+              );
+              setDeleteStoppable(false);
+              if (forcedRes.cancelled) throwIfDeleteStopped();
+              if (forcedRes.exitCode === 0 && !fs.existsSync(row.worktree_path)) {
+                residualWorktreeCleanup.deleteRow(row.worktree_path);
+                return { detail: `${row.worktree_path} (with submodules)` };
+              }
+            }
+            if (!managedWorktreePath) {
+              // Git can give up partway: it unregisters the worktree and
+              // deletes `.git`, then fails on a file Windows still holds open
+              // (an AV scan, an indexer) somewhere in a huge node_modules.
+              // The lane is gone as far as Git knows, so finish deleting it
+              // and offer the remaining files the same way as above.
+              if (
+                fs.existsSync(row.worktree_path)
+                && !(await isStillRegisteredWorktree())
+                && !(await isExpectedGitWorktreeRoot(row.worktree_path))
+              ) {
+                logger.warn("lane.delete.git_worktree_remove_partial", { laneId, error: original });
+                progress.leftoverWorktree = {
+                  path: normAbs(row.worktree_path),
+                  canDelete: true,
+                  laneName: row.name,
+                };
+                return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
+              }
+              // No filesystem escalation for a folder ADE does not own: the
+              // git failure is the answer the user gets.
+              throw new Error(original || `git worktree remove exited ${removeRes.exitCode}`);
+            }
+            // Recovery path: a previous failed delete (or this one's first attempt)
+            // can leave the worktree dir present without its `.git` pointer file, or
+            // the dir gone with stale metadata still registered. Either way: rm the
+            // dir if any, then prune git's metadata.
+            return removeResidualDirectory(
+              `${row.worktree_path} (recovered from stale state)`,
+              `git worktree remove failed (${original})`
+            );
+          }, { signal: deleteGitWrite.signal, message: LANE_DELETE_CANCEL_MESSAGE });
+        });
+        setDeleteStoppable(false);
+      }
+
+      if (deleteBranch && row.branch_ref) {
+        await runStep("git_branch_delete", async () => {
+          await ensureWorkSaved();
+          const branchName = branchNameForDelete(row.branch_ref, remoteName);
+          const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
+            cwd: projectRoot,
+            timeoutMs: 8_000,
+          });
+          if (refCheck.exitCode !== 0) return { detail: "ref not found" };
+          await runGitOrThrow(["branch", "-D", branchName], { cwd: projectRoot, timeoutMs: 30_000 });
+          return { detail: branchName };
+        }, { fatal: requireRemoteBranchDelete });
+      }
+
+      const remote = remoteName.trim() || "origin";
+      const remoteBranchName = row.branch_ref ? branchNameForDelete(row.branch_ref, remote) : "";
+      /**
+       * Deletes the branch on the remote. With `expectedSha`, only while the
+       * remote still has that commit: a background retry must never delete a
+       * branch someone pushed again since.
+       */
+      const deleteRemoteBranchOnce = async (expectedSha?: string): Promise<{ detail: string }> => {
+        const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
+        if (remoteCheck.exitCode !== 0) {
+          throw new AdeExpectedError(`Remote '${remote}' is not configured for this repository`, "user");
+        }
+        const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, `refs/heads/${remoteBranchName}`], {
+          cwd: projectRoot,
+          timeoutMs: 30_000,
+        });
+        if (remoteRefCheck.exitCode !== 0) {
+          const detail = (remoteRefCheck.stderr || remoteRefCheck.stdout).trim();
+          throw new Error(detail || `Unable to check ${remote}/${remoteBranchName}`);
+        }
+        if (remoteRefCheck.stdout.trim().length === 0) {
+          return { detail: `${remote}/${remoteBranchName} not found` };
+        }
+        const lease = expectedSha ? [`--force-with-lease=refs/heads/${remoteBranchName}:${expectedSha}`] : [];
+        await runGitWithGithubAuthFallbackOrThrow(["push", ...lease, remote, "--delete", remoteBranchName], { cwd: projectRoot, timeoutMs: 45_000 });
+        return { detail: `${remote}/${remoteBranchName}` };
+      };
+      const runRemoteBranchStep = (): Promise<void> => runStep("git_remote_branch_delete", async () => {
+        await ensureWorkSaved();
+        if (!remoteBranchAfterLocal) return deleteRemoteBranchOnce();
+        try {
+          return await deleteRemoteBranchOnce();
+        } catch (error) {
+          if (error instanceof AdeExpectedError) throw error;
+          const message = error instanceof Error ? error.message : String(error);
+          // The commit the remote had when the delete saved the lane's work.
+          const tracked = await runGit(["rev-parse", "--verify", "--quiet", `refs/remotes/${remote}/${remoteBranchName}`], {
+            cwd: projectRoot,
+            timeoutMs: 8_000,
+          });
+          const expectedSha = tracked.exitCode === 0 ? tracked.stdout.trim() : "";
+          if (!expectedSha) throw error;
+          retryRemoteBranchDeleteInBackground({
+            laneId,
+            branch: `${remote}/${remoteBranchName}`,
+            attempt: () => {
+              // A lane made since on the same branch keeps it.
+              const reused = db.get<{ id: string }>(
+                "select id from lanes where project_id = ? and branch_ref = ? limit 1",
+                [projectId, row.branch_ref],
+              );
+              if (reused) return Promise.resolve({ detail: `kept: lane ${reused.id} uses the branch again` });
+              return deleteRemoteBranchOnce(expectedSha);
+            },
+            logger,
+          });
+          throw new Error(`${message} ADE will try again in the background.`);
+        }
+      }, { fatal: requireRemoteBranchDelete });
+
+      if (remoteBranchStep && !remoteBranchAfterLocal) await runRemoteBranchStep();
+
+      await runStep("pack_dir_remove", async () => {
+        if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
+          throw new Error("ADE will not delete generated lane data through a symbolic link.");
+        }
+        try {
+          await fs.promises.rm(lanePackDir, { recursive: true, force: true });
+          return { detail: lanePackDir };
+        } catch (err) {
+          // Best-effort cleanup — match the warn pattern used by the other
+          // best-effort cleanup steps so a failure
+          // here is at least surfaced in the lane's logs and progress UI
+          // rather than vanishing silently.
+          const message = err instanceof Error ? err.message : String(err);
+          logger.warn("lane.delete.pack_dir_remove_failed", { laneId, lanePackDir, error: message });
+          return { detail: `warning: ${message}` };
+        }
+      });
+
+      await runStep("database_cleanup", async () => {
+        // Read the proof file paths before the rows go, then unlink only
+        // after the transaction commits: a rollback must not leave files
+        // deleted out from under rows that survived.
+        const laneArtifactFiles = collectLaneArtifactFilePaths(laneId);
+        db.run("begin immediate");
+        try {
+          cleanupLaneDatabaseRows(laneId);
+          db.run("commit");
+        } catch (error) {
+          try {
+            db.run("rollback");
+          } catch {
+            // ignore rollback failures and surface the original cleanup error
+          }
+          throw error;
+        }
+        const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
+        // The lane's Apple device, build cache and recordings go with it.
+        // Not awaited: `simctl delete` can take tens of seconds on a large
+        // device set and the lane row is already gone, so blocking the delete
+        // on it would only make the progress UI look wedged. It deletes an
+        // ADE device and only releases an attached one — ADE never deletes a
+        // simulator it did not create.
+        releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: true });
+        releaseAndroidSideOfLane(laneId);
+        if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
+        return removedProofFiles === laneArtifactFiles.length
+          ? { detail: `${removedProofFiles} proof file(s) removed` }
+          : { detail: `${removedProofFiles} of ${laneArtifactFiles.length} proof file(s) removed; see logs` };
+      });
+
+      if (remoteBranchStep && remoteBranchAfterLocal) await runRemoteBranchStep();
+
+      invalidateLanePathCaches();
+      const leftover = progress.leftoverWorktree ?? null;
+      if (leftover) {
+        const stored = await rememberLeftoverWorktree(laneId, leftover);
+        progress.leftoverWorktree = {
+          path: stored.path,
+          canDelete: stored.canDelete,
+          laneName: stored.laneName,
+        };
+      }
+      finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
+      broadcastLifecycleEvent({
+        type: "lane-deleted",
+        laneId,
+        laneName: row.name,
+        color: row.color,
+      });
+      try {
+        runtimeOpts?.onDeleted?.();
+      } catch (error) {
+        logger.warn("lane.delete.on_deleted_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+      }
+      finishDeleteOperation("succeeded", {
+        overallStatus: progress.overallStatus,
+        ...(progress.savedWork ? { savedWorkId: progress.savedWork.id, savedUncommitted: progress.savedWork.uncommitted } : {}),
+        warnings: nonFatalFailures,
+        completedAt: progress.completedAt ?? new Date().toISOString(),
+      });
+      const totalMs = Date.now() - new Date(progress.startedAt).getTime();
+      if (totalMs >= 1_000) {
+        logger.info("lane.delete.completed", {
+          laneId,
+          laneType: row.lane_type,
+          deleteBranch,
+          deleteRemoteBranch,
+          force,
+          warnings: nonFatalFailures,
+          durationMs: totalMs
+        });
+      }
+      return { leftoverWorktree: progress.leftoverWorktree ?? null, savedWork: progress.savedWork ?? null };
+    } catch (error) {
+      progress.leftoverWorktree = null;
+      const stoppedByUser = error instanceof Error && error.message === LANE_DELETE_CANCEL_MESSAGE;
+      // A caller that follows the progress, not the call, reads why here.
+      progress.errorMessage = error instanceof Error ? error.message : String(error);
+      finalize(stoppedByUser ? "cancelled" : "failed");
+      finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    } finally {
+      branchesBeingDeleted.delete(laneId);
+      deleteGitWrite.end();
+      storageLock.release();
+    }
+  };
 
   const laneServiceApi = {
     async ensurePrimaryLane(): Promise<void> {
@@ -8416,730 +9254,42 @@ export function createLaneService({
       return Array.from(deleteProgressByLaneId.values()).some((progress) => progress.overallStatus === "running");
     },
 
+    /**
+     * Deletes a lane. A second call for a lane that is being deleted waits for
+     * that delete (a caller re-sends after a lost answer), so it never fails as
+     * "already running". With `background`, the call answers `accepted` once
+     * the checks passed, and the delete finishes here even if the caller is
+     * gone; a lane already deleted answers `alreadyDeleted`.
+     */
     async delete(
       args: DeleteLaneArgs,
-      runtimeOpts?: { teardownEnv?: () => Promise<void> }
+      runtimeOpts?: LaneDeleteRuntimeOptions
     ): Promise<DeleteLaneResult> {
-      const {
-        laneId,
-        deleteBranch = true,
-        deleteRemoteBranch = false,
-        requireRemoteBranchDelete = false,
-        remoteName = "origin",
-        force = false
-      } = args;
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Lane not found: ${laneId}`);
-      if (laneReclaimInFlight.has(laneId)) {
-        throw new Error("Archive & Reclaim is already running for this lane.");
+      const laneId = args.laneId;
+      const background = args.background === true;
+      const running = deleteInFlightByLaneId.get(laneId);
+      if (running) {
+        // The first call's options (force, branches) stand.
+        if (background) return { leftoverWorktree: null, savedWork: null, accepted: true };
+        return await running;
       }
-      if (deleteProgressByLaneId.get(laneId)?.overallStatus === "running") {
-        throw new Error(`Lane delete is already running: ${laneId}`);
+      if (background && !getLaneRow(laneId)) {
+        return { leftoverWorktree: null, savedWork: null, alreadyDeleted: true };
       }
-      if (row.lane_type === "primary") {
-        throw new Error("Primary lane cannot be deleted");
-      }
-      const deleteOperation = (() => {
-        try {
-          return operationService?.start({
-            laneId: null,
-            kind: "lane_delete",
-            metadata: {
-              laneId,
-              laneName: row.name,
-              laneType: row.lane_type,
-              branchRef: row.branch_ref,
-              deleteBranch,
-              deleteRemoteBranch,
-              force,
-            },
-          }) ?? null;
-        } catch (error) {
-          logger.warn("lane.delete.operation_start_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
-          return null;
-        }
-      })();
-      const finishDeleteOperation = (
-        status: "succeeded" | "failed",
-        metadataPatch: Record<string, unknown>,
-      ): void => {
-        if (!deleteOperation?.operationId) return;
-        try {
-          operationService?.finish({
-            operationId: deleteOperation.operationId,
-            status,
-            metadataPatch,
-          });
-        } catch (error) {
-          logger.warn("lane.delete.operation_finish_failed", { laneId, status, error: error instanceof Error ? error.message : String(error) });
-        }
+      let markAccepted: () => void = () => undefined;
+      const accepted = new Promise<null>((resolve) => {
+        markAccepted = () => resolve(null);
+      });
+      const run = runLaneDelete(args, runtimeOpts, () => markAccepted());
+      deleteInFlightByLaneId.set(laneId, run);
+      const forget = (): void => {
+        if (deleteInFlightByLaneId.get(laneId) === run) deleteInFlightByLaneId.delete(laneId);
       };
-      const worktreeMetadataPath = row.worktree_path
-        ? path.join(projectRoot, ".git", "worktrees", path.basename(row.worktree_path))
-        : "";
-      const worktreeRegistered = Boolean(worktreeMetadataPath) && fs.existsSync(worktreeMetadataPath);
-      // Every lane owns a real worktree now, wherever it lives — deleting one
-      // removes the checkout. Legacy `attached` rows are no exception; the
-      // safety rails below are what keep an arbitrary path safe to remove, not
-      // the lane type.
-      const hasWorktree =
-        Boolean(row.worktree_path) &&
-        (fs.existsSync(row.worktree_path) || worktreeRegistered);
-      const stepNames: LaneDeleteStepName[] = [];
-      if (hasWorktree) stepNames.push("git_status");
-      stepNames.push("stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
-      if (hasWorktree) stepNames.push("git_worktree_remove");
-      if (deleteBranch && row.branch_ref) stepNames.push("git_branch_delete");
-      if (deleteRemoteBranch && row.branch_ref) stepNames.push("git_remote_branch_delete");
-      stepNames.push("pack_dir_remove", "database_cleanup");
-
-      const progress: LaneDeleteProgress = {
-        laneId,
-        steps: stepNames.map((name): LaneDeleteStep => ({ name, status: "pending" })),
-        startedAt: new Date().toISOString(),
-        overallStatus: "running",
-        cancellable: false
-      };
-      const findStep = (name: LaneDeleteStepName): LaneDeleteStep | undefined =>
-        progress.steps.find((s) => s.name === name);
-
-      const nonFatalFailures: Array<{ step: LaneDeleteStepName; message: string }> = [];
-      const recordNonFatalFailure = (step: LaneDeleteStepName, message: string): void => {
-        nonFatalFailures.push({ step, message });
-        logger.warn("lane.delete.non_fatal_step_failed", { laneId, step, error: message });
-      };
-
-      const runStep = async (
-        name: LaneDeleteStepName,
-        work: () => Promise<{ detail?: string } | void>,
-        options?: { fatal?: boolean },
-      ): Promise<void> => {
-        const step = findStep(name);
-        if (!step) return;
-        const fatal = options?.fatal !== false;
-        step.status = "running";
-        step.startedAt = new Date().toISOString();
-        broadcastDeleteEvent(progress);
-        await new Promise<void>((resolve) => setImmediate(resolve));
-        const t0 = Date.now();
-        try {
-          const result = await work();
-          step.detail = result?.detail;
-          step.status = "completed";
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          step.status = fatal ? "failed" : "warning";
-          step.errorMessage = errorMessage;
-          step.completedAt = new Date().toISOString();
-          step.durationMs = Date.now() - t0;
-          if (!fatal) {
-            recordNonFatalFailure(name, errorMessage);
-          }
-          broadcastDeleteEvent(progress);
-          if (fatal) throw error;
-          return;
-        }
-        step.completedAt = new Date().toISOString();
-        step.durationMs = Date.now() - t0;
-        if (step.durationMs >= 500) {
-          logger.info("lane.delete.step", { laneId, step: name, durationMs: step.durationMs });
-        }
-        broadcastDeleteEvent(progress);
-      };
-
-      const finalize = (status: LaneDeleteProgress["overallStatus"]): void => {
-        if (status === "failed" || status === "cancelled") {
-          for (const step of progress.steps) {
-            if (step.status === "pending") step.status = "skipped";
-          }
-        }
-        progress.overallStatus = status;
-        progress.completedAt = new Date().toISOString();
-        progress.cancellable = false;
-        broadcastDeleteEvent(progress);
-      };
-
-      let storageLock: ReturnType<typeof acquireStorageLifecycleLock>;
-      try {
-        storageLock = acquireStorageLifecycleLock({
-          laneId,
-          worktreePath: row.worktree_path,
-          ownerLabel: `Delete: ${row.name}`,
-        });
-      } catch (error) {
-        finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
-        throw error;
-      }
-      broadcastDeleteEvent(progress);
-      // `cancelDelete` stops the worktree removal through this. Nothing else
-      // in the delete listens: once the folder is gone, the rest must finish.
-      const deleteGitWrite = beginLaneGitWrite(null, undefined, `delete:${laneId}`);
-      const throwIfDeleteStopped = (): void => {
-        if (deleteGitWrite.signal.aborted) throw new AdeExpectedError(LANE_DELETE_CANCEL_MESSAGE, "user");
-      };
-      // Open only while the queue wait or a `worktree remove` listens for
-      // the stop. The UI reads the broadcast copy, so publish each change.
-      const setDeleteStoppable = (stoppable: boolean): void => {
-        deleteGitWrite.setStoppable(stoppable);
-        if (progress.cancellable === stoppable) return;
-        progress.cancellable = stoppable;
-        broadcastDeleteEvent(progress);
-      };
-
-      try {
-        if (deleteBranch && row.branch_ref) {
-          branchesBeingDeleted.set(laneId, branchNameForDelete(row.branch_ref, remoteName.trim() || "origin"));
-        }
-        const { adeDir: packAdeDir, lanePackDir } = lanePackDirectory(projectRoot, laneId);
-        if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
-          throw new Error("ADE will not delete generated lane data through a symbolic link.");
-        }
-        if (hasWorktree) {
-          await runStep("git_status", async () => {
-            if (!(await isExpectedGitWorktreeRoot(row.worktree_path))) {
-              return { detail: fs.existsSync(row.worktree_path) ? "stale worktree directory" : "missing worktree directory" };
-            }
-            const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
-            // Force keeps a copy of the lane, but a copy cannot hold another
-            // repository. Refused here, before anything is stopped, and
-            // without offering a force that would refuse too.
-            const otherRepoWork = unsavedWork ? await describeWorkInOtherRepos(row.worktree_path) : null;
-            if (otherRepoWork) throw new AdeExpectedError(`${otherRepoWork} ${NESTED_REPO_WORK_NOT_KEPT}`, "user");
-            if (unsavedWork && !force) {
-              logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork });
-              // An answer for the user, not a defect: keep it out of Sentry issues.
-              throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
-            }
-            return { detail: unsavedWork ? "dirty (force enabled)" : "clean" };
-          });
-        }
-
-        await runStep("stop_chats", async () => {
-          const svc = teardownDeps?.agentChatService;
-          if (!svc) return { detail: "no service" };
-          // Before the session rows go: what the lane's chats added on other
-          // machines is removed there, save a copy holding work nobody
-          // pushed (kept, as for an archive). Sent, never awaited.
-          try {
-            svc.releaseRemoteWorkForLane?.(laneId, "deleted");
-          } catch (error) {
-            logger.warn("lane.delete.remote_work_release_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
-          }
-          const before = svc.countActiveForLane(laneId);
-          if (before === 0) return { detail: "none active" };
-          const disposed = await svc.disposeForLane(laneId);
-          return { detail: `closed ${disposed} ${disposed === 1 ? "chat" : "chats"}` };
-        }, { fatal: false });
-
-        await runStep("stop_ptys", async () => {
-          const svc = teardownDeps?.ptyService;
-          if (!svc) return { detail: "no service" };
-          const before = svc.countActiveForLane(laneId);
-          if (before === 0) return { detail: "none active" };
-          const disposed = svc.disposeForLane(laneId);
-          return { detail: `closed ${disposed} ${disposed === 1 ? "session" : "sessions"}` };
-        });
-
-        await runStep("stop_watchers", async () => {
-          const svc = teardownDeps?.fileWatcherService;
-          if (!svc) return { detail: "no service" };
-          const before = svc.countActiveForWorkspace(laneId);
-          const stopped = svc.stopAllForWorkspace(laneId);
-          if (before === 0 && stopped === 0) return { detail: "none active" };
-          return { detail: `stopped ${stopped} ${stopped === 1 ? "watcher" : "watchers"}` };
-        });
-
-        await runStep("destroy_mac_desktop", async () => {
-          const svc = teardownDeps?.macDesktopService;
-          if (!svc) return { detail: "no service" };
-          const result = await svc.destroyForLane(laneId);
-          return { detail: result.destroyed ? "display destroyed" : "no display" };
-        }, { fatal: false });
-
-        // Not a named step: the delete dialog's step list is a shared contract
-        // (desktop and phone), and releasing App Control has nothing for the
-        // user to watch. Best-effort, before the worktree goes away under the
-        // app it launched.
-        try {
-          await teardownDeps?.appControlService?.stopForLane(laneId);
-        } catch (error) {
-          logger.warn("lane.delete.stop_app_control_failed", {
-            laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        // The same for the lane's Apple device session, so its stream and
-        // recording end before the device is deleted under them.
-        try {
-          await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
-        } catch (error) {
-          logger.warn("lane.delete.stop_apple_device_failed", {
-            laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        // And the lane's Android emulator, so the AVD is not running when the
-        // release below deletes it.
-        try {
-          await teardownDeps?.androidEmulatorService?.stopForLane(laneId);
-        } catch (error) {
-          logger.warn("lane.delete.stop_android_device_failed", {
-            laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-
-        await runStep("cleanup_env", async () => {
-          if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
-          try {
-            await runtimeOpts.teardownEnv();
-            return { detail: "env cleaned" };
-          } catch (err) {
-            logger.warn("lane.delete.cleanup_env_failed", { laneId, error: err instanceof Error ? err.message : String(err) });
-            return { detail: `warning: ${err instanceof Error ? err.message : String(err)}` };
-          }
-        });
-
-        // Brief grace period so kernel-level handle releases settle on macOS before
-        // git tries to unlink the worktree directory.
-        await new Promise((resolve) => setTimeout(resolve, 250));
-
-        // Before anything is removed, keep what the delete would lose: the
-        // worktree's uncommitted files (a forced delete) and commits only this
-        // lane's branch holds. Taken after the chats and terminals stopped, so
-        // nothing writes after it. A save that fails stops the step that needed
-        // it: a forced delete never discards work it could not keep.
-        const refreshRemoteTrackingBranch = async (remote: string, branch: string): Promise<void> => {
-          // What the remote holds now, so a push from elsewhere is saved too.
-          const fetched = await runGitWithGithubAuthFallback(
-            ["fetch", "--no-tags", remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`],
-            { cwd: projectRoot, timeoutMs: 30_000 },
-          );
-          if (fetched.exitCode !== 0) {
-            logger.warn("lane.delete.remote_refresh_failed", { laneId, remote, error: fetched.stderr.trim().split(/\r?\n/, 1)[0] });
-          }
-        };
-        let savedWorkPromise: Promise<void> | null = null;
-        const ensureWorkSaved = (): Promise<void> => {
-          savedWorkPromise ??= (async () => {
-            const worktreeIsCheckout = hasWorktree
-              && fs.existsSync(row.worktree_path)
-              && await isExpectedGitWorktreeRoot(row.worktree_path);
-            try {
-              const remoteGoes = deleteRemoteBranch && row.branch_ref ? (remoteName.trim() || "origin") : null;
-              if (remoteGoes) await refreshRemoteTrackingBranch(remoteGoes, branchNameForDelete(row.branch_ref, remoteGoes));
-              progress.savedWork = await saveDeletedLaneSnapshot({
-                projectRoot,
-                laneId,
-                laneName: row.name,
-                branchName: row.branch_ref ? branchNameForDelete(row.branch_ref, remoteGoes ?? "origin") : null,
-                worktreePath: worktreeIsCheckout ? row.worktree_path : null,
-                branchGoes: deleteBranch,
-                otherBranchesGoing: [...branchesBeingDeleted.entries()].filter(([otherLaneId]) => otherLaneId !== laneId).map(([, branch]) => branch),
-                remoteGoes,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              logger.error("lane.delete.save_work_failed", { laneId, error: message });
-              throw new Error(`ADE could not save this lane's unsaved work, so it did not delete it: ${message}`);
-            }
-            if (progress.savedWork) {
-              logger.info("lane.delete.work_saved", {
-                laneId,
-                snapshotId: progress.savedWork.id,
-                uncommitted: progress.savedWork.uncommitted,
-              });
-              await laneServiceApi.pruneDeletedLanes();
-            }
-          })();
-          return savedWorkPromise;
-        };
-
-        // Without a folder the branch steps are the first to save, and their
-        // failures are only warnings: a failed save must stop the delete.
-        if (!hasWorktree && (deleteBranch || deleteRemoteBranch)) await ensureWorkSaved();
-
-        if (hasWorktree) {
-          // The one slow step with no progress to watch, so the user can stop
-          // it (see setDeleteStoppable). It also waits here behind other lane
-          // git writes.
-          await runStep("git_worktree_remove", async () => {
-            await ensureWorkSaved();
-            const targetPath = normAbs(row.worktree_path);
-            // Rails that must hold for ANY worktree path, not just the ones ADE
-            // created: never the repository itself, never the worktrees folder,
-            // never through a symlink, and never a directory that is not the
-            // root of a Git worktree.
-            if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
-              throw new Error("ADE will not remove the project's own folder.");
-            }
-            const managedWorktreePath = residualWorktreeCleanup.isDirectManagedWorktreePath(targetPath);
-            if (managedWorktreePath) {
-              // A managed path is a direct child of the worktrees folder under
-              // one of its two spellings. Walking from that same spelling is
-              // what keeps a symlinked project root from reading as a redirect
-              // planted inside the folder.
-              if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
-                throw new Error("ADE will not remove a lane folder through a symbolic link.");
-              }
-            } else {
-              const symlink = await isSymbolicLinkPath(targetPath);
-              const directoryExists = fs.existsSync(targetPath);
-              const recognizedRoot = directoryExists && !symlink && await isExpectedGitWorktreeRoot(targetPath);
-              // A folder ADE did not create is removed only by `git worktree remove`
-              // while Git still claims it. Once Git has forgotten it, the lane row
-              // can go and the directory stays until the user deletes it.
-              if (symlink || (directoryExists && !recognizedRoot)) {
-                const worktrees = await listGitWorktrees();
-                const canonicalTarget = canonicalPath(targetPath);
-                const stillRegistered = worktrees.some((worktree) =>
-                  !worktree.isBare && (
-                    worktree.path === targetPath || canonicalPath(worktree.path) === canonicalTarget
-                  )
-                );
-                if (!stillRegistered) {
-                  progress.leftoverWorktree = {
-                    path: targetPath,
-                    canDelete: !symlink,
-                    laneName: row.name,
-                  };
-                  return {
-                    detail: symlink
-                      ? `left symlink on disk: ${targetPath}`
-                      : `left on disk: ${targetPath}`,
-                  };
-                }
-                if (symlink) {
-                  throw new Error("ADE will not remove a lane folder through a symbolic link.");
-                }
-              }
-            }
-            setDeleteStoppable(true);
-            return runGitWorktreeMutation(async () => {
-              setDeleteStoppable(false);
-              const removeArgs = ["worktree", "remove"];
-              if (force) removeArgs.push("--force");
-              removeArgs.push(row.worktree_path);
-              const isStillRegisteredWorktree = async (): Promise<boolean> => {
-                try {
-                  const worktrees = await listGitWorktrees();
-                  const target = normAbs(row.worktree_path);
-                  return worktrees.some((wt) => wt.path === target);
-                } catch {
-                  return fs.existsSync(worktreeMetadataPath);
-                }
-              };
-              const pruneWorktreesBestEffort = pruneGitWorktrees;
-              const removeResidualDirectory = async (detail: string, failurePrefix?: string) => {
-                try {
-                  await removeWorktreeDirectoryWithRecovery(row.worktree_path);
-                } catch (rmError) {
-                  const cleanupMessage = `${failurePrefix ? `${failurePrefix}; ` : ""}manual cleanup failed: ${
-                    rmError instanceof Error ? rmError.message : String(rmError)
-                  }`;
-                  const pruneFailure = await pruneWorktreesBestEffort();
-                  const fullMessage = pruneFailure
-                    ? `${cleanupMessage}; git worktree prune failed: ${pruneFailure}`
-                    : cleanupMessage;
-                  if (await isStillRegisteredWorktree()) {
-                    throw new Error(fullMessage);
-                  }
-                  residualWorktreeCleanup.recordFailure({
-                    laneId,
-                    branchRef: row.branch_ref,
-                    worktreePath: row.worktree_path,
-                    error: fullMessage,
-                  });
-                  recordNonFatalFailure("git_worktree_remove", fullMessage);
-                  return { detail: `${detail}; warning: ${fullMessage}` };
-                }
-                residualWorktreeCleanup.deleteRow(row.worktree_path);
-                const pruneFailure = await pruneWorktreesBestEffort();
-                if (pruneFailure) {
-                  const message = `git worktree prune failed: ${pruneFailure}`;
-                  if (await isStillRegisteredWorktree()) {
-                    throw new Error(message);
-                  }
-                  recordNonFatalFailure("git_worktree_remove", message);
-                  return { detail: `${detail}; warning: ${message}` };
-                }
-                return { detail };
-              };
-              // Windows: deleting a few hundred thousand node_modules files
-              // one at a time (each scanned by Defender) takes minutes, and
-              // every other lane delete in the project waits behind it in
-              // this queue. Renaming the checkout aside is instant on the
-              // same volume; once Git prunes the now-missing worktree the
-              // lane is gone, and the files are removed after the queue moves
-              // on. The git_status step already refused a dirty tree without
-              // `force`, which is the check `git worktree remove` would make.
-              const renameAsideWorktree = async (): Promise<{ detail: string } | null> => {
-                if (process.platform !== "win32") return null;
-                const target = normAbs(row.worktree_path);
-                if (!fs.existsSync(target) || !(await isExpectedGitWorktreeRoot(target))) return null;
-                // Git refuses to remove a worktree with submodules unless forced.
-                if (!force && fs.existsSync(path.join(target, ".gitmodules"))) return null;
-                // Only a folder Git lists as this worktree is renamed: pruning
-                // the missing entry is what makes the rename a removal.
-                if ((await isListedGitWorktree(target)) !== true) return null;
-                // Git kept the worktree (it is locked, or prune failed): the
-                // folder is back and `git worktree remove` decides.
-                const { trashPath } = await moveWorktreeAsideAndPrune(target, {
-                  moveAside: async (folder) => {
-                    const aside = path.join(path.dirname(folder), deletingTrashName(path.basename(folder)));
-                    try {
-                      await fs.promises.rename(folder, aside);
-                      return aside;
-                    } catch (error) {
-                      // A handle still open inside the tree blocks the rename;
-                      // `git worktree remove` gets its usual chance below.
-                      logger.info("lane.delete.rename_aside_skipped", {
-                        laneId,
-                        error: error instanceof Error ? error.message : String(error),
-                      });
-                      return null;
-                    }
-                  },
-                  prune: pruneWorktreesBestEffort,
-                  isListed: () => isListedGitWorktree(target),
-                });
-                if (!trashPath) return null;
-                residualWorktreeCleanup.deleteRow(target);
-                removeLaneTrashInBackground(trashPath, logger);
-                void sweepLaneDeletingTrash(path.dirname(target), logger);
-                return { detail: `${target} (removing files in the background)` };
-              };
-              const renamedAside = await renameAsideWorktree();
-              if (renamedAside) return renamedAside;
-              // A large worktree (node_modules, say) can take minutes to walk, and a
-              // timeout mid-remove leaves a half-deleted worktree that blocks
-              // future deletes.
-              // English messages, so the submodule refusal below matches on any locale.
-              setDeleteStoppable(true);
-              const removeRes = await runGit(removeArgs, {
-                cwd: projectRoot,
-                timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-                env: GIT_ENGLISH_MESSAGES_ENV,
-                signal: deleteGitWrite.signal,
-              });
-              setDeleteStoppable(false);
-              // Stopped: leave the rest of the folder for the next delete
-              // rather than falling through to the manual cleanup below.
-              if (removeRes.cancelled) throwIfDeleteStopped();
-              if (removeRes.exitCode === 0) {
-                if (!fs.existsSync(row.worktree_path)) {
-                  residualWorktreeCleanup.deleteRow(row.worktree_path);
-                  return { detail: row.worktree_path };
-                }
-                if (!managedWorktreePath) {
-                  // Git unregistered the checkout and left the directory. The
-                  // lane row can go; the dialog asks before anything is removed.
-                  progress.leftoverWorktree = {
-                    path: normAbs(row.worktree_path),
-                    canDelete: true,
-                    laneName: row.name,
-                  };
-                  return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
-                }
-                return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
-              }
-              const original = (removeRes.stderr || removeRes.stdout || "").trim();
-              // Git refuses a worktree with initialized submodules unless
-              // forced. The git_status step already checked the submodules for
-              // changes and unpushed commits, so let Git remove it with one
-              // --force instead of deleting the folder by hand.
-              if (!force && /containing submodules/i.test(original)) {
-                // Chats and terminals were still running after the check; a
-                // forced removal would take whatever they wrote since.
-                const unsavedWork = await describeUnsavedWorktreeWork(row.worktree_path);
-                if (unsavedWork) {
-                  logger.info("lane.delete.unsaved_work", { laneId, reason: unsavedWork, stage: "submodule_retry" });
-                  throw new AdeExpectedError(`${unsavedWork} Enable force delete after confirming warnings.`, "user");
-                }
-                setDeleteStoppable(true);
-                const forcedRes = await runGit(
-                  ["worktree", "remove", "--force", row.worktree_path],
-                  { cwd: projectRoot, timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS, signal: deleteGitWrite.signal },
-                );
-                setDeleteStoppable(false);
-                if (forcedRes.cancelled) throwIfDeleteStopped();
-                if (forcedRes.exitCode === 0 && !fs.existsSync(row.worktree_path)) {
-                  residualWorktreeCleanup.deleteRow(row.worktree_path);
-                  return { detail: `${row.worktree_path} (with submodules)` };
-                }
-              }
-              if (!managedWorktreePath) {
-                // Git can give up partway: it unregisters the worktree and
-                // deletes `.git`, then fails on a file Windows still holds open
-                // (an AV scan, an indexer) somewhere in a huge node_modules.
-                // The lane is gone as far as Git knows, so finish deleting it
-                // and offer the remaining files the same way as above.
-                if (
-                  fs.existsSync(row.worktree_path)
-                  && !(await isStillRegisteredWorktree())
-                  && !(await isExpectedGitWorktreeRoot(row.worktree_path))
-                ) {
-                  logger.warn("lane.delete.git_worktree_remove_partial", { laneId, error: original });
-                  progress.leftoverWorktree = {
-                    path: normAbs(row.worktree_path),
-                    canDelete: true,
-                    laneName: row.name,
-                  };
-                  return { detail: `left on disk: ${normAbs(row.worktree_path)}` };
-                }
-                // No filesystem escalation for a folder ADE does not own: the
-                // git failure is the answer the user gets.
-                throw new Error(original || `git worktree remove exited ${removeRes.exitCode}`);
-              }
-              // Recovery path: a previous failed delete (or this one's first attempt)
-              // can leave the worktree dir present without its `.git` pointer file, or
-              // the dir gone with stale metadata still registered. Either way: rm the
-              // dir if any, then prune git's metadata.
-              return removeResidualDirectory(
-                `${row.worktree_path} (recovered from stale state)`,
-                `git worktree remove failed (${original})`
-              );
-            }, { signal: deleteGitWrite.signal, message: LANE_DELETE_CANCEL_MESSAGE });
-          });
-          setDeleteStoppable(false);
-        }
-
-        if (deleteBranch && row.branch_ref) {
-          await runStep("git_branch_delete", async () => {
-            await ensureWorkSaved();
-            const branchName = branchNameForDelete(row.branch_ref, remoteName);
-            const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${branchName}`], {
-              cwd: projectRoot,
-              timeoutMs: 8_000,
-            });
-            if (refCheck.exitCode !== 0) return { detail: "ref not found" };
-            await runGitOrThrow(["branch", "-D", branchName], { cwd: projectRoot, timeoutMs: 30_000 });
-            return { detail: branchName };
-          }, { fatal: requireRemoteBranchDelete });
-        }
-
-        if (deleteRemoteBranch && row.branch_ref) {
-          await runStep("git_remote_branch_delete", async () => {
-            await ensureWorkSaved();
-            const remote = remoteName.trim() || "origin";
-            const branchName = branchNameForDelete(row.branch_ref, remote);
-            const remoteCheck = await runGit(["remote", "get-url", remote], { cwd: projectRoot, timeoutMs: 8_000 });
-            if (remoteCheck.exitCode !== 0) {
-              throw new Error(`Remote '${remote}' is not configured for this repository`);
-            }
-            const remoteRefCheck = await runGitWithGithubAuthFallback(["ls-remote", "--heads", remote, `refs/heads/${branchName}`], {
-              cwd: projectRoot,
-              timeoutMs: 30_000,
-            });
-            if (remoteRefCheck.exitCode !== 0) {
-              const detail = (remoteRefCheck.stderr || remoteRefCheck.stdout).trim();
-              throw new Error(detail || `Unable to check ${remote}/${branchName}`);
-            }
-            if (remoteRefCheck.stdout.trim().length === 0) {
-              return { detail: `${remote}/${branchName} not found` };
-            }
-            await runGitWithGithubAuthFallbackOrThrow(["push", remote, "--delete", branchName], { cwd: projectRoot, timeoutMs: 45_000 });
-            return { detail: `${remote}/${branchName}` };
-          }, { fatal: requireRemoteBranchDelete });
-        }
-
-        await runStep("pack_dir_remove", async () => {
-          if (await hasSymlinkInManagedPath(packAdeDir, lanePackDir)) {
-            throw new Error("ADE will not delete generated lane data through a symbolic link.");
-          }
-          try {
-            await fs.promises.rm(lanePackDir, { recursive: true, force: true });
-            return { detail: lanePackDir };
-          } catch (err) {
-            // Best-effort cleanup — match the warn pattern used by the other
-            // best-effort cleanup steps so a failure
-            // here is at least surfaced in the lane's logs and progress UI
-            // rather than vanishing silently.
-            const message = err instanceof Error ? err.message : String(err);
-            logger.warn("lane.delete.pack_dir_remove_failed", { laneId, lanePackDir, error: message });
-            return { detail: `warning: ${message}` };
-          }
-        });
-
-        await runStep("database_cleanup", async () => {
-          // Read the proof file paths before the rows go, then unlink only
-          // after the transaction commits: a rollback must not leave files
-          // deleted out from under rows that survived.
-          const laneArtifactFiles = collectLaneArtifactFilePaths(laneId);
-          db.run("begin immediate");
-          try {
-            cleanupLaneDatabaseRows(laneId);
-            db.run("commit");
-          } catch (error) {
-            try {
-              db.run("rollback");
-            } catch {
-              // ignore rollback failures and surface the original cleanup error
-            }
-            throw error;
-          }
-          const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
-          // The lane's Apple device, build cache and recordings go with it.
-          // Not awaited: `simctl delete` can take tens of seconds on a large
-          // device set and the lane row is already gone, so blocking the delete
-          // on it would only make the progress UI look wedged. It deletes an
-          // ADE device and only releases an attached one — ADE never deletes a
-          // simulator it did not create.
-          releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: true });
-          releaseAndroidSideOfLane(laneId);
-          if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
-          return removedProofFiles === laneArtifactFiles.length
-            ? { detail: `${removedProofFiles} proof file(s) removed` }
-            : { detail: `${removedProofFiles} of ${laneArtifactFiles.length} proof file(s) removed; see logs` };
-        });
-
-        invalidateLanePathCaches();
-        const leftover = progress.leftoverWorktree ?? null;
-        if (leftover) {
-          const stored = await rememberLeftoverWorktree(laneId, leftover);
-          progress.leftoverWorktree = {
-            path: stored.path,
-            canDelete: stored.canDelete,
-            laneName: stored.laneName,
-          };
-        }
-        finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
-        broadcastLifecycleEvent({
-          type: "lane-deleted",
-          laneId,
-          laneName: row.name,
-          color: row.color,
-        });
-        finishDeleteOperation("succeeded", {
-          overallStatus: progress.overallStatus,
-          ...(progress.savedWork ? { savedWorkId: progress.savedWork.id, savedUncommitted: progress.savedWork.uncommitted } : {}),
-          warnings: nonFatalFailures,
-          completedAt: progress.completedAt ?? new Date().toISOString(),
-        });
-        const totalMs = Date.now() - new Date(progress.startedAt).getTime();
-        if (totalMs >= 1_000) {
-          logger.info("lane.delete.completed", {
-            laneId,
-            laneType: row.lane_type,
-            deleteBranch,
-            deleteRemoteBranch,
-            force,
-            warnings: nonFatalFailures,
-            durationMs: totalMs
-          });
-        }
-        return { leftoverWorktree: progress.leftoverWorktree ?? null, savedWork: progress.savedWork ?? null };
-      } catch (error) {
-        progress.leftoverWorktree = null;
-        const stoppedByUser = error instanceof Error && error.message === LANE_DELETE_CANCEL_MESSAGE;
-        finalize(stoppedByUser ? "cancelled" : "failed");
-        finishDeleteOperation("failed", { error: error instanceof Error ? error.message : String(error) });
-        throw error;
-      } finally {
-        branchesBeingDeleted.delete(laneId);
-        deleteGitWrite.end();
-        storageLock.release();
-      }
+      // Also marks a background run's rejection as handled: the progress and the log carry it.
+      run.then(forget, forget);
+      if (!background) return await run;
+      // A refusal from the checks (unsaved work, say) still reaches the caller.
+      return (await Promise.race([accepted, run])) ?? { leftoverWorktree: null, savedWork: null, accepted: true };
     },
 
     /**

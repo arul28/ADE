@@ -197,7 +197,7 @@ function formatLaneDeleteProgressError(progress: LaneDeleteProgress, laneName: s
     const extra = warningSteps.length > 1 ? ` (+${warningSteps.length - 1} more)` : "";
     return `${laneName} was deleted, but ${label} needs attention${detail}${extra}`;
   }
-  return `${laneName} delete failed.`;
+  return progress.errorMessage ? `${laneName} delete failed: ${progress.errorMessage}` : `${laneName} delete failed.`;
 }
 
 function laneDeleteWarnings(messagesByLaneId: Map<string, string>): LaneActionError | null {

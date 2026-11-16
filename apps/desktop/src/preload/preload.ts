@@ -157,6 +157,7 @@ import {
   type BuiltInBrowserRemoteRequestAck,
 } from "../shared/types/builtInBrowserRemote";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
+import { deleteLaneAndFollow } from "../shared/laneDeleteFollow";
 import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import type {
@@ -509,6 +510,7 @@ import type {
   ArchiveAndReclaimLaneArgs,
   ArchiveAndReclaimLaneResult,
   DeleteLaneArgs,
+  DeleteLaneResult,
   DevToolsCheckResult,
   DiffChanges,
   BranchDiffChanges,
@@ -7728,7 +7730,20 @@ const adeBridge = {
     delete: async (args: DeleteLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
       rememberLaneDeleteOrigin(args.laneId, pin ?? currentProjectBinding);
-      if (pin) {
+      // A lane on another machine: the machine answers once the delete is
+      // under way, and short progress reads say when it is done, so a slow or
+      // dropped link cannot fail it (shared/laneDeleteFollow.ts). The machine
+      // is fixed here, for the start and every read.
+      const remotePin = pin ? (pin.kind === "remote" ? pin : null)
+        : currentProjectBinding?.kind === "remote" ? currentProjectBinding : null;
+      if (remotePin) {
+        await deleteLaneAndFollow({
+          laneId: args.laneId,
+          start: () => callPinnedRuntimeAction<DeleteLaneResult>(remotePin, "lane", "delete", { args: { ...args, background: true } }),
+          readProgress: () => callPinnedRuntimeAction<LaneDeleteProgress[]>(remotePin, "lane", "listDeleteProgress", {}),
+          wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+        });
+      } else if (pin) {
         await callPinnedRuntimeAction<void>(pin, "lane", "delete", { args });
       } else {
         await callProjectRuntimeActionOr("lane", "delete", { args }, () =>
