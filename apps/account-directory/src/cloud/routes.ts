@@ -33,7 +33,7 @@ import { CLOUD_PATHS, cloudAutoSizeRefusalSentence, formatCloudCents, overPlanLi
 import { overPlanInForce, readPlanCleanupChoiceIds, readPlanCleanupPick } from "./planCleanup";
 import { ownerLimitState } from "./costReport";
 import { boundedDisplayText } from "../displayText";
-import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import {
   AWAKE_COMPUTER_CAP,
   DISK_ON_CREATE_GB,
@@ -1429,12 +1429,11 @@ async function routeCloudRequest(request: Request, env: CloudEnv, waitUntil?: Cl
       ? fail("unavailable", "ADE Cloud can't check your sign-in right now. Try again soon.", 503)
       : fail("unauthorized", "Sign in to ADE to use ADE Cloud.", 401);
   }
-  const allowed = cloudAccessAllows(env, caller.userId);
+  // ADE Cloud is open to every signed-in account. Builds that still ask whether it is on get yes.
   if (path === CLOUD_PATHS.access) {
     if (request.method !== "GET") return fail("not_found", NOT_FOUND_MESSAGE, 404);
-    return json({ enabled: allowed });
+    return json({ enabled: true });
   }
-  if (!allowed) return notFound();
   if (isCloudWakeRequest(url)) {
     // Scheduled work is refused at 0 hours; a timed wake would break the stop.
     if (request.method === "PUT") {

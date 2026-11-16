@@ -815,10 +815,8 @@ The server holds the provider key and owns every ADE Cloud computer
 and optional `RESEND_API_KEY`). `src/cloud/contract.ts` lists the routes and
 their shapes for a client to mirror. Every route takes the account bearer.
 
-- `CLOUD_ACCESS_ACCOUNTS` is a comma list of Clerk user ids, or `*`. Unset means
-  nobody. `GET /cloud/access` answers `{ enabled }` for the bearer; every other
-  `/cloud/*` route, including `/cloud/wake`, answers 404 `not_found` to a caller
-  not on the list.
+- ADE Cloud is open to every signed-in account. `GET /cloud/access` still
+  answers `{ enabled: true }` for builds that ask.
 - `cloud_computers` records each computer's owner. Every call by instance id
   checks it, and not yours or unknown is 404. Provider errors become one plain
   sentence.
