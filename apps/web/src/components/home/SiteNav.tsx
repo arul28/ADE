@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ArrowUpRight, Github, Menu, Star, X } from "lucide-react";
+import { ArrowUpRight, Download, Github, Menu, Star, X } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { linkToPricing } from "../../lib/siteFlags";
@@ -146,9 +146,9 @@ export function SiteNav() {
             data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
             data-ade-analytics-cta={MARKETING_CTA_LABELS.OPEN_WEB_CLIENT}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className="hidden h-9 items-center gap-1.5 rounded-full border border-white/20 bg-white/[0.07] px-4 text-[14px] font-medium text-white transition-colors hover:border-white/40 hover:bg-white/[0.12] md:inline-flex"
+            className="focus-ring hidden h-10 items-center gap-1.5 rounded-full bg-white px-[18px] text-[15px] font-semibold text-[#0a0a0f] shadow-[0_0_0_1px_rgba(255,255,255,0.25),0_6px_24px_-6px_rgba(255,255,255,0.45)] transition-[background-color,transform] duration-200 hover:-translate-y-px hover:bg-white/90 md:inline-flex"
           >
-            Open web app <ArrowUpRight className="h-4 w-4" />
+            Open web app <ArrowUpRight className="h-4 w-4" strokeWidth={2.4} />
           </a>
           <button
             type="button"
@@ -157,8 +157,9 @@ export function SiteNav() {
               platform === "windows" ? MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS : MARKETING_CTA_LABELS.DOWNLOAD_MAC
             }
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            className="h-9 rounded-full bg-[color:var(--color-violet-bright)] px-5 text-[14px] font-medium text-[#0a0a0f] transition-colors hover:bg-[#c4b5fd]"
+            className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[color:var(--color-violet-bright)] px-[18px] text-[15px] font-semibold text-[#0a0a0f] shadow-[0_0_0_1px_rgba(196,181,253,0.4),0_6px_28px_-4px_rgba(167,139,250,0.75)] transition-[background-color,transform] duration-200 hover:-translate-y-px hover:bg-[#c4b5fd]"
           >
+            <Download className="h-4 w-4" strokeWidth={2.4} />
             Download
           </button>
           <button

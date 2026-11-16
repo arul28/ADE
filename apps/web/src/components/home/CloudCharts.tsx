@@ -18,9 +18,9 @@ const panel = "rounded-[20px] border border-white/[0.08] bg-[#0f0e16]";
 export function CloudCharts() {
   return (
     <div className="mt-12 grid gap-3 lg:grid-cols-3">
-      <BillChart className="lg:col-span-2" />
-      <FreeHoursChart />
       <PerHourChart className="lg:col-span-2" />
+      <FreeHoursChart />
+      <BillChart className="lg:col-span-2" />
       <NoCloudCard />
     </div>
   );
@@ -51,7 +51,7 @@ function Chart({ title, metric, children, control, className }: { title: string;
         </figcaption>
         {control}
       </div>
-      <div className="mt-6 flex flex-1 flex-col justify-center gap-2.5">{children}</div>
+      <div className="mt-6 flex flex-1 flex-col gap-2.5">{children}</div>
     </figure>
   );
 }

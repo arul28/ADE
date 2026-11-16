@@ -1,10 +1,9 @@
-import { ArrowUpRight, Smartphone } from "lucide-react";
+import { ArrowUpRight, Check, Smartphone } from "lucide-react";
 import { FREE_PLAN, PRICING_PLANS, formatCount } from "../../lib/cloudPricing";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { MARKETING_CTA_LABELS, MARKETING_CTA_POSITIONS, type MarketingCtaLabel } from "../../lib/marketingAnalytics";
 import { CloudLockup } from "../cloud/CloudMark";
-import { PlanButton } from "../cloud/PlanButton";
 import { AppleMark } from "./marks";
 import { CloudCharts, CloudSources } from "./CloudCharts";
 
@@ -27,19 +26,6 @@ export function CloudSection() {
             <br className="hidden md:block" />{" "}
             <span className="text-white/45">{formatCount(FREE_PLAN.hours)} free hours a month, then from 1¢ an hour.</span>
           </h2>
-          <div className="mt-7 flex flex-wrap gap-3">
-            <PlanButton cta={MARKETING_CTA_LABELS.GET_STARTED_FREE} position={MARKETING_CTA_POSITIONS.HOME_CLOUD} tone="lamp">
-              Start free
-            </PlanButton>
-            <a
-              href={`${LINKS.webClient}/?cloudPlan=free`}
-              data-ade-analytics-cta={MARKETING_CTA_LABELS.CHOOSE_PLAN_FREE}
-              data-ade-analytics-position={MARKETING_CTA_POSITIONS.HOME_CLOUD}
-              className="focus-ring inline-flex h-11 items-center rounded-full border border-white/15 px-5 text-[15px] font-medium text-white/85 hover:border-white/35 hover:text-white"
-            >
-              Open in the web app
-            </a>
-          </div>
         </div>
 
         <CloudCharts />
@@ -95,6 +81,11 @@ function Plans() {
             <p className="mt-2 text-[14px] text-white/70">
               <span className="font-mono text-white tabular-nums">{formatCount(plan.hours)}</span> hours
             </p>
+            {free && (
+              <p className="mt-3 inline-flex items-center gap-1.5 text-[13px] text-[#ffc861]">
+                <Check className="h-3.5 w-3.5" strokeWidth={2.5} /> No credit card needed
+              </p>
+            )}
           </a>
         );
       })}

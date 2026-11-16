@@ -2440,8 +2440,8 @@ handlers make no analytics call for any method.
 
 The pricing page (`/pricing`, screen `pricing`) reuses the same events. It is
 hidden until ADE Cloud launches (`PRICING_PAGE_LIVE` in
-`apps/web/src/lib/siteFlags.ts`): no link points to it and production builds
-send the route home. A paid plan's button links to the web app with
+`apps/web/src/lib/siteFlags.ts`): production builds link nowhere to it and
+send the route home; dev servers show it and its links for preview. A paid plan's button links to the web app with
 `?cloudPlan=<plan>` (it signs in, then opens Stripe's checkout); Free's button
 opens the install dialog. Each records the CTA event with `choose_plan_free`,
 `choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
@@ -2457,7 +2457,7 @@ On the home page, the hero's ADE Cloud link records `view_ade_cloud`, the ADE
 Cloud section's four plan tiles open the web app at that plan (`?cloudPlan=`)
 and record the matching `choose_plan_*` CTA at position `home_cloud`, and the
 feature wall's "See every feature" button records `view_all_features`. The
-section's price comparison (its tabs and hours slider) records nothing.
+section's price comparison (its hours buttons) records nothing.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 
