@@ -253,6 +253,7 @@ export const IPC = {
   remoteRuntimeInspectProjectRemoval: "ade.remoteRuntime.inspectProjectRemoval",
   remoteRuntimeRemoveProjectCopy: "ade.remoteRuntime.removeProjectCopy",
   remoteRuntimeGetDefaultParentDir: "ade.remoteRuntime.getDefaultParentDir",
+  remoteRuntimeSubmitProviderSignInCode: "ade.remoteRuntime.submitProviderSignInCode",
   remoteRuntimeGetHandoffStoragePreflight: "ade.remoteRuntime.getHandoffStoragePreflight",
   remoteRuntimeCreateProject: "ade.remoteRuntime.createProject",
   remoteRuntimeCloneProject: "ade.remoteRuntime.cloneProject",

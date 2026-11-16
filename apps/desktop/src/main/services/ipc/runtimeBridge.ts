@@ -55,6 +55,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeHandoffStoragePreflightArgs,
   RemoteRuntimeHandoffStoragePreflightResult,
+  RemoteProviderSignInCodeResult,
   RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -1636,6 +1637,29 @@ export function registerRuntimeBridge({
     async (_event, arg: { id: string }): Promise<string> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       return await remoteConnectionService.getDefaultParentDir(id);
+    },
+  );
+
+  // A code from a provider's sign-in page, for a sign-in job on that machine
+  // (an ADE Cloud computer waiting on the chat's provider). Always the
+  // target the card names, never this window's machine.
+  handle(
+    IPC.remoteRuntimeSubmitProviderSignInCode,
+    async (_event, arg: { id?: unknown; jobId?: unknown; code?: unknown }): Promise<RemoteProviderSignInCodeResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const jobId = typeof arg?.jobId === "string" ? arg.jobId.trim() : "";
+      const code = typeof arg?.code === "string" ? arg.code.trim() : "";
+      if (!id || !jobId || !code) throw new Error("A sign-in code needs its machine, its sign-in and the code.");
+      const answer = await remoteConnectionService.callMachineMethod<{ state?: unknown; reason?: unknown }>(
+        id,
+        "providers.remoteSignInCode",
+        { jobId, code },
+        { timeoutMs: 45_000 },
+      );
+      return {
+        state: typeof answer?.state === "string" ? answer.state : "unknown",
+        reason: typeof answer?.reason === "string" && answer.reason.trim() ? answer.reason.trim() : null,
+      };
     },
   );
 

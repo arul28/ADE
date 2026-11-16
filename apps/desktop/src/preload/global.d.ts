@@ -1149,6 +1149,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeHandoffStoragePreflightArgs,
   RemoteRuntimeHandoffStoragePreflightResult,
+  RemoteProviderSignInCodeResult,
   RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -1738,6 +1739,12 @@ declare global {
           request: ProjectRemovalRequest,
         ) => Promise<ProjectRemovalOutcome>;
         getDefaultParentDir: (id: string) => Promise<string>;
+        /**
+         * A code from a provider's sign-in page, for a sign-in job on machine
+         * `id` (`providers.remoteSignInCode`). Desktop only: the web sends it
+         * through the account server (`cloudLaunches.sendSignInCode`).
+         */
+        submitProviderSignInCode?: (id: string, args: { jobId: string; code: string }) => Promise<RemoteProviderSignInCodeResult>;
         getHandoffStoragePreflight: (
           id: string,
           input: RemoteRuntimeHandoffStoragePreflightArgs,

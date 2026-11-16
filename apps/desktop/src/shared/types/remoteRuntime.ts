@@ -527,6 +527,13 @@ export type RemoteRuntimeCloneProjectOptions = {
   credentialMode?: "destination_only" | "source_forwarded";
 };
 
+/** The answer to a code sent to a provider sign-in job on a machine (`providers.remoteSignInCode`). */
+export type RemoteProviderSignInCodeResult = {
+  /** `failed` when the provider refused the code; `reason` says why. */
+  state: string;
+  reason: string | null;
+};
+
 export type RemoteRuntimeHandoffStoragePreflightResult = {
   parentDir: string;
   targetPath: string;

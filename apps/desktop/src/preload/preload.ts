@@ -1322,6 +1322,7 @@ import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeHandoffStoragePreflightArgs,
   RemoteRuntimeHandoffStoragePreflightResult,
+  RemoteProviderSignInCodeResult,
   RemoteRuntimeCloneProjectOptions,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -6054,6 +6055,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.remoteRuntimeRemoveProjectCopy, { id, projectId, request }),
     getDefaultParentDir: async (id: string): Promise<string> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetDefaultParentDir, { id }),
+    submitProviderSignInCode: async (id: string, args: { jobId: string; code: string }): Promise<RemoteProviderSignInCodeResult> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeSubmitProviderSignInCode, { id, jobId: args.jobId, code: args.code }),
     getHandoffStoragePreflight: async (
       id: string,
       input: RemoteRuntimeHandoffStoragePreflightArgs,

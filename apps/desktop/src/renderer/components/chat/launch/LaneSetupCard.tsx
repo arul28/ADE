@@ -84,6 +84,7 @@ import {
   normalizeStatus,
   stepCardFrameClass,
 } from "./stepCardParts";
+import { CloudSignInCodeField } from "./CloudSignInCodeField";
 
 /** A launch's own error text without Electron's wrapper; the raw text when the wrapper was all there was. */
 function launchErrorText(raw: string): string {
@@ -589,6 +590,15 @@ export function LaneSetupCard({
             ...(signInDetail ? { detail: signInDetail } : {}),
             ...(signIn.url && !pastesCode ? { actions: [{ label: "Open sign-in", href: signIn.url }] } : {}),
           }}
+        />
+      ) : null}
+      {signIn?.needsPastedCode && signIn.jobId ? (
+        <CloudSignInCodeField
+          key={signIn.jobId}
+          jobId={signIn.jobId}
+          pin={snapshot.cloud?.binding ?? null}
+          instanceId={snapshot.cloud?.instanceId ?? null}
+          className={cn("mt-1.5", metaSize)}
         />
       ) : null}
 

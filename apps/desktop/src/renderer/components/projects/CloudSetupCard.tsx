@@ -155,7 +155,7 @@ function SignInDetail({ signIn, instanceId }: { signIn: CloudLaunchSignIn; insta
               onChange={(event) => setValue(event.target.value)}
             />
             <button type="submit" className="kit-btn" data-size="sm" disabled={busy || !value.trim()}>
-              {busy ? "Sending…" : signIn.kind === "api_key" ? "Save" : "Send"}
+              {busy ? "Sending…" : signIn.kind === "api_key" ? "Save" : "Send code"}
             </button>
           </form>
         ) : null}

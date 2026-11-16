@@ -261,6 +261,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.remoteRuntimeChooseProjectIcon:
     case IPC.remoteRuntimeRemoveProjectIcon:
     case IPC.remoteRuntimeGetDefaultParentDir:
+    // The provider checks the code on that machine.
+    case IPC.remoteRuntimeSubmitProviderSignInCode:
     case IPC.remoteRuntimeCreateProject:
     case IPC.remoteRuntimeCloneProject:
     case IPC.remoteRuntimeListMyGitHubRepos:
