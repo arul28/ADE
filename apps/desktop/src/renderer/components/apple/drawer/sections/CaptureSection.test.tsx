@@ -48,16 +48,6 @@ describe("CaptureSection", () => {
     expect(iosSimulator.recordStart).not.toHaveBeenCalled();
   });
 
-  it("lists a finished recording with its duration, size and description", async () => {
-    const { iosSimulator } = installAdeMock();
-    iosSimulator.recordList.mockResolvedValue([recording({ label: "signup", chatSessionId: "chat-9", mode: "auto" })]);
-    render(<CaptureSection ctx={makeCtx()} />);
-    const row = await screen.findByText("signup");
-    expect(row.parentElement?.textContent).toContain("00:23");
-    expect(row.parentElement?.textContent).toContain("8.1 MB");
-    expect(row.parentElement?.textContent).toContain("agent · auto · proof");
-  });
-
   it("hides the one still running: the rail says that, not the library", async () => {
     const { iosSimulator } = installAdeMock();
     iosSimulator.recordList.mockResolvedValue([

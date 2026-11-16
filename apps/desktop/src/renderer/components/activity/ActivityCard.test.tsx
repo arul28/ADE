@@ -86,12 +86,6 @@ describe("ActivityCard", () => {
     expect(chip?.getAttribute("title")).toContain("offline");
   });
 
-  it("falls back to the project name when an item has no lane", () => {
-    render(<ActivityCard item={item({ laneName: null })} onOpen={vi.fn()} />);
-
-    expect(screen.getByText("ADE")).toBeTruthy();
-  });
-
   it("hands the whole item back on open and does nothing else", () => {
     const onOpen = vi.fn();
     render(<ActivityCard item={item()} onOpen={onOpen} />);

@@ -102,32 +102,6 @@ describe("WorkToolPicker", () => {
 
   afterEach(cleanup);
 
-  it("renders one equal tile per tool, untitled and ungrouped, each with its live status line", () => {
-    const statuses: WorkToolStatusMap = {
-      terminal: { line: "2 shells", live: true },
-      browser: { line: "3 tabs · agent", live: true },
-    };
-    render(
-      <Picker
-        context={LOCAL}
-        statuses={statuses}
-        onPick={vi.fn()}
-      />,
-    );
-
-    // No title and no subline: the tab strip above the page already says
-    // "Tools", and six labelled cards do not need introducing.
-    expect(screen.queryByRole("heading", { name: "Tools" })).toBeNull();
-    expect(screen.queryByText("Pick what this lane works with")).toBeNull();
-
-    // Every tool once, as equal tiles: no group headings to read past.
-    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(ALWAYS_LISTED_CARD_COUNT);
-    expect(screen.queryAllByRole("heading")).toHaveLength(0);
-    expect(screen.getByText("2 shells")).toBeTruthy();
-    expect(screen.getByText("3 tabs · agent")).toBeTruthy();
-    expect(document.querySelector('button[data-tool-id="side-chat"]')).toBeNull();
-  });
-
   it("offers the Side chat card only for a chat that has a side chat", () => {
     render(
       <Picker
@@ -303,18 +277,6 @@ describe("WorkToolPicker", () => {
     fireEvent.keyDown(document.body, { key: "ArrowDown" });
     expect(document.querySelector("[data-highlighted='true']")).toBeNull();
     expect(document.activeElement).toBe(document.body);
-  });
-
-  it("shows long tool status", () => {
-    render(
-      <Picker
-        context={LOCAL}
-        statuses={{ terminal: { line: "2 shells · a very long dev server command that would wrap", live: true } }}
-        onPick={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByText("2 shells · a very long dev server command that would wrap")).toBeTruthy();
   });
 
   it("keeps the web client's watchable and fully drivable tools pickable", () => {

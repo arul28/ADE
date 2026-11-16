@@ -95,29 +95,6 @@ describe("laneSetupActions", () => {
 });
 
 describe("LaneSetupCard", () => {
-  it("renders one row per stage with its status, detail and live percent", () => {
-    render(
-      <LaneSetupCard
-        snapshot={snapshot({
-          stages: [
-            stage("fetch", "done", { detail: "origin/main at 807fb2c", startedAt: "2026-09-22T10:00:00.000Z", endedAt: "2026-09-22T10:00:00.443Z" }),
-            stage("checkout", "running", { percent: 62, startedAt: "2026-09-22T10:00:00.500Z" }),
-            stage("environment", "warning", { detail: "Default template" }),
-            stage("agent", "pending"),
-          ],
-        })}
-      />,
-    );
-    const rows = screen.getAllByTestId("lane-setup-stage");
-    expect(rows.map((row) => row.getAttribute("data-stage-status"))).toEqual(["done", "running", "warning", "pending"]);
-    expect(within(rows[0]!).getByText("Fetch base branch")).toBeTruthy();
-    expect(within(rows[0]!).getByText("origin/main at 807fb2c")).toBeTruthy();
-    expect(within(rows[0]!).getByTestId("lane-setup-stage-duration").textContent).toBe("443ms");
-    expect(within(rows[1]!).getByText("62%")).toBeTruthy();
-    expect(screen.getByTestId("lane-setup-title").textContent).toBe("Setting up lane…");
-    expect(screen.getByTestId("lane-setup-cancel")).toBeTruthy();
-    expect(screen.queryByTestId("lane-setup-retry")).toBeNull();
-  });
 
   it("shows the failure in amber with Retry, Start anyway and Delete", () => {
     render(

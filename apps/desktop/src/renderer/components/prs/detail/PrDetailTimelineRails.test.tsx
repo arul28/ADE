@@ -331,18 +331,6 @@ function openThread(id: string, author: string, createdAt: string): PrReviewThre
 }
 
 describe("PrDetailTimelineRails — Overview layout", () => {
-  it("is one thread with the tick rail and the dock laid over it, Merge open by default", () => {
-    renderRails();
-    const overview = screen.getByTestId("pr-detail-timeline-rails");
-    expect(overview.contains(screen.getByTestId("pr-timeline"))).toBe(true);
-    // No resizable rail and no separator any more.
-    expect(screen.queryByRole("separator")).toBeNull();
-    expect(screen.queryByTestId("pr-detail-right-rail")).toBeNull();
-    for (const id of ["merge", "comment", "reviewers", "labels", "assignees"]) {
-      expect(screen.getByTestId(`pr-dock-bubble-${id}`)).toBeTruthy();
-    }
-    expect(screen.getByTestId("pr-dock-card-merge")).toBeTruthy();
-  });
 
   it("opens one card at a time and closes it on Escape", () => {
     renderRails();

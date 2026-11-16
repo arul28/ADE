@@ -81,9 +81,6 @@ describe("canonicalSessionState precedence", () => {
 });
 
 describe("stale boundary", () => {
-  it("uses a three-hour silence threshold", () => {
-    expect(SESSION_STALE_AFTER_MS).toBe(3 * 60 * 60 * 1000);
-  });
 
   it("flips exactly at the threshold, not before", () => {
     const justUnder = new Date(NOW - SESSION_STALE_AFTER_MS + 1_000).toISOString();

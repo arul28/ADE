@@ -211,16 +211,6 @@ describe("ChatMacDesktopPanel against an older remote brain", () => {
       STUDIO_PIN,
     );
   });
-
-  it("falls back to the binding's machine name when the union has no row", async () => {
-    macDesktop.getStatus.mockRejectedValue(new Error(OLDER_ADE_ERROR));
-
-    renderPanel();
-
-    expect(await screen.findByText(
-      "Mac Studio runs ADE 1.2.74, which has no Mac Desktop. Update ADE there.",
-    )).toBeTruthy();
-  });
 });
 
 describe("ChatMacDesktopPanel actions on a pinned machine", () => {

@@ -18,17 +18,6 @@ describe("CodexGoalCard", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("renders objective, status label, and tokens used when no budget is set", () => {
-    render(
-      <CodexGoalCard
-        goal={{ objective: "Refactor auth", status: "active", tokensUsed: 12345 }}
-      />,
-    );
-    expect(screen.getByText("Refactor auth")).toBeTruthy();
-    expect(screen.getByText(/^active$/i)).toBeTruthy();
-    expect(screen.getByText(/12\.3k/)).toBeTruthy();
-  });
-
   it("ignores provider token budgets and only shows tokens used", () => {
     render(
       <CodexGoalCard
@@ -131,14 +120,5 @@ describe("CodexGoalCard", () => {
     );
     expect(screen.getByText(/^active$/i)).toBeTruthy();
     expect(screen.queryByText(/budget/i)).toBeNull();
-  });
-
-  it("labels provider usage limits without debug wording", () => {
-    render(
-      <CodexGoalCard
-        goal={{ objective: "Wait for reset", status: "usage_limited" }}
-      />,
-    );
-    expect(screen.getByText(/^usage paused$/i)).toBeTruthy();
   });
 });

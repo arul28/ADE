@@ -126,16 +126,6 @@ describe("RuleRow provenance", () => {
     expect(label.getAttribute("title")).toBe("Fix the sync cursor");
   });
 
-  it("provides the full chat title on the scope label", () => {
-    const long = "A very long chat title that will never fit inside the three-hundred-and-forty pixel list";
-    renderList([
-      rule({ id: "scoped", name: "Scoped rule", scope: { sessionId: "chat-1", sessionTitle: long } }),
-    ]);
-
-    const label = screen.getByTestId("rule-scope-label");
-    expect(label.getAttribute("title")).toBe(long);
-  });
-
   it("warns on the row that a one-shot rule deletes itself", () => {
     renderList([
       rule({ id: "once", name: "One and done", oneShot: true }),

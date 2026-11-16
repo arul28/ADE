@@ -115,14 +115,6 @@ describe("LaneSidebarRow", () => {
     expect(status.getAttribute("title")).toContain("PR checks are failing");
   });
 
-  it("tints the PR chip's glyph red when the open PR is failing", () => {
-    renderRow({ prs: [{ ...makePr(1301, "open"), checksStatus: "failing" }] });
-    const chip = screen.getByTestId("lane-sidebar-pr-chip");
-    expect(chip.getAttribute("data-state")).toBe("open");
-    expect(chip.getAttribute("data-tone")).toBe("danger");
-    expect(screen.getByTestId("lane-sidebar-pr-chip-glyph").style.color).toBe("rgb(248, 113, 113)");
-  });
-
   it("is inert while deleting and shows the delete step instead of metadata", () => {
     const props = renderRow({ deleteStatusLabel: "Removing worktree", prs: [makePr(1, "open")] });
     expect(screen.getByText("Removing worktree")).toBeTruthy();

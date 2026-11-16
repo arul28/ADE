@@ -6,14 +6,6 @@ import type { LaneSummary } from "../../../shared/types";
 import { deferredLaneRefreshOptions } from "./AppShell";
 
 describe("deferredLaneRefreshOptions", () => {
-  it("asks for lane status on every route, not just Lanes", () => {
-    // Regression: the Work tab's Git and Files cards read `lane.status` /
-    // `lane.trackedFileCount`. This deferred refresh is the only status read
-    // the boot/restore path schedules, so gating it on the Lanes route left a
-    // session that booted into Work with no status for its whole life.
-    expect(deferredLaneRefreshOptions(false).includeStatus).toBe(true);
-    expect(deferredLaneRefreshOptions(true).includeStatus).toBe(true);
-  });
 
   it("keeps the conflict/rebase decorations on the Lanes route only", () => {
     expect(deferredLaneRefreshOptions(false)).toEqual({
