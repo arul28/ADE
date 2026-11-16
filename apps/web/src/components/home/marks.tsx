@@ -46,12 +46,3 @@ export function LinearMark({ className }: { className?: string }) {
     </svg>
   );
 }
-
-/** Android's robot head (after Simple Icons). */
-export function AndroidMark({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable="false">
-      <path d="M18.44 5.56 16.41 9.06C14.98 8.42 13.4 8.06 12 8.06s-2.98.36-4.41 1L5.56 5.56a.42.42 0 0 0-.72.42l1.94 3.36C3.33 11.04 1.25 14.2 1 17.95h22c-.26-3.75-2.33-6.9-5.55-8.61l1.93-3.36a.42.42 0 0 0-.72-.42ZM6.48 13.34a.87.87 0 1 1 0 1.75.87.87 0 0 1 0-1.75Zm11.04 0a.87.87 0 1 1 0 1.75.87.87 0 0 1 0-1.75Z" />
-    </svg>
-  );
-}
