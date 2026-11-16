@@ -163,6 +163,29 @@ export function useRemoteTargetState(targetId: string | null): "online" | "offli
   );
 }
 
+/**
+ * A mark for the target's current connection: its `connectedAt` while it is
+ * connected (not held after a drop), else "". A new connection, such as an
+ * ADE Cloud computer's new brain after a wake, gives a new mark. Same shared
+ * feed as `useRemoteTargetState`; null target: "", and no feed.
+ */
+export function useRemoteConnectionMark(targetId: string | null): string {
+  const subscribe = useMemo(
+    () => (targetId ? subscribeSharedSnapshot : () => () => undefined),
+    [targetId],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => {
+      if (!targetId) return "";
+      const connection = sharedSnapshot?.connections.find((entry) => entry.target.id === targetId);
+      if (!connection || connection.state !== "connected" || typeof connection.reconnectingSinceMs === "number") return "";
+      return String(connection.connectedAt ?? "");
+    },
+    () => "",
+  );
+}
+
 /** This computer's sync identity, read once per activation through the shared reader. */
 function useThisMachineIdentity(active: boolean): {
   deviceId: string | null;
