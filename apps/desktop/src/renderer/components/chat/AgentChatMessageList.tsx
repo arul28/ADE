@@ -6006,6 +6006,15 @@ const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
  * waiting for the page and still gets it at once.
  */
 const OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS = 400;
+/**
+ * A page that arrives while the reader scrolls (wheel, touch, momentum, a held
+ * press) waits until the scrolling has been quiet this long before it is
+ * prepended. The prepend re-lays out the list and moves scrollTop; inside a
+ * gesture that drops frames and fights the scroll.
+ */
+const OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS = 150;
+/** Longest a page waits for a quiet scroll, so a scroll that never ends (or a lost pointerup) cannot hold it. */
+const OLDER_HISTORY_PREPEND_MAX_HOLD_MS = 2_000;
 function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
   return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
 }
@@ -6361,7 +6370,12 @@ function AgentChatMessageListMain({
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
   /** Called when automatic scroll-back needs an older page. */
-  onLoadOlderHistory?: (options?: { backfill?: boolean }) => void;
+  /**
+   * `whenScrollQuiet` is null while the reader is not scrolling, else a promise
+   * that settles once the scrolling goes quiet. The owner awaits it before it
+   * prepends a page that arrived mid-scroll.
+   */
+  onLoadOlderHistory?: (options?: { backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null }) => void;
   /**
    * Page the rest of the transcript in during idle time. Only for owners whose
    * loader refuses a backfill page that would hit the resident cap (the cap
@@ -6676,6 +6690,28 @@ function AgentChatMessageListMain({
   const readerPointerHeldRef = useRef(false);
   /** When the reader last scrolled (`performance.now()`); backfill waits for a quiet spell. */
   const lastReaderScrollAtRef = useRef(Number.NEGATIVE_INFINITY);
+  /** A finger is on the list: a touch scroll can pause without lifting. */
+  const touchHeldRef = useRef(false);
+  /** See `OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS`. Null at once when nothing is scrolling. */
+  const whenScrollQuiet = useCallback((): Promise<void> | null => {
+    const busyFor = () => {
+      if (readerPointerHeldRef.current || touchHeldRef.current) return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS;
+      return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS - (performance.now() - lastReaderScrollAtRef.current);
+    };
+    if (busyFor() <= 0) return null;
+    const giveUpAt = performance.now() + OLDER_HISTORY_PREPEND_MAX_HOLD_MS;
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        const wait = busyFor();
+        if (wait <= 0 || performance.now() >= giveUpAt) {
+          resolve();
+          return;
+        }
+        setTimeout(check, Math.max(16, Math.min(wait, giveUpAt - performance.now())));
+      };
+      check();
+    });
+  }, []);
   const armOlderHistoryBackfill = useCallback(() => {
     const { armed, key } = backfillArmStateRef.current;
     if (armed) return;
@@ -6710,8 +6746,8 @@ function AgentChatMessageListMain({
       if (autoOlderLoadsSinceUserScrollRef.current >= MAX_CHAINED_AUTO_OLDER_PAGES) return;
       autoOlderLoadsSinceUserScrollRef.current += 1;
     }
-    onLoadOlderHistoryRef.current?.(source === "backfill" ? { backfill: true } : undefined);
-  }, []);
+    onLoadOlderHistoryRef.current?.({ backfill: source === "backfill", whenScrollQuiet });
+  }, [whenScrollQuiet]);
 
   // Re-arm after a batch that changed nothing visible.
   //
@@ -8889,6 +8925,7 @@ function AgentChatMessageListMain({
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     noteReaderScrollIntent();
+    touchHeldRef.current = true;
     lastTouchYRef.current = event.touches[0]?.clientY ?? null;
   }, [noteReaderScrollIntent]);
 
@@ -8922,8 +8959,11 @@ function AgentChatMessageListMain({
     lastTouchYRef.current = nextY;
   }, [noteReaderScrollDirection]);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     lastTouchYRef.current = null;
+    touchHeldRef.current = event.touches.length > 0;
+    // A fling keeps scrolling after the finger lifts; those scroll events keep the hold.
+    lastReaderScrollAtRef.current = performance.now();
   }, []);
 
   const jumpToLatest = useCallback(() => {

@@ -5991,6 +5991,11 @@ export function AgentChatPane({
     }
   }, [setAttachments]);
   const updateSubmittedDraftTextEdit = useCallback((value: SubmittedDraftTextEdit | null) => {
+    // Every keystroke calls this, nearly always with null again. React cannot
+    // drop a same-value write while the pane has other updates queued (a
+    // streaming chat), so each such write rendered the whole pane.
+    const current = submittedDraftTextEditRef.current;
+    if (current === value || (current && value && current.submittedText === value.submittedText && current.kind === value.kind)) return;
     submittedDraftTextEditRef.current = value;
     setSubmittedDraftTextEdit(value);
   }, []);
@@ -9455,7 +9460,7 @@ export function AgentChatPane({
   const loadOlderHistory = useCallback(async (
     sessionId: string,
     pin: OpenProjectBinding | null,
-    options?: { interactive?: boolean; backfill?: boolean },
+    options?: { interactive?: boolean; backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null },
   ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
     if (cursor == null) {
@@ -9524,6 +9529,14 @@ export function AgentChatPane({
         }, chatPin)),
       });
       if (!batch || !isCurrentRequest()) return false;
+      // A page that arrives mid-scroll waits for the scroll to go quiet: the
+      // prepend moves scrollTop and re-lays out the list. The merge below then
+      // reads the events as they are after the wait (streamed ones included).
+      const scrollQuiet = batch.events.length > 0 ? options?.whenScrollQuiet?.() : null;
+      if (scrollQuiet) {
+        await scrollQuiet;
+        if (!isCurrentRequest()) return false;
+      }
       const { events: olderEvents, nextCursor } = batch;
       if (olderEvents.length) {
         const existing = eventsBySessionRef.current[sessionId] ?? [];
@@ -18323,8 +18336,11 @@ export function AgentChatPane({
   // mounted transcript row each time.
   const listLoadOlderHistory = useLatestCallback(
     !subagentView && renderedSessionId
-      ? (options?: { backfill?: boolean }) => {
-          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, { backfill: options?.backfill });
+      ? (options?: { backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null }) => {
+          void loadOlderHistory(renderedSessionId, renderedChatRuntimePin, {
+            backfill: options?.backfill,
+            whenScrollQuiet: options?.whenScrollQuiet,
+          });
         }
       : undefined,
   );

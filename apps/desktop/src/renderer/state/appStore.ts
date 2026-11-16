@@ -2,7 +2,7 @@ import React, { useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { shallow } from "zustand/shallow";
-import { reuseStructurallyEqualArray } from "../lib/stableIdentity";
+import { reconcileRowsById, reconcileRowsByKey, reuseStructurallyEqualArray } from "../lib/stableIdentity";
 import { setTabBindingKey } from "../lib/tabBindingKey";
 import type { StateCreator } from "zustand";
 import {
@@ -1153,6 +1153,46 @@ function readPersistedLaneCache(projectRoot: string | null | undefined): WarmLan
   }
 }
 
+const laneSnapshotKey = (snapshot: LaneListSnapshot): string => snapshot.lane.id;
+
+/** A re-read list with each unchanged row's previous object kept (see `reconcileRowsById`). */
+function reconcileIncomingRows<T extends { id: string }>(incoming: T[] | undefined, current: T[] | undefined): T[] | undefined {
+  return incoming && current ? reconcileRowsById(current, incoming) : incoming;
+}
+
+function sameTerminalAttention(a: TerminalAttentionSnapshot, b: TerminalAttentionSnapshot): boolean {
+  return a === b || (
+    a.runningCount === b.runningCount
+    && a.activeCount === b.activeCount
+    && a.needsAttentionCount === b.needsAttentionCount
+    && a.indicator === b.indicator
+  );
+}
+
+function sameCtoAttention(a: CtoAttentionState, b: CtoAttentionState): boolean {
+  return a === b || (a.status === b.status && a.awaitingInput === b.awaitingInput && a.since === b.since);
+}
+
+/** The list each project's lane cache last saved, and when. */
+const persistedLaneCacheByProject = new Map<string, { lanes: LaneSummary[]; savedAt: number }>();
+/** Re-save an unchanged list this often, so its `savedAt` never ages out of the TTL while ADE runs. */
+const LANE_CACHE_RESAVE_MS = 60 * 60 * 1000;
+
+/**
+ * `persistLaneCache`, skipped when this exact list was saved in the last hour.
+ * A lane refresh runs on many events; most return the same lanes, and each
+ * save serializes every lane into localStorage on the main thread.
+ */
+function persistLaneCacheIfChanged(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
+  const projectKey = normalizeProjectKey(projectRoot);
+  if (!projectKey) return;
+  const last = persistedLaneCacheByProject.get(projectKey);
+  const now = Date.now();
+  if (last?.lanes === lanes && now - last.savedAt < LANE_CACHE_RESAVE_MS) return;
+  persistedLaneCacheByProject.set(projectKey, { lanes, savedAt: now });
+  persistLaneCache(projectKey, lanes);
+}
+
 function persistLaneCache(projectRoot: string | null | undefined, lanes: LaneSummary[]): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey || lanes.length === 0) return;
@@ -1235,6 +1275,7 @@ function rememberKnownProjectInfo(project: ProjectInfo): void {
 function removePersistedLaneCache(projectRoot: string | null | undefined): void {
   const projectKey = normalizeProjectKey(projectRoot);
   if (!projectKey) return;
+  persistedLaneCacheByProject.delete(projectKey);
   try {
     window.localStorage.removeItem(laneCacheStorageKey(projectKey));
   } catch {
@@ -2893,10 +2934,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   setLaneDeleteProgressByLaneId: (next) =>
-    set((prev) => ({
-      laneDeleteProgressByLaneId:
-        typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next,
-    })),
+    set((prev) => {
+      const laneDeleteProgressByLaneId = typeof next === "function" ? next(prev.laneDeleteProgressByLaneId) : next;
+      return laneDeleteProgressByLaneId === prev.laneDeleteProgressByLaneId ? prev : { laneDeleteProgressByLaneId };
+    }),
   selectLane: (laneId) =>
     set((prev) => {
       const projectKey = selectActiveProjectStateKey(prev);
@@ -2941,7 +2982,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       ) ?? null;
       const intendedChanged = stableIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
 
-      if (!scopeChanged && !intendedChanged) return {};
+      if (!scopeChanged && !intendedChanged) return prev;
       // Identity matters: consumers select this record straight out of the
       // store, so a fresh `{}` on every call would re-render the whole sidebar.
       const alreadyEmpty = Object.keys(prev.crossMachineLanesByMachineId).length === 0;
@@ -2955,15 +2996,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   mergeCrossMachineLanes: (entry) =>
     set((prev) => {
       const machineId = entry.machineId.trim();
-      if (!machineId) return {};
+      if (!machineId) return prev;
       const nextIntendedMachineIds = prev.crossMachineLaneIntendedMachineIds?.includes(machineId)
         ? prev.crossMachineLaneIntendedMachineIds
         : [...(prev.crossMachineLaneIntendedMachineIds ?? []), machineId].sort();
       const intendedChanged = nextIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
-      const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
-      const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
-      const prs = reuseStructurallyEqualArray(entry.prs, previous?.prs);
+      // Per row, not per list: a running chat on that machine changes its row
+      // on every read, and the other rows keep their objects.
+      const lanes = reconcileIncomingRows(entry.lanes, previous?.lanes);
+      const sessions = reconcileIncomingRows(entry.sessions, previous?.sessions);
+      const prs = reconcileIncomingRows(entry.prs, previous?.prs);
       const incomingBinding =
         entry.binding !== undefined ? entry.binding : previous?.binding ?? null;
       const binding = reuseStructurallyEqualValue(incomingBinding, previous?.binding ?? null);
@@ -3021,7 +3064,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.error === next.error
         && (previous.failedReads ?? 0) === next.failedReads
       );
-      if (sliceUnchanged && !intendedChanged) return {};
+      if (sliceUnchanged && !intendedChanged) return prev;
       return {
         ...(sliceUnchanged
           ? {}
@@ -3056,7 +3099,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : { ...entry, online: false };
         changed = true;
       }
-      return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
+      return changed ? { crossMachineLanesByMachineId: nextRecord } : prev;
     }),
 
   dropCrossMachineLanes: (machineIds) =>
@@ -3083,13 +3126,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               ? { crossMachineLaneIntendedMachineIds: nextIntendedMachineIds }
               : {}),
           }
-        : {};
+        : prev;
     }),
 
   setCloudSessionWaking: (sessionId, since) =>
     set((prev) => {
       const current = prev.cloudWakingSinceBySessionId[sessionId];
-      if (since ? current === since : current === undefined) return {};
+      if (since ? current === since : current === undefined) return prev;
       const next = { ...prev.cloudWakingSinceBySessionId };
       if (since) next[sessionId] = since;
       else delete next[sessionId];
@@ -3284,8 +3327,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, terminalPreferences: updated });
       return { terminalPreferences: updated };
     }),
-  setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
-  setCtoAttention: (ctoAttention) => set({ ctoAttention }),
+  // Both are re-read on session and chat events. An equal read keeps the
+  // current object, so the badges that select it do not render again.
+  setTerminalAttention: (terminalAttention) =>
+    set((prev) => (sameTerminalAttention(prev.terminalAttention, terminalAttention) ? prev : { terminalAttention })),
+  setCtoAttention: (ctoAttention) =>
+    set((prev) => (sameCtoAttention(prev.ctoAttention, ctoAttention) ? prev : { ctoAttention })),
   setSmartTooltipsEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
@@ -3586,43 +3633,76 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             }
           }
         }
-        const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-        const nextSnapshots: LaneListSnapshot[] =
-          laneSnapshots ??
-          prev.laneSnapshots
-            .filter((snapshot) => allowed.has(snapshot.lane.id))
-            .map((snapshot) => {
-              const nextLane = lanesById.get(snapshot.lane.id);
-              return nextLane ? { ...snapshot, lane: nextLane } : snapshot;
-            });
+        // Every read builds new objects. Keep the previous object of each lane
+        // and snapshot whose contents did not change, and the previous list
+        // when nothing changed, so readers of `lanes` (and per-lane selectors)
+        // do not render again for an equal list.
+        const nextLanes = reconcileRowsById(prev.lanes, lanes);
+        const lanesById = new Map(nextLanes.map((lane) => [lane.id, lane] as const));
+        const reconciledSnapshots = reconcileRowsByKey(
+          prev.laneSnapshots,
+          laneSnapshots ?? prev.laneSnapshots.filter((snapshot) => allowed.has(snapshot.lane.id)),
+          laneSnapshotKey,
+        );
+        // Each snapshot carries the same lane object as `lanes`.
+        let snapshotLaneMoved = false;
+        const snapshotsWithLanes = reconciledSnapshots.map((snapshot) => {
+          const nextLane = lanesById.get(snapshot.lane.id);
+          if (!nextLane || nextLane === snapshot.lane) return snapshot;
+          snapshotLaneMoved = true;
+          return { ...snapshot, lane: nextLane };
+        });
+        const nextSnapshots: LaneListSnapshot[] = snapshotLaneMoved ? snapshotsWithLanes : reconciledSnapshots;
         if (removedLaneScopeKeys.length > 0) {
           persistWorkViewState({ deleteLaneScopeKeys: removedLaneScopeKeys });
         }
+        // Both are subsets of the previous record: an equal size means equal.
+        const keptTabs = Object.keys(nextTabs).length === Object.keys(prev.laneInspectorTabs).length
+          ? prev.laneInspectorTabs
+          : nextTabs;
+        const keptLaneWorkViews = removedLaneScopeKeys.length === 0 ? prev.laneWorkViewByScope : nextLaneWorkViews;
         // Cache the lane list per project root so the next switch back to this
         // project can apply lanes immediately (no flicker, no chat unmount).
         const activeProjectKey = selectActiveProjectStateKey(get());
+        const cachedEntry = activeProjectKey ? prev.laneCacheByProject[activeProjectKey] : undefined;
         const nextLaneCache = activeProjectKey
+          && !(cachedEntry?.lanes === nextLanes && cachedEntry.laneSnapshots === nextSnapshots)
           ? {
               ...prev.laneCacheByProject,
-              [activeProjectKey]: { lanes, laneSnapshots: nextSnapshots },
+              [activeProjectKey]: { lanes: nextLanes, laneSnapshots: nextSnapshots },
             }
           : prev.laneCacheByProject;
-        persistLaneCache(activeProjectKey, lanes);
+        persistLaneCacheIfChanged(activeProjectKey, nextLanes);
+        const nextLaneStatusStale = currentRequest.includeStatus
+          ? false
+          : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS;
+        // Nothing changed: skip the write, so no subscriber runs at all.
+        if (
+          nextLanes === prev.lanes
+          && nextSnapshots === prev.laneSnapshots
+          && !prev.lanesLoading
+          && prev.lanesLoadError === null
+          && nextLaneStatusStale === prev.laneStatusStale
+          && nextSelected === prev.selectedLaneId
+          && keptTabs === prev.laneInspectorTabs
+          && keptLaneWorkViews === prev.laneWorkViewByScope
+          && nextLaneCache === prev.laneCacheByProject
+        ) {
+          return prev;
+        }
         return {
           laneSnapshots: nextSnapshots,
-          lanes,
+          lanes: nextLanes,
           lanesLoading: false,
           lanesLoadError: null,
           // A measured read replaces the numbers and their flag together. A
           // status-less one only carries numbers forward: they stay as fresh
           // as they were, unless they have aged out or a lane arrived with
           // only the brain's 0/0 placeholder.
-          laneStatusStale: currentRequest.includeStatus
-            ? false
-            : prev.laneStatusStale || statusUnknownForSomeLane || laneStatusAgeMs(requestedProjectKey) >= LANE_STATUS_MAX_AGE_MS,
+          laneStatusStale: nextLaneStatusStale,
           selectedLaneId: nextSelected,
-          laneInspectorTabs: nextTabs,
-          laneWorkViewByScope: nextLaneWorkViews,
+          laneInspectorTabs: keptTabs,
+          laneWorkViewByScope: keptLaneWorkViews,
           laneCacheByProject: nextLaneCache,
         };
       });

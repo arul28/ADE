@@ -121,6 +121,17 @@ function createInitialState(): Pick<
   };
 }
 
+/** The same keys holding the same objects. */
+function sameRecordValues<V>(previous: Record<string, V>, next: Record<string, V>): boolean {
+  if (previous === next) return true;
+  const keys = Object.keys(next);
+  if (keys.length !== Object.keys(previous).length) return false;
+  for (const key of keys) {
+    if (previous[key] !== next[key]) return false;
+  }
+  return true;
+}
+
 export const activityStore = createStore<ActivityStoreState>((set) => ({
   ...createInitialState(),
   resetStream: () =>
@@ -173,6 +184,13 @@ export const activityStore = createStore<ActivityStoreState>((set) => ({
       for (const [itemId, item] of Object.entries(itemsById)) {
         const presence = presenceByMachine.get(item.machine.machineKey);
         if (!presence) continue;
+        // Every read carries presence for every machine. A row whose machine
+        // did not change keeps its object, so its readers do not render again.
+        if (
+          item.machine.name === presence.name
+          && item.machine.online === presence.online
+          && item.machine.lastSeenAt === presence.lastSeenAt
+        ) continue;
         itemsById[itemId] = {
           ...item,
           machine: {
@@ -190,8 +208,8 @@ export const activityStore = createStore<ActivityStoreState>((set) => ({
         streamId: incomingStreamId ?? (streamReset ? null : state.streamId),
         revision: snapshot.revision,
         generatedAt: snapshot.generatedAt,
-        itemsById,
-        tombstonesById,
+        itemsById: sameRecordValues(state.itemsById, itemsById) ? state.itemsById : itemsById,
+        tombstonesById: sameRecordValues(state.tombstonesById, tombstonesById) ? state.tombstonesById : tombstonesById,
         syncStatus: "ready",
         syncError: null,
         pendingAcknowledgements: streamReset ? {} : state.pendingAcknowledgements,
