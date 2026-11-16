@@ -18,7 +18,10 @@ import {
   type CloudPlanId,
   type CloudTierId,
 } from "../../../account-directory/src/cloud/contract";
-import { CLOUD_PLANS, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudCatalog } from "../../../account-directory/src/cloud/plans";
+import { CLOUD_PLANS, DISK_ON_CREATE_GB, EXTRA_DISK_CENTS_PER_10GB_MONTH, cloudCatalog } from "../../../account-directory/src/cloud/plans";
+
+/** The disk each new computer takes from the plan's shared disk. */
+export const COMPUTER_START_DISK_GB = DISK_ON_CREATE_GB;
 
 /** Hours are kept in thousandths of a Small-hour. */
 const hoursOf = (milli: number): number => Math.round(milli / 1000);
@@ -137,6 +140,8 @@ export type PlanCost = {
   extraHours: number;
   /** Hours of the plan left unused. */
   spareHours: number;
+  /** GB past the plan's shared disk that the computers need, bought as extra disk. */
+  extraDiskGb: number;
 };
 
 /**
@@ -144,13 +149,17 @@ export type PlanCost = {
  * first. Free can run it only inside its own hours (work stops there); a
  * paid plan runs past its hours with extra hours turned on.
  */
-export function planCostsFor(hours: number): PlanCost[] {
+export function planCostsFor(hours: number, diskGb = 0): PlanCost[] {
   const needed = Math.max(0, hours);
   return PRICING_PLANS.flatMap((plan): PlanCost[] => {
     const extraHours = Math.max(0, needed - plan.hours);
+    // Free can buy neither: past its hours or its disk, it doesn't run the month.
     if (extraHours > 0 && plan.extraHourCents == null) return [];
-    const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100;
-    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed) }];
+    const extraDiskGb = Math.max(0, diskGb - plan.diskGb);
+    if (extraDiskGb > 0 && plan.extraHourCents == null) return [];
+    const extraDiskUsd = Math.ceil(extraDiskGb / 10) * EXTRA_DISK_USD_PER_10GB_MONTH;
+    const costUsd = plan.priceUsd + (extraHours * (plan.extraHourCents ?? 0)) / 100 + extraDiskUsd;
+    return [{ plan, costUsd, extraHours, spareHours: Math.max(0, plan.hours - needed), extraDiskGb }];
   }).sort((a, b) => a.costUsd - b.costUsd || b.spareHours - a.spareHours);
 }
 
@@ -167,8 +176,8 @@ export const formatUsd = (usd: number): string => {
  * more: a person rarely wants a bill that grows with every hour to save a
  * dollar or two.
  */
-export function suggestPlan(hours: number): { pick: PlanCost; other: PlanCost | null } | null {
-  const costs = planCostsFor(hours);
+export function suggestPlan(hours: number, diskGb = 0): { pick: PlanCost; other: PlanCost | null } | null {
+  const costs = planCostsFor(hours, diskGb);
   const cheapest = costs[0];
   if (!cheapest) return null;
   const covered = costs.find((cost) => cost.extraHours === 0) ?? null;

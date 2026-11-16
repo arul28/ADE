@@ -23,6 +23,7 @@ import {
   formatUsd,
   planDayLine,
   suggestPlan,
+  COMPUTER_START_DISK_GB,
   type PricingPlan,
   type PricingSize,
 } from "../../lib/cloudPricing";
@@ -246,7 +247,9 @@ function PlanFinder() {
 
   const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL;
   const hours = Math.round(computers * hoursEach * size.rate);
-  const suggestion = suggestPlan(hours);
+  // Each computer takes its starting disk from the plan's shared disk.
+  const diskGb = computers * COMPUTER_START_DISK_GB;
+  const suggestion = suggestPlan(hours, diskGb);
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
 
@@ -325,7 +328,9 @@ function PlanFinder() {
                   <span className="ml-2 font-sans text-[15px] tracking-normal text-white/45">a month</span>
                 </p>
                 <p className="mt-4 text-[15px] leading-[1.6] text-white/65">
-                  {best.extraHours > 0
+                  {best.extraDiskGb > 0
+                    ? `${computers} computers need ${diskGb} GB of disk. ${best.plan.name} includes ${best.plan.diskGb} GB; the other ${best.extraDiskGb} GB is extra disk at $${EXTRA_DISK_USD_PER_10GB_MONTH} for each 10 GB.${best.extraHours > 0 ? ` Extra hours cost ${formatCents(best.plan.extraHourCents ?? 0)} each.` : ""}`
+                    : best.extraHours > 0
                     ? `${best.plan.name} includes ${hoursWord(best.plan.hours)}. The other ${hoursWord(best.extraHours)} cost ${formatCents(best.plan.extraHourCents ?? 0)} each, with extra hours turned on.`
                     : best.plan.priceUsd === 0
                       ? `That fits in the free ${hoursWord(best.plan.hours)}.`
