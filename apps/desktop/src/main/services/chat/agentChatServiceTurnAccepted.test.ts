@@ -4,23 +4,45 @@ import {
   mockState,
 } from "./agentChatService.testHarness";
 import { TURN_ACCEPTED_START_TIMEOUT_MS } from "./agentChatService";
-import { describe, expect, it, vi } from "vitest";
+import { installProviderLoginGate } from "../providerLogins/providerLoginHooks";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 type ChatService = ReturnType<typeof createService>["service"];
 
+afterEach(() => {
+  installProviderLoginGate(null);
+});
+
 /**
- * Sends a message whose provider start never answers, and checks it is in
- * flight. The caller enables fake timers and restores them.
+ * Holds every turn before its provider starts, the way a cloud computer's
+ * sign-in gate does while it fetches a fresh sign-in. The send is accepted but
+ * its turn has not started or shown, so the chat reads idle with the marker.
+ */
+function holdTurnsAtSignInGate(): { release: () => void } {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  installProviderLoginGate(async () => {
+    await held;
+  });
+  return { release };
+}
+
+/**
+ * Sends a message that waits before its provider starts, and checks it is in
+ * flight. The OpenCode session setup behind the gate never answers until the
+ * test fails it. The caller enables fake timers and restores them.
  */
 async function sendWhoseStartNeverAnswers(service: ChatService, sessionId: string) {
-  // The OpenCode runtime is still starting: its session setup never answers.
+  const gate = holdTurnsAtSignInGate();
   let failSetup!: (error: Error) => void;
   mockState.openCodeSessionCreateBarrier = new Promise<void>((_resolve, reject) => {
     failSetup = reject;
   });
   await service.sendMessage({ sessionId, text: "Start the work." });
   expect((await service.getSessionSummary(sessionId))?.turnAcceptedAt).toBeTruthy();
-  return { failSetup };
+  return { release: gate.release, failSetup };
 }
 
 const isSessionMetaUpdated = (envelope: AgentChatEventEnvelope): boolean =>
@@ -38,34 +60,16 @@ describe("an accepted send whose provider start never completes", () => {
       model: "",
       modelId: "opencode/anthropic/claude-sonnet-5",
     });
-    // The OpenCode runtime is still starting: its session setup never answers.
-    let failSetup!: (error: Error) => void;
-    mockState.openCodeSessionCreateBarrier = new Promise<void>((_resolve, reject) => {
-      failSetup = reject;
-    });
-
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let stuckStart!: Awaited<ReturnType<typeof sendWhoseStartNeverAnswers>>;
     try {
-      await service.sendMessage({ sessionId: session.id, text: "Start the work." });
+      stuckStart = await sendWhoseStartNeverAnswers(service, session.id);
 
-      // The start moves on the fake clock. Count every advance, so the bound is
-      // measured from acceptance.
-      let elapsedMs = 0;
-      const advance = async (ms: number): Promise<void> => {
-        await vi.advanceTimersByTimeAsync(ms);
-        elapsedMs += ms;
-      };
-      for (let i = 0; i < 100 && mockState.openCodeServeLaunches === 0; i += 1) {
-        await advance(100);
-      }
-      expect(mockState.openCodeServeLaunches).toBe(1);
-      expect((await service.getSessionSummary(session.id))?.turnAcceptedAt).toBeTruthy();
-
-      await advance(TURN_ACCEPTED_START_TIMEOUT_MS - 1 - elapsedMs);
+      await vi.advanceTimersByTimeAsync(TURN_ACCEPTED_START_TIMEOUT_MS - 1);
       expect((await service.getSessionSummary(session.id))?.turnAcceptedAt).toBeTruthy();
 
       const eventsBeforeBound = events.length;
-      await advance(1);
+      await vi.advanceTimersByTimeAsync(1);
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.status).toBe("idle");
       expect(summary?.turnAcceptedAt).toBeUndefined();
@@ -75,9 +79,10 @@ describe("an accepted send whose provider start never completes", () => {
       vi.useRealTimers();
     }
 
-    // The bound only stops the row reading as working. The start that never
-    // answered still fails eventually, and that failure still reaches the chat.
-    failSetup(new Error("OpenCode session setup failed."));
+    // The bound only stops the row reading as working. The start goes on once
+    // the gate lets it, and a start that then fails still reaches the chat.
+    stuckStart.release();
+    stuckStart.failSetup(new Error("OpenCode session setup failed."));
     await vi.waitFor(() => {
       expect(events.some((envelope) =>
         envelope.event.type === "error" && envelope.event.message === "OpenCode session setup failed.",
@@ -98,10 +103,9 @@ describe("an accepted send whose provider start never completes", () => {
     });
 
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    let failSetup: ((error: Error) => void) | undefined;
+    let stuckStart: Awaited<ReturnType<typeof sendWhoseStartNeverAnswers>> | undefined;
     try {
-      const stuckStart = await sendWhoseStartNeverAnswers(service, session.id);
-      failSetup = stuckStart.failSetup;
+      stuckStart = await sendWhoseStartNeverAnswers(service, session.id);
       // Half the bound in: the chat still reads as in flight.
       await vi.advanceTimersByTimeAsync(TURN_ACCEPTED_START_TIMEOUT_MS / 2);
       expect((await service.getSessionSummary(session.id))?.turnAcceptedAt).toBeTruthy();
@@ -116,7 +120,8 @@ describe("an accepted send whose provider start never completes", () => {
       expect(events.slice(eventsAfterArchive).some(isSessionMetaUpdated)).toBe(false);
     } finally {
       vi.useRealTimers();
-      failSetup?.(new Error("OpenCode session setup failed."));
+      stuckStart?.release();
+      stuckStart?.failSetup(new Error("OpenCode session setup failed."));
     }
   });
 
@@ -133,10 +138,9 @@ describe("an accepted send whose provider start never completes", () => {
     });
 
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    let failSetup: ((error: Error) => void) | undefined;
+    let stuckStart: Awaited<ReturnType<typeof sendWhoseStartNeverAnswers>> | undefined;
     try {
-      const stuckStart = await sendWhoseStartNeverAnswers(service, session.id);
-      failSetup = stuckStart.failSetup;
+      stuckStart = await sendWhoseStartNeverAnswers(service, session.id);
       await vi.advanceTimersByTimeAsync(TURN_ACCEPTED_START_TIMEOUT_MS / 2);
 
       // The bound is the timer still pending for the chat. Dispose cancels it.
@@ -150,7 +154,53 @@ describe("an accepted send whose provider start never completes", () => {
       expect(events.slice(eventsAfterDispose).some(isSessionMetaUpdated)).toBe(false);
     } finally {
       vi.useRealTimers();
-      failSetup?.(new Error("OpenCode session setup failed."));
+      stuckStart?.release();
+      stuckStart?.failSetup(new Error("OpenCode session setup failed."));
     }
+  });
+});
+
+describe("a cold send whose provider is still starting", () => {
+  it("is active at once, under the turn its start error later ends", async () => {
+    // An OpenCode chat with no runtime: the session setup is slow, then fails.
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "",
+      modelId: "opencode/anthropic/claude-sonnet-5",
+    });
+    let failSetup!: (error: Error) => void;
+    mockState.openCodeSessionCreateBarrier = new Promise<void>((_resolve, reject) => {
+      failSetup = reject;
+    });
+
+    await service.sendMessage({ sessionId: session.id, text: "Start the work." });
+
+    // The turn shows before the start answers: the message, then `started`, and
+    // the chat reads as working, not as merely accepted.
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.status).toBe("active");
+    expect(summary?.turnAcceptedAt).toBeUndefined();
+    const started = events.find((envelope) =>
+      envelope.event.type === "status" && envelope.event.turnStatus === "started");
+    const turnId = (started?.event as { turnId?: string } | undefined)?.turnId;
+    expect(turnId).toBeTruthy();
+    expect(events.some((envelope) =>
+      envelope.event.type === "user_message" && (envelope.event as { turnId?: string }).turnId === turnId)).toBe(true);
+
+    // The start fails: that same turn ends with the error, and nothing is left working.
+    failSetup(new Error("OpenCode session setup failed."));
+    await vi.waitFor(() => {
+      expect(events.some((envelope) => envelope.event.type === "done")).toBe(true);
+    });
+    const ofTurn = (type: string) => events.filter((envelope) => envelope.event.type === type)
+      .map((envelope) => envelope.event as { turnId?: string; message?: string; status?: string });
+    expect(ofTurn("error")).toEqual([expect.objectContaining({ turnId, message: "OpenCode session setup failed." })]);
+    expect(ofTurn("done")).toEqual([expect.objectContaining({ turnId, status: "failed" })]);
+    expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
   });
 });
