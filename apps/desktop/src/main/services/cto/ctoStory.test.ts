@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   acceptCtoStoryAnswer,
   buildCtoHistoryBlock,
@@ -8,7 +8,9 @@ import {
   planCtoStoryFold,
   selectCtoTail,
   type CtoStoryEntry,
+  type CtoStoryRecord,
 } from "./ctoStory";
+import { createCtoStoryUpdater, type CtoStorySession } from "./ctoStoryUpdater";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 16, 9, minute)).toISOString();
 const entries = (count: number, chars: number, startMinute = 0): CtoStoryEntry[] =>
@@ -128,5 +130,79 @@ describe("cleanCtoStoryAnswer", () => {
 
   it("clips an overlong answer under the ceiling", () => {
     expect(cleanCtoStoryAnswer("line\n".repeat(5_000))!.length).toBeLessThanOrEqual(12_000 + 20);
+  });
+});
+
+describe("createCtoStoryUpdater", () => {
+  const storyText = (label: string) => `## Where things stand\n${label}`.padEnd(3_000, ".");
+  const makeStore = (initial: CtoStoryRecord | null) => {
+    let record = initial;
+    let unreadable = false;
+    const writes: CtoStoryRecord[] = [];
+    return {
+      writes,
+      get: () => record,
+      set: (next: CtoStoryRecord | null) => { record = next; },
+      breakFile: () => { unreadable = true; },
+      readStory: () => {
+        if (unreadable) throw new Error("locked");
+        return record;
+      },
+      writeStory: (next: CtoStoryRecord) => { record = next; writes.push(next); },
+    };
+  };
+  const silent = { info: () => {}, warn: () => {} };
+  const session = (runPrompt: CtoStorySession["runPrompt"]): CtoStorySession => ({
+    id: "cto-1",
+    isGone: () => false,
+    readEntries: () => entries(50, 2_000),
+    pickModel: async () => "anthropic/claude-haiku-5-5",
+    runPrompt,
+  });
+
+  it("never replaces the story with a refusal or over a file it can't read", async () => {
+    const existing: CtoStoryRecord = { v: 1, summary: storyText("old"), coveredThrough: at(0), startsAt: at(0), updatedAt: at(0), model: null };
+    const store = makeStore(existing);
+    const updater = createCtoStoryUpdater({ readStory: store.readStory, writeStory: store.writeStory, timeZone: () => null, logger: silent });
+    const prompts: string[] = [];
+    await updater.update(session(async ({ prompt }) => { prompts.push(prompt); return { text: "I'm sorry, but I can't summarize this conversation." }; }), { force: true, reason: "test" });
+    expect(prompts).toHaveLength(1);
+    expect(store.writes).toHaveLength(0);
+    expect(store.get()).toBe(existing);
+
+    // An unreadable file is not "no story": no helper call, no write.
+    store.breakFile();
+    let helperCalls = 0;
+    await updater.update(session(async () => { helperCalls += 1; return { text: storyText("new") }; }), { force: true, reason: "test" });
+    expect(helperCalls).toBe(0);
+    expect(store.writes).toHaveLength(0);
+  });
+
+  it("runs one update at a time, runs a queued one after, and drops an answer a move superseded", async () => {
+    const store = makeStore(null);
+    const updater = createCtoStoryUpdater({ readStory: store.readStory, writeStory: store.writeStory, timeZone: () => null, logger: silent });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const moved: CtoStoryRecord = { v: 1, summary: storyText("moved"), coveredThrough: at(5), startsAt: at(0), updatedAt: at(5), model: null, movedAt: at(5) };
+    const first = updater.update(session(async () => {
+      calls += 1;
+      if (calls === 1) {
+        await gate;
+        // A move replaced the story while the helper ran.
+        store.set(moved);
+      }
+      return { text: storyText(`run ${calls}`) };
+    }), { reason: "turns" });
+    const second = updater.update(session(async () => ({ text: "unused" })), { force: true, reason: "refresh" });
+    expect(second).toBe(first);
+    release();
+    await first;
+    // The first run's answer lost to the move; the queued run folded on top of the moved story.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(store.writes.length).toBeGreaterThan(0));
+    expect(store.writes.every((write) => write.summary !== storyText("run 1"))).toBe(true);
+    expect(store.get()!.startsAt).toBe(at(0));
+    expect(store.get()!.coveredThrough > moved.coveredThrough).toBe(true);
   });
 });
