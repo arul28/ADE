@@ -22,7 +22,8 @@ describe("active-turn dispatch modes", () => {
     // Cursor gained inline with `Run.steer()` in @cursor/sdk 1.0.31.
     expect(activeTurnDispatchModes("cursor")).toEqual(["inline", "queue", "interrupt"]);
     expect(activeTurnDispatchModes("opencode")).toEqual(["inline", "queue"]);
-    for (const provider of ["droid", "pi", "qwen", "unknown-provider", undefined]) {
+    expect(activeTurnDispatchModes("pi")).toEqual(["inline", "queue"]);
+    for (const provider of ["droid", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
   });
@@ -101,13 +102,13 @@ describe("CTO live-redirect providers", () => {
     ["cursor", true],
     ["opencode", true],
     ["  CURSOR ", true],
-    ["droid", false],
-    ["pi", false],
     ["muse", false],
+    ["copilot", true],
+    ["pi", false],
+    ["droid", false],
     ["qwen", false],
     ["kimi", false],
     ["grok", false],
-    ["copilot", false],
     ["devin", false],
     ["antigravity", false],
     ["", false],

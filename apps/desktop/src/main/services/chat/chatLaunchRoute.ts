@@ -141,7 +141,7 @@ export function crossMachineRouteFor(args: {
     const saved = route ? null : readHarnessPresetsFromMachine(args.adeHome)?.find((preset) => preset.id === presetId) ?? null;
     const label = route
       ? presetSourceLabel(route.source)
-      : saved ? `${presetLabel(saved)} (${presetSourceLabel(saved.source)})` : "a saved preset";
+      : saved ? `${presetLabel(saved)} (${presetSourceLabel(saved.source)})` : "a saved Custom provider";
     if (source.modelId !== args.targetModelId) return { label, dropped: true };
     return { label, presetId, ...(saved ? { presetSnapshot: saved } : {}) };
   }

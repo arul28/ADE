@@ -1,4 +1,5 @@
 import os from "node:os";
+import { adeDeprecatedAgentSkillAliases } from "../../../../desktop/src/shared/adeCliGuidance";
 import path from "node:path";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
@@ -142,8 +143,6 @@ export function createRemoteMcpProtocol(deps: {
   /** The account's projects as this computer last read them, or null when signed out or never read. */
   accountProjects?: () => Readonly<Record<string, AccountProjectView>> | null;
   record: (entry: Omit<RemoteMcpActivityEntry, "at">) => void;
-  /** The provider and model this computer last launched a chat with, for chat_start. */
-  launchDefaults?: () => { provider: string; model: string; reasoningEffort?: string | null } | null;
   warn?: (event: string, data?: Record<string, unknown>) => void;
   /** The account's computers: every tool takes `machine`, and machines_list lists them. */
   machines: RemoteMcpMachineRouter;
@@ -352,7 +351,7 @@ export function createRemoteMcpProtocol(deps: {
   const instructions = (scope: RemoteMcpScope): string => [
     `ADE on ${deps.machineName()}: coding lanes (git worktrees), agent chats and pull requests.`,
     "Use the typed tools; `ade` runs anything else.",
-    "`project` defaults to the last opened, `machine` (a machines_list key) to this machine; each result names both. A chat id finds its own.",
+    "`machine` (a machines_list key or name) defaults to this machine, `project` to the last opened (chat_start and lanes_create need it); each result names both. A chat id finds its own.",
     "The `ade-mcp-client` prompt explains the workflow.",
     // Only for an account with ADE Cloud: the same answer that lists the `ade-cloud` prompt.
     ...(adeWithheldAgentSkills().includes("ade-cloud") ? [] : ["Before an ADE Cloud lane, run `cloud status` and follow the `ade-cloud` prompt."]),
@@ -430,8 +429,7 @@ export function createRemoteMcpProtocol(deps: {
     let words: unknown;
     let stdin: string | null = null;
     if (typed) {
-      const defaults = typed.launchDefaults ? deps.launchDefaults?.() ?? null : null;
-      const built = typed.build(defaults && typed.launchDefaults ? typed.launchDefaults(input, defaults) : input);
+      const built = typed.build(input);
       if ("error" in built) return refuseHere("", built.error);
       words = built.argv;
       stdin = typed.stdin?.(input) ?? null;
@@ -933,7 +931,10 @@ export function createRemoteMcpProtocol(deps: {
         // Prompt names must be unique, so the list is the default project's;
         // prompts/get takes `project` for another one.
         const resolved = await resolveProject(undefined);
-        const skills = "error" in resolved || !resolved.project ? [] : listAgentSkills({ cwd: resolved.cwd, includeUser: false, onError: skillUnreadable });
+        const skills = "error" in resolved || !resolved.project
+          ? []
+          : listAgentSkills({ cwd: resolved.cwd, includeUser: false, onError: skillUnreadable })
+            .filter((skill) => !adeDeprecatedAgentSkillAliases.has(skill.name));
         return reply({
           prompts: skills.slice(0, MAX_PROMPTS).map((skill) => ({
             name: skill.name,

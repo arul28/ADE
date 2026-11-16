@@ -71,7 +71,7 @@ them to the provider adapter:
 - **Spawned helpers:** there is no separate orchestration mode. A
   coordinating agent spawns its own helpers from any thread with
   `ade chat create --type subagent --provider <p> --model <m>
-  [--instance <id>] [--preset <id>]`, and each child is an ordinary agent
+  [--instance <id>] [--custom-provider <name>]`, and each child is an ordinary agent
   with the same runtime, permissions, and tools.
 
 ### ADE CLI path
@@ -206,16 +206,16 @@ calls return a structured error with retry-after guidance.
 
 ## Capability mode
 
-When a session starts, the ADE CLI records the resolved
-`capabilityMode` for the session log:
+When a session starts, ADE records the resolved `capabilityMode` on the
+chat session:
 
 - `full_tooling` -- the session connected to the ADE CLI and the
   action list resolved successfully.
 - `fallback` -- the ADE CLI/action bridge was unavailable; only the
   provider adapter's built-in tools are available.
 
-`agentChatService` persists this mode on the session log entry so
-history shows which mode the agent actually ran in.
+`agentChatService` persists this mode on the session so a chat summary
+shows which mode the agent actually ran in.
 
 ## Tool execution flow
 

@@ -188,6 +188,7 @@ import type { createAiIntegrationService } from "../../../../desktop/src/main/se
 import type { JevService } from "../../../../desktop/src/main/services/jev/jevService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
@@ -1248,6 +1249,7 @@ type SyncHostServiceArgs = {
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   /**
    * Read-only Work-tools mirror for iOS and the hosted web client.
    *
@@ -2572,6 +2574,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
+    ctoAccountCopyService: args.ctoAccountCopyService,
     workToolsStateService: args.workToolsStateService,
     builtInBrowserService: args.builtInBrowserService ?? null,
     computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,

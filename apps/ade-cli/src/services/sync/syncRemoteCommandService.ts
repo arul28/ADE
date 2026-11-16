@@ -364,6 +364,7 @@ import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/u
 import { resolveTrackedCliUserMcp } from "../../../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { CtoAccountCopyService } from "../../../../desktop/src/main/services/cto/ctoAccountCopyService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import {
   LINEAR_MOBILE_OAUTH_REDIRECT_URI,
@@ -652,6 +653,8 @@ type SyncRemoteCommandServiceArgs = {
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
+  /** The CTO's account copy, read when a phone asks (the brain builds it after this service). */
+  ctoAccountCopyService?: () => CtoAccountCopyService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   /**
@@ -5183,6 +5186,18 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (!enabled) args.agentChatService?.applyFastModePolicy();
     return { ok: true, enabled };
   });
+  // Claude's Full access where ADE runs as root (the brain's
+  // `claudeRootFullAccess.ts`). The answer covers every chat on this machine,
+  // so only the owner's own controller devices may set it, as with spending
+  // a reset credit; a viewer only reads it.
+  register("chat.getRootFullAccess", { viewerAllowed: true }, async () =>
+    requireService(args.agentChatService, "Chats are not available on this machine.").getRootFullAccess(),
+  );
+  register("chat.setRootFullAccess", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Chats are not available on this machine.").setRootFullAccess({
+      allowed: (payload as { allowed?: unknown } | null)?.allowed,
+    }),
+  );
   register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
       parseAgentChatHandoffArgs(payload),
@@ -5517,6 +5532,20 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       paused,
     });
   });
+  register("chat.setScheduledWorkItemPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const paused = asOptionalBoolean(payload.paused);
+    if (paused === undefined) throw new Error("chat.setScheduledWorkItemPaused requires paused.");
+    return requireService(args.agentChatService, "Agent chat service not available.").setScheduledWorkItemPaused({
+      sessionId: requireString(payload.sessionId, "chat.setScheduledWorkItemPaused requires sessionId."),
+      scheduleId: requireString(payload.scheduleId, "chat.setScheduledWorkItemPaused requires scheduleId."),
+      paused,
+    });
+  });
+  register("chat.runScheduledWorkNow", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").runScheduledWorkNow({
+      sessionId: requireString(payload.sessionId, "chat.runScheduledWorkNow requires sessionId."),
+      scheduleId: requireString(payload.scheduleId, "chat.runScheduledWorkNow requires scheduleId."),
+    }));
   register("chat.getChatEventHistory", { viewerAllowed: true, observesAbort: true }, async (payload, context): Promise<AgentChatEventHistorySnapshot> => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
@@ -5669,7 +5698,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.completeLaunchClient", { viewerAllowed: true }, async (payload) =>
     requireChatLaunchService().completeClient(parseChatLaunchCompleteClientArgs(payload)));
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload, context) => {
-    const sendArgs = withExpectedTurn(withGuestAgentNote(parseAgentChatSendArgs(payload), context), context);
+    // A paired controller sends what its user typed, like `chat.steer`.
+    const sendArgs = withExpectedTurn(
+      withGuestAgentNote({ ...parseAgentChatSendArgs(payload), sentByUser: true }, context),
+      context,
+    );
     // A phone or web message: no desktop is the one being talked from now.
     noteSessionInputOrigin(sendArgs.sessionId, null);
     const result = await requireService(args.agentChatService, "Agent chat service not available.").sendMessage(
@@ -7029,11 +7062,8 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     return summarizeChatSessionForRemote(agentChatService, session);
   });
 
-  register("cto.getState", { viewerAllowed: true }, async (payload) => {
-    const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
-    const recentLimit = asOptionalNumber(payload.recentLimit);
-    return ctoStateService.getSnapshot(recentLimit ?? 20);
-  });
+  register("cto.getState", { viewerAllowed: true }, async () =>
+    requireService(args.ctoStateService, "CTO state service not available.").getSnapshot());
   // The project's CTO home machine, the same account setting the desktop reads
   // (`ctoHomeMachine.ts`): scope `repo:<origin>`, key `cto.homeMachine`.
   register("cto.getHomeMachine", { viewerAllowed: true }, async (payload) => {
@@ -7057,6 +7087,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       name,
       hostname: asTrimmedString(record?.hostname) ?? null,
       chosenAt: new Date().toISOString(),
+      ...(asTrimmedString(record?.cloudInstanceId) ? { cloudInstanceId: asTrimmedString(record?.cloudInstanceId) } : {}),
     };
     store.set(scope, CTO_HOME_SETTING_KEY, value);
     return { ok: true, value };
@@ -7070,9 +7101,50 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
-    // Returns the exact CtoMemorySnapshot shape the iOS client decodes:
-    // { memory, threadState, dailyLog, dailyLogDate, updatedAt }.
+    // Returns the CtoMemorySnapshot the iOS client decodes (every field
+    // defaulted there); the v1-only fields are sent empty.
     return ctoMemoryService.getSnapshot();
+  });
+  // Not queueable: a whole-file write replayed later would overwrite whatever
+  // the CTO or another device saved in between. `baseHash` refuses that too.
+  register("cto.updateNotes", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    const scope = payload.scope === "user" ? "user" : payload.scope === "project" ? "project" : null;
+    if (!scope) throw new Error("cto.updateNotes requires scope: project or user.");
+    if (typeof payload.text !== "string") throw new Error("cto.updateNotes requires text.");
+    ctoMemoryService.writeNotes(scope, payload.text, {
+      baseHash: typeof payload.baseHash === "string" ? payload.baseHash : null,
+    });
+    return ctoMemoryService.getSnapshot();
+  });
+  register("cto.updateOpenWork", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    const op = payload.op;
+    if (op === "add") {
+      ctoMemoryService.updateOpenWork({ op, text: requireString(payload.text, "cto.updateOpenWork add requires text.") });
+    } else if (op === "complete" || op === "reopen" || op === "remove") {
+      ctoMemoryService.updateOpenWork({ op, id: requireString(payload.id, `cto.updateOpenWork ${op} requires id.`) });
+    } else {
+      throw new Error("cto.updateOpenWork requires op: add, complete, reopen or remove.");
+    }
+    return ctoMemoryService.getSnapshot();
+  });
+  // The person moved the CTO here: take it from its account copy. The phone
+  // that made the move asks the new home itself.
+  register("cto.adoptAccountCopy", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const copy = args.ctoAccountCopyService?.() ?? null;
+    if (!copy) return { restored: false, fromName: null, savedAt: null };
+    return await copy.adopt({ home: payload.home });
+  });
+  register("cto.getAccountCopyStatus", { viewerAllowed: true }, async () =>
+    args.ctoAccountCopyService?.()?.status()
+      ?? { available: false, savedAt: null, ownerName: null, ownerIsThisMachine: false });
+  register("cto.refreshContext", { viewerAllowed: true, queueable: false }, async () =>
+    requireService(args.agentChatService, "Agent chat service not available.").refreshCtoContext());
+  register("cto.previewSystemPrompt", { viewerAllowed: true }, async (payload) => {
+    const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
+    const override = isRecord(payload.identityOverride) ? (payload.identityOverride as Partial<CtoIdentity>) : undefined;
+    return ctoStateService.previewSystemPrompt(override);
   });
   register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () =>
     buildLinearConnectionStatus(args));

@@ -1,0 +1,296 @@
+/*
+ * The CTO avatar (CtoAvatar.tsx).
+ *
+ * Every moving part is an HTML layer animated on transform and opacity only,
+ * so Chromium can run it on the compositor. Translations are in percent of
+ * the layer, which is the full avatar box: 1% is one unit of the 100 × 100
+ * drawing at any size.
+ *
+ * Every loop uses step timing, so the renderer's step clock
+ * (lib/steppedLoopClock.ts) runs it from a timer at its steps instead of the
+ * display's frame clock: a glide would be redrawn at the refresh rate (up to
+ * 240 times a second) for the whole of a turn. Long-lived states (idle,
+ * waiting, asleep) step a few times a second; working and thinking about 20
+ * times, with keyframes sampled from the ease curve so the motion keeps its
+ * shape, and every loop of one state on the same step grid (working 46.875 ms,
+ * thinking 50 ms) so their steps share a frame. Only the one-shot blips (happy, error) glide: they end. `data-paused` (set by the
+ * component when the avatar is off screen or the window is hidden) freezes
+ * everything; nothing here listens for animationiteration.
+ */
+
+.cto-av {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+  line-height: 0;
+}
+
+.cto-av-body,
+.cto-av-gaze,
+.cto-av-eyes,
+.cto-av-blink,
+.cto-av-ring,
+.cto-av-orbit {
+  position: absolute;
+  inset: 0;
+}
+
+.cto-av svg {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.cto-av-body { transform-origin: 50% 86%; transition: transform 240ms cubic-bezier(0.3, 0.7, 0.4, 1); }
+.cto-av-gaze { transition: transform 200ms ease; }
+.cto-av-blink { transform-origin: 50% var(--cto-av-eye-y, 50%); }
+.cto-av-eyes { opacity: 0; transition: opacity 140ms ease; }
+.cto-av-eyes[data-on="true"] { opacity: 1; }
+
+.cto-av-shadow {
+  position: absolute;
+  left: 27%;
+  top: 88.5%;
+  width: 46%;
+  height: 5%;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--color-fg, #000) 14%, transparent);
+}
+
+.cto-av-dot { position: absolute; border-radius: 50%; background: var(--cto-av-ink); }
+
+.cto-av-ring { opacity: 0; transform-origin: 50% 52%; }
+.cto-av-ring path { fill: none; stroke: var(--cto-av-body); stroke-width: 3; }
+
+.cto-av-orbit { opacity: 0; transform-origin: 50% 52%; transition: opacity 200ms ease; }
+.cto-av-orbit > span {
+  position: absolute;
+  left: 46.5%;
+  top: -1.5%;
+  width: 7%;
+  height: 7%;
+  border-radius: 50%;
+  background: var(--cto-av-body);
+}
+
+.cto-av-z {
+  position: absolute;
+  left: 70%;
+  top: 2%;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--cto-av-body);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ── Poses: hold in every motion mode, including reduced motion ── */
+
+.cto-av[data-state="waiting"] .cto-av-body { transform: rotate(-6deg); }
+.cto-av[data-state="waiting"] .cto-av-gaze { transform: translate(1.5%, -5%); }
+
+/* ── Idle, motion "live": a terminal-cursor blink, a glance now and then ── */
+
+.cto-av[data-anim="on"][data-life="on"][data-state="idle"] .cto-av-blink { animation: cto-av-blink 5.4s step-end infinite; }
+.cto-av[data-anim="on"][data-life="on"][data-state="idle"][data-eyes="caret"] .cto-av-blink { animation: cto-av-caret-blink 6s step-end infinite; }
+.cto-av[data-anim="on"][data-life="on"][data-state="idle"] .cto-av-gaze { animation: cto-av-glance 11s step-end infinite; }
+
+/* ── Working: a bob, eyes reading in saccades, a commit dot in orbit ── */
+
+.cto-av[data-anim="on"][data-state="working"] .cto-av-body { animation: cto-av-bob 1.5s steps(4, end) infinite; }
+.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-body { animation-name: cto-av-bob-calm; }
+.cto-av[data-anim="on"][data-state="working"] .cto-av-gaze { animation: cto-av-scan 2.4s step-end infinite; }
+.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-gaze { animation-name: cto-av-scan-calm; }
+.cto-av[data-anim="on"][data-state="working"] .cto-av-orbit { opacity: 1; animation: cto-av-orbit 3s steps(64, end) infinite; }
+.cto-av[data-anim="on"][data-state="working"][data-energy="calm"] .cto-av-orbit { animation-duration: 4.5s; animation-timing-function: steps(48, end); }
+
+/* ── Thinking (writing its reply): the eyes become typing dots ── */
+
+.cto-av[data-anim="on"][data-state="thinking"] .cto-av-body { animation: cto-av-sway 1.6s steps(4, end) infinite; }
+.cto-av[data-anim="on"][data-state="thinking"][data-energy="calm"] .cto-av-body { animation: none; }
+.cto-av[data-anim="on"][data-state="thinking"] .cto-av-dot { animation: cto-av-ripple 1s steps(5, end) infinite; }
+.cto-av[data-anim="on"][data-state="thinking"][data-energy="calm"] .cto-av-dot { animation-name: cto-av-ripple-calm; }
+.cto-av[data-anim="on"][data-state="thinking"] .cto-av-dot:nth-child(2) { animation-delay: 0.15s; }
+.cto-av[data-anim="on"][data-state="thinking"] .cto-av-dot:nth-child(3) { animation-delay: 0.3s; }
+
+/* ── Waiting on the person: looks up, tilts, a slow sonar ping ── */
+
+.cto-av[data-anim="on"][data-state="waiting"] .cto-av-ring { animation: cto-av-ping 2.8s step-end infinite; }
+
+/* ── Asleep: slow stepped breathing and a drifting z ── */
+
+.cto-av[data-anim="on"][data-state="asleep"] .cto-av-body { animation: cto-av-breathe 4.8s step-end infinite; }
+.cto-av[data-anim="on"][data-state="asleep"][data-energy="calm"] .cto-av-body { animation-name: cto-av-breathe-calm; }
+.cto-av[data-anim="on"][data-state="asleep"] .cto-av-z { animation: cto-av-z 3.6s step-end infinite; }
+
+/* ── Happy (a turn landed) and error (a turn failed): played once ── */
+
+.cto-av[data-anim="on"][data-state="happy"] .cto-av-body { animation: cto-av-hop 1.1s ease-out 1 both; }
+.cto-av[data-anim="on"][data-state="happy"][data-energy="calm"] .cto-av-body { animation-name: cto-av-hop-calm; }
+.cto-av[data-anim="on"][data-state="happy"] .cto-av-shadow { animation: cto-av-hop-shadow 1.1s ease-out 1 both; }
+.cto-av[data-anim="on"][data-state="error"] .cto-av-body { animation: cto-av-shake 0.7s ease-in-out 1 both; }
+.cto-av[data-anim="on"][data-state="error"][data-energy="calm"] .cto-av-body { animation-name: cto-av-shake-calm; }
+
+.cto-av[data-paused="true"],
+.cto-av[data-paused="true"] * { animation-play-state: paused !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cto-av,
+  .cto-av * { animation: none !important; transition: none !important; }
+  .cto-av-orbit { opacity: 0 !important; }
+  .cto-av[data-anim="on"][data-state="asleep"] .cto-av-z { opacity: 0.75; transform: translate(30%, -40%); }
+}
+
+@keyframes cto-av-blink {
+  0% { transform: scaleY(1); }
+  95% { transform: scaleY(0.12); }
+  97%, 100% { transform: scaleY(1); }
+}
+
+/* Off, on, off, on: the way a terminal cursor blinks. */
+@keyframes cto-av-caret-blink {
+  0% { opacity: 1; }
+  86% { opacity: 0; }
+  90% { opacity: 1; }
+  94% { opacity: 0; }
+  98%, 100% { opacity: 1; }
+}
+
+@keyframes cto-av-glance {
+  0% { transform: none; }
+  34% { transform: translateX(-3.5%); }
+  44% { transform: none; }
+  68% { transform: translate(3.5%, -1%); }
+  77%, 100% { transform: none; }
+}
+
+/* Eight stops on a sine, each stepped four times: an eased bob at ~21 changes/s. */
+@keyframes cto-av-bob {
+  0%, 100% { transform: translateY(0) scale(1.035, 0.965); }
+  12.5%, 87.5% { transform: translateY(-0.73%) scale(1.028, 0.973); }
+  25%, 75% { transform: translateY(-2.5%) scale(1.01, 0.993); }
+  37.5%, 62.5% { transform: translateY(-4.27%) scale(0.992, 1.012); }
+  50% { transform: translateY(-5%) scale(0.985, 1.02); }
+}
+
+@keyframes cto-av-bob-calm {
+  0%, 100% { transform: translateY(0); }
+  12.5%, 87.5% { transform: translateY(-0.37%); }
+  25%, 75% { transform: translateY(-1.25%); }
+  37.5%, 62.5% { transform: translateY(-2.13%); }
+  50% { transform: translateY(-2.5%); }
+}
+
+/* Reading a line: jump, jump, jump, then drop to the next one. */
+@keyframes cto-av-scan {
+  0% { transform: translateX(-4.5%); }
+  20% { transform: translateX(-1.5%); }
+  40% { transform: translateX(1.5%); }
+  60% { transform: translateX(4.5%); }
+  80% { transform: translate(4.5%, 1.5%); }
+  100% { transform: translateX(-4.5%); }
+}
+
+@keyframes cto-av-scan-calm {
+  0% { transform: translateX(-2.5%); }
+  25% { transform: translateX(0); }
+  50% { transform: translateX(2.5%); }
+  75% { transform: translate(2.5%, 1%); }
+  100% { transform: translateX(-2.5%); }
+}
+
+@keyframes cto-av-orbit {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes cto-av-sway {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  12.5%, 87.5% { transform: translateY(-0.37%) rotate(0.22deg); }
+  25%, 75% { transform: translateY(-1.25%) rotate(0.75deg); }
+  37.5%, 62.5% { transform: translateY(-2.13%) rotate(1.28deg); }
+  50% { transform: translateY(-2.5%) rotate(1.5deg); }
+}
+
+@keyframes cto-av-ripple {
+  0%, 50%, 100% { transform: translateY(0); opacity: 0.5; }
+  25% { transform: translateY(-70%); opacity: 1; }
+}
+
+@keyframes cto-av-ripple-calm {
+  0%, 50%, 100% { transform: translateY(0); opacity: 0.55; }
+  25% { transform: translateY(-35%); opacity: 1; }
+}
+
+@keyframes cto-av-ping {
+  0% { transform: scale(1.05); opacity: 0.5; }
+  12% { transform: scale(1.11); opacity: 0.32; }
+  24% { transform: scale(1.17); opacity: 0.16; }
+  36%, 100% { transform: scale(1.17); opacity: 0; }
+}
+
+@keyframes cto-av-breathe {
+  0%, 100% { transform: scale(1, 1); }
+  25% { transform: scale(1.012, 1.02); }
+  50% { transform: scale(1.024, 1.04); }
+  75% { transform: scale(1.012, 1.02); }
+}
+
+@keyframes cto-av-breathe-calm {
+  0%, 100% { transform: scale(1, 1); }
+  50% { transform: scale(1.012, 1.02); }
+}
+
+@keyframes cto-av-z {
+  0% { transform: translate(0, 0) scale(0.8); opacity: 0; }
+  12% { transform: translate(0, 0) scale(0.8); opacity: 0.9; }
+  37% { transform: translate(35%, -55%) scale(1); opacity: 0.75; }
+  62% { transform: translate(70%, -110%) scale(1.15); opacity: 0.45; }
+  80%, 100% { transform: translate(70%, -110%) scale(1.15); opacity: 0; }
+}
+
+@keyframes cto-av-hop {
+  0% { transform: translateY(0) scale(1.08, 0.92); }
+  16% { transform: translateY(-16%) scale(0.94, 1.07); }
+  32% { transform: translateY(0) scale(1.08, 0.92); }
+  46% { transform: translateY(-6%) scale(0.98, 1.03); }
+  60% { transform: translateY(0) scale(1.02, 0.98); }
+  72%, 100% { transform: none; }
+}
+
+@keyframes cto-av-hop-calm {
+  0% { transform: none; }
+  18% { transform: translateY(-8%); }
+  36% { transform: none; }
+  50% { transform: translateY(-3%); }
+  64%, 100% { transform: none; }
+}
+
+@keyframes cto-av-hop-shadow {
+  0%, 32%, 60%, 100% { transform: scale(1); opacity: 1; }
+  16% { transform: scale(0.62); opacity: 0.5; }
+  46% { transform: scale(0.85); opacity: 0.8; }
+}
+
+@keyframes cto-av-shake {
+  0%, 100% { transform: none; }
+  12% { transform: translateX(-5%) rotate(-4deg); }
+  26% { transform: translateX(5%) rotate(4deg); }
+  40% { transform: translateX(-4%) rotate(-3deg); }
+  54% { transform: translateX(3%) rotate(2deg); }
+  68% { transform: translateX(-1.5%) rotate(-1deg); }
+  82% { transform: none; }
+}
+
+@keyframes cto-av-shake-calm {
+  0%, 100% { transform: none; }
+  15% { transform: translateX(-2.5%); }
+  35% { transform: translateX(2.5%); }
+  55% { transform: translateX(-1.5%); }
+  75% { transform: none; }
+}

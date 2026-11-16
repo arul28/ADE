@@ -443,8 +443,10 @@ describe("WorkSidebar context targets", () => {
     });
     renderSidebar({ tab: "ios", contextTarget: { kind: "chat", sessionId: "chat-1" } });
 
-    expect(screen.getByTestId("ios-panel").getAttribute("data-session-id")).toBe("chat-1");
-    expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
+    // A tool's panel loads on first use (`gatedWorkTool`), so it appears once
+    // its code is in.
+    expect((await screen.findByTestId("ios-panel", {}, { timeout: 5_000 })).getAttribute("data-session-id")).toBe("chat-1");
+    expect(((await screen.findByText("Add iOS attachment", {}, { timeout: 5_000 })) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByText("Add iOS context"));
 
     expect(received).toEqual([expect.objectContaining({
@@ -458,27 +460,27 @@ describe("WorkSidebar context targets", () => {
     expect((await screen.findByTestId("app-control-panel")).getAttribute("data-session-id")).toBe("chat-1");
   });
 
-  it("renders the attached terminal panel for running CLI session owners", () => {
+  it("renders the attached terminal panel for running CLI session owners", async () => {
     renderSidebar({
       tab: "terminal",
       activeSession: { ...activeSession, id: "term-1", toolType: "codex" },
       contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "codex" },
     });
 
-    const drawer = screen.getByTestId("chat-terminal-drawer");
+    const drawer = await screen.findByTestId("chat-terminal-drawer", {}, { timeout: 5_000 });
     expect(drawer.getAttribute("data-lane-id")).toBe("lane-1");
     expect(drawer.getAttribute("data-chat-session-id")).toBe("term-1");
     expect(drawer.getAttribute("data-open")).toBe("true");
   });
 
-  it("renders the attached terminal panel for chat owners", () => {
+  it("renders the attached terminal panel for chat owners", async () => {
     renderSidebar({
       tab: "terminal",
       activeSession: { ...activeSession, id: "chat-1", toolType: "claude-chat" },
       contextTarget: { kind: "chat", sessionId: "chat-1" },
     });
 
-    expect(screen.getByTestId("chat-terminal-drawer").getAttribute("data-chat-session-id")).toBe("chat-1");
+    expect((await screen.findByTestId("chat-terminal-drawer", {}, { timeout: 5_000 })).getAttribute("data-chat-session-id")).toBe("chat-1");
   });
 
   it("offers an ended CLI session the one action that brings its shells back", async () => {
@@ -552,7 +554,8 @@ describe("WorkSidebar context targets", () => {
       contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "codex" },
     });
 
-    fireEvent.click(screen.getByText("Add Browser attachment"));
+    // The browser panel loads on first use here (`gatedWorkTool`).
+    fireEvent.click(await screen.findByText("Add Browser attachment", {}, { timeout: 5_000 }));
 
     await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
     expect(terminalWrite.mock.calls[0]?.[0].data).toContain(".ade/artifacts/browser.png");

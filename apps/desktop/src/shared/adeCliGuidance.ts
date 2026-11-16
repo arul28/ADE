@@ -368,7 +368,7 @@ export function buildAdeBootstrapGuidance(
     // models, and one wake per thing waited on, so an agent never polls.
     // `ade drafts` and `ade settings find` stay named here: without them the
     // 2026-11-16 discovery bench lost both features.
-    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat`)."} Subagents report back; to wait on a PR use \`ade prs watch\`, on a terminal \`ade terminal watch\`, else \`ade chat scheduled-work create\`. \`ade drafts\` sends a message as the user. ADE settings: \`ade settings find <words>\`. Stop processes you start; \`ade help <command>\` shows usage.`,
+    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat --provider <p> --model <id>`)."} Subagents report back; to wait on a PR use \`ade prs watch\`, on a terminal \`ade terminal watch\`, else \`ade chat scheduled-work create\`. \`ade drafts\` sends a message as the user. ADE settings: \`ade settings find <words>\`. Stop processes you start; \`ade help <command>\` shows usage.`,
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

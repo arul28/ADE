@@ -116,6 +116,10 @@ export const HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS = [
   // rule (or an agent) forge "the user moved this card", which the renderer
   // renders as a user act and which clears the attention markers.
   "boardMove",
+  // The CTO's mid-task wrapper and resend markers: the host sets them on a
+  // person's message; a caller asserting one would mislabel its own words.
+  "ctoMidTask",
+  "ctoResend",
   ...NON_DIRECTIVE_METADATA_KEYS,
   // Host-only dispatch markers are host-authored provenance too, and they are
   // the load-bearing kind: each one exempts its message from the auto-resume

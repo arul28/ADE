@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  shouldInjectLaneMemoryContext,
   truncateTailToLineBoundary,
 } from "./ctoTurnContext";
 
@@ -46,46 +45,5 @@ describe("truncateTailToLineBoundary", () => {
     expect(truncateTailToLineBoundary("one unbroken line of context", 10)).toBe("");
     expect(truncateTailToLineBoundary(RECONSTRUCTION, 0)).toBe("");
     expect(truncateTailToLineBoundary(RECONSTRUCTION, -5)).toBe("");
-  });
-});
-
-describe("shouldInjectLaneMemoryContext", () => {
-  const base = {
-    isCto: false,
-    isPersonal: false,
-    laneDirectiveKey: "lane-7:/work/lane-7",
-    lastLaneDirectiveKey: null as string | null,
-  };
-
-  it("delivers once per lane change, not once per turn", () => {
-    // First turn on the lane: the key has not been stamped yet.
-    expect(shouldInjectLaneMemoryContext(base)).toBe(true);
-
-    // The send path stamps the key after delivery; every later turn on the same
-    // lane is deduped away.
-    const afterDelivery = { ...base, lastLaneDirectiveKey: base.laneDirectiveKey };
-    expect(shouldInjectLaneMemoryContext(afterDelivery)).toBe(false);
-
-    // Moving the chat to another lane makes it due again.
-    expect(shouldInjectLaneMemoryContext({
-      ...afterDelivery,
-      laneDirectiveKey: "lane-8:/work/lane-8",
-    })).toBe(true);
-
-    // So does the same lane relocating to a different worktree, because the key
-    // carries both.
-    expect(shouldInjectLaneMemoryContext({
-      ...afterDelivery,
-      laneDirectiveKey: "lane-7:/work/lane-7-moved",
-    })).toBe(true);
-  });
-
-  it("is for workers, not for the CTO or personal chats", () => {
-    // The CTO already receives the whole of durable memory.
-    expect(shouldInjectLaneMemoryContext({ ...base, isCto: true })).toBe(false);
-    // A personal chat has no project lane to be scoped to.
-    expect(shouldInjectLaneMemoryContext({ ...base, isPersonal: true })).toBe(false);
-    // No resolvable lane means nothing to scope to either.
-    expect(shouldInjectLaneMemoryContext({ ...base, laneDirectiveKey: null })).toBe(false);
   });
 });

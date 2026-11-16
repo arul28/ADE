@@ -513,34 +513,31 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(isCtoOnlyAdeAction("cto_memory", "recordDiscovery")).toBe(false);
 
     // ...and can still READ, exactly as it could before this domain was
-    // inverted. These two are deliberately open and must stay open: CTO memory
-    // is plain markdown under `<adeDir>/cto/` that every coding agent can
-    // already open with a file read, so closing the action gate protects
+    // inverted. The snapshot is deliberately open and must stay open: the
+    // notes are plain markdown under `<adeDir>/cto/` that every coding agent
+    // can already open with a file read, so closing the action gate protects
     // nothing — it only breaks existing automation `ade-action` steps, silently.
     expect(isCtoOnlyAdeAction("cto_memory", "getSnapshot")).toBe(false);
-    expect(isCtoOnlyAdeAction("cto_memory", "searchMemory")).toBe(false);
 
-    // The REWRITE path is the one that is actually operator state.
-    expect(isCtoOnlyAdeAction("cto_memory", "updateMemory")).toBe(true);
+    // The write paths are the ones that are actually operator state.
+    expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
+    expect(isCtoOnlyAdeAction("cto_memory", "updateOpenWork")).toBe(true);
 
     // Fail-closed: a method added to the domain later is CTO-only by default
     // rather than open by omission.
     expect(isCtoOnlyAdeAction("cto_memory", "someMethodAddedLater")).toBe(true);
   });
 
-  it("keeps starting a fresh CTO session operator-only, and its reads open", () => {
+  it("keeps refreshing the CTO's context operator-only, and its reads open", () => {
     const actions = ADE_ACTION_ALLOWLIST.cto_state ?? [];
-    expect(actions).toContain("startFreshSession");
-    expect(actions).toContain("getThreadHealth");
+    expect(actions).toContain("refreshContext");
 
-    // Retiring the thread every other CTO surface is talking to is the
-    // operator's call — an agent could otherwise quietly drop the context it is
-    // being supervised with.
-    expect(isCtoOnlyAdeAction("cto_state", "startFreshSession")).toBe(true);
+    // When the CTO starts over on a fresh provider thread is the operator's
+    // call, not an agent's.
+    expect(isCtoOnlyAdeAction("cto_state", "refreshContext")).toBe(true);
 
     // Everything else on this domain is a read the whole fleet depends on and
-    // stays open, including the new health probe (it creates nothing).
-    expect(isCtoOnlyAdeAction("cto_state", "getThreadHealth")).toBe(false);
+    // stays open.
     expect(isCtoOnlyAdeAction("cto_state", "getSnapshot")).toBe(false);
     expect(isCtoOnlyAdeAction("cto_state", "getAttention")).toBe(false);
     expect(isCtoOnlyAdeAction("cto_state", "updateIdentity")).toBe(false);
@@ -663,12 +660,12 @@ describe("CTO domain coverage over the ADE action bus", () => {
   });
 
   it("does not widen or re-tighten the cto_memory inversion", () => {
-    // The inversion is fail-closed: everything CTO-only EXCEPT these three,
+    // The inversion is fail-closed: everything CTO-only EXCEPT these two,
     // and the polarity is carried by the rule itself rather than by which of
     // two tables the domain happened to be listed in.
     expect(ADE_ACTION_CTO_ONLY.cto_memory)
-      .toEqual({ allExcept: ["recordDiscovery", "getSnapshot", "searchMemory"] });
-    expect(isCtoOnlyAdeAction("cto_memory", "updateMemory")).toBe(true);
+      .toEqual({ allExcept: ["recordDiscovery", "getSnapshot"] });
+    expect(isCtoOnlyAdeAction("cto_memory", "updateNotes")).toBe(true);
     expect(isCtoOnlyAdeAction("cto_memory", "recordDiscovery")).toBe(false);
   });
 

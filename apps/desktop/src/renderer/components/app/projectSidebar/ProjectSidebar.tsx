@@ -2,7 +2,7 @@ import React, { startTransition, useCallback, useEffect, useRef, useState } from
 import { useNavigate } from "react-router-dom";
 import { GearSix } from "@phosphor-icons/react";
 import { cn } from "../../ui/cn";
-import { useAppStore } from "../../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../../lib/webClientMode";
 import { pressActivation } from "../../../lib/pressActivation";
 import { preloadRoute } from "../../../lib/routePreload";
@@ -29,6 +29,8 @@ import {
   visibleProjectSidebarTabs,
 } from "./projectSidebarTabs";
 import { cssZoomOf } from "../../../lib/webZoom";
+import { CtoAvatar } from "../../cto/avatar/CtoAvatar";
+import { useRememberedCtoLook } from "../../cto/ctoLook";
 
 export { projectSidebarTabForPath };
 
@@ -49,6 +51,8 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
   const workIndicator = useAppStore((s) => s.terminalAttention.indicator);
   const needsYouCount = useAppStore((s) => s.terminalAttention.needsAttentionCount);
   const ctoAwaitingInput = useAppStore((s) => s.ctoAttention.awaitingInput);
+  // The CTO entry wears the CTO's own look (the last one its page saw here).
+  const ctoLook = useRememberedCtoLook(useAppStore(selectActiveProjectStateKey));
   const keybindings = useAppStore((s) => s.keybindings);
   const pathname = route.split(/[?#]/, 1)[0] || "/work";
   const activeTab = projectSidebarTabForPath(pathname);
@@ -272,7 +276,9 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
               })}
             >
               <span className="relative inline-flex shrink-0">
-                <item.icon size={15} weight={active ? "fill" : "regular"} />
+                {item.to === "/cto"
+                  ? <CtoAvatar look={ctoLook} state={waiting ? "waiting" : "idle"} size={15} motion="static" />
+                  : <item.icon size={15} weight={active ? "fill" : "regular"} />}
                 {waiting ? (
                   <span className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning" />
                 ) : null}

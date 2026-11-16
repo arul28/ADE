@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildDeeplink, type DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
 import { pathIsWithinRoot } from "../../../../desktop/src/shared/pathContainment";
+import { launchModelRequiredMessage } from "../../../../desktop/src/shared/launchModelRule";
 import { redactOutgoingChatText } from "../../../../desktop/src/main/utils/redaction";
 import { CHAT_SETTING_FIELDS } from "../../../../desktop/src/shared/chatTurnStatus";
 import type { RemoteMcpToolResult } from "./remoteMcpForward";
@@ -66,8 +67,6 @@ export type TypedTool = {
   shape?: (value: unknown, input: TypedToolInput, context: TypedShapeContext) => unknown;
   /** The next step for the model, from the shaped result; null when there is none to give. */
   next?: (result: unknown, input: TypedToolInput) => string | null;
-  /** Fills inputs the call left out from the model the person last launched a chat with. */
-  launchDefaults?: (input: TypedToolInput, defaults: { provider: string; model: string; reasoningEffort?: string | null }) => TypedToolInput;
   /** What the command reads on stdin, so large text never goes through an argument. */
   stdin?: (input: TypedToolInput) => string | null;
   /** It creates something, so it must name where: `project`, and `machine` on the account address. */
@@ -88,7 +87,7 @@ export type TypedTool = {
 
 const LANE = { type: "string", description: "Lane id from lanes_list, not its name." };
 const PR = { type: "string", description: "PR number, URL or ADE id." };
-const SESSION = { type: "string", description: "Chat id (chat_list, inbox)." };
+const SESSION = { type: "string", description: "A chat's id, from chat_list or inbox." };
 const RELATIVE_PATH = { type: "string", description: "Path in the lane's worktree." };
 const LIMIT = (max: number, fallback: number) => ({
   type: "integer", minimum: 1, maximum: max, description: `Default ${fallback}.`,
@@ -372,7 +371,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "lanes_create",
     title: "Create a lane",
-    description: "Creates a lane (a git worktree on a new branch), as `ade lanes create` does.",
+    description: "Creates a lane (a git worktree on a new branch) on this machine, as `ade lanes create` does. "
+      + "A lane on ADE Cloud: the `ade` tool with `lanes create --machine cloud`.",
     write: true,
     explicitTarget: true,
     properties: {
@@ -618,7 +618,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "chat_list",
     title: "List chats",
-    description: "Agent chats, most recently active first.",
+    description: "Agent chats and agent CLI sessions (`kind: \"cli\"`), most recently active first.",
     fanOut: true,
     view: true,
     properties: {
@@ -669,7 +669,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "chat_status",
     title: "Chat status",
-    description: "Whether a chat is running, idle or blocked, what it is doing now, and its model, effort, permissions and account.",
+    description: "Whether a chat is running, waiting, idle or blocked (on the person: see inbox), what it is doing now, and its model, effort, permissions and account.",
     properties: { session: SESSION },
     required: ["session"],
     build: (input) => {
@@ -833,7 +833,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "usage_limits",
     title: "Usage limits",
     description: "Subscription usage left on this machine, per account: percent left per window (5-hour, weekly, "
-      + "monthly), reset time, whether the pace lasts, and the account id to start a chat on.",
+      + "monthly), reset time, whether the usage is on pace to last the window, and the account id to start a chat on (chat_start `instance`).",
     machineWide: true,
     fanOut: true,
     view: true,
@@ -856,7 +856,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "inbox",
     title: "What waits on you",
-    description: "Questions and approvals chats wait on the person for, with their options. Every recent project unless `project` is given.",
+    description: "Questions and approvals chats wait on the person for, with their options (the state chat_status calls blocked). Every recent project unless `project` is given.",
     fanOut: true,
     view: true,
     properties: {},
@@ -1055,12 +1055,12 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     explicitTarget: true,
     properties: {
       prompt: { type: "string", description: "What the agent should do." },
-      provider: { type: "string", description: "e.g. claude, codex. Default: the person's last-used model." },
-      model: { type: "string", description: "Full model id (claude-opus-5-5), not a short name. Default: last-used." },
+      model: { type: "string", description: "Required. Full model id (claude-opus-5-5), not a short name. `ade chat models --text` lists them." },
+      provider: { type: "string", description: "The agent program: claude, codex, cursor, droid, opencode, pi, ... Optional when the model names it." },
       reasoning_effort: REASONING_EFFORT,
       permission_mode: PERMISSION_MODE,
       fast: { type: "boolean" },
-      instance: { type: "string", description: "Provider account id (usage_limits)." },
+      instance: { type: "string", description: "Provider account id, from usage_limits (the CLI's --instance)." },
       lane: LANE,
       lane_name: { type: "string", description: "Name for a new lane." },
       base: { type: "string", description: "Branch a new lane starts from." },
@@ -1069,19 +1069,11 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       notify_token: { type: "string", description: "Sent to notify_url as a bearer token." },
       dry_run: { type: "boolean", description: "Show the launch; start nothing." },
     },
-    required: ["prompt"],
-    // Neither given: start on what the person last used, as a new chat in ADE does.
-    launchDefaults: (input, defaults) => (text(input, "provider") || text(input, "model")
-      ? input
-      : {
-        ...input,
-        provider: defaults.provider,
-        model: defaults.model,
-        ...(defaults.reasoningEffort && !text(input, "reasoning_effort") ? { reasoning_effort: defaults.reasoningEffort } : {}),
-      }),
+    required: ["prompt", "model"],
     build: (input) => {
       const prompt = text(input, "prompt");
       if (!prompt) return { error: "Pass `prompt`." };
+      if (!text(input, "model")) return { error: launchModelRequiredMessage(text(input, "provider") || null, "model") };
       const lane = optionalWord(input, "lane");
       if ("error" in lane) return lane;
       if (lane.value && (text(input, "lane_name") || text(input, "base"))) {

@@ -5301,7 +5301,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval on-request resume thread-stored continue`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-stored continue`],
         expect.any(Object),
       );
     });
@@ -5400,7 +5400,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-legacy \"continue legacy thread\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-legacy \"continue legacy thread\"`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5962,7 +5962,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-concurrent first`],
         expect.any(Object),
       );
       const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);

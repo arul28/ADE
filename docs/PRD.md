@@ -105,12 +105,12 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 - [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, compact web/MCP/image/subagent activity, Codex Sources and stalled-turn recovery, scenes (agent-authored generated UI, sandboxed to its own origin and frozen to a picture when its turn ends), tool system (universal/workflow/coordinator), agent routing, composer + derived panels, parallel multi-model lane launch, and [cross-machine Work chat handoff](./features/sync-and-multi-device/cross-machine-session-handoff.md).
 - [**Personal Chats**](./features/personal-chats/README.md) — General-purpose, machine-owned AI conversations with the same model catalog but no project, lane, Git, or PR binding. Available from desktop, hosted web, mobile Hub, and the ADE CLI.
 - [**ADE SDK**](./features/sdk/README.md) — Embeddable chat sidecar (`@ade-dev/sdk`, `@ade-dev/chat-ui`) that spawns an isolated ADE runtime as a guest of a third-party app. Strict MCP isolation is Claude-only as a guarantee; `mcpCapability` is the honesty report. Public docs: [ade-app.dev/docs/sdk](https://ade-app.dev/docs/sdk/overview).
-- [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions and CTO sessions. Every recorded service follows the same `runTrackedOperation` pattern.
+- [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions. Every recorded service follows the same `runTrackedOperation` pattern.
 
 ### Automation and CTO
 
 - [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → agent-session and built-in execution surfaces. Confidence + verification + human review.
-- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator: one chat thread with a smart memory system, first-class mid-thread model switching, a settings page of its own, and a light Linear read/write surface. Voice comes from the chat composer's Codex voice button, like every other chat.
+- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator: one chat session that never rotates, a small memory of project notes, notes about the person and open work, a disposable provider thread that ADE refreshes instead of rotating, fallback models, a character you can shape, a page built around a profile panel, and a light Linear read/write surface. Voice starts from the doctrine; the personality setting only adjusts tone.
 - [**Capture gesture**](./features/capture-gesture/README.md) — Both ⌘ keys on macOS, both Ctrl keys on Windows, anywhere on the OS: the window in front is captured by a supervised native helper and handed to the CTO, staged on the CTO composer. Over ADE's own window the shot travels with a note describing what ADE was showing. Desktop-only by construction; Linux ships nothing.
 
 ### Workspace surfaces
@@ -164,7 +164,7 @@ Fragile areas flagged across the docs (read docs before editing):
 - Local vs. remote runtime pools (`apps/desktop/src/main/services/localRuntime/`, `remoteRuntime/`) — desktop binding switching, SSH bootstrap upload, version negotiation against bundled `ade-<platform-arch>` binaries.
 - Sync service inside the ADE runtime (`apps/ade-cli/src/services/sync/`) — desktop's old in-process sync host is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics; do not assume desktop owns sync.
 - Multi-window shell + `app/navigate` JSON-RPC handoff (desktop main `main.ts`, runtime side in `apps/ade-cli/src/adeRpcServer.ts`) — external controllers can drive desktop window navigation.
-- CTO smart-memory system — recent work: deterministic pre-compaction / pre-model-switch flush, file-backed durable memory, memory-rich reconstruction injection.
+- CTO continuity — one ADE session forever with a disposable provider thread. The refresh is `refreshCtoProviderThread` (occupancy, compaction, overflow, model fallback, manual); notes, open work and live state are injected every turn; older CTO sessions are read back with `readHistory`.
 - PTY / session services — rewritten this branch.
 - OAuth redirect service — complex three-state machine with HMAC signing.
 - Chat transcript render pipeline — two-layer event→state→render path.

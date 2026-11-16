@@ -1419,11 +1419,12 @@ recorded here and in the `RETAINED_EVENT_LOG_TABLES` doc comment so nobody
   `delivery_id` it has already stored, and the cursor is explicitly reset on
   `cursorExpired`. Pruning it lets a backlog drain **re-dispatch automations** —
   re-running agent work and re-posting Linear comments.
-- **`cto_session_logs` is two-way reconciled** against an append-only
-  `.ade/cto/sessions.jsonl` that has no retention of its own, so every prune is
-  undone by the next CTO read. On a CRR table each such cycle writes a tombstone
-  plus a fresh set of clock rows, so pruning would make the metric this work
-  exists to improve permanently *worse*.
+- **`cto_session_logs` stays because tables are never dropped.** Nothing reads or
+  writes the CTO session log any more — the `.ade/cto/sessions.jsonl` file it was
+  reconciled against is moved into `.ade/cto/legacy-v1/` by the one-time v2
+  migration — so the table is dormant, not a live log. Pruning it is still out of
+  scope for this sweep: it is a CRR table, and a prune would write tombstones for
+  no benefit.
 - **`worker_agent_runs` is a lifecycle table.** Keying it on `created_at` would
   delete a still-pending run and orphan the `worker_agent_cost_events.run_id`
   and `automation_runs.worker_run_id` references. It needs a terminal-status +

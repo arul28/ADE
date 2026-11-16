@@ -44,6 +44,7 @@ import {
   type JsonObject,
 } from "./cli";
 import { DEFAULT_PARENT_FLAGS, NO_REPORT_FLAGS, SPAWN_TYPE_FLAGS } from "./launchFlagNames";
+import { launchModelMissing, launchModelRequiredMessage } from "../../desktop/src/shared/launchModelRule";
 import type { AgentChatPermissionMode } from "../../desktop/src/shared/types";
 import {
   isAgentChatDroidPermissionMode,
@@ -439,7 +440,12 @@ export function collectLaunchArgs(
   if (isBlankLaunchArgValue(merged.provider) && base.provider !== undefined) {
     merged.provider = base.provider;
   }
-  return normalizeLaunchArgs(merged, options);
+  const normalized = normalizeLaunchArgs(merged, options);
+  // Checked on the merged bag, so `--arg model=…` counts and a blank one does not.
+  if (launchModelMissing(normalized.provider, normalized.model, normalized.modelId)) {
+    throw new CliUsageError(launchModelRequiredMessage(typeof normalized.provider === "string" ? normalized.provider : null));
+  }
+  return normalized;
 }
 
 /** An explicit `null` or a blank string — a launch-identity field's "unset". */

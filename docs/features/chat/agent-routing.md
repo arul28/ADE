@@ -18,7 +18,6 @@ where the machinery lives.
 | `apps/desktop/src/main/services/chat/claudeReplayOverflowRecovery.ts` | Claude-only repair for a handoff replay that does not fit, as one factory taking every dependency by injection (`createClaudeReplayOverflowRecovery`). Owns `TranscriptReplayOrigin` + `normalizeTranscriptReplayOrigin`, the `ReplayForkProvenance` shape, the `CLAUDE_REPLAY_OVERFLOW_MIN_BUDGET_CHARS` floor (2,000), and the four entry points the chat service calls: `noteConsumedReplay` / `forgetConsumedReplay`, `recoverFromOverflow`, `noteRetrySucceeded`, and `reportRetryFailed`. The consumed and staged records live in `WeakMap`s keyed by the runtime, so they die with it rather than being persisted or leaking across a rebind. |
 | `apps/desktop/src/main/services/chat/providerThreadContinuity.ts` | Which provider-side thread a chat is talking to, and whether it has moved. `persistedPointerState()` is the one complete pointer mapping across every provider's thread field (`threadId`, `sdkSessionId`, `providerSessionId`, `droidSdkSessionId`, `piSessionId`/`piSessionFile`, `cursorSdkAgentId`/`cursorCloudAgentId`, `acpSessionId`) and is shared with the thread-pointer ledger, so the two cannot disagree; `providerThreadRef()` renders it, with `UNOPENED_PROVIDER_THREAD_REF` (`"none"`) meaning unknown rather than absent, and `providerThreadContinuityChanged()` is the verdict. On top of it sits `StagedSection` and its four operations — `newStagedSection()`, `armIfStale()`, `resetStagedSection()` (the thread is gone; re-stage) and `suppressStagedSection()` — which decide whether a large static block or the conversation tail rides a turn at all. The CTO's ~21 KB context block is the heaviest caller; see [CTO](../cto/README.md). |
 | `apps/desktop/src/main/services/chat/sessionTurnHealth.ts` | A session's durable turn health, as pure functions over plain records — answered from what is already on disk rather than from a provider, so it outlives a restart. `normalizeLastTurnFailure()` and `normalizeSessionContextHealth()` read the persisted records back, `shouldAdviseSessionRotation()` is the occupancy-streak verdict (`AGENT_CHAT_CONTEXT_ROTATION_PCT` / `_TURNS`), and the `nextSessionTurnHealth()` reducer is what `recordSettledTurnHealth` spends on every `done`. It reports whether the record actually moved, compared field by field rather than by `JSON.stringify`, because a false "changed" costs a disk write on every settled turn of every chat. |
-| `apps/desktop/src/main/services/chat/identityThreadRotation.ts` | The way out of an identity thread that is finished, over an injected deps bag (the same shape `claudeReplayOverflowRecovery.ts` uses): `getSessionTurnHealth()`, `getCtoThreadHealth()`, `distilIdentityHandoff()`, and `startFreshIdentitySession()`, which retires a full thread and opens a clean one carrying the distillation. Identity threads are the CTO's; the product behaviour is in [CTO › One thread, and the way out of one that is finished](../cto/README.md#one-thread-and-the-way-out-of-one-that-is-finished). |
 | `apps/desktop/src/shared/cursorModes.ts` | Canonical Cursor mode vocabulary and compatibility mapping from the legacy ADE permission field; permission-only full-auto/plan launches persist the native mode that the UI and later clients read. |
 | `apps/desktop/src/main/services/chat/cursorModelSelection.ts` | Turns a chat's Cursor effort, Fast/tier, and model options into `ModelSelection.params`, for local sends, cloud creates, and cloud follow-ups. Reads the catalog that `cursorModelsDiscovery.ts` owns. See "Model params: local, cloud, and model options". |
 | `apps/desktop/src/main/services/chat/servedModelMismatch.ts` | Decides whether a served model is another model (`isServedModelMismatch`) or another route (`isServedRouteMismatch`: a different upstream is always a mismatch). |
@@ -806,6 +805,20 @@ Two independent controls:
 - `AgentChatCodexConfigSource` -- `flags | config-toml`. When
   `config-toml`, ADE defers both controls to the project's
   `.codex/config.toml`.
+
+Codex commands reach the network in every chat mode ADE sets and in a
+terminal's Default and Edit (owner's decision, 2026-11-16). Codex's own
+default keeps `read-only` and `workspace-write` offline, so `gh`,
+`npm install` and `git push` used to work only in Full auto. Each chat turn
+sends `sandboxPolicy: { type, networkAccess: true }` (`codexTurnSandboxPolicy`).
+A terminal Codex gets its flags from `codexSandboxCliArgs` in
+`shared/pinnedToolSpawnEnv.ts`: `-c sandbox_workspace_write.network_access=true`
+for `workspace-write`. Plan in a terminal keeps Codex's own
+`--sandbox read-only`, offline: its only network switch is a custom permission
+profile, and an organization's managed Codex policy (requirements.toml, MDM, a
+ChatGPT workspace) that doesn't list it makes Codex fall back to the policy's
+default, which can be writable. The file limits are unchanged, and
+`config-toml` still leaves both to the person's config.
 
 The chat adapter translates ADE's persisted kebab-case approval/sandbox
 values into the Codex app-server wire format at the JSON-RPC boundary:
@@ -2287,25 +2300,35 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
 
 1. `sessionProfile: "persistent_identity"` drives a distinct
    `ChatSurfaceProfile` in the UI.
-2. Identity and recent context are reconstructed from `ctoStateService`
-   on session start and re-injected via `buildReconstructionContext()`.
+2. Identity, notes, open work and the live project state are rebuilt from
+   `ctoStateService` into the volatile turn prefix on every send, and the
+   static prompt block is staged once per provider thread.
 3. The CTO system prompt is built from one immutable doctrine plus
-   environment knowledge. The doctrine carries the CTO's voice and its
-   ADE-product-help rules; there is no per-user personality overlay to
-   layer on top. See `ctoStateService.ts`.
+   environment knowledge. The doctrine carries the CTO's voice, its
+   precision rules and its ADE-product-help rules; the `focused`,
+   `friendly` and `playful` personalities only adjust the tone, never the
+   rules. See `ctoStateService.ts`.
 4. Extra tooling: CTO sessions receive `ctoOperatorTools` (including the
-   `saveMemory` / `searchMemory` / `readMemory` memory tools) and Linear
-   tools when connected. `createCtoRuntimeToolMap` registers them on the
-   live session through each provider's tool transport — an `ade-cto` SDK
-   MCP server (Claude), the `ade_cto` dynamic-tool namespace (Codex), or a
-   dedicated HTTP MCP lease (Cursor / Droid / OpenCode). See
+   `remember` / `forget` / `trackWork` / `finishWork` / `readHistory`
+   memory tools) and Linear tools when connected. `createCtoRuntimeToolMap`
+   registers them on the live session through each provider's tool
+   transport — an `ade-cto` SDK MCP server (Claude), the `ade_cto`
+   dynamic-tool namespace (Codex), or a dedicated HTTP MCP lease (Cursor /
+   Droid / OpenCode). See
    [tool-system](tool-system.md#registration-on-a-live-session).
 5. Pinned permission mode: `normalizeIdentityPermissionMode` in
    `identitySessionPolicy.ts` pins the CTO to `full-auto` on every
    provider. The mode is not a default a caller can override.
    `ensureIdentitySession` re-normalizes the session before every turn,
    so a mode written once is snapped back.
-6. Work the CTO launches never lands on the primary lane.
+6. The CTO's provider thread is disposable. `refreshCtoProviderThread` tears
+   down the runtime, forgets every provider pointer, re-stages the static
+   prompt and conversation tail, and lets the next send open a new thread on
+   the same ADE session. It runs when a settled turn is at or past 55%
+   occupancy, after a compaction, after a context overflow, on a model
+   fallback, or when the person asks. There is no thread rotation and no
+   second ADE session.
+7. Work the CTO launches never lands on the primary lane.
    `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
    creates a dedicated lane; it has no fallback to the CTO session's
    lane, because that lane is the project's primary lane. The capability
@@ -2313,11 +2336,11 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    thing in the first place. Mutating git tools follow the same rule
    through `requireMutationLaneId`, which refuses to default at all. See
    [CTO](../cto/README.md#where-cto-launched-work-runs).
-7. Creating the CTO thread seeds one real, visible opening user turn
+8. Creating the CTO thread seeds one real, visible opening user turn
    (`seedCtoIntroTurn`) so a first-run thread is not blank. It fires only
    on creation, once per project, and is recorded in CTO onboarding
    state.
-8. Because the thread is hidden from every session roster, its
+9. Because the thread is hidden from every session roster, its
    "needs you" state is read through the dedicated read-only
    `getCtoAttention` probe rather than the shared attention summary.
 

@@ -379,20 +379,33 @@ way through a second id, `credentialId`: the key's declared `models[]` appear
 under that provider in the picker in their own section, and choosing one goes
 through the same resolver.
 
-`ade` takes both:
+Agent-facing text calls a preset a **Custom provider** (the Settings section
+is Providers › Custom providers); "preset" survives only in code and wire
+fields. `ade` names one by its name or id, and the model is always passed too:
 
 ```bash
-ade chat create --lane <lane> --preset <preset-id>
-ade new chat --mode cli --lane <lane> --provider claude --preset <preset-id>
-ade chat create --lane <lane> --provider claude --credential <credential-id>
+ade harness providers --text      # each Custom provider, with the flags to launch it
+ade chat create --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+ade new chat --mode cli --lane <lane> --custom-provider "DeepSeek on Claude" --model deepseek-v4.1-flash
+ade chat create --lane <lane> --provider claude --credential <credential-id> --model <id>
 ```
 
-`--preset` and `--credential` are mutually exclusive. `--via <source>` with
-`--provider` and `--model` builds an ad-hoc route id (`ade harness routes
---text` lists what each harness can reach; `ade harness test` checks one). Agents discover what
-exists through `ade chat models`, `ade providers accounts list`, or the
-`harnessPresets[]` and `providerAccounts[]` arrays on `ai.getStatus`; the
-`ade-harnesses` skill teaches the whole flow.
+The CLI resolves the name against the account's Custom providers
+(`customProviderRef.ts`: id first, then name ignoring case; two with one name
+are refused with their ids) and sends `presetId`. `--model` must be that
+Custom provider's model, and `--provider`, when given, its harness; either
+mismatch is refused with the right value named. The old `--preset` flag is
+refused with the new spelling. `--via`, `--custom-provider` and
+`--credential` are mutually exclusive: each says where the model runs.
+`--via <source>` with `--provider` and `--model` builds an ad-hoc route id
+(`ade harness routes --text` lists what each harness can reach; `ade harness
+test` checks one). The `ade-harnesses` skill teaches the whole flow.
+
+Every launch from an agent, a script or ADE MCP names its model
+(`launchModelRule.ts`): the CLI, the MCP `chat_start` tool and the RPC
+agent guard (`assertLaunchModelNamed`) refuse a launch with none. The app's own
+composer always sends one; internal callers (automations, side chats, forks)
+keep their service-level defaults.
 
 ### What each source does to the environment
 
@@ -491,7 +504,7 @@ as unavailable with the reason, so the choice cannot be made and then ignored.
 
 ### Running one outside ADE
 
-`ade harness env <preset-id|route-id> --text` prints the launch's exports
+`ade harness env "<Custom provider name>"|<id>|<route-id> --text` prints the launch's exports
 (zsh/bash, or `--shell pwsh`) for `eval`, and the Copy launcher button builds
 the matching `claude --model …` / `codex -m …` command. The output contains the
 provider token and is never written anywhere by ADE.

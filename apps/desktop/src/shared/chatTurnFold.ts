@@ -327,7 +327,7 @@ function classifySystemNotice(event: SystemNoticeProjection): TurnFoldRowRole {
   const detail = readRecord(event.detail);
   // Needs the user: a continuity recovery card and a spendable reset credit.
   if (detail?.kind === "continuity_recovery") return "keep";
-  if (status === "reset_credit_available") return "keep";
+  if (status === "reset_credit_available" || status === "claude_root_full_access") return "keep";
   // Spawn chips: the spawn/result cards carry the same facts and stay visible.
   if (status === "subagent_spawned" || status === "spawn_completed") return "history";
   if (event.hostSleep) return "history";

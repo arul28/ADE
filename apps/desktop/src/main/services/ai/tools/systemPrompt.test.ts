@@ -5,8 +5,8 @@ describe("buildCodingAgentSystemPrompt", () => {
   it("returns a prompt containing the cwd", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/my/project" });
     expect(result).toContain("/my/project");
-    expect(result).toContain("Read-only inspection outside this path is allowed");
-    expect(result).toContain("mutating commands only inside this path");
+    expect(result).toContain("mutating commands only inside this worktree");
+    expect(result).toContain("Reading outside it is fine");
   });
 
   it("includes session activity guidance only when a provider supplies it", () => {
@@ -59,10 +59,10 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("**ade-cli-control-plane**");
       // A wake is the agent's own work; a message arriving later is a draft.
       expect(result).toContain("ade drafts");
-      expect(result).toContain('ade chat note "testing desktop auth fallback"');
+      expect(result).toContain('ade chat note "testing auth fallback"');
       expect(result).toContain('ade chat ask "<the exact question>"');
       // Agents cannot settle; the prompt says so instead of teaching a command.
-      expect(result).toContain("You cannot settle or unsettle a session");
+      expect(result).toContain("You cannot settle a session");
       expect(result).not.toContain("ade chat settle --outcome");
     });
 

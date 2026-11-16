@@ -15,7 +15,7 @@ import {
   type ClaudeVersionRejection,
 } from "./providerVersionRejection";
 import { requirePinnedProviderExecutable } from "./pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, codexSandboxCliArgs, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCopilotSdkRuntime } from "./acpExecutables";
 import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
@@ -297,8 +297,7 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     ...codexLinuxShellArgs(process.platform),
     "--color",
     "never",
-    "--sandbox",
-    buildCodexSandbox(args.permissionMode),
+    ...codexSandboxCliArgs(buildCodexSandbox(args.permissionMode)),
     "--cd",
     // A background helper (a title, a status line) gets every word it needs in
     // its prompt; in the lane, Codex would also send the lane's AGENTS.md.

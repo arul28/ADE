@@ -23,7 +23,6 @@ import type { EventCategory, EventImportance } from "./eventTaxonomy";
 import {
   fetchSupplementalTimelineRecords,
   sortTimelineRecords,
-  type HistoryCtoRoute,
 } from "./historyActivitySources";
 import { withMachineTimeout } from "../../state/projectMachines";
 import { rootAppStoreApi } from "../../state/appStore";
@@ -189,8 +188,6 @@ export type TimelineStore = {
   machines: HistoryMachineSource[];
   /** Per-machine read state for machines other than the bound one. */
   machineLoads: Record<string, MachineReadLoad>;
-  /** Where the CTO's sessions are read from (its home machine). */
-  ctoRoute: HistoryCtoRoute;
   /** Enriched + filtered events ready for rendering */
   events: TimelineEvent[];
   /** Currently running operations (for WIP row) */
@@ -270,7 +267,6 @@ export type TimelineStore = {
   setRawEvents: (events: OperationRecord[]) => void;
   /** Publish the machine set. Drops segments of machines that left. */
   setMachines: (machines: HistoryMachineSource[]) => void;
-  setCtoRoute: (route: HistoryCtoRoute) => void;
 };
 
 // ── Default filter state ─────────────────────────────────────────
@@ -421,7 +417,6 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
     recordsByMachine: {},
     machines: [],
     machineLoads: {},
-    ctoRoute: { skip: false, pin: null },
     events: [],
     wipNodes: [],
     loading: false,
@@ -572,7 +567,7 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
             kind: opts?.kind,
             limit,
           }, localPin),
-          skipSupplemental ? Promise.resolve([]) : fetchSupplementalTimelineRecords(limit, get().ctoRoute, localPin),
+          skipSupplemental ? Promise.resolve([]) : fetchSupplementalTimelineRecords(localPin),
         ]);
         if (!isLatestRead(localKey, seq)) return;
         if (skipSupplemental) {
@@ -612,7 +607,6 @@ const createTimelineState: StateCreator<TimelineStore> = (set, get) => {
       set({ recordsByMachine: { [key]: events as TimelineRecord[] }, rawEvents: events as TimelineRecord[] });
       refilter();
     },
-    setCtoRoute: (ctoRoute) => set({ ctoRoute }),
     setMachines: (machines) => {
       const previous = get();
       const byKey = new Map(machines.map((machine) => [machine.machineId, machine]));

@@ -22,20 +22,23 @@ Cloudflare front refuses default library user agents (Python's urllib) with
 3. A device there: `["devices","--text"]` through the `ade` tool with that
    `machine` lists them; device commands take `--lane <lane there>`.
    `--machine` and `devices use` are refused: pick the machine with `machine`.
+   The one exception is `--machine cloud` (and `--size`) on `chat create`,
+   `lanes create` and `chat launch-status`, for ADE Cloud.
 
 **Device work (an iPhone simulator, an emulator) stays inside ADE.** Best:
 `chat_start` a chat whose prompt asks for it; the chat drives its own lane's
 device and files proof. Driving it yourself: `["apple","start","--lane",
 "<lane>"]`, then `apple` verbs with that same `--lane`, in ONE lane. Each lane
 boots its own simulator, so never spread device work over many lanes. Never
-`ios-sim open-device` or `--window`/`--foreground` (they open Simulator.app,
+pass `--window`, `--foreground` or `--open-simulator` (they open Simulator.app,
 which gives every booted simulator a window on the person's screen; MCP
 refuses them). `["apple","screenshot","--lane","<lane>"]` shows the screen;
 `["apple","stop","--lane","<lane>"]` when done.
 
-`chat_start` and `lanes_create` refuse to run without them, because the default
-project changes as the person works. Reads default to the last opened project,
-and every result starts with `[machine: …]` and `[project: …]`, so check them.
+`chat_start` and `lanes_create` need `project`, because the last opened
+project changes as the person works. Every other tool defaults `machine` to
+the machine serving this URL and `project` to the last opened one. Every
+result starts with `[machine: …]` and `[project: …]`, so check them.
 
 A chat id finds its own project and machine. `chat_status`, `chat_read`,
 `chat_send`, `chat_wait`, `chat_events` and the others need only `session`.
@@ -51,6 +54,10 @@ A chat id finds its own project and machine. `chat_status`, `chat_read`,
 }}
 ```
 
+- `model` is required: ADE never picks one for you. `["chat","models",
+  "--text"]` through the `ade` tool lists the ids, and `["harness","routes",
+  "--text"]` lists every model each harness can reach. `provider` is the
+  harness (`claude`, `codex`, `opencode`, …).
 - `permission_mode` defaults to `full-auto`, the highest level for each
   provider. `bypass` and `bypassPermissions` mean the same thing.
 - A new lane is made unless you pass `lane` (from `lanes_list` or

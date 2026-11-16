@@ -37,7 +37,7 @@ ade search "<query>" --lane fix-login      # restrict to a lane (id or name)
 ade search "<query>" --limit 20            # cap result count
 ade search "<query>" --cursor <nextCursor> # next page from a prior query
 ade search --status --text                 # index doc counts + backfill state
-ade search --rebuild --text                # rebuild the index (CTO-only)
+ade search --rebuild --text                # rebuild the index (the person's; if refused, ask them)
 ```
 
 `ade search` refuses an option it does not know. Global options such as

@@ -1396,8 +1396,8 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     domain: "cto_state",
     action: "getSnapshot",
     label: "Get CTO snapshot",
-    description: "Return the CTO agent's current snapshot (identity + recent activity).",
-    params: [{ name: "recentLimit", type: "number", description: "Number of recent items to include." }],
+    description: "Return the CTO's current snapshot (identity and capabilities).",
+    params: [],
   },
   // ---------------------------------------------------------------------------
   // worker_agent

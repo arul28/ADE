@@ -723,7 +723,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     const destination = (positionals(args)[0] ?? "main").toLowerCase();
     if (!["main", "display"].includes(destination)) {
       throw new CliUsageError(
-        `mac-desktop present: unknown destination '${destination}'. Use main or display.`,
+        `screen present: unknown destination '${destination}'. Use main or display.`,
       );
     }
     return desktopAction("screen present", "present", {

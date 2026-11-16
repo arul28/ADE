@@ -998,6 +998,11 @@ struct WorkChatSessionView: View {
   /// Opens this chat's side chat. Set only while the chat has one; the badge
   /// row then shows a Side chat chip (never otherwise).
   var onOpenSideChat: (() -> Void)? = nil
+  /// Set on the CTO thread only. Its turns draw calm: quiet chips for state
+  /// changes instead of the turn-end line, one working line while it runs.
+  /// Every other chat leaves it nil and renders exactly as before.
+  var ctoLive: CtoLiveModel? = nil
+  /// The CTO greeting's starters: fills the composer with the text.
 
   @State private var threadCommentsSheetPresented = false
   /// Compact first for the next send: nil follows the offer's own default.
@@ -1085,6 +1090,9 @@ struct WorkChatSessionView: View {
   /// The sign-in card to show, keyed so a dismissed one stays hidden until a
   /// new reason brings it back: the failed turn whose signed-out agent it is
   /// for, else the machine's word that the agent has no login yet.
+  /// The CTO greeting's starters need a prompt box on screen to land in.
+  var ctoStartersEnabled: Bool { canComposeMessages && shownProviderSignIn == nil }
+
   var shownProviderSignIn: (key: String, reason: WorkProviderSignInReason)? {
     guard providerSignInAllowed, !isStreamingTurn, !isPersonalChat else { return nil }
     let shown: (key: String, reason: WorkProviderSignInReason)
@@ -1352,7 +1360,18 @@ struct WorkChatSessionView: View {
   }
 
   var visibleTimelineRenderEntries: [WorkTimelineRenderEntry] {
-    timelinePresentation.renderEntries
+    let entries = timelinePresentation.renderEntries
+    guard ctoLive != nil else { return entries }
+    // The CTO thread hides its plumbing cards: drop them here, not in the row
+    // view, so they leave no empty row (and its spacing) behind.
+    return entries.filter { entry in
+      if case .entry(let timelineEntry) = entry.payload,
+         case .eventCard(let card) = timelineEntry.payload,
+         ctoThreadHidesCard(card) {
+        return false
+      }
+      return true
+    }
   }
 
   var latestScrollTargetId: String {
@@ -1717,6 +1736,7 @@ struct WorkChatSessionView: View {
       var hasher = Hasher()
       hasher.combine(transcriptLoadState)
       hasher.combine(isLive)
+      hasher.combine(ctoLive != nil && ctoStartersEnabled)
       rows.append(
         WorkChatTranscriptRow(id: "chat-empty-state", kind: .emptyState, revision: hasher.finalize())
       )
@@ -1740,6 +1760,15 @@ struct WorkChatSessionView: View {
     if isStreamingTurn {
       var hasher = Hasher()
       hasher.combine(turnToolActivity.active?.count ?? 0)
+      // A step finishing changes the working line's step words without
+      // changing the count.
+      for member in turnToolActivity.active?.members ?? [] {
+        switch member {
+        case .tool(let card): hasher.combine(card.status)
+        case .command(let card): hasher.combine(card.status)
+        case .fileChange(let card): hasher.combine(card.status)
+        }
+      }
       hasher.combine(frame?.activityPresentation?.label)
       hasher.combine(frame?.activityPresentation?.detail)
       rows.append(
@@ -1889,6 +1918,17 @@ struct WorkChatSessionView: View {
       }
       .adeInspectable("Work.Chat.Transcript.LoadFailed")
     case .idle:
+      // Offline, the empty thread means "not loaded", not "no history": the
+      // reconnect copy below says so, not the greeting.
+      if let ctoLive, isLive {
+        // The CTO's empty thread: it says hi and offers a start.
+        // A starter goes into the prompt box once, like a scene's reply: an
+        // event, not held state, so a composer that remounts later (after a
+        // sign-in card) keeps whatever the person typed since.
+        CtoGreetingView(live: ctoLive, onPick: ctoStartersEnabled ? { [sessionId = session.id] text in
+          WorkSceneReplyCenter.replies.send(WorkSceneReplyRequest(sessionId: sessionId, text: text))
+        } : nil)
+      } else {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
         title: "No chat messages yet",
@@ -1896,12 +1936,37 @@ struct WorkChatSessionView: View {
           ? "Send a message to start streaming the transcript."
           : "Reconnect to load the latest chat history from the machine."
       )
+      }
     }
+  }
+
+  /// The CTO thread's live facts, for its header pill and profile.
+  var ctoLiveFacts: WorkCtoLiveFacts? {
+    guard ctoLive != nil else { return nil }
+    let active = isStreamingTurn
+    return WorkCtoLiveFacts(
+      active: active,
+      streaming: active && streamingAssistantMessageId != nil,
+      awaiting: !pendingInputs.isEmpty,
+      step: active ? ctoLatestStepWords(turnToolActivity.active?.members ?? []) : nil
+    )
   }
 
   @ViewBuilder
   var streamingStatusSection: some View {
-    if isStreamingTurn {
+    if isStreamingTurn, let ctoLive {
+      CtoWorkingLine(
+        look: ctoLive.look,
+        members: turnToolActivity.active?.members ?? [],
+        streamingText: streamingAssistantMessageId != nil,
+        startedAt: ctoLive.turnStartedAt,
+        onOpenSteps: turnToolActivity.active.map { _ in
+          { toolActivitySheet = .active }
+        }
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else if isStreamingTurn {
       WorkActivityIndicator(
         transcript: transcript,
         precomputedPresentation: frame?.activityPresentation,
@@ -1944,7 +2009,9 @@ struct WorkChatSessionView: View {
   }
 
   var composerCompactFirstOffer: WorkCompactFirstOffer? {
-    guard chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
+    // The CTO never offers: its brain moves it to a fresh thread on its own.
+    guard ctoLive == nil,
+          chatSummaryContext.compactFirstSupported, chatSummaryContext.compactionIdleMode != "never",
           // OpenCode only offers `/compact` when its server lists the command, Cursor only on local chats.
           !workManualCompactDependsOnChat(chatSummaryContext.provider) || chatSummaryContext.manualCompactAvailable,
           !hasPendingInputGate, !isStreamingTurn, sessionStatus != "active",
@@ -2381,6 +2448,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSkillInstructions, skillInstructions)
             .environment(\.workProofCitations, proofCitationContext)
             .environment(\.workSceneBridge, sceneBridge)
+            .environment(\.workChatAccentHexOverride, ctoLive.map { CtoResolvedLook($0.look).hex })
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,
@@ -2867,6 +2935,26 @@ struct WorkChatSessionView: View {
         .onChange(of: liveClaudeQuotaCardId) { _, newId in
           handleLiveQuotaCardChange(newId)
         }
+        .onChange(of: ctoLiveFacts, initial: true) { _, facts in
+          publishCtoLiveFacts(facts)
+        }
+  }
+
+  /// Hands the CTO thread's turn facts to its live model (header pill,
+  /// profile). The turn's start is read off the transcript once, when the
+  /// turn begins, never per streamed delta.
+  @MainActor
+  private func publishCtoLiveFacts(_ facts: WorkCtoLiveFacts?) {
+    guard let ctoLive, let facts else { return }
+    if facts.active {
+      if ctoLive.turnStartedAt == nil {
+        ctoLive.turnStartedAt = WorkActivityIndicator.activeTurnStartTimestamp(from: transcript)
+          .flatMap(workActivityTimestamp) ?? Date()
+      }
+    } else if ctoLive.turnStartedAt != nil {
+      ctoLive.turnStartedAt = nil
+    }
+    ctoLive.applyTurn(active: facts.active, streaming: facts.streaming, awaiting: facts.awaiting, step: facts.step, failed: false)
   }
 
   /// Per-frame bookkeeping that is not rendering: a history reset (generation

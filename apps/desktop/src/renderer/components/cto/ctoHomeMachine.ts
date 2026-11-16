@@ -24,8 +24,11 @@
  * a fallback join.
  */
 
+import type { AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import type { ProjectMachine } from "../../state/projectMachines";
 import { accountRepoScopeKey } from "../../../shared/accountSettingsScope";
+import { savedChatsMachineKey } from "../../../shared/cloudSavedChats";
+import { isAdeCloudLaneComputer } from "../lanes/laneMachines";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
@@ -36,6 +39,26 @@ import {
 
 export { CTO_HOME_SETTING_KEY, isCtoHomeMachineRecord, type CtoHomeMachineRecord };
 
+
+/**
+ * The machines the CTO's home can be picked from: This computer and every
+ * machine with a checkout of the repo. Never offered (the present home always
+ * stays listed):
+ * - a cloud computer's saved chats (`cloud-saved:<key>`), a stand-in that
+ *   answers only for those chats;
+ * - a lane's own ADE Cloud computer, which goes when its lane does.
+ * ADE Cloud as a home is its own row, not one of these.
+ */
+export function ctoHomeCandidates(
+  machines: readonly ProjectMachine[],
+  currentMachineId: string | null,
+  laneComputers: readonly AdeCloudLaneComputer[],
+): ProjectMachine[] {
+  return machines.filter((machine) => (machine.hasRepo || machine.isThisMachine)
+    && (machine.machineId === currentMachineId
+      || (savedChatsMachineKey(machine.machineId) == null
+        && !isAdeCloudLaneComputer({ hostname: machine.hostname, machineKey: machine.machineId }, laneComputers))));
+}
 
 /** Shown while This computer's account device id is still being read. */
 export const STILL_IDENTIFYING_THIS_COMPUTER = "Still identifying this computer…";
@@ -179,14 +202,3 @@ export function resolveCtoHomeMachine(
   ) ?? null;
 }
 
-/**
- * The machine to suggest on first run: This computer when it has the repo,
- * otherwise the bound machine, otherwise the first reachable one.
- */
-export function suggestCtoHomeMachine(machines: readonly ProjectMachine[]): ProjectMachine | null {
-  const candidates = machines.filter((machine) => machine.hasRepo);
-  return candidates.find((machine) => machine.isThisMachine && machine.routable)
-    ?? candidates.find((machine) => machine.isActiveBinding)
-    ?? candidates.find((machine) => machine.routable && machine.online)
-    ?? null;
-}

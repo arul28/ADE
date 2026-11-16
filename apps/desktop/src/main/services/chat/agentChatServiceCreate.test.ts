@@ -60,6 +60,25 @@ import {
 } from "../../../../../ade-cli/src/services/tools";
 import { afterEach, describe, expect, it, test, vi } from "vitest";
 
+/** The system prompt each Claude query was built with (`options.systemPrompt.append`). */
+function claudeSystemPromptsBuilt(): string[] {
+  const appendOf = (options: unknown): string => {
+    const systemPrompt = (options as { systemPrompt?: { append?: unknown } } | undefined)?.systemPrompt;
+    const append = systemPrompt?.append;
+    // The append is a string when the query takes one prompt block, or the
+    // list the builder passes.
+    if (typeof append === "string") return append;
+    return Array.isArray(append) ? append.map(String).join("\n") : "";
+  };
+  const fromCreate = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.map(([options]) => appendOf(options));
+  const fromResume = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.map(([, options]) => appendOf(options));
+  const fromQuery = vi.mocked(query).mock.calls.map(([args]) => appendOf((args as { options?: unknown } | undefined)?.options));
+  // A new chat's first query is the warm `startup()` one, so its options are
+  // where the session's system prompt is first built.
+  const fromStartup = vi.mocked(startup).mock.calls.map(([args]) => appendOf((args as { options?: unknown } | undefined)?.options));
+  return [...fromCreate, ...fromResume, ...fromQuery, ...fromStartup].filter((text) => text.length > 0);
+}
+
 afterEach(() => {
   vi.unstubAllEnvs();
 });
@@ -497,13 +516,11 @@ describe("createAgentChatService", () => {
       } as any);
     }
 
-    it("delivers the directive once, then suppresses it while the capability set holds", async () => {
-      // The gate is a fingerprint of the rendered directive, and it is marked at
-      // the dispatch commitment point — not in `prepareSendMessage` and not in
-      // the local `/fast` handler. This is the regression guard for the bug
-      // where the key was written only by `/fast`: a normal send never marked
-      // it (so the directive rode every turn, the exact cost this gate exists to
-      // remove) and a `/fast` first message suppressed it for the whole session.
+    it("delivers the computer-use rules once per capability epoch, never on every turn", async () => {
+      // The rules ride the query's system prompt when the capability is there
+      // when it is built, and otherwise the first turn that sees it (the
+      // re-arm path). Either way, one delivery, and a second turn repeats
+      // nothing: the person's own text stays the message.
       const fixture = installClaudeResponseFixture({ sdkSessionId: "sdk-cu-cadence", responseText: "ok" });
       const { service } = createService();
       installAvailableBroker(service);
@@ -514,13 +531,16 @@ describe("createAgentChatService", () => {
       await service.runSessionTurn({ sessionId: session.id, text: "second" });
 
       const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
-      const carryingDirective = prompts.filter((text) => text.includes("## Computer Use"));
-      expect(carryingDirective).toHaveLength(1);
-      expect(prompts.at(-1) ?? "").not.toContain("## Computer Use");
+      // The prompt each query was built with carries the rules; the person's
+      // messages never do. (The same options object reaches more than one SDK
+      // entry in this harness, so the prompts are compared as one set.)
+      const systemPrompts = [...new Set(claudeSystemPromptsBuilt())];
+      expect(systemPrompts.some((text) => text.includes("## Computer Use"))).toBe(true);
+      expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(false);
       service.forceDisposeAll();
     });
 
-    it("re-arms the directive when compaction completes before dispatch bookkeeping settles", async () => {
+    it("delivers the directive again after a compaction, then suppresses it while the context holds", async () => {
       const fixture = installClaudeResponseFixture({
         sdkSessionId: "sdk-cu-compact",
         responseText: "ok",
@@ -538,10 +558,13 @@ describe("createAgentChatService", () => {
       await service.runSessionTurn({ sessionId: session.id, text: "same context" });
       await settleDirectiveBookkeeping();
 
-      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
       expect(events.some(({ event }) => event.type === "context_compact" && event.state === "completed")).toBe(true);
-      // The initial SDK setup also calls send; the final three are the user turns.
-      expect(prompts.slice(-3).map((text) => text.includes("## Computer Use"))).toEqual([true, true, false]);
+      const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
+      // After the compaction the session's prompt still carries the rules, and
+      // the turns still never do.
+      const systemPrompts = [...new Set(claudeSystemPromptsBuilt())];
+      expect(systemPrompts.at(-1) ?? "").toContain("## Computer Use");
+      expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(false);
       service.forceDisposeAll();
     });
 
@@ -551,13 +574,14 @@ describe("createAgentChatService", () => {
       installAvailableBroker(service);
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
 
-      // `/fast` is handled entirely locally: it never hands `promptText` — the
-      // carrier of the directive — to a provider, so it must not mark the key.
+      // `/fast` is handled entirely locally: it hands no prompt to a provider,
+      // so it must not consume the session's one delivery.
       await service.sendMessage({ sessionId: session.id, text: "/fast on" });
       await service.runSessionTurn({ sessionId: session.id, text: "real turn" });
 
       const prompts = fixture.send.mock.calls.map(([message]) => claudeInputText(message));
-      expect(prompts.some((text) => text.includes("## Computer Use"))).toBe(true);
+      const carriers = [...claudeSystemPromptsBuilt(), ...prompts].filter((text) => text.includes("## Computer Use"));
+      expect(carriers.length).toBeGreaterThanOrEqual(1);
       service.forceDisposeAll();
     });
 
@@ -1939,7 +1963,11 @@ describe("createAgentChatService", () => {
         .map((call) => String(call[0] ?? ""))
         .find((payload) => payload.includes("Inspect the repo and report the chat wiring."));
 
-      expect(userTurnPayload).toContain("[ADE launch directive]");
+      // The person's own text is the turn. ADE's instructions (the worktree
+      // rule, the CLI guidance) live in the session's system prompt, not in
+      // front of the message; this file mocks the prompt builder, so the
+      // prompt's own wording is checked in `systemPrompt.test.ts`.
+      expect(userTurnPayload).not.toContain("[ADE launch directive]");
       expect(userTurnPayload).not.toContain("CLI controls ADE state");
       expect(userTurnPayload).not.toContain("ade actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;

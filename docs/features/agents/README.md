@@ -8,9 +8,9 @@ The former worker/hiring agents were removed. There is one persistent identity �
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, session logs, daily/onboarding state, the single immutable doctrine, and system-prompt preview. |
-| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's smart-memory file store (`MEMORY.md`, `thread-state.md`, daily logs, fact tags, the worker-discovery queue, per-lane sections, search, injection sections). |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `saveMemory` / `searchMemory` / `readMemory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
+| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity, system-prompt composition, onboarding markers, the static and volatile turn context, and the live project-state block. |
+| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The CTO's memory store: project notes (`MEMORY.md`), notes about the person (`USER.md`), the open-work list, the worker-discovery queue, and the injection sections. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO operator tools for chat spawning, lanes/PRs/git/tests, Linear reads/writes, the `remember` / `forget` / `trackWork` / `finishWork` / `readHistory` / `readDiscoveries` memory tools, and the `loadCtoTools` pack loader. |
 | `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` | The closed list of 11 CTO tool packs and their scopes, shared by the tool factory and the prompt's capability manifest. |
 | `apps/desktop/src/main/services/chat/ctoTurnContext.ts`, `codexCtoToolDeferral.ts` | The pure turn-context helpers and the Codex pack-deferral predicate, split out of `agentChatService` so they are testable without the provider graph. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH (`ade.agentTools.detect`). Informational only: ADE never runs what it finds; agents run from ADE's pinned copies. |
@@ -25,7 +25,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/ade-cli/src/services/builtInBrowser/remoteBrowserTabHosts.ts`, `remoteBrowserBroadcast.ts`, `remoteBrowserReceivedFiles.ts`, `remoteBrowserOwnerNames.ts` | The forwarder's parts: which machine's browser holds each tab and browser session (so a task's commands follow its tab); broadcasts to every desktop (`listTabsForAgent` for `ade browser status`, `releaseLaneTabs` for a deleted or archived lane); writing the screenshot bytes a desktop's reply carries; chat titles and lane names for the owners `status` lists. |
 | `apps/desktop/src/main/utils/codexComputerUse.ts` | Security boundary for direct Codex Computer Use: explicit config opt-in, stable/cache candidate resolution, executable check, and strict OpenAI code-signature identity verification. |
 | `apps/desktop/resources/agent-skills/ade-cli-control-plane/SKILL.md` | Agent-facing ADE CLI control-plane guidance. |
-| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for discovering, selecting, and launching saved harness presets. |
+| `apps/desktop/resources/agent-skills/ade-harnesses/SKILL.md` | Agent-facing guidance for launching on a specific setup: `--via` routes, saved Custom providers (`--custom-provider`), accounts and stored keys; every launch names its model. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, reporting session activity when a provider has trusted session-scoped CLI access, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, the CTO, and mobile-started runtime work. |
@@ -36,7 +36,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 
 ### CTO
 
-One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, nullable model preferences, onboarding state, optional prompt extension) plus a smart-memory system that survives sessions, compaction, and model switches. Its voice is fixed by the immutable doctrine rather than chosen — there are no personality presets and no work-style settings. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
+One persistent project-level identity. The CTO carries a structured `CtoIdentity` document (name, persona, nullable model preferences, fallback models, avatar look, personality, onboarding markers, optional prompt extension) plus a small memory of project notes, notes about the person and open work that survives every fresh provider context and model switch. Its voice starts from the immutable doctrine; the personality setting only warms or lightens it, never overrides its precision rules. See [CTO](../cto/README.md) and [Identity and Personas](identity-and-personas.md).
 
 ### Regular chat agents
 
@@ -293,7 +293,7 @@ path.
 
 There is no separate orchestration mode: a coordinating agent spawns its own
 helpers from any thread with
-`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--preset <id>]`,
+`ade chat create --type subagent --provider <p> --model <m> [--instance <id>] [--custom-provider <name>]`,
 and reads their results back through the same spawn lineage.
 
 The runtime mechanics — provider-native mid-turn completion steering, the
@@ -362,17 +362,21 @@ terminal.
 type CtoIdentity = {
   name: string;
   version: number;
+  schemaVersion?: number;
   persona: string;
   systemPromptExtension?: string;
   onboardingState?: CtoOnboardingState;
   modelPreferences: CtoModelPreferences | null;
+  fallbackModels?: CtoModelPreferences[];
+  avatar?: CtoAvatarLook | null;
+  personality?: CtoPersonality | null;
   updatedAt: string;
 };
 ```
 
 ## Capability modes
 
-`CtoCapabilityMode` is persisted per CTO session log:
+`CtoCapabilityMode` is recorded on the chat session:
 
 - `full_tooling` — the session connected to the ADE CLI/action bridge.
 - `fallback` — the bridge was unavailable and the adapter used its own built-in tool set.
@@ -392,7 +396,7 @@ Standalone chat sessions connected through the ADE CLI have elevated tools hidde
 
 The project surfaces use `buildCodingAgentSystemPrompt` with different identity/context prefixes; personal chat deliberately does not:
 
-- **CTO:** the immutable CTO doctrine (role, precision rules, how it speaks, and how it helps with ADE itself), persona, continuity model, memory-system guidance, environment knowledge, recent session context, injected durable memory, and the user-defined prompt extension.
+- **CTO:** the immutable CTO doctrine (role, precision rules, how it speaks, and how it helps with ADE itself), persona, the continuity model, memory guidance, environment knowledge, the injected notes and open work, the live project state, and the user-defined prompt extension.
 - **Regular chat:** lane context, workflow tool guidance, and permission-mode framing.
 - **Personal chat:** a compact general-assistant directive stating that no
   repository/project is attached and that explicit filesystem/shell work must
@@ -415,15 +419,15 @@ therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than inheriting it,
 so it cannot self-update the binary ADE pinned. See
 [Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
 
-## Smart memory and reconstruction
+## Memory and reconstruction
 
-The CTO's durable memory lives in files under `.ade/cto/` (`MEMORY.md`, `thread-state.md`, `daily/<date>.md`, `discoveries.md`) owned by `ctoMemoryService`. A deterministic flush writes the rolling summary before compaction and before model switches; a best-effort LLM upgrade refines it. `refreshReconstructionContext()` re-injects identity plus memory after compaction and switches.
+The CTO's memory lives in files under `.ade/cto/` (`MEMORY.md`, `open-work.json`, `discoveries.md`) plus `USER.md` under the ADE home, owned by `ctoMemoryService`. Project notes (4096 bytes), notes about the person (2048 bytes) and the open-work list are injected on every turn with a byte count in each heading; nothing in the pipeline runs a model. `refreshCtoProviderThread()` gives the CTO a fresh provider thread when its context is full, after a compaction, after an overflow, on a model fallback, or when the person asks, and carries the static prompt, the notes, the open work, the live state and the last 40 messages onto it.
 
-Two parts of that system are not CTO-only. Every agent gets `recordDiscovery`, an append-only tool that hands one durable finding up to the project's CTO — a convention, a trap, a decision the next agent should not have to rediscover — with no matching read tool, so contributing never grants a view of the CTO's memory. And every project chat receives the facts memory holds about *its* lane, injected once per lane change beside the lane execution directive. Full details in [Identity and Personas](identity-and-personas.md#smart-memory-system).
+One part of that system is not CTO-only. Every agent gets `recordDiscovery`, an append-only tool that hands one durable finding up to the project's CTO — a convention, a trap, a decision the next agent should not have to rediscover — with no matching read tool, so contributing never grants a view of the CTO's memory. Project chats do not receive the CTO's notes. Full details in [Identity and Personas](identity-and-personas.md#memory-system).
 
 ## Session logs
 
-The CTO maintains an append-only session log. Each entry carries session id, summary, started/ended timestamps, provider, model id, capability mode, and a previous-hash pointer (`prevHash`) so `logIntegrityService.ts` can verify the chain.
+The CTO keeps no session log. The live CTO conversation and its older sessions are read straight from the chat transcripts (`readHistory`), and the `cto_session_logs` table remains in the schema only because tables are never dropped.
 
 ## IPC surface
 
@@ -431,19 +435,18 @@ Representative channels:
 
 | Channel | Purpose |
 |---|---|
-| `ade.cto.getState` | Fetch CTO identity and recent sessions. |
+| `ade.cto.getState` | Fetch the CTO identity. |
 | `ade.cto.updateIdentity` | Patch identity fields. |
 | `ade.cto.ensureSession` | Create or fetch the CTO's persistent chat session. |
-| `ade.cto.listSessionLogs` | Read the CTO session log. |
+| `ade.cto.refreshContext` | Give the CTO a fresh provider thread. |
 | `ade.cto.previewSystemPrompt` | Generate a system-prompt preview for the UI. |
-| `ade.cto.getMemory` / `updateMemory` / `searchMemory` | Read, rewrite, and search durable memory. |
+| `ade.cto.getMemory` / `updateNotes` / `updateOpenWork` | Read the memory snapshot, rewrite one notes file, change the open-work list. |
 
 ## Fragile and tricky wiring
 
-- **Post-compaction identity re-injection.** The CTO identity session calls `refreshReconstructionContext()` after chat context compaction. Missing this path loses the persona and durable memory mid-session.
-- **Removed identity keys still appear on disk.** `normalizeIdentity` silently drops `personality`, `customPersonality`, `communicationStyle`, and `constraints` so an `identity.yaml` written by an older build still loads.
-- **Deterministic memory flush is the guarantee.** The LLM summary upgrade is best-effort; the durable write must never depend on it.
-- **Daily log integrity hashes.** Session log entries carry `prevHash`; manual row deletion breaks the chain and is detected by `logIntegrityService`.
+- **A fresh context never runs mid-turn.** `refreshCtoProviderThread` refuses while the thread is busy and records the reason for the next settled turn; the static prompt, notes, open work and 40-message tail then carry over.
+- **A forgotten provider pointer is what makes the thread fresh.** Clearing the pointer fields is the only thing that stops Claude, Codex or Cursor resuming the old thread.
+- **The notes caps are load-bearing.** A `remember` past a notes cap is refused so the CTO merges or forgets; a silently truncated note would make the CTO look forgetful.
 - **Standalone-chat tool filtering at ADE CLI boundary.** Filtering is applied in `apps/ade-cli/src/adeRpcServer.ts` from the initialize payload's identity.
 - **A bound session never inherits CTO authority.** Keep role resolution on
   `resolveSessionBoundRole` in both single-project and multi-project RPC
