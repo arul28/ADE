@@ -20,6 +20,12 @@
 export const SPAWN_TYPE_FLAGS = ["--type", "--spawn-type"] as const;
 
 /**
+ * The plain spelling of `--type peer`: the new chat does not report back to
+ * the chat that started it. `--type peer` stays accepted for old scripts.
+ */
+export const NO_REPORT_FLAGS = ["--no-report"] as const;
+
+/**
  * The parent-session flag spelling `lanes create-from-linear --start-chat`
  * uses. `--parent` is deliberately absent: on that command it names the parent
  * LANE, not the parent chat session.

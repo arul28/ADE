@@ -37,8 +37,10 @@ import {
   waitForSessionTitle,
   writePersistedChatState,
   dedicatedTranscriptPath,
+  settleSteppingTimeouts,
 } from "./agentChatService.testHarness";
 import { describe, expect, it, test, vi } from "vitest";
+import { resolveAdeHomeForOwnership } from "./chatRuntimeOwnership";
 
 /**
  * The setup every Claude approval test shares: one session whose stream never
@@ -556,6 +558,40 @@ describe("createAgentChatService", () => {
       expect(readPersistedChatState(child.id)).toMatchObject({ spawnKind: "subagent" });
       await expect(service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
       await expect(createService().service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
+
+      // The child never ran: a parent agent polling `ade chat status` must not
+      // wait on it as running.
+      const status = await service.getTurnStatus(parent.id);
+      expect(status?.subagents).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "completed" }),
+      ]);
+
+      // Another live brain on this ADE home runs the child. This brain cannot
+      // see that turn, so its status keeps the row as written. Only the OS
+      // process table (the registry's liveness probe) is faked.
+      writePersistedChatState(child.id, {
+        ...readPersistedChatState(child.id),
+        runtimeOwner: {
+          brainId: "brain-other",
+          pid: 4242,
+          startedAt: "2026-10-09T03:00:00.000Z",
+          socketPath: "/tmp/owner-brain.sock",
+          claimedAt: "2026-10-09T03:00:00.000Z",
+          adeHome: resolveAdeHomeForOwnership(),
+        },
+      });
+      const second = createService({
+        processRegistry: {
+          pid: process.pid,
+          startedAt: "2026-10-09T03:30:00.000Z",
+          isProcessIdentityLive: (pid: number) => pid === 4242,
+        },
+        runtimeSocketPath: "/tmp/second-brain.sock",
+      });
+      const heldElsewhere = await second.service.getTurnStatus(parent.id);
+      expect(heldElsewhere?.subagents).toEqual([
+        expect.objectContaining({ taskId: `chat:${child.id}`, status: "running" }),
+      ]);
     });
 
     it.each<[string, (launcherId: string) => Record<string, unknown>, boolean]>([
@@ -990,7 +1026,7 @@ describe("createAgentChatService", () => {
       expect(quietNotices()).toHaveLength(0);
     });
 
-    it("emits a quiet completion notice without a wake when a peer finishes", async () => {
+    it("closes the parent's card without a notice or a wake when a chat that does not report back finishes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-peer", slash_commands: [] };
@@ -1018,19 +1054,17 @@ describe("createAgentChatService", () => {
       await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
 
       await vi.waitFor(() => {
-        const completion = events.find((event) =>
+        expect(events.find((event) =>
           event.sessionId === parent.id
-          && event.event.type === "system_notice"
-          && event.event.status === "spawn_completed"
-        );
-        expect(completion).toBeTruthy();
-        expect((completion!.event as any).detail.spawnCompletion).toMatchObject({
-          childSessionId: child.id,
-          childTitle: "Quiet peer",
-          spawnKind: "peer",
-          status: "completed",
-        });
+          && event.event.type === "subagent_result"
+          && event.event.taskId === `chat:${child.id}`
+        )?.event).toMatchObject({ status: "completed" });
       });
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+      )).toBe(false);
       expect(events.some((event) =>
         event.sessionId === parent.id
         && event.event.type === "user_message"
@@ -1038,7 +1072,7 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
-    it("demotes a subagent to a peer, notes the parent, and keeps later turns quiet", async () => {
+    it("stops a subagent's reports, notes the parent, and posts nothing for later turns", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-demote", slash_commands: [] };
@@ -1087,11 +1121,15 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.sessionId === parent.id
-          && event.event.type === "system_notice"
-          && event.event.status === "spawn_completed"
-          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+          && event.event.type === "subagent_result"
+          && event.event.taskId === `chat:${child.id}`
         )).toBe(true);
       });
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "system_notice"
+        && event.event.status === "spawn_completed"
+      )).toBe(false);
       expect(events.some((event) =>
         event.sessionId === parent.id
         && event.event.type === "user_message"
@@ -4181,7 +4219,7 @@ describe("createAgentChatService", () => {
       try {
         const warm = async (service: ReturnType<typeof createService>["service"], text: string) => {
           const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-          await service.runSessionTurn({ sessionId: session.id, text, timeoutMs: 15_000 });
+          await settleSteppingTimeouts(() => service.runSessionTurn({ sessionId: session.id, text, timeoutMs: 15_000 }));
         };
 
         // Fill the budget inside the first service. Nothing is evicted: the cap

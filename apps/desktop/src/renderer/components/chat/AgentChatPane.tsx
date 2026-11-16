@@ -202,6 +202,7 @@ import { ClaudeModUi } from "./ClaudeModUi";
 import { registerDraftModelSetter } from "./draftModelSeam";
 import { useClaudeModsPrompt } from "./useClaudeModsPrompt";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { useMachineSlotHold } from "../../lib/machineSlotHolds";
 import { threadReviewCountLabel } from "../../../shared/threadComments";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
@@ -239,8 +240,9 @@ import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
+import { ChatActionsToggleBadge } from "./ChatActionsToggleBadge";
 import { chatApiPin, requireChatPin, withChatPin } from "./chatMachinePin";
-import { ChatMachineWakeProvider } from "./useChatMachineWake";
+import { ChatMachineWakeBanner, ChatMachineWakeProvider } from "./useChatMachineWake";
 import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import { settingsCardSelector, showSpotlight } from "../onboarding/spotlight/spotlight";
 import { noteFastModeAllowedFromHost, useFastModeEnabled } from "../../lib/fastModePolicy";
@@ -253,7 +255,8 @@ import {
 } from "../../state/cloudSavedChatsSync";
 import { ThreadEntityProvider } from "./threadEntities";
 import { useSessionLifecycleSnapshot } from "../work/useSessionLifecycleSnapshot";
-import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
+import { useForeignSessionLaneId, useLanesForPin, useMachineEntryForBinding } from "../../state/crossMachineLanes";
+import { machineIsCloudResting } from "../../state/cloudRestingRows";
 import { isWebRuntimePinUnroutableError } from "../../webclient/adapter/runtimePinGuard";
 import {
   CHAT_HISTORY_BACKFILL_PAGE_MAX_BYTES,
@@ -276,6 +279,7 @@ import {
 const NO_NESTING: ReadonlyMap<string, string> = new Map();
 /** A pane locked to one chat has no spawned children in its session list. */
 const NO_SPAWNED_CHAT_SESSIONS: readonly AgentChatSessionSummary[] = [];
+const NO_PENDING_STEERS: PendingSteerEntry[] = [];
 
 export {
   advanceOlderHistoryCursor,
@@ -353,7 +357,7 @@ import { resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { deriveRuntimeState, userMessageVisibleText, type PendingSteerEntry } from "./chatRuntimeState";
 export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
 import { AskQuestionComposer } from "./AskQuestionComposer";
-import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
+import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive, rowSaysTurnEnded } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import type { ModelPickerSelection } from "../shared/ModelPicker/ModelPickerContent";
 import { DevinLogo } from "../shared/ProviderLogos";
@@ -462,7 +466,7 @@ import {
 } from "./draftAttachmentTransfer";
 import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import { savedChatComputerGone } from "../../state/cloudSavedChats";
-import { useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
+import { useAdeCloudLaneComputers, useAdeCloudLaneForBinding } from "../../state/adeCloudLaneIndex";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -2344,6 +2348,8 @@ function composerDraftStorageKey(scope: {
 /** Draft key for a personal pane before its first message creates the chat. */
 const PERSONAL_DRAFT_COMPANION_STATE_KEY = "personal:draft";
 const PERSONAL_COMPOSER_DRAFT_ROOT = "personal";
+/** The key root of an open project chat's draft: the session id alone names it. */
+const SESSION_COMPOSER_DRAFT_ROOT = "session";
 
 function composerDraftStorageKeys(scope: {
   projectRoot: string | null | undefined;
@@ -4630,7 +4636,7 @@ export function AgentChatPane({
   // rendered transcript is kept as-is (it is real, just possibly behind) and a
   // later pass renders a catch-up hairline from this flag.
   const [syncPendingBySession, setSyncPendingBySession] = useState<Record<string, boolean>>({});
-  const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
+  const [turnActiveBySessionState, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   // Raw derivations, straight from the transcript. Every reader goes through
   // `resolvedPendingInputsBySession` below instead of reading this directly —
   // an entry swept at a turn boundary is still in here, and only the session
@@ -5154,13 +5160,26 @@ export function AgentChatPane({
     companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
       ? `draft:${legacyWorkDraftLaneId}`
       : null;
+  // An open chat's draft belongs to the chat, not to the copy the tab shows.
+  // The tab moves to another copy when its computer goes away, and a key with
+  // that copy's folder in it made the typed draft vanish with the move.
+  const sessionDraftRoot = selectedSessionId && !chatScope ? SESSION_COMPOSER_DRAFT_ROOT : null;
   const composerDraftStorageKeyValues = useMemo(() => {
     const primary = composerDraftStorageKeys({
-      projectRoot: composerDraftProjectRoot,
+      projectRoot: sessionDraftRoot ?? composerDraftProjectRoot,
       companionStateKey,
       surfaceProfile,
       workDraftKind: workDraftStorageKind,
     });
+    // Drafts saved before, under the folder of the copy then on screen.
+    const folderKeyed = sessionDraftRoot
+      ? composerDraftStorageKeys({
+          projectRoot: composerDraftProjectRoot,
+          companionStateKey,
+          surfaceProfile,
+          workDraftKind: workDraftStorageKind,
+        })
+      : [];
     const legacy = legacyWorkDraftCompanionStateKey
       ? composerDraftStorageKeys({
           projectRoot: composerDraftProjectRoot,
@@ -5169,8 +5188,8 @@ export function AgentChatPane({
           workDraftKind: workDraftStorageKind,
         })
       : [];
-    return [...new Set([...primary, ...legacy])];
-  }, [companionStateKey, composerDraftProjectRoot, legacyWorkDraftCompanionStateKey, surfaceProfile, workDraftStorageKind]);
+    return [...new Set([...primary, ...folderKeyed, ...legacy])];
+  }, [companionStateKey, composerDraftProjectRoot, legacyWorkDraftCompanionStateKey, sessionDraftRoot, surfaceProfile, workDraftStorageKind]);
   const composerDraftStorageKeyValue = composerDraftStorageKeyValues[0]!;
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
@@ -5642,6 +5661,31 @@ export function AgentChatPane({
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   const draftStartedOnRef = useRef<{ tabId: string | null; machineKey: string | null }>({ tabId: null, machineKey: null });
   chatRuntimePinRef.current = chatRuntimePin;
+  // The chat's ADE Cloud computer is asleep: no turn runs there, whatever the
+  // transcript ended on. The pane shows the saved state, as the row does: no
+  // "Thinking", no Stop, no steer.
+  const chatMachineEntry = useMachineEntryForBinding(chatRuntimePin);
+  const { computers: chatCloudLaneComputers } = useAdeCloudLaneComputers();
+  const chatComputerResting = chatMachineEntry != null && machineIsCloudResting(chatMachineEntry, chatCloudLaneComputers);
+  // The chat's own machine says, in its Work row, that no turn runs there: the
+  // pane takes the row's state (`rowSaysTurnEnded`), so a wake or a reconnect
+  // never leaves a dead turn reading "Thinking" beside a Done row.
+  const selectedChatRow = selectedSessionId
+    ? chatMachineEntry?.sessions.find((session) => session.id === selectedSessionId) ?? null
+    : null;
+  const rowEndedChatSessionId = selectedSessionId
+    && turnActiveBySessionState[selectedSessionId]
+    && rowSaysTurnEnded(eventsBySession[selectedSessionId], selectedChatRow)
+    ? selectedSessionId
+    : null;
+  const restingChatSessionId = chatComputerResting ? selectedSessionId : null;
+  const idleChatSessionId = restingChatSessionId ?? rowEndedChatSessionId;
+  const turnActiveBySession = useMemo(
+    () => (idleChatSessionId && turnActiveBySessionState[idleChatSessionId]
+      ? { ...turnActiveBySessionState, [idleChatSessionId]: false }
+      : turnActiveBySessionState),
+    [idleChatSessionId, turnActiveBySessionState],
+  );
   // The tab's own copy, for the draft's branch picks (an ADE Cloud start).
   const tabCopyPin = useTabCopyPin();
   const tabCopyPinRef = useRef(tabCopyPin);
@@ -5652,6 +5696,9 @@ export function AgentChatPane({
   // A cloud lane's chat follows its lane to a new computer (contract C3).
   useFollowLaneMoves({ sessionId: selectedSessionId, laneId: selectedSession?.laneId ?? null, pin: chatRuntimePin });
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  // While this chat is on screen its computer keeps its ADE Web connection
+  // slot: connecting another computer never parks it.
+  useMachineSlotHold(chatRuntimePin ?? projectBinding, isTileVisible);
   // An ADE Cloud lane computer is called by its lane in the notice; any other
   // machine keeps the name it was given, short or not.
   const chatCloudLane = useAdeCloudLaneForBinding(chatRuntimePin ?? projectBinding);
@@ -6435,19 +6482,6 @@ export function AgentChatPane({
     () => selectedSubagentSnapshots.some((s) => s.background === true && s.status === "running"),
     [selectedSubagentSnapshots],
   );
-  /**
-   * Subagents still RUNNING, which is what the toolbar badge counts.
-   *
-   * It used to count every tracked subagent, so a fleet that had finished an
-   * hour ago still wore a "7" — a number that only ever grew and told you
-   * nothing about now. A badge on a live-activity toggle has to answer "how
-   * much is happening", and once nothing is running the honest answer is to
-   * show no badge at all.
-   */
-  const runningSubagentCount = useMemo(
-    () => selectedSubagentSnapshots.filter((s) => s.status === "running").length,
-    [selectedSubagentSnapshots],
-  );
   // Auto-clear the subagent view when the underlying snapshot disappears
   // (e.g. session switch). Updating status is fine and stays in view.
   useEffect(() => {
@@ -7133,7 +7167,8 @@ export function AgentChatPane({
     }
     return ids;
   }, [resolvedPendingInputsBySession, selectedSessionId]), sameSetContents);
-  const pendingSteers = selectedSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : [];
+  // Steers wait for a turn; an asleep computer runs none.
+  const pendingSteers = selectedSessionId && selectedSessionId !== restingChatSessionId ? (pendingSteersBySession[selectedSessionId] ?? []) : NO_PENDING_STEERS;
   /* The exact preset the composer is showing: a running chat's own preset (or
      the pick still waiting for Send), or the draft's. The launch must read its
      source-model ladder, not the harness's ladder, or a picked level is lost
@@ -17142,7 +17177,14 @@ export function AgentChatPane({
     connected.sort((a, b) => a.order - b.order);
     // This computer's own name as its second line, from the sync snapshot the
     // app already read (no read of its own). Before that read it has none.
-    const thisComputerName = peekLocalSyncStatus()?.localDevice?.name?.trim() || null;
+    // A device with no name of its own carries the OS host name there
+    // ("Desk-MacBook.local"): that is not a name a person gave it, so the row
+    // shows none.
+    const localDevice = peekLocalSyncStatus()?.localDevice;
+    const deviceName = localDevice?.name?.trim() || null;
+    const hostKey = (value: unknown) => (typeof value === "string" ? value.trim().replace(/\.$/, "").replace(/\.local$/i, "").toLowerCase() : "");
+    const hostNames = new Set([hostKey(localDevice?.lastHost), hostKey(localDevice?.metadata?.hostname)].filter(Boolean));
+    const thisComputerName = deviceName && !hostNames.has(hostKey(deviceName)) ? deviceName : null;
     const withThisComputerName = (row: DraftMachineOption): DraftMachineOption => (
       row.id === THIS_MACHINE_ID && !row.detail && thisComputerName && thisComputerName !== row.name
         ? { ...row, detail: thisComputerName }
@@ -19054,7 +19096,9 @@ export function AgentChatPane({
     chatActionsAvailable,
     chatActionsOpen,
     proofArtifactCount,
-    runningSubagentCount,
+    selectedSubagentSnapshots,
+    knownChatStatusesById,
+    selectedSession?.runtimeAlive,
     selectedTaskProgress?.done,
     selectedTaskProgress?.total,
     chatRuntimePinKey,
@@ -19109,24 +19153,14 @@ export function AgentChatPane({
       aria-pressed={chatActionsOpen}
     >
       <TreeStructure size={16} weight="bold" />
-      {proofArtifactCount > 0 ? (
-        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-emerald-500/80 px-0.5 font-mono text-[8px] font-bold text-black">
-          {proofArtifactCount}
-        </span>
-      ) : runningSubagentCount > 0 ? (
-        <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-(color:--ade-on-tone-ink)">
-          {runningSubagentCount}
-        </span>
-      ) : selectedTaskProgress && selectedTaskProgress.total > 0 && selectedTaskProgress.done < selectedTaskProgress.total ? (
-        // Proof, then running subagents, then an unfinished task list: the
-        // badge answers "how much is happening now". A finished list shows none.
-        <span
-          data-testid="chat-actions-task-badge"
-          className="absolute -right-1.5 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-(color:--ade-on-tone-ink)"
-        >
-          {selectedTaskProgress.done}/{selectedTaskProgress.total}
-        </span>
-      ) : null}
+      <ChatActionsToggleBadge
+        proofArtifactCount={proofArtifactCount}
+        sessionId={selectedSessionId}
+        snapshots={selectedSubagentSnapshots}
+        childChatStatuses={knownChatStatusesById}
+        runtimeAlive={selectedSession?.runtimeAlive}
+        taskProgress={selectedTaskProgress}
+      />
     </button>
       ) : null}
     </>
@@ -20466,6 +20500,7 @@ export function AgentChatPane({
             }}
           />
         ) : null}
+        <ChatMachineWakeBanner style={RUNTIME_BANNER_STYLE} />
         {replayForkDisclosure ? (
           <Banner
             layout="inline"

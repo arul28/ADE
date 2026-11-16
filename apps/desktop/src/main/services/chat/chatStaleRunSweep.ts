@@ -244,11 +244,11 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
   const resolveOrphanChildChat = (
     parentSessionId: string,
     rowId: string,
-  ): { state: OrphanChildChatState; report: string | null } | null => {
+  ): { state: OrphanChildChatState; report: string | null; childSessionId: string } | null => {
     const candidate = orphanRowChildSessionCandidate(rowId);
     if (!candidate || candidate === parentSessionId) return null;
     try {
-      if (deferChildTerminal?.(candidate)) return { state: "active", report: null };
+      if (deferChildTerminal?.(candidate)) return { state: "active", report: null, childSessionId: candidate };
     } catch {
       // A failed deferral check falls through to the chat verdict.
     }
@@ -261,11 +261,12 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     if (!row) {
       // Only a row that looked like a chat pointer earns the "gone" verdict; a
       // plain SDK task id is not a deleted chat.
-      return rowId.trim().startsWith("chat:") ? { state: "missing", report: null } : null;
+      return rowId.trim().startsWith("chat:") ? { state: "missing", report: null, childSessionId: candidate } : null;
     }
     return {
       state: deriveOrphanChildChatState(row, chatRuntimeOwnerLive(row.id)),
       report: row.statusNote?.trim() || row.summary?.trim() || null,
+      childSessionId: candidate,
     };
   };
 
@@ -280,6 +281,7 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
       const child = resolveOrphanChildChat(sessionId, snapshot.id);
       return {
         snapshot,
+        childSessionId: child?.childSessionId ?? null,
         terminal: decideOrphanSubagentTerminal({
           row: snapshot,
           childState: child?.state ?? null,
@@ -313,11 +315,16 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
         ...(snapshot.turnId ? { turnId: snapshot.turnId } : {}),
       });
     }
-    for (const { snapshot, terminal } of emittable) {
+    for (const { snapshot, terminal, childSessionId } of emittable) {
       if (!terminal) continue;
       emitChatEvent(managed, {
         type: "subagent_result",
-        taskId: snapshot.id,
+        // A spawned chat's row is keyed `chat:<id>` where the parent tracks it
+        // (`subagentAgentKey`); the bare id opened a second row there and left
+        // the spawn "running" in `ade chat status`.
+        ...(childSessionId
+          ? { taskId: `chat:${childSessionId}`, agentId: childSessionId }
+          : { taskId: snapshot.id }),
         parentToolUseId: snapshot.parentToolUseId ?? null,
         status: terminal.status,
         summary: terminal.summary,

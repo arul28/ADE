@@ -16,7 +16,7 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | Detects external CLI tools on PATH (`ade.agentTools.detect`). Informational only: ADE never runs what it finds; agents run from ADE's pinned copies. |
 | `apps/desktop/src/main/services/ai/piInstallation.ts` | Resolves ADE's pinned Pi (the `pi` npm-tree pin; `ADE_PI_PACKAGE_ROOT` is a dev/test override, never a user install) — CLI path (`dist/cli.js`, run with a Node >= 22.19), SDK package root/entry, agent dir, `auth.json` / models / settings paths, provider inventory, and a `blocker` when the SDK path is unusable. `sdkAvailable` and `cliAvailable` are independent signals. Provider rows are the shared `AiPiProviderStatus` shape; a provider whose `baseUrl` is a loopback host is classified `local` and carries that endpoint through, so a model server the user runs is never mistaken for an API provider on the strength of a placeholder key. |
 | `apps/desktop/src/main/services/ai/piAuthService.ts` | In-app Pi sign-in: enumerates signable providers, drives Pi's own `ModelRuntime.login` on a dedicated inventory-only worker, and relays Pi's prompts and notices to whatever surface is listening. Relays credentials, never stores or logs them. |
-| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. `ade new chat --mode chat|cli ... --type <subagent|peer>` mirrors the desktop New Chat toggle; parented agent sessions inherit `ADE_CHAT_SESSION_ID` and must choose a type, while `--no-parent` creates an independent top-level session. `ade chat read <session> --limit <n> --max-chars <n>` silently reads a bounded project-backed transcript window across registered projects, and `--page --cursor <offset>` walks older content. Personal chats remain on `ade chat ... --personal`. `ade chat activity` sets or clears a fixed session-card activity detail; the file also owns typed Work status, scheduled work, Linear attachment, secrets, iOS Simulator, App Control, and browser command families. |
+| `apps/ade-cli/src/cli.ts` | Agent-focused `ade` command surface and text/JSON output formatters. `ade new chat --mode chat|cli ... [--no-report]` mirrors the desktop New Chat toggle; parented agent sessions inherit `ADE_CHAT_SESSION_ID` and report back unless `--no-report` (stored as `spawnKind: "peer"`; `--type peer` is still accepted), while `--no-parent` creates an independent top-level session. `ade chat read <session> --limit <n> --max-chars <n>` silently reads a bounded project-backed transcript window across registered projects, and `--page --cursor <offset>` walks older content. Personal chats remain on `ade chat ... --personal`. `ade chat activity` sets or clears a fixed session-card activity detail; the file also owns typed Work status, scheduled work, Linear attachment, secrets, iOS Simulator, App Control, and browser command families. |
 | `apps/ade-cli/src/services/account/accountAuthService.ts` | Required ADE account auth for humans, remote agents, and CI: loopback OAuth, account-directory device authorization, shared `account.session.v1` refresh storage, JWT-`exp`-authoritative access-token refresh, one cross-process refresh-rotation recovery attempt after `invalid_grant`, and ephemeral `ADE_ACCOUNT_TOKEN` credentials. Desktop and CLI ask the brain-owned refresh broker for access tokens. |
 | `apps/desktop/src/main/services/ai/apiKeyStore.ts`, `apps/desktop/src/main/services/cto/linearCredentialService.ts` | Encrypted provider/Linear credential storage with account/device provenance. Account-origin values hydrate from the brain-backed vault and are purged at sign-out or account switch; device-only values remain local. |
 | `apps/ade-cli/src/adeRpcServer.ts`, `apps/ade-cli/src/multiProjectRpcServer.ts`, `apps/ade-cli/src/runtimeRoles.ts` | Private ADE action RPC, caller-role boundary, and multi-project routing. `start_cli_session` requires `subagent` or `peer` whenever it records parent lineage. The RPC edge derives trusted parent→child turn provenance for `chat.messageSession`, strips spoofed provenance, keeps writes/history/lifecycle scoped, and permits bounded transcript reads from project-backed chats. The machine router locates the owning registered project for a chat id and aggregates foreign-project chat search while excluding personal chats. |
@@ -221,12 +221,13 @@ project workflow tools are not injected. See [Personal chats](../personal-chats/
 Any chat-bound agent can run `ade new chat` to spawn either another ADE chat
 or a tracked agent CLI session. Both modes inherit
 `orchestrationParentSessionId` from the spawner's `ADE_CHAT_SESSION_ID`, and
-both accept `--parent`, `--no-parent`, and `--type subagent|peer`. Plain
-shell terminals do not record this lineage. The child is a normal agent with
-the same runtime, permissions, and tools, but the type is a coordination
-contract: `subagent` (the default when `--type` is left out) reports back to
-the parent after every turn; `peer` is fire-and-forget and leaves quiet
-turn-completion notes. The legacy `none` value is rejected. Lineage decides
+both accept `--parent`, `--no-parent`, and `--no-report`. Plain shell
+terminals do not record this lineage. The child is a normal agent with the
+same runtime, permissions, and tools, but reporting is a coordination
+contract: a `subagent` (the default) reports back to the parent after every
+turn; a `--no-report` child (stored as `spawnKind: "peer"`, and still accepted
+as `--type peer`) posts nothing to the parent when its turns finish. The
+product never shows the word "peer". The legacy `none` value is rejected. Lineage decides
 only who gets reports: any agent may read, message, interrupt, or stop any
 chat (see `CHAT_ACTION_SCOPE` in `adeRpcServer.ts`). A `--no-parent`
 session an agent starts records the agent as `launchedBySessionId`: no
@@ -238,7 +239,7 @@ archived, or deleted, the child does not resume its unattended work.
 
 Subagent chat turns return their child turn id and latest bounded assistant
 summary, steering an active parent or waking an idle parent. A subagent always
-wakes its parent; a peer never does. The policy lives in
+wakes its parent; a `peer` child never does. The policy lives in
 `services/chat/spawnMissionOwnership.ts` plus the child's persisted
 `spawnKind`. These inputs continue the mission in
 flight rather than reassigning it, so a subagent that self-schedules wakeups —
@@ -259,11 +260,13 @@ finishes:
 
 A direct human message on a subagent does not steal the report channel. The
 next wake names how many human messages landed in that turn. Taking over
-(demote to peer) is an explicit user action — composer banner, session menu,
-`ade chat demote`, or `/session demote` — and posts a quiet parent note that
-reports stop. Promoting restores the channel when the parent chat still
-exists. A later parent dispatch into a peer child auto-promotes it back to
-subagent. Peer turns are always quiet notes.
+(stop reports, `spawnKind: "peer"`) is an explicit user action — composer
+banner, the session menu's **Stop reports to <parent>**, `ade chat demote`, or
+`/session demote` — and posts a quiet parent note that reports stop.
+**Report back to <parent>** or `ade chat promote` restores the channel when the
+parent chat still exists. A later parent dispatch into a `peer` child
+auto-promotes it back to subagent. A `peer` child's finished turns post
+nothing to the parent.
 
 All of this provenance is host-authored. `withTrustedAgentProvenance` runs on
 `chat.messageSession`, `chat.sendMessage` and `chat.steer` before any

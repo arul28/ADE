@@ -139,7 +139,14 @@ Browser sync client:
   for the same session join the next unsent frame (at most 16 KB). A frame
   that was sent once never changes, so a retry resends its id with the same
   bytes. `isRetryingDial` tells a dial round that failed and retries apart
-  from a refusal.
+  from a refusal. The project in front belongs to this browser, not to the
+  brain. A brain that restarts on its own default project, or that another
+  client moves to another project, does not move the browser: the client keeps
+  its project and its chat and terminal streams, and sends a
+  `project_switch_request` for its own project again
+  (`ensureHostOnOwnProject`). It sends at most one such request per 15 seconds,
+  so two clients that show different projects of one computer do not keep
+  moving it. A request inside that gap runs when the gap ends.
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
   lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
@@ -703,7 +710,12 @@ Browser shell and routes:
   live catalog frame is written through to IndexedDB, a successful connect
   records the last-active machine key, and forgetting a machine drops its cached
   catalog. The optional store is injected, so a manager without browser storage
-  simply runs without the cache.
+  simply runs without the cache. A `background` connect (a repository tab
+  joins every computer with a copy) never parks another machine for room and
+  skips a machine the person disconnected (`disconnectByUser`). That choice is
+  kept in `localStorage` across reloads, and the person's own connect clears it.
+  A person's connect that finds a background connect in flight waits for it and
+  then runs its own.
 - `apps/desktop/src/renderer/webclient/workspace/machineIdentity.ts` - the
   `machineCatalogKey` identity (`device:<hostDeviceId>`, falling back to the
   environment id) shared by the catalog store, the session pool, and the

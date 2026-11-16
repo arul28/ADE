@@ -19,6 +19,7 @@ import {
   useActivityStore,
 } from "../../state/activityStore";
 import { activitySections } from "../activity/activityPriority";
+import { useActivityIncomplete } from "../activity/useActivitySync";
 import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import {
   ACTIVITY_COLUMN_PRESENTATION,
@@ -110,9 +111,16 @@ export async function openAttentionItem(item: AttentionItem): Promise<string | n
   return null;
 }
 
+/** Where a row's chat lives: its project and lane. A row never names a computer. */
+function runningItemPlace(item: AttentionItem): string {
+  const lane = item.laneName?.trim();
+  return lane ? `${item.project.name} · ${lane}` : item.project.name;
+}
+
 /** Running chats; rows that do not fit the card hide behind "N more", which opens Activity. */
 export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?: () => void }) {
   const availability = useActivityStore((state) => state.availability);
+  const activityIncomplete = useActivityIncomplete();
   const [error, setError] = useState<string | null>(null);
 
   const openItem = useCallback(async (item: AttentionItem) => {
@@ -125,9 +133,11 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
       // Centred and muted, like every other empty card.
       <div className="ade-home-empty">
         <span>
-          {availability?.state === "signed_out"
-            ? "Nothing running here · sign in to see other machines"
-            : "Nothing running right now"}
+          {activityIncomplete
+            ? "Activity isn't loading, so running chats can't show here"
+            : availability?.state === "signed_out"
+              ? "Nothing running here · sign in to see other machines"
+              : "Nothing running right now"}
         </span>
       </div>
     );
@@ -149,7 +159,7 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
             role="listitem"
             className="kit-row ade-welcome-item"
             onClick={() => void openItem(item)}
-            title={`${item.title} — ${item.project.name} · ${item.machine.name}`}
+            title={`${item.title} — ${runningItemPlace(item)}`}
           >
             <span className={`ade-welcome-item-glyph activity-tone-${tone}`} aria-label={label}>
               <ActivityColumnMark column={column} failed={failed} size={12} />
@@ -157,7 +167,7 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
             <span className="ade-welcome-item-text">
               <span className="ade-welcome-item-title">{item.title}</span>
               <span className="ade-welcome-item-sub">
-                {item.project.name} · {item.machine.name}
+                {runningItemPlace(item)}
               </span>
             </span>
             <span className={`ade-welcome-item-state activity-tone-${tone}`}>

@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef } from 
 import type { LaneDiffMode } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
+import { useAndroidStatusWatch } from "../../lib/androidStatusWatch";
 import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
@@ -636,6 +637,8 @@ function WorkAndroidTool(props: WorkToolPanelProps) {
   // Registered for the pane's own lane whichever target is chosen, so
   // `ade android show` for this chat finds the tool on screen.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("android", mountScope, laneId) : null);
+  // While the tool is open, ADE Web re-reads the emulator state for its events.
+  useAndroidStatusWatch();
   const target = chosenRemoteTarget(props, "android");
   if (target && !target.use) return <StartOn {...props} kind="android" machine={target.machine} />;
   if (!target && toolContext.supportsAndroidEmulator === false) {

@@ -47,63 +47,67 @@ export type ProjectMachinesState = {
 /**
  * The remote-runtime connection snapshot, subscribed while `active`.
  *
- * `loaded` is true once the snapshot has answered since `active` last turned
- * on, and resolves even when the bridge is missing (tests, the hosted web
- * client), so callers never wait forever. The last snapshot is kept while
- * inactive.
+ * `loaded` is true once the snapshot has answered since the shared feed last
+ * started (or at once while another caller keeps it live), and resolves even
+ * when the bridge is missing (tests, the hosted web client), so callers never
+ * wait forever. The last snapshot is kept while inactive.
+ *
+ * Every caller reads the one shared feed below: one snapshot read and one
+ * window listener however many panes, chips and pickers ask. A listener per
+ * hook added one IPC listener per mounted caller, enough to trip Node's
+ * MaxListeners warning on a desktop with a few chats and computers open.
  */
 export function useRemoteConnectionSnapshot(active: boolean): {
   snapshot: RemoteRuntimeConnectionSnapshot | null;
   loaded: boolean;
 } {
-  const [snapshot, setSnapshot] = useState<RemoteRuntimeConnectionSnapshot | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    if (!active) {
-      setLoaded(false);
-      return undefined;
-    }
-    const bridge = typeof window === "undefined" ? undefined : window.ade?.remoteRuntime;
-    if (typeof bridge?.getConnectionSnapshot !== "function") {
-      // No other machines can exist without the remote runtime bridge.
-      setLoaded(true);
-      return undefined;
-    }
-    let cancelled = false;
-    const apply = (next: RemoteRuntimeConnectionSnapshot | null | undefined) => {
-      if (cancelled) return;
-      if (next) setSnapshot((current) => (current && current.updatedAt > next.updatedAt ? current : next));
-      setLoaded(true);
-    };
-    void bridge.getConnectionSnapshot().then(apply, () => apply(null));
-    const unsubscribe = typeof bridge.onConnectionSnapshotChanged === "function"
-      ? bridge.onConnectionSnapshotChanged((next) => apply(next))
-      : undefined;
-    return () => {
-      cancelled = true;
-      unsubscribe?.();
-    };
-  }, [active]);
-  return { snapshot, loaded };
+  const state = useSyncExternalStore(
+    active ? subscribeSharedSnapshot : subscribeNothing,
+    readSharedSnapshotState,
+    readSharedSnapshotState,
+  );
+  return active ? state : { snapshot: state.snapshot, loaded: false };
 }
 
-// ── One shared connection state per remote target ───────────────────────────
+// ── One shared connection snapshot feed for the window ──────────────────────
+
+type SharedSnapshotState = { snapshot: RemoteRuntimeConnectionSnapshot | null; loaded: boolean };
 
 let sharedSnapshot: RemoteRuntimeConnectionSnapshot | null = null;
+let sharedSnapshotState: SharedSnapshotState = { snapshot: null, loaded: false };
 const sharedSnapshotListeners = new Set<() => void>();
 let stopSharedSnapshot: (() => void) | null = null;
 
+function subscribeNothing(): () => void {
+  return () => undefined;
+}
+
+function readSharedSnapshotState(): SharedSnapshotState {
+  return sharedSnapshotState;
+}
+
+function publishSharedSnapshot(loaded: boolean): void {
+  if (sharedSnapshotState.snapshot === sharedSnapshot && sharedSnapshotState.loaded === loaded) return;
+  sharedSnapshotState = { snapshot: sharedSnapshot, loaded };
+  for (const listener of sharedSnapshotListeners) listener();
+}
+
 function startSharedSnapshot(): () => void {
   const bridge = typeof window === "undefined" ? undefined : window.ade?.remoteRuntime;
-  if (typeof bridge?.getConnectionSnapshot !== "function") return () => undefined;
+  if (typeof bridge?.getConnectionSnapshot !== "function") {
+    // No other machines can exist without the remote runtime bridge.
+    publishSharedSnapshot(true);
+    return () => undefined;
+  }
+  // A restarted feed has not answered yet; its last snapshot stays readable.
+  publishSharedSnapshot(false);
   let stopped = false;
   const apply = (next: RemoteRuntimeConnectionSnapshot | null | undefined) => {
-    if (stopped || !next) return;
-    if (sharedSnapshot && sharedSnapshot.updatedAt > next.updatedAt) return;
-    sharedSnapshot = next;
-    for (const listener of sharedSnapshotListeners) listener();
+    if (stopped) return;
+    if (next && !(sharedSnapshot && sharedSnapshot.updatedAt > next.updatedAt)) sharedSnapshot = next;
+    publishSharedSnapshot(true);
   };
-  void bridge.getConnectionSnapshot().then(apply, () => undefined);
+  void bridge.getConnectionSnapshot().then(apply, () => apply(null));
   const unsubscribe = typeof bridge.onConnectionSnapshotChanged === "function"
     ? bridge.onConnectionSnapshotChanged((next) => apply(next))
     : undefined;
@@ -121,6 +125,8 @@ function subscribeSharedSnapshot(listener: () => void): () => void {
     if (sharedSnapshotListeners.size > 0) return;
     stopSharedSnapshot?.();
     stopSharedSnapshot = null;
+    // Nobody listens: the next caller waits for a fresh answer, not this one.
+    sharedSnapshotState = { snapshot: sharedSnapshot, loaded: false };
   };
 }
 

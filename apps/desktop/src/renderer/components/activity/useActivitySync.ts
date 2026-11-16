@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   type AttentionPresence,
@@ -31,6 +31,11 @@ const PRESENCE_FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
 const ACTIVITY_SNAPSHOT_TIMEOUT_MS = 35_000;
 const PREFERENCES_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
+// While a page that lists running chats is on screen, Activity is re-read at
+// this pace. The backstop poll above can sit at two minutes after a quiet
+// spell, and nothing pushes a turn start to it, so a short turn would come and
+// go without ever showing as working.
+const LIVE_ACTIVITY_REFRESH_MS = 5_000;
 type ActivityAccountScope = {
   generation: number;
   ownerId: string | null;
@@ -153,6 +158,43 @@ export async function refreshActivitySnapshot(): Promise<void> {
     });
   refreshPromise = { generation, promise };
   return promise;
+}
+
+/**
+ * Keeps Activity current while the calling page is on screen: one read when it
+ * opens, then one every few seconds while the window is visible. For pages that
+ * say what is running right now (New Tab's "Working now" and its headline).
+ */
+export function useLiveActivityRefresh(): void {
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    void refreshActivitySnapshot();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refreshActivitySnapshot();
+    }, LIVE_ACTIVITY_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, []);
+}
+
+/**
+ * Whether Activity may be missing chats: the last finished read failed, or it
+ * answered without the account stream ("degraded": this computer only, other
+ * computers may be missing) or from a host that cannot refresh it. A read in
+ * flight keeps the previous answer, so a page that re-reads every few seconds
+ * does not flip between "missing" and "fine" while the outage lasts.
+ */
+export function useActivityIncomplete(): boolean {
+  const syncStatus = useActivityStore((state) => state.syncStatus);
+  const availabilityState = useActivityStore((state) => state.availability?.state ?? null);
+  const incomplete = syncStatus === "error"
+    || availabilityState === "degraded"
+    || availabilityState === "incompatible";
+  const [answer, setAnswer] = useState(incomplete);
+  useEffect(() => {
+    if (syncStatus !== "syncing") setAnswer(incomplete);
+  }, [incomplete, syncStatus]);
+  return answer;
 }
 
 /**

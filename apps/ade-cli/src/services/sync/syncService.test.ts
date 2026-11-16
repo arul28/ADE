@@ -660,10 +660,19 @@ describe("createSyncService", () => {
     });
 
     try {
-      const snapshot = await service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true });
+      // Fake timeouts stand in for its bounded wait: the read must return within
+      // a fixed 3 s of fake time (the bound is 2 s), not merely eventually.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      let settled = false;
+      const read = service.getStatus({ includeTransferReadiness: false, awaitTransferReadiness: true })
+        .finally(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(settled).toBe(true);
+      const snapshot = await read;
       expect(snapshot.transferReadiness.ready).toBe(false);
       expect(snapshot.transferReadiness.blockers).toEqual([]);
     } finally {
+      vi.useRealTimers();
       await service.dispose();
       db.close();
     }

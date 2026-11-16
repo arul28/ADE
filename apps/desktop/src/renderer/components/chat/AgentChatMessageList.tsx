@@ -3097,7 +3097,7 @@ function renderEvent(
           type="button"
           onClick={() => openSpawnedChat(event.childSessionId, null, event.childMachineName)}
           className="group inline-flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-1.5 rounded-md px-1.5 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55 transition-colors hover:bg-fg/[0.05] hover:text-fg/80"
-          title={`Open ${event.spawnKind === "peer" ? "peer chat" : "subagent"} "${event.childTitle}"`}
+          title={`Open ${event.spawnKind === "peer" ? "chat" : "subagent"} "${event.childTitle}"`}
         >
           <Robot size={12} weight="duotone" className="shrink-0 text-violet-300/80" aria-hidden />
           <span className="max-w-[16rem] shrink-0 truncate font-medium text-fg/80">{event.childTitle}</span>
@@ -3952,6 +3952,7 @@ function renderEvent(
     // notice, drawn below as one quiet line that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
+        // `peer` is the stored name of a chat that does not report back.
         spawnKind?: "subagent" | "peer";
         spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string };
       };
@@ -3974,7 +3975,7 @@ function renderEvent(
         >
           <Robot size={11} weight="duotone" className={cn("shrink-0", isPeer ? "text-slate-300/60" : "text-violet-300/70")} aria-hidden />
           <span className={cn("shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em]", isPeer ? "text-slate-300/50" : "text-violet-300/55")}>
-            {isPeer ? "peer" : "subagent"}
+            {isPeer ? "chat" : "subagent"}
           </span>
           <span className="min-w-0 truncate">{childTitle}</span>
           {childSessionId ? <CaretRight size={10} className={cn("shrink-0", isPeer ? "text-slate-300/55" : "text-violet-300/55")} /> : null}

@@ -52,6 +52,7 @@ export function useProjectTabLifecycle({
   checkForActiveWorkloads,
   isProjectBusy,
   tabSwitchRef,
+  noteTabMove,
 }: {
   tabGroupsRef: MutableRefObject<ProjectTabGroup[]>;
   openProjectTabRootsRef: MutableRefObject<string[]>;
@@ -65,6 +66,8 @@ export function useProjectTabLifecycle({
    * switch still waits for its answer.
    */
   tabSwitchRef?: MutableRefObject<Promise<void> | null>;
+  /** Records that one copy takes another's place in its tab (the top bar's `noteTabMove`). */
+  noteTabMove?: (from: string, to: string) => void;
 }) {
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
   const setOpenRemoteProjectTabs = useAppStore((s) => s.setOpenRemoteProjectTabs);
@@ -314,20 +317,37 @@ export function useProjectTabLifecycle({
     async (rootPath: string, remoteKey: string) => {
       const keys = tabGroupsRef.current.map(tabOrderKey);
       const at = keys.indexOf(remoteKey);
-      try {
-        await useAppStore.getState().switchProjectToPath(rootPath, { skipWorktreeGate: true });
-      } catch {
-        return;
+      // The clone replaces the remote copy in its tab, so it keeps the open
+      // chat and grid. The copy job can end while another tab is in front:
+      // only the tab's own view moves, never another tab's, and the tab in
+      // front stays in front.
+      const inFront = useAppStore.getState().projectBinding?.key === remoteKey;
+      noteTabMove?.(remoteKey, rootPath);
+      if (inFront) {
+        try {
+          await useAppStore.getState().switchProjectToPath(rootPath, { skipWorktreeGate: true, carryWorkView: true });
+        } catch {
+          return;
+        }
+      } else if (!openProjectTabRootsRef.current.includes(rootPath)) {
+        const nextRoots = [...openProjectTabRootsRef.current, rootPath];
+        openProjectTabRootsRef.current = nextRoots;
+        setOpenProjectTabRoots((prev) => (prev.includes(rootPath) ? prev : [...prev, rootPath]));
       }
       const next = keys.filter((key) => key !== remoteKey && key !== rootPath);
       next.splice(at === -1 ? next.length : at, 0, rootPath);
       handleReorderTabs(next);
-      const groupId = groupIdForBindingKey(remoteKey);
-      if (groupId) {
-        await closeTabGroups([groupId], { confirm: false, checkWorkloads: false, forgetState: true });
+      // Only the remote copy leaves the tab. Closing the tab's group here
+      // closed the clone with it: the clone is the same repository, so it is
+      // in that group.
+      if (openRemoteProjectTabsRef.current.some((entry) => entry.key === remoteKey)) {
+        const nextRemote = openRemoteProjectTabsRef.current.filter((entry) => entry.key !== remoteKey);
+        openRemoteProjectTabsRef.current = nextRemote;
+        setOpenRemoteProjectTabs((prev) => prev.filter((entry) => entry.key !== remoteKey));
+        useAppStore.getState().evictProjectDataCaches(remoteKey);
       }
     },
-    [closeTabGroups, groupIdForBindingKey, handleReorderTabs, tabGroupsRef],
+    [handleReorderTabs, noteTabMove, openProjectTabRootsRef, openRemoteProjectTabsRef, setOpenProjectTabRoots, setOpenRemoteProjectTabs, tabGroupsRef],
   );
 
   const handleMoveTabToNewWindow = useCallback(

@@ -6,6 +6,25 @@ import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 import { windowsScaledTimeout } from "../../../../vitest.timeouts";
+import { PREFERRED_PORT_BIND_RETRY_DELAY_MS } from "../../../../../ade-cli/src/services/sync/syncListenerBind";
+
+/**
+ * Initializes with fake timeouts, stepping one bind retry delay at a time until
+ * startup settles, so a run of port conflicts costs no wall-clock time. It
+ * stops as soon as startup settles, before any later timer could fire.
+ */
+async function initializeSkippingBindRetryDelays(service: { initialize(): Promise<void> }): Promise<void> {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    let settled = false;
+    const startup = service.initialize().finally(() => { settled = true; });
+    startup.catch(() => {});
+    while (!settled) await vi.advanceTimersByTimeAsync(PREFERRED_PORT_BIND_RETRY_DELAY_MS);
+    await startup;
+  } finally {
+    vi.useRealTimers();
+  }
+}
 
 const { acquireSyncHostSingletonMock, createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => {
   const syncHostServiceMockState = {
@@ -1408,7 +1427,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       db.close();
     });
 
-    await service.initialize();
+    await initializeSkippingBindRetryDelays(service);
 
     expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([
       8787,
@@ -1560,7 +1579,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       db.close();
     });
 
-    await expect(service.initialize()).rejects.toThrow("address already in use");
+    await expect(initializeSkippingBindRetryDelays(service)).rejects.toThrow("address already in use");
     const attemptedPorts = createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port);
     expect(attemptedPorts[0]).toBe(8787);
     expect(attemptedPorts).toContain(8999);

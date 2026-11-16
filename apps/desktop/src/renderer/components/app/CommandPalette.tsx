@@ -122,7 +122,9 @@ import {
   projectStateKeyForBinding,
   useAppStore,
   useRootAppStore,
+  workViewStoreForProject,
 } from "../../state/appStore";
+import { useStore } from "zustand";
 import { openStartChatDraft } from "../../lib/workDraft";
 import { cn } from "../ui/cn";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -324,15 +326,24 @@ export function CommandPalette({
   // be opened this is the same list the sidebar is rendering. Selecting the
   // array (not the whole map) keeps the palette from re-rendering when an
   // unrelated project's cache is refreshed.
+  //
+  // The Work tab writes that cache in its project's own store, not the shell's,
+  // so the palette reads the same store. Read from the shell's store, the tab's
+  // own computer had no threads here: not under Recent threads, not in search.
+  const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
+  const threadStore = useMemo(
+    () => workViewStoreForProject(activeProjectStateKey),
+    // `open`: the project's store registers when its surface mounts, which can
+    // be after this key is first read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeProjectStateKey, open],
+  );
   const threadSessions =
-    useAppStore((s) => {
-      const key = selectActiveProjectStateKey(s);
-      return key ? (s.sessionsCacheByProject[key] ?? null) : null;
-    }) ?? EMPTY_SESSIONS;
-  const activeSessionId = useAppStore((s) => {
-    const key = selectActiveProjectStateKey(s);
-    return key ? (s.workViewByProject[key]?.activeItemId ?? null) : null;
-  });
+    useStore(threadStore, (s) =>
+      activeProjectStateKey ? (s.sessionsCacheByProject[activeProjectStateKey] ?? null) : null)
+    ?? EMPTY_SESSIONS;
+  const activeSessionId = useStore(threadStore, (s) =>
+    activeProjectStateKey ? (s.workViewByProject[activeProjectStateKey]?.activeItemId ?? null) : null);
   // The session in front of the user, for the commands that act on it. The
   // Work tab's mirrored list answers at once when it has the row; otherwise it
   // is read when the palette opens.

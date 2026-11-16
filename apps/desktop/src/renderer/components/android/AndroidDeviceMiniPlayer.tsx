@@ -28,6 +28,7 @@ import {
 import { useAndroidDeviceInput } from "./useAndroidDeviceInput";
 import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
 import { useAndroidRecording } from "./useAndroidRecording";
+import { useAndroidStatusWatch } from "../../lib/androidStatusWatch";
 
 /**
  * The lane's Android emulator, floating over the chat: the Android slot of
@@ -78,6 +79,8 @@ function AndroidMiniPlayerFrameView({
   visible: boolean;
   onOpenInPane: (target: AndroidMiniPlayerTarget) => void;
 }) {
+  // While it floats, ADE Web re-reads the emulator state for its events.
+  useAndroidStatusWatch();
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
   const pinRef = useRef(target.runtimePin);
   pinRef.current = target.runtimePin;

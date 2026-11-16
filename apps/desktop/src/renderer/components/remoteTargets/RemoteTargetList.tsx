@@ -43,7 +43,7 @@ import {
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
 import {
-  accountMachineMatchesTarget,
+  accountMachineForTarget as findAccountMachineForTarget,
   assignMachineSections,
   discoveredPairingInput,
   discoveredTargetInput,
@@ -59,6 +59,7 @@ import {
   type MachineSection,
 } from "./remoteMachineModel";
 import {
+  accountMachinePresence,
   connectedMachineIds,
   isMachineConnected,
 } from "../../../shared/machinePresence";
@@ -67,6 +68,7 @@ import { MachinesBehindBanner } from "./MachinesBehindBanner";
 import { isMachineUpdateBusy, machineUpdateIsManual, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
+import { useOptionalWebWorkspace } from "../../webclient/workspace/WebWorkspaceContext";
 import { accountRowKey, useRowActions } from "./useRowActions";
 import {
   helperTextStyle,
@@ -85,6 +87,8 @@ type RemoteTargetListProps = {
   ) => boolean | Promise<boolean>;
   /** Account-directory machines, merged into the sections alongside saved/discovered. */
   accountMachines?: AdeAccountMachine[];
+  /** ADE Web: the tab holds its limit of connections now (the number), else null. */
+  sessionLimit?: number | null;
   accountMachinesState?: AdeAccountMachinesResult["state"];
   accountSignedIn?: boolean;
   onAccountRequested?: () => void;
@@ -175,17 +179,23 @@ function joinDiagnosticMessages(
   return diagnostics.map((entry) => entry.message).join(" ");
 }
 
+// "Not connected", not "Ready to connect": this section also holds computers
+// that are connecting or that this app can't reach right now, and the heading
+// has to be true for every row under it.
 const SECTION_LABELS: Record<MachineSection, string> = {
   connected: "Connected",
-  available: "Ready to connect",
+  available: "Not connected",
   unavailable: "Not reachable right now",
 };
+
+const NO_RELAYS: readonly string[] = [];
 
 export function RemoteTargetList({
   onConnected,
   onDisconnectRequested,
   onRemoveRequested,
   accountMachines,
+  sessionLimit = null,
   accountMachinesState,
   accountSignedIn = false,
   onAccountRequested,
@@ -339,6 +349,8 @@ export function RemoteTargetList({
       ? hostKeyTrust
       : null;
 
+  // ADE Web's own relay (configured per deployment) is trusted like ADE's.
+  const relayBaseUrls = useOptionalWebWorkspace()?.account.relayBaseUrls ?? NO_RELAYS;
   const statusById = useMemo(() => {
     const map = new Map<string, RemoteRuntimeConnectionStatus>();
     for (const entry of connectionSnapshot?.connections ?? []) {
@@ -372,6 +384,7 @@ export function RemoteTargetList({
       discoveredMachines,
       accountMachines: visibleAccountMachines,
       includeDiscoveredRows: false,
+      relayBaseUrls,
     });
     // A machine restarting for an update drops its connection on purpose.
     // It stays where it was, under Connected, until it is back or the update
@@ -397,7 +410,7 @@ export function RemoteTargetList({
       available: assigned.available.filter((row) => !restarting(row)),
       unavailable: assigned.unavailable.filter((row) => !restarting(row)),
     };
-  }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey]);
+  }, [targets, statusById, connected, discoveredMachines, visibleAccountMachines, restartingKey, relayBaseUrls]);
 
   const loadTargets = useCallback(async () => {
     setLoading(true);
@@ -1111,9 +1124,7 @@ export function RemoteTargetList({
   // the stale pairing. Without a directory match there is nothing to re-adopt.
   const accountMachineForTarget = useCallback(
     (target: RemoteRuntimeTarget): AdeAccountMachine | null =>
-      (visibleAccountMachines ?? []).find((machine) =>
-        accountMachineMatchesTarget(machine, target),
-      ) ?? null,
+      findAccountMachineForTarget(visibleAccountMachines ?? [], target),
     [visibleAccountMachines],
   );
 
@@ -1266,6 +1277,9 @@ export function RemoteTargetList({
           hideLocalRemove={extras.hideLocalRemove}
           footer={extras.footer}
           parked={extras.parked}
+          sessionLimit={sessionLimit}
+          accountOnline={pairAgainMachine ? accountMachinePresence(pairAgainMachine) === "online" : null}
+          accountLastSeenAt={pairAgainMachine?.lastSeenAt ?? null}
         />
       );
     }
@@ -1319,6 +1333,8 @@ export function RemoteTargetList({
           extraActions={extras.extraActions}
           footer={extras.footer}
           parked={extras.parked}
+          relayBaseUrls={relayBaseUrls}
+          sessionLimit={sessionLimit}
         />
       );
     }

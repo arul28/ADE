@@ -53,6 +53,7 @@ const mockLocalStorage = {
 // Import after window is set up
 import { createProjectAppStore, effectiveThemeId, flushWorkViewStatePersistForTests, retainProjectAppStoreState, selectEffectiveThemeId, useAppStore, DEFAULT_TERMINAL_PREFERENCES, DEFAULT_CHAT_FONT_SIZE_PX } from "./appStore";
 import { DEFAULT_APPLE_DEVICE_PREFERENCES } from "../../shared/appleDeviceSettings";
+import { rememberProjectOriginSummaries, resetProjectOriginMemory } from "../components/lanes/laneMachines";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1601,6 +1602,31 @@ describe("appStore", () => {
   });
 
   describe("project transitions", () => {
+    it.each([
+      ["a switch to another tab keeps that tab's own view", undefined, "chat-b"],
+      ["the same tab moving to another copy brings its view", true, "chat-a"],
+    ])("two folders of one repository on this computer: %s", async (_label, carryWorkView, expectedActive) => {
+      // Two clones of one repository: the same origin, separate tabs.
+      const origin = "https://github.com/demo-org/atlas.git";
+      rememberProjectOriginSummaries([
+        { rootPath: "/clones/atlas-1", kind: "local", gitOriginUrl: origin },
+        { rootPath: "/clones/atlas-2", kind: "local", gitOriginUrl: origin },
+      ] as any, { replace: true });
+      const projectB = { rootPath: "/clones/atlas-2", displayName: "atlas", baseRef: "main" } as any;
+      useAppStore.setState({
+        project: { rootPath: "/clones/atlas-1", displayName: "atlas", baseRef: "main" } as any,
+        projectBinding: { kind: "local", key: "/clones/atlas-1", rootPath: "/clones/atlas-1", displayName: "atlas" },
+      } as any);
+      useAppStore.getState().setWorkViewState("/clones/atlas-1", { openItemIds: ["chat-a"], activeItemId: "chat-a", selectedItemId: "chat-a" });
+      useAppStore.getState().setWorkViewState("/clones/atlas-2", { openItemIds: ["chat-b"], activeItemId: "chat-b", selectedItemId: "chat-b" });
+      (window.ade.project.switchToPath as any).mockResolvedValueOnce(projectB);
+
+      await useAppStore.getState().switchProjectToPath("/clones/atlas-2", carryWorkView ? { carryWorkView } : undefined);
+
+      expect(useAppStore.getState().getWorkViewState("/clones/atlas-2").activeItemId).toBe(expectedActive);
+      resetProjectOriginMemory();
+    });
+
     it("tracks project switching progress and clears it on success", async () => {
       const nextProject = { rootPath: "/tmp/next", displayName: "Next", baseRef: "main" } as any;
       (window.ade.project.switchToPath as any).mockResolvedValueOnce(nextProject);
