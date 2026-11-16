@@ -5301,7 +5301,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval on-request resume thread-stored continue`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-stored continue`],
         expect.any(Object),
       );
     });
@@ -5352,7 +5352,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenLastCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-permission-override \"first continuation\"`],
         expect.any(Object),
       );
 
@@ -5366,7 +5366,7 @@ describe("ptyService", () => {
       const laterSpawn = (loadPty.mock.results[1]?.value as any).spawn;
       expect(laterSpawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-permission-override \"later continuation\"`],
         expect.any(Object),
       );
     });
@@ -5400,7 +5400,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-legacy \"continue legacy thread\"`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-legacy \"continue legacy thread\"`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5446,7 +5446,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-resume-only`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-resume-only`],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -5539,7 +5539,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"`],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5645,7 +5645,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"`],
+          ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen -c \"default_permissions=\\\"ade_read_only\\\"\" -c \"permissions.ade_read_only.filesystem={\\\":root\\\"=\\\"read\\\"}\" -c permissions.ade_read_only.network.enabled=true --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\"`],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -5962,7 +5962,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-concurrent first`],
+        ["--noprofile", "--norc", "-lc", `${PINNED_CODEX} --no-alt-screen --sandbox workspace-write -c sandbox_workspace_write.network_access=true --ask-for-approval on-request resume thread-concurrent first`],
         expect.any(Object),
       );
       const writes = (mockPty.write as any).mock.calls.map((call: string[]) => call[0]);
