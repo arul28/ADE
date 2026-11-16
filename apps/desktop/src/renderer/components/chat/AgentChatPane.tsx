@@ -15647,11 +15647,21 @@ export function AgentChatPane({
     mode: AgentChatDispatchSteerMode | undefined;
     projectRoot: string;
     targetKey: string;
+    /** The composer's text when Enter was pressed: the message that was submitted. */
+    text: string;
   } | null>(null);
   const queueSendUntilProjectOpens = useCallback((mode?: AgentChatDispatchSteerMode): boolean => {
     const openingRoot = rootAppStoreApi.getState().cachedProjectViewRoot;
     if (openingRoot == null || openingRoot !== projectRoot) return false;
-    queuedSendUntilOpenRef.current = { mode, projectRoot: openingRoot, targetKey: sendTargetKeyRef.current };
+    // The message is the text in the composer now. Reading the draft again
+    // after the open would send whatever was typed since (or nothing, if the
+    // composer was emptied while the project opened).
+    queuedSendUntilOpenRef.current = {
+      mode,
+      projectRoot: openingRoot,
+      targetKey: sendTargetKeyRef.current,
+      text: draftStore.get(),
+    };
     setError({ message: "Opening the project. Your message sends when it is ready.", kind: "status" });
     return true;
   }, [projectRoot]);
@@ -16788,6 +16798,13 @@ export function AgentChatPane({
       && root.projectTransitionError == null;
     if (!opened || queued.targetKey !== sendTargetKeyRef.current) {
       setError({ message: "Your message was not sent. Check the chat, then send it again.", kind: "status" });
+      return;
+    }
+    // Send the message that was submitted. A draft that changed since Enter
+    // (text typed after it, or a draft emptied meanwhile) is not what the
+    // person asked to send, so nothing goes out and the draft stays as it is.
+    if (draftStore.get() !== queued.text) {
+      setError({ message: "Your draft changed while the project opened. Send it again when you are ready.", kind: "status" });
       return;
     }
     setError(null);

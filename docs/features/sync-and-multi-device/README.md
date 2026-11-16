@@ -4804,7 +4804,8 @@ candidate is shadowed fails to bind and the startup loop retries.
   you turn it on, both an in-process host and the standing runtime can be
   alive simultaneously on the same machine — that's intentional for
   comparing behaviors, but production builds should never run with
-  that flag set.
+  that flag set. A packaged build drops the in-process project runtime from
+  main, so the flag only works from a dev build; set it there.
 - **Project-scoped commands need `projectId`.** A runtime hosting
   multiple projects has no implicit "current project". Forward the
   active `projectId` on every project-scoped command or the runtime
