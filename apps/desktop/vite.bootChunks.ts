@@ -1,4 +1,4 @@
-import type { Plugin } from "vite";
+import type { HtmlTagDescriptor, Plugin } from "vite";
 
 /*
  * Puts the renderer's startup code in two chunks instead of about 410.
@@ -25,6 +25,14 @@ import type { Plugin } from "vite";
  * it shares with startup go in `app-boot-shared`, which both load, and the
  * modules it shares with lazy code stay in automatic chunks. `generateBundle`
  * checks that neither the entry nor the mock reaches the boot chunk.
+ *
+ * The built `index.html` names the boot chunks and their CSS as preloads.
+ * Without them the page asks for those files only when `main.tsx` runs
+ * `import("./rendererBoot")`, after the entry chunk has loaded and run; with
+ * them the fetch (and the compile, for a module preload) runs beside the
+ * entry. A preload does not run a module, so the entry still decides whether
+ * the mock loads first. The preload helper skips a file a link already names
+ * (it compares `link.href`), so the boot import adds no second link.
  *
  * The Work page (`TerminalsPage`, about 145 more chunks) is not grouped: its
  * modules are shared with other pages in many combinations, and one group
@@ -59,10 +67,64 @@ export function bootChunks(): { groups: Array<{ name: GroupName; priority: numbe
   let boot = new Set<string>();
   let shared = new Set<string>();
   let bootRoot: string | undefined;
+  let base = "./";
 
   const plugin: Plugin = {
     name: "ade-boot-chunks",
     apply: "build",
+    configResolved(config) {
+      base = config.base;
+    },
+    transformIndexHtml: {
+      order: "post",
+      handler(_html, ctx): HtmlTagDescriptor[] | undefined {
+        const bundle = ctx.bundle;
+        if (!bundle || !bootRoot) return undefined;
+        type Chunk = { fileName: string; imports: string[]; moduleIds: string[]; facadeModuleId: string | null; viteMetadata?: { importedCss: Set<string> } };
+        const chunks = new Map<string, Chunk>();
+        for (const output of Object.values(bundle)) if (output.type === "chunk") chunks.set(output.fileName, output);
+        const root = [...chunks.values()].find((chunk) => chunk.facadeModuleId != null && normalize(chunk.facadeModuleId).endsWith(BOOT_ROOT))
+          ?? [...chunks.values()].find((chunk) => bootRoot != null && chunk.moduleIds.includes(bootRoot));
+        if (!root) return undefined;
+        // The entry and the chunks it imports already have their tags.
+        const named = new Set<string>();
+        const entryStack = ctx.chunk ? [ctx.chunk.fileName] : [];
+        while (entryStack.length > 0) {
+          const fileName = entryStack.pop()!;
+          if (named.has(fileName)) continue;
+          named.add(fileName);
+          entryStack.push(...(chunks.get(fileName)?.imports ?? []));
+        }
+        const scripts: string[] = [];
+        const styles = new Set<string>();
+        const queue = [root.fileName];
+        const seen = new Set<string>();
+        while (queue.length > 0) {
+          const fileName = queue.shift()!;
+          if (seen.has(fileName)) continue;
+          seen.add(fileName);
+          const chunk = chunks.get(fileName);
+          if (!chunk) continue;
+          if (!named.has(fileName)) scripts.push(fileName);
+          for (const css of chunk.viteMetadata?.importedCss ?? []) styles.add(css);
+          queue.push(...chunk.imports);
+        }
+        return [
+          ...scripts.map((fileName): HtmlTagDescriptor => ({
+            tag: "link",
+            attrs: { rel: "modulepreload", crossorigin: true, href: `${base}${fileName}` },
+            injectTo: "head",
+          })),
+          // `as="style"` fetches without holding the first paint; the boot
+          // import's stylesheet link then takes the file from the cache.
+          ...[...styles].map((fileName): HtmlTagDescriptor => ({
+            tag: "link",
+            attrs: { rel: "preload", as: "style", crossorigin: true, href: `${base}${fileName}` },
+            injectTo: "head",
+          })),
+        ];
+      },
+    },
     buildEnd(error) {
       boot = new Set();
       shared = new Set();
