@@ -112,7 +112,6 @@
     "mp4-muxer": "^5.2.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
-    "posthog-js": "1.444.0",
     "ssh2": "^1.17.0",
     "tldts": "^7.5.1",
     "ws": "^8.19.0",
@@ -188,6 +187,7 @@
     "pdfjs-dist": "^4.10.38",
     "pngjs": "^7.0.0",
     "postcss": "^8.5.6",
+    "posthog-js": "1.444.0",
     "qrcode.react": "^4.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -300,6 +300,10 @@
       {
         "from": "../ade-cli/dist/cli.cjs",
         "to": "ade-cli/cli.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/watchdogCheck.cjs",
+        "to": "ade-cli/watchdogCheck.cjs"
       },
       {
         "from": "../ade-cli/dist/bootstrap.cjs",

@@ -69,10 +69,19 @@ export type SyncTunnelClientStatus = {
   relayTurnedOff?: boolean;
 };
 
+let lastMcpEndpointKey: { machineKey: string; secret: string; value: string } | null = null;
+
 /** The ADE MCP endpoint key for a relay identity (see SyncTunnelClientStatus). */
 export function mcpEndpointKeyFor(identity: { machineKey: string; secret: string }): string {
-  return signRelayHmacHex(identity.secret, `ade-mcp-endpoint:${identity.machineKey}`).slice(0, 40);
+  // Every tunnel status read asks this (the account publisher reads one every
+  // 2 s) with the same identity; the HMAC is kept for the last identity.
+  const last = lastMcpEndpointKey;
+  if (last && last.machineKey === identity.machineKey && last.secret === identity.secret) return last.value;
+  const value = signRelayHmacHex(identity.secret, `ade-mcp-endpoint:${identity.machineKey}`).slice(0, 40);
+  lastMcpEndpointKey = { machineKey: identity.machineKey, secret: identity.secret, value };
+  return value;
 }
+
 
 export type SyncTunnelClientService = {
   start(): Promise<void>;
@@ -139,6 +148,12 @@ type SyncTunnelClientArgs = {
   /** Refresh-aware lease; the account token is validated upstream and never retained here. */
   getAccountLease?: () => Promise<{ userId: string; expiresAt?: string | null } | null>;
   /**
+   * Calls the listener when the account signs in or out, or when the owner
+   * turns ADE Relay on or off. With it, the client checks the account at once
+   * on those events and polls only as a slow backstop.
+   */
+  subscribeEligibilityChanges?: (listener: () => void) => () => void;
+  /**
    * Test seam only. Production passes none of these — bootstrap hands the
    * listener to attachHostListener instead, so the attached listener is the
    * single source of truth there. Wiring them from a per-runtime closure is
@@ -197,6 +212,19 @@ const BACKOFF_CAP_MS = 60_000;
  */
 const BACKOFF_MIN_MS = 1_000;
 const ACCOUNT_STATUS_POLL_MS = 1_000;
+/**
+ * The account poll when sign-in, sign-out and the relay setting arrive as
+ * events. The poll then only catches what has no event: a lease that a token
+ * refresh lost, or an expired session.
+ */
+const ACCOUNT_STATUS_BACKSTOP_POLL_MS = 5_000;
+/**
+ * How long an eligibility event waits before the check. Turning ADE Relay off
+ * (or signing out) can come in over the relay itself, and its answer must leave
+ * before the control socket closes. The 1 s poll used to give it that time by
+ * chance; this gives it on purpose and still closes well within a second.
+ */
+const ELIGIBILITY_EVENT_SETTLE_MS = 300;
 export const CONTROL_PING_INTERVAL_MS = 30_000;
 export const CONTROL_PONG_DEADLINE_MS = 10_000;
 /**
@@ -533,6 +561,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let accountStatusTimer: NodeJS.Timeout | null = null;
   let connectingControl = false;
   let accountLeaseCheckInFlight: Promise<void> | null = null;
+  /** An eligibility event came while a lease check ran: check again after it. */
+  let accountLeaseRecheckQueued = false;
+  let eligibilityEventTimer: NodeJS.Timeout | null = null;
+  let unsubscribeEligibility: (() => void) | null = null;
   let accountLeaseUserId: string | null = args.getAccountLease ? null : "legacy";
   let accountEligible: boolean | null = null;
   let attempt = 0;
@@ -752,8 +784,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const createWebSocket = args.createWebSocket
     ?? ((url: string, options?: { headers?: Record<string, string>; maxPayload?: number }) => new WebSocket(url, options));
   // The owner's setting for this computer, read from the identity store's
-  // sibling file. Off closes the control socket and every tunnel within one
-  // lease poll, and keeps them closed. An unreadable setting reads as on.
+  // sibling file. Off closes the control socket and every tunnel within a
+  // second (on the setting's event, or else within one lease poll), and keeps
+  // them closed. An unreadable setting reads as on.
   const relayTurnedOff = (): boolean => {
     try {
       return args.configStore.isRelayEnabled() === false;
@@ -1043,8 +1076,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const connectControl = async (): Promise<void> => {
     if (stopped || control || connectingControl || reconnectTimer) return;
     // Suppression has to hold at the dial itself, not just in the reconnect
-    // scheduler: the account-lease poll runs every second and calls this
-    // directly, which would redial straight back into the eviction war.
+    // scheduler: the account-lease poll and its events call this directly,
+    // which would redial straight back into the eviction war.
     if (controlReplacedStopped) return;
     if (!accountSignedIn()) {
       lastError = ineligibleMessage();
@@ -2324,7 +2357,39 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       await check;
     } finally {
       if (accountLeaseCheckInFlight === check) accountLeaseCheckInFlight = null;
+      if (accountLeaseRecheckQueued && !stopped) {
+        accountLeaseRecheckQueued = false;
+        void refreshAccountLease();
+      }
     }
+  };
+
+  /**
+   * An account or relay-setting event. After the settle delay, the cheap
+   * synchronous checks (relay off, signed out) close at once, before the lease
+   * round trip; the lease check then follows. A check already running read the
+   * old state, so one more runs after it.
+   */
+  const onEligibilityEvent = (): void => {
+    if (stopped || !started || eligibilityEventTimer) return;
+    eligibilityEventTimer = setTimeout(() => {
+      eligibilityEventTimer = null;
+      if (stopped || !started) return;
+      void reconcileAccountEligibility()
+        .then(() => {
+          if (accountLeaseCheckInFlight) {
+            accountLeaseRecheckQueued = true;
+            return;
+          }
+          return refreshAccountLease();
+        })
+        .catch((error: unknown) => {
+          log.warn?.("sync_tunnel.eligibility_event_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }, ELIGIBILITY_EVENT_SETTLE_MS);
+    eligibilityEventTimer.unref?.();
   };
 
   const notifyHostResumed = (): void => {
@@ -2354,9 +2419,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       unsubscribePower = args.powerSource?.subscribe((event) => {
         if (event.kind === "resume") notifyHostResumed();
       }) ?? null;
+      unsubscribeEligibility = args.subscribeEligibilityChanges?.(onEligibilityEvent) ?? null;
       accountStatusTimer = setInterval(
         () => { void refreshAccountLease(); },
-        args.accountStatusPollMs ?? ACCOUNT_STATUS_POLL_MS,
+        args.accountStatusPollMs
+          ?? (unsubscribeEligibility ? ACCOUNT_STATUS_BACKSTOP_POLL_MS : ACCOUNT_STATUS_POLL_MS),
       );
       accountStatusTimer.unref?.();
       await refreshAccountLease();
@@ -2435,6 +2502,13 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         clearInterval(accountStatusTimer);
         accountStatusTimer = null;
       }
+      unsubscribeEligibility?.();
+      unsubscribeEligibility = null;
+      if (eligibilityEventTimer) {
+        clearTimeout(eligibilityEventTimer);
+        eligibilityEventTimer = null;
+      }
+      accountLeaseRecheckQueued = false;
       accountEligible = null;
       closeRelayConnections("service stopped");
     },

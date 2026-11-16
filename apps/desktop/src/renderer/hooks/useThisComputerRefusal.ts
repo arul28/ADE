@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { SyncRoleSnapshot } from "../../shared/types";
 import { readThisMachineRefusal, type ThisMachineRefusal } from "../../shared/accountMachineRefusal";
 import { readLocalSyncStatus } from "../lib/localSyncStatusReader";
+import { isPageHidden, observePageVisibility } from "../lib/pageVisibility";
 
 /** A refusal rarely changes on its own; this only catches a missed broadcast. */
 const REFUSAL_REFRESH_MS = 60_000;
@@ -56,12 +57,19 @@ export function useThisComputerRefusal(): {
     const dispose = syncApi.onEvent?.((event) => {
       if (event.type === "sync-status") read();
     });
-    const interval = window.setInterval(onFocus, REFUSAL_REFRESH_MS);
+    // The backstop read is for a window someone looks at: a hidden one
+    // (minimized, or covered by another window on macOS) skips it and reads
+    // once when it shows again. The `sync-status` event still reads at once.
+    const interval = window.setInterval(() => {
+      if (!isPageHidden()) read();
+    }, REFUSAL_REFRESH_MS);
+    const stopObservingVisibility = observePageVisibility({ onHidden: () => {}, onVisible: onFocus });
     window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
       dispose?.();
       window.clearInterval(interval);
+      stopObservingVisibility();
       window.removeEventListener("focus", onFocus);
     };
   }, [tick]);

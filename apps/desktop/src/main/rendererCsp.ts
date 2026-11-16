@@ -8,6 +8,12 @@ type RendererCspMatchOptions = {
   devServerUrl?: string | null;
 };
 
+/**
+ * Diagnostics for the launch report: how often the window's header hook ran,
+ * and how often it set the policy on a response.
+ */
+export const rendererCspHookCounts = { calls: 0, applied: 0 };
+
 export function shouldApplyRendererCsp(
   details: RendererCspResponseDetails,
   options: RendererCspMatchOptions,

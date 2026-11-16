@@ -1,4 +1,6 @@
-import { query as claudeQuery, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+// Types only: the SDK loads on the first probe, not with this module, so a
+// process that never probes (Electron main) never loads it.
+import type { Query as ClaudeQuery, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 // Deep import rather than the `services/tools` barrel: the barrel pulls the
 // whole fetch/install stack with it.
 import { pinnedToolFetchInFlight } from "../../../../../ade-cli/src/services/tools/onDemand";
@@ -166,9 +168,10 @@ export async function probeClaudeRuntimeHealth(args: {
   const probe = (async (): Promise<ClaudeRuntimeProbeResult> => {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), PROBE_TIMEOUT_MS);
-    let stream: ReturnType<typeof claudeQuery> | null = null;
+    let stream: ClaudeQuery | null = null;
 
     try {
+      const { query: claudeQuery } = await import("@anthropic-ai/claude-agent-sdk");
       stream = claudeQuery({
         prompt: "System initialization check. Respond with only the word READY.",
         options: {

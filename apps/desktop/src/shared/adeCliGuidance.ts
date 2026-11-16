@@ -73,13 +73,11 @@ export function adeAdvertisedAgentSkillNames(): string[] {
 // project rules below it. The board rule is documented where an agent actually
 // reads it: the "Board and status" section of the ade-cli-control-plane skill.
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
-  "ADE control protocol for truthful Work status:",
-  `- Use \`ade chat note "testing desktop auth fallback"\` for a durable one-line summary (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters).`,
-  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates. A subagent puts its question in its report instead.',
-  "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
-  '- Done: report it and leave `ade chat note "<delivered result>"`.',
-  "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
-  "- Keep lane and chat names accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
+  "Work status:",
+  `- \`ade chat note "testing auth fallback"\` sets a durable one-line status (${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; cut at ${MAX_STATUS_NOTE_CHARACTERS} characters). Done: report it and \`ade chat note "<delivered result>"\`.`,
+  '- Any question for the user, even while background work runs: `ade chat ask "<the exact question>"` (a note alone can make an idle row look Done); not for progress. The next user message clears it; ask again if still blocked. A subagent asks in its report instead.',
+  "- You cannot settle a session; the user does, or its PR merge does.",
+  "- When the work changes direction or branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`.",
 ].join("\n");
 
 /**
@@ -191,9 +189,7 @@ export function buildAdeSessionActivityGuidance(args: {
         `- For long work, keep a one-line status on this chat's ${row} with \`${cliCommand} chat note${scopeFlag} --session ${safeSessionId} "<what you are doing>"\`; when you are blocked on the user, \`${cliCommand} chat ask${scopeFlag} --session ${safeSessionId} "<the question>"\`. If you asked and then kept working anyway, take the hand down with \`${cliCommand} chat ask --clear${scopeFlag} --session ${safeSessionId}\`.`,
       ]
       : []),
-    `- ADE shows this chat's activity on its ${row}, detected from your tool calls. You do not need to report it.`,
-    `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\` (replace debugging with the real value); clear it with \`${command("clear")}\`.`,
-    `  Values: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+    `- ADE reads this chat's activity for its ${row} from your tool calls; you need not report it. If it is wrong (debugging can look like testing), set it with \`${command("debugging")}\` (values: ${SESSION_ACTIVITY_VALUES.join(", ")}); clear it with \`${command("clear")}\`.`,
   ].join("\n");
 }
 
@@ -228,8 +224,11 @@ export function buildAdePosixTrackedCliActivityGuidance(): string {
  * blob is gone: ADE's capabilities are delivered as session-scoped Agent Skills, with
  * `ade skill show` as the runtime-independent activation fallback. Do not re-grow this.
  */
-export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
-  return buildAdeBootstrapGuidance(skillRoots);
+export function buildAdeCliAgentGuidance(
+  skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeBootstrapGuidanceOptions = {},
+): string {
+  return buildAdeBootstrapGuidance(skillRoots, options);
 }
 
 export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
@@ -315,35 +314,60 @@ export const ADE_CLI_INLINE_GUIDANCE = buildAdeCliInlineGuidance();
  * socket/browser/proof rule on every turn — those now live in their skills, which each
  * runtime discovers natively when it supports extra roots. Keep this short; do not re-grow it.
  */
+export type AdeBootstrapGuidanceOptions = {
+  /**
+   * The runtime lists the `ade-*` skills itself, with their descriptions
+   * (Claude's bundled `ade` plugin), so the name index, the skill root and the
+   * no-native-skills fallback are a second copy and are left out.
+   */
+  nativeSkillListing?: boolean;
+  /** The prompt already names the subagent route (the runtime block). */
+  subagentRouteStated?: boolean;
+  /**
+   * The same prompt carries the computer-use directive
+   * (`buildComputerUseDirective`), which states the real-screen rule and
+   * points at `ade-proof-artifacts` itself, so those two lines here are a
+   * second copy and are left out.
+   */
+  computerUseDirectiveIncluded?: boolean;
+};
+
 export function buildAdeBootstrapGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  options: AdeBootstrapGuidanceOptions = {},
 ): string {
   return [
     "## ADE",
-    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
-    `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
-    formatAdeAgentSkillRootsForPrompt(skillRoots),
-    "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
+    "ADE is a local-first dev environment (lanes, chats, terminals, PRs, proof, apps, iOS, browsers); its `ade` CLI controls ADE state.",
+    ...(options.nativeSkillListing
+      ? ["Before a task in an ADE area, read its `ade:ade-*` skill."]
+      : [
+        `Skills: read the matching \`ade-*\` skill first: ${adeAdvertisedAgentSkillNames().map((name) => `\`${name}\``).join(", ")}.`,
+        formatAdeAgentSkillRootsForPrompt(skillRoots),
+        "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
+      ]),
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
-    "Visuals: when a picture beats prose (status across many items, a comparison, a trend) or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
+    "Visuals: when a picture beats prose (many items, a comparison, a trend) or when asked, add one ```scene block (its buttons can offer choices). Run `ade scene guide` first; check with `ade scene preview`.",
     // The one proof line every agent sees. Chat shows a picture only from the
     // project's own files or the proof store; an agent that linked a screenshot
     // it saved to /tmp left the user a chip saying "Outside this project".
-    "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show. Proof or demos for people: read `ade-proof-artifacts`.",
+    `Images in answers: \`ade proof attach <file>\`, then paste its \`cite:\` line; other paths may not show.${options.computerUseDirectiveIncluded ? "" : " Proof or demos for people: `ade-proof-artifacts`."}`,
     // Agents opened about two thirds of recent PRs with `gh`, and rewrote the
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
-    "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings: `ade settings find <words>`; clean up started processes.",
+    ...(options.computerUseDirectiveIncluded
+      ? []
+      : ["`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`."]),
+    "CLI ground truth: `ade help <command>`, `ade actions list --text`; prefer typed commands with `--text`. Settings: `ade settings find <words>`. Stop processes you start.",
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
-    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show a card. Read only requested `ade secrets`; never print them or `.env` files.",
+    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them or `.env` files.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
-    "Stay in this chat and lane unless asked. Another model → a subagent (`ade new chat --mode chat --provider <p> --model <id>`). To wait: subagents report back; PR → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",
+    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat --provider <p> --model <id>`)."} Waiting: subagents report back; a PR → \`ade prs watch\`; a terminal → \`ade terminal watch\`; else \`ade chat scheduled-work create\`. \`ade drafts\` sends as the user.`,
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

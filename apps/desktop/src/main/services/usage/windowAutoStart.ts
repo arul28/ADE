@@ -26,6 +26,7 @@ import {
   BACKGROUND_UTILITY_CLAUDE_REASONING_EFFORT,
   BACKGROUND_UTILITY_CODEX_CLI_MODEL,
   BACKGROUND_UTILITY_CODEX_REASONING_EFFORT,
+  claudeBackgroundUtilityEnv,
   claudeBackgroundUtilityFlags,
   codexStandardSpeedFlags,
 } from "../../../shared/backgroundUtilityModel";
@@ -251,7 +252,7 @@ export function createWindowAutoStartScheduler({
       }),
     };
     // A Claude pass account gets its token at the spawn.
-    const env = state.provider === "claude" ? withClaudePassEnv(accountEnv) : accountEnv;
+    const env = state.provider === "claude" ? withClaudePassEnv({ ...accountEnv, ...claudeBackgroundUtilityEnv() }) : accountEnv;
     try {
       const resolved = opener.resolveExecutable(env);
       const invocation = resolveCliSpawnInvocation(resolved.path, opener.args(opener.model), env);

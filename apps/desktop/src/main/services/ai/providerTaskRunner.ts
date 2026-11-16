@@ -25,7 +25,7 @@ import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import { resolveCursorSdkModelSelectionParams } from "../chat/cursorModelSelection";
-import { claudeBackgroundUtilityFlags, codexStandardSpeedFlags } from "../../../shared/backgroundUtilityModel";
+import { claudeBackgroundUtilityEnv, claudeBackgroundUtilityFlags, codexStandardSpeedFlags } from "../../../shared/backgroundUtilityModel";
 import { codexDisableConfiguredMcpArgs } from "../mcp/codexMcpOff";
 import { openProviderTaskMcpOff } from "../mcp/providerTaskMcpOff";
 import {
@@ -236,7 +236,12 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
 
   const resolved = await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable());
   // The whole env, so a Claude pass account gets its token at the spawn.
-  const baseEnv = withClaudePassEnv({ ...userProcessEnv(), ...providerSelfUpdateEnv("claude"), ...args.accountEnv });
+  const baseEnv = withClaudePassEnv({
+    ...userProcessEnv(),
+    ...providerSelfUpdateEnv("claude"),
+    ...args.accountEnv,
+    ...(backgroundUtility ? claudeBackgroundUtilityEnv() : {}),
+  });
   const run = (command: string) => runCommand({
     command,
     argv: cliArgs,
@@ -273,6 +278,14 @@ async function runClaudeTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   };
 }
 
+/** An empty folder for Codex background helpers, so no project instructions load. Made once per process. */
+let backgroundUtilityCodexDirPath: string | null = null;
+function backgroundUtilityCodexDir(): string {
+  if (backgroundUtilityCodexDirPath && fs.existsSync(backgroundUtilityCodexDirPath)) return backgroundUtilityCodexDirPath;
+  backgroundUtilityCodexDirPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-helper-"));
+  return backgroundUtilityCodexDirPath;
+}
+
 async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const codexJsonSchema = args.jsonSchema ? makeCodexCompatibleJsonSchema(args.jsonSchema) : undefined;
   const prompt = appendStructuredOutputInstruction(args.prompt, codexJsonSchema);
@@ -286,7 +299,9 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     "never",
     ...codexSandboxCliArgs(buildCodexSandbox(args.permissionMode)),
     "--cd",
-    args.cwd,
+    // A background helper (a title, a status line) gets every word it needs in
+    // its prompt; in the lane, Codex would also send the lane's AGENTS.md.
+    args.backgroundUtility ? backgroundUtilityCodexDir() : args.cwd,
     "--skip-git-repo-check",
     "--output-last-message",
     outPath,

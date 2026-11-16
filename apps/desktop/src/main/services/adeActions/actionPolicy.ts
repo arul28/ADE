@@ -423,6 +423,9 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "revokeMcpAppGrant",
     // Taking a chat off Recently deleted means it can no longer be reopened.
     "removeDeletedChats",
+    // A person's composer only. An agent makes a chat with `createSession`,
+    // whose actor cap and message provenance the runtime applies per action.
+    "createSessionAndSend",
     // Letting agents run with Full access as root covers the whole machine;
     // an agent must not grant it to itself.
     "setRootFullAccess",
@@ -1036,6 +1039,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // failing on every machine.
     "createAttachmentUpload",
     "sendMessage",
+    // The Work prompt box's new chat and its first message in one call (person only).
+    "createSessionAndSend",
     "readTranscript",
     "readTranscriptPage",
     "setClaudeOutputStyle",
@@ -1057,6 +1062,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setParent",
     "dismissSubagentTakeoverPrompt",
     "warmupModel",
+    "prewarmDraft",
   ],
   keybindings: ["get", "set"],
   ai: [

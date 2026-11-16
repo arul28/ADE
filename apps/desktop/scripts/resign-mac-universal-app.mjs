@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { signAsync } from "@electron/osx-sign";
+import brainCopy from "./mac-brain-copy.cjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -69,6 +70,8 @@ if (appNeedsRepair) {
     hardenedRuntime: true,
     strictVerify: true,
   });
+  // osx-sign gave the brain copy (mode `brain-copy` only) its own identifier.
+  brainCopy.signBrainCopyIfPresent(appPath);
 }
 
 await verifyAppSignature(appPath, "post-repair universal app signature");

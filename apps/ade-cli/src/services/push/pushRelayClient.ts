@@ -53,6 +53,52 @@ export {
 const DEFAULT_RELAY_URL = "https://ade-push-relay.arulsharma1028.workers.dev";
 const REQUEST_TIMEOUT_MS = 15_000;
 /**
+ * How long an idle connection to the relay stays open. The presence report
+ * goes every 30 s and other relay loops every minute; Node's default (4 s)
+ * closed the connection between them, so each one paid a new TLS handshake.
+ */
+const RELAY_KEEP_ALIVE_MS = 60_000;
+let relayKeepAliveAgent: object | null = null;
+
+/**
+ * Node's own fetch dispatcher (the undici `Agent` bundled in Node, no package),
+ * when it is still the default one. The newest slot that is set decides: a
+ * proxy from `http.setGlobalProxyFromEnv` puts a different dispatcher there,
+ * and then requests keep using it.
+ */
+function defaultGlobalDispatcher(): object | null {
+  const slots = globalThis as unknown as Record<symbol, unknown>;
+  for (const name of ["undici.globalDispatcher.2", "undici.globalDispatcher.1"]) {
+    const dispatcher = slots[Symbol.for(name)];
+    if (dispatcher && typeof dispatcher === "object") {
+      return dispatcher.constructor?.name === "Agent" ? dispatcher : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * One keep-alive pool for every relay request in this process, built from the
+ * same `Agent` class Node's fetch uses. Undefined (the default dispatcher)
+ * before Node's fetch has loaded, and whenever a proxy dispatcher is in place.
+ */
+function relayKeepAliveDispatcher(): object | undefined {
+  const dispatcher = defaultGlobalDispatcher();
+  if (!dispatcher) return undefined;
+  if (!relayKeepAliveAgent) {
+    try {
+      const AgentClass = dispatcher.constructor as new (options: Record<string, unknown>) => object;
+      relayKeepAliveAgent = new AgentClass({
+        keepAliveTimeout: RELAY_KEEP_ALIVE_MS,
+        keepAliveMaxTimeout: RELAY_KEEP_ALIVE_MS,
+      });
+    } catch {
+      return undefined;
+    }
+  }
+  return relayKeepAliveAgent;
+}
+/**
  * The whole of one relay request: the account token, the fetch, and the one
  * forced-refresh retry after a 401, together. The background default keeps the
  * old worst case (a 30s shared token refresh, then two 15s fetches) for the
@@ -478,12 +524,15 @@ export function createPushRelayClient(args: {
         controller.abort();
       }, Math.max(1, Math.min(REQUEST_TIMEOUT_MS, remainingMs())));
       try {
+        const dispatcher = relayKeepAliveDispatcher();
         const response = await fetch(url.toString(), {
           method,
           headers,
           ...(options?.body !== undefined ? { body: bodyString } : {}),
           signal: controller.signal,
-        }).catch((error: unknown) => {
+          // Node's fetch takes undici's `dispatcher`; the DOM type does not list it.
+          ...(dispatcher ? { dispatcher } : {}),
+        } as RequestInit).catch((error: unknown) => {
           if (deadline.signal.aborted) throw deadlineError();
           if (attemptTimedOut) throw new PushRelayUnreachableError("timeout", { cause: error });
           // No HTTP answer at all. Name the network code now: the cause chain

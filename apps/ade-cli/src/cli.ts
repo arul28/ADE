@@ -654,12 +654,13 @@ import {
 import {
   defaultRuntimeCompileCacheDir,
   isCurrentProcessDescendantOfPid,
+  isSameElectronRuntime,
   resolveAdeServeCommand,
   RuntimeServiceStillStartingError,
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { awaitRuntimeServiceEndpoint } from "./services/runtime/awaitRuntimeServiceEndpoint";
-import { activeCompileCacheDir, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
+import { activeCompileCacheDir, flushActiveCompileCache, scheduleStaleCompileCachePrune } from "./services/runtime/compileCachePrune";
 import { readBrainStartupState } from "./services/runtime/brainStartupState";
 import {
   readEmbeddedParentPid,
@@ -681,6 +682,9 @@ import {
 } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import { readMachineInventorySummary } from "./services/account/accountMachinePublisherService";
+import { providerLoginGeneration } from "../../desktop/src/main/services/ai/providerLoginChanged";
+import { getProviderRuntimeHealthVersion } from "../../desktop/src/main/services/ai/providerRuntimeHealth";
+import { pinnedToolInstallGeneration } from "./services/tools/onDemand";
 import {
   getMachineProviderInstanceStore,
   resolveProviderInstanceForLaunch,
@@ -775,6 +779,7 @@ import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverr
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
 import { DEVICES_HELP } from "./help/devicesHelp";
+import { lazyRecord } from "./help/lazyRecord";
 import { DOCTOR_HELP, SETTINGS_HELP, STATUS_HELP, SYNC_HELP } from "./help/systemHelp";
 import { createHelpCatalog, filterHelpTextForScope } from "./help/catalog";
 import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommandPolicy";
@@ -1931,7 +1936,8 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   logout: "auth",
 };
 
-export const HELP_BY_COMMAND: Record<string, string> = {
+// Built on the first read (`help/lazyRecord.ts`): the brain never prints these pages.
+export const HELP_BY_COMMAND: Record<string, string> = lazyRecord(() => ({
   sync: SYNC_HELP,
   doctor: DOCTOR_HELP,
   status: STATUS_HELP,
@@ -5411,7 +5417,7 @@ ${CURSOR_CLOUD_HELP.cloud}`,
   the downloaded archive so a retry is just another install, and only a second
   failure discards the download and forces a fresh one.
 `,
-};
+}));
 
 export function isRecord(value: unknown): value is JsonObject {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -27959,8 +27965,10 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
   const args = [...serviceCommand.args];
   let buildHash: string | null = null;
   let filePath: string | null = null;
+  // The app's helper or brain copy (the brain-executable switch) runs this process's Node.
+  const runsThisNode = isSameElectronRuntime(serviceCommand.command, process.execPath);
   if (
-    serviceCommand.command === process.execPath &&
+    runsThisNode &&
     args.length === 1 &&
     args[0] === "serve" &&
     fs.existsSync(CLI_DIST_PATH)
@@ -27968,7 +27976,7 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
     args.splice(0, 1, CLI_DIST_PATH, "serve");
     filePath = CLI_DIST_PATH;
     buildHash = computeRuntimeBuildHash(filePath);
-  } else if (serviceCommand.command === process.execPath && args[0]) {
+  } else if (runsThisNode && args[0]) {
     filePath = path.resolve(args[0]);
     buildHash = computeRuntimeBuildHash(filePath);
   } else if (fs.existsSync(serviceCommand.command)) {
@@ -30047,6 +30055,10 @@ async function runServe(
   // child process froze it, which is most of the near misses that use no CPU.
   const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
   installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  // Code that ran only while the brain started drops its compiled form at the
+  // next quiet full collection (`brainCodeAging.ts`).
+  const { scheduleBrainCodeAging } = await import("./services/runtime/brainCodeAging");
+  scheduleBrainCodeAging();
   // And this names the synchronous file call, path and caller, that the main
   // thread is stuck in, for the watchdog to read while it is stuck. Installed
   // before the watchdog starts, which hands the tracker's memory to its worker.
@@ -30248,6 +30260,8 @@ async function runServe(
   // A refused project's folder is not read for account settings, nor counted
   // for this cloud computer's disk report.
   const refusedRoot = (rootPath: string): boolean => {
+    // Asked on every account-settings read; with no refusal the project list is not needed.
+    if (!projectOpenStrikes.anyBlocked()) return false;
     const resolved = path.resolve(rootPath);
     const record = projectRegistry.list().find((entry) => entry.rootPath === resolved);
     return Boolean(record && projectOpenStrikes.blocked(record.projectId));
@@ -32930,6 +32944,30 @@ async function runServe(
       const published = sync.runCount() !== before && !sync.publishPending();
       return { ...result, published };
     });
+    // The heartbeat (every 60 s) counts models and signed-in providers from
+    // the AI status, whose own cache lives 30 s, so every heartbeat rebuilt
+    // it: saved-login reads, two macOS keychain probes (`security`), the Pi
+    // and OpenCode inventories and four project config reads. The counts are
+    // decoration on the heartbeat. A status up to 5 minutes old is reused,
+    // unless a sign-in, a tool install or a provider runtime change on this
+    // computer happened since; `account.getMachineInventory` still reads
+    // afresh.
+    const HEARTBEAT_AI_STATUS_MAX_AGE_MS = 5 * 60_000;
+    let heartbeatAiStatus: { service: object; key: string; atMs: number; status: unknown } | null = null;
+    const heartbeatAiStatusReader = (
+      service: { getStatus(): Promise<unknown> } | null,
+    ): { getStatus(): Promise<unknown> } | null => service && {
+      getStatus: async () => {
+        const key = `${providerLoginGeneration()}|${pinnedToolInstallGeneration()}|${getProviderRuntimeHealthVersion()}`;
+        const kept = heartbeatAiStatus;
+        if (kept && kept.service === service && kept.key === key && Date.now() - kept.atMs < HEARTBEAT_AI_STATUS_MAX_AGE_MS) {
+          return kept.status;
+        }
+        const status = await service.getStatus();
+        heartbeatAiStatus = { service, key, atMs: Date.now(), status };
+        return status;
+      },
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -32953,6 +32991,8 @@ async function runServe(
           const activeScope = await activeSyncHostScopeWithoutBooting();
           const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
+            // The registration never carries the pairing token or PIN.
+            includePairingSecrets: false,
           }) ?? null;
           if (scoped) return scoped;
           // Hosting sync without a project is a supported state, not the
@@ -32970,7 +33010,7 @@ async function runServe(
           return await readMachineInventorySummary({
             providerInstanceStore: getMachineProviderInstanceStore(),
             accountSettingsStore: activeScope?.runtime.accountSettingsStore ?? null,
-            aiIntegrationService: activeScope?.runtime.aiIntegrationService ?? null,
+            aiIntegrationService: heartbeatAiStatusReader(activeScope?.runtime.aiIntegrationService ?? null),
           });
         },
         // Only consulted on the `no_active_sync_scope` branch, but declared here
@@ -33138,6 +33178,9 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  // The start-up code is compiled now: write its cache, so a brain that is
+  // killed later (and never exits normally) still starts warm next time.
+  flushActiveCompileCache();
   // Once per brain start, to Sentry Logs: the beta gate counts the machines
   // whose brain ran a build (`shared/sentry/logBridge.ts`).
   headlessProjectLogger.info("brain.started", {

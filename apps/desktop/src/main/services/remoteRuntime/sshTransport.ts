@@ -1,8 +1,10 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { Client, type ConnectConfig } from "ssh2";
+import { fileURLToPath } from "node:url";
+import type { Client, ConnectConfig } from "ssh2";
 import type {
   RemoteRuntimeSshHostKeyIdentity,
   RemoteRuntimeSshHostKeyTrustStatus,
@@ -923,9 +925,41 @@ function isLocalPortUnavailableError(error: unknown): boolean {
     (typeof candidate.message === "string" && /EADDRNOTAVAIL|EADDRINUSE|can't assign requested address|address already in use/i.test(candidate.message));
 }
 
-function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
+/**
+ * `ssh2` is loaded on the first connection, not with this module. Its crypto
+ * module starts a 16 MB WebAssembly heap (poly1305) the moment it loads, and
+ * main imports this file at boot, so a static import kept that heap in every
+ * session, including the ones that never open an SSH machine.
+ *
+ * A dynamic import, so the brain's bundle still inlines its copy. Main keeps
+ * `ssh2` external; if the import cannot resolve there, `require` resolves it
+ * the way the static import did (the SDK loaders do the same).
+ */
+type Ssh2Module = typeof import("ssh2");
+const requireFromRuntime = createRequire(
+  typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
+);
+let ssh2Module: Promise<Ssh2Module> | null = null;
+function loadSsh2(): Promise<Ssh2Module> {
+  ssh2Module ??= import("ssh2")
+    .then((loaded) => {
+      // A CommonJS package imported natively may expose its exports only as
+      // `default`.
+      const namespace = loaded as Ssh2Module & { default?: Ssh2Module };
+      return namespace.Client ? namespace : (namespace.default ?? namespace);
+    })
+    .catch(() => requireFromRuntime("ssh2") as Ssh2Module)
+    .catch((error: unknown) => {
+      ssh2Module = null;
+      throw error;
+    });
+  return ssh2Module;
+}
+
+async function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
+  const { Client: SshClient } = await loadSsh2();
   return new Promise((resolve, reject) => {
-    const client = new Client();
+    const client = new SshClient();
     let settled = false;
     let connectTimer: NodeJS.Timeout | null = null;
     const connectTimeoutMs =

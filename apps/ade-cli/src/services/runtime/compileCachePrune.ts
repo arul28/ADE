@@ -21,6 +21,29 @@ export function activeCompileCacheDir(): string | undefined {
 }
 
 /**
+ * Writes the compile cache this process has gathered so far. Node writes it on
+ * its own only when the process exits normally. A brain that is killed after
+ * an update (the watchdog, a crash, launchd) never wrote it, so each restart
+ * compiled cli.cjs from source again (about 207 ms against 27 ms warm). The
+ * brain calls this once it is listening, when the start-up code is compiled.
+ * A start that found its cache has nothing new to write. In a probe with a
+ * 9 MB module, a cold flush wrote 2.5 MB in about 1 ms and a warm one took
+ * 0 ms. Never throws: the cache is only a
+ * speed-up. False when the cache is off or this Node has no flush.
+ */
+export function flushActiveCompileCache(): boolean {
+  // @types/node 20 predates flushCompileCache (Node 22.10+ has it), so it is read untyped.
+  const flush: (() => void) | undefined = Reflect.get(nodeModule, "flushCompileCache");
+  if (typeof flush !== "function" || !activeCompileCacheDir()) return false;
+  try {
+    flush.call(nodeModule);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Removes the cache directories of other Node builds that sit next to `activeDir` under the
  * same root. A build is removed only when it is stale (nothing written in it for 14 days) and is
  * not one of the two most recently written other builds, so a build that another process is

@@ -1,6 +1,11 @@
 /* ------------------------------------------------------------------ *
  * Logo → texture + signed distance field
  * ------------------------------------------------------------------ */
+import { captureError } from "../../../../shared/sentry/capture";
+import { sdfFromRgba } from "./logoSdf";
+import LogoSdfWorker from "./logoSdf.worker?worker";
+import type { LogoSdfRequest, LogoSdfResponse } from "./logoSdf.worker";
+
 export const TEX = 1024; // logo texture size
 export const BOX = 0.75; // share of the texture the logo fills (the rest is room for the SDF)
 
@@ -106,69 +111,83 @@ function fitToTexture(source: CanvasImageSource, sw: number, sh: number, alphaFl
   return out;
 }
 
-// Signed distance field from alpha (TinySDF method): + outside, − inside, in texture units.
-function buildSdf(canvas: HTMLCanvasElement) {
-  const n = TEX * TEX;
-  const alpha = canvas.getContext("2d", { willReadFrequently: true })!.getImageData(0, 0, TEX, TEX).data;
-  const INF = 1e20;
-  const outer = new Float64Array(n);
-  const inner = new Float64Array(n);
-  for (let i = 0; i < n; i++) {
-    const a = alpha[i * 4 + 3] / 255;
-    if (a >= 1) { outer[i] = 0; inner[i] = INF; }
-    else if (a <= 0) { outer[i] = INF; inner[i] = 0; }
-    else {
-      const dd = 0.5 - a;
-      outer[i] = dd > 0 ? dd * dd : 0;
-      inner[i] = dd < 0 ? dd * dd : 0;
+// The SDF of the texture's alpha. It is about 30 ms of math, so a worker builds it when it can and
+// the page keeps drawing; the page builds it itself when no worker can start or the worker fails.
+// Both run `sdfFromRgba`, so the field is the same either way.
+async function buildSdf(canvas: HTMLCanvasElement): Promise<Float32Array> {
+  const read = () => canvas.getContext("2d", { willReadFrequently: true })!.getImageData(0, 0, TEX, TEX).data;
+  return (await sdfInWorker(read())) ?? sdfFromRgba(read(), TEX);
+}
+
+// A worker that answers nothing this long is stuck; the page builds the field instead.
+const WORKER_ANSWER_CAP_MS = 4000;
+let workerUnusable = false;
+
+/** One report per renderer for each way the worker can fail; the page builds the field instead. */
+const reportedWorkerFailures = new Set<string>();
+function reportWorkerFailure(kind: "worker_start" | "worker_error" | "post" | "stuck", error: unknown): void {
+  workerUnusable = true;
+  if (reportedWorkerFailures.has(kind)) return;
+  reportedWorkerFailures.add(kind);
+  captureError(error, { fingerprint: ["logo_reveal", "sdf_worker", kind], tags: { area: "logo_reveal", step: "sdf_worker", kind }, level: "warning", handled: true });
+}
+
+// The field from a worker of its own (moved there with the pixels), or null when no worker can do it.
+// `rgba` is moved to the worker, so the caller must not use it again.
+function sdfInWorker(rgba: Uint8ClampedArray): Promise<Float32Array | null> {
+  if (workerUnusable || typeof Worker === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let worker: Worker;
+    try {
+      worker = new LogoSdfWorker();
+    } catch (error) {
+      reportWorkerFailure("worker_start", error);
+      resolve(null);
+      return;
     }
-  }
-  const f = new Float64Array(TEX);
-  const z = new Float64Array(TEX + 1);
-  const v = new Uint16Array(TEX);
-  edt(outer, f, v, z, INF);
-  edt(inner, f, v, z, INF);
-  const sdf = new Float32Array(n);
-  for (let i = 0; i < n; i++) sdf[i] = (Math.sqrt(outer[i]) - Math.sqrt(inner[i])) / TEX;
-  return sdf;
+    let done = false;
+    const finish = (sdf: Float32Array | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(cap);
+      worker.terminate();
+      resolve(sdf);
+    };
+    const cap = setTimeout(() => {
+      reportWorkerFailure("stuck", new Error("GlassIconReveal: the SDF worker did not answer"));
+      finish(null);
+    }, WORKER_ANSWER_CAP_MS);
+    worker.onmessage = (event: MessageEvent<LogoSdfResponse>) => {
+      const sdf = event.data?.sdf;
+      finish(sdf instanceof Float32Array && sdf.length === TEX * TEX ? sdf : null);
+    };
+    worker.onerror = (event) => {
+      event.preventDefault();
+      reportWorkerFailure("worker_error", new Error(event.message || "GlassIconReveal: the SDF worker failed"));
+      finish(null);
+    };
+    worker.onmessageerror = () => {
+      reportWorkerFailure("worker_error", new Error("GlassIconReveal: the SDF worker answer could not be read"));
+      finish(null);
+    };
+    try {
+      const request: LogoSdfRequest = { rgba, size: TEX };
+      worker.postMessage(request, [rgba.buffer]);
+    } catch (error) {
+      reportWorkerFailure("post", error);
+      finish(null);
+    }
+  });
 }
 
-function edt(grid: Float64Array, f: Float64Array, v: Uint16Array, z: Float64Array, INF: number) {
-  for (let x = 0; x < TEX; x++) edt1d(grid, x, TEX, f, v, z, INF);
-  for (let y = 0; y < TEX; y++) edt1d(grid, y * TEX, 1, f, v, z, INF);
-}
-
-function edt1d(grid: Float64Array, offset: number, stride: number, f: Float64Array, v: Uint16Array, z: Float64Array, INF: number) {
-  v[0] = 0;
-  z[0] = -INF;
-  z[1] = INF;
-  f[0] = grid[offset];
-  for (let q = 1, k = 0, s = 0; q < TEX; q++) {
-    f[q] = grid[offset + q * stride];
-    const q2 = q * q;
-    do {
-      const r = v[k];
-      s = (f[q] - f[r] + q2 - r * r) / (q - r) / 2;
-    } while (s <= z[k] && --k > -1);
-    k++;
-    v[k] = q;
-    z[k] = s;
-    z[k + 1] = INF;
-  }
-  for (let q = 0, k = 0; q < TEX; q++) {
-    while (z[k + 1] < q) k++;
-    const r = v[k];
-    const qr = q - r;
-    grid[offset + q * stride] = f[r] + qr * qr;
-  }
-}
-
-// One texture and SDF per logo: about 100 ms to build and about 8 MB to keep. A reveal holds its
+// One texture and SDF per logo: about 50 ms to build (most of it in a worker) and about 8 MB to keep. A reveal holds its
 // logo while it is mounted, and the cache keeps it a while after, so a remount (the boot guard,
 // then a Suspense fallback) or a twin reuses it. Then it goes: a finished splash never needs it again.
 const RELEASE_AFTER_MS = 30_000;
 
 type CacheEntry = { job: Promise<LogoData>; users: number; timer: ReturnType<typeof setTimeout> | null };
+// The job of a logo no reveal shows any more: it never settles.
+const NEVER: Promise<LogoData> = new Promise(() => undefined);
 const logoCache = new Map<string, CacheEntry>();
 
 /** The logo's texture and SDF, and `release` for when the caller no longer shows it. */
@@ -176,11 +195,22 @@ export function loadLogo(logo: string, alphaFloor = 0): { job: Promise<LogoData>
   const key = `${alphaFloor}|${logo}`;
   let entry = logoCache.get(key);
   if (!entry) {
-    const job = loadImage(logoUrl(logo)).then((img) => {
+    const created: CacheEntry = { job: NEVER, users: 0, timer: null };
+    // The texture and SDF are built only while a reveal still shows this logo. A splash that went
+    // before the image arrived (a fast boot) builds nothing: the entry goes, and its job never
+    // settles, which no one waits for. A later reveal of the logo starts a new entry.
+    const stillShown = () => {
+      if (logoCache.get(key) === created && created.users > 0) return true;
+      if (logoCache.get(key) === created) logoCache.delete(key);
+      return false;
+    };
+    const job = loadImage(logoUrl(logo)).then(async (img) => {
+      if (!stillShown()) return NEVER;
       const canvas = fitToTexture(img, img.naturalWidth || TEX, img.naturalHeight || TEX, alphaFloor);
-      return { canvas, sdf: buildSdf(canvas) };
+      if (!stillShown()) return NEVER;
+      return { canvas, sdf: await buildSdf(canvas) };
     });
-    const created: CacheEntry = { job, users: 0, timer: null };
+    created.job = job;
     logoCache.set(key, created);
     job.catch(() => {
       if (logoCache.get(key) === created) logoCache.delete(key);

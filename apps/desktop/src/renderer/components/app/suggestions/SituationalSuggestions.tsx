@@ -12,7 +12,6 @@ import { usageLeftLevel } from "../../usage/usageDesign";
 import { humanizeProvider } from "../../usage/usageProviderNames";
 import { formatResetIn, windowLabel } from "../../usage/usageWindowFormat";
 import { settingsRouteFor } from "../../settings/settingsManifest";
-import { loadJiraConnectionStatus } from "../../issues/jiraIssueStore";
 import { openConnectionsPanel } from "../../../lib/connectionsPanel";
 import { openStartChatDraft } from "../../../lib/workDraft";
 import { readOnboardingProgress } from "../../../onboarding/onboardingProgress";
@@ -189,7 +188,11 @@ function useIssueTrackerSuggestion({ enabled, projectRoot, githubStatus, navigat
     let cancelled = false;
     const isConnected = async (tracker: IssueTracker): Promise<boolean> => {
       if (tracker === "github") return githubConnected !== false;
-      if (tracker === "jira") return (await loadJiraConnectionStatus(projectRoot))?.connected !== false;
+      if (tracker === "jira") {
+        // Loaded only when a Jira issue was mentioned, not with the window.
+        const { loadJiraConnectionStatus } = await import("../../issues/jiraIssueStore");
+        return (await loadJiraConnectionStatus(projectRoot))?.connected !== false;
+      }
       const pin = linearReaderPinRef.current;
       if (!pin) return true;
       const status = await window.ade?.cto?.getLinearConnectionStatus?.(pin);

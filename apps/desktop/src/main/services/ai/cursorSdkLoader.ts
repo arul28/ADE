@@ -14,6 +14,7 @@ const requireFromRuntime = createRequire(
 
 let sdkModule: CursorSdkModule | null = null;
 let sdkModulePromise: Promise<CursorSdkModule> | null = null;
+let sdkResolves = false;
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return `${error.name}: ${error.message}`;
@@ -71,6 +72,25 @@ export function assertCursorSdkSupportedOnThisPlatform(
   throw error;
 }
 
+/**
+ * Whether `loadCursorSdk` can find the package, without loading it: the
+ * platform gate and module resolution only, so a caller can use Cursor's REST
+ * API and keep the SDK's heap for the chats that need it. False is not a
+ * verdict (the dynamic import can still succeed); such a caller loads the SDK
+ * and lets `isCursorSdkResolutionError` decide.
+ */
+export function cursorSdkResolvesWithoutLoading(): boolean {
+  if (sdkModule || sdkResolves) return true;
+  try {
+    assertCursorSdkSupportedOnThisPlatform();
+    requireFromRuntime.resolve("@cursor/sdk");
+    sdkResolves = true;
+  } catch {
+    // Not cached: a reinstall can fix it while ADE runs.
+  }
+  return sdkResolves;
+}
+
 export async function loadCursorSdk(): Promise<CursorSdkModule> {
   assertCursorSdkSupportedOnThisPlatform();
   if (sdkModule) return sdkModule;
@@ -95,4 +115,5 @@ export async function loadCursorSdk(): Promise<CursorSdkModule> {
 export function resetCursorSdkLoaderForTests(): void {
   sdkModule = null;
   sdkModulePromise = null;
+  sdkResolves = false;
 }

@@ -59,6 +59,11 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
     listeners,
     /** How many times `restart` was asked for. */
     restartCalls: 0,
+    /** How many times the service started or disposed this client. */
+    ensureStartedCalls: 0,
+    disposeCalls: 0,
+    /** Requests the helper has not answered yet. */
+    pending: 0,
     /** Lets a test hold `display.create` open to force a race. */
     blockCreate() {
       return new Promise<void>((resolve) => {
@@ -69,8 +74,11 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
       resolveCreate?.();
       resolveCreate = null;
     },
-    async ensureStarted() {},
+    async ensureStarted() {
+      client.ensureStartedCalls += 1;
+    },
     isRunning: () => true,
+    isBusy: () => client.pending > 0,
     async restart() {
       client.restartCalls += 1;
       calls.push({ op: "restart", payload: {} });
@@ -141,7 +149,9 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
     }),
     setVersion: () => {},
     retry: () => client.getHealth(),
-    dispose: () => {},
+    dispose: () => {
+      client.disposeCalls += 1;
+    },
   };
   return client;
 }
@@ -927,6 +937,47 @@ describe("macDesktopService usage analytics", () => {
       { action: "mac_desktop", outcome: "agent_drove" },
     ]);
     windows.service.dispose();
+  });
+});
+
+describe("macDesktopService idle helper release", () => {
+  it("stops the helper only when no screen or request uses it, and the next read starts a new one", async () => {
+    const driver = createFakeDriver();
+    const { service } = makeService({ driver });
+    // No helper yet: nothing to stop.
+    expect(service.releaseIdleDriver()).toBe(false);
+
+    await service.start({ laneId: "lane-1" });
+    expect(service.releaseIdleDriver()).toBe(false);
+    await service.stop({ laneId: "lane-1" });
+
+    driver.pending = 1;
+    expect(service.releaseIdleDriver()).toBe(false);
+    driver.pending = 0;
+    expect(driver.disposeCalls).toBe(0);
+
+    expect(service.releaseIdleDriver()).toBe(true);
+    expect(driver.disposeCalls).toBe(1);
+    expect(service.releaseIdleDriver()).toBe(false);
+
+    // A read that comes back starts a new helper. A release while it starts
+    // keeps it, so the read gets the helper it waited for.
+    let finishStart: () => void = () => {};
+    driver.ensureStarted = async () => {
+      driver.ensureStartedCalls += 1;
+      await new Promise<void>((resolve) => {
+        finishStart = resolve;
+      });
+    };
+    const startsBefore = driver.ensureStartedCalls;
+    const reading = service.getStatus({});
+    await vi.waitFor(() => expect(driver.ensureStartedCalls).toBe(startsBefore + 1));
+    expect(service.releaseIdleDriver()).toBe(false);
+    finishStart();
+    const status = await reading;
+    expect(status.driver.state).toBe("running");
+    expect(driver.disposeCalls).toBe(1);
+    service.dispose();
   });
 });
 

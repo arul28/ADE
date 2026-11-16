@@ -210,11 +210,18 @@ export type RendererOwnedLaunchDeps = {
       pin: OpenProjectBinding;
     },
   ) => Promise<DraftLaunchLaneTarget>;
+  /**
+   * `onOpeningMessageOut(true)` says one call now carries the chat and its
+   * first message (false: it did not, the machine predates it). While it is
+   * out, the launch clock no longer fails the launch: the call's answer, or
+   * the check of the chat's machine after a lost one, decides.
+   */
   startChat: (
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     pin: OpenProjectBinding,
     assertActive: () => void,
+    onOpeningMessageOut: (out: boolean) => void,
   ) => Promise<StartedDraftLaunch>;
   startCli: (
     prepared: PreparedDraftLaunch,
@@ -298,6 +305,11 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
   if (!holdsComposerUntilOpen) deps.clearDraftLaunchComposer(snapshot);
 
   let targetLane: DraftLaunchLaneTarget | null = null;
+  // A chat sent in one call (create and first message together) may be with
+  // the agent when the clock runs out. Then the clock does not fail the
+  // launch, and no failure deletes its lane: the start's own answer decides.
+  let openingMessageOut = false;
+  let startClockRanOut = false;
 
   try {
     if (holdsComposerUntilOpen) {
@@ -328,13 +340,23 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     // Re-check before starting the session. The start functions also re-assert
     // immediately before each of their own mutating calls.
     assertLaunchActive();
-    const launched = await withDraftLaunchTimeout(
-      kind === "chat"
-        ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive)
-        : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding),
-      "Session start",
-      markLaunchTimedOut,
-    );
+    const onOpeningMessageOut = (out: boolean) => {
+      openingMessageOut = out;
+      if (!out && startClockRanOut) markLaunchTimedOut();
+    };
+    const started = kind === "chat"
+      ? deps.startChat(prepared, targetLane, launchBinding, assertLaunchActive, onOpeningMessageOut)
+      : deps.startCli(prepared, targetLane, mode, assertLaunchActive, launchBinding);
+    let launched: StartedDraftLaunch;
+    try {
+      launched = await withDraftLaunchTimeout(started, "Session start", () => {
+        startClockRanOut = true;
+        if (!openingMessageOut) markLaunchTimedOut();
+      });
+    } catch (startError) {
+      if (!startClockRanOut || launchTimedOut) throw startError;
+      launched = await started;
+    }
     invalidateSessionListCache();
     invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
     if (launched.draftKind === "chat" && targetLane.laneId === deps.paneLaneId && deps.canRefreshPinnedProject(launchBinding)) {
@@ -381,7 +403,7 @@ export async function runRendererOwnedLaunch(deps: RendererOwnedLaunchDeps): Pro
     }
   } catch (launchError) {
     discardRendererLaunchHandoff(jobId);
-    if (targetLane?.autoCreated) {
+    if (targetLane?.autoCreated && !openingMessageOut) {
       // Pin the rollback to the originating project so it deletes the lane we
       // created, even if the active project has since changed.
       await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }, launchBinding).catch((cleanupError: unknown) => {

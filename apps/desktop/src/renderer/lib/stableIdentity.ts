@@ -65,11 +65,16 @@ export function reuseStructurallyEqualArray<T>(
  * changed. Rows passed to memoized children then keep their identity.
  */
 export function reconcileRowsById<T extends { id: string }>(previous: T[], next: T[]): T[] {
+  return reconcileRowsByKey(previous, next, (row) => row.id);
+}
+
+/** `reconcileRowsById` for rows whose key is not an `id` field. */
+export function reconcileRowsByKey<T>(previous: T[], next: T[], keyOf: (row: T) => string): T[] {
   if (previous === next) return previous;
-  const previousById = new Map(previous.map((row) => [row.id, row]));
+  const previousById = new Map(previous.map((row) => [keyOf(row), row]));
   let changed = previous.length !== next.length;
   const merged = next.map((row, index) => {
-    const prior = previousById.get(row.id);
+    const prior = previousById.get(keyOf(row));
     const kept = prior && (prior === row || JSON.stringify(prior) === JSON.stringify(row)) ? prior : row;
     if (!changed && previous[index] !== kept) changed = true;
     return kept;

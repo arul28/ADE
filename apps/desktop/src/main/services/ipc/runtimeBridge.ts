@@ -468,6 +468,11 @@ function resolveAuthorizedLocalRuntimeRootPath(
 
 // A window bound to the same local project shares that binding's key; any other
 // authorized root gets a root-scoped key of its own.
+/** The binding's kind for a log line; the key itself can hold a local path. */
+function runtimeEventBindingKind(bindingKey: string): "local" | "remote" {
+  return bindingKey.startsWith("remote:") ? "remote" : "local";
+}
+
 function localRuntimeEventBindingKey(
   binding: WindowRuntimeSession["binding"] | null | undefined,
   rootPath: string,
@@ -1028,6 +1033,49 @@ export function registerRuntimeBridge({
     return !ptyId || shouldSendPtyDataToWebContents(sender, ptyId);
   };
 
+  /**
+   * Main's half of the per-turn send timing (the brain logs
+   * `agent_chat.send_timing`): when main passed a chat's user message and then
+   * its first words to a window, and how long after the brain committed each.
+   * One line per turn, ids and numbers only.
+   */
+  const forwardedUserMessages = new Map<string, { atMs: number; commitToMainMs: number | null }>();
+  const noteChatEventForward = (event: RemoteRuntimeBufferedEvent): void => {
+    const payload = event.payload;
+    // The brain pushes a chat event as the bare envelope
+    // (`{ sessionId, timestamp, event }`), with no `type` of its own.
+    if (payload.type !== undefined) return;
+    const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
+    const inner = isObjectRecord(payload.event) ? payload.event : null;
+    if (!sessionId || !inner) return;
+    if (inner.type === "done") {
+      forwardedUserMessages.delete(sessionId);
+      return;
+    }
+    if (inner.type !== "user_message" && inner.type !== "text") return;
+    const nowMs = Date.now();
+    const committedAtMs = typeof payload.timestamp === "string" ? Date.parse(payload.timestamp) : Number.NaN;
+    const commitToMainMs = Number.isFinite(committedAtMs) ? nowMs - committedAtMs : null;
+    if (inner.type === "user_message") {
+      if (!forwardedUserMessages.has(sessionId) && forwardedUserMessages.size >= 64) {
+        const oldest = forwardedUserMessages.keys().next().value;
+        if (oldest !== undefined) forwardedUserMessages.delete(oldest);
+      }
+      forwardedUserMessages.set(sessionId, { atMs: nowMs, commitToMainMs });
+      return;
+    }
+    const userMessage = forwardedUserMessages.get(sessionId);
+    if (!userMessage) return;
+    forwardedUserMessages.delete(sessionId);
+    getMachineMainLogger().info("chat.send_timing.main", {
+      sessionId,
+      userMessageForwardedAtMs: userMessage.atMs,
+      userMessageCommitToMainMs: userMessage.commitToMainMs,
+      firstTextForwardedAtMs: nowMs,
+      firstTextCommitToMainMs: commitToMainMs,
+    });
+  };
+
   const sendRuntimeEvent = (
     subscription: RuntimeEventWindowSubscription,
     event: RemoteRuntimeBufferedEvent,
@@ -1050,6 +1098,30 @@ export function registerRuntimeBridge({
       sender.send(IPC.runtimeEvent, payload);
     } catch {
       // Renderer may have gone away between the destroyed check and send.
+    }
+    noteChatEventForward(event);
+  };
+
+  /**
+   * Tell the window that a stream ended by itself (the runtime's connection
+   * closed), so its pump re-subscribes now. A local pump polls only as a
+   * keep-alive (its events come by push), so without this it would wait up to
+   * its slow keep-alive interval. A stream that ends less than 2 s after it
+   * started is not told: a runtime that keeps closing streams must not turn
+   * this into a subscribe loop, and the pump's own schedule re-subscribes.
+   */
+  const RUNTIME_EVENT_STREAM_ENDED_MIN_AGE_MS = 2_000;
+  const noticeRuntimeEventStreamEnded = (
+    sender: WebContents,
+    bindingKey: string,
+    subscribedAtMs: number,
+  ): void => {
+    if (Date.now() - subscribedAtMs < RUNTIME_EVENT_STREAM_ENDED_MIN_AGE_MS) return;
+    if (sender.isDestroyed()) return;
+    try {
+      sender.send(IPC.runtimeEventStreamEnded, { bindingKey });
+    } catch {
+      // The renderer went away between the check and the send.
     }
   };
 
@@ -1075,9 +1147,20 @@ export function registerRuntimeBridge({
       requestKey,
       cleanup: null,
     });
+    const subscribedAtMs = Date.now();
+    // Rare (a pump's first poll, or one after a release or a stream end), so
+    // the log shows when a window's push stream started and stopped.
+    getMachineMainLogger().info("runtime_events.subscribed", {
+      webContentsId: sender.id,
+      kind: runtimeEventBindingKind(bindingKey),
+      request: requestKey.slice(bindingKey.length + 1),
+    });
     const onEnded = () => {
-      removeRuntimeEventSubscription(sender.id, requestKey, subscription);
+      // False when the window already released it or it was replaced: then
+      // no pump waits on this stream.
+      const endedByItself = removeRuntimeEventSubscription(sender.id, requestKey, subscription);
       notePageRuntimeDisconnected(sender.id, fileWatchRuntimeKey);
+      if (endedByItself) noticeRuntimeEventStreamEnded(sender, bindingKey, subscribedAtMs);
     };
     let subscriptionInit: Partial<RuntimeEventSubscriptionInit> | null = null;
     try {
@@ -1729,6 +1812,23 @@ export function registerRuntimeBridge({
     },
   );
 
+  // Whether a chat's machine makes a new chat and sends its first message in
+  // one call (`chat.createSessionAndSend`). A main-process read of the brain's
+  // initialize answer; it reaches no brain.
+  handle(
+    IPC.agentChatCreateAndSendSupported,
+    (_event, arg: { targetId?: string | null }): boolean => {
+      const targetId = typeof arg?.targetId === "string" ? arg.targetId.trim() : "";
+      if (targetId) {
+        // A machine with no connection here (an asleep cloud computer the
+        // account must wake) takes the two calls, which wake it.
+        const target = savedOrGoneTarget(targetId);
+        return target ? remoteConnectionService.supportsChatCreateAndSend(target.id) : false;
+      }
+      return localRuntimeConnectionPool?.supportsChatCreateAndSend() ?? false;
+    },
+  );
+
   handle(
     IPC.remoteRuntimeAttachmentUploadCapability,
     async (
@@ -2266,6 +2366,14 @@ export function registerRuntimeBridge({
         event.sender.id,
         (subscription) => subscription.requestKey.startsWith(prefix),
       );
+      if (released > 0) {
+        getMachineMainLogger().info("runtime_events.released", {
+          webContentsId: event.sender.id,
+          kind: runtimeEventBindingKind(bindingKey),
+          category: prefix.slice(bindingKey.length + 1, -1),
+          released,
+        });
+      }
       return { released };
     },
   );

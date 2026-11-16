@@ -158,6 +158,10 @@ function parseAgentChatMessageFields(value: Record<string, unknown>): Omit<Agent
     ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
     ...(asTrimmedString(value.executionMode) ? { executionMode: asTrimmedString(value.executionMode)! as AgentChatSendArgs["executionMode"] } : {}),
     ...(asTrimmedString(value.interactionMode) ? { interactionMode: asTrimmedString(value.interactionMode)! as AgentChatSendArgs["interactionMode"] } : {}),
+    // Send timing only (`chatSendTiming.ts`): when the person pressed Enter.
+    ...(typeof value.clientSubmittedAtMs === "number" && Number.isFinite(value.clientSubmittedAtMs)
+      ? { clientSubmittedAtMs: value.clientSubmittedAtMs }
+      : {}),
   };
 }
 

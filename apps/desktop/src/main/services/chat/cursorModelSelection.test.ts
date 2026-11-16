@@ -43,6 +43,13 @@ import {
 
 beforeEach(() => {
   cursorModelsListMock.mockReset();
+  // Cursor's `GET /v1/models` at the fetch boundary. ADE asks it directly
+  // when the SDK is installed, so the SDK mock's list answers through here.
+  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init?: { headers?: Record<string, string> }) => {
+    const apiKey = init?.headers?.Authorization?.replace(/^Bearer /, "");
+    const items = await cursorModelsListMock({ apiKey });
+    return { ok: true, status: 200, json: async () => ({ items: items ?? [] }) };
+  }));
   clearCursorCliModelsCache();
   vi.useRealTimers();
 });

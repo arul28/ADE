@@ -79,7 +79,7 @@ describe("Work board status guidance", () => {
     // agent hunting for one.
     const guidance = buildAdeBootstrapGuidance([]);
     expect(guidance).not.toContain("moveOnBoard");
-    expect(guidance).toContain("You cannot settle or unsettle a session");
+    expect(guidance).toContain("You cannot settle a session");
   });
 });
 
@@ -124,7 +124,9 @@ describe("ADE session activity guidance", () => {
       "ADE_DEFAULT_ROLE='agent' ADE_CHAT_SESSION_ID='chat-1' ADE_RPC_URL='/Users/admin/.ade-beta/sock/ade.sock' ADE_RPC_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' ADE_RUNTIME_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' '/Applications/ADE Beta.app/bin/ade' chat activity debugging --session 'chat-1'",
     );
     expect(posixGuidance).toContain("chat activity clear --session 'chat-1'");
-    expect(posixGuidance).toContain("replace debugging with the real value");
+    // The example value is a placeholder the agent replaces: the line names the
+    // closed set it may choose from.
+    expect(posixGuidance).toContain(`values: ${SESSION_ACTIVITY_VALUES.join(", ")}`);
     expect(posixGuidance).not.toContain("$ADE_CLI_PATH");
     expect(powershellGuidance).toContain(
       "$env:ADE_DEFAULT_ROLE = 'agent'; $env:ADE_CHAT_SESSION_ID = 'chat-1'; $env:ADE_RPC_URL = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RPC_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RUNTIME_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; & 'C:\\Program Files\\ADE Beta\\ade.exe' chat activity debugging --session 'chat-1'",

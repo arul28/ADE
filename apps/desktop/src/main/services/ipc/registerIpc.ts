@@ -577,6 +577,8 @@ import type {
   AgentChatCancelDispatchedSteerResult,
   AgentChatUpdateSessionArgs,
   AgentChatSetScheduledWorkPausedArgs,
+  AgentChatPrewarmDraftArgs,
+  AgentChatPrewarmDraftResult,
   AgentChatSetScheduledWorkItemPausedArgs,
   AgentChatSetScheduledWorkItemPausedResult,
   AgentChatRunScheduledWorkNowArgs,
@@ -884,6 +886,7 @@ import {
 import type {
   AppResourceUsageAttributionSources,
   ProcessMetricRowsCollector,
+  ProcessMetricSample,
   ResourceAttributionRoot,
 } from "../pty/resourceUsageSampling";
 import {
@@ -957,6 +960,7 @@ import { registerMachineConnectIpc } from "../machines/registerMachineConnectIpc
 import type { MachineWakeResult } from "../machines/machineConnector";
 import { registerCloudLaneLaunchIpc } from "../adeCloud/registerCloudLaneLaunchIpc";
 import { getMachineMainLogger } from "../logging/machineLogger";
+import { startStartupLoopStallWatch, takeStartupLoopStalls } from "../logging/startupLoopStalls";
 import { registerCloudSavedChatsIpc } from "../cloudChats/registerCloudSavedChatsIpc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
@@ -1163,20 +1167,64 @@ import type {
 } from "../../../shared/types/diagnostics";
 import { buildPublicIssueUrl, osFamilyOf } from "../../../shared/publicIssueLink";
 import { listWebhookAutomations } from "../automations/webhookAutomationFactory";
+import { rendererCspHookCounts } from "../../rendererCsp";
 
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
-let appResourceUsageCache: {
+type AppResourceUsageMode = "fresh" | "calm-ok";
+const appResourceUsageCache = new Map<AppResourceUsageMode, {
   contexts: AppResourceUsageContext[];
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   sampledAtMs: number;
   snapshot: AppResourceUsageSnapshot;
-} | null = null;
-let appResourceUsageInFlight: {
+}>();
+const appResourceUsageInFlight = new Map<AppResourceUsageMode, {
   contexts: AppResourceUsageContext[];
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   promise: Promise<AppResourceUsageSnapshot>;
-} | null = null;
+}>();
 let appProcessMetricRowsCollector: ProcessMetricRowsCollector | null = null;
+
+/**
+ * The machine-wide `ps` behind a resource sample costs Electron main about
+ * 17 ms of CPU (a process spawn plus a parse of every process on the
+ * machine). The top bar's calm check runs every 10 s only to decide whether
+ * to show its pressure chip, so while the last sample's process trees were
+ * far below every pressure line (see `isCalmProcessSample`), a calm-ok caller
+ * reuses that `ps` for this long. Electron's own numbers and system memory
+ * are read fresh on every call; a fresh caller (Settings > Health) always
+ * gets a new `ps`.
+ */
+const CALM_PROCESS_SAMPLE_REUSE_MS = 30_000;
+let lastProcessSample: { sample: ProcessMetricSample; atMs: number; calm: boolean } | null = null;
+
+/**
+ * The process trees (the brain, terminals, agents: the part a reuse keeps)
+ * far below the top bar's first pressure level (30% CPU, 8% of RAM for the
+ * whole app). Electron's own share is read fresh on every call anyway.
+ */
+function isCalmProcessSample(snapshot: AppResourceUsageSnapshot): boolean {
+  if (snapshot.processSample?.status !== "ok") return false;
+  if ((snapshot.ptyCpuPercent ?? 0) >= 10 || (snapshot.cpuPercent ?? 0) >= 20) return false;
+  const total = snapshot.totalMemoryMB ?? 0;
+  if (total <= 0) return false;
+  return (snapshot.ptyMemoryMB ?? 0) / total < 0.03;
+}
+
+function processRowsCollectorFor(mode: AppResourceUsageMode): ProcessMetricRowsCollector {
+  const base = getAppProcessMetricRowsCollector();
+  return {
+    collect: async () => {
+      const kept = lastProcessSample;
+      if (mode === "calm-ok" && kept?.calm && Date.now() - kept.atMs < CALM_PROCESS_SAMPLE_REUSE_MS) {
+        return kept.sample;
+      }
+      const sample = await base.collect();
+      lastProcessSample = { sample, atMs: Date.now(), calm: false };
+      return sample;
+    },
+    dispose: () => base.dispose(),
+  };
+}
 
 /**
  * `runtimeActor` is stamped by the RPC server on an agent's or the CTO's call
@@ -1297,46 +1345,55 @@ function sameAppResourceUsageContexts(
 function getCachedAppResourceUsageSnapshot(
   contexts: AppResourceUsageContext[],
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null,
+  mode: AppResourceUsageMode = "calm-ok",
 ): Promise<AppResourceUsageSnapshot> {
   const now = Date.now();
+  const cached = appResourceUsageCache.get(mode);
   if (
-    appResourceUsageCache
-    && sameAppResourceUsageContexts(appResourceUsageCache.contexts, contexts)
-    && appResourceUsageCache.localRuntimeConnectionPool === localRuntimeConnectionPool
-    && now - appResourceUsageCache.sampledAtMs < APP_RESOURCE_USAGE_CACHE_MS
+    cached
+    && sameAppResourceUsageContexts(cached.contexts, contexts)
+    && cached.localRuntimeConnectionPool === localRuntimeConnectionPool
+    && now - cached.sampledAtMs < APP_RESOURCE_USAGE_CACHE_MS
   ) {
-    return Promise.resolve(appResourceUsageCache.snapshot);
+    return Promise.resolve(cached.snapshot);
   }
+  const inFlight = appResourceUsageInFlight.get(mode);
   if (
-    appResourceUsageInFlight
-    && sameAppResourceUsageContexts(appResourceUsageInFlight.contexts, contexts)
-    && appResourceUsageInFlight.localRuntimeConnectionPool === localRuntimeConnectionPool
+    inFlight
+    && sameAppResourceUsageContexts(inFlight.contexts, contexts)
+    && inFlight.localRuntimeConnectionPool === localRuntimeConnectionPool
   ) {
-    return appResourceUsageInFlight.promise;
+    return inFlight.promise;
   }
   const promise = computeAppResourceUsageSnapshot(
     {
       getElectronMetrics: () => app.getAppMetrics(),
       getSystemMemoryMB,
-      collector: getAppProcessMetricRowsCollector(),
+      collector: processRowsCollectorFor(mode),
     },
     collectAppResourceAttributionSources(contexts, localRuntimeConnectionPool),
   ).then((snapshot) => {
-    appResourceUsageCache = {
+    // Calm is judged on the snapshot the newest `ps` produced, never on one
+    // that reused it, so a reuse window cannot extend itself.
+    const kept = lastProcessSample;
+    if (kept && !kept.calm && snapshot.processSample?.sampledAt === kept.sample.sampledAt) {
+      kept.calm = isCalmProcessSample(snapshot);
+    }
+    appResourceUsageCache.set(mode, {
       contexts: [...contexts],
       localRuntimeConnectionPool,
       sampledAtMs: Date.now(),
       snapshot,
-    };
+    });
     return snapshot;
   }).finally(() => {
-    if (appResourceUsageInFlight?.promise === promise) appResourceUsageInFlight = null;
+    if (appResourceUsageInFlight.get(mode)?.promise === promise) appResourceUsageInFlight.delete(mode);
   });
-  appResourceUsageInFlight = {
+  appResourceUsageInFlight.set(mode, {
     contexts: [...contexts],
     localRuntimeConnectionPool,
     promise,
-  };
+  });
   return promise;
 }
 
@@ -3552,12 +3609,38 @@ export function registerIpc({
     return ctx.hasUserSelectedProject ? ctx.project : null;
   });
 
+  let windowSessionAnswered = false;
+  let windowSessionReadsBeforeAnswer = 0;
+  // Launch diagnostics for the first answer (see `startupLoopStalls.ts`).
+  startStartupLoopStallWatch();
   handle(IPC.appGetWindowSession, async (event) => {
+    const receivedMs = Math.round(process.uptime() * 1000);
+    const receivedAtEpochMs = Date.now();
+    if (!windowSessionAnswered) windowSessionReadsBeforeAnswer += 1;
     // The first window can load before the launch has opened its project.
     await waitForStartupProjectOpen?.();
     // The window can close while the launch is still opening its project.
     if (event.sender.isDestroyed()) return null;
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+    if (!windowSessionAnswered) {
+      // Launch report: when main got the first request and answered it
+      // (process uptime, and wall clock to line up with the renderer's
+      // `ade:boot:*` marks), how long it waited for the launch's project
+      // open, and the times main's loop was blocked until then.
+      windowSessionAnswered = true;
+      const answeredMs = Math.round(process.uptime() * 1000);
+      getCtx().logger.info("startup.window_session_first", {
+        receivedAtEpochMs,
+        receivedMs,
+        startupOpenWaitMs: answeredMs - receivedMs,
+        answeredMs,
+        answeredAtEpochMs: Date.now(),
+        readsBeforeAnswer: windowSessionReadsBeforeAnswer,
+        mainLoopStalls: takeStartupLoopStalls(),
+        cspHookCalls: rendererCspHookCounts.calls,
+        cspHookApplied: rendererCspHookCounts.applied,
+      });
+    }
     if (getWindowSession) return getWindowSession(windowId);
     const ctx = getCtx();
     return {
@@ -4194,12 +4277,13 @@ export function registerIpc({
     },
   );
 
-  handle(IPC.appGetResourceUsage, async (): Promise<AppResourceUsageSnapshot> => {
+  handle(IPC.appGetResourceUsage, async (_event, arg?: { fresh?: boolean } | null): Promise<AppResourceUsageSnapshot> => {
     const ctx = getCtx();
     const contexts = getResourceUsageContexts?.() ?? [ctx];
     return getCachedAppResourceUsageSnapshot(
       contexts.length > 0 ? contexts : [ctx],
       localRuntimeConnectionPool,
+      arg?.fresh === true ? "fresh" : "calm-ok",
     );
   });
 
@@ -9990,6 +10074,11 @@ export function registerIpc({
   handle(IPC.agentChatWarmupModel, async (_event, arg: { sessionId: string; modelId: string }): Promise<void> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.warmupModel(arg);
+  });
+
+  handle(IPC.agentChatPrewarmDraft, async (_event, arg: AgentChatPrewarmDraftArgs): Promise<AgentChatPrewarmDraftResult> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.prewarmDraft(withoutRendererRuntimeActor(arg));
   });
 
   handle(IPC.agentChatSlashCommands, async (_event, arg: AgentChatSlashCommandsArgs): Promise<AgentChatSlashCommand[]> => {

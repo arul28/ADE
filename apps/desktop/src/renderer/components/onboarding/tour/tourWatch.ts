@@ -27,10 +27,23 @@ const WATCHED_ATTRIBUTES = [
   "data-state",
 ];
 
-function isOverlayMutation(record: MutationRecord): boolean {
-  const target = record.target instanceof Element ? record.target : record.target.parentElement;
-  return target?.closest("[data-onboarding-hint-layer]") != null;
+function mutationTarget(record: MutationRecord): Element | null {
+  return record.target instanceof Element ? record.target : record.target.parentElement;
 }
+
+function isOverlayMutation(record: MutationRecord): boolean {
+  return mutationTarget(record)?.closest("[data-onboarding-hint-layer]") != null;
+}
+
+/**
+ * Where a streaming reply or a terminal changes the DOM many times a second.
+ * The tour's and the hints' anchors are never inside these, so a watcher that
+ * looks only for those anchors passes `ignoreWithin` with this selector: DOM
+ * changes and scrolls inside it do not wake the check. A message list or
+ * terminal that mounts or unmounts still wakes it: that change's target is
+ * the parent, outside the selector.
+ */
+export const TOUR_WATCH_IGNORE_STREAMING_CONTENT = "[data-chat-message-list-root], .xterm";
 
 export type TourWatch = {
   /** Runs `check` after `delayMs` (or the next coalesced slot), unless a run is already due sooner. */
@@ -38,8 +51,16 @@ export type TourWatch = {
   dispose: () => void;
 };
 
-export function watchTourDom(check: () => void, options: { minIntervalMs: number; settleMs?: number }): TourWatch {
+export function watchTourDom(
+  check: () => void,
+  options: { minIntervalMs: number; settleMs?: number; ignoreWithin?: string },
+): TourWatch {
   const settleMs = options.settleMs ?? 90;
+  const ignoreWithin = options.ignoreWithin ?? null;
+  const isIgnoredMutation = (record: MutationRecord): boolean => {
+    if (isOverlayMutation(record)) return true;
+    return ignoreWithin != null && mutationTarget(record)?.closest(ignoreWithin) != null;
+  };
   let timer: number | null = null;
   let frame = 0;
   let dueAt = Infinity;
@@ -70,9 +91,16 @@ export function watchTourDom(check: () => void, options: { minIntervalMs: number
   };
 
   const wake = () => scheduleCheck();
-  // The overlays' own changes (a card mounting) are not news.
+  // A streaming reply scrolls its own list on each chunk; that moves nothing
+  // outside the list, so it is not news either.
+  const onScroll = (event: Event) => {
+    if (ignoreWithin != null && event.target instanceof Element && event.target.closest(ignoreWithin) != null) return;
+    scheduleCheck();
+  };
+  // The overlays' own changes (a card mounting) are not news, and neither is
+  // streamed text in a place the caller said holds none of its anchors.
   const observer = new MutationObserver((records) => {
-    if (records.every(isOverlayMutation)) return;
+    if (records.every(isIgnoredMutation)) return;
     scheduleCheck();
   });
   // The whole document, not just <body>: a theme or layout class on <html>
@@ -87,7 +115,7 @@ export function watchTourDom(check: () => void, options: { minIntervalMs: number
     if (!document.hidden) scheduleCheck(0);
   };
   window.addEventListener("resize", wake, { passive: true });
-  window.addEventListener("scroll", wake, { capture: true, passive: true });
+  window.addEventListener("scroll", onScroll, { capture: true, passive: true });
   document.addEventListener("click", wake, true);
   document.addEventListener("keyup", wake, true);
   document.addEventListener("visibilitychange", onVisibility);
@@ -101,7 +129,7 @@ export function watchTourDom(check: () => void, options: { minIntervalMs: number
       if (frame) window.cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("resize", wake);
-      window.removeEventListener("scroll", wake, { capture: true });
+      window.removeEventListener("scroll", onScroll, { capture: true });
       document.removeEventListener("click", wake, true);
       document.removeEventListener("keyup", wake, true);
       document.removeEventListener("visibilitychange", onVisibility);

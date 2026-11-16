@@ -186,7 +186,6 @@ import {
 } from "./services/sessions/sessionService";
 import { createLateBoundSettle, createSettleWiring } from "./services/sessions/settleWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
-import { createPtyService } from "./services/pty/ptyService";
 import { terminalShellPreferenceStoreFor } from "./services/pty/terminalShells";
 import { createSupervisedPtyLoader } from "./services/pty/supervisedPtyHost";
 import {
@@ -206,7 +205,6 @@ import { createProcessRegistryService } from "./services/runtime/processRegistry
 import { createDiffService } from "./services/diffs/diffService";
 import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
-import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createDiskPressureMonitor } from "./services/storage/diskPressure";
 import { createStorageInsightsService } from "./services/storage/storageInsightsService";
 import {
@@ -246,7 +244,6 @@ import {
   setPathEnvValue,
   SHELL_PATH_CACHE_FILE,
 } from "./services/ai/cliExecutableResolver";
-import { createAgentChatService, listMachineProviderAccountChatLoad, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
 import { disposeAllCursorSdkConnections } from "./services/chat/cursorSdkPool";
 import { recoverCursorSdkWorkerOrphans } from "./services/chat/cursorSdkWorkerOrphans";
 import { createChatRuntimeBudget } from "./services/chat/chatRuntimeBudget";
@@ -358,12 +355,13 @@ import type {
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
 import net from "node:net";
-import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
-import {
-  createEventBuffer,
-  type AdeRuntime,
-  type AdeRuntimePaths,
-} from "../../../ade-cli/src/bootstrap";
+// The buffer's own module: the brain's bootstrap brings its whole service
+// graph (the chat service and the Claude Agent SDK with it). Its first import
+// marks a packaged bundle as packaged, which `shared/accountDirectory` reads,
+// so main keeps that import, at the same point in the order.
+import "../../../ade-cli/src/lib/packagedRuntimeFlag";
+import { createEventBuffer } from "../../../ade-cli/src/eventBuffer";
+import type { AdeRuntime, AdeRuntimePaths } from "../../../ade-cli/src/bootstrap";
 import {
   startJsonRpcServer,
   type JsonRpcServerErrorContext,
@@ -379,6 +377,7 @@ import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/loc
 import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
 import {
   shippedVersionOrNull,
+  APP_VERSION_ARGV_PREFIX,
   UPDATE_TRACK_ARGV_PREFIX,
   updateTrackOfVersion,
   type UpdateTrack,
@@ -475,6 +474,7 @@ import { stampCustomNotificationLinkOwner } from "../shared/customNotificationLi
 import {
   buildRendererCspPolicy,
   isRendererFrameNavigationAllowed,
+  rendererCspHookCounts,
   shouldApplyRendererCsp,
 } from "./rendererCsp";
 import { trustedAccountRelayBaseUrls } from "../shared/accountDirectory";
@@ -524,7 +524,7 @@ import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBr
 import { BUILT_IN_BROWSER_DISK_CACHE_BYTES, BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
-import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
+import { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
@@ -573,6 +573,37 @@ import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
 import { createWebhookRemoteSource } from "./services/automations/webhookAutomationFactory";
+
+/**
+ * Whether this build carries the in-process project runtime: the whole
+ * service graph that tests and the `ADE_ENABLE_DESKTOP_SYNC_HOST` diagnostics
+ * host run inside main. Every other main hands projects to the brain. A
+ * packaged or release build sets it false (`tsup.config.ts`), and the bundler
+ * drops that graph, about 7 MB of the bundle and its module objects. Tests and
+ * the dev build keep it (undefined counts as true).
+ *
+ * Each use writes out `(typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean"
+ * || __ADE_IN_PROCESS_PROJECT_RUNTIME__)`: with `keepNames` the bundler folds
+ * the expression where it stands, but it does not inline a const built from
+ * it, and then nothing is dropped.
+ */
+declare const __ADE_IN_PROCESS_PROJECT_RUNTIME__: boolean | undefined;
+
+/**
+ * Milliseconds since the process started, at each step to the first window:
+ * all of main's modules evaluated, Electron ready, the window created, its
+ * page loaded. Logged once as `startup.main_boot`, so a slow launch shows
+ * which step took the time. Reading the clock costs nothing.
+ */
+const mainBootMarks: Record<string, number> = {
+  // `entryMs` and `mainRequireMs` come from electron.cjs: Electron's own start
+  // ends at the first, and this bundle's load and evaluation start at the second.
+  ...((globalThis as { __adeBootMarks?: Record<string, number> }).__adeBootMarks ?? {}),
+  modulesEvaluatedMs: Math.round(process.uptime() * 1000),
+};
+const markMainBoot = (name: string): void => {
+  mainBootMarks[name] ??= Math.round(process.uptime() * 1000);
+};
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
@@ -1148,11 +1179,14 @@ async function createWindow(args: {
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
         // Same reason: the "Beta" label next to the logo is drawn at first paint.
         `${UPDATE_TRACK_ARGV_PREFIX}${updateTrackOfVersion(app.getVersion())}`,
+        // The boot splash plays its full reveal once per version, decided at first paint.
+        `${APP_VERSION_ARGV_PREFIX}${app.getVersion()}`,
         ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },
   });
 
+  markMainBoot("firstBrowserWindowMs");
   if (restoredBounds && restoreState?.maximized && !restoreState.fullScreen && !args.hidden) win.maximize();
   if (args.onWindowStateChange) trackMainWindowState(win, args.onWindowStateChange);
   args.onCreated?.(win);
@@ -1168,6 +1202,8 @@ async function createWindow(args: {
     }
     delete webPreferences.preload;
     delete (webPreferences as Record<string, unknown>).preloadURL;
+    // Opens the shared profile with its passkey picker; it is not open at start.
+    openBuiltInBrowserSession();
     webPreferences.partition = BUILT_IN_BROWSER_PARTITION;
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;
@@ -1212,7 +1248,10 @@ async function createWindow(args: {
     ).map((base) => new URL(base).origin),
   });
 
+  // No URL filter: a filter's patterns do not match the app's own page
+  // scheme, so a filtered hook never sets the policy on the app document.
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    rendererCspHookCounts.calls += 1;
     if (
       !shouldApplyRendererCsp(details, {
         isDevMode,
@@ -1223,6 +1262,7 @@ async function createWindow(args: {
       return;
     }
 
+    rendererCspHookCounts.applied += 1;
     callback({
       responseHeaders: {
         ...details.responseHeaders,
@@ -1570,6 +1610,7 @@ async function createWindow(args: {
     url: rendererUrl,
   });
 
+  markMainBoot("firstLoadUrlMs");
   try {
     await win.loadURL(rendererUrl);
   } catch (error) {
@@ -1814,6 +1855,7 @@ if (process.platform !== "darwin") {
 const museQuota = createMuseQuotaStore();
 
 app.whenReady().then(async () => {
+  markMainBoot("appReadyMs");
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
   const perfRun = initPerfRunFromEnv();
   if (perfRun) {
@@ -1826,6 +1868,30 @@ app.whenReady().then(async () => {
   })) {
     return;
   }
+  markMainBoot("launchGateMs");
+  /**
+   * Launch work the first window does not need: sweeps and cleanups that
+   * spawn processes or scan folders. They run a short while after the first
+   * window has loaded its page, once the renderer has booted and restored its
+   * tabs. Run beside the renderer's start, their process listings and the
+   * parsing of them delayed main's answers to the window's first requests.
+   * Nothing in the window or in a project open waits on any of them.
+   */
+  const afterFirstLoadStarts: Array<{ name: string; run: () => void }> = [];
+  /** After the first page load; the renderer shows its prompt box well inside this. */
+  const DEFERRED_LAUNCH_JOBS_DELAY_MS = 2_000;
+  const runAfterFirstLoadStarts = (): void => {
+    for (const job of afterFirstLoadStarts.splice(0)) {
+      try {
+        job.run();
+      } catch (error) {
+        logMachineEvent("warn", "startup.deferred_job_failed", {
+          job: job.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
   // A standalone brain (`ade brain update`) has no app resources: this record
   // is how it finds this app, its version and its signed native helpers, and
   // how a brain restart report finds this app's logs.
@@ -2153,6 +2219,7 @@ app.whenReady().then(async () => {
     normalizeProjectPath,
   });
   const shouldOpenStartupProject = startupProject.rootPath != null;
+  markMainBoot("startupStateMs");
 
   const broadcast = (channel: string, payload: unknown) => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -2722,6 +2789,7 @@ app.whenReady().then(async () => {
   // it held per folder; a report about an unknown project id also gets the
   // machine's project list and its journal (`shared/sentry/diagnostics.ts`).
   registerSentryDiagnosticContext("brain_connection", () => localRuntimePool.diagnosticSnapshot());
+  markMainBoot("runtimePoolMs");
   // A failure on another machine's brain is about that machine's list.
   const attachProjectRegistry = projectRegistryDiagnosticAttachment(new ProjectRegistry(machineAdeLayout).diagnosticPaths());
   registerSentryDiagnosticAttachment("project-registry", (event) => (isRemoteMachineEvent(event) ? null : attachProjectRegistry(event)));
@@ -2830,7 +2898,7 @@ app.whenReady().then(async () => {
     ipcWindowScope.getStore() ?? null;
 
   const shouldUseInProcessProjectRuntime = (): boolean =>
-    process.env.NODE_ENV === "test";
+    (typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean" || __ADE_IN_PROCESS_PROJECT_RUNTIME__) && process.env.NODE_ENV === "test";
 
   /**
    * The chat title and lane name for the browser agent-access prompt, read
@@ -3046,9 +3114,16 @@ app.whenReady().then(async () => {
     return null;
   };
 
-  const isDesktopSyncHostEnabled = (): boolean =>
-    process.env.ADE_ENABLE_DESKTOP_SYNC_HOST === "1"
-    && process.env.ADE_DISABLE_SYNC_HOST !== "1";
+  let warnedDesktopSyncHostNotBuilt = false;
+  const isDesktopSyncHostEnabled = (): boolean => {
+    if (process.env.ADE_ENABLE_DESKTOP_SYNC_HOST !== "1" || process.env.ADE_DISABLE_SYNC_HOST === "1") return false;
+    if (typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean" || __ADE_IN_PROCESS_PROJECT_RUNTIME__) return true;
+    if (!warnedDesktopSyncHostNotBuilt) {
+      warnedDesktopSyncHostNotBuilt = true;
+      console.warn("[main] ADE_ENABLE_DESKTOP_SYNC_HOST is set, but this build has no in-process sync host; use a dev build. The brain hosts sync.");
+    }
+    return false;
+  };
 
   const getMobileSyncHostRoot = (): string | null =>
     isDesktopSyncHostEnabled()
@@ -3552,9 +3627,14 @@ app.whenReady().then(async () => {
   const updateLogger = createFileLogger(
     path.join(app.getPath("userData"), "ade-update.jsonl"),
   );
-  cleanupStaleTempArtifacts({
-    tempRoot: app.getPath("temp"),
-    logger: updateLogger,
+  // A scan of the whole user temp folder; it removes only entries a day or a
+  // week old, so nothing this launch creates is at stake.
+  afterFirstLoadStarts.push({
+    name: "temp_cleanup",
+    run: () => cleanupStaleTempArtifacts({
+      tempRoot: app.getPath("temp"),
+      logger: updateLogger,
+    }),
   });
   let runtimeServiceUninstalledForUpdate = false;
   let autoUpdateInstallRollbackReason: string | null = null;
@@ -3755,6 +3835,7 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  markMainBoot("updateServiceMs");
   startupRecovery = createDesktopStartupRecovery({
     logger: getMachineMainLogger(),
     runningVersion: app.getVersion(),
@@ -3855,9 +3936,16 @@ app.whenReady().then(async () => {
     // Tools this machine shows no sign of using download when something needs them.
     enablePinnedToolFetch(updateLogger, { downloadOnly: !app.isPackaged });
     if (app.isPackaged) {
-      void agentToolsCacheService.ensureMissing().catch(() => {
-        // Per-tool failures are already recorded on the snapshot and in the log;
-        // a rejected kick must never take down app startup.
+      // Coalesced with any later request, so a renderer retry before this
+      // runs starts the same fetch.
+      afterFirstLoadStarts.push({
+        name: "agent_tools_ensure_missing",
+        run: () => {
+          void agentToolsCacheService.ensureMissing().catch(() => {
+            // Per-tool failures are already recorded on the snapshot and in the log;
+            // a rejected kick must never take down app startup.
+          });
+        },
       });
     }
   }
@@ -4192,7 +4280,13 @@ app.whenReady().then(async () => {
       });
   }
 
-  const initContextForProjectRoot = async ({
+  // Only the in-process runtime reaches this (see __ADE_IN_PROCESS_PROJECT_RUNTIME__);
+  // a build without it keeps a stub, and its service graph is not bundled.
+  const initContextForProjectRoot = !(typeof __ADE_IN_PROCESS_PROJECT_RUNTIME__ !== "boolean" || __ADE_IN_PROCESS_PROJECT_RUNTIME__)
+    ? async (_args: { projectRoot: string }): Promise<AppContext> => {
+      throw new Error("This build has no in-process project runtime; the brain opens projects.");
+    }
+    : async ({
     projectRoot,
     baseRef,
     ensureExclude,
@@ -4209,6 +4303,21 @@ app.whenReady().then(async () => {
     preserveRecentOrder?: boolean;
     userSelectedProject?: boolean;
   }): Promise<AppContext> => {
+    // Loaded here, not at the top: only an in-process project runtime (tests,
+    // the opt-in desktop sync host) reaches this, and the chat service brings
+    // the Claude Agent SDK with it, which main otherwise never loads.
+    const {
+      createAgentChatService,
+      listMachineProviderAccountChatLoad,
+      writeSessionLinearIssueContextFile,
+    } = await import("./services/chat/agentChatService");
+    // The same for these: each module starts work at load (headless xterm,
+    // zod's locales, the RPC server's tables) that only this runtime uses.
+    const [{ createPtyService }, { createProjectConfigService }, { createAdeRpcRequestHandler }] = await Promise.all([
+      import("./services/pty/ptyService"),
+      import("./services/config/projectConfigService"),
+      import("../../../ade-cli/src/adeRpcServer"),
+    ]);
     // The .ade directory may exist from git (shared scaffold files like ade.yaml),
     // but the db is gitignored and machine-local. A missing db, or a scaffold
     // first-open marker, means this machine has not finished a real bind yet.
@@ -8823,7 +8932,9 @@ app.whenReady().then(async () => {
     replaceDormantContext(previousRoot);
   };
 
+  markMainBoot("dormantContextStartMs");
   replaceDormantContext();
+  markMainBoot("dormantContextMs");
   configureBuiltInBrowserWebAuthn({
     getLogger: () => getActiveContext().logger,
   });
@@ -9826,29 +9937,37 @@ app.whenReady().then(async () => {
     recordMainExit(shutdownReason ?? (installQuit ? "update_install" : "will_quit"), null);
   });
 
-  try {
-    const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServer");
-    void recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger }).catch((error: unknown) => {
-      getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
-        error: error instanceof Error ? error.message : String(error),
+  // Orphan sweeps: each one lists processes (`ps`). They touch only processes
+  // whose owner is gone, and a Cursor or OpenCode start in between protects
+  // its own (the Cursor sweep is shared, OpenCode skips active ports).
+  afterFirstLoadStarts.push({
+    name: "orphan_sweeps",
+    run: () => {
+      try {
+        const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServer");
+        void recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger }).catch((error: unknown) => {
+          getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      } catch (error) {
+        getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      // Cursor SDK workers a dead brain or a crashed main left behind. Only
+      // workers whose owner is dead are touched.
+      void recoverCursorSdkWorkerOrphans({ logger: getActiveContext().logger }).catch((error: unknown) => {
+        getActiveContext().logger.warn("agent_chat.cursor_sdk_worker_orphan_sweep_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
-  } catch (error) {
-    getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  // Cursor SDK workers a dead brain or a crashed main left behind. Only
-  // workers whose owner is dead are touched.
-  void recoverCursorSdkWorkerOrphans({ logger: getActiveContext().logger }).catch((error: unknown) => {
-    getActiveContext().logger.warn("agent_chat.cursor_sdk_worker_orphan_sweep_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  });
-  void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
-    getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
+      void recoverOrphanedAdeAgentProcesses({ logger: getActiveContext().logger }).catch((error: unknown) => {
+        getActiveContext().logger.warn("agent_process_orphan_recovery_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    },
   });
   autoUpdateService.onStateChange((snapshot) => {
     BrowserWindow.getAllWindows().forEach((win) => {
@@ -10955,6 +11074,7 @@ app.whenReady().then(async () => {
     void migrateLegacyKeepAwakePreference();
   }
 
+  markMainBoot("registerIpcStartMs");
   ipcBridge = registerIpc({
     getCtx: () => {
       const ctx = getActiveContext();
@@ -11076,6 +11196,7 @@ app.whenReady().then(async () => {
     getCurrentAccountOwnerId: () => readAccountOwnerId(),
   });
   remoteArtifactRangeReader = ipcBridge.readRemoteArtifactRange;
+  markMainBoot("registerIpcMs");
 
   // Explicit project launches still bind a project before the renderer boots;
   // normal launches stay on the welcome/recent-project surface.
@@ -11083,6 +11204,7 @@ app.whenReady().then(async () => {
   registerPerfIpcHandlers();
 
   await projectMoveRecovery;
+  markMainBoot("moveRecoveryMs");
   const savedUpdateState = readGlobalState(globalStatePath);
   // A hidden quit-install launch opens no project: it closes once the service
   // is on the new build. The saved workspace stays for the next launch the
@@ -11210,7 +11332,8 @@ app.whenReady().then(async () => {
   // opens no local project; `bindLaunchWindow` corrects it afterwards.
   const initialRemoteProjectBinding =
     shouldOpenStartupProject || restoresUpdateWorkspace ? null : savedRemoteProjectBinding;
-  const initialWindow = await createWindow({
+  markMainBoot("firstWindowCreateMs");
+  const initialWindowLoad = createWindow({
     logger: getActiveContext().logger,
     restoreState: readSavedMainWindowState(),
     onWindowStateChange: saveMainWindowState,
@@ -11225,6 +11348,21 @@ app.whenReady().then(async () => {
     onCloseRequested: handleMainWindowCloseRequested,
     hidden: quitInstallLaunch,
   });
+  // Node loads its `fetch` code on the first call: about 10 ms of main thread.
+  // The first call came from the window's own launch reads (ADE Cloud access,
+  // analytics), inside its wait for its session. Make that first call now, a
+  // `data:` read with no network, while main only waits for the page to load.
+  setImmediate(() => {
+    void fetch("data:,").catch(() => {});
+  });
+  const initialWindow = await initialWindowLoad;
+  markMainBoot("firstPageLoadedMs");
+  getMachineMainLogger().info("startup.main_boot", { ...mainBootMarks });
+  setTimeout(() => {
+    const startedAt = Date.now();
+    runAfterFirstLoadStarts();
+    getMachineMainLogger().info("startup.deferred_jobs", { ms: Date.now() - startedAt });
+  }, DEFERRED_LAUNCH_JOBS_DELAY_MS);
   if (quitInstallLaunch) {
     // Shown by anything (the person reopening ADE, a deep link, a notification),
     // a hidden quit-install launch stays open as an ordinary one.

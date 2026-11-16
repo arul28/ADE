@@ -25,6 +25,18 @@
   animation-delay: -750ms !important;
 }
 
+/* lib/caretRest.ts: after 10 s with no input, carets stay drawn but stop
+   blinking. A blinking caret repaints every 500 ms and keeps the display link
+   awake, so an idle focused prompt box woke the app about 60 times a second.
+   xterm's hidden input never shows its caret, so it never blinks. */
+html.caret-resting,
+html.caret-resting * {
+  caret-animation: manual;
+}
+.xterm .xterm-helper-textarea {
+  caret-animation: manual;
+}
+
 /* The app's text selection color. Chromium inherits ::selection from the
    parent's ::selection, so one rule on the app root colors every descendant,
    and a nested `selection:` class still wins for its own subtree. Tailwind's
@@ -3041,10 +3053,14 @@ button, [role="button"] {
    Per-Tab Ambient Background System
    ═══════════════════════════════════════════════════════════ */
 
+/* No `will-change`: a window-sized layer under every page cost its own tiles,
+   and every box painted over it then became a layer of its own too (overlap),
+   about 28 MB of tile memory in the renderer and as much again in the GPU
+   process. The tab-switch fade still runs on the compositor: an opacity
+   animation gets its own layer while it runs. */
 .ade-tab-bg {
   opacity: 1;
   contain: strict;
-  will-change: opacity;
 }
 
 [data-theme="dark"] .ade-tab-bg,

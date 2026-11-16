@@ -3451,6 +3451,69 @@ export function createProjectConfigService({
     return account === null ? hashContent(raw) : hashContent(`${raw}\n# account settings: ${account}`);
   };
 
+  /**
+   * What the account added to the last snapshot: the account's values over
+   * the file, the account's rules, the hash and the notices. Building it read
+   * the account settings store a few dozen times (each read checks the
+   * signed-in account), and about ten timers per project ask for a snapshot
+   * each minute (automation pollers, the PR poll, storage cleanup, the settle
+   * nudge, the AI status); this was most of the brain's idle config cost.
+   * It is kept while the file and every account input are unchanged (the
+   * layer's and the rule store's `revision`), so a change on another computer
+   * or a write here shows on the next read. Validation and `stampRunsHere`
+   * still run on every read. The age limit re-reads what no revision covers:
+   * an account value judged alone against the disk (a path that appears),
+   * which the layer itself re-judges every 5 s.
+   */
+  const ACCOUNT_PARTS_MAX_AGE_MS = 30_000;
+  type AccountParts = {
+    config: ProjectConfigFile;
+    notes: typeof automationNotes;
+    localHash: string;
+    notices: NonNullable<ProjectConfigSnapshot["accountNotices"]>;
+  };
+  // `file` is the `cachedLocalFile` object it was built from: a re-read is a
+  // new object, also when a same-size write kept the file's stat identity.
+  let keptAccountParts: (AccountParts & { key: string; file: object; atMs: number }) | null = null;
+
+  /** Null when an input cannot say whether it changed: nothing is kept then. */
+  const accountPartsKey = (fileKey: string): string | null => {
+    const layer = accountLayer ? accountLayer.revision() : "-";
+    const rules = automationRuleSync ? automationRuleSync.revision() : "-";
+    if (layer === null || rules === null) return null;
+    return `${fileKey}#${layer}#${rules}`;
+  };
+
+  const buildAccountParts = (file: { config: ProjectConfigFile; raw: string }): AccountParts => {
+    const fileConfig = structuredClone(file.config);
+    // The layer compares paths as the file means them (project-relative).
+    const layerFile = accountLayer ? normalizeConfigFilePaths(fileConfig, projectRoot) : null;
+    const config = withAccountRules(accountLayer && layerFile ? accountLayer.overlay(layerFile) : fileConfig);
+    return {
+      config,
+      notes: automationNotes,
+      localHash: localHashOf(file.raw),
+      notices: accountLayer && layerFile ? accountLayer.notices(layerFile) : [],
+    };
+  };
+
+  const readAccountParts = (fileKey: string, file: { config: ProjectConfigFile; raw: string }): AccountParts => {
+    if (!accountLayer && !automationRuleSync) return buildAccountParts(file);
+    const key = accountPartsKey(fileKey);
+    const nowMs = Date.now();
+    const kept = keptAccountParts;
+    if (key !== null && kept && kept.key === key && kept.file === file && nowMs - kept.atMs < ACCOUNT_PARTS_MAX_AGE_MS) {
+      automationNotes = kept.notes;
+      // Copies: the snapshot owns what it is built from, and callers may edit it.
+      return { config: structuredClone(kept.config), notes: kept.notes, localHash: kept.localHash, notices: structuredClone(kept.notices) };
+    }
+    const parts = buildAccountParts(file);
+    keptAccountParts = key === null
+      ? null
+      : { ...parts, config: structuredClone(parts.config), notices: structuredClone(parts.notices), key, file, atMs: nowMs };
+    return parts;
+  };
+
   const readSnapshotFromDisk = (): ProjectConfigSnapshot => {
     // Keyed by the identity seen before the read: a write racing the read
     // changes the files again, so the next call misses and reads afresh.
@@ -3461,19 +3524,16 @@ export function createProjectConfigService({
       const localFile = readConfigFile(localPath);
       cachedLocalFile = { key, config: localFile.config, raw: localFile.raw };
     }
-    const fileConfig = structuredClone(cachedLocalFile.config);
-    // The layer compares paths as the file means them (project-relative).
-    const layerFile = accountLayer ? normalizeConfigFilePaths(fileConfig, projectRoot) : null;
+    const parts = readAccountParts(key, cachedLocalFile);
     const snapshot = buildSnapshotFromFiles(
       emptySharedConfig(),
-      withAccountRules(accountLayer && layerFile ? accountLayer.overlay(layerFile) : fileConfig),
-      { sharedHash: hashContent(""), localHash: localHashOf(cachedLocalFile.raw) },
+      parts.config,
+      { sharedHash: hashContent(""), localHash: parts.localHash },
       { persistSnapshots: persistedKey !== key },
     );
     if (snapshot.validation.ok) persistedKey = key;
     stampRunsHere(snapshot);
-    const notices = accountLayer && layerFile ? accountLayer.notices(layerFile) : [];
-    if (notices.length > 0) snapshot.accountNotices = notices;
+    if (parts.notices.length > 0) snapshot.accountNotices = parts.notices;
     return snapshot;
   };
 
@@ -3682,6 +3742,7 @@ export function createProjectConfigService({
       accountLayer = args
         ? createProjectConfigAccountLayer({ ...args, rules: { coerceFile: coerceConfigFile, validAlone: configValidAlone }, logger })
         : null;
+      keptAccountParts = null;
     },
 
     /**
@@ -3736,6 +3797,7 @@ export function createProjectConfigService({
         : null;
       automationNotes = new Map();
       cachedLocalFile = null;
+      keptAccountParts = null;
     },
 
     /** Changes when the account's rules for this repository do; null without a store or remote. */

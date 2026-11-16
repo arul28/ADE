@@ -10,9 +10,26 @@ import { AdeExpectedError } from "../../../shared/expectedError";
  */
 export function isTrustedAdeRendererUrl(rawUrl: string | null | undefined): boolean {
   if (!rawUrl) return false;
+  // Every trusted IPC call asks this, with the same few frame URLs. The answer
+  // depends only on the URL, the dev server setting and `app.isPackaged`, so
+  // it is kept per URL and dev server setting.
+  const devServerUrl = process.env.VITE_DEV_SERVER_URL ?? "";
+  const key = `${devServerUrl}\u0000${rawUrl}`;
+  const known = trustedUrlVerdicts.get(key);
+  if (known !== undefined) return known;
+  const verdict = classifyRendererUrl(rawUrl, devServerUrl);
+  // Frame URLs carry the route in the hash, so the set can grow; start over past the cap.
+  if (trustedUrlVerdicts.size >= TRUSTED_URL_VERDICT_LIMIT) trustedUrlVerdicts.clear();
+  trustedUrlVerdicts.set(key, verdict);
+  return verdict;
+}
+
+const TRUSTED_URL_VERDICT_LIMIT = 64;
+const trustedUrlVerdicts = new Map<string, boolean>();
+
+function classifyRendererUrl(rawUrl: string, devServerUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
-    const devServerUrl = process.env.VITE_DEV_SERVER_URL;
     if (devServerUrl) return url.origin === new URL(devServerUrl).origin;
     if (!app.isPackaged && url.origin === "http://localhost:5173") return true;
     return url.protocol === "file:" && /\/renderer\/index\.html$/.test(decodeURIComponent(url.pathname));

@@ -6,8 +6,16 @@ import path from "node:path";
 
 const spawnMock = vi.fn();
 const getAllApiKeysMock = vi.fn();
-const cursorMeMock = vi.fn();
-const cursorModelsListMock = vi.fn();
+/** Cursor's REST API at the fetch boundary: `/v1/me` and `/v1/models`. */
+function stubCursorApi(models: Response) {
+  const fetchMock = vi.fn(async (url: string | URL) => {
+    if (String(url).endsWith("/v1/me")) return new Response(JSON.stringify({ userEmail: "user@example.test" }), { status: 200 });
+    if (String(url).endsWith("/v1/models")) return models;
+    return new Response("not found", { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
 const reportProviderRuntimeAuthFailureMock = vi.fn();
 const reportProviderRuntimeFailureMock = vi.fn();
 const reportProviderRuntimeReadyMock = vi.fn();
@@ -77,17 +85,6 @@ vi.mock("./apiKeyStore", () => ({
   getAllApiKeys: () => getAllApiKeysMock(),
 }));
 
-vi.mock("./cursorSdkLoader", () => ({
-  loadCursorSdk: async () => ({
-    Cursor: {
-      me: (...args: unknown[]) => cursorMeMock(...args),
-      models: {
-        list: (...args: unknown[]) => cursorModelsListMock(...args),
-      },
-    },
-  }),
-}));
-
 vi.mock("./providerRuntimeHealth", () => ({
   reportProviderRuntimeAuthFailure: (...args: unknown[]) => reportProviderRuntimeAuthFailureMock(...args),
   reportProviderRuntimeFailure: (...args: unknown[]) => reportProviderRuntimeFailureMock(...args),
@@ -111,8 +108,6 @@ function setPlatform(value: NodeJS.Platform): void {
 beforeEach(async () => {
   vi.resetModules();
   setPlatform("darwin");
-  cursorMeMock.mockReset();
-  cursorModelsListMock.mockReset();
   reportProviderRuntimeAuthFailureMock.mockReset();
   reportProviderRuntimeFailureMock.mockReset();
   reportProviderRuntimeReadyMock.mockReset();
@@ -494,24 +489,24 @@ describe("authDetector", () => {
   });
 
   it("marks Cursor runtime ready only after API key and model access verification succeeds", async () => {
-    cursorMeMock.mockResolvedValue({ userEmail: "user@example.test" });
-    cursorModelsListMock.mockResolvedValue([{ id: "composer-1" }]);
+    const fetchMock = stubCursorApi(new Response(JSON.stringify({ items: [{ id: "composer-1" }] }), { status: 200 }));
 
     const result = await verifyProviderApiKey("cursor", "crsr_test");
 
     expect(result.ok).toBe(true);
     expect(result.message).toContain("user@example.test");
     expect(result.endpoint).toBe("Cursor.me + Cursor.models.list");
-    expect(cursorMeMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
-    expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
+    for (const [, init] of fetchMock.mock.calls as unknown as Array<[string, RequestInit]>) {
+      expect((init.headers as Record<string, string>).Authorization).toBe("Bearer crsr_test");
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
     expect(reportProviderRuntimeAuthFailureMock).not.toHaveBeenCalled();
     expect(reportProviderRuntimeFailureMock).not.toHaveBeenCalled();
   });
 
   it("does not mark Cursor runtime ready when model access verification fails", async () => {
-    cursorMeMock.mockResolvedValue({ userEmail: "user@example.test" });
-    cursorModelsListMock.mockRejectedValue(new Error("Forbidden: model access denied"));
+    stubCursorApi(new Response(JSON.stringify({ error: { code: "forbidden", message: "model access denied" } }), { status: 403 }));
 
     const result = await verifyProviderApiKey("cursor", "crsr_test");
 
@@ -526,8 +521,7 @@ describe("authDetector", () => {
   });
 
   it("does not mark Cursor runtime ready when model access returns no models", async () => {
-    cursorMeMock.mockResolvedValue({ userEmail: "user@example.test" });
-    cursorModelsListMock.mockResolvedValue([]);
+    stubCursorApi(new Response(JSON.stringify({ items: [] }), { status: 200 }));
 
     const result = await verifyProviderApiKey("cursor", "crsr_test");
 

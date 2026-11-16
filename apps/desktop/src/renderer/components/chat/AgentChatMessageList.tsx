@@ -276,6 +276,8 @@ import {
 import {
   calculateVirtualWindowAnchoredToEnd,
   calculateVirtualWindowFromOffsets,
+  CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN,
+  CHAT_TRANSCRIPT_OVERSCAN,
   reconcileMeasuredScrollTop,
   resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
@@ -6097,6 +6099,24 @@ const OLDER_HISTORY_AUTO_FILL_DELAY_MS = 1_500;
 const OLDER_HISTORY_BACKFILL_IDLE_TIMEOUT_MS = 1_000;
 /** How often backfill looks again while a scroll restore is still landing. */
 const OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS = 500;
+/**
+ * A backfill page waits until the reader's scrolling has been quiet this long.
+ * Each page re-runs the row pipeline over the resident transcript, and one
+ * that lands during a wheel scroll drops frames. A reader near the top is
+ * waiting for the page and still gets it at once.
+ */
+const OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS = 400;
+/**
+ * A page that arrives while the reader scrolls (wheel, touch, momentum, a held
+ * press) waits until the scrolling has been quiet this long before it is
+ * prepended. The prepend re-lays out the list and moves scrollTop; inside a
+ * gesture that drops frames and fights the scroll.
+ */
+const OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS = 150;
+/** Longest a page waits for a quiet scroll, so a scroll that never ends (or a lost pointerup) cannot hold it. */
+const OLDER_HISTORY_PREPEND_MAX_HOLD_MS = 2_000;
+/** How often a held page looks again, for the quiet spell or the reader reaching the top. */
+const OLDER_HISTORY_PREPEND_RECHECK_MS = 50;
 function scrollCommitKeyOf(startIndex: number, endIndex: number, activeOrdinal: number | null): string {
   return `${startIndex}:${endIndex}:${activeOrdinal ?? -1}`;
 }
@@ -6455,7 +6475,12 @@ function AgentChatMessageListMain({
   /** Retryable error from the most recent older-history request. */
   olderHistoryError?: string | null;
   /** Called when automatic scroll-back needs an older page. */
-  onLoadOlderHistory?: (options?: { backfill?: boolean }) => void;
+  /**
+   * `whenScrollQuiet` is null while the reader is not scrolling, else a promise
+   * that settles once the scrolling goes quiet. The owner awaits it before it
+   * prepends a page that arrived mid-scroll.
+   */
+  onLoadOlderHistory?: (options?: { backfill?: boolean; whenScrollQuiet?: () => Promise<void> | null }) => void;
   /**
    * Page the rest of the transcript in during idle time. Only for owners whose
    * loader refuses a backfill page that would hit the resident cap (the cap
@@ -6768,6 +6793,36 @@ function AgentChatMessageListMain({
   backfillArmStateRef.current = { armed: backfillArmed, key: backfillSessionKey };
   /** A press on the list is held (a scrollbar drag, among others). */
   const readerPointerHeldRef = useRef(false);
+  /** When the reader last scrolled (`performance.now()`); backfill waits for a quiet spell. */
+  const lastReaderScrollAtRef = useRef(Number.NEGATIVE_INFINITY);
+  /** A finger is on the list: a touch scroll can pause without lifting. */
+  const touchHeldRef = useRef(false);
+  /** See `OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS`. Null at once when nothing is scrolling. */
+  const whenScrollQuiet = useCallback((): Promise<void> | null => {
+    const busyFor = () => {
+      if (readerPointerHeldRef.current || touchHeldRef.current) return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS;
+      // At the top the wheel has nothing left to move: the reader waits for
+      // this page, and the prepend cannot fight the gesture. Holding it here
+      // kept a reader who scrolled up without a pause at the top for the full
+      // hold (about 1.8 s) on every page.
+      if ((scrollRef.current?.scrollTop ?? Number.POSITIVE_INFINITY) < 1) return 0;
+      return OLDER_HISTORY_PREPEND_SCROLL_QUIET_MS - (performance.now() - lastReaderScrollAtRef.current);
+    };
+    if (busyFor() <= 0) return null;
+    const giveUpAt = performance.now() + OLDER_HISTORY_PREPEND_MAX_HOLD_MS;
+    return new Promise<void>((resolve) => {
+      const check = () => {
+        const wait = busyFor();
+        if (wait <= 0 || performance.now() >= giveUpAt) {
+          resolve();
+          return;
+        }
+        // Look at least every 50 ms, so a reader who reaches the top gets the page then.
+        setTimeout(check, Math.max(16, Math.min(wait, OLDER_HISTORY_PREPEND_RECHECK_MS, giveUpAt - performance.now())));
+      };
+      check();
+    });
+  }, []);
   const armOlderHistoryBackfill = useCallback(() => {
     const { armed, key } = backfillArmStateRef.current;
     if (armed) return;
@@ -6802,8 +6857,8 @@ function AgentChatMessageListMain({
       if (autoOlderLoadsSinceUserScrollRef.current >= MAX_CHAINED_AUTO_OLDER_PAGES) return;
       autoOlderLoadsSinceUserScrollRef.current += 1;
     }
-    onLoadOlderHistoryRef.current?.(source === "backfill" ? { backfill: true } : undefined);
-  }, []);
+    onLoadOlderHistoryRef.current?.({ backfill: source === "backfill", whenScrollQuiet });
+  }, [whenScrollQuiet]);
 
   // Re-arm after a batch that changed nothing visible.
   //
@@ -6855,6 +6910,15 @@ function AgentChatMessageListMain({
       // (a timer, not another idle slot, which can come back every frame).
       if (scrollRestoreActiveRef.current) {
         timer = setTimeout(run, OLDER_HISTORY_BACKFILL_RESTORE_RECHECK_MS);
+        return;
+      }
+      // The reader is scrolling: a prepend now would drop frames. Look again
+      // once the scroll has been quiet, unless they are near the top and waiting.
+      const sinceScrollMs = performance.now() - lastReaderScrollAtRef.current;
+      const root = scrollRef.current;
+      const readerWaiting = root != null && root.scrollTop <= resolveOlderHistoryPrefetchTriggerPx(root.clientHeight);
+      if (!readerWaiting && sinceScrollMs < OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS) {
+        timer = setTimeout(run, OLDER_HISTORY_BACKFILL_SCROLL_QUIET_MS - sinceScrollMs);
         return;
       }
       maybeRequestOlderHistory(scrollRef.current?.scrollTop ?? 0, "backfill");
@@ -8157,6 +8221,16 @@ function AgentChatMessageListMain({
   // flip the list between the plain and virtualized render paths, which would
   // remount every row and drop its measured height.
   const shouldVirtualize = presentedRows.length >= VIRTUALIZATION_THRESHOLD;
+  // A chat opening at its end paints only the rows on screen and two above
+  // them; the rest of the overscan mounts in the commit after that paint. Rows
+  // above the view are parsed, drawn and measured for a scroll that has not
+  // started, and on a long chat they were half the open (a 1,000 px reply
+  // among them). A window that does not fill the pane widens before paint.
+  // Once a list has drawn rows any other way (a short chat, a reader scrolled
+  // up), it never narrows later.
+  const [firstWindowWidened, setFirstWindowWidened] = useState(false);
+  const firstWindowSettledRef = useRef(false);
+  const narrowFirstWindow = !firstWindowWidened && !firstWindowSettledRef.current && shouldVirtualize && stickToBottom;
 
   useLayoutEffect(() => {
     measureScrollContainerHeight();
@@ -8515,6 +8589,7 @@ function AgentChatMessageListMain({
         containerHeight: windowContainerHeight,
         rowHeight,
         rowGap: timelineRowGapPx,
+        overscan: narrowFirstWindow ? CHAT_TRANSCRIPT_FIRST_PAINT_OVERSCAN : CHAT_TRANSCRIPT_OVERSCAN,
       });
     }
 
@@ -8525,7 +8600,46 @@ function AgentChatMessageListMain({
       rowHeight,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx, narrowFirstWindow]);
+
+  // The narrow first window, checked against the rows' own heights: the rows
+  // measured themselves in their layout effects (they run before this one),
+  // and estimates can run high. Rows that leave part of the pane empty widen
+  // the window now, in a render before paint.
+  useLayoutEffect(() => {
+    if (!narrowFirstWindow || endIndex <= startIndex) return;
+    const paneHeight = windowContainerHeight;
+    if (paneHeight <= 0) return;
+    let mountedHeight = 0;
+    for (let index = startIndex; index < endIndex; index += 1) {
+      mountedHeight += rowHeight(index) + timelineRowGapPx;
+    }
+    if (mountedHeight < paneHeight) setFirstWindowWidened(true);
+  }, [narrowFirstWindow, startIndex, endIndex, windowContainerHeight, rowHeight, timelineRowGapPx]);
+
+  // The rest of the overscan: in the first task after the narrow window's
+  // paint (a frame, then a task), so a scroll right after the open still finds
+  // rows above. Pinned to the end, the rows that mount above keep the view in
+  // place.
+  const firstWindowHasRows = groupedRows.length > 0;
+  useEffect(() => {
+    if (!firstWindowHasRows) return undefined;
+    if (!narrowFirstWindow) {
+      firstWindowSettledRef.current = true;
+      return undefined;
+    }
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const raf = requestAnimationFrame(() => {
+      timer = setTimeout(() => {
+        firstWindowSettledRef.current = true;
+        setFirstWindowWidened(true);
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [firstWindowHasRows, narrowFirstWindow]);
 
   // Not on `totalHeight`: it moves on every render of a growing reply, and the
   // content observer already pins the view when the content's box grows. This
@@ -8812,6 +8926,7 @@ function AgentChatMessageListMain({
 
   /** Wheel, touch, press, or a scroll key: the reader is driving now. */
   const noteReaderScrollIntent = useCallback(() => {
+    lastReaderScrollAtRef.current = performance.now();
     autoOlderLoadsSinceUserScrollRef.current = 0;
     if (scrollRestoreActiveRef.current) finishScrollRestore();
   }, [finishScrollRestore]);
@@ -8980,6 +9095,7 @@ function AgentChatMessageListMain({
     }
     // A scroll we did not author is the reader moving: automatic older pages
     // get their one chained page back.
+    lastReaderScrollAtRef.current = performance.now();
     autoOlderLoadsSinceUserScrollRef.current = 0;
     // A scrollbar drag upward (wheel, keys and touch arm through the scroll direction).
     if (readerPointerHeldRef.current && target.scrollTop < previousScrollTop - 0.5) armOlderHistoryBackfill();
@@ -9003,6 +9119,7 @@ function AgentChatMessageListMain({
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     noteReaderScrollIntent();
+    touchHeldRef.current = true;
     lastTouchYRef.current = event.touches[0]?.clientY ?? null;
   }, [noteReaderScrollIntent]);
 
@@ -9036,8 +9153,11 @@ function AgentChatMessageListMain({
     lastTouchYRef.current = nextY;
   }, [noteReaderScrollDirection]);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     lastTouchYRef.current = null;
+    touchHeldRef.current = event.touches.length > 0;
+    // A fling keeps scrolling after the finger lifts; those scroll events keep the hold.
+    lastReaderScrollAtRef.current = performance.now();
   }, []);
 
   const jumpToLatest = useCallback(() => {

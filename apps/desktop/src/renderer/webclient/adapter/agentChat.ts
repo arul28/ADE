@@ -671,6 +671,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("warmupModel", pin);
       await call("chat.warmupModel", args, undefined, false);
     },
+    // The web client starts the provider on the first send, as before: a host
+    // that predates draft warmups would refuse an unknown command.
+    prewarmDraft: async (_args: unknown, pin?: RuntimePinArg) => {
+      guardPin("prewarmDraft", pin);
+      return { warming: false, reason: "unavailable" as const };
+    },
     // No promise to reject: a subscription taking a foreign pin is asking for
     // another machine's event stream, and handing back this machine's stream
     // would be a silent mis-route, so the refusal is synchronous.

@@ -3,6 +3,7 @@ import path from "node:path";
 import { defineConfig } from "tsup";
 import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
 import { asciiBundleSource } from "../../scripts/build/asciiBundleSource";
+import { sharedNodeBuiltins } from "../../scripts/build/sharedNodeBuiltins";
 
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
 const devMainReadyMarker = process.env.ADE_DEV_MAIN_READY_MARKER?.trim() ?? "";
@@ -12,6 +13,18 @@ const devMainReadyMarker = process.env.ADE_DEV_MAIN_READY_MARKER?.trim() ?? "";
 const releaseBuild = process.env.ADE_RELEASE_BUILD === "1"
   || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha";
 assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
+// V8 keeps every loaded script's source in the heap for the life of the
+// process, so a minified bundle is about half the memory of a readable one.
+// `keepNames` keeps function and class names in stack traces and in `.name`;
+// release source maps still map each frame back to the source. The dev watch
+// build stays readable (it has no source maps), and `ADE_BUILD_MINIFY=0` turns
+// minify off for any build.
+const minifyBundle = !devMainReadyMarker && process.env.ADE_BUILD_MINIFY !== "0";
+// The in-process project runtime (tests and the ADE_ENABLE_DESKTOP_SYNC_HOST
+// diagnostics host) stays in the dev watch build only, or with
+// `ADE_BUILD_IN_PROCESS_RUNTIME=1`. Every other main hands projects to the
+// brain, and dropping that graph makes main.cjs about 7 MB smaller.
+const inProcessProjectRuntime = Boolean(devMainReadyMarker) || process.env.ADE_BUILD_IN_PROCESS_RUNTIME === "1";
 
 export default defineConfig({
   entry: {
@@ -49,6 +62,8 @@ export default defineConfig({
   noExternal: [/^@opencode\/client(?:\/.*)?$/, /^@muse-code\/sdk(?:\/.*)?$/, /^@sentry\//],
   outDir: "dist",
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
+  minify: minifyBundle,
+  keepNames: minifyBundle,
   // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.
   clean: ["dist/main", "dist/preload"],
   // The dev launcher must not infer build completion from main.cjs appearing:
@@ -67,11 +82,16 @@ export default defineConfig({
     : undefined,
   // Keeps the bundle's source pure ASCII, which V8 stores at one byte per character; see the plugin.
   plugins: [asciiBundleSource()],
+  // One import wrapper per Node built-in instead of one per importing module; see the plugin.
+  esbuildPlugins: [sharedNodeBuiltins()],
+  // The plugin strips `node:` itself; tsup's own plugin would run first and claim those imports.
+  removeNodeProtocol: false,
   // Inline build-time env variables so they're available in the packaged app.
   define: {
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),
     __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
     __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
     __ADE_RELEASE_BUILD__: JSON.stringify(releaseBuild),
+    __ADE_IN_PROCESS_PROJECT_RUNTIME__: JSON.stringify(inProcessProjectRuntime),
   },
 });
