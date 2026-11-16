@@ -310,6 +310,7 @@ body {
 .ade-log-line { opacity: 0; }
 [data-shown="true"] .ade-log-line { animation: ade-log-line 0.5s var(--ease-out) forwards; }
 @keyframes ade-pulse-dot { 50% { opacity: 0.35; } }
+@keyframes ade-tab-progress { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 .ade-pulse-dot { animation: ade-pulse-dot 1.6s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
   .ade-pop-in, .ade-pulse-dot { animation: none; }

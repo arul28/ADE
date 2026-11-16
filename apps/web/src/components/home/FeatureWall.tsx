@@ -1,6 +1,5 @@
 import { useState, type ComponentType, type ReactNode } from "react";
 import {
-  AppWindow,
   Bell,
   BellRing,
   Boxes,
@@ -11,6 +10,7 @@ import {
   Crown,
   FolderTree,
   GitBranch,
+  GitCompareArrows,
   GitMerge,
   GitPullRequest,
   Layers,
@@ -18,12 +18,12 @@ import {
   Gauge,
   Globe,
   Import,
+  KeyRound,
   LayoutGrid,
   Link2,
   ListTodo,
   MessageSquareQuote,
   Mic,
-  Monitor,
   Moon,
   Palette,
   PanelRight,
@@ -31,6 +31,7 @@ import {
   Repeat2,
   RotateCcw,
   Scale,
+  Search,
   Server,
   Smartphone,
   Sparkles,
@@ -39,7 +40,6 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
-import { WindowsMark } from "./marks";
 
 const GRID = "grid auto-rows-[150px] grid-flow-dense grid-cols-2 gap-3 md:grid-cols-4 lg:auto-rows-[170px] lg:grid-cols-6";
 
@@ -338,9 +338,9 @@ export function FeatureWall() {
           <Small span="2x1" icon={Scale} title="Smart balance" body="Spreads chats across all your accounts, so one plan never runs dry first." tint="text-lime-400" />
 
           <Small icon={CalendarClock} title="Scheduled sends" body="Write now, send later." tint="text-yellow-300" />
-          <Small icon={Monitor} title="Mac desktop" body="A private screen agents drive, so yours stays free." tint="text-slate-300" />
-          <Small icon={WindowsMark} title="Windows desktop" body="The same, on your PC." tint="text-sky-400" />
-          <Small icon={AppWindow} title="App Control" body="Drives and records Electron apps." tint="text-teal-300" />
+          <Small icon={KeyRound} title="Passwords" body="Agents sign in for you and never see the password." tint="text-amber-300" />
+          <Small icon={Search} title="Search" body="Find any chat, PR, commit or file." tint="text-slate-300" />
+          <Small icon={GitCompareArrows} title="Conflicts" body="See lanes that will clash before you merge." tint="text-orange-300" />
           <Small icon={Link2} title="Deep links" body="Link to any chat, file or PR." tint="text-violet-300" />
           <Small icon={BellRing} title="Notifications" body="Know when an agent needs you, on any device." tint="text-rose-300" />
 
