@@ -524,7 +524,7 @@ import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBr
 import { BUILT_IN_BROWSER_DISK_CACHE_BYTES, BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
 import { renderScenePreview } from "./services/scenes/scenePreviewRenderer";
-import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
+import { configureBuiltInBrowserWebAuthn, openBuiltInBrowserSession } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
@@ -1202,6 +1202,8 @@ async function createWindow(args: {
     }
     delete webPreferences.preload;
     delete (webPreferences as Record<string, unknown>).preloadURL;
+    // Opens the shared profile with its passkey picker; it is not open at start.
+    openBuiltInBrowserSession();
     webPreferences.partition = BUILT_IN_BROWSER_PARTITION;
     webPreferences.nodeIntegration = false;
     webPreferences.contextIsolation = true;

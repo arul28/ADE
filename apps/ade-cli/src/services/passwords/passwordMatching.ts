@@ -17,7 +17,7 @@
  * secure contexts anyway.
  */
 import { isLoopbackHost } from "../../../../desktop/src/shared/passwordFillTarget";
-import { getDomain } from "tldts";
+import type * as Tldts from "tldts";
 
 export type NormalizedLoginOrigin = {
   /** Scheme, host and non-default port, lowercased: `https://login.github.com`. */
@@ -96,8 +96,17 @@ function toUrlText(raw: string): string | null {
   return raw;
 }
 
+let tldts: typeof Tldts | null = null;
+
+/**
+ * `tldts` loads on the first match (about 3 ms once). Its suffix list cost the
+ * desktop main process and the brain 0.7 MB of heap each from start, and only
+ * a password or passkey lookup reads it.
+ */
 function registrableSite(host: string): string {
-  return getDomain(host, TLD_OPTIONS) ?? host;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  tldts ??= require("tldts") as typeof Tldts;
+  return tldts.getDomain(host, TLD_OPTIONS) ?? host;
 }
 
 const isLocalHost = isLoopbackHost;

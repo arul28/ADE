@@ -257,7 +257,11 @@ import { chromeUserAgent, withChromeIdentityHeaders } from "./builtInBrowserChro
 import {
   createBuiltInBrowserPermissionController,
 } from "./builtInBrowserPermissions";
-import { configureBuiltInBrowserSessionWebAuthn } from "./builtInBrowserWebAuthn";
+import {
+  builtInBrowserSessionOpened,
+  configureBuiltInBrowserSessionWebAuthn,
+  openBuiltInBrowserSession,
+} from "./builtInBrowserWebAuthn";
 import {
   createBuiltInBrowserIsolatedSessions,
   type BrowserDownloadListener,
@@ -1161,7 +1165,7 @@ export function createBuiltInBrowserService(args: {
   const profileMigrationPromise = userDataPath
     ? migrateLegacyBuiltInBrowserProfiles({
         userDataPath,
-        getSession: (partition) => session.fromPartition(partition),
+        getSession: (partition) => (partition === BROWSER_PARTITION ? openBuiltInBrowserSession() : session.fromPartition(partition)),
         getLogger: args.getLogger,
       }).catch((error) => {
         let migrationLogger = null;
@@ -1822,12 +1826,18 @@ export function createBuiltInBrowserService(args: {
   const flushStorage = async (): Promise<void> => {
     const startedAt = Date.now();
     await profileMigrationPromise;
-    const browserSession = session.fromPartition(BROWSER_PARTITION);
+    // A run that never opened the shared profile has nothing of it to flush;
+    // opening it here would only cost the quit a browser context.
+    const browserSession = builtInBrowserSessionOpened() ? openBuiltInBrowserSession() : null;
     const results = await Promise.allSettled([
       stateStore?.flush() ?? Promise.resolve(),
       permissionController.flush(),
-      Promise.resolve().then(() => browserSession.cookies.flushStore()),
-      Promise.resolve().then(() => browserSession.flushStorageData()),
+      ...(browserSession
+        ? [
+            Promise.resolve().then(() => browserSession.cookies.flushStore()),
+            Promise.resolve().then(() => browserSession.flushStorageData()),
+          ]
+        : []),
     ]);
     const failures = results
       .filter((result): result is PromiseRejectedResult => result.status === "rejected")
@@ -1896,12 +1906,14 @@ export function createBuiltInBrowserService(args: {
       const { partitions } = await certificateTrust.revoke(input.id ?? null);
       // Chromium keeps a TLS connection it was told to accept open for reuse;
       // close them so the next request meets the certificate check again.
-      await Promise.allSettled(partitions.map((partition) => session.fromPartition(partition).closeAllConnections()));
+      // An unopened shared profile holds no connections; do not open it to close none.
+      const open = partitions.filter((partition) => partition !== BROWSER_PARTITION || builtInBrowserSessionOpened());
+      await Promise.allSettled(open.map((partition) => session.fromPartition(partition).closeAllConnections()));
       return { certificates: certificateTrust.list() };
     },
     async getProfileDiagnostics(): Promise<BuiltInBrowserProfileDiagnostics> {
       await profileMigrationPromise;
-      const browserSession = session.fromPartition(BROWSER_PARTITION);
+      const browserSession = openBuiltInBrowserSession();
       const cookies = await browserSession.cookies.get({});
       let cacheSizeBytes: number | null = null;
       try {
@@ -5094,7 +5106,7 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  const browserSessionForProfile = () => session.fromPartition(BROWSER_PARTITION);
+  const browserSessionForProfile = () => openBuiltInBrowserSession();
 
   const removeBrowserDownloadListener = (): void => {
     if (!browserDownloadListener) return;
