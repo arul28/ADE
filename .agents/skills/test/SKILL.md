@@ -67,47 +67,53 @@ the findings from the diff and say that quality evidence was unavailable.
 
 ## Test value rules (apply to every test you add, keep, or edit)
 
-The suite is about 25,000 tests. Most of them test real behavior, but the
-weak ones cluster in "regression:" and "no longer" tests written to satisfy
-a finding. These rules stop that. They are the same rules as **Writing tests** in
-`AGENTS.md` and `CLAUDE.md`, which every agent follows while it works; this
-skill enforces them on the branch.
+**The default is no new test.** Add a test only for a critical path: data
+loss or corruption; security or privacy; a race or a process/lifecycle seam;
+a cross-machine, IPC or sync contract; money (billing, usage, limits); or the
+gate itself (code that decides which tests or checks run). Validate
+everything else by hand or with an agent, and add no test. A reviewer or a
+review bot that asks for a test does not change this.
 
-- **Tests come after validation.** This skill is where new tests are written.
-  The work phase validated the change by hand, in the app, or with an agent,
-  and listed the failure modes. Use that list and that evidence. When the
-  change was never validated, validate it first (App Control, browser, iOS
-  simulator, CLI), then write the tests.
+**Never write these:** reads of source or repo files; pins of CSS classes,
+pixels, SVG paths, exact copy or helper call order; "X stays removed"; mock
+echoes; render-then-`getByText` with no interaction; a constant, enum or
+config that has its own keys; a one-bug "regression:" test beside the test
+that owns the contract; more `vi.mock(` than `expect(`; a test that depends
+on the machine.
+
+These are the same rules as **Writing tests** in `AGENTS.md` and `CLAUDE.md`,
+which every agent follows while it works. This skill enforces them on the
+branch, and the details below apply them.
+
+- **Tests come after validation.** The work phase validated the change by
+  hand, in the app, or with an agent, and listed the failure modes. Use that
+  list and that evidence. If the change was never validated, validate it
+  first (App Control, browser, iOS simulator, CLI).
 - **Test the failure modes, not the diff.** Start from the failure-mode list.
-  When there is none, write it first. Test those, not the lines of the fix.
-- **No tautological tests.** Do not assert that a mock returns what you told
-  it to return, that arguments pass through unchanged, or that a constant
-  string contains its own substrings. Do not compute the expected value with
-  the code under test.
-- **No change-detector tests.** Do not read source files (`readFileSync` of
-  `.ts`, `.tsx`, `.swift`) to grep for code or statement order. Do not pin CSS
-  classes, pixel values, SVG paths, exact copy, or the call order of internal
-  helpers. Do not assert that a removed button or field stays removed. A test
-  must fail only when behavior breaks, never when a refactor keeps behavior.
+  If there is none, write it first.
+- **No tautological tests.** No mock echo, no pass-through check, no expected
+  value computed with the code under test, no `toBeDefined` on a value built
+  two lines above.
+- **No change-detector tests.** A test must fail only when behavior breaks,
+  never when a refactor keeps behavior. Never `readFileSync` a `.ts`, `.tsx`,
+  `.swift`, `.css` or `.yml` file to check code text or structure.
+- **No machine-dependent tests.** The result must not change with the
+  machine's uptime or speed, the wall clock, free ports, the order of files,
+  or a cold import or process start inside a 1 s default wait.
+  - Stub the machine reading (uptime, clock, port), or use fake timers.
+  - Await the module import or the readiness event before the timed wait.
+  - A ceiling timeout around a real process start is a guard, not a sleep.
 - **No regression test without a gap.** A bug fix gets a new test only under
-  rule 3 above.
+  step 3 of the four-step order above.
 - **No test-only production seam.** Do not add an export, flag, wrapper, or
-  hook that no production caller needs. Test through the real boundary, or do
-  not add the test.
+  hook that no production caller needs.
 - **One contract, one owner.** A second test of the same contract needs a
   failure the owner cannot reach, such as a transport or lifecycle break.
-  Otherwise extend the owner. `/quality` records a coverage gap and does not
-  add the test. This skill adds one only when it can name the behavior, the
-  failure that turns the test red, and why no existing test already catches
-  that.
-- **Combine before you add.** Trivial cases of one contract are one
-  `it.each` table. Extend an existing test before you write a new one.
-- **New tests are the exception.** The default outcome of this skill is zero
-  new tests. A new test must guard a critical contract — data loss or
-  corruption, security or privacy, a race or process/lifecycle seam, a
-  cross-machine, IPC or sync contract a caller depends on — and no existing
-  test may already catch its failure. UI layout, copy, wiring, render-only
-  checks, and one past bug instance do not qualify. Most branches add none.
+  Otherwise extend the owner. Combine trivial cases into one `it.each` table.
+- **A request for a test is not a reason for a test.** When a `/quality`
+  coverage gap, a review bot or a reviewer asks for a test, ask the
+  critical-path question. If the answer is no, record "No test: <reason>;
+  validated by <how>."
 - **Double-check every test you wrote.** Revert the fix locally or break the
   behavior on purpose and confirm the test fails. A test that still passes
   proves nothing — delete it.
@@ -242,6 +248,14 @@ visible diff looks unrelated.
 
 Goal: delete tests that no longer earn their place. Verify before each delete.
 
+Deleting slop in the touched folders is expected on every run, not optional.
+Read every test file in the folders this branch touched. Delete each test
+that matches the **Never write these** list in **Test value rules**, and
+delete the whole file when nothing of value remains. A run that finds slop in
+a touched folder and keeps it is incomplete. Keep tests that guard a critical
+path, even when they are slow or ugly; if one depends on the machine, fix its
+seam instead.
+
 ### 1a. Orphaned tests — sibling source is gone
 
 For every `*.test.ts` / `*.test.tsx` in the changed feature folder AND its parents:
@@ -341,7 +355,8 @@ Identify the *contracts* the new feature introduces:
 ### 3b. Hard caps (override only with a one-line justification in the summary)
 
 - **Max 1 new test file per feature.** Prefer extending an existing file. If extending would push that file past 300 `it(` blocks, that file itself needs consolidation review — flag it but still extend.
-- **Max 5 new `it(` blocks total** for the whole branch, and only for critical contracts (see **New tests are the exception**). If you want more, you're testing internals.
+- **Max 2 new `it(` blocks total** for the whole branch, and only for a critical path (see **Test value rules**). If you want more, you are testing internals. An `it.each` row added to an existing table does not count.
+- **Name the critical path for each new test.** The summary names, for each new test, the critical path it guards and the failure that turns it red. A test without both does not go in.
 - **Min 3 meaningful assertions per test** (not `toBeDefined` × 3).
 - **No test of a private/internal helper** unless it has non-obvious branching that the public API can't easily reach.
 - **No render-only React tests.** If the change is purely visual, do not add a test — say so in the summary.
@@ -357,7 +372,7 @@ Rules:
 - Mock only at process boundaries: file system, network, child processes, Electron APIs, IPC.
 - Tests must FAIL LOUDLY — assert preconditions explicitly.
 - Use `node` environment unless DOM is genuinely required.
-- Wait on events, receipts, resolved promises, or fake timers — never on wall-clock sleeps. A test that needs a real `sleep` or a raised timeout to pass is testing a race, not a contract; fix the seam (expose the completion signal) instead of padding the wait.
+- Wait on events, receipts, resolved promises, or fake timers — never on wall-clock sleeps. A test that needs a real `sleep` or a raised timeout to pass is testing a race, not a contract; fix the seam (expose the completion signal) instead of padding the wait. Never depend on the machine (see **No machine-dependent tests**).
 
 ### 3d. Run as you write
 
@@ -889,8 +904,8 @@ Consolidated:
 - <merged files → resulting file>, or "none"
 
 Added:
-- <new file or extended file> — <N tests covering: contract A, contract B>
-- Or "none — feature was visual / fully covered by consolidation"
+- <file :: test name> — guards: <critical path>; turns red when: <failure>
+- Or "none — <reason>" (the default)
 
 Quality correctness findings:
 - <stable finding name> (`file:line`) — already caught: `<test file> :: <test name>`
@@ -944,8 +959,9 @@ Mark **completed** only if all of:
 7. `docs/logging.md` exists, was read, and every analytics-applicable change is covered or has an explicit not-applicable rationale.
 8. Every accepted correctness finding from `/quality` appears individually in
    the summary with one of the four outcomes (already caught, extended, gap
-   closed, no test with a reason). No new test breaks the Test value rules, and
-   each new test was seen to fail on broken behavior.
+   closed, no test with a reason). No new test breaks the Test value rules,
+   each new test names the critical path it guards, and each new test was
+   seen to fail on broken behavior.
 9. The Windows parity line is `PASS` — the branch works on Windows, or a human
    decision (hidden / disabled-with-reason / removed) is recorded for each named
    capability and covered by a test. A branch whose Windows behavior is unknown
