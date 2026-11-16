@@ -181,3 +181,46 @@ describe("the waking mark of a send that wakes a cloud computer", () => {
     expect(waking()).toBeUndefined();
   });
 });
+
+describe("the server's answer for a saved chat's computer", () => {
+  const MACHINE_ID = `${SAVED_CHATS_MACHINE_PREFIX}key-told`;
+  const told = (chatId: string, updatedAt: number, computer: unknown) => ({
+    machineKey: "key-told",
+    chatId,
+    instanceId: null,
+    lastSeq: 1,
+    updatedAt,
+    title: "Chat",
+    laneId: "lane-told",
+    laneName: "Lane Told",
+    status: null,
+    toolType: "claude-chat",
+    provider: null,
+    model: null,
+    projectKey: "repo-key",
+    projectId: "proj",
+    projectRoot: "/repo",
+    lastActivityAt: null,
+    computer,
+  });
+  const DELETED = { state: "deleted", deletedAt: 1, reason: "idle" };
+  const EXISTS = { state: "exists" };
+
+  // No connection on this desktop and no computer list open: only the server's answer (or, without one, a
+  // fresh lane index) decides. A computer the server says exists stays live, so its rows never jump.
+  it.each<[string, unknown[], boolean, boolean]>([
+    ["a deleted computer is gone, even with no fresh lane index", [told("chat-1", 2, DELETED)], false, true],
+    ["a computer that exists is not gone, though a fresh index lists no lane computer for it", [told("chat-1", 2, EXISTS)], true, false],
+    ["one row that says it exists outweighs a newer row that says deleted", [told("chat-1", 3, DELETED), told("chat-2", 2, EXISTS)], true, false],
+  ])("%s", async (_label, chats, indexFresh, gone) => {
+    if (!indexFresh) vi.setSystemTime(Date.now() + 11 * 60_000);
+    window.ade = { cloud: { savedChats: { list: async () => ({ nextCursor: null, chats }) } } } as unknown as typeof window.ade;
+
+    await refreshCloudSavedChats({ projectKey: "repo-key", isActive: () => true, connections: [] as never });
+
+    const slice = useAppStore.getState().crossMachineLanesByMachineId[MACHINE_ID];
+    expect(slice, "the saved chats get a slice").toBeTruthy();
+    expect(slice!.computerGone === true).toBe(gone);
+    expect(slice!.sessions.map((session) => session.id).sort()).toEqual(chats.map((chat) => (chat as { chatId: string }).chatId).sort());
+  });
+});

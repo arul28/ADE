@@ -46,7 +46,7 @@ import {
   normalizeCloudMachineName,
   type CloudMachineCreatorDeps,
 } from "./cloudMachineCreator";
-import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
+import { CLOUD_FORMER_MACHINE_KEYS_METADATA, CLOUD_MACHINE_KEY_METADATA, formerMachineKeysAfterMove } from "./cloudMachines";
 import { deleteCloudInstanceConfirmed } from "./cloudPendingCreates";
 import { wakeThroughTransition } from "./cloudInstanceOps";
 import { cloudHoldCommand, cloudReleaseHoldCommand } from "./cloudSleep";
@@ -80,6 +80,7 @@ const MOVE_HOLD_MS = 45 * 60_000;
  */
 const NOT_COPIED_METADATA = new Set<string>([
   CLOUD_MACHINE_KEY_METADATA,
+  CLOUD_FORMER_MACHINE_KEYS_METADATA,
   CLOUD_MADE_BY_CHAT_METADATA,
   CLOUD_MADE_BY_AGENT_METADATA,
   "ade_request_id",
@@ -318,6 +319,7 @@ export async function moveCloudMachine(
       // delete read the lane from here with no wake.
       ...laneMetadataOf(source),
       ade_moved_from: source.id,
+      [CLOUD_FORMER_MACHINE_KEYS_METADATA]: formerMachineKeysAfterMove(source.metadata, args.machineKey ?? source.metadata[CLOUD_MACHINE_KEY_METADATA] ?? null),
       ...cloudMadeByMetadata(args),
     },
   });

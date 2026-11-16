@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLOUD_LANE_BRANCH_METADATA, CLOUD_LANE_ID_METADATA, CLOUD_LANE_NAME_METADATA } from "../../../shared/cloudLaneLaunch";
 import type { CloudLaneWorkLane } from "../../../shared/cloudLaneLife";
 import { createCloudLaneLife, type CloudLaneLifeDeps } from "./cloudLaneLife";
-import { CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
+import { CLOUD_FORMER_MACHINE_KEYS_METADATA, CLOUD_MACHINE_KEY_METADATA } from "./cloudMachines";
 import type { CloudInstance, CloudProvider } from "./cloudProvider";
 
 /**
@@ -23,6 +23,8 @@ const LANE_METADATA = {
   [CLOUD_LANE_NAME_METADATA]: "Lane one",
   [CLOUD_LANE_BRANCH_METADATA]: "feature/one",
   [CLOUD_MACHINE_KEY_METADATA]: "mk_1",
+  // Two moves: the first old computer is gone, the second one stayed.
+  [CLOUD_FORMER_MACHINE_KEYS_METADATA]: "mk_old,mk_live",
 };
 
 function unpushedLane(): CloudLaneWorkLane {
@@ -86,8 +88,9 @@ describe("cloud lane life: the work check", () => {
     run = vi.fn(async () => ({ ok: true, message: null }));
     forgetMachineConnections = vi.fn();
     changed = vi.fn();
-    // The computer's own chats (any case of its key), the lane's copy from the computer it had before a size
-    // change, and rows that must stay: another lane's on a gone computer, this lane's on a live one.
+    // The computer's own chats (any case of its key), the chats of the computer a move replaced, and rows that
+    // must stay: another lane's on a gone computer, a former computer that still exists, and a deleted copy
+    // that carries the same lane id but was never this lane's computer.
     const gone = { state: "deleted", deletedAt: 1, reason: "other" };
     let saved = [
       { machineKey: "mk_1", chatId: "chat_a", laneId: "lane_1" },
@@ -95,6 +98,7 @@ describe("cloud lane life: the work check", () => {
       { machineKey: "mk_old", chatId: "chat_d", laneId: "lane_1", computer: gone },
       { machineKey: "mk_other", chatId: "chat_c", laneId: "lane_2", computer: gone },
       { machineKey: "mk_live", chatId: "chat_e", laneId: "lane_1", computer: { state: "exists" } },
+      { machineKey: "mk_copy", chatId: "chat_f", laneId: "lane_1", computer: gone },
     ];
     // Like the server: the key filter has no case rule of its own, so a stray row must be filtered again.
     listSavedChats = vi.fn(async (args: { machineKey?: string }) => ({
