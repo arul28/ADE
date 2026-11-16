@@ -25,7 +25,7 @@ import { COMPOSER_DRAFT_STORAGE_KEY_PREFIX, storedDraftHasContent } from "../sta
 // ── The recorded new-chat screen ──────────────────────────────────────────
 
 export const EARLY_COMPOSER_LAYOUT_STORAGE_KEY = "ade.earlyComposer.layout.v1";
-const LAYOUT_VERSION = 1;
+const LAYOUT_VERSION = 2;
 /** A piece bigger than this is not recorded (the composer is a few KB). */
 const MAX_PIECE_HTML_CHARS = 150_000;
 
@@ -50,8 +50,15 @@ export type EarlyComposerLayout = {
   devicePixelRatio: number;
   route: { width: number; height: number };
   routeBackground: string;
-  /** The new-chat surface; its backdrop is drawn here as the flat gradient. */
+  /** The new-chat surface, where the early screen draws the backdrop. */
   surface: EarlyComposerRect;
+  /**
+   * What was behind the screen: the scene picture (the window's current one is
+   * drawn, not the recorded one: shuffle picks again each launch), or the flat
+   * gradient (the first paint of the mesh). The two lay out differently (a
+   * picture hides the wordmark), so a layout only serves the same kind.
+   */
+  scene: "image" | "flat";
   /** The prompt box with everything under `[data-chat-composer-dock]`; the text field is a slot. */
   composer: EarlyComposerPiece;
   wordmark: EarlyComposerPiece | null;
@@ -130,11 +137,28 @@ function hashString(value: string): string {
   return (hash >>> 0).toString(36);
 }
 
-/** The theme the window paints now. A layout from another theme is not used. */
+// A colour value of a root custom property (`#rrggbb`, `rgb()`, `color-mix()`, ...).
+const COLOUR_VALUE = /^(#[0-9a-f]{3,8}|(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix)\()/i;
+
+/**
+ * The theme the window paints now, as far as it moves things: `data-theme`
+ * plus a hash of the root's inline theme variables that are not colours
+ * (fonts, corners, sizes). A layout from another key is not used. Colours are
+ * left out because the copy takes them from the live variables, and with
+ * "match app colours" each launch's scene picture tints them, later than the
+ * early box shows.
+ */
 export function currentEarlyComposerThemeKey(): string {
   if (typeof document === "undefined") return "";
   const root = document.documentElement;
-  return `${root.getAttribute("data-theme") ?? ""}|${hashString(root.style.cssText)}`;
+  const style = root.style;
+  const shape: string[] = [];
+  for (let index = 0; index < style.length; index += 1) {
+    const name = style.item(index);
+    const value = style.getPropertyValue(name).trim();
+    if (!COLOUR_VALUE.test(value)) shape.push(`${name}:${value}`);
+  }
+  return `${root.getAttribute("data-theme") ?? ""}|${hashString(shape.join(";"))}`;
 }
 
 function rectWithin(element: Element, container: DOMRect): EarlyComposerRect {
@@ -253,6 +277,16 @@ function capturePiece(element: Element, route: Element, routeRect: DOMRect, opti
  * its draft composer. Returns false when the screen is not at rest or not the
  * plain new-chat layout; the last record then stays.
  */
+// The Work page's own background: its CSS variable when it names one, so the
+// early screen follows the live theme (a scene tint changes each launch), or
+// the colour it computes to.
+function routeBackgroundOf(element: Element | null): string {
+  if (!element) return "";
+  const inline = element instanceof HTMLElement ? element.style.getPropertyValue("background").trim() : "";
+  if (/^var\(--[\w-]+\)$/.test(inline)) return inline;
+  return getComputedStyle(element).backgroundColor;
+}
+
 export function recordEarlyComposerLayout(dock: HTMLElement, projectRoot: string): boolean {
   if (typeof window === "undefined") return false;
   const route = dock.closest(`[${WORK_ROUTE_ATTRIBUTE}]`);
@@ -263,9 +297,12 @@ export function recordEarlyComposerLayout(dock: HTMLElement, projectRoot: string
   if (!route || !surface || !emptyState || !dock.closest("[data-chat-composer-wrapper]")) return false;
   if (!(textField instanceof HTMLTextAreaElement) || textField.value !== "") return false;
   if (dock.getClientRects().length === 0 || !atRest(dock, route)) return false;
-  const backdrop = surface.querySelector(".ade-tool-picker-backdrop");
-  // A scene picture behind the screen cannot be drawn without its renderer.
-  if (backdrop?.getAttribute("data-backdrop") === "scene") return false;
+  const backdropKind = surface.querySelector(".ade-tool-picker-backdrop")?.getAttribute("data-backdrop") ?? null;
+  // The scene has not settled (shuffle still picks): the layout may change in a moment.
+  if (backdropKind === "settling") return false;
+  const scene = backdropKind === "scene" ? "image" : "flat";
+  // The page and the backdrop must agree (`data-scene` hides the wordmark), or the screen is mid-change.
+  if ((document.documentElement.getAttribute("data-scene") === "image") !== (scene === "image")) return false;
   const routeRect = route.getBoundingClientRect();
   if (routeRect.width <= 0 || routeRect.height <= 0) return false;
 
@@ -273,7 +310,8 @@ export function recordEarlyComposerLayout(dock: HTMLElement, projectRoot: string
   if (!composer) return false;
   const wordmarkElement = emptyState.querySelector(".ade-draft-wordmark img");
   const pillsElement = surface.querySelector("[data-onboarding-anchor='draft-mode-switch']");
-  const wordmark = wordmarkElement && atRest(wordmarkElement, route)
+  // On a scene picture the wordmark is hidden (scene.css) and has no box.
+  const wordmark = wordmarkElement && wordmarkElement.getClientRects().length > 0 && atRest(wordmarkElement, route)
     ? capturePiece(wordmarkElement, route, routeRect)
     : null;
   const pills = pillsElement && atRest(pillsElement, route)
@@ -293,8 +331,9 @@ export function recordEarlyComposerLayout(dock: HTMLElement, projectRoot: string
     chatFontSize: dock.style.getPropertyValue("--chat-font-size").trim(),
     devicePixelRatio: window.devicePixelRatio || 1,
     route: { width: routeRect.width, height: routeRect.height },
-    routeBackground: routeChild ? getComputedStyle(routeChild).backgroundColor : "",
+    routeBackground: routeBackgroundOf(routeChild),
     surface: rectWithin(surface, routeRect),
+    scene,
     composer,
     wordmark,
     pills,
@@ -338,6 +377,7 @@ export function readEarlyComposerLayout(): EarlyComposerLayout | null {
     if (!parsed || parsed.version !== LAYOUT_VERSION) return null;
     if (typeof parsed.projectRoot !== "string" || typeof parsed.themeKey !== "string") return null;
     if (!parsed.route || !isRect(parsed.surface) || !isPiece(parsed.composer)) return null;
+    if (parsed.scene !== "image" && parsed.scene !== "flat") return null;
     if (parsed.wordmark != null && !isPiece(parsed.wordmark)) return null;
     if (parsed.pills != null && !isPiece(parsed.pills)) return null;
     if (!parsed.text || typeof parsed.text.className !== "string" || typeof parsed.text.height !== "number") return null;
@@ -364,6 +404,8 @@ export type EarlyComposerContext = {
   laneCount: number;
   chatFontSizePx: number;
   route: { width: number; height: number } | null;
+  /** The scene will show a picture once it settles (`sceneWillShowPicture`); null when that is not known yet. */
+  sceneShown: boolean | null;
 };
 
 export type EarlyComposerDecision =
@@ -419,6 +461,8 @@ export function decideEarlyComposer(context: EarlyComposerContext): EarlyCompose
   ) {
     return { ok: false, reason: "layout-size" };
   }
+  if (context.sceneShown === null) return { ok: false, reason: "scene-unknown" };
+  if (layout.scene !== (context.sceneShown ? "image" : "flat")) return { ok: false, reason: "layout-scene" };
   if (!newChatDraftIsEmpty(context.projectRoot)) return { ok: false, reason: "saved-draft" };
   return { ok: true, layout };
 }

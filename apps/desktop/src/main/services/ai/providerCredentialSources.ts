@@ -177,6 +177,54 @@ function claudeCacheKey(configHome?: string): string {
 const KEYCHAIN_ITEM_NOT_FOUND_EXIT = 44;
 
 /**
+ * Keychain answers that only a keychain write can change, kept while the
+ * login keychain file is unchanged.
+ *
+ * The provider status runs `security` for Claude's login on every rebuild
+ * (once to read the item, and once more for its attributes when the read
+ * found nothing), each a process of its own. Adding, changing or deleting an
+ * item writes `login.keychain-db`, which moves its `ino`/`mtime`/`size`, so
+ * while that stat holds a "no such item" (and an attribute probe's "present")
+ * is still the answer. A secret is never kept here, failures (a locked
+ * keychain, a timeout) are never kept, and an answer older than
+ * {@link KEYCHAIN_ANSWER_MAX_AGE_MS} is asked again in any case.
+ */
+const KEYCHAIN_ANSWER_MAX_AGE_MS = 10 * 60_000;
+type KeychainAnswer = { stamp: string; exitCode: number; atMs: number };
+const keychainAnswers = new Map<string, KeychainAnswer>();
+
+function loginKeychainStamp(): string | null {
+  try {
+    const stat = fs.statSync(path.join(os.homedir(), "Library", "Keychains", "login.keychain-db"));
+    return `${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+
+function keptKeychainAnswer(key: string): number | null {
+  const kept = keychainAnswers.get(key);
+  if (!kept) return null;
+  if (Date.now() - kept.atMs >= KEYCHAIN_ANSWER_MAX_AGE_MS || loginKeychainStamp() !== kept.stamp) {
+    keychainAnswers.delete(key);
+    return null;
+  }
+  return kept.exitCode;
+}
+
+function keepKeychainAnswer(key: string, stampBefore: string | null, exitCode: number): void {
+  // The stamp is read before `security` runs: a write that lands while it
+  // runs moves the stamp, and the next read asks again.
+  if (stampBefore === null) return;
+  keychainAnswers.set(key, { stamp: stampBefore, exitCode, atMs: Date.now() });
+}
+
+/** Drops every kept keychain answer (tests, and a sign-in ADE itself started). */
+export function clearKeptKeychainAnswers(): void {
+  keychainAnswers.clear();
+}
+
+/**
  * Whether Claude's login item can be read from the macOS keychain right now:
  * `present`, `absent` (really signed out), or `unreadable` (the keychain did
  * not answer, as when it waits on an unanswered password dialog). Reads the
@@ -184,11 +232,15 @@ const KEYCHAIN_ITEM_NOT_FOUND_EXIT = 44;
  */
 export async function probeClaudeKeychainLogin(configHome?: string): Promise<"present" | "absent" | "unreadable"> {
   if (process.platform !== "darwin") return "present";
-  const result = await runReapedCommand(
-    "/usr/bin/security",
-    ["find-generic-password", "-a", claudeKeychainAccountName(), "-s", claudeKeychainServiceName(configHome)],
-    { timeoutMs: 3_000, maxBuffer: 64 * 1024 },
-  );
+  const args = ["find-generic-password", "-a", claudeKeychainAccountName(), "-s", claudeKeychainServiceName(configHome)];
+  const answerKey = `attributes\0${args.join("\0")}`;
+  const kept = keptKeychainAnswer(answerKey);
+  if (kept !== null) return kept === 0 ? "present" : "absent";
+  const stampBefore = loginKeychainStamp();
+  const result = await runReapedCommand("/usr/bin/security", args, { timeoutMs: 3_000, maxBuffer: 64 * 1024 });
+  if (result.exitCode === 0 || result.exitCode === KEYCHAIN_ITEM_NOT_FOUND_EXIT) {
+    keepKeychainAnswer(answerKey, stampBefore, result.exitCode);
+  }
   if (result.exitCode === 0) return "present";
   if (result.exitCode === KEYCHAIN_ITEM_NOT_FOUND_EXIT) return "absent";
   return "unreadable";
@@ -216,15 +268,22 @@ async function readClaudeCredentialSource(
   // config home there, which is the fallback below.
   if (process.platform === "darwin" && options.allowKeychain !== false) {
     const service = claudeKeychainServiceName(options.configHome);
+    const secretArgs = ["find-generic-password", "-a", claudeKeychainAccountName(), "-s", service, "-w"];
+    const missKey = `secret\0${secretArgs.join("\0")}`;
     try {
+      // Only "no such item" is kept (see `keychainAnswers`); a found item is
+      // read again each time, since its secret is never kept here.
+      const keptMiss = keptKeychainAnswer(missKey);
+      const stampBefore = keptMiss === null ? loginKeychainStamp() : null;
       // `security` itself, reaped: a shell around it left `security` running
       // when the timeout killed the shell. With the account, as Claude Code
       // reads it: a duplicate item under another account is not this login.
-      const result = await runReapedCommand(
-        "/usr/bin/security",
-        ["find-generic-password", "-a", claudeKeychainAccountName(), "-s", service, "-w"],
-        { timeoutMs: 5_000, maxBuffer: 256 * 1024 },
-      );
+      const result = keptMiss !== null
+        ? { exitCode: KEYCHAIN_ITEM_NOT_FOUND_EXIT, stdout: "", stderr: "" }
+        : await runReapedCommand("/usr/bin/security", secretArgs, { timeoutMs: 5_000, maxBuffer: 256 * 1024 });
+      if (keptMiss === null && result.exitCode === KEYCHAIN_ITEM_NOT_FOUND_EXIT) {
+        keepKeychainAnswer(missKey, stampBefore, KEYCHAIN_ITEM_NOT_FOUND_EXIT);
+      }
       if (result.exitCode === 0 && result.stdout.trim()) {
         const credentials = parseClaudeCredentials(
           safeJsonParse<Record<string, unknown>>(result.stdout.trim(), {}),
@@ -303,6 +362,7 @@ function claudeCacheEntry(key: string): ClaudeCredentialCacheEntry {
 /** Clears every account's cache. */
 export function clearClaudeCredentialCache(): void {
   claudeCredentialCache.clear();
+  keychainAnswers.clear();
 }
 
 /**
@@ -313,6 +373,8 @@ export function clearClaudeCredentialCache(): void {
  */
 export function invalidateCachedClaudeCredentials(configHome?: string): void {
   claudeCredentialCache.delete(claudeCacheKey(configHome));
+  // A re-read was asked for: no kept "no such item" may answer it.
+  keychainAnswers.clear();
 }
 
 export function cacheClaudeCredentials(

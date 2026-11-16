@@ -359,7 +359,10 @@ import fs from "node:fs";
 import net from "node:net";
 import { createAdeRpcRequestHandler } from "../../../ade-cli/src/adeRpcServer";
 // The buffer's own module: the brain's bootstrap brings its whole service
-// graph (the chat service and the Claude Agent SDK with it).
+// graph (the chat service and the Claude Agent SDK with it). Its first import
+// marks a packaged bundle as packaged, which `shared/accountDirectory` reads,
+// so main keeps that import, at the same point in the order.
+import "../../../ade-cli/src/lib/packagedRuntimeFlag";
 import { createEventBuffer } from "../../../ade-cli/src/eventBuffer";
 import type { AdeRuntime, AdeRuntimePaths } from "../../../ade-cli/src/bootstrap";
 import {

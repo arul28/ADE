@@ -4,6 +4,10 @@ import { useLocation } from "react-router-dom";
 import { selectActiveProjectRoot, selectWorkViewState, useAppStore } from "../../state/appStore";
 import { fgTint } from "../lanes/laneDesignTokens";
 import { isImeComposing } from "../../lib/imeComposition";
+import { useAppearanceStore } from "../../state/appearanceStore";
+import { DEFAULT_SCENE_PREFERENCES } from "../../scene/scenePreferences";
+import { sceneWillShowPicture, useActiveScene } from "../../scene/useScene";
+import { SceneImageLayer } from "../../scene/SceneImageLayer";
 import {
   activateEarlyComposer,
   decideEarlyComposer,
@@ -233,11 +237,15 @@ function EarlyNewChatScreen({
           height: layout.surface.height,
         }}
       >
-        {/* The flat form of the new-chat backdrop, which is also the first
-            paint of the real one (`WorkToolPickerBackdrop`). */}
-        <div aria-hidden="true" className="ade-tool-picker-backdrop" data-field="window">
-          <div className="ade-tool-picker-static absolute inset-0" />
-        </div>
+        {layout.scene === "image" ? (
+          <EarlySceneBackdrop />
+        ) : (
+          // The flat form of the new-chat backdrop, which is also the first
+          // paint of the real one (`WorkToolPickerBackdrop`).
+          <div aria-hidden="true" className="ade-tool-picker-backdrop" data-field="window">
+            <div className="ade-tool-picker-static absolute inset-0" />
+          </div>
+        )}
       </div>
       {layout.pills ? <PieceFrame piece={layout.pills} offset={offset} /> : null}
       {layout.wordmark ? <PieceFrame piece={layout.wordmark} offset={offset} shiftY={shiftY} /> : null}
@@ -249,6 +257,29 @@ function EarlyNewChatScreen({
         frameRef={composerFrameRef}
       />
       {textField}
+    </div>
+  );
+}
+
+/**
+ * The scene backdrop of the new-chat screen, as `WorkToolPickerBackdrop`
+ * draws it for the window field: the static gradient, and over it the
+ * window's current picture (the same one the top bar shows, from the same
+ * scene cache), with the same fit, position, veil and texture. While shuffle
+ * still picks, it is the static gradient, as the top bar is then.
+ */
+function EarlySceneBackdrop() {
+  const scene = useActiveScene();
+  const showPicture = scene.kind === "image" && scene.showImage;
+  return (
+    <div
+      aria-hidden="true"
+      className="ade-tool-picker-backdrop"
+      data-field="window"
+      data-backdrop={showPicture ? "scene" : "settling"}
+    >
+      <div className="ade-tool-picker-static absolute inset-0" />
+      {showPicture ? <SceneImageLayer scene={scene} /> : null}
     </div>
   );
 }
@@ -270,6 +301,7 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
   const draftOnCloud = useAppStore((s) => selectWorkViewState(projectRoot)(s).draftCloudTarget != null);
   const laneCount = useAppStore((s) => s.lanes.length);
   const chatFontSizePx = useAppStore((s) => s.chatFontSizePx);
+  const scenePreferences = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
   // Once the early box is on screen it stays until the Work page replaces it,
   // so text the person typed never turns back into a skeleton.
   const [heldLayout, setHeldLayout] = React.useState<EarlyComposerLayout | null>(null);
@@ -314,6 +346,7 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
     laneCount,
     chatFontSizePx,
     route: geometry?.size ?? null,
+    sceneShown: sceneWillShowPicture(scenePreferences),
   }), [
     activeGridSetId,
     activeItemId,
@@ -327,6 +360,7 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
     location.pathname,
     location.search,
     projectRoot,
+    scenePreferences,
     shown,
   ]);
 

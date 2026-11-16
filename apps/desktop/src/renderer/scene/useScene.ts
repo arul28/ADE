@@ -19,8 +19,12 @@ import { listUserScenes, subscribeUserScenes, userSceneUrl, type UserSceneSummar
 export type ActiveScene =
   /** The flat theme background (mode `plain`): no mesh is drawn and nothing moves. */
   | { kind: "plain" }
-  /** The theme's animated mesh (mode `gradient`, or a picture that is gone). */
-  | { kind: "gradient" }
+  /**
+   * The theme's animated mesh (mode `gradient`, or a picture that is gone).
+   * `pending`: shuffle has not drawn its picture yet (it waits for the user
+   * library), so a picture may still replace the mesh in a moment.
+   */
+  | { kind: "gradient"; pending?: true }
   | {
       kind: "image";
       id: string;
@@ -240,6 +244,25 @@ export function sceneIdFor(prefs: ScenePreferences): string | null {
   return null;
 }
 
+/**
+ * Whether the scene will show a picture once it settles, read from the
+ * preferences alone, before the user library loads: the boot code that must
+ * know the window's final look early (the early prompt box) asks this. Null
+ * when only the user library can tell (shuffle with no bundled picture that
+ * fits this screen). A user picture chosen by hand counts as shown; if it was
+ * deleted, the gradient shows instead.
+ */
+export function sceneWillShowPicture(prefs: ScenePreferences): boolean | null {
+  if (!prefs.showImage) return false;
+  if (prefs.mode === "image") {
+    const id = prefs.imageId;
+    return id !== null && (findBundledScene(id) !== null || isUserSceneId(id));
+  }
+  if (prefs.mode !== "shuffle") return false;
+  if (shufflePick !== null || shufflePool(prefs).length > 0) return true;
+  return userScenesLoaded ? false : null;
+}
+
 export function useActiveScene(): ActiveScene {
   const prefs = useAppearanceStore((s) => s.interfacePreferences.scene ?? DEFAULT_SCENE_PREFERENCES);
   useSyncExternalStore(subscribe, () => snapshotVersion);
@@ -261,7 +284,10 @@ export function useActiveScene(): ActiveScene {
     if (id) load(id);
   }, [id]);
 
-  if (!id) return prefs.mode === "plain" ? { kind: "plain" } : { kind: "gradient" };
+  if (!id) {
+    if (prefs.mode === "plain") return { kind: "plain" };
+    return waitingForLibrary ? { kind: "gradient", pending: true } : { kind: "gradient" };
+  }
   const entry = entries.get(id);
   // A user picture that no longer exists falls back to the gradient.
   if (entry?.done && !entry.url) return { kind: "gradient" };

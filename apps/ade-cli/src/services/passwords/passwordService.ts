@@ -170,6 +170,9 @@ export function createPasswordService(args: {
     return accountId;
   };
 
+  /** Caches `readCache` built because none of this account was stored (none, unreadable, or another account's). */
+  const unstoredCaches = new WeakSet<CacheShape>();
+
   async function readCache(accountId: string): Promise<CacheShape> {
     const raw = await store.get(CACHE_KEY);
     if (raw) {
@@ -181,7 +184,9 @@ export function createPasswordService(args: {
         logger.warn("passwords.cache_unreadable", {});
       }
     }
-    return { v: 1, accountId, cursor: null, items: [], pending: [] };
+    const fresh: CacheShape = { v: 1, accountId, cursor: null, items: [], pending: [] };
+    unstoredCaches.add(fresh);
+    return fresh;
   }
 
   async function writeCache(cache: CacheShape): Promise<void> {
@@ -411,15 +416,27 @@ export function createPasswordService(args: {
         pulledOldKey = await vaultKey(accountId, startedAt);
         await dropKey();
       }
+      let cacheChanged = false;
       const toPush = await withCache(async () => {
         if (purgedSince(startedAt, accountId)) return null;
         const cache = await readCache(accountId);
-        const byId = new Map(cache.items.map((item) => [item.id, item]));
-        for (const [id, row] of pulled) byId.set(id, row);
-        cache.items = [...byId.values()];
-        cache.cursor = cursor;
-        if (keyIsStale && cache.pending.length) resealStale(accountId, cache, await vaultKey(accountId, startedAt), pulledOldKey);
-        await writeCache(cache);
+        // A pull that brought nothing and left the cursor where it was changes
+        // nothing in the cache. Writing it anyway (every minute) re-sealed the
+        // whole credential store and cleared every reader's settled read, so
+        // the next read decrypted again and, on macOS, started `security`.
+        const reseal = keyIsStale && cache.pending.length > 0;
+        // A cache that was not stored for this account (first sync, or another
+        // account's left on this machine) is still written, as before.
+        const changed = pulled.size > 0 || cache.cursor !== cursor || reseal || unstoredCaches.has(cache);
+        cacheChanged = changed;
+        if (changed) {
+          const byId = new Map(cache.items.map((item) => [item.id, item]));
+          for (const [id, row] of pulled) byId.set(id, row);
+          cache.items = [...byId.values()];
+          cache.cursor = cursor;
+          if (reseal) resealStale(accountId, cache, await vaultKey(accountId, startedAt), pulledOldKey);
+          await writeCache(cache);
+        }
         return cache.pending.map((write) => ({ ...write }));
       });
       if (!toPush) return;
@@ -491,6 +508,10 @@ export function createPasswordService(args: {
         }
       }
       if (purgedSince(startedAt, accountId)) return;
+      // A sync that pulled nothing, pushed nothing and kept the key leaves the
+      // opened secrets as they are (a local save updates them itself), so they
+      // are not decrypted again each minute.
+      if (!cacheChanged && !keyIsStale && toPush.length === 0 && openedFor === accountId) return;
       openedFor = null;
       // Open what the sync brought in now, so a caller that cannot wait (a
       // webhook check) reads today's secrets, not the last open's.

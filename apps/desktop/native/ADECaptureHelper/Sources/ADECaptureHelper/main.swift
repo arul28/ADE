@@ -223,6 +223,54 @@ final class FlashPresenter {
     }
 }
 
+// MARK: - AppKit on demand
+
+/// NSApplication, started the first time the helper has to show the flash.
+///
+/// At rest the helper is an event tap (or the poll timer) and a stdin reader
+/// on the main run loop, and neither needs NSApplication, whose window-server
+/// session and app machinery were most of the helper's resident memory. The
+/// entry point runs a plain main run loop until a flash asks for AppKit; then
+/// it stops that loop, starts NSApplication on the same main run loop (the tap
+/// source, the poll timer and the main queue carry over), and the flash runs.
+/// From then on the helper is exactly the AppKit app it always was.
+///
+/// Main-queue confined, like everything else here.
+final class AppKitOnDemand {
+    private(set) var wanted = false
+    private var started = false
+    private var pending: [() -> Void] = []
+
+    /// Runs `work` now if AppKit is up, else as soon as the entry point starts it.
+    func run(_ work: @escaping () -> Void) {
+        if started {
+            work()
+            return
+        }
+        pending.append(work)
+        wanted = true
+        CFRunLoopStop(CFRunLoopGetMain())
+    }
+
+    /// Called by the entry point once NSApplication exists, before `run()`.
+    func didStart() {
+        started = true
+        let work = pending
+        pending = []
+        DispatchQueue.main.async { work.forEach { $0() } }
+    }
+
+    /// Ends the process the way `NSApp.terminate` does (status 0), with or
+    /// without AppKit running.
+    func terminate() {
+        if started {
+            NSApp.terminate(nil)
+        } else {
+            exit(0)
+        }
+    }
+}
+
 // MARK: - Helper
 
 /// The event tap's C callback. The app object is the `userInfo` pointer, so the
@@ -243,6 +291,7 @@ private func captureChordTapCallback(
 final class CaptureHelperApp: NSObject {
     private let writer = EventWriter()
     private let capturer: WindowCapturer
+    private let appKit: AppKitOnDemand
     private let flash = FlashPresenter()
     /// `.flagsChanged` key codes, the route that still works on macOS 27.
     private var detector = CommandKeyChordDetector()
@@ -259,8 +308,9 @@ final class CaptureHelperApp: NSObject {
     /// is invisible in Activity Monitor.
     private let pollInterval: TimeInterval = 0.04
 
-    init(outputDirectory: URL) {
+    init(outputDirectory: URL, appKit: AppKitOnDemand) {
         capturer = WindowCapturer(outputDirectory: outputDirectory)
+        self.appKit = appKit
         super.init()
     }
 
@@ -394,7 +444,9 @@ final class CaptureHelperApp: NSObject {
             // stdin closed: ADE is gone, so nothing is listening for events any
             // more. Exiting here is what stops an orphaned helper polling
             // forever if the parent dies without sending `quit`.
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+            DispatchQueue.main.async {
+                if let self { self.appKit.terminate() } else { exit(0) }
+            }
         }
     }
 
@@ -403,7 +455,7 @@ final class CaptureHelperApp: NSObject {
         case .quit:
             stopPolling()
             removeEventTap()
-            NSApp.terminate(nil)
+            appKit.terminate()
         case let .settings(enabled):
             self.enabled = enabled
             // Drop the latch so re-enabling does not fire on keys already held.
@@ -419,6 +471,9 @@ final class CaptureHelperApp: NSObject {
     private func performCapture() {
         guard !capturing else { return }
         capturing = true
+        // Start AppKit now, while screencapture runs (100-300ms), so the
+        // first flash is not late; starting it takes 30-200ms. No-op once up.
+        appKit.run {}
         // Off the main thread: screencapture takes 100-300ms and blocking main
         // would stall the poll timer, so the chord would appear to stick.
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -427,7 +482,8 @@ final class CaptureHelperApp: NSObject {
                 let result = try self.capturer.capture()
                 DispatchQueue.main.async {
                     self.capturing = false
-                    self.flash.flash(bounds: result.window.bounds)
+                    let bounds = result.window.bounds
+                    self.appKit.run { self.flash.flash(bounds: bounds) }
                     self.writer.emit(.captured(
                         path: result.path.path,
                         appName: result.window.appName,
@@ -464,6 +520,17 @@ let outputDirectory = URL(fileURLWithPath:
         ?? NSTemporaryDirectory().appending("ade-capture-fallback")
 )
 
+let appKit = AppKitOnDemand()
+let helper = CaptureHelperApp(outputDirectory: outputDirectory, appKit: appKit)
+helper.start()
+
+// A plain run loop until the first flash wants AppKit. On the main thread it
+// never runs dry (the main queue counts as a source), and a stop that did not
+// come from `AppKitOnDemand` just runs it again.
+while !appKit.wanted {
+    CFRunLoopRun()
+}
+
 let application = NSApplication.shared
 // `.accessory`, not `.regular` or `.prohibited`. `.regular` would put a Dock
 // icon and a menu bar on a process with no UI; `.prohibited` cannot reliably
@@ -471,7 +538,5 @@ let application = NSApplication.shared
 // accessory app shows windows without a Dock tile and never becomes the active
 // app on its own — so the window we are about to capture keeps its focus.
 application.setActivationPolicy(.accessory)
-
-let helper = CaptureHelperApp(outputDirectory: outputDirectory)
-helper.start()
+appKit.didStart()
 application.run()

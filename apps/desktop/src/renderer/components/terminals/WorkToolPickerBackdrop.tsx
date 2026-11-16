@@ -96,6 +96,10 @@ export function WorkToolPickerBackdrop({
   const showPicture = !colors && field === "window" && scene.kind === "image" && scene.showImage;
   // The `plain` scene: the flat CSS background below, with no mesh and no loop.
   const still = !colors && scene.kind === "plain";
+  // Shuffle has not drawn its picture yet: a mesh built now would be thrown
+  // away when the picture arrives (the top bar did that on every launch), so
+  // the static gradient holds until the scene settles.
+  const settling = !colors && scene.kind === "gradient" && scene.pending === true;
   const scenePalette = colors ?? (scene.kind === "image" ? scene.palette : null);
   const override = useMemo(
     () => (scenePalette ? backdropThemeFromScene(scenePalette, theme) : undefined),
@@ -120,7 +124,7 @@ export function WorkToolPickerBackdrop({
   }, []);
 
   useEffect(() => {
-    if (webglRefused || showPicture || still) return;
+    if (webglRefused || showPicture || still || settling) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const renderer = createBackdropRenderer({
@@ -139,7 +143,7 @@ export function WorkToolPickerBackdrop({
       renderer?.dispose();
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, palette, override, reduceMotion, clockOrigin, field, webglRefused, motionEpoch, showPicture, still]);
+  }, [theme, palette, override, reduceMotion, clockOrigin, field, webglRefused, motionEpoch, showPicture, still, settling]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);
@@ -150,14 +154,14 @@ export function WorkToolPickerBackdrop({
   return (
     <div
       aria-hidden="true"
-      data-backdrop={showPicture ? "scene" : webglRefused || still ? "static" : "shader"}
+      data-backdrop={showPicture ? "scene" : settling ? "settling" : webglRefused || still ? "static" : "shader"}
       data-field={field}
       className={cn("ade-tool-picker-backdrop", className)}
     >
       <div className="ade-tool-picker-static absolute inset-0" />
       {showPicture && scene.kind === "image" ? (
         <SceneImageLayer scene={scene} />
-      ) : webglRefused || still ? null : (
+      ) : webglRefused || still || settling ? null : (
         <canvas
           ref={canvasRef}
           data-backdrop-canvas=""

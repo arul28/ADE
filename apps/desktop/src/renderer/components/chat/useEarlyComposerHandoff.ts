@@ -85,6 +85,36 @@ function finishHandoff(
   requestAnimationFrame(tick);
 }
 
+/**
+ * A record refused because the backdrop was still settling (shuffle picking
+ * its picture) is tried again once the scene changes, after that change has
+ * laid out, so a window that opens on the gradient and then shows a picture
+ * still records the picture's layout. Returns the stop.
+ */
+function recordWhenSceneSettles(dock: HTMLElement, projectRoot: string, readDraft: () => string): () => void {
+  const surface = dock.closest("[data-work-draft-surface]");
+  if (!surface || typeof MutationObserver === "undefined") return () => undefined;
+  let raf = 0;
+  const stop = () => {
+    observer.disconnect();
+    cancelAnimationFrame(raf);
+  };
+  const observer = new MutationObserver(() => {
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(() => {
+      if (layoutRecordedThisWindow || !dock.isConnected || readDraft() !== "") {
+        stop();
+        return;
+      }
+      layoutRecordedThisWindow = recordEarlyComposerLayout(dock, projectRoot);
+      if (layoutRecordedThisWindow) stop();
+    });
+  });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-scene"] });
+  observer.observe(surface, { attributes: true, attributeFilter: ["data-backdrop"], subtree: true });
+  return stop;
+}
+
 export function useEarlyComposerHandoff(args: {
   /** This is the Work tab's new-chat composer. */
   enabled: boolean;
@@ -103,13 +133,15 @@ export function useEarlyComposerHandoff(args: {
     const { dockRef, readDraft, applyDraft } = argsRef.current;
     const dock = dockRef.current;
     const hydrated = readDraft();
+    let stopRecordRetry: (() => void) | undefined;
     if (dock && projectRoot && hydrated === "" && !layoutRecordedThisWindow) {
       layoutRecordedThisWindow = recordEarlyComposerLayout(dock, projectRoot);
+      if (!layoutRecordedThisWindow) stopRecordRetry = recordWhenSceneSettles(dock, projectRoot, readDraft);
     }
     const claim = claimEarlyComposer(projectRoot);
     if (!claim) {
       retireEarlyComposer();
-      return;
+      return stopRecordRetry;
     }
     let expectedText = hydrated;
     let caret = { start: hydrated.length, end: hydrated.length };
@@ -124,7 +156,7 @@ export function useEarlyComposerHandoff(args: {
     }
     // No prompt box on screen (a panel holds it): the text is in the draft,
     // and the caret and an early Enter have nowhere to go.
-    if (!dock) return;
+    if (!dock) return stopRecordRetry;
     finishHandoff(dock, claim, expectedText, caret, () => {
       const current = argsRef.current.readDraft();
       const start = Math.min(caret.start, current.length);
@@ -138,6 +170,7 @@ export function useEarlyComposerHandoff(args: {
         }
       });
     });
+    return stopRecordRetry;
     // Mount only: the hand-over happens once, on the first draft composer.
   }, [enabled, projectRoot]);
 }

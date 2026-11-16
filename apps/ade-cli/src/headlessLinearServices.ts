@@ -1797,7 +1797,7 @@ export function createHeadlessGitHubService(
       if (args.method === "GET") {
         const etag = response.headers.get("etag");
         if (etag) {
-          conditionalRequestCache.store(cacheKey, { etag, data, linkHeader });
+          conditionalRequestCache.store(cacheKey, { etag, data, linkHeader }, text.length);
         }
       }
       return { data: data as T, response, linkHeader };

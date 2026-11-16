@@ -14,6 +14,7 @@ import {
   isSameCredentialFileStat,
   isSamePath,
   readCredentialFileStatSnapshot,
+  readCredentialFileStatSnapshotAsync,
   readJsonObject,
   readJsonObjectAsync,
   unlinkIfExists,
@@ -759,7 +760,47 @@ type SettledCredentialRead = {
   state: CredentialStoreReadState;
   values: Record<string, string>;
   expiresAt: number;
+  /**
+   * The machine key file's stat when these values were proven to open with
+   * it; `undefined` when it was not taken. With the credential file's stat it
+   * lets the expiry re-check skip the decode while neither file changed.
+   */
+  keyStat?: CredentialFileStatSnapshot;
 };
+
+/**
+ * The credential file's stat, taken once per event-loop turn and path.
+ *
+ * One account status read reaches `getSync` several times (the session, the
+ * lease, the relay check), and a status build calls it again for each field,
+ * all in the same turn. A peer process's write cannot be seen by this process
+ * any sooner than at the start of the next turn, so those calls share one
+ * `stat`: a read is at most one turn behind a peer's write, as if the turn had
+ * run a moment earlier. The stats are dropped when the turn ends
+ * (`setImmediate`), and a path's stat is dropped as soon as any store in this
+ * process writes that file, so in-process writes are seen at once.
+ */
+const credentialFileTurnStats = new Map<string, CredentialFileStatSnapshot | undefined>();
+let credentialFileTurnStatsDrop: ReturnType<typeof setImmediate> | null = null;
+
+function credentialFileStatThisTurn(filePath: string): CredentialFileStatSnapshot | undefined {
+  const key = path.resolve(filePath);
+  if (credentialFileTurnStats.has(key)) return credentialFileTurnStats.get(key);
+  const stat = readCredentialFileStatSnapshot(filePath);
+  credentialFileTurnStats.set(key, stat);
+  if (!credentialFileTurnStatsDrop) {
+    credentialFileTurnStatsDrop = setImmediate(() => {
+      credentialFileTurnStats.clear();
+      credentialFileTurnStatsDrop = null;
+    });
+    credentialFileTurnStatsDrop.unref?.();
+  }
+  return stat;
+}
+
+function forgetCredentialFileTurnStat(filePath: string): void {
+  credentialFileTurnStats.delete(path.resolve(filePath));
+}
 
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
@@ -932,7 +973,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readSettledCache(): Record<string, string> | null {
     const entry = this.settledRead;
     if (!entry) return null;
-    const stat = readCredentialFileStatSnapshot(this.credentialsPath);
+    const stat = credentialFileStatThisTurn(this.credentialsPath);
     if (stat === undefined || !isSameCredentialFileStat(stat, entry.stat)) {
       this.settledRead = null;
       return null;
@@ -957,7 +998,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       const stillSettled = await this.isStillSettledAsync(entry);
       if (this.settledRead !== entry) return;
       this.settledRead = stillSettled
-        ? { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS }
+        ? { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS, keyStat: stillSettled.keyStat }
         : null;
     })()
       .catch(() => undefined)
@@ -966,16 +1007,35 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       });
   }
 
-  private async isStillSettledAsync(entry: SettledCredentialRead): Promise<boolean> {
-    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return false;
+  /**
+   * Whether the entry still stands, and the machine key stat that proves it.
+   *
+   * The quarantine record is read on every re-check, so a quarantine is found
+   * as fast as before. The decode is the expensive part (the whole store is
+   * read and decrypted). Its answer depends only on the bytes of the
+   * credential file and of the machine key, so while neither file's
+   * `ino`/`mtime`/`size` moved since the entry was proven, the answer is the
+   * one it gave then: the same signal `readSettledCache` trusts for the values.
+   * A replaced or removed machine key moves its stat and takes the full check.
+   */
+  private async isStillSettledAsync(
+    entry: SettledCredentialRead,
+  ): Promise<{ keyStat: CredentialFileStatSnapshot | undefined } | null> {
+    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return null;
     // A missing store owes no write and has nothing to decrypt.
-    if (entry.stat === null) return true;
+    if (entry.stat === null) return { keyStat: entry.keyStat };
+    const keyStat = await readCredentialFileStatSnapshotAsync(this.machineKeyPath);
+    if (keyStat === null) return null;
+    if (keyStat !== undefined && entry.keyStat !== undefined && isSameCredentialFileStat(keyStat, entry.keyStat)) {
+      const stat = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
+      if (stat !== undefined && isSameCredentialFileStat(stat, entry.stat)) return { keyStat };
+    }
     const machineKey = await readMachineKeyIfExistsAsync(this.machineKeyPath);
-    if (!machineKey) return false;
+    if (!machineKey) return null;
     const { value: raw } = await readJsonObjectAsync(this.credentialsPath);
-    if (raw == null || Object.keys(raw).length === 0) return false;
+    if (raw == null || Object.keys(raw).length === 0) return null;
     const attempt = decodeMachineSealedStore(raw, machineKey);
-    return attempt?.ok === true && attempt.sealedBinding === "machine";
+    return attempt?.ok === true && attempt.sealedBinding === "machine" ? { keyStat } : null;
   }
 
   /**
@@ -996,6 +1056,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     try {
       const before = readCredentialFileStatSnapshot(this.credentialsPath);
       if (!before) return null;
+      // Taken before the key is read: a key replaced in between leaves an
+      // older stat here, which only sends the expiry re-check to a full decode.
+      const keyStatAtRead = readCredentialFileStatSnapshot(this.machineKeyPath) ?? undefined;
       const machineKey = readMachineKeyIfExists(this.machineKeyPath);
       if (!machineKey) return null;
       const raw = readJsonObject(this.credentialsPath);
@@ -1013,6 +1076,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         state: "available",
         values: attempt.values,
         expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
+        keyStat: keyStatAtRead,
       };
       return attempt.values;
     } catch {
@@ -1501,10 +1565,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private writeAll(values: Record<string, string>): void {
     this.settledRead = null;
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    writeFileAtomic(
-      this.credentialsPath,
-      `${JSON.stringify(serializeStore(values, machineKey, "machine"), null, 2)}\n`,
-    );
+    try {
+      writeFileAtomic(
+        this.credentialsPath,
+        `${JSON.stringify(serializeStore(values, machineKey, "machine"), null, 2)}\n`,
+      );
+    } finally {
+      forgetCredentialFileTurnStat(this.credentialsPath);
+    }
   }
 
   /**
