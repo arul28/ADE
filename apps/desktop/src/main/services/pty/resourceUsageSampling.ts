@@ -17,15 +17,27 @@ export type ProcessMetricRow = {
   ppid: number;
   cpuPercent: number;
   rssKB: number;
-  /** The executable's file name (`ps` comm), when the sample has it. */
+  /** The executable's file name (`ps` comm; macOS: ucomm, at most 16 characters), when the sample has it. */
   command?: string;
 };
 
 const PROCESS_SAMPLE_TIMEOUT_MS = 1_000;
 const PROCESS_SAMPLE_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
 const PROCESS_TREE_MAX_DEPTH = 12;
-/** The Android emulator launcher and its QEMU process (Linux truncates comm to 15 characters). */
+/** The Android emulator launcher and its QEMU process (Linux truncates comm to 15 characters, macOS ucomm to 16). */
 const ANDROID_EMULATOR_COMMAND = /^(?:emulator|qemu-system-[\w-]*)$/u;
+
+/**
+ * macOS asks for `ucomm`, the kernel's short process name: `comm` makes `ps`
+ * read every process's arguments for the full path, which doubled its CPU
+ * (about 24 ms against 12 ms for 850 processes) and its output (90 KB against
+ * 35 KB, all parsed in Electron main). Only the file name is ever used, and a
+ * truncated `qemu-system-aarch64` still matches `ANDROID_EMULATOR_COMMAND`.
+ * Linux `comm` is already the short name.
+ */
+function processSampleFormat(platform: NodeJS.Platform): string {
+  return platform === "darwin" ? "pid=,ppid=,pcpu=,rss=,ucomm=" : "pid=,ppid=,pcpu=,rss=,comm=";
+}
 
 export function parseProcessMetricRows(stdout: string): ProcessMetricRow[] {
   return stdout
@@ -156,7 +168,7 @@ export function createProcessMetricRowsCollector(
     };
 
     try {
-      child = spawnImpl("ps", ["-axo", "pid=,ppid=,pcpu=,rss=,comm="], {
+      child = spawnImpl("ps", ["-axo", processSampleFormat(platform)], {
         stdio: ["ignore", "pipe", "ignore"],
         windowsHide: true,
       });
