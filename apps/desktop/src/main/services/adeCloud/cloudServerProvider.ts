@@ -202,7 +202,10 @@ export function createCloudServerProvider(deps: CloudServerProviderDeps): CloudP
 
     async listInstances(): Promise<CloudInstance[]> {
       const data = record(await request("GET", INSTANCES))?.data;
-      return Array.isArray(data) ? data.map(readInstance) : [];
+      // An unreadable reply is a failed read, never "no computers": a caller
+      // that reads absence as deleted (a launch's gone-computer check) must not.
+      if (!Array.isArray(data)) throw new Error("ADE Cloud sent a list of computers ADE couldn't read.");
+      return data.map(readInstance);
     },
 
     async getInstance(id: string): Promise<CloudInstance> {

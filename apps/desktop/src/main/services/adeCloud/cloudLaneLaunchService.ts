@@ -37,6 +37,8 @@ import {
   CANCELLED_CREATE_FOLLOW_MS,
   CANCELLED_CREATE_FOLLOW_POLL_MS,
   CANT_CARRY_FILES,
+  COMPUTER_DELETED_SENTENCE,
+  COMPUTER_GONE_CHECK_MS,
   cantDeleteComputer,
   DEFAULT_FINISHED_RETENTION_MS,
   DEFAULT_RESUME_DELAY_MS,
@@ -355,7 +357,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
 
   const onBrainEvent = (launchId: string, event: ChatLaunchEvent): void => {
     const record = records.get(launchId);
-    if (!record || !isHandedOff(record)) return;
+    if (!record || !isHandedOff(record) || record.snapshot.cloud.computerGone) return;
     if (event.type === "launch-removed") {
       if (event.launchId === launchId) markRemoved(launchId);
       return;
@@ -432,6 +434,33 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     runtime.timer.unref?.();
   };
 
+  /**
+   * A launch whose computer was deleted before it finished (from ADE, the web
+   * page, the phone, a cleanup) has no brain left to read, so its last
+   * snapshot ("running") would stay up for good. While the brain can't be
+   * read, ADE Cloud is asked whether the computer is still there, at most once
+   * a minute per launch; a gone computer ends the launch with a plain sentence.
+   */
+  const computerGoneCheckedAt = new Map<string, number>();
+  const endIfComputerGone = async (record: CloudLaneLaunchRecord): Promise<void> => {
+    const launchId = record.snapshot.launchId;
+    const instanceId = record.snapshot.cloud.instanceId;
+    if (!instanceId || isSettled(record)) return;
+    const now = Date.now();
+    if (now - (computerGoneCheckedAt.get(launchId) ?? 0) < COMPUTER_GONE_CHECK_MS) return;
+    computerGoneCheckedAt.set(launchId, now);
+    // The account's list, not a read of the one computer: a 404 also comes
+    // when the account has lost ADE Cloud, while a list that answers and
+    // leaves it out means it is gone. A list that fails proves nothing.
+    const instances = await (await providerClient()).listInstances();
+    const gone = !instances.some((instance) => instance.id === instanceId && instance.status !== "deleted");
+    if (!gone || records.get(launchId) !== record || isSettled(record)) return;
+    record.snapshot.cloud.computerGone = true;
+    stopFollowing(launchId);
+    const stage = record.snapshot.stages.find((entry) => entry.status === "running")?.id ?? "agent";
+    fail(record, stage, new LaunchStepError(COMPUTER_DELETED_SENTENCE));
+  };
+
   /** One read of the brain's snapshot. Null answers mean the brain dropped a finished launch. */
   const refreshFromBrain = async (record: CloudLaneLaunchRecord): Promise<void> => {
     const binding = record.snapshot.cloud.binding;
@@ -441,7 +470,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       const brain = await deps.callChatAction(binding, "getLaunch", { args: { launchId } }) as ChatLaunchSnapshot | null;
       const reading = runtimes.get(launchId);
       if (reading) reading.readFailing = false;
-      if (records.get(launchId) !== record) return;
+      // A read that was out when the computer was found gone never brings "running" back.
+      if (records.get(launchId) !== record || record.snapshot.cloud.computerGone) return;
       if (!brain) {
         markRemoved(launchId);
         return;
@@ -456,6 +486,9 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
       const repeat = reading?.readFailing === true;
       if (reading) reading.readFailing = true;
       logger[repeat ? "info" : "warn"]("cloud_lane_launch.brain_read_failed", { launchId, error: getErrorMessage(error) });
+      await endIfComputerGone(record).catch((goneError: unknown) => {
+        logger.info("cloud_lane_launch.computer_gone_check_failed", { launchId, error: getErrorMessage(goneError) });
+      });
     }
   };
 
@@ -862,7 +895,11 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     const launchId = record.snapshot.launchId;
     if (record.snapshot.phase === "cancelled") return served(record);
     if (record.snapshot.agentStarted || record.snapshot.phase === "completed") throw new Error(chatLaunchAlreadyStartedMessage(record.snapshot.kind));
-    if (isHandedOff(record)) {
+    const computerGone = record.snapshot.cloud.computerGone === true;
+    if (computerGone) {
+      // No brain to ask: the server's launch row is closed too, as far as it answers.
+      await cancelOnServer(record);
+    } else if (isHandedOff(record)) {
       const binding = record.snapshot.cloud.binding!;
       // The brain refuses once the agent runs; then nothing here is deleted.
       const brain = await deps.callChatAction(binding, "cancelLaunch", { args: { launchId } }) as ChatLaunchSnapshot | null;
@@ -895,7 +932,7 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
     if (pipeline) {
       await Promise.race([pipeline, sleep(CANCEL_PIPELINE_WAIT_MS)]);
     }
-    await cleanUp(record, { serverCancelled: !isHandedOff(record) && record.via === "server" });
+    await cleanUp(record, { serverCancelled: computerGone || (!isHandedOff(record) && record.via === "server") });
     return served(record);
   };
 
@@ -908,6 +945,8 @@ export function createCloudLaneLaunchService(deps: CloudLaneLaunchDeps) {
   const retry = async (args: ChatLaunchIdArgs, options: { sizeChoice?: ChatLaunchCloudState["sizeChoice"] } = {}): Promise<ChatLaunchSnapshot | null> => {
     const record = recordFor(args);
     if (!record) return null;
+    // Nothing is left to retry on: the prompt starts again on a new computer.
+    if (record.snapshot.cloud.computerGone) throw new AdeExpectedError(COMPUTER_DELETED_SENTENCE, "user");
     if (isHandedOff(record)) {
       const brain = await deps.callChatAction(record.snapshot.cloud.binding!, "retryLaunch", { args: { launchId: record.snapshot.launchId } }) as ChatLaunchSnapshot | null;
       if (brain) {

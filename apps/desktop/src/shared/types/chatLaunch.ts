@@ -159,6 +159,13 @@ export type ChatLaunchCloudState = {
    */
   handedOff: boolean;
   /**
+   * True once ADE Cloud's list no longer has this launch's computer (deleted
+   * from ADE, the web page, the phone or a cleanup) before it finished: the
+   * launch failed here, nothing reads that brain again, and Delete closes it
+   * without asking the computer.
+   */
+  computerGone?: boolean;
+  /**
    * What the start's GitHub check (contract C4) could not settle, in plain
    * words: GitHub didn't answer whether the repository is public, and the
    * account has no GitHub sign-in, so a private one won't clone. The card
