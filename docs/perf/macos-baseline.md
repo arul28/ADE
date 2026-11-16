@@ -648,7 +648,8 @@ vs 1.3 s / 17 KB.
 - **GitHub calls:** `pr.getChecks` and `pr.getStatus` take 1–1.5 s each
   (network) and dominate the Lanes and PRs IPC totals.
 - **Prewarmed Claude processes:** 150–420 MB each until they are reaped
-  after 3 minutes idle.
+  after 3 minutes idle. A new chat now starts its prewarm on the first
+  keystroke, not on focus; the idle memory of this change is not in the table.
 - **Typing:** a keystroke renders the composer's store reader, the composer,
   its shell and the drafts button (about 7 component renders per key in the
   browser mock). The drafts button still takes the draft text as a prop; the
@@ -667,6 +668,41 @@ vs 1.3 s / 17 KB.
 - **PRs tab:** the only tab with a long task on a warm visit (54-61 ms on the
   Mac Studio): the PR body's markdown parse and the mount of about 2,300
   elements.
+
+## Patterns that bloat ADE
+
+Small repeated work caused most of the idle cost that the Mac mini M4
+reference pass found. No single loop was to blame. Check each pattern before
+you add a poll, a timer, a spawn, a read or a background job.
+
+- **A poll path must be cheap.** Cache a read on a poll path against a change
+  signal or a time window. Do not read config, parse JSON, decode a token or
+  spawn a process on every poll. Found: `git config` on every window-session
+  read, and the brain parsing the same stored session JSON and JWT on every
+  status read.
+- **No `spawnSync` on the main thread of Electron.** A `launchctl` call on
+  every status poll older than 2 s blocked the main thread. A `ps` spawn
+  every 10 s for one number in the top bar cost a process each time. Cache the
+  answer, or compute it from data the app already holds.
+- **A periodic job gets its own small entry point.** The brain watchdog ran
+  the full 28.8 MB CLI bundle every minute (0.58 s CPU, 243 MB). The small
+  entry `watchdogCheck.cjs` costs 0.06 s and 75 MB. Never run the full CLI for
+  a timer.
+- **Rest a looping visual.** A blinking caret in a focused text box costs about
+  60 wakeups a second. `apps/desktop/src/renderer/lib/caretRest.ts` rests the
+  caret after 10 s without input, with `caret-animation: manual` in CSS. Apply
+  the same rule to any other idle animation or ticker.
+- **A prewarm starts on intent, not on focus.** Start a provider prewarm on the
+  first keystroke. A prewarm on focus holds 150-420 MB for a chat that the user
+  never writes in.
+- **A helper model call runs with no project context.** A side call, such as a
+  chat title, must not load project instructions, settings or hooks.
+- **Never block the first usable frame on the brain.** Show the cached state
+  first, then hand over to the live state.
+
+For each new poll, timer or spawn, state in the PR what it costs while the app
+is idle, and measure it with `process-cpu.sh` and `spawn-trace.cjs` (see
+**Scripts**).
 
 ## How to measure
 

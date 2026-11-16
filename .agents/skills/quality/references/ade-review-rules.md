@@ -255,6 +255,33 @@ typed tool or view is `/test`'s ADE MCP parity pass, not a finding here.
 
 ---
 
+## 14. Idle and poll-path bloat
+
+**Class:** Small repeated work that raises idle CPU, memory and wakeups. ADE
+paid for it before: see **Patterns that bloat ADE** in
+`docs/perf/macos-baseline.md`.
+
+**Check:** For each new or changed poll, timer, interval, animation, spawn,
+watcher or periodic job in the diff, confirm:
+
+- A read on a poll path is cached against a change signal or a time window.
+  It does not read config, parse stored JSON or decode a token on each poll.
+- Electron's main thread does not call `spawnSync` or `execFileSync` on a poll
+  path.
+- A periodic job in the brain uses its own small entry point, not the full CLI
+  bundle.
+- A looping animation or caret rests when the user is idle.
+- A provider prewarm starts on intent (first keystroke), not on focus.
+- A helper model call (title, summary) runs with no project instructions,
+  settings or hooks.
+- The first usable frame does not wait on the brain.
+
+A poll that spawns a process or parses data on every tick is Medium. Raise it
+to High if the tick runs on Electron's main thread or at 1 Hz or faster. The
+perf budget in `AGENTS.md` still decides what needs a measurement.
+
+---
+
 ## Output
 
 Same per-finding shape as `correctness-security-review.md`: Severity / Location

@@ -35,6 +35,7 @@ Do not make speculative cleanup the main result. If you cannot reproduce a suspe
 
 1. Read the relevant docs before editing:
    - `AGENTS.md` or the prompt-provided project instructions.
+   - `docs/perf/macos-baseline.md`: the table and its ceilings, **Patterns that bloat ADE**, and the measuring scripts under `scripts/perf/`.
    - `docs/ARCHITECTURE.md` if the change crosses app/service boundaries.
    - Feature docs under `docs/features/**` that match `$ARGUMENTS`.
    - Existing playbooks if the surface involves PRs, lanes, computer use, sync, or release.
@@ -238,7 +239,7 @@ node -e 'let i=0; const t=setInterval(()=>{process.stdout.write("ade-stress "+(+
 
 Prefer fixes in this order:
 
-1. Remove runaway work:
+1. Remove runaway work (first check the diff against **Patterns that bloat ADE** in `docs/perf/macos-baseline.md`):
    - Stop polling when hidden, closed, or unfocused.
    - Deduplicate identical in-flight calls.
    - Debounce or throttle high-frequency refresh.
@@ -273,15 +274,13 @@ Prefer fixes in this order:
 
 ## Phase 6: Verify
 
-Run the smallest meaningful checks first, then broaden.
+Run the smallest meaningful checks first. Do not run the full test suite locally; CI runs it.
 
 Desktop checks to choose from:
 
 ```bash
 npm --prefix apps/desktop run typecheck
 npm --prefix apps/desktop run test -- <targeted test files>
-npm --prefix apps/desktop run test
-npm --prefix apps/desktop run build
 npm --prefix apps/desktop run lint
 ```
 

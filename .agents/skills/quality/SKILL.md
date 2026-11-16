@@ -240,7 +240,8 @@ Apply all three reference files:
    CRR constraints, mobile-host compatibility, IPC/preload/shared/renderer
    contract drift, fast-tier loading, Node/test-env gotchas, worktree path
    discipline, and the surface coverage sweep (entry points, clients,
-   providers, reverse states, connection modes — rule 11).
+   providers, reverse states, connection modes — rule 11), and idle/poll-path
+   bloat (rule 14).
 3. **`references/windows-quirks.md`** — the Windows failure classes ADE has
    actually hit and the named helper that resolves each one. Windows parity is
    a default requirement (see **Windows parity rules** above), so this file
