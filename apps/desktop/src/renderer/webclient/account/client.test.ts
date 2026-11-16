@@ -308,6 +308,8 @@ describe("BrowserAccountClient", () => {
     ["the computer's own authorize URL", `${AUTHORIZE}&state=s`, { continueUrl: `${AUTHORIZE}&state=s`, fresh: false }],
     // The card asks for the account itself, so `prompt` comes off; Clerk's fallback page keeps it.
     ["a sign-in after the computer signed out", `${AUTHORIZE}&prompt=login`, { continueUrl: AUTHORIZE, fresh: true }],
+    ["a localhost redirect (the listener binds 127.0.0.1 only)", AUTHORIZE.replace("127.0.0.1", "localhost"), null],
+    ["a redirect with credentials", AUTHORIZE.replace("http%3A%2F%2F127", "http%3A%2F%2Fu%3Ap%40127"), null],
     ["another origin", AUTHORIZE.replace("https://clerk.example", "https://evil.example"), null],
     ["another path on the issuer", AUTHORIZE.replace("/oauth/authorize", "/v1/client"), null],
     ["another client id", AUTHORIZE.replace("client_ade", "client_other"), null],

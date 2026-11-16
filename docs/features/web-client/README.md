@@ -1276,8 +1276,8 @@ open `https://app.ade-app.dev/sign-in?continue=<authorize URL>` for ADE's
 production Clerk app (`buildWebClientSignInUrl`; other configurations open
 Clerk's page as before). The page runs the same card and then goes on to that
 authorize URL, which returns to the computer's loopback listener. It accepts
-only this client's issuer, `/oauth/authorize`, its own client id, and a
-loopback (`127.0.0.1` / `localhost`) redirect; anything else loads ADE Web as
+only this client's issuer, `/oauth/authorize`, its own client id, and an
+`http://127.0.0.1` redirect (the computer's listener binds only that); anything else loads ADE Web as
 usual, so the page never forwards a browser elsewhere. The computer adds
 `prompt=login` after its own sign-out; the page takes it off and treats it as
 `fresh`. When the card falls back, its one button opens that same authorize

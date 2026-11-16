@@ -565,7 +565,7 @@ export class BrowserAccountClient {
   /**
    * The desktop or CLI sign-in this page was opened to finish, read from
    * `?continue=`. Only this client's own authorize endpoint, with its own
-   * client id and a loopback redirect, is accepted: the page never forwards a
+   * client id and a `127.0.0.1` redirect, is accepted: the page never forwards a
    * browser anywhere else. `prompt=login` is taken off the URL and returned as
    * `fresh`, because the card asks for the sign-in itself; left on, Clerk would
    * ask again on its own page.
@@ -592,7 +592,9 @@ export class BrowserAccountClient {
     } catch {
       return null;
     }
-    const loopback = redirect.protocol === "http:" && (redirect.hostname === "127.0.0.1" || redirect.hostname === "localhost");
+    // The computer's listener binds 127.0.0.1 only (`localhost` can resolve to ::1).
+    const loopback = redirect.protocol === "http:" && redirect.hostname === "127.0.0.1"
+      && !redirect.username && !redirect.password;
     if (!loopback) return null;
     // `hostedUrl` keeps `prompt`: it is the card's fallback, Clerk's own page.
     const hostedUrl = target.toString();
