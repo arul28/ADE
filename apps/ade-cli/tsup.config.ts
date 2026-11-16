@@ -4,13 +4,16 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { asciiBundleSource } from "../../scripts/build/asciiBundleSource";
+import { sharedNodeBuiltins } from "../../scripts/build/sharedNodeBuiltins";
 
 const external = [
   "@anthropic-ai/claude-agent-sdk",
   "@cursor/sdk",
   "chokidar",
   "node-pty",
-  "node:sqlite",
+  // `node:sqlite` is not listed: sharedNodeBuiltins makes every `node:`
+  // import external (tsup's own plugin did before), and a listed name would
+  // reach tsup's external check first and keep its prefix.
   "sqlite3",
 ];
 const ZOD_IMPORT = /^zod(?:\/.*)?$/;
@@ -105,7 +108,11 @@ export default defineConfig([
       js: ".cjs"
     }),
     external,
-    esbuildPlugins: [droidSdkOwnZod],
+    // One import wrapper per Node built-in instead of one per importing module
+    // (scripts/build/sharedNodeBuiltins.ts). The plugin strips `node:` itself,
+    // because tsup's own plugin would run first and claim those imports.
+    esbuildPlugins: [droidSdkOwnZod, sharedNodeBuiltins()],
+    removeNodeProtocol: false,
     plugins: [asciiBundleSource()],
     esbuildOptions(options) {
       options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));

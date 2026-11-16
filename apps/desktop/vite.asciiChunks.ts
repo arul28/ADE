@@ -93,12 +93,44 @@ export function escapeChunkToAscii(code: string): { code: string; escapedColumns
   return { code: escaped, escapedColumnsByLine };
 }
 
+/*
+ * Stylesheets too: Blink stores a sheet with one character past ASCII at two
+ * bytes per character (SettingsPage's 176 KB sheet held 352 KB for three
+ * characters). In CSS, `\<hex>` plus one space means the same character in a
+ * string, an identifier and a URL, and is inert in a comment. The space is
+ * part of the escape, so a space that followed the character stays. A character right
+ * after a backslash is already escaped text; the sheet is then left as it is.
+ * The build writes no CSS source maps, so no columns need to move.
+ */
+const NON_ASCII_CODE_POINT = /[^\x00-\x7f]/gu;
+
+/** The escaped sheet, or why it must stay as it is. Null when it is already ASCII. */
+export function escapeCssToAscii(css: string): { css: string } | { skipped: string } | null {
+  if (!HAS_NON_ASCII.test(css)) return null;
+  let skipped: string | null = null;
+  const escaped = css.replace(NON_ASCII_CODE_POINT, (char, offset: number) => {
+    const codePoint = char.codePointAt(0) ?? 0;
+    if (css[offset - 1] === "\\") skipped ??= `U+${codePoint.toString(16)} at ${offset} follows a backslash`;
+    return `\\${codePoint.toString(16)} `;
+  });
+  return skipped ? { skipped } : { css: escaped };
+}
+
 export function asciiChunksPlugin(): Plugin {
   return {
     name: "ade-ascii-chunks",
     apply: "build",
     generateBundle(_options, bundle) {
       for (const output of Object.values(bundle)) {
+        if (output.type === "asset" && output.fileName.endsWith(".css") && typeof output.source === "string") {
+          const sheet = escapeCssToAscii(output.source);
+          if (sheet && "skipped" in sheet) {
+            this.warn(`${output.fileName} keeps non-ASCII text (two bytes per character in the page): ${sheet.skipped}`);
+          } else if (sheet) {
+            output.source = sheet.css;
+          }
+          continue;
+        }
         if (output.type !== "chunk" || !/\.[cm]?js$/.test(output.fileName)) continue;
         const result = escapeChunkToAscii(output.code);
         if (!result) continue;
