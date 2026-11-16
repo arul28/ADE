@@ -30,21 +30,15 @@ export type AdeRuntimeKind =
 /**
  * The runtime block is paid on every chat by every provider, so it names each
  * capability in a line and leaves the manual to the **ade-cli-control-plane**
- * skill (scheduling rules, drafts, MCP sign-in). The drafts-versus-wake rule
- * lives in the shared `## ADE` block, which every one of these prompts carries.
+ * skill (scheduling rules, drafts, MCP servers and sign-in). The drafts and
+ * MCP-server lines live in the shared `## ADE` block, which every one of these
+ * prompts carries.
  */
-const adeScheduledWorkGuidance = "**Scheduled work:** to wake yourself later, run `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text`. It starts a new turn in this chat, survives restarts, and prints the next run time; check it. `--at`, cron, listing and cancelling: **ade-cli-control-plane**.";
+const adeScheduledWorkGuidance = "**Scheduled work:** to wake yourself later, run `ade chat scheduled-work create --in 12m --prompt \"<task>\" --text`. Details: **ade-cli-control-plane**.";
 
 const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine: ADE shows each job, keeps the session open, and wakes you when it ends. They stop if ADE restarts, so for a wait that must survive a restart use `ade chat scheduled-work create`.";
 
-/**
- * What an agent does when the user asks for an MCP server it does not have.
- * The agent asks with a card the user approves; the server list is fixed when
- * the provider process starts, so a new server loads on **Refresh chat**.
- */
-const adeMcpServersGuidance = "**MCP servers:** this chat keeps the servers it started with. For one the user asks for, run `ade mcp servers add <name> --reason \"…\"`: the user approves a card, then presses **Refresh chat** to load it. Never guess an address. Removing, sign-in, GitHub/Linear/Jira and settings links: **ade-cli-control-plane**.";
-
-const adeProviderSubagentGuidance = "Another provider's model: `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` runs as your subagent and reports back. `ade chat interrupt <id>` stops a chat when the user asks.";
+const adeProviderSubagentGuidance = "Another provider's model: `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` (it reports back).";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 
@@ -61,12 +55,12 @@ const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily
 };
 
 const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
-  claude: "For short delegation whose result belongs in this thread, prefer Claude's native `Agent` tool (its `model` override picks another Anthropic model); do not start an ADE chat only to switch Claude models.",
-  codex: "For short delegation whose result belongs in this thread, prefer Codex's native subagent tool.",
-  cursor: "For short delegation whose result belongs in this thread, prefer Cursor's native task tool.",
-  droid: "For short delegation whose result belongs in this thread, prefer Droid's native subagent tool.",
+  claude: "Prefer the native `Agent` tool for Claude models.",
+  codex: "Prefer your native subagent tool.",
+  cursor: "Prefer Cursor's native task tool.",
+  droid: "Prefer Droid's native subagent tool.",
   copilot: "Copilot has no native subagent tool here. Delegate with an ADE subagent chat.",
-  opencode: "For short delegation whose result belongs in this thread, prefer OpenCode's native `task` tool.",
+  opencode: "Prefer OpenCode's native `task` tool.",
   pi: "Pi has no native subagent tool here. Delegate with `ade new chat --mode chat --prompt \"<task>\"`: it runs as your subagent and reports back. Give it a self-contained brief.",
 };
 
@@ -86,50 +80,43 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
       return [
         "**Runtime:** ADE Work chat on the Claude Agent SDK.",
         describeSubagentRouting(runtime),
-        "**Wake-ups:** `ScheduleWakeup`, `CronCreate` and `/loop` go to ADE's durable scheduler and start a new turn later, even after a restart. Use `sleep` only for short waits. `CronCreate` always adds a job, so delete the old one first; `CronList` can lag ADE's state. Details: **ade-cli-control-plane**.",
-        adeMcpServersGuidance,
+        "**Wake-ups:** `ScheduleWakeup`, `CronCreate` and `/loop` use ADE's durable scheduler. Details: **ade-cli-control-plane**.",
       ];
     case "claude-code-cli":
       return [
         "**Runtime:** ADE Work chat running Claude Code CLI as a subprocess; ADE owns the lane, transcript and follow-ups.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
       ];
     case "codex-cli":
       return [
         "**Runtime:** ADE Work chat running the Codex CLI; ADE hosts slash commands, attachments and the lane.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
       ];
     case "codex-app-server":
       return [
         "**Runtime:** ADE Work chat on the Codex app-server; ADE hosts slash commands, attachments and the lane.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
       ];
     case "cursor-sdk":
       return [
         "**Runtime:** ADE Work chat on the Cursor SDK.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
       ];
     case "droid-sdk":
       return [
         "**Runtime:** ADE Work chat on the Factory Droid SDK (local Droid CLI).",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
       ];
     case "copilot-sdk":
       return [
         "**Runtime:** ADE Work chat on the GitHub Copilot SDK (installed Copilot CLI).",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
       ];
     case "pi-sdk":
       return [
@@ -142,7 +129,6 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
         "**Runtime:** ADE Work chat wrapping an OpenCode session.",
         describeSubagentRouting(runtime),
         adeScheduledWorkGuidance,
-        adeMcpServersGuidance,
         openCodeBackgroundWorkGuidance,
       ];
   }
@@ -226,29 +212,11 @@ export function buildCodingAgentSystemPrompt(args: {
   const prIssueToolNames = toolNames.filter((name) => PR_ISSUE_TOOL_NAMES.has(name));
   const hasPrIssueTools = prIssueToolNames.length > 0;
 
-  return [
-    `${ADE_AGENT_PROMPT_OPENING} ${args.cwd}.`,
-    "Edit files and run mutating commands only inside this worktree, unless ADE relaunches you in another lane. Reading outside it is fine.",
-    ...(runtime
-      ? [
-          "",
-          "## Runtime Environment",
-          ...describeRuntime(runtime),
-        ]
-      : []),
-    "",
-    "## Task",
-    describeMode(mode),
-    describePermissionMode(permissionMode),
-    "",
-    // No generic coding advice here (inspect first, keep edits narrow, verify,
-    // narrate briefly): every harness ADE hosts already gives its own, and a
-    // second copy only dilutes the lines below, which are ADE's own.
-    "## Working in ADE",
-    "A status question or a tool/subagent timeout is a checkpoint: answer it, then continue. New instructions, from the user or another agent, replace the old ones. Stop or pause only when told to.",
-    "The user may not see your thinking. Put answers, requests and your final summary in your visible reply, in full.",
-    "",
-    "## Tool Use Rules",
+  // An interactive chat gets no "ask one question when stuck" line: the
+  // harnesses already decide when to ask, and the 2026-11-16 discovery bench
+  // found no loss without it. The section stays for what changes behavior: a
+  // tool list, plan mode, a task list, a headless run.
+  const toolUseRules = [
     ...(toolNames.length ? [`Available tools: ${toolNames.join(", ")}.`] : []),
     ...(guardedLocalReadOnly
       ? runtime === "codex-cli" || runtime === "codex-app-server"
@@ -270,9 +238,34 @@ export function buildCodingAgentSystemPrompt(args: {
           "When the plan changes materially, update the task list instead of silently drifting.",
         ]
       : []),
-    interactive
-      ? "If requirements are genuinely unclear and progress would otherwise stall, ask one concise question with concrete options."
-      : "If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer.",
+    ...(interactive
+      ? []
+      : ["If requirements are unclear, make the safest reasonable assumption and continue. State the assumption in the final answer."]),
+  ];
+
+  return [
+    `${ADE_AGENT_PROMPT_OPENING} ${args.cwd}.`,
+    "Edit files and run mutating commands only inside this worktree, unless ADE relaunches you in another lane. Reading outside it is fine.",
+    ...(runtime
+      ? [
+          "",
+          "## Runtime Environment",
+          ...describeRuntime(runtime),
+        ]
+      : []),
+    // The default task (coding work in edit mode) needs no words: every
+    // harness ADE hosts already works that way. Only a mode that changes what
+    // the agent may do gets a `## Task` section.
+    ...(mode !== "coding" || permissionMode !== "edit"
+      ? ["", "## Task", describeMode(mode), describePermissionMode(permissionMode)]
+      : []),
+    "",
+    // No generic coding advice here (inspect first, keep edits narrow, verify,
+    // narrate briefly): every harness ADE hosts already gives its own, and a
+    // second copy only dilutes the lines below, which are ADE's own.
+    "## Working in ADE",
+    "A status question or a timeout is a checkpoint: answer it, then continue. New instructions replace old ones; stop only when told. Put answers and your summary in your visible reply.",
+    ...(toolUseRules.length ? ["", "## Tool Use Rules", ...toolUseRules] : []),
     "",
     buildAdeCliAgentGuidance(adeSkillRoots, {
       nativeSkillListing: args.nativeSkillListing === true,
@@ -280,7 +273,8 @@ export function buildCodingAgentSystemPrompt(args: {
       subagentRouteStated: Boolean(runtime),
       computerUseDirectiveIncluded: args.computerUseDirectiveIncluded === true,
     }),
-    ...(args.sessionActivityGuidance ? ["", args.sessionActivityGuidance] : []),
+    // The activity line belongs with the Work row line that ends the block above.
+    ...(args.sessionActivityGuidance ? [args.sessionActivityGuidance] : []),
     ...(hasWorkflowTools
       ? [
           "",

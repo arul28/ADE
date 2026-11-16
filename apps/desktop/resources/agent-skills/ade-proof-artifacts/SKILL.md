@@ -1,6 +1,6 @@
 ---
 name: ade-proof-artifacts
-description: Use this skill when the user asks for proof, a demo, screenshots, video, something to post or show off, artifacts, test evidence, computer-use capture, or when work should appear in ADE's proof drawer. Read it before capturing anything a person will see.
+description: "Proof, a demo, screenshots, video, an image to show in your answer, something to post or show off, test evidence, computer-use captures, or work for ADE's proof drawer. Read it before capturing anything a person will see."
 ---
 
 # ADE proof and artifacts
@@ -198,7 +198,7 @@ Only a proof-named command files a drawer entry. Taking a screenshot is not the 
 
 - `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade screen proof --caption "…"`, a captioned `ade screen record` and a captioned `ade app-control record` **do** file.
 - `ade proof capture` and `ade proof record` never take the user's real screen unless you pass `--real-screen`. For desktop app work on a Mac, work on the lane's own screen (see the **ade-computer-use** skill) and record there.
-- A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
+- A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. From ADE's RPC/MCP tool surface, `ingest_computer_use_artifacts` files an existing capture the same way. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
 Artifacts worth filing:
 

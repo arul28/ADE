@@ -1,6 +1,6 @@
 ---
 name: ade-cli-control-plane
-description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, send a message to a chat later, or create a lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
+description: "ADE's own state via `ade`: hand work to another ADE agent and wait or check on it, read another agent's transcript, Work-row status or question, wake-ups, messages to a chat later, rename the chat, create lanes, secrets, MCP servers, runtime/socket status."
 ---
 
 # ADE CLI control plane
@@ -332,15 +332,16 @@ ade lanes rename <lane> --name "Better name"
 They are two separate signals on the row the user is looking at:
 
 - **`ade chat note` sets the row's status line.** It shows a durable one-line
-  summary of the current state; it does not change the row's phase. Keep it to about six words with the decisive state first; long notes are cut off.
+  summary of the current state; it does not change the row's phase. Keep it to six words or fewer with the decisive state first; ADE cuts a note at 72 characters.
   Good: `CI green; awaiting Codex review`
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` raises the row's hand**, moving it to **Needs you**. Because
   a note alone never changes the phase, an idle row with only a note can read as
   **Done** — whenever your reply asks the user a question or for a decision,
   call `note` for the context and then `ask` for the exact question.
-- **Subagents do not ask the user.** Put the question in your final reply; it
-  reaches your parent, which asks the user if it cannot answer.
+- **Subagents do not ask the user.** A subagent asks in its report instead of
+  `ade chat ask`: put the question in your final reply; it reaches your parent,
+  which asks the user if it cannot answer.
 - **Ask even while background work runs.** A chat whose subagents or monitors
   are still running reads as **Working**, so a question at the end of your turn
   is invisible unless you `ask`. "Ship this, or keep building?" and "Want me to

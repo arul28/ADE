@@ -1,6 +1,6 @@
 ---
 name: ade-cloud
-description: Use this skill before any ADE Cloud work: reading the account (plan, hours, disk, computers, lanes, sizes, agent limits, and whether a new lane can start and why not), starting a lane on its own cloud computer, following, retrying or cancelling that launch, explaining a refusal, proposing a cleanup, or the other `ade cloud` commands (sleep, wake, resize, copy, move, delete, clear caches).
+description: "Before any ADE Cloud work via `ade cloud`: the account (plan, hours, disk, computers, lanes, sizes, agent limits, whether a new lane can start and why not), start a lane on its own cloud computer, follow, retry or cancel that launch, explain a refusal, propose a cleanup, sleep, wake, resize, copy, move, delete, clear caches."
 ---
 
 # ADE Cloud

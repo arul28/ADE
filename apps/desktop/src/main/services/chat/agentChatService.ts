@@ -10068,7 +10068,9 @@ export function buildComputerUseDirective(
     linuxDesktopAvailable?: boolean;
     /**
      * This host can run `ade apple` (a Mac). Off on Windows and Linux, where
-     * the ade-apple skill is withheld too (`adeHostWithheldAgentSkills`).
+     * the ade-apple skill is withheld too (`adeHostWithheldAgentSkills`). The
+     * directive no longer lists surfaces, so this does not change its text;
+     * ade-computer-use picks the surface.
      */
     appleAvailable?: boolean;
   } = {},
@@ -10084,7 +10086,6 @@ export function buildComputerUseDirective(
   const hasLocalFallback = backendStatus?.localFallback.available ?? false;
 
   const ownScreen = Boolean(options.macDesktopAvailable || options.windowsDesktopAvailable || options.linuxDesktopAvailable);
-  const apple = options.appleAvailable !== false;
   // No backends, no local fallback and no lane screen → skip the directive
   // entirely. A headless Linux brain has neither of the first two, and its
   // lane screen is the only screen an agent there can use.
@@ -10094,26 +10095,23 @@ export function buildComputerUseDirective(
 
   const sections: string[] = [];
 
-  // The full manuals live in the ade-computer-use and ade-proof-artifacts
-  // skills; this block is only what must hold before the agent opens them. It
-  // rides the first turn of every chat on every provider, so every line here
-  // is paid by chats that never touch a screen (it was ~9.4k chars).
-  // --- Header (always when we have any capability) ---
+  // This block is only what must hold before the agent opens a skill. It rides
+  // the first turn of every chat on every provider, so every line here is paid
+  // by chats that never touch a screen. The surface list, browser profiles,
+  // the proof commands, `--real-screen`, the requested-backend rule and the
+  // full real-screen rule live in ade-computer-use and ade-proof-artifacts;
+  // the proof pointer and the `cite:` rule are in the `## ADE` image line.
+  // The 2026-11-16 discovery bench found no loss with this short form.
   sections.push(
     [
       "## Computer Use",
-      "Read the **ade-computer-use** skill before your first screen action; it picks the surface: "
-        + (apple ? "an iOS app → `ade apple`, " : "")
-        + "a dev Electron app's DOM → `ade app-control`, a web page or localhost → `ade browser` (shares the user's sign-ins; `--profile <name>` for another account; attach to the user's own browser only when they ask).",
-      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task; act on the user's real screen only when the user explicitly asks.",
       ownScreen
-        ? "`mcp__computer_use`, `osascript`, `cliclick`, `screencapture` and any other tool outside `ade` that clicks, types or captures drive the user's real screen: use them only when the user asks you to operate their screen, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
-        : "When the `mcp__computer_use` tools are present, they drive the user's real screen: start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
-      // With no external backend there is no backend status to read: only
-      // the rule about a requested backend applies.
-      hasExternalBackends
-        ? "If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching."
-        : "If the user asks for a computer-use backend that is unavailable, stop and report instead of switching.",
+        ? "For any screen, app, simulator or browser work, read **ade-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open; use `mcp__computer_use`, `osascript`, `cliclick` or `screencapture` only when asked, never `@oai/sky`."
+        : "For any screen, app, simulator or browser work, read **ade-computer-use** first. The user's own screen and windows are not yours: never close, quit or hide an app you did not open, and act on them only when asked. When the `mcp__computer_use` tools are present, they drive that screen: start with `list_apps` or `get_app_state`, honor their per-app approval prompts, and never use `@oai/sky`.",
+      // Only an external backend has a status to read.
+      ...(hasExternalBackends
+        ? ["If `get_computer_use_backend_status` is exposed, call it before computer use; if it is not exposed, do not stall. Respect the backend the user requested: if it is unavailable, stop and report instead of switching."]
+        : []),
     ].join("\n"),
   );
 
@@ -10139,21 +10137,6 @@ export function buildComputerUseDirective(
       ].join("\n"),
     );
   }
-
-  // --- Proof instructions (always) ---
-  sections.push(
-    [
-      "### Proof Capture",
-      "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`"
-        + (apple ? ", `ade apple proof`" : "")
-        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable || options.macDesktopAvailable ? ", `ade screen proof`" : "")
-        + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
-        + (ownScreen
-          ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
-          : "`ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — only when the user asks."),
-      "Every proof command prints a `cite:` line; paste it on its own line in your answer, directly under the claim it proves. Read the **ade-proof-artifacts** skill for before/after blocks, recordings, PR publishing and keeping the drawer clean.",
-    ].join("\n"),
-  );
 
   return sections.join("\n\n");
 }

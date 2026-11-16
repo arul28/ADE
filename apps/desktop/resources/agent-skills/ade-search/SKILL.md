@@ -1,6 +1,6 @@
 ---
 name: ade-search
-description: Use this skill to search project-backed ADE chats across registered projects and search the active project's terminals, PRs, commits, branches, lanes, files, Linear issues, and proof artifacts via `ade search` instead of grepping .ade/ internals.
+description: "Search ADE chats across projects, and this project's terminals, PRs, commits, branches, lanes, files, Linear issues and proof (`ade search`), instead of grepping .ade/."
 ---
 
 # ADE search
