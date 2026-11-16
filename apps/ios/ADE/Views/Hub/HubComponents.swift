@@ -336,16 +336,22 @@ func hubConnectionStatus(
   // the machine it is about.
   let liveCount = (health.transport == .connected ? 1 : 0)
     + machineFleet.machines.filter { $0.state == .live }.count
+  // Signed in with no computer of the person's own (the account's list is
+  // loaded): chats run on ADE Cloud, so there is nothing to be offline.
+  let cloudOnly = health.transport == .disconnected
+    && account.identity != nil
+    && account.machinesState == .loaded
+    && !syncService.accountHasOwnComputer(account.machines)
   let label = health.transport == .connected && liveCount > 1
     ? "\(liveCount) computers"
-    : machineName ?? transportWord
+    : cloudOnly ? "ADE Cloud" : machineName ?? transportWord
   let switching = syncService.isProjectSwitching
     ? syncService.projects.first(where: { syncService.isSwitchingProject($0) })?.displayName
     : nil
   return HubConnectionStatus(
     tone: tone,
     label: label,
-    spokenState: spokenState,
+    spokenState: cloudOnly ? "no computer of your own" : spokenState,
     switchingProjectName: switching,
     machineCount: liveCount
   )

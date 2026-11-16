@@ -1039,7 +1039,8 @@ struct HubScreen: View {
       list: accountProjects,
       fleetMachines: machineFleet.machines,
       hasCards: !hubProjectPresentations.isEmpty,
-      canAddProject: canShowProjects
+      // The account list adds a GitHub project with no computer connected.
+      canAddProject: canShowProjects || accountProjects.governsHub
     )
   }
 
@@ -1172,7 +1173,8 @@ struct HubScreen: View {
         merged: accountProjects.mergedTargets,
         display: accountProjects.display,
         machines: account.machines,
-        hiddenOnPhone: hidden
+        hiddenOnPhone: hidden,
+        hasOwnComputer: syncService.accountHasOwnComputer(account.machines)
       )
       nextPresentations = pass.presentations
       duplicates = pass.duplicatePresentations

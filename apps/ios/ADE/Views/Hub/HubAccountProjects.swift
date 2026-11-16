@@ -257,9 +257,10 @@ func accountProjectCopyMachines(_ project: AccountProject, machines: [AccountMac
 /// The line under an account-only card's name: how many computers hold it, or
 /// why nothing shows it. A Hub card never names a machine; the machine shows
 /// once the project is open, and in the menus where new work starts.
-func hubAccountProjectNote(_ project: AccountProject, machines: [AccountMachine]) -> String {
+func hubAccountProjectNote(_ project: AccountProject, machines: [AccountMachine], hasOwnComputer: Bool = true) -> String {
   let held = accountProjectCopyMachines(project, machines: machines)
-  guard !held.isEmpty else { return "Not on a computer yet" }
+  // With no computer of their own, a chat starts a computer on ADE Cloud.
+  guard !held.isEmpty else { return hasOwnComputer ? "Not on a computer yet" : "Chats run on ADE Cloud" }
   let online = held.filter { $0.machine?.online == true }
   // The computer list did not load (offline): say how many hold a copy, not
   // that none is online.
@@ -279,8 +280,9 @@ enum HubAccountNotice: Equatable {
   /// The phone has a computer, but none is reachable. `byUser`: the user
   /// disconnected it. `failed`: the last attempt to reach it failed.
   case noComputerOnline(machineName: String?, lastSeen: String?, failed: Bool, byUser: Bool)
-  /// Signed in with projects, but this phone has no computer.
-  case noComputer(accountHasComputers: Bool)
+  /// Signed in with projects; the account has computers of the person's own,
+  /// but this phone is connected to none.
+  case noComputer
 }
 
 /// What the grid says when it has no card.
@@ -338,8 +340,10 @@ func hubAccountNotice(_ inputs: HubAccountStatusInputs) -> HubAccountNotice? {
       byUser: inputs.focusedDisconnectedByUser
     )
   }
-  if inputs.governedByAccount {
-    return .noComputer(accountHasComputers: inputs.accountHasComputers)
+  // With no computer of their own, nothing is missing: chats run on ADE
+  // Cloud from each project.
+  if inputs.governedByAccount, inputs.accountHasComputers {
+    return .noComputer
   }
   return nil
 }
@@ -460,10 +464,8 @@ struct HubAccountStatusCard: View {
       if byUser { return "Reconnect to run agents. Your projects stay here." }
       if let lastSeen { return "Last seen \(lastSeen). Start ADE on it to run agents." }
       return "Start ADE on it to run agents. Your projects stay here."
-    case .noComputer(let accountHasComputers):
-      return accountHasComputers
-        ? "Connect one of your computers to run agents on these projects."
-        : "Your projects are on your account. Connect a computer to run agents on them."
+    case .noComputer:
+      return "Connect one of your computers to run agents on these projects."
     }
   }
 
@@ -526,7 +528,7 @@ struct HubAccountEmptyCard: View {
         title: "No projects yet",
         message: hasComputer
           ? "Add a project on one of your computers. It shows here, on every device."
-          : "Your projects show here. Connect a computer to add your first one."
+          : "Add a repository from GitHub. Your first chat starts a computer on ADE Cloud for it."
       ) {
         if canAddProject {
           Button("Add project", action: onAddProject)
@@ -708,9 +710,16 @@ struct AccountProjectHomeScreen: View {
 
   @ObservedObject private var store = AccountProjectStore.shared
   @ObservedObject private var account = AccountService.shared
+  @ObservedObject private var launches = AccountCloudLaunchStore.shared
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @Environment(\.dismiss) private var dismiss
   @State private var deletePresented = false
   @State private var locationPresented = false
+
+  /// No computer of the person's own: chats run on ADE Cloud from here.
+  private var cloudChats: Bool {
+    !syncPublishes.service.accountHasOwnComputer(account.machines)
+  }
 
   private var project: AccountProject? {
     store.liveProjects.first { $0.id == projectId }
@@ -739,6 +748,9 @@ struct AccountProjectHomeScreen: View {
         ToolbarItem(placement: .confirmationAction) {
           Button("Done") { dismiss() }
         }
+      }
+      .task(id: cloudChats) {
+        if cloudChats { await launches.refreshActive(using: syncPublishes.service) }
       }
       .sheet(isPresented: $locationPresented) {
         ProjectLocationScreen(projectId: projectId)
@@ -774,6 +786,13 @@ struct AccountProjectHomeScreen: View {
         }
       }
 
+      if cloudChats, project.host == "github.com" {
+        AccountProjectCloudComposer(project: project)
+        ForEach(launches.entries(forOrigin: "\(project.host)/\(project.owner)/\(project.name)")) { entry in
+          AccountProjectCloudSetupCard(entry: entry) { openCloudChat(project) }
+        }
+      }
+
       if let open = accountProjectOpenCopy(held) {
         Button {
           dismiss()
@@ -792,7 +811,14 @@ struct AccountProjectHomeScreen: View {
         Text("Computers")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
-        if held.isEmpty {
+        if held.isEmpty && cloudChats {
+          Text("Your first chat starts a computer on ADE Cloud with a copy of this project.")
+            .font(.system(size: 13.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(14)
+            .adeKitCard(padding: nil)
+        } else if held.isEmpty {
           VStack(alignment: .leading, spacing: 10) {
             Text("This project is not on a computer yet. Open it in ADE on a computer to add it there.")
               .font(.system(size: 13.5))
@@ -815,7 +841,9 @@ struct AccountProjectHomeScreen: View {
             }
           }
         }
-        // A row like Pull requests below it, not a bare text link.
+        // A row like Pull requests below it, not a bare text link. Not
+        // while no computer has a copy and chats run on ADE Cloud.
+        if !(held.isEmpty && cloudChats) {
         ADESettingsRows {
           Button {
             locationPresented = true
@@ -825,6 +853,7 @@ struct AccountProjectHomeScreen: View {
             }
           }
           .buttonStyle(ADEKitRowButtonStyle())
+        }
         }
       }
 
@@ -841,6 +870,23 @@ struct AccountProjectHomeScreen: View {
       }
       .buttonStyle(.plain)
       .padding(.top, 6)
+    }
+  }
+
+  /// The chat runs on its cloud computer, which holds a copy once it joined:
+  /// open the project there, where the chat lists. The list is read again
+  /// first when this phone has not seen that copy yet.
+  private func openCloudChat(_ project: AccountProject) {
+    Task {
+      var held = accountProjectCopyMachines(project, machines: account.machines)
+      if accountProjectOpenCopy(held) == nil {
+        await store.refresh()
+        let fresh = store.liveProjects.first { $0.id == project.id } ?? project
+        held = accountProjectCopyMachines(fresh, machines: account.machines)
+      }
+      guard let open = accountProjectOpenCopy(held) else { return }
+      dismiss()
+      DeepLinkRouter.shared.openAccountProjectCopy(accountMachineKey: open.machineKey, checkoutId: open.checkoutId)
     }
   }
 

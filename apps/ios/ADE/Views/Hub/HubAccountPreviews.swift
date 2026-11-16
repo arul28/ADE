@@ -232,8 +232,7 @@ struct HubAccountStatesPreviewHost: View {
     ("Computer offline", .noComputerOnline(machineName: "Mac Studio", lastSeen: "2 hours ago", failed: false, byUser: false)),
     ("Connection failed", .noComputerOnline(machineName: "Mac Studio", lastSeen: nil, failed: true, byUser: false)),
     ("Disconnected by you", .noComputerOnline(machineName: "Mac Studio", lastSeen: nil, failed: false, byUser: true)),
-    ("No computer", .noComputer(accountHasComputers: false)),
-    ("Computers on the account", .noComputer(accountHasComputers: true)),
+    ("Computers on the account", .noComputer),
   ]
   private let empties: [(String, HubAccountEmptyKind)] = [
     ("Loading", .loading),

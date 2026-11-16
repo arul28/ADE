@@ -752,7 +752,8 @@ struct CloudServerClient {
     do { return try JSONDecoder().decode(type, from: data) } catch { throw Failure.unreadable }
   }
 
-  private func send(
+  /// One call to the account server; `AccountCloudLaunches.swift` adds the launch routes.
+  func send(
     _ method: String,
     _ path: String,
     query: [URLQueryItem] = [],
@@ -826,6 +827,8 @@ extension SyncService {
     cloudServerReadAt = nil
     cloudServerInstances = []
     cloudSavedChats = []
+    // The last account's chat launches from this phone go too.
+    AccountCloudLaunchStore.shared.reset()
     // The last account's ADE Cloud computers and wake messages go too.
     setCloudMachines([])
     cloudAccountMachineKeys = nil
