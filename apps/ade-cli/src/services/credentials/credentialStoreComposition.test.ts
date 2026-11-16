@@ -121,6 +121,9 @@ describe("routed credential store", () => {
 
     // A build that failed is not kept: the next use builds again.
     expect(() => routed.getSync("linear.token.v1")).toThrow("keychain not answering");
+    // Unreadable, not missing: "not connected" would invite a reconnect.
+    expect(routed.getLastReadState?.()).toBe("unreadable");
+    expect(routed.getLastReadFailureReason?.()).toBe("no_os_key_material");
     expect(routed.getSync("linear.token.v1")).toBe("lin_secret");
     expect(builds).toBe(2);
     expect(keychainCalls).toBeGreaterThan(0);

@@ -117,12 +117,23 @@ export function createUnavailableCredentialStore(message: string): SyncCredentia
  * use, it costs nothing until a key that lives in it is needed.
  *
  * `build` runs again on a later call when it throws, so a store that could not
- * be built is not kept.
+ * be built is not kept. Until then the store reads as unreadable, never as
+ * missing: "not connected" would invite a reconnect over secrets that are
+ * still on disk. The reason is `no_os_key_material` (the OS has not handed
+ * over the key), which never counts as corruption.
  */
 export function createLazyCredentialStore(build: () => SyncCredentialStore): SyncCredentialStore {
   let store: SyncCredentialStore | null = null;
+  let buildFailed = false;
   const resolve = (): SyncCredentialStore => {
-    store ??= build();
+    if (store) return store;
+    try {
+      store = build();
+    } catch (error) {
+      buildFailed = true;
+      throw error;
+    }
+    buildFailed = false;
     return store;
   };
   return {
@@ -144,7 +155,7 @@ export function createLazyCredentialStore(build: () => SyncCredentialStore): Syn
     },
     // Not built by a question about the last read: before the first call,
     // there was no read.
-    getLastReadState: () => store?.getLastReadState?.() ?? "missing",
-    getLastReadFailureReason: () => store?.getLastReadFailureReason?.() ?? null,
+    getLastReadState: () => store?.getLastReadState?.() ?? (buildFailed ? "unreadable" : "missing"),
+    getLastReadFailureReason: () => store?.getLastReadFailureReason?.() ?? (buildFailed ? "no_os_key_material" : null),
   };
 }

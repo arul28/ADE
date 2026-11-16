@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import type { SafeStorage } from "electron";
-import { isSecureStorageAvailable as hasSecureStorage } from "../shared/secureStorage";
+import { isSecureStorageAvailable as hasSecureStorage, onSecureStorageAnswered } from "../shared/secureStorage";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { isSafeIdentifier } from "../../../shared/safeIdentifier";
@@ -212,6 +212,19 @@ function emptyScopeState(): ApiKeyScopeState {
 
 /** The project the app currently has open. Rebuilt by `initApiKeyStore`. */
 let projectScope: ApiKeyScopeState = emptyScopeState();
+
+// A read made while the OS credential store had not answered found nothing it
+// could open, and the cache kept that empty view. Read again once the answer
+// is in, so the keys show without a restart.
+onSecureStorageAnswered(() => {
+  projectScope.cache = null;
+  projectScope.summaries = null;
+  projectScope.provenance = null;
+  projectScope.decryptionFailed = false;
+  projectScope.missingMacosKeychainProviders = new Set<string>();
+  projectScope.missingCredentialProviders = new Set<string>();
+  projectScope.legacyKeychainMigrationTried = false;
+});
 /** How the current ADE-stored Cursor key was written. Lost on process restart;
  *  cursorSdkAuth reconstructs from Cursor.auth.status() + the SDK auth file. */
 let cursorKeyOrigin: "oauth" | "pasted" | null = null;

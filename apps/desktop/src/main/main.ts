@@ -547,7 +547,7 @@ import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrai
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
 import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
 import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
-import { isSecureStorageAvailable } from "./services/shared/secureStorage";
+import { isSecureStorageAvailable, isSecureStorageCheckPending, startSecureStorageCheck } from "./services/shared/secureStorage";
 import { resolveSafeStorageKeyName } from "./safeStorageKeyName";
 import {
   checkRuntimeIdentity,
@@ -1038,6 +1038,11 @@ function buildDesktopPrimaryCredentialStore(
   secretsDir: string,
   legacyStore: EncryptedFileCredentialStore,
 ): SyncCredentialStore {
+  if (isSecureStorageCheckPending()) {
+    // Not built yet, and not kept: the next call builds again. Reads as
+    // unreadable meanwhile (`createLazyCredentialStore`).
+    throw new Error("The system keychain has not answered yet; ADE will read these credentials once it does.");
+  }
   const safeCredentialsPath = path.join(secretsDir, "credentials.safe.enc");
   const legacyCredentialsPath = path.join(secretsDir, "credentials.json.enc");
   if (!keychainReadBeforeWindowLogged && BrowserWindow.getAllWindows().length === 0) {
@@ -1900,6 +1905,10 @@ if (process.platform !== "darwin") {
 const museQuota = createMuseQuotaStore();
 
 app.whenReady().then(async () => {
+  // Asks the OS credential store for the safeStorage key off the main thread
+  // (`secureStorage.ts`). A Keychain prompt then never holds main; the secrets
+  // that need the key wait for the answer.
+  startSecureStorageCheck(safeStorage);
   markMainBoot("appReadyMs");
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.
   const perfRun = initPerfRunFromEnv();
