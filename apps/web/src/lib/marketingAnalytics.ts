@@ -44,6 +44,13 @@ export const MARKETING_FEATURES = {
   COPY_INVITE_CODE: "copy_invite_code",
   // ADE Cloud's prices: the links to `/pricing` (header, footer, home page).
   VIEW_PRICING: "view_pricing",
+  // The home hero's "New: ADE Cloud" link, which scrolls to the cloud section.
+  VIEW_ADE_CLOUD: "view_ade_cloud",
+  // `/pricing`'s plan finder: the visitor's first change to one of its
+  // controls (sent once per page view; the inputs themselves are not sent).
+  USE_PLAN_FINDER: "use_plan_finder",
+  // The home feature wall's "See every feature" button.
+  VIEW_ALL_FEATURES: "view_all_features",
   // Install dialog. The dialog captures its own open event so every trigger
   // (hero, back cover, header, footer) reports the same feature regardless of
   // which CTA label it also carries.
@@ -99,6 +106,10 @@ export const MARKETING_CTA_POSITIONS = {
   INSTALL_DIALOG: "install_dialog",
   INVITE_PAGE: "invite_page",
   PRICING_PAGE: "pricing_page",
+  // The ADE Cloud section of the home page: its four plan tiles.
+  HOME_CLOUD: "home_cloud",
+  // `/pricing`'s plan finder: the button under the plan it suggests.
+  PLAN_FINDER: "plan_finder",
 } as const;
 
 export type MarketingCtaPosition =

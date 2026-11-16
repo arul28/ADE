@@ -13,6 +13,7 @@ import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine, unionSlotIdForBinding, useLanesForPin } from "../../../state/crossMachineLanes";
 import { useCloudLaneDelete } from "../../cloudLane/deleteCloudLane";
 import { requirePin } from "../../../state/repositoryScope";
+import type { CloudLaneDeleteOptions } from "../../../../shared/cloudLaneLife";
 
 export type PrManageLaneDialogHostProps = {
   open: boolean;
@@ -80,11 +81,11 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
 
   // A lane on its own ADE Cloud computer gets the cloud delete.
   const cloud = useCloudLaneDelete();
-  const handleDelete = useCallback(async () => {
+  const handleDelete = useCallback(async (options?: CloudLaneDeleteOptions) => {
     if (!lane || lane.laneType === "primary") return;
 
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
-    if (cloud.deleteIfCloudLane({ pin: runtimePin, laneId: lane.id, laneName: lane.name, machineId: null, onDeleted: refreshOwnerLanes })) {
+    if (cloud.deleteIfCloudLane({ pin: runtimePin, laneId: lane.id, laneName: lane.name, machineId: null, keepChats: options?.keepChats, onDeleted: refreshOwnerLanes })) {
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       onOpenChange(false);
       return;
@@ -129,7 +130,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       laneActionError={laneActionError}
       laneActionKind={laneActionKind}
       onArchive={handleArchive}
-      onDelete={() => { void handleDelete(); }}
+      onDelete={(options) => { void handleDelete(options); }}
       onAppearanceChanged={refreshOwnerLanes}
     />
   );

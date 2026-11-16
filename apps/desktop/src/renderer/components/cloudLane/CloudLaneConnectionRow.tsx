@@ -10,7 +10,8 @@ import { cloudLaneJobFor, useCloudLaneJobs } from "./cloudLaneStores";
 import { cloudLaneLifeAvailable } from "./cloudLaneActions";
 import "./cloudLane.css";
 
-const STATE_TEXT: Record<CloudLaneMachine["state"], string> = {
+/** A lane computer's state, as its rows and Manage lane say it. */
+export const CLOUD_MACHINE_STATE_TEXT: Record<CloudLaneMachine["state"], string> = {
   running: "Awake",
   asleep: "Asleep",
   stopped: "Asleep",
@@ -58,7 +59,7 @@ export function CloudLaneConnectionRow({
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span className="adecl-cx-state" data-awake={awake ? "true" : "false"}>
             <i aria-hidden />
-            {changing ? "Changing size" : STATE_TEXT[box.state]}
+            {changing ? "Changing size" : CLOUD_MACHINE_STATE_TEXT[box.state]}
           </span>
           <button
             type="button"

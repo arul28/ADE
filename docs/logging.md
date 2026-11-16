@@ -2000,7 +2000,11 @@ when the launch host (the desktop's `registerCloudLaneLaunchIpc.ts`, surface
 `desktop`, or the brain's `cloudLaneLaunchBrainHost.ts`, surface `api`) saw it
 move there; a Retry that fixes a failure counts the failure, then the
 completion. `cloud_lane_freed`: Keep the lane and free its computer from the
-desktop, `completed` or `failed`. `cloud_clear_caches`: the computer's own
+desktop, `completed` or `failed`. `cloud_lane_deleted`: a person deleted a
+lane and its computer from the desktop: `completed` (its saved chats went
+too), `kept` (they ticked "Keep its chats"), `partial` (ADE couldn't delete
+all its chats) or `failed`; it tells whether deleting the chats is the right
+default. `cloud_clear_caches`: the computer's own
 brain clears its caches, `completed`, `failed`, or `denied` (an agent's ask
 declined or unanswered). `cloud_default_size`: the person picked another size
 for new lanes, `size_small` to `size_xlarge` (a value another computer synced
@@ -2438,12 +2442,24 @@ fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 
 dialog's client-side click is the funnel signal, and a test pins that the
 handlers make no analytics call for any method.
 
-The pricing page (`/pricing`, screen `pricing`) reuses the same events: each
-plan card's button records the CTA event with `choose_plan_free`,
+The pricing page (`/pricing`, screen `pricing`) reuses the same events. The
+navbar, the footer and the download section link to it. A paid plan's button links to the web app with
+`?cloudPlan=<plan>` (it signs in, then opens Stripe's checkout); Free's button
+opens the install dialog. Each records the CTA event with `choose_plan_free`,
 `choose_plan_plus`, `choose_plan_pro` or `choose_plan_max` at position
-`pricing_page` (it opens the install dialog, which records its own feature
-event), and every link to the page (site header, home page masthead and
-ADE Cloud teaser, footer) records the `view_pricing` feature.
+`pricing_page`; the CTA names the plan, which shows which plan people want.
+Every link to the page (site header and its phone menu, the home page's ADE
+Cloud section, footer) records the `view_pricing` feature. The plan finder
+records `use_plan_finder` once per page view, on the visitor's first change to
+one of its controls; the numbers chosen are never sent. Its button under the
+suggested plan records the matching `choose_plan_*` CTA at position
+`plan_finder`, so a finder-led choice is told apart from a plan card's.
+
+On the home page, the hero's ADE Cloud link records `view_ade_cloud`, the ADE
+Cloud section's four plan tiles open the web app at that plan (`?cloudPlan=`)
+and record the matching `choose_plan_*` CTA at position `home_cloud`, and the
+feature wall's "See every feature" button records `view_all_features`. The
+section's price comparison (its hours buttons) records nothing.
 
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 

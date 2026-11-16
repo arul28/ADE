@@ -3,6 +3,7 @@
 # `run=true` or `run=false`, for $GITHUB_OUTPUT, and the reason on stderr.
 #
 #   scripts/ci/ios-gate.sh
+#   scripts/ci/ios-gate.sh --fingerprint
 #
 # Reads the same runner variables as scripts/ci/changed-files.sh, which gives
 # it the diff. Needs a checkout with fetch-depth 2.
@@ -64,7 +65,25 @@ ios_part() {
   '
 }
 
-[ "$#" -eq 0 ] || { echo "usage: scripts/ci/ios-gate.sh (no arguments)" >&2; exit 2; }
+# --fingerprint prints one hash of everything the iOS build reads: each file
+# IOS_PATHS matches, with its blob id, plus the whole ci.yml, at HEAD (for a
+# pull request, the merge commit, so a change on main that touches iOS gives a
+# new hash). A pull request run that passed test-ios saves this hash; a later
+# run of the same pull request with the same hash reuses that pass instead of
+# building again. The whole ci.yml, not only its iOS part, keeps the hash
+# trivially safe: any ci.yml change builds again.
+if [ "$#" -eq 1 ] && [ "$1" = "--fingerprint" ]; then
+  set -e
+  {
+    # -z: paths unquoted (a quoted "apps/ios/Café.swift" would miss the
+    # pattern and drop out of the hash), one NUL-ended record each. IOS_PATHS
+    # is anchored right after ls-tree's tab instead of at the record start.
+    git ls-tree -r -z --full-tree HEAD | grep -zE $'\t'"${IOS_PATHS#^}" || true
+    git ls-tree --full-tree HEAD -- "$CI_FILE"
+  } | sha256sum | cut -c1-64
+  exit 0
+fi
+[ "$#" -eq 0 ] || { echo "usage: scripts/ci/ios-gate.sh [--fingerprint]" >&2; exit 2; }
 
 changed="$("$here/changed-files.sh")"
 status=$?

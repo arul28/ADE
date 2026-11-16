@@ -3284,8 +3284,10 @@ export function TopBar({
         <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         {/* App settings with no project surface in front (welcome page, new
-            tab, Chats). A project's own sidebar carries Settings otherwise. */}
-        {!webMode && !projectSurfaceVisible && !isSettingsTabOpen ? (
+            tab, Chats). A project's own sidebar carries Settings otherwise.
+            The web app too: its account pages (ADE Cloud among them) need no
+            machine, and the machine sections say to connect one. */}
+        {!projectSurfaceVisible && !isSettingsTabOpen ? (
           <SmartTooltip
             forceEnabled
             side="bottom"

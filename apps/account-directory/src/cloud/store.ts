@@ -32,7 +32,6 @@ import { keepLaneStatement, laneFactsOf } from "./lanesWithoutComputer";
 export type CloudEnv = CallerTokenEnv & CloudEmailEnv & {
   DB: D1Database;
   AGENT37_API_KEY?: string;
-  CLOUD_ACCESS_ACCOUNTS?: string;
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
   STRIPE_PLAN_PRICE_ID?: string;

@@ -9,6 +9,7 @@ import {
   type CloudReferralSummary,
 } from "../../../../shared/adeCloud";
 import { captureInviteAnalytics } from "../../../lib/invitePill";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import "./cloudDashboard.css";
 
@@ -29,7 +30,8 @@ export function InviteCodeBox({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const redeem = window.ade?.cloud?.redeemInvite;
-  if (!redeem) return null;
+  // The web app has no code box: its stand-in for the member is truthy, so ask whether it is real.
+  if (!isAdeAvailable(redeem)) return null;
   const submit = async () => {
     const value = code.trim();
     if (!value || busy) return;

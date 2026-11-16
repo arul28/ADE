@@ -2982,6 +2982,12 @@ function detach(): void {
  * No-op when nothing is subscribed: a refresh outside a live scope would read
  * against an empty scope and publish rows nobody asked for.
  */
+/** Reads the account's saved chats again now, past the 30 s wait: a delete just changed them. */
+export function requestCloudSavedChatsRead(): void {
+  if (runtime.refCount === 0 || !connectionSnapshotSeen) return;
+  scheduleCloudSavedChatsRefresh(savedChatsContext, { force: true });
+}
+
 export function requestCrossMachineLanesForMachine(machineId: string): void {
   const trimmed = machineId.trim();
   if (!trimmed || runtime.refCount === 0) return;

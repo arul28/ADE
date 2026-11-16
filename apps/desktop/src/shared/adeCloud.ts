@@ -1081,6 +1081,12 @@ export type CloudMachinesResult = {
   deletedInstanceIds?: string[];
   /** A plain sentence for `access_refused` and `unreachable`. */
   message: string | null;
+  /**
+   * The web app with none of the account's computers online: the plan and
+   * hours came straight from the account server, and `machines` is empty
+   * because listing them needs a computer, not because there are none.
+   */
+  computersUnread?: boolean;
 };
 
 export type CloudMachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "update";

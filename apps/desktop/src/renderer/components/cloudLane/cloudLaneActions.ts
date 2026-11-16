@@ -1,4 +1,5 @@
 import type {
+  CloudLaneDeleteOptions,
   CloudLaneDeleteResult,
   CloudLaneFreeResult,
   CloudLaneJobSnapshot,
@@ -14,6 +15,7 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { rootAppStoreApi } from "../../state/appStore";
 import { adeCloudLaneComputerForMachine, forgetCloudLaneComputer, type AdeCloudLaneComputer } from "../../state/adeCloudLaneIndex";
 import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
  * What ADE does to a cloud lane's computer, from every place that shows one
@@ -32,7 +34,9 @@ import { resolveAdeCloudLaneBinding } from "../chat/adeCloudLaneBinding";
 export const CLOUD_LANE_LIFE_UNAVAILABLE = "Do this in the ADE desktop app. This window can't change ADE Cloud lanes.";
 
 function laneLife(): NonNullable<NonNullable<typeof window.ade.cloud>["laneLife"]> | null {
-  return (typeof window !== "undefined" ? window.ade?.cloud?.laneLife : null) ?? null;
+  // The web app's stand-in for a missing member is truthy: ask whether it is real.
+  const run = typeof window !== "undefined" ? window.ade?.cloud?.laneLife : null;
+  return isAdeAvailable(run) ? run : null;
 }
 
 async function call<M extends CloudLaneLifeMethod>(method: M, args?: unknown): Promise<CloudLaneLifeResults[M]> {
@@ -50,8 +54,8 @@ export async function cloudLaneWorkState(instanceId: string): Promise<CloudLaneW
   return await call("workState", { instanceId });
 }
 
-export async function deleteCloudLane(instanceId: string, options: { skipCheck: boolean }): Promise<CloudLaneDeleteResult> {
-  const done = await call("deleteLane", { instanceId, skipCheck: options.skipCheck });
+export async function deleteCloudLane(instanceId: string, options: CloudLaneDeleteOptions & { skipCheck: boolean }): Promise<CloudLaneDeleteResult> {
+  const done = await call("deleteLane", { instanceId, skipCheck: options.skipCheck, keepChats: options.keepChats === true });
   if (done.ok) forgetCloudLaneComputer(instanceId);
   return done;
 }
@@ -117,7 +121,7 @@ export async function forgetCloudLaneWithoutComputer(laneId: string): Promise<vo
  */
 export async function pushCloudLaneWork(instanceId: string): Promise<string> {
   const push = window.ade?.cloud?.pushAllWork;
-  if (!push) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
+  if (!isAdeAvailable(push)) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
   const result = await push(instanceId);
   if (!result.ok) throw new Error(result.message || "ADE couldn't push the work.");
   return result.message || "Pushed all work to GitHub.";
@@ -130,7 +134,7 @@ export async function pushCloudLaneWork(instanceId: string): Promise<string> {
 export async function clearCloudLaneCaches(input: { instanceId: string | null; machine: CloudLaneMachine | null }): Promise<{ freedGb: number }> {
   const clear = window.ade?.cloud?.clearCaches;
   const { machine, instanceId } = input;
-  if (!clear || !machine?.lane || !instanceId) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
+  if (!isAdeAvailable(clear) || !machine?.lane || !instanceId) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
   const snapshot = await window.ade.remoteRuntime?.getConnectionSnapshot?.().catch(() => null);
   const pin = await resolveAdeCloudLaneBinding({
     lane: {

@@ -17,7 +17,7 @@ import {
   type CloudReferralSummary,
 } from "./contract";
 import { readClerkUser } from "./email";
-import { UNREADABLE_REQUEST_MESSAGE, cloudAccessAllows, fail, json, readJson } from "./http";
+import { UNREADABLE_REQUEST_MESSAGE, fail, json, readJson } from "./http";
 import { checkDeviceRateLimit } from "../deviceAuthorization";
 import { loadAccount, logCloud, reportCloudFailure, type AccountRow, type CloudEnv } from "./store";
 
@@ -199,7 +199,7 @@ async function redeem(request: Request, env: CloudEnv, userId: string, ctx: Ctx)
   if (!code) return refused(env, userId, "invalid_code", ctx);
   const owner = await env.DB.prepare("select user_id from cloud_invite_codes where code = ?").bind(code).first<{ user_id: string }>();
   // An inviter without ADE Cloud has no code to give: the same answer as no code at all.
-  if (!owner || !cloudAccessAllows(env, owner.user_id)) return refused(env, userId, "unknown_code", ctx);
+  if (!owner) return refused(env, userId, "unknown_code", ctx);
   if (owner.user_id === userId) return refused(env, userId, "own_code", ctx);
   const account = await loadAccount(env, userId, ctx.now);
   if (await env.DB.prepare("select 1 as taken from cloud_referrals where friend_user_id = ?").bind(userId).first()) {
@@ -407,7 +407,7 @@ export async function handleInviteLookup(request: Request, env: CloudEnv): Promi
   }
   const code = parseCloudInviteCode(raw);
   const owner = code ? await env.DB.prepare("select user_id from cloud_invite_codes where code = ?").bind(code).first<{ user_id: string }>() : null;
-  if (!owner || !cloudAccessAllows(env, owner.user_id)) return answer(404, { error: { code: "not_found", message: "That invite isn't valid." } });
+  if (!owner) return answer(404, { error: { code: "not_found", message: "That invite isn't valid." } });
   let cached = firstNames.get(owner.user_id);
   if (!cached || now - cached.at > FIRST_NAME_TTL_MS) {
     const facts = await readClerkUser(env, owner.user_id).catch((error: unknown) => {

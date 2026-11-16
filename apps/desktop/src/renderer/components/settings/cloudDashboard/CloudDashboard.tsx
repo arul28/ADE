@@ -23,6 +23,7 @@ import type { CloudLaneMachine } from "../../../../shared/cloudLaneLaunch";
 import { resolveSettingsHash } from "../../../../shared/settingsManifest";
 import { useLocation } from "react-router-dom";
 import { formatAgo, ipcErrorMessage } from "../../../lib/format";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { showToast } from "../../app/toast/toastStore";
 import { ADE_CLOUD_NAME, CloudLogo, CloudMark, CloudSizeIcon } from "../../remoteTargets/cloudBrand";
 import type { CloudMachinesState } from "../../remoteTargets/useCloudMachines";
@@ -54,8 +55,8 @@ import {
   prefersReducedMotion,
   type DashLane,
 } from "./cloudDashboardModel";
-import { clearCloudLaneCaches, cloudLaneLifeAvailable, freeCloudLane } from "../../cloudLane/cloudLaneActions";
-import { deleteCloudLaneWithCheck, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
+import { clearCloudLaneCaches, cloudLaneLifeAvailable } from "../../cloudLane/cloudLaneActions";
+import { deleteCloudLaneWithCheck, freeCloudLaneWithConfirm, useCloudLaneDeletes, type CloudLaneDeletePhase } from "../../cloudLane/deleteCloudLane";
 import { cloudLaneJobFor, cloudLaneJobVisible, refreshCloudLanesWithoutComputer, useCloudLaneJobs, useCloudLanesWithoutComputer } from "../../cloudLane/cloudLaneStores";
 import { CloudLaneJobCard, cloudLaneJobPresentation } from "../../cloudLane/CloudLaneJobCard";
 import type { CloudLaneJobSnapshot } from "../../../../shared/cloudLaneLife";
@@ -119,6 +120,8 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
   const [now, setNow] = useState(() => Date.now());
   const result = machines.result?.state === "ok" ? machines.result : null;
   const list = (result?.machines ?? NO_MACHINES) as CloudLaneMachine[];
+  // The web app with none of the account's computers online: the plan is read, the computers are not.
+  const computersUnread = result?.computersUnread === true;
   const refresh = machines.refresh;
 
   useEffect(() => {
@@ -211,21 +214,9 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
 
   const freeLane = async (lane: DashLane) => {
     if (!lane.instanceId) return;
-    const ok = await confirmDialog({
-      title: `Free the computer of ${lane.name}?`,
-      message: "ADE pushes its work to GitHub, then removes the computer. The lane and its chats stay. Your next message makes a new computer.",
-      confirmLabel: "Free the computer",
-      cancelLabel: "Cancel",
-    });
-    if (!ok) return;
     setBusyKey(lane.key);
     try {
-      const done = await freeCloudLane(lane.instanceId);
-      showToast({ tone: done.ok ? "success" : "error", title: done.ok ? `Freed ${lane.name}'s computer` : `Kept ${lane.name}'s computer`, message: done.message });
-      refresh();
-      refreshCloudLanesWithoutComputer();
-    } catch (error) {
-      showToast({ tone: "error", title: `Couldn't free ${lane.name}'s computer`, message: errorText(error) });
+      await freeCloudLaneWithConfirm({ instanceId: lane.instanceId, laneName: lane.name, onDone: refresh });
     } finally {
       setBusyKey(null);
     }
@@ -259,6 +250,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
         onSelect={selectFromCity}
         onOpen={openInside}
         now={now}
+        computersUnread={computersUnread}
         celebrating={moment != null}
       />
 
@@ -325,6 +317,7 @@ export function CloudDashboard({ account, machines }: { account: CloudAccountSta
           ) : (
             <LaneTable
               lanes={lanes}
+              computersUnread={computersUnread}
               now={now}
               selectedKey={selected?.key ?? null}
               onSelect={(key) => setSelectedKey((current) => (current === key ? null : key))}
@@ -383,6 +376,7 @@ function CloudHero({
   onSelect,
   onOpen,
   now,
+  computersUnread,
   celebrating,
 }: {
   account: CloudAccountState;
@@ -392,6 +386,7 @@ function CloudHero({
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
   now: number;
+  computersUnread: boolean;
   /** A plan just landed: the plan's name glows once. */
   celebrating: boolean;
 }) {
@@ -479,6 +474,12 @@ function CloudHero({
                 stars={false}
               />
             </>
+          ) : computersUnread ? (
+            <div className="adecd-city-empty">
+              <EmptyPlot />
+              <b>Your cloud lanes show when a computer is online</b>
+              <span>Listing them goes through one of your computers. Your plan, hours and billing work without one.</span>
+            </div>
           ) : (
             <div className="adecd-city-empty">
               <EmptyPlot />
@@ -535,6 +536,7 @@ function laneDetail(lane: DashLane, now: number): string[] {
 /** Every lane and every computer the account pays for, one row each; the selected row opens its actions under it. */
 function LaneTable({
   lanes,
+  computersUnread = false,
   now,
   selectedKey,
   onSelect,
@@ -544,6 +546,8 @@ function LaneTable({
   menuActions,
 }: {
   lanes: readonly DashLane[];
+  /** The computers weren't read (the web app with none online): say so, not "nothing here". */
+  computersUnread?: boolean;
   now: number;
   selectedKey: string | null;
   onSelect: (key: string) => void;
@@ -574,6 +578,9 @@ function LaneTable({
     event.preventDefault();
     if (lanes[next]!.key !== selectedKey) onSelect(lanes[next]!.key);
   };
+  if (!lanes.length && computersUnread) {
+    return <p className="adecd-empty">None of your computers is online, so ADE can't list your cloud lanes and computers here. They show when one is.</p>;
+  }
   if (!lanes.length) {
     return <p className="adecd-empty">Nothing here yet. Each cloud lane gets its own computer, and every computer you pay for is listed here.</p>;
   }
@@ -724,7 +731,7 @@ function LookInside({ lane, now, busy, onBack, onClear }: { lane: DashLane; now:
   })), [usage, lane.state]);
   const clearableGb = (usage?.items ?? []).filter((part) => part.clearable).reduce((total, part) => total + part.gb, 0);
   const total = usage?.totalGb ?? 0;
-  const canClear = clearableGb > 0 && Boolean(window.ade.cloud?.clearCaches) && lane.state !== "failed";
+  const canClear = clearableGb > 0 && isAdeAvailable(window.ade.cloud?.clearCaches) && lane.state !== "failed";
   const backRef = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     backRef.current?.focus();
