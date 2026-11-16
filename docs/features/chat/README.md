@@ -4272,7 +4272,7 @@ Where it is set:
   and CLI lineage never populates `chatSessionId` because that field means
   attached-terminal ownership.
 - `ade chat create --type subagent --provider <p> --model <m> [--instance <id>]
-  [--preset <id>]` is how a coordinating agent spawns its own helpers from any
+  [--custom-provider <name>]` is how a coordinating agent spawns its own helpers from any
   thread. There is no separate orchestration mode.
 - The CTO's `spawnChat` tool sets `orchestrationParentSessionId` to the calling
   CTO session unconditionally and defaults `spawnKind` to `"subagent"` — twice,
@@ -5328,11 +5328,13 @@ rejected like the other generic titles.
   `interrupt()` calls. Missing the guard yields duplicate
   `subagent_result` or `error` events. See `interrupted` flag in
   `ClaudeChatRuntimeState`.
-- **Claude post-compaction identity re-injection.** When the CTO
-  identity session undergoes context compaction, the service calls
-  `refreshReconstructionContext()` to re-inject persona, durable memory,
-  and continuity protocols. Missing this path loses CTO identity and
-  memory mid-session. See [CTO](../cto/README.md#flush-and-injection-lifecycle).
+- **A compacted CTO thread is replaced, not re-injected.** When the CTO's
+  provider thread reports a completed compaction, `refreshCtoProviderThread()`
+  runs as soon as that turn settles: the runtime is torn down, every provider
+  pointer is forgotten, the static prompt and 40-message tail are re-staged, and
+  the notes, open work and live state ride the next send. Living on in a
+  compacted thread would keep only whatever the provider's summary kept. See
+  [CTO](../cto/README.md#what-the-cto-is-given-each-turn).
 - **Transcript persistence.** Sessions persist version-2 state under the
   `.ade` layout. Re-derivation goes through `sessionRecovery.ts`;
   changing the on-disk format without bumping the version silently

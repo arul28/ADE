@@ -133,7 +133,9 @@ import { createSettledLaneReleaseActions, createSettledLaneReleaseService } from
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
-import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
+import { createCtoAccountCopyService, type CtoAccountCopyService } from "../../desktop/src/main/services/cto/ctoAccountCopyService";
+import { reportCtoHomeMove } from "../../desktop/src/main/services/analytics/ctoHomeProductAnalytics";
+import { accountRepoScopeKey } from "../../desktop/src/shared/accountSettingsScope";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -563,6 +565,8 @@ export type AdeRuntime = {
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
+  /** The CTO's account copy (ctoAccountCopyService.ts); null when this brain has no account vault. */
+  ctoAccountCopyService?: CtoAccountCopyService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearAgentRuntime?: LinearAgentRuntime | null;
@@ -1377,6 +1381,7 @@ export async function createAdeRuntime(args: {
     } = { current: null };
     // Built after the chat service; a lane's delete reaches it through here.
     const cloudChatUploaderRef: { current: ReturnType<typeof createCloudChatUploader> | null } = { current: null };
+    const ctoAccountCopyRef: { current: CtoAccountCopyService | null } = { current: null };
     const cloudLaneNameSyncRef: { current: CloudLaneNameSync | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
@@ -2178,9 +2183,9 @@ export async function createAdeRuntime(args: {
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
-      account: accountSettingsStore
-        ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
-        : null,
+      // Edits made while no turn runs (Settings, the side panel, another
+      // device) reach the account copy too, not only at a turn's end.
+      onChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
     });
     const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
     // The CTO's generic actions on this machine run through the same RPC
@@ -2214,6 +2219,7 @@ export async function createAdeRuntime(args: {
     };
     const ctoStateService = createCtoStateService({
       db,
+      onIdentityChanged: () => ctoAccountCopyRef.current?.noteTurnEnded(),
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
@@ -3294,6 +3300,10 @@ export async function createAdeRuntime(args: {
           linearAgentRuntime?.onChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
           if (event.event.type === "done") cloudChatUploader?.noteTurnEnded(event.sessionId);
+          // A routine added, changed or removed between turns is part of the copy too.
+          if ((event.event.type === "done" || event.event.type === "scheduled_work_update") && ctoAccountCopyRef.current && agentChatServiceHolder.current?.sessionIdentityKeyNow(event.sessionId) === "cto") {
+            ctoAccountCopyRef.current.noteTurnEnded();
+          }
           if (event.event.type === "done") chatBrowserLifecycleHolder.current?.(event.sessionId, "idle");
           else if (event.event.type === "status" && event.event.turnStatus === "started") {
             chatBrowserLifecycleHolder.current?.(event.sessionId, "running");
@@ -3393,6 +3403,64 @@ export async function createAdeRuntime(args: {
       }
     }
     agentChatServiceHolder.current = agentChatService;
+    // The CTO's account copy: written here while this machine is the CTO's
+    // home, and what a new home restores it from (ctoAccountCopyService.ts).
+    let ctoOriginCache: { at: number; scope: string | null } | null = null;
+    const ctoRepoScope = (): string | null => {
+      if (!ctoOriginCache || Date.now() - ctoOriginCache.at > 60_000) {
+        let origin: string | null = null;
+        try {
+          origin = readGitOriginUrl(projectRoot);
+        } catch {
+          origin = null;
+        }
+        ctoOriginCache = { at: Date.now(), scope: accountRepoScopeKey(origin) };
+      }
+      return ctoOriginCache.scope;
+    };
+    const chatServiceForCtoCopy = agentChatService;
+    const ctoAccountCopy: CtoAccountCopyService | null = chatServiceForCtoCopy && accountVaultStore
+      ? createCtoAccountCopyService({
+          adeDir: paths.adeDir,
+          repoScope: ctoRepoScope,
+          vault: accountVaultStore,
+          settings: accountSettingsStore
+            ? {
+                get: (scope, key) => accountSettingsStore.get(scope, key),
+                set: (scope, key, value) => accountSettingsStore.set(scope, key, value),
+                sync: () => accountSettingsStore.sync(),
+              }
+            : null,
+          deviceId: readSyncDeviceId,
+          deviceName: () => {
+            try {
+              return syncService?.getDeviceRegistryService().ensureLocalDevice().name ?? null;
+            } catch {
+              return null;
+            }
+          },
+          ctoState: ctoStateService,
+          ctoMemory: ctoMemoryService,
+          readSources: () => chatServiceForCtoCopy.readCtoAccountCopySources(),
+          replaceRoutines: (routines) => chatServiceForCtoCopy.replaceCtoRoutines(routines),
+          startFreshThread: () => chatServiceForCtoCopy.startFreshCtoThread(),
+          threadIsBusy: () => chatServiceForCtoCopy.isCtoThreadBusy(),
+          onMoveLanded: (outcome) => reportCtoHomeMove(productAnalyticsService, outcome),
+          logger,
+        })
+      : null;
+    if (ctoAccountCopy && chatServiceForCtoCopy) {
+      chatServiceForCtoCopy.setCtoAccountCopyHooks({
+        homeGate: (ctoName) => ctoAccountCopy.homeGate(ctoName),
+        routineHoldReason: () => ctoAccountCopy.routineHoldReason(),
+        carriedTail: () => ctoAccountCopy.carriedTail(),
+        dropCarriedTail: () => ctoAccountCopy.dropCarriedTail(),
+        applyCarriedRoutines: () => ctoAccountCopy.applyCarriedRoutines(),
+        save: (reason) => ctoAccountCopy.save(reason),
+      });
+      teardown.push(() => ctoAccountCopy.dispose());
+    }
+    ctoAccountCopyRef.current = ctoAccountCopy;
     // A new CLI session that names no account starts where a new chat would.
     const chatServiceForCliAccounts = agentChatService;
     if (chatServiceForCliAccounts) {
@@ -4492,6 +4560,7 @@ export async function createAdeRuntime(args: {
         pushPublisherService,
         ctoStateService,
         ctoMemoryService,
+        ctoAccountCopyService: () => ctoAccountCopyRef.current,
         linearCredentialService: headlessLinearServices.linearCredentialService,
         linearOAuthService,
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
@@ -4676,6 +4745,7 @@ export async function createAdeRuntime(args: {
       cloudAgentsService,
       ctoStateService,
       ctoMemoryService,
+      ctoAccountCopyService: ctoAccountCopyRef.current,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       jiraService: jiraServiceRef,

@@ -697,25 +697,30 @@ describe("productAnalyticsService", () => {
     expect(JSON.stringify(harness.messages)).not.toContain("private");
   });
 
-  it("accepts the three capture-gesture outcomes and nothing about the window", () => {
+  it.each([
+    { action: "capture_gesture", surface: "desktop", outcomes: ["delivered", "failed", "too_large"] },
+    { action: "cto_home_move", surface: "api", outcomes: ["completed", "kept", "failed"] },
+  ] as const)("accepts the CTO's $action outcomes and nothing private beside them", ({ action, surface, outcomes }) => {
     const harness = makeHarness();
 
-    for (const outcome of ["delivered", "failed", "too_large"]) {
+    for (const outcome of outcomes) {
       harness.service.captureInternal({
         event: "ade_feature_used",
-        surface: "desktop",
+        surface,
         properties: {
           feature: "cto",
-          action: "capture_gesture",
+          action,
           outcome,
           window_title: "Bank of Somewhere — Statement",
         },
-        dedupeKey: `capture_gesture:${outcome}`,
+        dedupeKey: `${action}:${outcome}`,
       });
     }
 
     expect(harness.messages.map((message) => (message.properties as { outcome?: string } | undefined)?.outcome))
-      .toEqual(["delivered", "failed", "too_large"]);
+      .toEqual([...outcomes]);
+    expect(harness.messages.map((message) => (message.properties as { action?: string } | undefined)?.action))
+      .toEqual(outcomes.map(() => action));
     expect(JSON.stringify(harness.messages)).not.toContain("Bank of Somewhere");
   });
 

@@ -38,22 +38,26 @@ type AdeActionInputContractTable =
 
 const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   cto_state: {
-    getThreadHealth: {
+    refreshContext: {
       description:
-        "Report whether the CTO thread can take a turn: the session id, the last turn failure, context occupancy, "
-        + "and whether a rotation is advised. Open to every role; never changes state.",
+        "Give the CTO a fresh provider thread. The conversation, notes, open work and the last 40 messages carry over. "
+        + "A CTO that is mid-turn is refreshed when the turn ends. CTO-only.",
       input: "none",
-      example: "ade actions run cto_state.getThreadHealth --json",
-    },
-    startFreshSession: {
-      description:
-        "Retire the CTO's live conversation into History and start a fresh one on the primary lane. "
-        + "Identity, memory and the daily log carry over; a hand-off note is written first. CTO-only.",
-      input: "none",
-      example: "ade --role cto actions run cto_state.startFreshSession --json",
+      example: "ade --role cto actions run cto_state.refreshContext --json",
     },
   },
   cto_memory: {
+    updateNotes: {
+      description:
+        "Replace one notes file, one note per line: scope \"project\" (.ade/cto/MEMORY.md, 4096 bytes) or \"user\" (the person, every project on this machine, 2048 bytes). Over the cap is refused. Pass the snapshot's memoryHash/userNotesHash as baseHash to refuse the write when the file changed since it was read. CTO-only.",
+      input: "object { scope: \"project\" | \"user\", text: string, baseHash?: string }",
+      example: "ade --role cto actions run cto_memory.updateNotes --input-json '{\"scope\":\"project\",\"text\":\"- Deploys go through the release lane\"}' --json",
+    },
+    updateOpenWork: {
+      description: "Add, complete, reopen or remove one open-work item on the CTO's list. CTO-only.",
+      input: "object { op: \"add\", text: string } | { op: \"complete\" | \"reopen\" | \"remove\", id: string }",
+      example: "ade --role cto actions run cto_memory.updateOpenWork --input-json '{\"op\":\"add\",\"text\":\"Land the login fix\"}' --json",
+    },
     recordDiscovery: {
       description:
         "Hand one durable finding up to the project's CTO — a convention, a trap, a decision the next agent should not have to rediscover. "
@@ -133,7 +137,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade proxy stop --text",
     },
     signIn: {
-      description: "Sign in one Claude or Codex subscription for use by harness presets; ADE opens the provider's sign-in page and waits for completion.",
+      description: "Sign in one Claude or Codex subscription for use in other harnesses (Custom providers, --via); ADE opens the provider's sign-in page and waits for completion.",
       input: "object { provider: \"claude\" | \"codex\" }",
       example: "ade actions run proxy.signIn --input-json '{\"provider\":\"claude\"}'",
     },
@@ -242,7 +246,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade cloud limits --text",
     },
     set_limits: {
-      description: "Change what unattended agents may do: a preset, or single limits. Loosening any limit asks the person; an unattended agent is refused.",
+      description: "Change what unattended agents may do: a level in `preset` (ask, balanced, hands_off), or single limits. Loosening any limit asks the person; an unattended agent is refused.",
       input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
       example: "ade cloud limits balanced",
     },
@@ -254,7 +258,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     lane_launch: {
       description: "Start a new lane on ADE Cloud: this brain makes one new computer for the lane alone, joins it to the account, gets the GitHub repository there, then starts the chat there (chat.startLaunch on that computer, same launch id). Returns at once with {launch, machine, approvalUrl, madeByChat}; read progress with lane_launch_status. The same launch id again answers that launch (a failed one goes on from its failed step), never a second computer. Refused before any card when the account is out of hours, uses all its computers or has a full disk, with status's canStartLane sentence. Costs hours: asks the person in your chat first, within the agent limits for unattended chats. The lane starts from the pushed copy of its branch.",
       input: "object { launch: chat launch args (kind \"chat\", launchId, prompt, chat, laneConfig?) with cloud: { sizeId: \"small\" | \"medium\" | \"large\" | \"xlarge\" }, originUrl: string (the project's git origin) }",
-      example: "ade chat create --machine cloud --size medium --prompt \"…\"",
+      example: "ade chat create --machine cloud --size medium --provider codex --model openai/gpt-5.6-sol --prompt \"…\"",
     },
     lane_launch_status: {
       description: "An ADE Cloud lane launch this brain owns: {launch (stages, phase, laneId, sessionId), machine {name, instanceId, machineKey}, approvalUrl (the sign-in link while the join waits for the person), madeByChat}. Null for an unknown id.",
@@ -380,17 +384,17 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   usage: {
     getAdeUsageStats: {
       description:
-        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the ADE account, \"machine\" is this computer only, \"project\" is the open project's share of it.",
+        "Read token, cost, and activity stats. `scope` picks the reach: \"account\" merges every machine on the ADE account, \"machine\" is this machine only, \"project\" is the open project's share of it.",
       input:
         "object { preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, scope?: \"account\" | \"machine\" | \"project\", force?: boolean }",
-      example: "ade usage stats --preset 30d --scope account --text",
+      example: "ade usage stats --range 30d --scope account --text",
     },
     getCostBreakdown: {
       description:
         "Rank ADE chat spend by chat, lane, or account from the per-turn ledger: API-equivalent value, dollars billed to API keys, and plan value covered by subscriptions. Chats and lanes are the open project's; accounts are the machine's. The ledger keeps three months.",
       input:
         "object { by: \"chat\" | \"lane\" | \"account\", preset?: \"today\" | \"7d\" | \"30d\" | \"year\" | \"all\", since?: ISO string, until?: ISO string, laneId?: string (with by: chat, one lane's chats), limit?: number (max 200) }",
-      example: "ade usage stats --by lane --preset 30d --text",
+      example: "ade usage stats --by lane --range 30d --text",
     },
     getModelDetail: {
       description:
@@ -606,7 +610,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
     createSession: {
       description: "Create a persistent ADE Work chat session.",
-      input: "object { laneId?, provider?, model?/modelId?, reasoningEffort?, permissionMode?, fastMode?, title?, surface? }",
+      input: "object { laneId?, provider?, model/modelId (required from an agent), reasoningEffort?, permissionMode?, fastMode?, title?, surface? }",
       example: "ade actions run chat.createSession --input-json '{\"laneId\":\"lane-1\",\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\",\"reasoningEffort\":\"xhigh\",\"permissionMode\":\"full-auto\",\"fastMode\":false}'",
     },
     getAvailableModels: {
@@ -825,6 +829,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         + "Captions contain spoken words, so this read is CTO-only.",
       input: "object { sessionId: string, token: string }",
     },
+    launchCli: {
+      description: "Start a tracked provider CLI session in a lane and type the kickoff prompt into it (what the phone's New CLI does). "
+        + "An agent names the model; presetId is a Custom provider's id (`ade harness providers --text`).",
+      input: "object { laneId: string, provider: string, kickoffPrompt: string, model: string (required from an agent), reasoningEffort?, "
+        + "permissionMode?, fastMode?, instanceId?, presetId?, credentialId?, title?, disposition?: \"background\" }",
+      example: "ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --prompt \"fix the tests\"",
+    },
     handoffSession: {
       description:
         "Hand a chat to a different model. \"brief\" writes a summary and starts a fresh thread (any lane in the project); "
@@ -844,6 +855,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "End a side chat for good. Pass the side chat's id or its main chat's id; with expectedSideSessionId, it refuses when the main chat has a different side chat now.",
       input: "object { sessionId: string, expectedSideSessionId?: string }",
       example: "ade actions run chat.endSideChat --input-json '{\"sessionId\":\"chat-123\"}' --json",
+    },
+    setScheduledWorkItemPaused: {
+      description: "Pause or resume one scheduled job on a chat, leaving its other jobs alone. Reversible; nothing is cancelled.",
+      input: "object { sessionId: string, scheduleId: string, paused: boolean }",
+      example: "ade actions run chat.setScheduledWorkItemPaused --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\",\"paused\":true}' --text",
+    },
+    runScheduledWorkNow: {
+      description: "Run one scheduled job now. A recurring job keeps its next time; a one-shot is spent. Refused while the chat is busy.",
+      input: "object { sessionId: string, scheduleId: string }",
+      example: "ade actions run chat.runScheduledWorkNow --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
     },
     setScheduledWorkPaused: {
       description: "Pause or resume every scheduled job on one chat. Reversible; nothing is cancelled.",
@@ -907,14 +928,15 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     webhookCreateAutomation: {
       description:
         "One step: make a private webhook URL and the automation that runs on it. Returns { rule, hookId, setup } where setup has the URL, "
-        + "numbered paste steps for the service, the signature/secret state, and the filters in words. Defaults come from the preset "
-        + "(GitHub/Stripe/Linear/Sentry signature format, suggested filters and prompt). chatSessionId \"this\" sends every delivery to the "
+        + "numbered paste steps for the service, the signature/secret state, and the filters in words. Defaults come from the service named in "
+        + "`preset` (GitHub/Stripe/Linear/Sentry signature format, suggested filters and prompt). modelId is the model of the chat each "
+        + "delivery starts, required unless chatSessionId is set: \"this\" sends every delivery to the "
         + "calling chat as a new turn; an agent may bind only its own chat. Failures leave no URL behind.",
       input:
         "object { preset?: \"github\" | \"stripe\" | \"linear\" | \"sentry\" | \"generic\", name?: string, prompt?: string (use {{trigger.body.<path>}}), "
         + "filters?: Array<string like \"body.action=opened\" | \"headers.x-github-event=issues\" | \"body.ref~main\" | \"body.draft!=true\" | \"body.issue\"> ([] = every request), "
         + "requireSignature?: boolean, secretName?: string, modelId?: string, reasoningEffort?: string, chatSessionId?: string | \"this\", enabled?: boolean, confirmations?: string[] }",
-      example: "ade automations webhook create --preset github --filter body.action=opened --in-this-chat --text",
+      example: "ade automations webhook create --service github --filter body.action=opened --in-this-chat --text",
     },
     webhookList: {
       description: "Every webhook automation in this project: its URL and route (relay / gateway / this computer), signature and secret state, filters, bound chat, and last delivery.",

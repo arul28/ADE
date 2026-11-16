@@ -1,24 +1,31 @@
 import SwiftUI
 import UIKit
 
-/// Top-level CTO tab. The tab body IS the CTO chat: one always-on agent thread
-/// embedded inline. A gear in the top bar opens settings as a sheet. Until a
-/// model that can steer a live turn has been picked, a picker card takes the
-/// thread's place.
+/// Top-level CTO tab. The tab body IS the CTO chat: one always-on agent
+/// thread, headed by a floating pill (the CTO's live avatar, its name and one
+/// status word) that opens its profile. Until a model that can steer a live
+/// turn has been picked, the CTO sleeps on a welcome page in the thread's
+/// place.
 struct CtoRootScreen: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.duoLayout) private var duo
   var isTabActive = true
 
-  @State private var snapshot: CtoSnapshot?
+  @StateObject private var store = CtoStore()
+  @StateObject private var live = CtoLiveModel()
   @State private var isLoadingSnapshot = false
   @State private var snapshotLoadError: String?
   @State private var lastLiveSnapshotReloadAt: Date?
-  @State private var showingSettings = false
+  @State private var sheet: CtoRootSheet?
   @State private var showingModelPicker = false
   @State private var modelPickInFlight = false
   @State private var modelPickError: String?
+  @State private var waking = false
+  /// Changing the home from the asleep card ("Pick another home").
+  @State private var showingHomeChooser = false
+  /// "Moved from …" after a move that took the CTO's account copy.
+  @State private var moveNote: ADEToastMessage?
 
   /// The pane beside the CTO thread on a wide display (Chat Info, CTO
   /// Settings), the same model Work's chat column owns.
@@ -28,17 +35,25 @@ struct CtoRootScreen: View {
   @State private var compactEdgeRail = false
 
   var body: some View {
-    // One design on every display: the phone, the Duo's closed display and
-    // the wide windows all get the thread with Work's chat chrome. Only where
-    // its panes open changes (stacked over the thread on a narrow window).
     wideBody
       .task(id: "\(isTabActive)|\(syncService.activeProjectId ?? "")") {
         guard isTabActive else { return }
+        wireLive()
         // The CTO follows the project's home machine; a change there reloads.
         let previousHome = syncService.ctoHomeMachineKey
+        let hadHome = !syncService.ctoHomeNeedsChoice
         await syncService.refreshCtoHomeMachine()
-        guard snapshot == nil || syncService.ctoHomeMachineKey != previousHome else { return }
+        let changed = store.snapshot == nil
+          || syncService.ctoHomeMachineKey != previousHome
+          || (!hadHome && !syncService.ctoHomeNeedsChoice)
+        // No home yet: the chooser asks, and nothing is called meanwhile.
+        guard changed, !syncService.ctoHomeNeedsChoice else { return }
         await loadSnapshot()
+      }
+      .onChange(of: syncService.ctoHomeNeedsChoice) { _, needsChoice in
+        // A home picked from Settings: load that machine's CTO.
+        guard !needsChoice else { return }
+        Task { await loadSnapshot() }
       }
       .task(id: ctoLiveReloadKey) {
         guard ctoLiveReloadKey != nil else { return }
@@ -47,61 +62,87 @@ struct CtoRootScreen: View {
         lastLiveSnapshotReloadAt = now
         await loadSnapshot()
       }
-      .sheet(isPresented: $showingSettings) {
-        CtoSettingsScreen(snapshot: snapshot) { updated in
-          self.snapshot = updated
+      .onChange(of: store.snapshot) { _, snapshot in applySnapshot(snapshot) }
+      .onChange(of: syncService.connectionState.isHostUnreachable) { _, unreachable in
+        live.offline = unreachable
+      }
+      .adeToast($moveNote)
+      .sheet(item: $sheet) { which in
+        switch which {
+        case .profile:
+          CtoProfileSheet(live: live, store: store)
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(ADEColor.pageBackground)
+            .environmentObject(syncService)
+        case .settings(let route):
+          CtoSettingsScreen(store: store, live: live, initialRoute: route)
+            .environmentObject(syncService)
         }
-        .environmentObject(syncService)
       }
   }
 
-  /// The inner display and an iPad: the CTO thread full screen with Work's
-  /// chat chrome (a thin title pill, the pill row, the composer on the rail's
-  /// line). Chat Info and CTO Settings open in the pane at the hinge, the way
-  /// Work's chat panes do. Before there is a thread (loading, a model to
-  /// pick, an error), the same column with the way back and the tabs.
+  /// Moves the CTO to `option`, then says what came along.
+  @MainActor
+  private func moveHome(to option: WorkNewChatMachineOption) async throws -> String? {
+    let note = try await ctoChooseHome(option, sync: syncService)
+    if let note { moveNote = ADEToastMessage(text: note) }
+    await loadSnapshot()
+    return note
+  }
+
+  private func wireLive() {
+    live.onOpenProfile = { sheet = .profile }
+    live.onOpenSettings = { sheet = .settings(nil) }
+    live.offline = syncService.connectionState.isHostUnreachable
+  }
+
+  private func applySnapshot(_ snapshot: CtoSnapshot?) {
+    guard let identity = snapshot?.identity else { return }
+    if live.look != identity.avatar { live.look = identity.avatar }
+    let name = store.name
+    if live.name != name { live.name = name }
+    live.noModel = identity.needsModelPick
+  }
+
   @ViewBuilder
   private var wideBody: some View {
-    if case .thread = currentContent {
+    if case .thread = currentContent, !waking, !syncService.ctoHomeNeedsChoice {
       CtoSessionDestinationView(
         navigationChrome: .embedded,
         duoPane: duoPane,
         duoPaneOpen: duoPane.isOpen,
-        title: topBarTitle,
-        duoSettings: { [snapshot] in
-          AnyView(
-            CtoSettingsScreen(snapshot: snapshot, embedded: true) { updated in
-              self.snapshot = updated
-            }
-          )
+        title: store.name,
+        live: live,
+        store: store,
+        duoSettings: { [store, live] in
+          AnyView(CtoSettingsScreen(store: store, live: live, embedded: true))
         }
       )
       .environmentObject(syncService)
-      .tint(ADEColor.ctoAccent)
+      .tint(live.look.ctoAccent)
       .environment(\.workCompactEdgeRail, compactEdgeRail)
       .onGeometryChange(for: Bool.self) { proxy in
         workDisplayHasEdgeRail(proxy)
       } action: { hasRail in
         if compactEdgeRail != hasRail { compactEdgeRail = hasRail }
       }
-      // Work's rule: laptop or tent (a bent horizontal fold) stacks the pane
-      // over the thread; flat, held either way, it sits beside it. A narrow
-      // window (a phone, the closed display) has no room beside the thread,
-      // so its panes stack over it too.
       .environment(\.duoWorkFamily, ctoWorkFamily)
     } else {
       NavigationStack {
         content
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .tint(ADEColor.ctoAccent)
+          .tint(live.look.ctoAccent)
           .adeScreenBackground()
-          .navigationTitle(topBarTitle)
+          .navigationTitle("")
           .navigationBarTitleDisplayMode(.inline)
           .toolbar {
             DuoHubBackToolbarItem()
-            ToolbarItem(placement: .topBarTrailing) {
-              Button { showingSettings = true } label: {
-                Label("CTO Settings", systemImage: "gearshape")
+            if store.snapshot != nil {
+              ToolbarItem(placement: .topBarTrailing) {
+                Button { sheet = .settings(nil) } label: {
+                  Label("\(store.name) settings", systemImage: "gearshape")
+                }
               }
             }
             DuoAppTabsToolbar()
@@ -117,98 +158,93 @@ struct CtoRootScreen: View {
     return duo.fold.isStacked && duo.bend > 0 ? .tall : .wide
   }
 
-  // MARK: - Title
-
-  private var topBarTitle: String {
-    guard let name = snapshot?.identity.name, !name.isEmpty else { return "CTO" }
-    return name
-  }
-
   // MARK: - Content
 
   private var currentContent: CtoRootContent {
     ctoRootContent(
-      identity: snapshot?.identity,
+      identity: store.snapshot?.identity,
       loadError: snapshotLoadError,
-      hostUnreachable: syncService.connectionState.isHostUnreachable
+      hostUnreachable: syncService.connectionState.isHostUnreachable,
+      homeOffline: syncService.ctoHomeIsOffline
     )
   }
 
   @ViewBuilder
   private var content: some View {
-    switch currentContent {
-    case .modelPick:
-      // No model the CTO can steer live has been picked yet. The picker takes
-      // the thread's place — and `CtoSessionDestinationView` is deliberately
-      // not built, so nothing ensures (and so nothing creates) a session on a
-      // provider the user has not chosen. Desktop parity: `CtoPage`'s
-      // `ModelPickCard`.
-      modelPickCard
-    case .thread:
-      CtoSessionDestinationView(navigationChrome: .embedded)
-        .environmentObject(syncService)
-    case .loadError(let message):
-      loadErrorView(message)
-    case .loading:
-      loadingView
+    if syncService.ctoHomeNeedsChoice {
+      // No home on the account yet: there is no default, so the person picks.
+      CtoHomeChooser(
+        look: live.look,
+        name: store.name,
+        onChoose: { option in try await moveHome(to: option) }
+      )
+    } else {
+      switch currentContent {
+      case .modelPick:
+        welcome
+      case .thread:
+        // Only while the wake hop plays.
+        welcome
+      case .loadError(let message):
+        CtoStateCard(
+          look: live.look,
+          name: store.name,
+          state: .error,
+          line: "Couldn't wake up",
+          detail: message,
+          actionTitle: "Try again",
+          action: { Task { await loadSnapshot() } }
+        )
+      case .offline:
+        offlineCard
+      case .loading:
+        CtoStateCard(look: live.look, name: store.name, state: .thinking, line: "Waking up…")
+      }
     }
   }
 
-  // MARK: - Model pick
-
-  private var modelPickCard: some View {
-    VStack(spacing: 14) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(ADEColor.ctoAccent.opacity(0.16))
-        Image("CtoMark")
-          .renderingMode(.template)
-          .resizable()
-          .scaledToFit()
-          .frame(width: 24, height: 24)
-          .foregroundStyle(ADEColor.ctoAccent)
-      }
-      .frame(width: 52, height: 52)
-
-      VStack(spacing: 6) {
-        Text("Pick a model that can steer live turns")
-          .font(.system(size: 17, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .multilineTextAlignment(.center)
-        Text("The CTO needs a model that accepts messages mid-turn.")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      Button {
-        showingModelPicker = true
-      } label: {
-        HStack(spacing: 8) {
-          if modelPickInFlight { ProgressView().controlSize(.small).tint(.white) }
-          Text(modelPickInFlight ? "Moving the thread…" : "Choose a model")
-            .fontWeight(.semibold)
+  /// The home cannot be reached now: asleep on ADE Cloud, or offline. Either
+  /// way the way on is another home, which brings the notes and chat along.
+  private var offlineCard: some View {
+    let copy = ctoHomeOfflineCopy(sync: syncService)
+    return CtoStateCard(
+      look: live.look,
+      name: store.name,
+      state: .asleep,
+      line: copy.line,
+      message: copy.message,
+      actionTitle: "Reconnect",
+      action: {
+        Task {
+          await syncService.reconnectCtoHome()
+          await loadSnapshot()
         }
-      }
-      .buttonStyle(ADEKitButtonStyle(prominent: true, wide: true))
-      .disabled(modelPickInFlight)
-      .accessibilityLabel("Choose a CTO model")
-
-      if let modelPickError {
-        ADENoticeCard(
-          title: "Couldn't switch the model",
-          message: modelPickError,
-          icon: "exclamationmark.triangle.fill",
-          tint: ADEColor.danger,
-          actionTitle: nil,
-          action: nil
-        )
-      }
+      },
+      secondaryActionTitle: "Pick another home",
+      secondaryAction: { showingHomeChooser = true }
+    )
+    .sheet(isPresented: $showingHomeChooser) {
+      CtoHomeChooserSheet(
+        look: live.look,
+        name: store.name,
+        currentName: ctoHomeRowName(syncService),
+        onChoose: { option in try await moveHome(to: option) }
+      )
+      .environmentObject(syncService)
     }
-    .frame(maxWidth: 420)
-    .padding(.horizontal, 20)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  // MARK: - Welcome
+
+  private var welcome: some View {
+    CtoWelcomeView(
+      look: live.look,
+      name: store.name,
+      waking: waking,
+      switching: modelPickInFlight,
+      error: modelPickError,
+      onPick: { showingModelPicker = true }
+    )
     .sheet(isPresented: $showingModelPicker) {
       WorkModelPickerSheet(
         currentModelId: "",
@@ -218,16 +254,11 @@ struct CtoRootScreen: View {
         lanes: [],
         commandScope: .project,
         isBusy: modelPickInFlight,
-        // Same gate the CTO settings sheet uses: only providers that can
-        // redirect a turn already in flight.
+        // Only providers that can redirect a turn already in flight.
         modelFilter: { providerSupportsLiveRedirect($0.provider) },
         onSelect: { option, pickedReasoning, _, pickedFastMode in
           Task { @MainActor in
-            await applyModelPick(
-              option,
-              reasoningEffort: pickedReasoning,
-              fastMode: pickedFastMode
-            )
+            await applyModelPick(option, reasoningEffort: pickedReasoning, fastMode: pickedFastMode)
           }
         }
       )
@@ -236,30 +267,16 @@ struct CtoRootScreen: View {
   }
 
   /// Desktop stores the bare model name in `modelPreferences.model` while the
-  /// catalog id is `family/model` (`resolveModelSelection` in
-  /// `useCtoModelOptions.ts`).
+  /// catalog id is `family/model`.
   private func ctoPreferenceModelName(_ modelId: String) -> String {
     modelId.split(separator: "/").last.map(String.init) ?? modelId
   }
 
-  /// Applies the first model pick without starting a second thread.
-  ///
-  /// The preference is written first so that, if the host has to bring the
-  /// existing session back up, it comes up on the provider the user just chose
-  /// rather than on the identity default. Only then is the live session moved
-  /// onto the exact model — the phone's `CtoModelPreferences` carries no
-  /// `modelId`, so the session update is what pins the precise model (and what
-  /// writes it back into the identity host-side).
-  ///
-  /// The snapshot is published only at the end: swapping it in earlier would
-  /// drop the picker for the thread mid-flight and let
-  /// `CtoSessionDestinationView` run a second, concurrent ensure.
+  /// Applies the first model pick without starting a second thread: the
+  /// preference first (so a restarted session comes up on it), then the live
+  /// session onto the exact model, then the wake hop, then the thread.
   @MainActor
-  private func applyModelPick(
-    _ option: WorkModelOption,
-    reasoningEffort: String?,
-    fastMode: Bool
-  ) async {
+  private func applyModelPick(_ option: WorkModelOption, reasoningEffort: String?, fastMode: Bool) async {
     if modelPickInFlight { return }
     modelPickInFlight = true
     modelPickError = nil
@@ -282,63 +299,56 @@ struct CtoRootScreen: View {
         reasoningEffort: pickedReasoning,
         codexFastMode: fastMode
       )
-      snapshot = try await syncService.fetchCtoState()
-      ADEHaptics.light()
+      let next = try await syncService.fetchCtoState()
+      ADEHaptics.success()
+      waking = true
+      live.noModel = false
+      store.snapshot = next
+      try? await Task.sleep(nanoseconds: 1_300_000_000)
+      waking = false
     } catch {
       ADEHaptics.error()
-      modelPickError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+      modelPickError = ctoShortError(error, fallback: "Couldn't wake up")
     }
-  }
-
-  private var loadingView: some View {
-    VStack(spacing: 16) {
-      ProgressView()
-        .controlSize(.large)
-        .tint(ADEColor.ctoAccent)
-      Text("Opening the CTO")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-  }
-
-  private func loadErrorView(_ message: String) -> some View {
-    VStack {
-      ADENoticeCard(
-        title: "Couldn't load CTO state",
-        message: message,
-        icon: "exclamationmark.triangle.fill",
-        tint: ADEColor.warning,
-        actionTitle: "Retry",
-        action: { Task { await loadSnapshot() } }
-      )
-      .padding(.horizontal, 20)
-      .padding(.top, 12)
-      Spacer(minLength: 0)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
   // MARK: - Loading
 
+  /// The CTO keeps the person's clock: its routines and "now" use this zone
+  /// even when it lives on a computer in another one (ADE Cloud runs on UTC).
+  /// Written only when it differs.
+  @MainActor
+  private func syncTimeZoneIfNeeded() async {
+    let zone = TimeZone.current.identifier
+    guard let identity = store.snapshot?.identity, !zone.isEmpty, identity.timeZone != zone else { return }
+    if let next = try? await syncService.updateCtoIdentity(patch: CtoIdentityPatch(timeZone: zone)) {
+      store.snapshot = next
+    }
+  }
+
   @MainActor
   private func loadSnapshot() async {
+    // No home yet: the chooser asks; nothing may be sent to the primary machine.
+    guard !syncService.ctoHomeNeedsChoice else { return }
     if isLoadingSnapshot { return }
     isLoadingSnapshot = true
     defer { isLoadingSnapshot = false }
     do {
-      snapshot = try await syncService.fetchCtoState()
+      store.snapshot = try await syncService.fetchCtoState()
       snapshotLoadError = nil
+      await syncTimeZoneIfNeeded()
     } catch {
-      // Connection failures are owned by the top-right gear dot. Surface
-      // anything else (command/parse errors, timeouts while connected) so the
-      // user has a retry path instead of a blank tab.
       if syncService.connectionState.isHostUnreachable {
         snapshotLoadError = nil
       } else {
-        snapshotLoadError = (error as NSError).localizedDescription
+        snapshotLoadError = ctoShortError(error, fallback: "Couldn't load")
       }
     }
+    applySnapshot(store.snapshot)
+    // Chats the CTO started, for "Working on 2 things".
+    await store.loadChildren()
+    let running = store.children.filter { $0.status == .working }.count
+    if live.runningChildren != running { live.runningChildren = running }
   }
 
   private var ctoLiveReloadKey: String? {
@@ -352,29 +362,204 @@ struct CtoRootScreen: View {
   }
 }
 
-/// What the CTO tab renders in place of its thread. Split out of
-/// `CtoRootScreen.content` so the branch order — in particular "picker before
-/// thread", which is what keeps the tab off the ensure path while no model has
-/// been chosen — can be asserted without standing up a UI host.
+enum CtoRootSheet: Identifiable, Hashable {
+  case profile
+  case settings(CtoSettingsRoute?)
+
+  var id: String {
+    switch self {
+    case .profile: return "profile"
+    case .settings(let route): return "settings-\(String(describing: route))"
+    }
+  }
+}
+
+/// What the CTO tab renders in place of its thread. Split out so the branch
+/// order — "picker before thread", which keeps the tab off the ensure path
+/// while no model has been chosen — can be asserted without a UI host.
 enum CtoRootContent: Equatable {
   case loading
   case loadError(String)
+  case offline
   case modelPick
   case thread
 }
 
-/// Mirrors desktop `CtoPage`: the model picker first, then the thread. A load
-/// failure is only surfaced while the host is reachable — the offline case is
-/// owned by the top bar's connection dot.
+/// Mirrors desktop `CtoPage`: the model picker first, then the thread. With no
+/// identity yet, an unreachable machine — or a chosen home that cannot be
+/// reached now — is "offline" (the asleep avatar), a reachable one that failed
+/// is the error, otherwise it is still loading.
 func ctoRootContent(
   identity: CtoIdentity?,
   loadError: String?,
-  hostUnreachable: Bool
+  hostUnreachable: Bool,
+  homeOffline: Bool = false
 ) -> CtoRootContent {
+  if homeOffline { return .offline }
   guard let identity else {
-    if let loadError, !hostUnreachable { return .loadError(loadError) }
+    if hostUnreachable { return .offline }
+    if let loadError { return .loadError(loadError) }
     return .loading
   }
   if identity.needsModelPick { return .modelPick }
   return .thread
+}
+
+// MARK: - Welcome and states
+
+/// The CTO is asleep until it has a model. One big sleeping avatar, its name,
+/// one status word and one button. Picking a model wakes it with a hop.
+struct CtoWelcomeView: View {
+  let look: CtoAvatarLook?
+  let name: String
+  var waking = false
+  var switching = false
+  var error: String? = nil
+  let onPick: () -> Void
+
+  private var state: CtoAvatarState { waking ? .happy : switching ? .thinking : .asleep }
+  private var status: String { waking ? "Morning! Let's go." : switching ? "Waking up…" : "Asleep" }
+
+  var body: some View {
+    let resolved = CtoResolvedLook(look)
+    VStack(spacing: 0) {
+      Spacer(minLength: 24)
+      ZStack {
+        CtoAvatarHalo(color: resolved.color, diameter: 300)
+        CtoAvatarView(look: look, state: state, size: 148, motion: .live, label: "\(name), \(status.lowercased())", blips: false)
+      }
+      .frame(height: 200)
+      Text(name)
+        .font(.system(.largeTitle, design: .rounded).weight(.bold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .padding(.top, 6)
+      Text(status)
+        .font(.system(.title3, design: .rounded).weight(.medium))
+        .foregroundStyle(waking ? resolved.color : ADEColor.textSecondary)
+        .lineLimit(1)
+        .contentTransition(.opacity)
+        .padding(.top, 2)
+        .accessibilityIdentifier("Cto.Welcome.Status")
+      CtoPrimaryButton(title: "Pick a model to wake", look: look, busy: switching, action: onPick)
+        .opacity(waking ? 0 : 1)
+        .disabled(waking || switching)
+        .padding(.top, 28)
+        .accessibilityIdentifier("Cto.Welcome.Pick")
+      if let error {
+        Text(error)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.warning)
+          .lineLimit(1)
+          .padding(.top, 12)
+          .padding(.horizontal, 32)
+      }
+      Spacer(minLength: 24)
+      Spacer(minLength: 24)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .animation(.easeOut(duration: 0.25), value: waking)
+    .animation(.easeOut(duration: 0.25), value: switching)
+  }
+}
+
+/// The CTO's one big action: its colour, its eye ink for the label.
+struct CtoPrimaryButton: View {
+  let title: String
+  let look: CtoAvatarLook?
+  var busy = false
+  let action: () -> Void
+
+  var body: some View {
+    let resolved = CtoResolvedLook(look)
+    Button(action: action) {
+      HStack(spacing: 8) {
+        if busy { ProgressView().controlSize(.small).tint(ctoColor(hex: resolved.inkHex)) }
+        Text(title)
+          .font(.system(.body, design: .rounded).weight(.semibold))
+          .lineLimit(1)
+      }
+      .foregroundStyle(ctoColor(hex: resolved.inkHex))
+      .padding(.horizontal, 26)
+      .frame(minHeight: 52)
+      .background(resolved.color, in: Capsule())
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+/// A state the avatar carries (asleep offline, x-eyes on an error, dots while
+/// loading) with a few words and at most one action.
+struct CtoStateCard: View {
+  let look: CtoAvatarLook?
+  let name: String
+  let state: CtoAvatarState
+  let line: String
+  var detail: String? = nil
+  /// A sentence under the line, when a state needs more than a few words
+  /// (the home asleep on ADE Cloud, a machine that is offline).
+  var message: String? = nil
+  var actionTitle: String? = nil
+  var action: (() -> Void)? = nil
+  var secondaryActionTitle: String? = nil
+  var secondaryAction: (() -> Void)? = nil
+
+  var body: some View {
+    let resolved = CtoResolvedLook(look)
+    VStack(spacing: 0) {
+      Spacer(minLength: 24)
+      ZStack {
+        CtoAvatarHalo(color: resolved.color, diameter: 240)
+        CtoAvatarView(look: look, state: state, size: 112, motion: .live, label: "\(name), \(line.lowercased())", blips: false)
+      }
+      .frame(height: 160)
+      Text(name)
+        .font(.system(.title2, design: .rounded).weight(.bold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      Text(line)
+        .font(.system(.subheadline, design: .rounded).weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .padding(.top, 2)
+      if let detail {
+        Text(detail)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .padding(.horizontal, 40)
+          .padding(.top, 6)
+      }
+      if let message {
+        Text(message)
+          .font(.footnote)
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.horizontal, 32)
+          .padding(.top, 8)
+      }
+      if let actionTitle, let action {
+        Button(actionTitle, action: action)
+          .font(.system(.body, design: .rounded).weight(.semibold))
+          .buttonStyle(.bordered)
+          .buttonBorderShape(.capsule)
+          .controlSize(.large)
+          .tint(resolved.color)
+          .padding(.top, 20)
+      }
+      if let secondaryActionTitle, let secondaryAction {
+        Button(secondaryActionTitle, action: secondaryAction)
+          .font(.system(.subheadline, design: .rounded).weight(.semibold))
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.textSecondary)
+          .padding(.top, 12)
+      }
+      Spacer(minLength: 24)
+      Spacer(minLength: 24)
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
 }

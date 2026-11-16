@@ -64,6 +64,26 @@ export const PINNED_PROVIDER_TOOLS: Readonly<Record<string, PinnedProviderToolSp
   antigravity: { tool: "antigravity", label: "Antigravity", terminal: { label: "Antigravity", binaries: ["agy"], tools: [{ tool: "antigravity", label: "Antigravity" }], selfUpdateTool: "antigravity" } },
 };
 
+/**
+ * Codex CLI flags for the sandbox ADE picks. Commands reach the network in
+ * workspace-write (Default, Edit) as in Full auto (owner's decision,
+ * 2026-11-16): Codex's own default keeps them offline, so `gh`,
+ * `npm install` and `git push` only worked in Full auto.
+ *
+ * read-only (Plan in a terminal) stays Codex's own `--sandbox read-only`,
+ * offline. Its only network switch is a custom permission profile, and an
+ * organization's managed Codex policy (requirements.toml, MDM, a ChatGPT
+ * workspace) that doesn't list that profile makes Codex fall back to the
+ * policy's default, which can be writable. ADE can't see every such policy,
+ * so Plan keeps the sandbox that is read-only under any of them. A Plan chat
+ * gets the network per turn (`codexTurnSandboxPolicy`), which no profile
+ * decides.
+ */
+export function codexSandboxCliArgs(sandbox: "read-only" | "workspace-write" | "danger-full-access"): string[] {
+  if (sandbox === "workspace-write") return ["--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true"];
+  return ["--sandbox", sandbox];
+}
+
 /** `codex` global flags that turn its startup update check off. */
 export const CODEX_NO_UPDATE_CHECK_ARGS: readonly string[] = ["-c", "check_for_update_on_startup=false"];
 

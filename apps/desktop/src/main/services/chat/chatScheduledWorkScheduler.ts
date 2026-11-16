@@ -1,4 +1,4 @@
-import { nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/chatScheduledWork";
+import { isKnownTimeZone, nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/chatScheduledWork";
 import {
   AUTO_RESUME_SCHEDULED_WORK_SOURCE,
   UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
@@ -53,6 +53,12 @@ export type ChatScheduledWorkRecord = {
   prompt: string;
   reason?: string;
   cron?: string;
+  /**
+   * IANA zone the cron is read in (the person's, for a CTO routine), so a
+   * routine keeps its hour on a brain in another zone, such as a UTC cloud
+   * computer. Absent means the brain machine's local time.
+   */
+  timeZone?: string;
   fireAt?: number;
   expiresAt?: number;
   createdAt: number;
@@ -105,7 +111,11 @@ export type ChatScheduledWorkSchedulerOptions = {
   timers?: ChatScheduledWorkTimerApi;
   isGlobalPaused(): boolean;
   sessionState(sessionId: string): "active" | "ended" | "archived" | "missing";
-  shouldDefer?(schedule: ChatScheduledWorkRecord): boolean;
+  /**
+   * True holds a fire until the chat's next safe turn boundary. A reason holds
+   * it the same way and is what Run now answers instead of "busy".
+   */
+  shouldDefer?(schedule: ChatScheduledWorkRecord): boolean | { reason: string };
   /**
    * Claims one occurrence (`id` + `fireAt`) across processes. Every brain that
    * opens the project loads the same rows and arms its own timer, and
@@ -127,7 +137,8 @@ export type ChatScheduledWorkSchedulerOptions = {
    */
   fire(
     schedule: ChatScheduledWorkRecord,
-    context: { late: boolean },
+    /** `manual`: a person pressed Run now; the schedule itself is unchanged. */
+    context: { late: boolean; manual?: boolean },
   ): Promise<void | { complete: true; outcomeSummary?: string } | { retry: true }>;
   onTransition?: (
     schedule: ChatScheduledWorkRecord,
@@ -146,6 +157,12 @@ export type ChatScheduledWorkScheduler = {
    */
   markFired(scheduleId: string): Promise<ChatScheduledWorkRecord | null>;
   setSchedulePaused(scheduleId: string, paused: boolean): Promise<ChatScheduledWorkRecord | null>;
+  /**
+   * Deliver one row now, out of turn, through `fire`. A cron keeps its next
+   * occurrence; a one-shot is spent the way a timer fire spends it. Refused
+   * (with the reason) while the chat is busy, ended, or the row is running.
+   */
+  runNow(scheduleId: string): Promise<{ fired: boolean; reason?: string }>;
   setSessionPaused(sessionId: string, paused: boolean): Promise<void>;
   refreshGlobalPause(): Promise<void>;
   list(sessionId?: string): ChatScheduledWorkRecord[];
@@ -227,6 +244,7 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
     prompt: record.prompt,
     ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
     ...(typeof record.cron === "string" ? { cron: record.cron } : {}),
+    ...(isKnownTimeZone(record.timeZone) ? { timeZone: record.timeZone } : {}),
     ...(readTimestamp(record.fireAt) != null ? { fireAt: readTimestamp(record.fireAt) } : {}),
     ...(readTimestamp(record.expiresAt) != null ? { expiresAt: readTimestamp(record.expiresAt) } : {}),
     createdAt: readTimestamp(record.createdAt) ?? 0,
@@ -278,11 +296,15 @@ function normalizeState(value: unknown): ChatScheduledWorkState {
 }
 
 function nextCronOccurrence(schedule: ChatScheduledWorkRecord, after: number): number | undefined {
-  return schedule.cron ? nextChatScheduledCronFireAt(schedule.cron, after) ?? undefined : undefined;
+  return schedule.cron ? nextChatScheduledCronFireAt(schedule.cron, after, schedule.timeZone) ?? undefined : undefined;
 }
 
 function cloneSchedule(schedule: ChatScheduledWorkRecord): ChatScheduledWorkRecord {
   return { ...schedule };
+}
+
+function isDeferred(answer: boolean | { reason: string } | undefined): boolean {
+  return answer === true || (typeof answer === "object" && answer !== null);
 }
 
 export function createChatScheduledWorkScheduler(
@@ -423,7 +445,7 @@ export function createChatScheduledWorkScheduler(
     // check must happen before the durable row transitions to `fired`: Claude's
     // native turn can otherwise arrive in the small persistence window and
     // miss claimNativeFire, leaving both native and ADE delivery active.
-    if (options.shouldDefer?.(cloneSchedule(schedule)) === true) {
+    if (isDeferred(options.shouldDefer?.(cloneSchedule(schedule)))) {
       armBusyDeferRetry(schedule);
       return;
     }
@@ -669,7 +691,7 @@ export function createChatScheduledWorkScheduler(
       await emitTransition(schedule, schedule.status);
     } else if (schedule.status === "scheduled" || schedule.status === "paused") {
       if (schedule.kind === "cron" && schedule.fireAt == null && schedule.cron) {
-        schedule.fireAt = nextChatScheduledCronFireAt(schedule.cron, now()) ?? undefined;
+        schedule.fireAt = nextChatScheduledCronFireAt(schedule.cron, now(), schedule.timeZone) ?? undefined;
       }
       const nextStatus = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
       if (nextStatus !== schedule.status) {
@@ -766,7 +788,7 @@ export function createChatScheduledWorkScheduler(
         lateFlag: input.lateFlag ?? existing?.lateFlag ?? false,
       };
       if (schedule.kind === "cron" && schedule.fireAt == null && schedule.cron) {
-        schedule.fireAt = nextChatScheduledCronFireAt(schedule.cron, now()) ?? undefined;
+        schedule.fireAt = nextChatScheduledCronFireAt(schedule.cron, now(), schedule.timeZone) ?? undefined;
       }
       if (schedule.status === "scheduled" || schedule.status === "paused") {
         schedule.status = isEffectivelyPaused(schedule) ? "paused" : "scheduled";
@@ -839,6 +861,108 @@ export function createChatScheduledWorkScheduler(
       if (schedule.status !== previousStatus) await emitTransition(schedule, schedule.status);
       arm(schedule);
       return cloneSchedule(schedule);
+    },
+
+    async runNow(scheduleId): Promise<{ fired: boolean; reason?: string }> {
+      await start();
+      const schedule = schedules.get(scheduleId);
+      if (!schedule) return { fired: false, reason: "That scheduled item no longer exists." };
+      if (isTerminal(schedule)) return { fired: false, reason: "That scheduled item has already finished." };
+      if (inFlight.has(scheduleId) || schedule.status === "fired") {
+        return { fired: false, reason: "It is running right now." };
+      }
+      if (options.sessionState(schedule.sessionId) !== "active") {
+        return { fired: false, reason: "Its chat has ended." };
+      }
+      const deferred = options.shouldDefer?.(cloneSchedule(schedule));
+      if (isDeferred(deferred)) {
+        return { fired: false, reason: typeof deferred === "object" ? deferred.reason : "The chat is busy. Try again when its turn finishes." };
+      }
+      // The same shared claim a timer fire takes, on the occurrence this run
+      // stands in for: another brain's timer (or its own Run now) for it then
+      // loses the claim instead of delivering a second time.
+      const claimed = cloneSchedule(schedule);
+      if (options.claimFire && !options.claimFire(claimed)) {
+        return { fired: false, reason: "Another ADE is running it right now." };
+      }
+      inFlight.add(scheduleId);
+      clearTimer(scheduleId);
+      const previousStatus = schedule.status;
+      const previousLastFiredAt = schedule.lastFiredAt;
+      const previousFireAt = schedule.fireAt;
+      // A cron's occurrence stays where it was unless it came due meanwhile;
+      // its claim goes back then, or the real fire would find it taken.
+      const releaseUnusedClaim = (current: ChatScheduledWorkRecord | undefined): void => {
+        if (!current || current.fireAt === previousFireAt) options.releaseFire?.(claimed);
+      };
+      schedule.status = "fired";
+      schedule.lastFiredAt = now();
+      // Outside the delivery's try: a failed save delivered nothing, so the row
+      // goes back exactly as it was and the claim is released.
+      try {
+        await persist();
+      } catch (error) {
+        schedule.status = previousStatus;
+        if (previousLastFiredAt == null) delete schedule.lastFiredAt;
+        else schedule.lastFiredAt = previousLastFiredAt;
+        inFlight.delete(scheduleId);
+        options.releaseFire?.(claimed);
+        arm(schedule);
+        return {
+          fired: false,
+          reason: `ADE could not save the run, so nothing was sent. ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      let complete = false;
+      let retry = false;
+      let outcomeSummary: string | undefined;
+      try {
+        await emitTransition(schedule, "fired");
+        const result = await options.fire(cloneSchedule(schedule), { late: false, manual: true });
+        complete = result != null && "complete" in result && result.complete === true;
+        retry = result != null && "retry" in result && result.retry === true;
+        if (result != null && "outcomeSummary" in result && result.outcomeSummary) outcomeSummary = result.outcomeSummary;
+      } catch {
+        // A delivery may have reached the chat before its caller failed; the
+        // row settles the same way a timer fire's would.
+      } finally {
+        inFlight.delete(scheduleId);
+      }
+      const current = schedules.get(scheduleId);
+      if (!current || current.status === "cancelled" || current.status === "done") return { fired: !retry };
+      if (outcomeSummary) current.outcomeSummary = outcomeSummary;
+      if (retry) {
+        options.releaseFire?.(claimed);
+        current.status = previousStatus;
+        if (previousLastFiredAt == null) delete current.lastFiredAt;
+        else current.lastFiredAt = previousLastFiredAt;
+        delete current.activeTurnId;
+        await persist();
+        await emitTransition(current, current.status);
+        arm(current);
+        return { fired: false, reason: "The chat could not take it now. Try again in a moment." };
+      }
+      if (current.kind === "cron") {
+        // The run was extra: the schedule's next occurrence stays where it was,
+        // unless it came due during the manual run, which stands in for it.
+        if (current.fireAt != null && current.fireAt <= now()) current.fireAt = nextCronOccurrence(current, now());
+        releaseUnusedClaim(current);
+        current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
+        await persist();
+        await emitTransition(current, current.status);
+        arm(current);
+        return { fired: true };
+      }
+      // A one-shot run now was its one run. Like a timer fire, it keeps its
+      // claim until its turn settles: another brain that still has the row as
+      // scheduled must not deliver it a second time.
+      if (complete) {
+        markTerminal(current, "done");
+        pruneTerminalHistory();
+        await persist();
+        await emitTransition(current, "done");
+      }
+      return { fired: true };
     },
 
     async setSessionPaused(sessionId, paused): Promise<void> {

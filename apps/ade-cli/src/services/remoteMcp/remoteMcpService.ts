@@ -129,8 +129,6 @@ export function createRemoteMcpService(args: {
   listProjects: () => RemoteMcpProject[];
   /** The account's projects as this computer last read them (see `RemoteMcpProtocolDeps`). */
   accountProjects?: () => Readonly<Record<string, AccountProjectView>> | null;
-  /** The provider and model this computer last launched a chat with. */
-  launchDefaults?: () => { provider: string; model: string; reasoningEffort?: string | null } | null;
   logger?: {
     info?: (event: string, data?: Record<string, unknown>) => void;
     warn?: (event: string, data?: Record<string, unknown>) => void;
@@ -622,7 +620,6 @@ export function createRemoteMcpService(args: {
     machineName: args.machineName,
     listProjects: args.listProjects,
     ...(args.accountProjects ? { accountProjects: args.accountProjects } : {}),
-    ...(args.launchDefaults ? { launchDefaults: args.launchDefaults } : {}),
     record,
     warn: (event, data) => args.logger?.warn?.(event, data),
     machines,

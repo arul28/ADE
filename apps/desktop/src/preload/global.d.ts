@@ -1,3 +1,4 @@
+import type { CtoAccountCopyStatus, CtoAdoptAccountCopyArgs, CtoAdoptAccountCopyResult } from "../shared/ctoAccountCopy";
 import type { RendererMemorySnapshot } from "../shared/types/rendererMemory";
 import type { ChatDeviceSourcesResult, ChatSetDeviceSourceArgs } from "../shared/types/deviceSources";
 import type { AccountProjectChangeResult, AccountProjectListResult } from "../shared/accountProject";
@@ -382,6 +383,8 @@ import type {
   AgentChatStartSideChatArgs,
   AgentChatStartSideChatResult,
   AgentChatEndSideChatArgs,
+  AgentChatRootFullAccessState,
+  AgentChatSetRootFullAccessArgs,
   AgentChatEndSideChatResult,
   AgentChatMarkCrossMachineHandoffArgs,
   AgentChatPrepareCrossMachineHandoffArgs,
@@ -440,6 +443,10 @@ import type {
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatPrewarmDraftArgs,
   AgentChatPrewarmDraftResult,
+  AgentChatSetScheduledWorkItemPausedArgs,
+  AgentChatSetScheduledWorkItemPausedResult,
+  AgentChatRunScheduledWorkNowArgs,
+  AgentChatRunScheduledWorkNowResult,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatCreateScheduledWorkArgs,
   AgentChatCreateScheduledWorkResult,
@@ -600,16 +607,12 @@ import type {
   SyncTransferReadiness,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
-  CtoListSessionLogsArgs,
   CtoSnapshot,
-  CtoSessionLogEntry,
-  CtoStartFreshSessionResult,
-  CtoThreadHealth,
   CtoUpdateIdentityArgs,
   CtoMemorySnapshot,
-  CtoUpdateMemoryArgs,
-  CtoSearchMemoryArgs,
-  CtoSearchMemoryResult,
+  CtoUpdateNotesArgs,
+  CtoUpdateOpenWorkArgs,
+  CtoRefreshContextResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
@@ -2785,6 +2788,10 @@ declare global {
           args: ChatSetDeviceSourceArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ChatDeviceSourcesResult>;
+        /** Whether Claude may run with Full access as root on the chat's machine. */
+        getRootFullAccess?: (pin: OpenProjectBinding | null) => Promise<AgentChatRootFullAccessState>;
+        /** The person allows (or stops allowing) Full access as root on the chat's machine. */
+        setRootFullAccess?: (args: AgentChatSetRootFullAccessArgs, pin: OpenProjectBinding | null) => Promise<AgentChatRootFullAccessState>;
         prepareCrossMachineHandoff: (
           args: AgentChatPrepareCrossMachineHandoffArgs,
           pin: OpenProjectBinding,
@@ -2986,6 +2993,14 @@ declare global {
           args: AgentChatSetScheduledWorkPausedArgs,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatSetScheduledWorkPausedResult>;
+        setScheduledWorkItemPaused: (
+          args: AgentChatSetScheduledWorkItemPausedArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatSetScheduledWorkItemPausedResult>;
+        runScheduledWorkNow: (
+          args: AgentChatRunScheduledWorkNowArgs,
+          pin: OpenProjectBinding,
+        ) => Promise<AgentChatRunScheduledWorkNowResult>;
         warmupModel: (
           args: {
             sessionId: string;
@@ -5130,6 +5145,15 @@ declare global {
         ) => Promise<import("../shared/cloudLaneLife").CloudLaneLifeResults[M]>;
         /** A tier change's steps as they move. */
         onLaneJob?: (cb: (job: import("../shared/cloudLaneLife").CloudLaneJobSnapshot) => void) => () => void;
+        /**
+         * The CTO's home on ADE Cloud (paid plans): start, get, retry, cancel
+         * or finish its one job per repository (`CtoCloudHomeCallResult` says
+         * what each answers). Desktop only: the web client and the phone have none.
+         */
+        ctoHome?: <M extends import("../shared/ctoCloudHome").CtoCloudHomeMethod>(
+          request: { method: M; args: import("../shared/ctoCloudHome").CtoCloudHomeCallArgs[M] },
+        ) => Promise<import("../shared/ctoCloudHome").CtoCloudHomeCallResult[M]>;
+        onCtoHomeEvent?: (cb: (event: import("../shared/ctoCloudHome").CtoCloudHomeEvent) => void) => () => void;
         /** Contract C3 (shared/laneComputer.ts): the computer a lane is on now, by lane id. Account level. */
         laneComputer?: (laneId: string) => Promise<import("../shared/laneComputer").LaneComputer | null>;
         /** The lane's computer and an address for it; pairs, and connects (which wakes it) unless `connect: false`. */
@@ -5509,16 +5533,14 @@ declare global {
           args: CtoEnsureSessionArgs | undefined,
           pin: OpenProjectBinding,
         ) => Promise<AgentChatSession>;
-        startFreshSession: (pin: OpenProjectBinding) => Promise<CtoStartFreshSessionResult>;
-        getThreadHealth: (pin: OpenProjectBinding) => Promise<CtoThreadHealth>;
-        listSessionLogs: (
-          args: CtoListSessionLogsArgs | undefined,
-          pin: OpenProjectBinding,
-        ) => Promise<CtoSessionLogEntry[]>;
+        refreshContext: (pin: OpenProjectBinding) => Promise<CtoRefreshContextResult>;
+        /** The new home machine takes the CTO from its account copy (`ctoAccountCopyService.ts`). */
+        adoptAccountCopy?: (args: CtoAdoptAccountCopyArgs, pin: OpenProjectBinding | null) => Promise<CtoAdoptAccountCopyResult>;
+        getAccountCopyStatus?: (pin: OpenProjectBinding | null) => Promise<CtoAccountCopyStatus>;
         updateIdentity: (args: CtoUpdateIdentityArgs, pin: OpenProjectBinding) => Promise<CtoSnapshot>;
         getMemory: (pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
-        updateMemory: (args: CtoUpdateMemoryArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
-        searchMemory: (args: CtoSearchMemoryArgs, pin: OpenProjectBinding) => Promise<CtoSearchMemoryResult>;
+        updateNotes: (args: CtoUpdateNotesArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
+        updateOpenWork: (args: CtoUpdateOpenWorkArgs, pin: OpenProjectBinding) => Promise<CtoMemorySnapshot>;
         getLinearConnectionStatus: (pin: OpenProjectBinding) => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,

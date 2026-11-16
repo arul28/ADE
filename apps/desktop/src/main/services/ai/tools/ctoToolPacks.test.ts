@@ -47,7 +47,6 @@ function runtimeShapedDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOpe
     conflictService: {} as any,
     computerUseArtifactBrokerService: {} as any,
     issueTracker: {} as any,
-    ctoStateService: {} as any,
     ctoMemoryService: {} as any,
     onToolPackLoaded: (pack) => loaded.add(pack),
     loadedToolPacks: () => loaded,
@@ -87,7 +86,7 @@ describe("CTO tool packs", () => {
       "listPullRequests", "createPrFromLane", "landPullRequest",
       "listAutomations", "saveAutomation", "deleteAutomation",
       "handoffChatToModel",
-      "saveMemory", "readMemory",
+      "remember", "forget", "trackWork", "finishWork", "readHistory",
       "getRecentEvents",
       "loadCtoTools",
     ]) {

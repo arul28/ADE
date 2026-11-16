@@ -1,3 +1,4 @@
+import { unknownModelHint } from "../../../shared/launchModelRule";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Logger } from "../logging/logger";
@@ -1863,7 +1864,7 @@ export function createAiIntegrationService(args: {
       if (exact) return exact.id;
       const resolved = resolveModelAlias(requestedModelHint);
       if (resolved) return resolved.id;
-      throw new Error(`Unknown model '${requestedModelHint}'.`);
+      throw new Error(`Unknown model '${requestedModelHint}'. ${unknownModelHint()}`);
     }
 
     if (SESSION_INTELLIGENCE_TASK_TYPES.has(taskType)) {
@@ -1912,7 +1913,7 @@ export function createAiIntegrationService(args: {
     if (!modelId) throw new Error("model is required for provider task execution");
     const descriptor = getModelById(modelId) ?? resolveModelAlias(modelId);
     if (!descriptor) {
-      throw new Error(`Unknown model '${modelId}'.`);
+      throw new Error(`Unknown model '${modelId}'. ${unknownModelHint()}`);
     }
 
     const accountEnv = resolveTaskAccountEnv(descriptor, args.providerAccount);
@@ -1998,7 +1999,7 @@ export function createAiIntegrationService(args: {
       ? (getModelById(requestedModel) ?? resolveModelAlias(requestedModel))
       : null;
     if (requestedModel && !explicitDescriptor) {
-      throw new Error(`Unknown model '${requestedModel}'.`);
+      throw new Error(`Unknown model '${requestedModel}'. ${unknownModelHint()}`);
     }
 
     const resolvedModelId = explicitDescriptor?.id

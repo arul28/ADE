@@ -71,7 +71,7 @@ import { createCtoOperatorTools } from "../../desktop/src/main/services/ai/tools
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../../desktop/src/main/services/ai/pinnedProviderTools";
-import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
+import { CODEX_NO_UPDATE_CHECK_ARGS, codexLinuxShellArgs, codexSandboxCliArgs, providerSelfUpdateEnv } from "../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   createComputerUseArtifactPath,
   createComputerUseScratchPath,
@@ -103,7 +103,6 @@ import { isMovedAwayChatError } from "../../desktop/src/shared/crossMachineMoveL
 import { crossMachineMoveRelation, withoutCrossMachineCallerFields } from "../../desktop/src/shared/crossMachineHandoff";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { parseDiffNameOnly, resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
-import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { thisDesktopOnlyRefusal, thisDesktopOnlyRefusalFor } from "../../desktop/src/shared/adeActionAccess";
 import { isSceneParseFailure, parseSceneFence } from "../../desktop/src/shared/chatScene";
@@ -185,7 +184,9 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { assertActionModelNames, assertFullModelName, savedRuleModelNames } from "./modelNameGuard";
+import { readHarnessPresetsFromMachine } from "../../desktop/src/main/services/chat/harnessPresetSettings";
+import { resolveMachineAdeDir } from "./services/projects/machineLayout";
+import { assertActionModelNames, assertCliLaunchModelNamed, assertFullModelName, assertLaunchModels, automationDraftMissingModels, savedRuleModelNames } from "./modelNameGuard";
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
@@ -421,7 +422,7 @@ const NEW_LANE_SETUP_TOOL_PROPERTIES = {
 const TOOL_SPECS: ToolSpec[] = [
   {
     name: "spawn_agent",
-    description: "Spawn a Codex or Claude CLI session in a lane-scoped tracked terminal.",
+    description: "Old: starts a Codex or Claude CLI session in a lane. start_cli_session starts any provider; use it instead.",
     inputSchema: {
       type: "object",
       required: ["laneId"],
@@ -473,7 +474,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_lane",
-    description: "Create a new lane/worktree for task execution, then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
+    description: "Create a new lane (a git worktree on a new branch), then set it up with the project's default lane template (or templateId; skipSetup leaves it a plain worktree). Waits for setup and returns its progress.",
     inputSchema: {
       type: "object",
       required: ["name"],
@@ -526,7 +527,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "start_cli_session",
-    description: "Start a tracked ADE Work CLI terminal for an allowlisted provider, using the same launch helpers as desktop and mobile.",
+    description: "Start a tracked ADE Work CLI session for a provider in a lane. Pass model (not for shell).",
     inputSchema: {
       type: "object",
       required: ["laneId", "provider"],
@@ -556,12 +557,12 @@ const TOOL_SPECS: ToolSpec[] = [
         // Which of this machine's provider accounts the session signs in as.
         // Claude and Codex only; omit it to use the provider's default account.
         instanceId: { type: "string", minLength: 1 },
-        // Saved harness preset (body + brain + model) this CLI launches under.
+        // The Custom provider (harness + where it runs + model) this CLI
+        // launches under, by id (the CLI resolves `--custom-provider <name>`).
         // Ignored for grok/cursor/copilot/kimi, whose CLIs take no outside key
         // and therefore launch on their own sign-in.
         presetId: { type: "string", minLength: 1 },
-        // A stored API credential, for a model chosen from a provider key
-        // rather than from a preset.
+        // A stored API key, for a model chosen from a provider key.
         credentialId: { type: "string", minLength: 1 },
         tracked: { type: "boolean", default: true }
       }
@@ -1448,47 +1449,63 @@ const STANDALONE_CHAT_HIDDEN_TOOL_NAMES = new Set([
 const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   {
     name: "get_cto_state",
-    description: "Read the reconstructed CTO identity and recent continuity state maintained by ADE. Prefer this over shell-reading .ade/cto files from the workspace.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        recentLimit: { type: "number", minimum: 0, maximum: 50 }
-      }
-    }
-  },
-  {
-    name: "saveMemory",
-    description: "Save a durable fact to your persistent memory (MEMORY.md) — decisions, preferences, conventions, and standing project context you should remember across sessions and model switches. One crisp sentence per fact; exact duplicates are ignored.",
-    inputSchema: {
-      type: "object",
-      required: ["fact"],
-      additionalProperties: false,
-      properties: {
-        fact: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "searchMemory",
-    description: "Search your persistent memory (MEMORY.md, thread state, and recent daily logs) for prior context before asking the user to restate something.",
-    inputSchema: {
-      type: "object",
-      required: ["query"],
-      additionalProperties: false,
-      properties: {
-        query: { type: "string", minLength: 1 },
-        limit: { type: "number", minimum: 1, maximum: 100 }
-      }
-    }
-  },
-  {
-    name: "readMemory",
-    description: "Read your persistent memory: durable facts (MEMORY.md) and the current thread state.",
+    description: "Read the CTO identity ADE maintains. Prefer this over shell-reading .ade/cto files from the workspace.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {}
+    }
+  },
+  {
+    name: "remember",
+    description: "Write a note the CTO sees on every turn: a decision, a convention, a trap, how the person likes to work. One short line. Pass part of an existing line in `replaces` to rewrite it. Refused past the notes' size cap.",
+    inputSchema: {
+      type: "object",
+      required: ["note"],
+      additionalProperties: false,
+      properties: {
+        note: { type: "string", minLength: 1, maxLength: 400 },
+        scope: { type: "string", enum: ["project", "user"] },
+        replaces: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "forget",
+    description: "Remove the note whose line contains this exact text (it must match one note).",
+    inputSchema: {
+      type: "object",
+      required: ["note"],
+      additionalProperties: false,
+      properties: {
+        note: { type: "string", minLength: 1 },
+        scope: { type: "string", enum: ["project", "user"] }
+      }
+    }
+  },
+  {
+    name: "readHistory",
+    description: "Page or search the CTO's whole conversation, newest first. With `query`, messages containing all its words, each with its neighbours. Pass `nextBefore` as `before` for older pages.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1 },
+        before: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 50 }
+      }
+    }
+  },
+  {
+    name: "replyNow",
+    description: "Answer the person right away while you keep working: only when they wrote mid-task and asked something or changed the plan. One or two sentences, then continue.",
+    inputSchema: {
+      type: "object",
+      required: ["message"],
+      additionalProperties: false,
+      properties: {
+        message: { type: "string", minLength: 1, maxLength: 600 }
+      }
     }
   },
   {
@@ -1505,13 +1522,14 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "spawnChat",
-    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt.",
+    description: "Create a Work chat session in ADE on a lane and optionally seed it with an initial prompt. modelId is required: ADE never picks a model (`ade chat models --text` lists the ids).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
+      required: ["modelId"],
       properties: {
         laneId: { type: "string" },
-        modelId: { type: "string" },
+        modelId: { type: "string", description: "The model the chat runs, e.g. anthropic/claude-opus-5-5." },
         reasoningEffort: { type: "string" },
         permissionMode: { type: "string", enum: [...AGENT_CHAT_PERMISSION_MODE_VALUES] },
         droidPermissionMode: { type: "string", enum: [...AGENT_CHAT_DROID_PERMISSION_MODE_VALUES] },
@@ -1745,8 +1763,7 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_checks",
   "pr_get_review_comments",
   "get_cto_state",
-  "searchMemory",
-  "readMemory",
+  "readHistory",
   "listChats",
   "getChatStatus",
   "readChatTranscript",
@@ -1762,7 +1779,9 @@ const READ_ONLY_TOOLS = new Set([
 ]);
 
 const MUTATION_TOOLS = new Set([
-  "saveMemory",
+  "remember",
+  "forget",
+  "replyNow",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
   // A chat on another machine whose turn ended letting go of the devices it holds here.
@@ -1822,18 +1841,35 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** The model names the rule an `automations.saveRule` edit replaces already holds. */
-function savedModelNamesKeptBy(domain: string, action: string, input: unknown, service: Record<string, unknown>): Set<string> {
-  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return new Set();
+/**
+ * What the rule an `automations.saveRule` edit replaces already holds: its
+ * model names (an unchanged old shorthand passes) and the places it already
+ * left without a model (an edit, such as a rename, may keep those; a model
+ * removed now is refused).
+ */
+function savedRuleKeptBy(
+  domain: string,
+  action: string,
+  input: unknown,
+  service: Record<string, unknown>,
+): { modelNames: Set<string>; missingModels: Set<string> } {
+  const none = { modelNames: new Set<string>(), missingModels: new Set<string>() };
+  if (domain !== "automations" || action !== "saveRule" || !isRecord(input) || !isRecord(input.draft)) return none;
   const id = typeof input.draft.id === "string" ? input.draft.id.trim() : "";
-  if (!id || typeof service.get !== "function") return new Set();
+  if (!id || typeof service.get !== "function") return none;
   try {
-    return savedRuleModelNames((service.get as (args: { id: string }) => unknown)({ id }));
+    const saved = (service.get as (args: { id: string }) => unknown)({ id });
+    if (!isRecord(saved)) return none;
+    return {
+      modelNames: savedRuleModelNames(saved),
+      missingModels: new Set(automationDraftMissingModels(saved).map((place) => place.key)),
+    };
   } catch (error) {
     // The save itself reports a missing or unreadable rule; without the saved
-    // names an unchanged old name is refused, which the caller can correct.
+    // rule an unchanged old name or missing model is refused, which the
+    // caller can correct.
     captureError(error, { tags: { area: "rpc.model_name_guard" }, fingerprint: ["rpc", "model_name_guard", "saved_rule_read"] });
-    return new Set();
+    return none;
   }
 }
 
@@ -3695,7 +3731,7 @@ function ptyAccessDenied(method: string, session?: SessionState): never {
     nextStep: foreignCaller
       ? "A caller on another machine owns no lane here, including a lane it created. "
         + "Run `ade shell start --machine <this machine>` without --lane to use your code there, "
-        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane>` and open the terminal from it."
+        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane> --provider <p> --model <id>` and open the terminal from it."
       : null,
   });
 }
@@ -4255,6 +4291,8 @@ const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
   // transcript records the cancel as the user's.
   ["cancelScheduledWork", "self"],
   ["setScheduledWorkPaused", "self"],
+  ["setScheduledWorkItemPaused", "self"],
+  ["runScheduledWorkNow", "self"],
   // Spends a real turn on the target; a bound agent could otherwise force any
   // usage-limited chat on the machine to burn its retry.
   ["resumeUsageLimitNow", "self"],
@@ -5844,23 +5882,9 @@ async function runCtoOperatorBridgeTool(
   // the real CTO is trusted, a CTO-role run or step agent is capped. Resolved
   // only when a create or update actually runs.
   const bridgeActor = async () => (await callerRuntimeActor(runtime, session, false)) ?? undefined;
-  const ctoIdentity = runtime.ctoStateService.getIdentity();
-  // Null until the user picks a model the CTO can steer live; the Claude/Codex
-  // fallback below already covers "nothing chosen yet".
-  const ctoModelPreferences = ctoIdentity.modelPreferences;
-  const preferredProvider = (ctoModelPreferences?.provider ?? "").trim().toLowerCase();
-  const fallbackModelId = preferredProvider.includes("claude")
-    ? (getDefaultModelDescriptor("claude")?.id ?? null)
-    : (getDefaultModelDescriptor("codex")?.id ?? null);
-  const defaultModelId =
-    (typeof ctoModelPreferences?.modelId === "string" && ctoModelPreferences.modelId.trim().length
-      ? ctoModelPreferences.modelId.trim()
-      : null)
-    ?? fallbackModelId;
   const tools = createCtoOperatorTools({
     currentSessionId: session.identity.callerId || "ade-cli-cto",
     defaultLaneId,
-    defaultModelId,
     sessionService: runtime.sessionService,
     resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
@@ -5869,6 +5893,12 @@ async function runCtoOperatorBridgeTool(
     fileService: runtime.fileService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
     ctoMemoryService: runtime.ctoMemoryService ?? null,
+    readHistory: (historyArgs) => agentChatService.readCtoHistory(historyArgs),
+    // The caller is the CTO chat itself; the service refuses any other session.
+    postInterimReply: ({ text }) => agentChatService.postCtoInterimReply({
+      sessionId: session.identity.chatSessionId?.trim() || session.identity.callerId,
+      text,
+    }),
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,
@@ -6650,8 +6680,7 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     if (name === "get_cto_state") {
-      const recentLimit = Math.max(0, Math.min(50, Math.floor(asNumber(toolArgs.recentLimit, 10))));
-      return runtime.ctoStateService.getSnapshot(recentLimit);
+      return runtime.ctoStateService.getSnapshot();
     }
     return await runCtoOperatorBridgeTool(runtime, session, name, toolArgs);
   }
@@ -6819,7 +6848,12 @@ async function runTool(args: {
       // The input the action receives: the first positional argument, a scalar
       // `arg` (an object there reaches the action too), or `args`.
       const actionInput = argsList ? argsList[0] : hasScalarArg ? toolArgs.arg : toolArgs.args;
-      assertActionModelNames(domain, action, actionInput, savedModelNamesKeptBy(domain, action, actionInput, service));
+      const savedRule = savedRuleKeptBy(domain, action, actionInput, service);
+      assertActionModelNames(domain, action, actionInput, savedRule.modelNames);
+      assertLaunchModels(domain, action, actionInput, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+        keptMissingModels: savedRule.missingModels,
+      });
     }
     if (
       domain === "cto_state"
@@ -7982,7 +8016,15 @@ async function runTool(args: {
     const rows = clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200);
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
+    if (!mayUseUserOnlyActions(session)) {
+      assertCliLaunchModelNamed(model, provider);
+      assertFullModelName(model, provider);
+      // A Custom provider or route runs its own model; a different one named here
+      // would be replaced silently, so it is refused as on `chat.launchCli`.
+      assertLaunchModels("chat", "launchCli", { provider, model, presetId }, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+      });
+    }
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
@@ -9819,7 +9861,10 @@ async function runTool(args: {
     }
     const provider = asTrimmedString(toolArgs.provider) === "claude" ? "claude" : "codex";
     const model = asOptionalTrimmedString(toolArgs.model);
-    if (!mayUseUserOnlyActions(session)) assertFullModelName(model, provider);
+    if (!mayUseUserOnlyActions(session)) {
+      assertCliLaunchModelNamed(model, provider);
+      assertFullModelName(model, provider);
+    }
     const requestedSpawnPermissionMode = parseSpawnPermissionMode(toolArgs.permissionMode);
     const spawnCeiling = await agentCliPermissionCeiling(runtime, session, null);
     const permissionMode = spawnCeiling
@@ -9894,17 +9939,17 @@ async function runTool(args: {
         commandArgs.push("--dangerously-bypass-approvals-and-sandbox");
         commandPreviewParts.push("--dangerously-bypass-approvals-and-sandbox");
       } else if (permissionMode === "default") {
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("workspace-write").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       } else if (permissionMode === "config-toml") {
         // No explicit Codex permission flags; let the host config.toml decide.
       } else if (permissionMode === "plan") {
-        commandArgs.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "read-only", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("read-only"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("read-only").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       } else {
         // The CLI flag refuses `untrusted` and exits (see `codexApprovalPolicy.ts`).
-        commandArgs.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
-        commandPreviewParts.push("--sandbox", "workspace-write", "--ask-for-approval", "on-request");
+        commandArgs.push(...codexSandboxCliArgs("workspace-write"), "--ask-for-approval", "on-request");
+        commandPreviewParts.push(...codexSandboxCliArgs("workspace-write").map(previewShellEscapeArg), "--ask-for-approval", "on-request");
       }
     } else {
       let claudePermission: string;

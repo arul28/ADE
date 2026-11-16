@@ -163,7 +163,7 @@ case a share made by an agent cannot change anything on the host.
   the durable signal.
 - **The CLI.** `ade lanes share --lane <lane>` lists, `--add <email>` makes a
   Watch share (`--ends`, `--hide-machines`, `--hide-models`), and `--remove
-  <email|grant id>` stops one. `--preset` takes only `watch`. Each meaning has
+  <email|grant id>` stops one. `--access` takes only `watch` (`--preset` is its old spelling). Each meaning has
   one flag, and the command refuses a word it does not know.
 - **ADE MCP.** A read-only connection can list shares only. The command
   policy lets `lanes share` through only in its list form (`--lane`,

@@ -122,6 +122,9 @@ export const CANCELLED_CREATE_FOLLOW_POLL_MS = 15_000;
 export const CONNECT_RETRY_MS = 3_000;
 /** After the hand-off, how often a dropped event stream is followed again, and how many times. */
 export const RESUBSCRIBE_MS = 15_000;
+/** While a launch's brain can't be read, how often ADE Cloud is asked whether its computer is still there. */
+export const COMPUTER_GONE_CHECK_MS = 60_000;
+export const COMPUTER_DELETED_SENTENCE = "This lane's ADE Cloud computer was deleted before the lane finished starting. Send the prompt again to start it on a new computer.";
 export const RESUBSCRIBE_ATTEMPTS = 20;
 
 export const CANT_MAKE_COMPUTER = "ADE Cloud can't make a computer right now. Try again soon.";

@@ -6094,6 +6094,28 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     accountSettings: (() => {
       const rows = new Map<string, AccountSettingRow>();
       const rowKey = (scope: string, key: string) => `${scope}\u0000${key}`;
+      // `?mockCtoHome=away|asleep|gone`: the CTO lives on a machine this preview can't reach
+      // (another computer, an ADE Cloud computer asleep, or one the idle cleanup deleted).
+      const ctoHomeSeed = new URLSearchParams(window.location.search).get("mockCtoHome");
+      if (ctoHomeSeed) {
+        const at = new Date().toISOString();
+        const scope = "repo:github.com/acme/ade";
+        rows.set(rowKey(scope, "cto.homeMachine"), {
+          scope,
+          key: "cto.homeMachine",
+          value: {
+            version: 1,
+            deviceId: "mock-away-device",
+            name: ctoHomeSeed === "away" ? "Ada's Mac Studio" : "CTO · acme/ade",
+            hostname: null,
+            chosenAt: at,
+            ...(ctoHomeSeed === "asleep" ? { cloudInstanceId: "p7r4t5c3" } : ctoHomeSeed === "gone" ? { cloudInstanceId: "gone-instance" } : {}),
+          },
+          updatedAt: at,
+          changedAt: at,
+          writerDeviceId: "browser-mock",
+        });
+      }
       return {
         list: async (args?: { scope?: string | null }) => ({
           ok: true as const,
@@ -6664,7 +6686,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         deletedPaths: [],
         clearedAt: new Date().toISOString(),
       }),
-      listRecent: resolved(BROWSER_MOCK_RECENT_PROJECTS),
+      // `?mockCtoCloud` gives the open project a GitHub origin, so the CTO page can offer ADE Cloud.
+      listRecent: async () => (new URLSearchParams(window.location.search).has("mockCtoCloud")
+        ? [{ rootPath: MOCK_PROJECT.rootPath, displayName: MOCK_PROJECT.displayName, lastOpenedAt: new Date().toISOString(), exists: true, kind: "local" as const, gitOriginUrl: BUILTIN_MOCK_PROJECT.gitRemoteUrl }, ...BROWSER_MOCK_RECENT_PROJECTS]
+        : BROWSER_MOCK_RECENT_PROJECTS),
       listThisComputer: resolved([]),
       findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
@@ -9430,44 +9455,19 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           "- The team prefers concise status updates with next actions.",
           "- Current focus: hardening the mobile sync transport.",
         ].join("\n"),
-        threadState:
-          "_Updated just now (compaction)_\n- Reviewing PR queue health.\n- Open loop: flaky sync test on CI.",
-        dailyLog: "09:12 — Asked for PR queue summary → 3 PRs ready, 1 blocked on CI.",
-        dailyLogDate: now.slice(0, 10),
         updatedAt: now,
-        projectBrief: [
-          "Goal: Keep one CTO who already knows this project.",
-          "Done when: A new idea can be handed over without restating the repo.",
-          "Constraints: The CTO directs agents. It does not commit the repository.",
-          "Open loops: Account copy still uploads from the brain process.",
-        ].join("\n"),
-        projectItems: [
-          "- (pinned) Desktop releases ship from tagged commits on main.",
-          "- (active) The team prefers concise status updates with a next action.",
-          "- (active) Current focus is the mobile sync transport.",
-        ].join("\n"),
-        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
-      updateMemory: async (arg: { memory?: string }) => ({
-        memory: arg?.memory ?? "",
-        threadState: "",
-        dailyLog: "",
-        dailyLogDate: now.slice(0, 10),
+      updateNotes: resolvedArg({
+        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
+        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
         updatedAt: now,
-        projectBrief: [
-          "Goal: Keep one CTO who already knows this project.",
-          "Done when: A new idea can be handed over without restating the repo.",
-          "Constraints: The CTO directs agents. It does not commit the repository.",
-          "Open loops: Account copy still uploads from the brain process.",
-        ].join("\n"),
-        projectItems: [
-          "- (pinned) Desktop releases ship from tagged commits on main.",
-          "- (active) The team prefers concise status updates with a next action.",
-          "- (active) Current focus is the mobile sync transport.",
-        ].join("\n"),
-        projectThreads: "- Sync transport · lane lane-sync · chat chat-sync · Harden the phone sync path",
       }),
-      searchMemory: resolvedArg({ query: "", rows: [] }),
+      updateOpenWork: resolvedArg({
+        memory: "", memoryBytes: 0, memoryLimitBytes: 4096,
+        userNotes: "", userNotesBytes: 0, userNotesLimitBytes: 2048, openWork: [],
+        updatedAt: now,
+      }),
+      refreshContext: resolvedArg({ refreshed: true }),
       ensureSession: resolvedArg({
         id: "mock-cto-session",
         laneId: "lane-main",
@@ -9479,7 +9479,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         createdAt: now,
         lastActivityAt: now,
       }),
-      listSessionLogs: resolvedArg([]),
       updateIdentity: resolvedArg({
         identity: {
           name: "CTO",

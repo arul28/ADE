@@ -198,7 +198,7 @@ enum WorkSettingsCatalog {
     "agents.provider.kimi": Setting(path: "App › Providers › Kimi", locked: true),
     "agents.provider.grok": Setting(path: "App › Providers › Grok", locked: true),
     "agents.provider.copilot": Setting(path: "App › Providers › GitHub Copilot", locked: true),
-    "agents.harnesses": Setting(path: "App › Providers › Custom", locked: true),
+    "agents.harnesses": Setting(path: "App › Providers › Custom providers", locked: true),
     "agents.scheduled-work": Setting(path: "App › Notifications › Pause all scheduled work", locked: true),
     "agents.budget": Setting(path: "App › Providers › Spend cap", locked: true),
     "agents.dictation": Setting(path: "App › Chat › Voice input", locked: false),

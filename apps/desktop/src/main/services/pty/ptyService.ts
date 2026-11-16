@@ -240,6 +240,7 @@ import { antigravityCredentialEnv, readAntigravitySettings } from "../ai/antigra
 import { holdToolInstalls } from "../../../../../ade-cli/src/services/tools/inUse";
 import { museCredentialEnv } from "../ai/museAuth";
 import { withClaudePassEnv } from "../claudePass/claudePassLaunch";
+import { claudeCodeRefusesBypassHere, claudeRootRuleApplies, rootFullAccessAllowed } from "../chat/claudeRootFullAccess";
 import { withCopilotCarriedEnv } from "../providerLogins/providerLoginCopilotEnv";
 import { findMuseSessionForCwd } from "../externalSessions/discoverMuse";
 import {
@@ -7047,7 +7048,18 @@ export function createPtyService({
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
-      const runtimeCliLaunch = withNewCliSessionAccount(args);
+      let runtimeCliLaunch = withNewCliSessionAccount(args);
+      // Claude Code exits at once when told to skip permissions as root. A
+      // launch nobody could be asked about (an agent's, a batch's) starts in
+      // Accept edits on a root machine the person hasn't allowed, not dead.
+      if (
+        runtimeCliLaunch?.provider === "claude"
+        && runtimeCliLaunch.permissionMode === "full-auto"
+        && claudeCodeRefusesBypassHere(process.env)
+      ) {
+        logger.warn("pty.claude_root_full_access_downgraded", { laneId: args.laneId });
+        runtimeCliLaunch = { ...runtimeCliLaunch, permissionMode: "edit" };
+      }
       if (runtimeCliLaunch) {
         // A routed CLI (Claude Code on an OpenAI-only model) needs ADE's proxy
         // running before the synchronous materializer resolves its endpoint.
@@ -7938,9 +7950,14 @@ export function createPtyService({
         // A Claude CLI on a Claude pass account gets the pass here, at the
         // spawn: never in `launchEnv`, which a tracked command can carry. The
         // Copilot CLI on a cloud computer gets the account's Copilot token the same way.
-        const spawnEnv = isClaudeTrackedCliToolType(toolTypeHint)
-          ? withClaudePassEnv(launchEnv)
-          : toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv;
+        const claudePassEnv = isClaudeTrackedCliToolType(toolTypeHint) ? withClaudePassEnv(launchEnv) : null;
+        // Claude CLI as root: the person allowed Full access for agents on this
+        // machine (`claudeRootFullAccess.ts`), so Claude is told it runs in a sandbox.
+        const claudeSpawnEnv = claudePassEnv && claudeRootRuleApplies(claudePassEnv) && rootFullAccessAllowed()
+          ? { ...claudePassEnv, IS_SANDBOX: "1" }
+          : claudePassEnv;
+        const spawnEnv = claudeSpawnEnv
+          ?? (toolTypeHint === "copilot" ? withCopilotCarriedEnv(launchEnv) : launchEnv);
         const opts: IWindowsPtyForkOptions = {
           name: "xterm-256color",
           cols,

@@ -34,27 +34,6 @@ export function truncateTailToLineBoundary(text: string, maxChars: number): stri
 }
 
 /**
- * Should this turn's reconstruction context carry the lane-scoped project
- * memory section?
- *
- * The CTO already receives the whole of durable memory, and a personal chat has
- * no project lane at all. Everyone else gets it once per lane change, keyed on
- * the same `lastLaneDirectiveKey` the lane execution directive uses — so the
- * section arrives with the directive that explains the lane, and a worker that
- * stays put never pays for it again.
- */
-export function shouldInjectLaneMemoryContext(args: {
-  isCto: boolean;
-  isPersonal: boolean;
-  laneDirectiveKey: string | null;
-  lastLaneDirectiveKey: string | null;
-}): boolean {
-  if (args.isCto || args.isPersonal) return false;
-  if (!args.laneDirectiveKey) return false;
-  return args.lastLaneDirectiveKey !== args.laneDirectiveKey;
-}
-
-/**
  * The PR a finished child produced, when it named one. The completion report
  * is the structured place an agent files it; the closing summary is the
  * fallback, because plenty of agents write the number in prose and never file

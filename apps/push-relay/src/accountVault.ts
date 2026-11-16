@@ -148,7 +148,12 @@ const MAX_VALUE_CHARS = 6_000;
  * under D1's limits and one item fits a single request under the 256 KiB body
  * limit.
  */
-const MAX_VALUE_CHARS_BY_KIND: ReadonlyMap<string, number> = new Map([["provider_login", 16_000]]);
+const MAX_VALUE_CHARS_BY_KIND: ReadonlyMap<string, number> = new Map([
+  ["provider_login", 16_000],
+  // The CTO's account copy: its notes, open work, routines and last turns,
+  // gzipped (`shared/ctoAccountCopy.ts`). One per repository.
+  ["cto_copy", 48_000],
+]);
 
 const MAX_ITEMS_PER_ACCOUNT = 2_000;
 const MAX_ITEMS_PER_WRITE = 100;
@@ -177,6 +182,9 @@ const ITEM_KINDS = new Set([
   // the account's other computers and ADE Cloud. The brain's sign-in sync owns
   // the payload and the renewal rules.
   "provider_login",
+  // The CTO's account copy (one per repository, key `cto`): what a new home
+  // machine restores it from. The brain's CTO account copy owns the payload.
+  "cto_copy",
 ]);
 
 export type AccountVaultRow = {

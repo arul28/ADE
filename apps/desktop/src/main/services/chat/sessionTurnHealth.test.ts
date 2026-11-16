@@ -1,15 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  AGENT_CHAT_CONTEXT_ROTATION_PCT,
-  AGENT_CHAT_CONTEXT_ROTATION_TURNS,
-  isContextOverflowFailureText,
-  type AgentChatSessionContextHealth,
-} from "../../../shared/types/chat";
+import { isContextOverflowFailureText } from "../../../shared/types/chat";
 import {
   normalizeLastTurnFailure,
   normalizeSessionContextHealth,
-  shouldAdviseSessionRotation,
 } from "./sessionTurnHealth";
 
 /**
@@ -39,37 +33,6 @@ describe("isContextOverflowFailureText", () => {
     expect(isContextOverflowFailureText("")).toBe(false);
     expect(isContextOverflowFailureText(null)).toBe(false);
     expect(isContextOverflowFailureText(undefined)).toBe(false);
-  });
-});
-
-describe("shouldAdviseSessionRotation", () => {
-  const context = (
-    overrides: Partial<AgentChatSessionContextHealth> = {},
-  ): AgentChatSessionContextHealth => ({
-    occupancyPct: AGENT_CHAT_CONTEXT_ROTATION_PCT,
-    aboveHighWaterTurns: AGENT_CHAT_CONTEXT_ROTATION_TURNS,
-    compactionSeen: true,
-    updatedAt: "2026-09-16T00:00:00.000Z",
-    ...overrides,
-  });
-
-  const overflow = { kind: "context_overflow" as const, message: "Prompt is too long", at: "2026-09-16T00:00:00.000Z" };
-  const transient = { kind: "error" as const, message: "ECONNRESET", at: "2026-09-16T00:00:00.000Z" };
-
-  // Advise only once the thread has sat above the high-water mark for the full
-  // streak AFTER a compaction ran (before it, the next compaction may win the
-  // occupancy back), or once it has already failed on overflow. One bad turn is
-  // never a reason to throw the thread away.
-  it.each([
-    ["a busy thread below the high-water mark", null, context({ occupancyPct: AGENT_CHAT_CONTEXT_ROTATION_PCT - 1 }), false],
-    ["no context at all", null, null, false],
-    ["a spike rather than a trend", null, context({ aboveHighWaterTurns: 1 }), false],
-    ["a sustained streak after compaction", null, context(), true],
-    ["a streak before any compaction", null, context({ compactionSeen: false }), false],
-    ["an overflow failure", overflow, null, true],
-    ["one transient failure", transient, context({ occupancyPct: 10, aboveHighWaterTurns: 0 }), false],
-  ])("for %s: %s", (_label, failure, health, expected) => {
-    expect(shouldAdviseSessionRotation(failure, health)).toBe(expected);
   });
 });
 

@@ -65,6 +65,8 @@ struct DuoChatRail: ViewModifier {
   @Environment(\.duoLayout) private var duo
   @Environment(\.duoWorkFamily) private var family
   @Environment(\.duoRailRetired) private var retired
+  /// The CTO thread's live state (nil on every other chat).
+  @Environment(\.ctoLiveModel) private var ctoLive
   /// The column's frame (global), so the title capsule can span the chat's
   /// own top and the pane's header can start at the hinge.
   /// Horizontal extent only, in whole points: a value that moved with the
@@ -255,7 +257,12 @@ struct DuoChatRail: ViewModifier {
     if !(paneBesideChat && pane.tab == .ctoSettings) {
       Button {
         ADEHaptics.light()
-        actions.onOpenCtoSettings?()
+        // A phone has no room beside the thread: settings is a sheet.
+        if !duo.isWide, let openSheet = ctoLive?.onOpenSettings {
+          openSheet()
+        } else {
+          actions.onOpenCtoSettings?()
+        }
       } label: {
         Label("CTO Settings", systemImage: DuoToolTab.ctoSettings.symbolName)
       }
@@ -413,6 +420,8 @@ struct DuoChatHeaderCapsules: View {
   let showsPrBadge: Bool
   let onToggleSidebar: () -> Void
   let onOpenPr: () -> Void
+  /// The CTO thread: its live pill takes the title's place.
+  @Environment(\.ctoLiveModel) private var ctoLive
 
   /// Where the bar puts a leading item, from the column's leading edge
   /// (measured on the inner display). Fixed rather than read back from the
@@ -487,9 +496,13 @@ struct DuoChatHeaderCapsules: View {
       if showsHubBack {
         DuoHubBackInCapsule()
       }
-      DuoChatTitleBlock(model: model)
-        .padding(.leading, showsSidebarButton || showsHubBack ? 0 : 12)
-        .padding(.trailing, 14)
+      if showsHubBack, let ctoLive {
+        CtoHeaderPillLabel(model: ctoLive)
+      } else {
+        DuoChatTitleBlock(model: model)
+          .padding(.leading, showsSidebarButton || showsHubBack ? 0 : 12)
+          .padding(.trailing, 14)
+      }
     }
     .frame(height: Self.height)
     .glassEffect(.regular, in: Capsule())
@@ -498,7 +511,7 @@ struct DuoChatHeaderCapsules: View {
 
 /// ‹ and the project's logo inside a header capsule's leading end: back to
 /// the Hub.
-private struct DuoHubBackInCapsule: View {
+struct DuoHubBackInCapsule: View {
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
 

@@ -94,6 +94,8 @@ export function hasCloudLaneLaunchRecords(recordsDir: string, logger?: Pick<Logg
 
 /** How often a handed-off launch is read from the computer's brain (the bridge carries no event stream). */
 const FOLLOW_POLL_MS = 5_000;
+/** Polls in a row that can't reach the computer's brain before its follow ends (about 15 s). */
+const BRAIN_POLL_FAILURES_TO_END = 3;
 const PROBE_TIMEOUT_MS = 15_000;
 const CHAT_ACTION_TIMEOUT_MS = 60_000;
 
@@ -230,9 +232,10 @@ export function createCloudLaneLaunchBrainHost(deps: {
     }),
     callChatAction: (binding, action, request) => callChat(binding, action, request.args),
     // The bridge has no event stream: read the project's launches now and then.
-    subscribeChatLaunchEvents: async (binding, onEvent) => {
+    subscribeChatLaunchEvents: async (binding, onEvent, onEnded) => {
       let stopped = false;
       let failures = 0;
+      let timer: ReturnType<typeof setInterval> | null = null;
       const tick = async () => {
         try {
           const launches = await callChat(binding, "listLaunches", {});
@@ -243,15 +246,22 @@ export function createCloudLaneLaunchBrainHost(deps: {
         } catch (error) {
           failures += 1;
           if (failures === 1) logger.warn("cloud_lane_launch.brain_poll_failed", { error: getErrorMessage(error) });
+          // A brain that stays unreachable ends this follow: the service reads
+          // again on its own clock, and a deleted computer ends the launch there.
+          if (failures >= BRAIN_POLL_FAILURES_TO_END && !stopped) {
+            stopped = true;
+            if (timer) clearInterval(timer);
+            onEnded();
+          }
         }
       };
-      const timer = setInterval(() => {
+      timer = setInterval(() => {
         if (!stopped) void tick();
       }, FOLLOW_POLL_MS);
       timer.unref?.();
       return () => {
         stopped = true;
-        clearInterval(timer);
+        if (timer) clearInterval(timer);
       };
     },
   });

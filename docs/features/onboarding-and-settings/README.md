@@ -829,8 +829,9 @@ Renderer — onboarding:
   account sign-in surfaces.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is the
   model picker. There is no setup wizard: a project with no stored model
-  preference opens on `ModelPickCard`, and picking a model is the whole
-  of first run. Linear and the rest live in the CTO Settings sheet.
+  preference opens on `CtoWelcome` (test id `cto-model-pick`), and picking a
+  model is the whole of first run. Linear and the rest live on the CTO
+  settings page.
 
 Renderer — settings:
 
@@ -2575,13 +2576,14 @@ for the full flow and environment overrides.
 ### CTO first-run setup
 
 The CTO has no wizard. A project whose `modelPreferences` is null opens
-on `ModelPickCard` instead of the thread, the user picks a model that can
-steer a live turn, and that pick is the entire setup — there is no
-personality question, no project-context step, and nothing to re-run.
-Reasoning effort, Fast mode, and Linear all layer in afterward from the
-CTO's own settings sheet. `CtoOnboardingState` survives only as an
-internal marker list (`intro`, `memory_gardener`) that is never shown.
-See [CTO › The welcome screen](../cto/README.md#the-welcome-screen).
+on the CTO welcome (`CtoWelcome`) instead of the thread: the avatar is
+asleep, and the picker offers only models that can steer a live turn. That
+pick is the entire setup — there is no personality question, no
+project-context step, and nothing to re-run. Reasoning effort, Fast mode,
+backup models, the look and the personality all layer in afterward from the
+CTO's own settings page. `CtoOnboardingState` survives only as an internal
+marker list (`intro`) that is never shown.
+See [CTO › Welcome](../cto/README.md#welcome).
 
 ## Settings responsibilities
 

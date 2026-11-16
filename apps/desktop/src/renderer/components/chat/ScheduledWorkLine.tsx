@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Alarm, ArrowsClockwise, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { useMinuteClock } from "../../hooks/useMinuteClock";
 import { cn } from "../ui/cn";
 import { describeCron } from "../automations/cronDescribe";
 import type { AgentChatEvent } from "../../../shared/types";
@@ -80,18 +81,6 @@ export function describeScheduledWorkLine(
     parts.push(event.status);
   }
   return { kind: "repeat", head: parts.join(" · "), detail: note, pending };
-}
-
-/** Re-render once a minute while a relative time is on screen. */
-function useMinuteClock(active: boolean): number {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return undefined;
-    setNowMs(Date.now());
-    const id = window.setInterval(() => setNowMs(Date.now()), 60_000);
-    return () => window.clearInterval(id);
-  }, [active]);
-  return nowMs;
 }
 
 /**

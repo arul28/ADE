@@ -367,7 +367,7 @@ export function buildAdeBootstrapGuidance(
     "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them or `.env` files.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
-    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat`)."} Waiting: subagents report back; a PR → \`ade prs watch\`; a terminal → \`ade terminal watch\`; else \`ade chat scheduled-work create\`. \`ade drafts\` sends as the user.`,
+    `Stay in this chat and lane unless asked.${options.subagentRouteStated ? "" : " Another model works as your subagent (`ade new chat --mode chat --provider <p> --model <id>`)."} Waiting: subagents report back; a PR → \`ade prs watch\`; a terminal → \`ade terminal watch\`; else \`ade chat scheduled-work create\`. \`ade drafts\` sends as the user.`,
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

@@ -226,7 +226,7 @@ before the first real query. To turn a chat `sessionId` into the
 workspace to search, the bridge (`adeActions/registry.ts`) caches the
 session's `laneId` in `fileSearchLaneIdBySessionId` (capped at 200,
 LRU). Only non-identity sessions are cached, because their lane binding
-is immutable; primary-pinned identity sessions (CTO / worker) can be
+is immutable; primary-pinned identity sessions (the CTO) can be
 migrated to the canonical primary lane by `resumeSession`, so they
 resolve fresh each call.
 

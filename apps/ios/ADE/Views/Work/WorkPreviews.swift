@@ -516,7 +516,9 @@ func workPreviewChatSessionView(
   onOpenSideChat: (() -> Void)? = nil,
   provider: String? = nil,
   providerSignInHost: ProviderAccountsHost? = nil,
-  providerSignInMachineName: String? = nil
+  providerSignInMachineName: String? = nil,
+  isStreaming: Bool = false,
+  ctoLive: CtoLiveModel? = nil
 ) -> WorkChatSessionView {
   var summary = WorkPreviewData.chatSummary
   if let provider {
@@ -546,7 +548,8 @@ func workPreviewChatSessionView(
       sessionId: WorkPreviewData.terminalSession.id,
       transcript: transcript,
       artifacts: [WorkPreviewData.artifact],
-      provider: WorkPreviewData.chatSummary.provider
+      provider: WorkPreviewData.chatSummary.provider,
+      isStreaming: isStreaming
     ),
     artifacts: [WorkPreviewData.artifact],
     cardExpansionSnapshot: WorkCardExpansionState(expandedIds: ["cmd-1"]),
@@ -611,6 +614,7 @@ func workPreviewChatSessionView(
     previewLaneTools: laneTools
   )
   view.onOpenSideChat = onOpenSideChat
+  view.ctoLive = ctoLive
   view.providerSignInHost = providerSignInHost
   if let providerSignInMachineName { view.providerSignInMachineName = providerSignInMachineName }
   return view
@@ -660,7 +664,8 @@ func workPreviewThreadModel(
   sessionId: String,
   transcript: [WorkChatEnvelope],
   artifacts: [ComputerUseArtifactSummary],
-  provider: String
+  provider: String,
+  isStreaming: Bool = false
 ) -> ChatThreadModel {
   let key = ChatThreadKey(machineKey: "preview", sessionId: sessionId, scope: .project("preview"))
   let model = ChatThreadModel(key: key, engine: ChatThreadEngine(key: key, store: nil), registry: nil)
@@ -693,7 +698,7 @@ func workPreviewThreadModel(
     canonicalPendingInputs: pending,
     pendingInputs: pending,
     pendingSteers: snapshot.pendingSteers,
-    isStreamingTurn: false,
+    isStreamingTurn: isStreaming,
     streamingAssistantMessageId: nil,
     activityPresentation: nil,
     claudeGoal: nil,
@@ -1582,6 +1587,16 @@ enum ADEPreviewScreen: String, CaseIterable {
   case passwords = "passwords"
   /// One fixture login's detail, with its live authenticator code.
   case passwordDetail = "password-detail"
+  /// The CTO v2 surfaces. See `CtoPreviews.swift`.
+  case ctoAvatar = "cto-avatar"
+  case ctoWelcome = "cto-welcome"
+  case ctoThread = "cto-thread"
+  case ctoProfile = "cto-profile"
+  case ctoProfileLibrary = "cto-profile-library"
+  case ctoSettingsLook = "cto-settings-look"
+  case ctoSettingsBrain = "cto-settings-brain"
+  case ctoSettingsMemory = "cto-settings-memory"
+  case ctoOffline = "cto-offline"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1864,6 +1879,9 @@ struct ADEPreviewScreenHost: View {
       PasswordsPreviewHost(detail: false)
     case .passwordDetail:
       PasswordsPreviewHost(detail: true)
+    case .ctoAvatar, .ctoWelcome, .ctoThread, .ctoProfile, .ctoProfileLibrary,
+         .ctoSettingsLook, .ctoSettingsBrain, .ctoSettingsMemory, .ctoOffline:
+      CtoPreviewHost(screen: screen)
     }
   }
 }

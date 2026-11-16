@@ -42,7 +42,6 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
   return {
     currentSessionId: "cto-current",
     defaultLaneId: "lane-1",
-    defaultModelId: "openai/gpt-5-chat-latest",
     defaultReasoningEffort: "medium",
     resolveExecutionLane: vi.fn().mockResolvedValue("lane-1"),
     laneService: {
@@ -369,7 +368,7 @@ describe("createCtoOperatorTools", () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
 
-      await (tools.spawnChat as any).execute({ title: "Default worker" });
+      await (tools.spawnChat as any).execute({ title: "Default worker", modelId: "openai/gpt-5.6-sol" });
 
       // A substituted default here would be persisted as a real selection and
       // pin the spawned chat to it. Absence has to stay absent.
@@ -382,7 +381,7 @@ describe("createCtoOperatorTools", () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
 
-      await (tools.spawnChat as any).execute({ title: "Implementation worker" });
+      await (tools.spawnChat as any).execute({ title: "Implementation worker", modelId: "openai/gpt-5.6-sol" });
 
       // Without the parent id the child finishes in silence and the CTO is left
       // polling transcripts to find out. `subagent` is the default because the
@@ -396,9 +395,10 @@ describe("createCtoOperatorTools", () => {
     it("accepts only the two spawn kinds at the schema layer, defaulting to subagent", () => {
       const tools = createCtoOperatorTools(buildDeps());
 
-      expect((tools.spawnChat as any).inputSchema.safeParse({}).data.spawnKind).toBe("subagent");
-      expect((tools.spawnChat as any).inputSchema.safeParse({ spawnKind: "peer" }).success).toBe(true);
-      expect((tools.spawnChat as any).inputSchema.safeParse({ spawnKind: "none" }).success).toBe(false);
+      const modelId = "openai/gpt-5.6-sol";
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId }).data.spawnKind).toBe("subagent");
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, spawnKind: "peer" }).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, spawnKind: "none" }).success).toBe(false);
     });
 
     it("exposes the complete ADE permission contract at the schema layer", () => {
@@ -407,12 +407,15 @@ describe("createCtoOperatorTools", () => {
       // The model reads the schema as the contract; values that fail deeper in
       // the stack burn a turn. Keep this in lockstep with AgentChatPermissionMode
       // and the ADE RPC spawnChat action.
+      const modelId = "openai/gpt-5.6-sol";
       for (const permissionMode of AGENT_CHAT_PERMISSION_MODE_VALUES) {
-        expect((tools.spawnChat as any).inputSchema.safeParse({ permissionMode }).success).toBe(true);
+        expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, permissionMode }).success).toBe(true);
       }
-      expect((tools.spawnChat as any).inputSchema.safeParse({ droidPermissionMode: "auto-high" }).success).toBe(true);
-      expect((tools.spawnChat as any).inputSchema.safeParse({ permissionMode: "yolo" }).success).toBe(false);
-      expect((tools.spawnChat as any).inputSchema.safeParse({}).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, droidPermissionMode: "auto-high" }).success).toBe(true);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId, permissionMode: "yolo" }).success).toBe(false);
+      expect((tools.spawnChat as any).inputSchema.safeParse({ modelId }).success).toBe(true);
+      // ADE never picks the model: the schema requires one.
+      expect((tools.spawnChat as any).inputSchema.safeParse({}).success).toBe(false);
     });
 
     it("persists a requested chat title and returns navigation metadata when spawning chats", async () => {
@@ -421,6 +424,7 @@ describe("createCtoOperatorTools", () => {
 
       const result = await (tools.spawnChat as any).execute({
         title: "Backend follow-up",
+        modelId: "openai/gpt-5.6-sol",
         initialPrompt: "Inspect the failing tests.",
         openInUi: true,
       });
@@ -459,11 +463,18 @@ describe("createCtoOperatorTools", () => {
       });
     });
 
-    it("spawns a chat without title or initial prompt", async () => {
+    it("spawns a chat without title or initial prompt, but never without a model", async () => {
       const deps = buildDeps();
       const tools = createCtoOperatorTools(deps);
 
+      // ADE never picks the model for the CTO.
+      const refused = await (tools.spawnChat as any).execute({ openInUi: false });
+      expect(refused.success).toBe(false);
+      expect(String(refused.error)).toMatch(/Send modelId/);
+      expect(deps.createChat).not.toHaveBeenCalled();
+
       const result = await (tools.spawnChat as any).execute({
+        modelId: "openai/gpt-5.6-sol",
         openInUi: false,
       });
 
