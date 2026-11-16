@@ -1,5 +1,5 @@
-import { useId, useRef, useState, type ComponentType, type ReactNode } from "react";
-import { ChevronDown, Cpu, HardDrive, MemoryStick, Server, Timer, Zap } from "lucide-react";
+import { useRef, useState, type ComponentType, type ReactNode } from "react";
+import { Check, ChevronDown, Clock, Cpu, Gift, HardDrive, MemoryStick, Recycle, Server, Timer, Zap } from "lucide-react";
 
 import { CloudLockup } from "../../components/cloud/CloudMark";
 import { ComingSoon } from "../../components/cloud/ComingSoon";
@@ -237,21 +237,23 @@ function Badge({ tone, children }: { tone: "lamp" | "violet" | "quiet"; children
 }
 
 const MAX_COMPUTERS = 20;
-const MAX_HOURS_A_DAY = 24;
+/** Every hour of the month, round-the-clock. */
+const MAX_HOURS_A_MONTH = 24 * FINDER_DAYS_A_MONTH;
+const HOURS_STEP = 10;
 
 /**
- * "Not sure which plan?": computers, hours a day and size make a month of
- * hours, and the plan that runs it. Only the first change is reported, never
+ * "Not sure which plan?": computers, hours a month each and size make a month
+ * of hours, and the plan that runs it. Only the first change is reported, never
  * the numbers.
  */
 function PlanFinder() {
   const [computers, setComputers] = useState(2);
-  const [hoursADay, setHoursADay] = useState(4);
+  const [hoursEach, setHoursEach] = useState(120);
   const [sizeId, setSizeId] = useState<PricingSize["id"]>(SMALL?.id ?? "small");
   const reported = useRef(false);
 
   const size = PRICING_SIZES.find((entry) => entry.id === sizeId) ?? SMALL;
-  const hours = Math.round(computers * hoursADay * FINDER_DAYS_A_MONTH * (size?.rate ?? 1));
+  const hours = Math.round(computers * hoursEach * (size?.rate ?? 1));
   const suggestion = suggestPlan(hours);
   const best = suggestion?.pick;
   const other = suggestion?.other ?? null;
@@ -283,12 +285,13 @@ function PlanFinder() {
           />
           <Slider
             id="finder-hours"
-            label="Hours a day, each"
-            value={hoursADay}
-            min={1}
-            max={MAX_HOURS_A_DAY}
-            display={`${hoursADay} h`}
-            onChange={(value) => change(() => setHoursADay(value))}
+            label="Hours a month, each"
+            value={hoursEach}
+            min={HOURS_STEP}
+            max={Math.floor(MAX_HOURS_A_MONTH / HOURS_STEP) * HOURS_STEP}
+            step={HOURS_STEP}
+            display={`${formatCount(hoursEach)} h`}
+            onChange={(value) => change(() => setHoursEach(value))}
           />
           <fieldset>
             <legend className="text-[15px] font-medium text-white/85">Size</legend>
@@ -327,7 +330,7 @@ function PlanFinder() {
                 <p className={cn(serifHeading, "mt-3")} style={{ fontSize: "clamp(40px, 4.4vw, 60px)", lineHeight: 1 }}>
                   {best.plan.name}{" "}
                   <span className="text-[color:var(--color-lamp)]">{formatUsd(best.costUsd)}</span>
-                  <span className="ml-2 font-sans text-[15px] text-white/45">a month</span>
+                  <span className="ml-2 font-sans text-[15px] tracking-normal text-white/45">a month</span>
                 </p>
                 <p className="mt-4 text-[15px] leading-[1.6] text-white/65">
                   {best.extraHours > 0
@@ -369,6 +372,7 @@ function Slider({
   value,
   min,
   max,
+  step = 1,
   display,
   onChange,
 }: {
@@ -377,6 +381,7 @@ function Slider({
   value: number;
   min: number;
   max: number;
+  step?: number;
   display: string;
   onChange: (value: number) => void;
 }) {
@@ -394,7 +399,7 @@ function Slider({
         type="range"
         min={min}
         max={max}
-        step={1}
+        step={step}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
         className="ade-range mt-3"
@@ -415,53 +420,50 @@ function SectionTitle({ id, title, children }: { id: string; title: string; chil
   );
 }
 
-const DETAIL_TABS = [
-  { id: "sizes", label: "Sizes" },
-  { id: "more", label: "More hours and disk" },
-  { id: "unused", label: "Unused computers" },
-  { id: "free", label: "The free plan" },
-] as const;
+type Accent = { color: string; glow: string };
+const AMBER: Accent = { color: "#ffd27a", glow: "rgba(255,210,122,0.14)" };
+const SKY: Accent = { color: "#7dd3fc", glow: "rgba(56,189,248,0.14)" };
+const MINT: Accent = { color: "#6ee7b7", glow: "rgba(52,211,153,0.13)" };
+const VIOLET: Accent = { color: "#c4b5fd", glow: "rgba(167,139,250,0.15)" };
 
-type DetailTab = (typeof DETAIL_TABS)[number]["id"];
-
-/** The rules most people never need, one tab at a time. */
+/** The rules most people never need, all on one page: sizes, then extras and the free plan, then what happens to unused computers. */
 function DetailsSection() {
-  const [tab, setTab] = useState<DetailTab>("sizes");
-  const baseId = useId();
   return (
     <section aria-labelledby="details-title" className={cn(wrap, "pt-[clamp(64px,7vw,96px)]")}>
-      <SectionTitle id="details-title" title="The details" />
-      <div role="tablist" aria-label="Plan details" className="mt-6 flex gap-2 overflow-x-auto pb-1">
-        {DETAIL_TABS.map((entry) => {
-          const active = entry.id === tab;
-          return (
-            <button
-              key={entry.id}
-              type="button"
-              role="tab"
-              id={`${baseId}-${entry.id}-tab`}
-              aria-selected={active}
-              aria-controls={`${baseId}-${entry.id}-panel`}
-              onClick={() => setTab(entry.id)}
-              className={cn(
-                "focus-ring shrink-0 rounded-full px-4 py-2 text-[14px] font-medium transition-colors",
-                active ? "bg-white text-[#0d0b24]" : "border border-white/[0.12] text-white/65 hover:text-white",
-              )}
-            >
-              {entry.label}
-            </button>
-          );
-        })}
-      </div>
-      <div
-        role="tabpanel"
-        id={`${baseId}-${tab}-panel`}
-        aria-labelledby={`${baseId}-${tab}-tab`}
-        className="mt-6 min-h-[260px]"
-      >
-        {tab === "sizes" ? <SizesPanel /> : tab === "more" ? <ExtrasPanel /> : tab === "unused" ? <CleanupPanel /> : <FreePanel />}
+      <SectionTitle id="details-title" title="The details">
+        Sizes, extras, the free plan and what happens to computers nobody uses.
+      </SectionTitle>
+      <div className="mt-8 flex flex-col gap-4">
+        <SizesPanel />
+        <div className="grid gap-4 lg:grid-cols-3">
+          <ExtraHoursCard />
+          <ExtraDiskCard />
+          <FreePlanCard />
+        </div>
+        <CleanupPanel />
       </div>
     </section>
+  );
+}
+
+/** A details card: an accent-coloured icon and title, and a soft glow of the same colour. */
+function DetailCard({ accent, icon: Icon, title, note, children, className }: { accent: Accent; icon: ComponentType<{ className?: string }>; title: string; note?: string; children: ReactNode; className?: string }) {
+  return (
+    <div className={cn("relative overflow-hidden rounded-[24px] border border-white/[0.08] bg-[#100e22] p-6 sm:p-7", className)}>
+      <div aria-hidden className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(90% 70% at 100% 0%, ${accent.glow}, transparent 65%)` }} />
+      <div className="relative">
+        <div className="flex items-center gap-3">
+          <span className="grid h-9 w-9 place-items-center rounded-[11px] border border-white/10 bg-white/[0.04]" style={{ color: accent.color }}>
+            <Icon className="h-[18px] w-[18px]" />
+          </span>
+          <div>
+            <h3 className="text-[17px] font-semibold text-white">{title}</h3>
+            {note ? <p className="text-[13.5px] text-white/50">{note}</p> : null}
+          </div>
+        </div>
+        <div className="mt-6">{children}</div>
+      </div>
+    </div>
   );
 }
 
@@ -470,11 +472,13 @@ const MAX_RATE = Math.max(...PRICING_SIZES.map((size) => size.rate));
 /** Each size as a card: how fast it uses hours, drawn as a bar, and its machine as three chips. */
 function SizesPanel() {
   return (
-    <>
-      <p className="whitespace-nowrap text-[15px] text-white/55">
-        {SMALL ? `One hour on ${SMALL.label} is one hour of your plan. Bigger sizes count more.` : "Bigger sizes count more."}
-      </p>
-      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+    <DetailCard
+      accent={AMBER}
+      icon={Cpu}
+      title="Sizes"
+      note={SMALL ? `One hour on ${SMALL.label} is one hour of your plan. Bigger sizes count more.` : "Bigger sizes count more."}
+    >
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {PRICING_SIZES.map((size, index) => (
           <div
             key={size.id}
@@ -505,7 +509,7 @@ function SizesPanel() {
           </div>
         ))}
       </div>
-    </>
+    </DetailCard>
   );
 }
 
@@ -518,39 +522,48 @@ function SpecChip({ icon: Icon, title, children }: { icon: ComponentType<{ class
   );
 }
 
-function ExtrasPanel() {
+function ExtraHoursCard() {
+  const most = Math.max(...PAID_PLANS.map((plan) => plan.extraHourCents ?? 0));
   return (
-    <>
-      <p className="whitespace-nowrap text-[15px] text-white/55">Paid plans can go past their hours and disk, if you turn it on.</p>
-      <div className="mt-6 grid gap-4 md:grid-cols-2">
-        <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.02] p-6 sm:p-8">
-          <h3 className="text-[17px] font-semibold text-white">Extra hours</h3>
-          <dl className="mt-5 divide-y divide-white/[0.07]">
-            {PAID_PLANS.map((plan) => (
-              <div key={plan.id} className="flex items-baseline justify-between py-3">
-                <dt className="text-[15px] text-white/70">{plan.name}</dt>
-                <dd className="text-[15px] text-white/55">
-                  <span className="font-display text-[26px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> an hour
-                </dd>
-              </div>
-            ))}
-          </dl>
-          <p className="mt-4 text-[14px] text-white/45">On Free, work pauses until next month instead.</p>
-        </div>
-        <div className="rounded-[24px] border border-white/[0.08] bg-white/[0.02] p-6 sm:p-8">
-          <h3 className="text-[17px] font-semibold text-white">Extra disk</h3>
-          <p className="mt-5 flex items-baseline gap-2">
-            <span className="font-display text-[60px] leading-none text-white">${EXTRA_DISK_USD_PER_10GB_MONTH}</span>
-            <span className="text-[15px] text-white/55">for each 10 GB, a month</span>
-          </p>
-          <ul className="mt-6 flex flex-col gap-2 text-[14px] leading-relaxed text-white/60">
-            <li>Counted by the day, so you pay only for the days you keep it.</li>
-            <li>You set the most it can cost each month.</li>
-            <li>All your computers share it.</li>
-          </ul>
-        </div>
-      </div>
-    </>
+    <DetailCard accent={AMBER} icon={Clock} title="Extra hours" note="Paid plans can go past their hours, if you turn it on.">
+      <ul className="flex flex-col gap-4">
+        {PAID_PLANS.map((plan) => (
+          <li key={plan.id}>
+            <div className="flex items-baseline justify-between">
+              <span className="text-[15px] text-white/75">{plan.name}</span>
+              <span className="text-[14px] text-white/50">
+                <span className="font-display text-[24px] text-white">{formatCents(plan.extraHourCents ?? 0)}</span> an hour
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+              <div className="h-full rounded-full" style={{ width: `${((plan.extraHourCents ?? 0) / most) * 100}%`, background: AMBER.color }} />
+            </div>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-5 text-[13.5px] text-white/45">On Free, work pauses until next month instead.</p>
+    </DetailCard>
+  );
+}
+
+function ExtraDiskCard() {
+  return (
+    <DetailCard accent={SKY} icon={HardDrive} title="Extra disk" note="Shared by all your computers.">
+      <p className="flex items-baseline gap-2">
+        <span className="font-display text-[56px] leading-none" style={{ color: SKY.color }}>
+          ${EXTRA_DISK_USD_PER_10GB_MONTH}
+        </span>
+        <span className="text-[15px] text-white/55">for each 10 GB, a month</span>
+      </p>
+      <ul className="mt-6 flex flex-col gap-3 text-[14px] leading-relaxed text-white/70">
+        {["Counted by the day: pay only for the days you keep it", "You set the most it can cost each month", "Turn it on in ADE Cloud settings"].map((line) => (
+          <li key={line} className="flex items-start gap-2.5">
+            <Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: SKY.color }} />
+            {line}
+          </li>
+        ))}
+      </ul>
+    </DetailCard>
   );
 }
 
@@ -568,37 +581,48 @@ function CleanupPanel() {
     { title: "The computer goes", body: "The task and its chats stay. Your next message makes a new computer from the branch." },
   ];
   return (
-    <>
-      <p className="whitespace-nowrap text-[15px] text-white/55">ADE deletes computers nobody uses. This is what happens first.</p>
-      <ol className="mt-6 grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
+    <DetailCard accent={VIOLET} icon={Recycle} title="Unused computers" note="ADE deletes computers nobody uses. This is what happens first.">
+      <ol className="relative grid gap-8 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
+        <span aria-hidden className="absolute left-4 right-4 top-4 hidden h-px lg:block" style={{ background: `linear-gradient(90deg, ${VIOLET.color}, transparent)` }} />
         {steps.map((step, index) => (
-          <li key={step.title} className="border-t border-white/[0.12] pt-5">
-            <span className="font-display text-[34px] leading-none text-[color:var(--color-lamp)]">{index + 1}</span>
-            <h3 className="mt-4 text-[16px] font-semibold text-white">{step.title}</h3>
+          <li key={step.title} className="relative">
+            <span
+              className="relative grid h-8 w-8 place-items-center rounded-full border text-[14px] font-semibold"
+              style={{ color: VIOLET.color, borderColor: `${VIOLET.color}66`, background: "#17132e" }}
+            >
+              {index + 1}
+            </span>
+            <h4 className="mt-4 text-[16px] font-semibold text-white">{step.title}</h4>
             <p className="mt-2 text-[14px] leading-relaxed text-white/55">{step.body}</p>
           </li>
         ))}
       </ol>
-    </>
+    </DetailCard>
   );
 }
 
-function FreePanel() {
+function FreePlanCard() {
+  const rules = [
+    `A GitHub account at least ${days(FREE_RULES.githubMinAgeDays)} old`,
+    "Newer account? Add a card to start now. It is not charged.",
+    "One free plan for each GitHub account",
+    `Invite a friend: you both get ${formatCount(INVITE_RULES.rewardHours)} extra hours that never expire, for up to ${INVITE_RULES.rewardLimit} friends`,
+  ];
   return (
-    <div className="grid gap-8 rounded-[28px] border border-white/[0.08] bg-[radial-gradient(120%_120%_at_0%_0%,rgba(255,210,122,0.08),transparent_55%)] p-7 sm:p-10 md:grid-cols-[1fr_1.1fr] md:gap-12">
-      <p className="font-display text-[clamp(26px,2.8vw,36px)] leading-[1.15] text-white">
-        {formatCount(FREE_PLAN.hours)} hours and {FREE_PLAN.diskGb} GB every month. You never pay to start.
+    <DetailCard accent={MINT} icon={Gift} title="The free plan" note="You never pay to start.">
+      <p className="font-display text-[34px] leading-[1.05]" style={{ color: MINT.color }}>
+        {formatCount(FREE_PLAN.hours)} h <span className="text-white/35">·</span> {FREE_PLAN.diskGb} GB
       </p>
-      <ul className="flex flex-col gap-4 self-center text-[15px] leading-relaxed text-white/80">
-        <li>A GitHub account that is at least {days(FREE_RULES.githubMinAgeDays)} old.</li>
-        <li>Newer account? Add a card to start now. It is not charged.</li>
-        <li>One free plan for each GitHub account.</li>
-        <li>
-          Invite a friend, and you both get {formatCount(INVITE_RULES.rewardHours)} extra hours that never expire, for up
-          to {INVITE_RULES.rewardLimit} friends.
-        </li>
+      <p className="text-[14px] text-white/50">every month</p>
+      <ul className="mt-5 flex flex-col gap-3 text-[14px] leading-relaxed text-white/70">
+        {rules.map((rule) => (
+          <li key={rule} className="flex items-start gap-2.5">
+            <Check className="mt-0.5 h-4 w-4 shrink-0" style={{ color: MINT.color }} />
+            {rule}
+          </li>
+        ))}
       </ul>
-    </div>
+    </DetailCard>
   );
 }
 

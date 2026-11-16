@@ -18,11 +18,10 @@ import {
   Network,
   Smartphone,
   Sparkles,
-  SquareTerminal,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
-import { AppleMark, GithubMark, LinearMark, WindowsMark } from "./marks";
+import { AppleMark, GithubMark, LinearMark, LinuxMark, WindowsMark } from "./marks";
 
 /*
  * What agents can do, as rows in the style of Cursor's feature rows: one
@@ -31,8 +30,7 @@ import { AppleMark, GithubMark, LinearMark, WindowsMark } from "./marks";
  * - an agent testing the Crumb app on a folding iPhone simulator, beside a
  *   3D render of the Android emulator's Pixel (from the Android PR, #2069);
  * - a chat starting its private Mac screen and opening TextEdit there, with a
- *   Windows Desktop session and a Linux lane screen typed from a Windows chat
- *   (from the any-machine PR, #2238);
+ *   Windows Desktop session and the three systems it runs on;
  * - one chat splitting a job across three agents on three models;
  * - a real pull request with its checks and a GitHub issue;
  * - ADE's browser with the download dialog an agent opened on ade-app.dev.
@@ -85,7 +83,7 @@ export function ToolsSection() {
         flip
         tone="sky"
         kicker={{
-          icons: [<AppleMark key="a" className={mark} />, <WindowsMark key="w" className="h-3 w-3" />, <SquareTerminal key="l" className={mark} />],
+          icons: [<AppleMark key="a" className={mark} />, <WindowsMark key="w" className="h-3 w-3" />, <LinuxMark key="l" className={mark} />],
           label: "Desktops",
         }}
         title="A desktop of their own."
@@ -103,17 +101,14 @@ export function ToolsSection() {
             <Window className="absolute left-0 top-0 w-[80%]">
               <Clip src="/film/devices-mac.mp4" poster="/film/devices-mac.jpg" label="A chat in ADE starting its private Mac screen, then opening TextEdit there, with the Mac Desktop pane beside the chat" />
             </Window>
-            <Window className="absolute bottom-[4%] left-[4%] w-[34%]">
-              <img src="/images/home/tools/linux-desktop.webp" alt="A terminal on a Linux lane screen, typed from a chat on a Windows PC" width={1440} height={810} loading="lazy" decoding="async" className="block h-auto w-full" />
-            </Window>
+            <OsLogos className="absolute bottom-[5%] left-0" />
             <img
               src="/images/home/tools/slide-windows.webp"
               alt="ADE with an agent's private Windows desktop open in the Windows Desktop pane"
               width={2400}
               height={1447}
-              loading="lazy"
               decoding="async"
-              className="absolute bottom-0 right-[-2%] w-[62%] drop-shadow-[0_30px_50px_rgba(0,0,0,0.7)]"
+              className="absolute bottom-0 right-[-3%] w-[57%] drop-shadow-[0_30px_50px_rgba(0,0,0,0.7)]"
             />
           </>
         }
@@ -236,6 +231,25 @@ function Row({
           <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
         </a>
       </div>
+    </div>
+  );
+}
+
+/** The three systems an agent's private screen runs on, as one floating card of their logos. */
+function OsLogos({ className }: { className?: string }) {
+  const systems = [
+    { name: "macOS", logo: <AppleMark className="h-7 w-7 text-white" /> },
+    { name: "Windows", logo: <WindowsMark className="h-6 w-6 text-[#3ea6ff]" /> },
+    { name: "Linux", logo: <LinuxMark className="h-7 w-7 text-[#fcd34d]" /> },
+  ];
+  return (
+    <div className={cn("flex gap-3 rounded-[20px] border border-white/[0.12] bg-[#12141f]/90 p-3 shadow-[0_30px_60px_-20px_rgba(0,0,0,0.9)] backdrop-blur-md", className)}>
+      {systems.map((system) => (
+        <div key={system.name} className="flex w-[clamp(64px,6vw,84px)] flex-col items-center gap-2 rounded-[14px] bg-white/[0.04] px-2 py-3">
+          {system.logo}
+          <span className="text-[12px] font-medium text-white/75">{system.name}</span>
+        </div>
+      ))}
     </div>
   );
 }
