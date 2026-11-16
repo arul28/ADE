@@ -6266,6 +6266,13 @@ function readLaidOutChatRowTop(container: HTMLElement, rowKey: string): number |
   return null;
 }
 
+/**
+ * How many mounted rows, top down, a turn that folds under the reader checks
+ * for one that stays drawn. More than a screen of rows, so a short screen of
+ * folded narration still finds the next row that stays.
+ */
+const CHAT_FOLD_ANCHOR_SCAN_ROWS = 64;
+
 type PendingFoldAnchor = {
   /** Row whose on-screen top must not move across the fold change. */
   key: string;
@@ -7747,8 +7754,23 @@ function AgentChatMessageListMain({
           const swallowing = newFolds.find((fold) => (
             fold.hiddenKeys.has(first.key) && !openTurnFolds.has(fold.foldId)
           ));
+          // The row being read folded away. A row still on screen that stays
+          // drawn holds the reader's place; the fold row does that only when
+          // nothing on screen stays. In a long turn that ends under the reader,
+          // the fold row sits at the turn's top, so taking it moved the view
+          // there in one frame. `placeKey` is the previous row whose position
+          // the anchor takes: the fold row takes the place of the row it hid.
+          let anchor = { key: first.key, top: first.top, placeKey: first.key };
+          if (swallowing) {
+            const nextKeys = new Set(groupedRowKeys);
+            const staying = readVisibleChatRows(container, CHAT_FOLD_ANCHOR_SCAN_ROWS)
+              .find((row) => row.top < container.clientHeight && nextKeys.has(row.key));
+            anchor = staying
+              ? { key: staying.key, top: staying.top, placeKey: staying.key }
+              : { key: swallowing.foldId, top: first.top, placeKey: first.key };
+          }
           const previousKeys = groupedRowKeysRef.current;
-          const previousIndex = previousKeys.indexOf(first.key);
+          const previousIndex = previousKeys.indexOf(anchor.placeKey);
           const previousOffsets = previousIndex >= 0
             ? computeRowStartOffsets(
                 previousIndex + 1,
@@ -7757,8 +7779,8 @@ function AgentChatMessageListMain({
               )
             : null;
           pendingFoldAnchorRef.current = {
-            key: swallowing ? swallowing.foldId : first.key,
-            top: first.top,
+            key: anchor.key,
+            top: anchor.top,
             modelTop: previousOffsets ? previousOffsets[previousIndex]! - container.scrollTop : null,
             wasStuck: false,
             fromToggle: false,
