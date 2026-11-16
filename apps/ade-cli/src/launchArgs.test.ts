@@ -114,7 +114,7 @@ describe("normalizeLaunchArgs", () => {
 describe("collectLaunchArgs", () => {
   it("restores the caller's provider behind --arg provider=", () => {
     expect(
-      collectLaunchArgs(["--arg", "provider="], { provider: "codex" }, { allowShell: false }),
+      collectLaunchArgs(["--arg", "provider="], { provider: "codex", model: "openai/gpt-5.6-sol" }, { allowShell: false }),
     ).toMatchObject({ provider: "codex" });
   });
 
@@ -122,7 +122,7 @@ describe("collectLaunchArgs", () => {
   // `undefined`: `Object.keys` and the JSON that reaches the runtime both
   // treat an own `provider: undefined` differently from an absent one.
   it("never installs an own undefined provider key from a base without one", () => {
-    const collected = collectLaunchArgs(["--arg", "provider="], {}, { allowShell: false });
+    const collected = collectLaunchArgs(["--arg", "provider="], { model: "claude-opus-5-5" }, { allowShell: false });
     expect(collected).not.toHaveProperty("provider");
     expect(Object.keys(collected)).not.toContain("provider");
   });

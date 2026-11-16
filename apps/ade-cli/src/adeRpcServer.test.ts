@@ -2329,6 +2329,7 @@ describe("adeRpcServer", () => {
     const result = await callTool(handler, "spawnChat", {
       laneId: "lane-1",
       title: "Fresh work chat",
+      modelId: "openai/gpt-5.5",
       openInUi: true,
     });
 
@@ -2983,6 +2984,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
+        model: "openai/gpt-5.5",
         permissionMode,
         prompt: "Check the Codex launch flags",
       });
@@ -3091,6 +3093,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       permissionMode: "edit",
       initialInput: "run the checks",
     });
@@ -3189,6 +3192,7 @@ describe("adeRpcServer", () => {
         return await callTool(handler, "start_cli_session", {
           laneId: "lane-1",
           provider: "codex",
+          model: "openai/gpt-5.5",
           permissionMode: "default",
           presetId: "preset-from-request",
         });
@@ -3226,6 +3230,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "droid",
+      model: "droid/claude-opus-4-5",
       permissionMode: "default",
       droidPermissionMode: "agi",
     });
@@ -3273,6 +3278,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "  parent-session-1  ",
       spawnKind: "peer",
     });
@@ -3315,6 +3321,7 @@ describe("adeRpcServer", () => {
     const allowed = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "chat-agent",
       spawnKind: "subagent",
     });
@@ -3324,6 +3331,7 @@ describe("adeRpcServer", () => {
     const otherLane = await callTool(handler, "start_cli_session", {
       laneId: "lane-2",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "chat-agent",
       spawnKind: "subagent",
     });
@@ -3334,6 +3342,7 @@ describe("adeRpcServer", () => {
     const foreignParent = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "other-chat",
       spawnKind: "subagent",
     });
@@ -3472,6 +3481,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
     });
 
     expect(response?.isError).toBeUndefined();
@@ -3487,6 +3497,7 @@ describe("adeRpcServer", () => {
     const legacyNone = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "parent-session-1",
       spawnKind: "none",
     });
@@ -3497,6 +3508,7 @@ describe("adeRpcServer", () => {
     const missingType = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       orchestrationParentSessionId: "parent-session-1",
     });
     expect(missingType?.isError).toBeUndefined();
@@ -3527,6 +3539,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       cols: 999,
       rows: 999,
     });
@@ -3549,7 +3562,7 @@ describe("adeRpcServer", () => {
     (fixture.runtime as any).projectConfigService = {
       get: () => ({ effective: { ai: { permissions: { cli: { mode: "edit" } } } } }),
     };
-    await callTool(handler, "start_cli_session", { laneId: "lane-1", provider: "codex" });
+    await callTool(handler, "start_cli_session", { laneId: "lane-1", provider: "codex", model: "openai/gpt-5.5" });
     const editCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
     expect(editCall?.args).toEqual(expect.arrayContaining([
       "--sandbox",
@@ -3608,6 +3621,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
+        model: "openai/gpt-5.5",
         prompt: "Check the mobile CLI path",
       });
     });
@@ -3618,7 +3632,7 @@ describe("adeRpcServer", () => {
       args?: string[];
       startupCommand?: string;
     };
-    expect(createCall.startupCommand).toContain(`codex --sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
+    expect(createCall.startupCommand).toContain(`--sandbox workspace-write -c ${NETWORK_FLAG_PREVIEW} --ask-for-approval on-request`);
     expect(createCall.command).toBe(codexPath);
     expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
     expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
@@ -3714,6 +3728,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
+      model: "claude-fable-5-2",
       permissionMode: "auto",
     });
 
@@ -3743,6 +3758,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
+      model: "claude-fable-5-2",
       permissionMode: "default",
       initialInput: "hello?",
     });
@@ -3775,6 +3791,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "cursor",
+      model: "cursor/auto",
       initialInput: "fix failing tests",
     });
 
@@ -3802,6 +3819,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
+      model: "claude-fable-5-2",
       permissionMode: "default",
     });
 
@@ -3941,6 +3959,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
+        model: "openai/gpt-5.5",
         prompt: "Implement API wiring",
         runId: "run-1",
         attemptId: "attempt-win-fallback",
@@ -4027,6 +4046,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "codex",
+      model: "openai/gpt-5.5",
       permissionMode: "plan",
       runId: "run-123",
       stepId: "step-abc",
