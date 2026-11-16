@@ -187,6 +187,10 @@ function accountClient(
     getAccessToken: vi.fn(async () => "token"),
     getRelayBaseUrls: vi.fn(() => snapshot.relayBaseUrls),
     onMachinesChanged: vi.fn(() => () => undefined),
+    // No Clerk configuration: the sign-in card shows its one button.
+    clerkFrontendApiBase: vi.fn(() => null),
+    signInHandoff: vi.fn(() => null),
+    signedOutByUser: vi.fn(() => false),
     ...overrides,
   } as unknown as BrowserAccountClient;
 }
