@@ -1,9 +1,10 @@
 import { useCallback, useId, useMemo, useState, useSyncExternalStore } from "react";
 import { CaretDown, CaretRight, ChatCircleText, Plus, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { CloudChatComputer } from "../../../shared/cloudSavedChats";
+import type { CloudChatComputer, CloudComputerDeleteReason } from "../../../shared/cloudSavedChats";
 import type { CloudLaneWithoutComputer } from "../../../shared/cloudLaneLife";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { sameMachineKey } from "../../../shared/machineAddress";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { primarySessionLabel } from "../../lib/sessions";
@@ -81,35 +82,19 @@ const dayOf = (ms: number | null | undefined): string | null => (ms && Number.is
   ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" })
   : null);
 
-/** What happened to the lane's computer, in one line. */
-function rowSentence(row: LaneRow): string {
-  if (row.kept) {
-    const on = dayOf(row.kept.since);
-    const when = on ? ` on ${on}` : "";
-    const branch = row.kept.branchRef ? row.kept.branchRef.replace(/^origin\//, "") : null;
-    switch (row.kept.reason) {
-      case "freed":
-        return `You freed its computer${when}. Its work is on GitHub.`;
-      case "idle_cleanup":
-        return `ADE deleted its computer${when} because it wasn't used. Its work is on ${branch ?? "GitHub"}.`;
-      case "plan_limit":
-        return `ADE deleted its computer${when} to fit your plan. Its work is on GitHub.`;
-      default:
-        return `ADE deleted its computer${when} after 30 days without use. Pushed work is on GitHub.`;
-    }
-  }
-  const computer = row.computer?.state === "deleted" ? row.computer : null;
-  const on = dayOf(computer?.deletedAt);
-  const when = on ? ` on ${on}` : "";
-  switch (computer?.reason) {
+/** What happened to the computer, for a kept lane's reason or the saved chats' answer. */
+function computerFate(reason: CloudComputerDeleteReason | "inactive" | undefined, when: string): string {
+  switch (reason) {
     case "you":
-      return `You deleted its computer${when}. Its chats are kept here.`;
+      return `You deleted its computer${when}.`;
     case "freed":
-      return `You freed its computer${when}. Its chats are kept here.`;
+      return `You freed its computer${when}.`;
     case "idle":
       return `ADE deleted its computer${when} because it wasn't used.`;
     case "plan":
       return `ADE deleted its computer${when} to fit your plan.`;
+    case "inactive":
+      return `ADE deleted its computer${when} after 30 days without use.`;
     case "automation":
       return `Its automation finished${when}, and ADE deleted its computer.`;
     case "project":
@@ -117,8 +102,31 @@ function rowSentence(row: LaneRow): string {
     case "launch":
       return `Its launch didn't finish, so ADE deleted its computer${when}.`;
     default:
-      return `Its computer was deleted${when}. Its chats are kept here.`;
+      return `Its computer was deleted${when}.`;
   }
+}
+
+const KEPT_REASON: Record<CloudLaneWithoutComputer["reason"], CloudComputerDeleteReason | "inactive"> = {
+  freed: "freed",
+  idle_cleanup: "idle",
+  plan_limit: "plan",
+  inactive: "inactive",
+};
+
+/** What happened to the lane's computer, in one line. */
+function rowSentence(row: LaneRow): string {
+  if (row.kept) {
+    const on = dayOf(row.kept.since);
+    const branch = row.kept.branchRef ? row.kept.branchRef.replace(/^origin\//, "") : null;
+    return `${computerFate(KEPT_REASON[row.kept.reason], on ? ` on ${on}` : "")} Its work is on ${branch ?? "GitHub"}.`;
+  }
+  const computer = row.computer?.state === "deleted" ? row.computer : null;
+  const on = dayOf(computer?.deletedAt);
+  const fate = computerFate(computer?.reason, on ? ` on ${on}` : "");
+  // ADE's own deletes say why; a delete the person made says the chats are what they kept.
+  return computer?.reason === "you" || computer?.reason === "freed" || computer?.reason === "other" || !computer
+    ? `${fate} Its chats are kept here.`
+    : fate;
 }
 
 /** A row's key for "seen": a lane kept again after a delete counts as new. */
@@ -138,7 +146,8 @@ function readSeen(): ReadonlySet<string> {
     const raw = typeof window !== "undefined" ? window.localStorage.getItem(SEEN_STORAGE_KEY) : null;
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === "string") : []);
-  } catch {
+  } catch (error) {
+    console.warn("[cloud] reading the seen lanes without a computer failed", error);
     return new Set();
   }
 }
@@ -149,8 +158,9 @@ function markSeen(keys: readonly string[]): void {
   seen = new Set(next);
   try {
     window.localStorage.setItem(SEEN_STORAGE_KEY, JSON.stringify(next));
-  } catch {
+  } catch (error) {
     // A full or blocked storage only brings the dot back next launch.
+    console.warn("[cloud] saving the seen lanes without a computer failed", error);
   }
   for (const listener of seenListeners) listener();
 }
@@ -191,9 +201,10 @@ function dropFromStore(row: LaneRow, removed: ReadonlySet<string> | null): void 
 
 /** Deletes the row's saved chats from ADE Cloud. Resolves how many it couldn't find. */
 async function deleteRowChats(row: LaneRow, removed: Set<string>): Promise<number> {
-  const remover = window.ade?.cloud?.savedChats?.delete;
-  if (!remover) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
+  const savedChats = window.ade?.cloud?.savedChats;
+  if (!savedChats?.delete) throw new Error(CLOUD_LANE_LIFE_UNAVAILABLE);
   let skipped = 0;
+  const machineKeys = new Set<string>(row.kept?.formerMachineKey ? [row.kept.formerMachineKey] : []);
   for (const session of row.sessions) {
     const location = savedChatLocationForSession(session.id);
     const machineKey = location?.readMachineKey ?? location?.machineKey ?? row.kept?.formerMachineKey ?? null;
@@ -201,11 +212,30 @@ async function deleteRowChats(row: LaneRow, removed: Set<string>): Promise<numbe
       skipped += 1;
       continue;
     }
-    await remover({ machineKey, chatId: session.id });
+    machineKeys.add(machineKey);
+    await savedChats.delete({ machineKey, chatId: session.id });
     removed.add(session.id);
+  }
+  // The window reads only a project's newest saved chats: the lane's older ones, on the same computers, go too.
+  for (const machineKey of machineKeys) {
+    let cursor: string | null = null;
+    for (let page = 0; page < SAVED_CHAT_PAGES; page += 1) {
+      const listed = await savedChats.list({ machineKey, limit: SAVED_CHAT_PAGE, cursor });
+      for (const chat of listed?.chats ?? []) {
+        if (chat.laneId !== row.laneId || !sameMachineKey(chat.machineKey, machineKey) || removed.has(chat.chatId)) continue;
+        await savedChats.delete({ machineKey: chat.machineKey, chatId: chat.chatId });
+        removed.add(chat.chatId);
+      }
+      cursor = listed?.nextCursor ?? null;
+      if (!cursor) break;
+    }
   }
   return skipped;
 }
+
+// A lane's saved chats on one computer are read in pages of this size, at most this many pages.
+const SAVED_CHAT_PAGE = 200;
+const SAVED_CHAT_PAGES = 20;
 
 /** The row's Delete, as its menu item and its confirm button both say it. */
 const deleteLabel = (row: LaneRow) => (row.sessions.length > 0 ? (row.kept ? "Delete lane and chats" : "Delete chats") : "Delete lane");
@@ -217,7 +247,7 @@ async function deleteRow(row: LaneRow): Promise<void> {
   const ok = await confirmDialog({
     title: `Delete ${row.laneName}?`,
     message: row.kept
-      ? `ADE stops listing the lane${chats ? ` and deletes ${chats}` : ""}. Its branch stays on GitHub.`
+      ? `ADE stops listing the lane and deletes ${chats ?? "any saved chats it has"}. Its branch stays on GitHub.`
       : `ADE deletes ${chats ?? "its saved chats"} from ADE Cloud. Work it pushed stays on GitHub.`,
     icon: <CloudMark size={16} brand />,
     confirmLabel: deleteLabel(row),
@@ -243,7 +273,7 @@ async function deleteRow(row: LaneRow): Promise<void> {
       refreshCloudLanesWithoutComputer();
     }
     dropFromStore(row, null);
-    showToast({ tone: "success", title: `Deleted ${row.laneName}`, message: chats ? "The lane and its chats are gone." : "The lane is gone.", replayMask: { title: true } });
+    showToast({ tone: "success", title: `Deleted ${row.laneName}`, message: !row.kept ? "Its chats are gone." : chats ? "The lane and its chats are gone." : "The lane is gone.", replayMask: { title: true } });
   } catch (error) {
     console.warn("[cloud] deleting a lane without a computer failed", error);
     if (removed.size) dropFromStore(row, removed);
@@ -256,18 +286,7 @@ async function deleteRow(row: LaneRow): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function NewComputerButton({ lane, disabled }: { lane: CloudLaneWithoutComputer; disabled: boolean }) {
-  const { problem, start } = useStartLaneOnNewComputer(lane, null);
-  const [busy, setBusy] = useState(false);
-  const onStart = async () => {
-    setBusy(true);
-    try {
-      await start();
-    } catch (error) {
-      showToast({ tone: "error", title: `Couldn't start ${lane.laneName}`, message: ipcErrorMessage(error) || "Try again in a moment." });
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { problem, busy, start } = useStartLaneOnNewComputer(lane, null);
   return (
     <button
       type="button"
@@ -275,7 +294,7 @@ function NewComputerButton({ lane, disabled }: { lane: CloudLaneWithoutComputer;
       data-size="xs"
       disabled={disabled || busy || Boolean(problem)}
       title={problem ?? "A new computer on the same branch"}
-      onClick={() => void onStart()}
+      onClick={() => void start()}
     >
       <Plus size={11} />
       {busy ? "Starting…" : "New computer"}

@@ -9,7 +9,6 @@ import {
   Palette,
   Terminal,
   ChatCircle,
-  Cpu,
   Eye,
   Cube,
   FolderDashed,
@@ -48,6 +47,7 @@ import { isImeComposing } from "../../lib/imeComposition";
 import { formatBytes } from "../../../shared/formatting";
 import { CloudLaneComputerPanel } from "../cloudLane/CloudLaneComputerPanel";
 import { KeepChatsCheckbox } from "../cloudLane/deleteCloudLane";
+import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
 
 /** Independent delete targets shown as a checklist. */
 export type LaneDeleteSelection = {
@@ -464,7 +464,7 @@ export function ManageLaneDialog({
   /** Resolves true when every lane was archived. */
   onArchive: () => Promise<boolean>;
   /** `keepChats`: an ADE Cloud lane's saved chats stay on ADE Cloud (the Delete tab's box). */
-  onDelete: (options?: { keepChats?: boolean }) => void;
+  onDelete: (options?: CloudLaneDeleteOptions) => void;
   onAppearanceChanged?: () => void | Promise<void>;
   /** The managed lanes' machine. Null: nothing is sent. */
   runtimePin: OpenProjectBinding | null | undefined;
@@ -551,9 +551,9 @@ export function ManageLaneDialog({
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
   }, [singleCloud, singleLaneType]);
-  // Manage Lane opens on Delete, the first tab and the action users reach for
-  // most, with nothing ticked (the hosts start with an empty selection and
-  // Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
+  // A cloud lane's Manage lane opens on its Computer tab. Any other lane opens
+  // on Delete, with nothing ticked (the hosts start with an empty selection
+  // and Force delete off). Callers can pick another tab ("Archive all" opens on Archive).
   const defaultTab = React.useMemo((): ManageLaneTab => {
     if (initialTab && tabDefs.some((tab) => tab.id === initialTab)) return initialTab;
     if (tabDefs.some((tab) => tab.id === "computer")) return "computer";
@@ -574,6 +574,11 @@ export function ManageLaneDialog({
     }
     setActiveTab(defaultTab);
   }, [open, singleLaneId, isBatch, defaultTab]);
+
+  // "Keep its chats" is a choice for one lane: another lane starts unticked.
+  useEffect(() => {
+    setKeepCloudChats(false);
+  }, [singleLaneId]);
 
   // Fetch pre-flight risk for the single-lane case.
   useEffect(() => {
@@ -935,12 +940,12 @@ export function ManageLaneDialog({
                 ) : null}
               </p>
               {cloudLanes.length ? (
-                <p className="mt-2 text-xs text-muted-fg/80">
-                  {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer and chats; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
-                </p>
-              ) : null}
-              {cloudLanes.length ? (
-                <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
+                <>
+                  <p className="mt-2 text-xs text-muted-fg/80">
+                    {cloudLanes.map((lane) => lane.name).join(", ")} {cloudLanes.length === 1 ? "is an ADE Cloud lane. It goes" : "are ADE Cloud lanes. They go"} with {cloudLanes.length === 1 ? "its" : "their"} computer and chats; the choices below do not apply. If work there isn&apos;t on GitHub, ADE shows it first.
+                  </p>
+                  <KeepChatsCheckbox checked={keepCloudChats} disabled={laneActionBusy} onChange={setKeepCloudChats} />
+                </>
               ) : null}
 
               {/* Uncommitted changes are named once, by the header chip; the
@@ -1010,7 +1015,7 @@ export function ManageLaneDialog({
                   casing="sentence"
                   data-tour="lanes.manageDialog.delete"
                   disabled={deleteDisabled}
-                  onClick={() => onDelete(cloudLanes.length ? { keepChats: keepCloudChats } : undefined)}
+                  onClick={() => onDelete({ keepChats: keepCloudChats })}
                   className={deleteDisabled
                     ? "!border-fg/[0.1] !bg-fg/[0.05] !text-muted-fg disabled:!opacity-100"
                     : "!border-red-600 !bg-red-600 !text-white hover:!bg-red-500"}

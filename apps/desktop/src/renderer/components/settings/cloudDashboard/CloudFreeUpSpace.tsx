@@ -55,7 +55,7 @@ export function CloudFreeUpSpace({
       setBusy(false);
       const ok = await confirmDialog({
         title: risky.length === 1 ? `${risky[0]!.name} has work that isn't on GitHub` : `${risky.length} lanes have work that isn't on GitHub`,
-        message: `${risky.map((lane) => lane.name).join(", ")}: ADE found unpushed work, or couldn't check. Deleting loses it. To keep the work, pick "Keep the lane, free its computer" instead: ADE pushes it first. Their chats stay readable.`,
+        message: `${risky.map((lane) => lane.name).join(", ")}: ADE found unpushed work, or couldn't check. Deleting loses it. To keep the work, pick "Keep the lane, free its computer" instead: ADE pushes it first and keeps its chats.`,
         confirmLabel: "Delete anyway",
         destructive: true,
       });
@@ -63,6 +63,7 @@ export function CloudFreeUpSpace({
       setBusy(true);
     }
     const failed: string[] = [];
+    const chatsLeft: string[] = [];
     for (const lane of picked) {
       if (!lane.instanceId) continue;
       try {
@@ -70,6 +71,7 @@ export function CloudFreeUpSpace({
           ? await deleteCloudLane(lane.instanceId, { skipCheck: true })
           : await freeCloudLane(lane.instanceId);
         if (!done.ok) failed.push(`${lane.name}: ${done.message}`);
+        else if ("chatsKept" in done && done.chatsKept) chatsLeft.push(lane.name);
       } catch (error) {
         failed.push(`${lane.name}: ${ipcErrorMessage(error) || "no answer"}`);
       }
@@ -81,7 +83,9 @@ export function CloudFreeUpSpace({
       showToast({ tone: "error", title: "Some lanes kept their computer", message: failed.join(" "), durationMs: READABLE_TOAST_DURATION_MS });
       return;
     }
-    showToast({ tone: "success", title: `Freed ${formatCloudGb(freedGb)}`, message: "The dashboard shows the new disk." });
+    showToast(chatsLeft.length
+      ? { tone: "warning", title: `Freed ${formatCloudGb(freedGb)}`, message: `ADE couldn't delete all the chats of ${chatsLeft.join(", ")}. Remove the rest in Work.`, durationMs: READABLE_TOAST_DURATION_MS }
+      : { tone: "success", title: `Freed ${formatCloudGb(freedGb)}`, message: "The dashboard shows the new disk." });
     onClose();
   };
 
@@ -129,7 +133,7 @@ export function CloudFreeUpSpace({
               <div className="adecd-fl-choices" role="radiogroup" aria-label={`What to do with ${lane.name}`}>
                 <ChoiceButton on={choice === "keep"} onPick={() => set("keep")} title="Keep it" hint="Nothing changes." />
                 <ChoiceButton on={choice === "free"} onPick={() => set("free")} title="Keep the lane, free its computer" hint="ADE pushes the work, then removes the computer. The next message makes a fresh one." />
-                <ChoiceButton on={choice === "delete"} onPick={() => set("delete")} title="Delete the lane" hint="The lane and its computer go. Its chats stay readable." tone="crit" />
+                <ChoiceButton on={choice === "delete"} onPick={() => set("delete")} title="Delete the lane" hint="The lane, its computer and its chats go." tone="crit" />
               </div>
             </div>
           );

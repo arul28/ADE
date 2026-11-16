@@ -1,9 +1,9 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { CloudArrowUp } from "@phosphor-icons/react";
-import type { CloudLaneWorkLane, CloudLaneWorkState } from "../../../shared/cloudLaneLife";
+import type { CloudLaneDeleteOptions, CloudLaneWorkLane, CloudLaneWorkState } from "../../../shared/cloudLaneLife";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { adeCloudLaneComputersNow, useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
-import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
+import { requestCloudSavedChatsRead, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { ipcErrorMessage } from "../../lib/format";
 import { READABLE_TOAST_DURATION_MS, dismissToast, getToasts, showToast } from "../app/toast/toastStore";
 import { CloudMark, ADE_CLOUD_NAME } from "../remoteTargets/cloudBrand";
@@ -81,12 +81,10 @@ function dismissProgressToast(toastId: string): void {
  *
  * Resolves true when the lane was deleted.
  */
-export async function deleteCloudLaneWithCheck(input: {
+export async function deleteCloudLaneWithCheck(input: CloudLaneDeleteOptions & {
   instanceId: string;
   laneName: string;
   askFirst: boolean;
-  /** Keep its saved chats on ADE Cloud. Off: they go with the lane. */
-  keepChats?: boolean;
   /** Runs after a delete that worked (a list refresh, a selection clear). */
   onDeleted?: () => void;
 }): Promise<boolean> {
@@ -140,7 +138,7 @@ export async function deleteCloudLaneWithCheck(input: {
         icon: <CloudMark size={16} brand />,
         confirmLabel: "Delete lane",
         destructive: true,
-        children: () => <KeepChatsCheckbox defaultChecked={keepChats} onChange={(value) => { keepChats = value; }} />,
+        children: () => <KeepChatsChoice initial={keepChats} onChange={(value) => { keepChats = value; }} />,
       });
       if (!confirmed) return false;
     }
@@ -209,8 +207,7 @@ export async function deleteCloudLaneWithCheck(input: {
     if (!done.ok) return fail(new Error(done.message));
     deleted = true;
     setDeletePhase(instanceId, "deleted");
-    // An older main answers no `chatsKept`: it kept them.
-    const chatsKept = done.chatsKept ?? true;
+    const { chatsKept } = done;
     showToast({
       id: toastId,
       tone: chatsKept && !keepChats ? "warning" : "success",
@@ -218,11 +215,13 @@ export async function deleteCloudLaneWithCheck(input: {
       message: keepChats
         ? "The lane and its computer are gone. Its chats stay in Work to read."
         : chatsKept
-          ? "The lane and its computer are gone. ADE couldn't delete its chats; remove them in Work."
+          ? "The lane and its computer are gone. ADE couldn't delete all its chats; remove the rest in Work."
           : "The lane, its computer and its chats are gone.",
       durationMs: chatsKept && !keepChats ? READABLE_TOAST_DURATION_MS : undefined,
       replayMask: { title: true },
     });
+    // Its chats went, or move to the lanes without a computer: the list says so now, not after its 30 s wait.
+    requestCloudSavedChatsRead();
     input.onDeleted?.();
     return true;
   } catch (error) {
@@ -281,13 +280,11 @@ export function useCloudLaneDelete() {
        * lane is an ADE Cloud lane, then re-reads `machineId`'s lanes. False for
        * any other lane, which the caller deletes the usual way.
        */
-      deleteIfCloudLane: (input: {
+      deleteIfCloudLane: (input: CloudLaneDeleteOptions & {
         pin: OpenProjectBinding | null | undefined;
         laneId: string;
         laneName: string;
         machineId: string | null;
-        /** Keep its saved chats on ADE Cloud (Manage lane's checkbox). */
-        keepChats?: boolean;
         onDeleted?: () => void;
       }): boolean => {
         const cloudLane = computerOf(input.pin, input.laneId);
@@ -309,23 +306,12 @@ export function useCloudLaneDelete() {
 }
 
 /** "Keep its chats": off by default, so a deleted lane leaves nothing behind. */
-export function KeepChatsCheckbox({
-  checked,
-  defaultChecked = false,
-  disabled,
-  onChange,
-}: {
-  /** Set for a controlled box (Manage lane); leave out for a confirm dialog's. */
-  checked?: boolean;
-  defaultChecked?: boolean;
-  disabled?: boolean;
-  onChange: (value: boolean) => void;
-}) {
+export function KeepChatsCheckbox({ checked, disabled, onChange }: { checked: boolean; disabled?: boolean; onChange: (value: boolean) => void }) {
   return (
     <label className="adecl-keep-chats">
       <input
         type="checkbox"
-        {...(checked === undefined ? { defaultChecked } : { checked })}
+        checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}
       />
@@ -335,6 +321,12 @@ export function KeepChatsCheckbox({
       </span>
     </label>
   );
+}
+
+/** The box in a confirm dialog: it holds its own tick and reports each change. */
+function KeepChatsChoice({ initial, onChange }: { initial: boolean; onChange: (value: boolean) => void }) {
+  const [checked, setChecked] = useState(initial);
+  return <KeepChatsCheckbox checked={checked} onChange={(value) => { setChecked(value); onChange(value); }} />;
 }
 
 function UnpushedList({ lanes }: { lanes: readonly CloudLaneWorkLane[] }) {

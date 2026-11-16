@@ -112,6 +112,7 @@ import { pickPrimaryPr } from "../../../shared/primaryPr";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { historyCommitsPath } from "../history/historyUrlHydration";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
 
 export function shouldRetryLaneGithubSnapshotForceRefresh({
   currentProjectRoot,
@@ -1386,7 +1387,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     };
   }, [active, activeProjectRoot, appStore, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
-  const deleteManagedLanes = async (options?: { keepChats?: boolean }) => {
+  const deleteManagedLanes = async (options?: CloudLaneDeleteOptions) => {
     const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     // ADE Cloud lanes go with their computers (one account-level delete each, warned only when
     // work isn't on GitHub), split off before the local rules: no Force gate, no branch picks.
@@ -2080,7 +2081,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     (row) => window.ade.lanes.archive({ laneId: row.lane.id }, row.pin),
   ), [runForeignLaneAction]);
 
-  const deleteForeignLane = useCallback((options?: { keepChats?: boolean }) => {
+  const deleteForeignLane = useCallback((options?: CloudLaneDeleteOptions) => {
     const key = foreignManageKey;
     const row = key ? foreignRowByKeyRef.current.get(key) ?? null : null;
     if (!row || row.lane.laneType === "primary") return;
@@ -2209,13 +2210,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // Row keys across machines; batch manage splits them per machine.
   const multiSelectedList = useMemo(() => [...multiSelectedLaneIds], [multiSelectedLaneIds]);
 
-  // This project's ADE Cloud lanes whose computer was freed or removed: each says so and offers a new one.
-  // Then the lanes whose computer was deleted: one place, apart from the live lanes.
-  const laneListToolbar = (
-    <>
-      <CloudLanesWithoutComputerBlock className="mx-1.5 mb-2" />
-    </>
-  );
+  // This project's ADE Cloud lanes without a computer: one folded block, apart from the live lanes.
+  const laneListToolbar = <CloudLanesWithoutComputerBlock className="mx-1.5 mb-2" />;
 
   /* ---- Render ---- */
 

@@ -225,10 +225,12 @@ export async function refreshCloudSavedChats(context: SavedChatsContext): Promis
       // or a reach that found it off the account. With no answer from the
       // list (an older server), a lane index read in the last few minutes
       // decides. No connection on THIS desktop is not gone: another desktop
-      // made it, and a send reaches it by its key.
-      const told = rows.find((row) => !row.savedOnMachineKey && row.computer)?.computer ?? null;
+      // made it, and a send reaches it by its key. One row that says the
+      // computer exists, or a live entry in the computer list, outweighs a delete.
+      const answers = rows.flatMap((row) => (!row.savedOnMachineKey && row.computer ? [row.computer] : []));
+      const told = answers.find((answer) => answer.state === "exists") ?? answers[0] ?? null;
       const gone = goneMachineKeys.has(machineKey.toLowerCase())
-        || told?.state === "deleted"
+        || (told?.state === "deleted" && !box)
         || (cloudBoxes != null ? !box : !told && !connection && cloudLaneIndexFresh() && !laneComputer);
       machineFacts.set(machineKey, { connection, gone, name: box?.name ?? laneComputer?.laneName ?? null });
     }

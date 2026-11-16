@@ -461,14 +461,29 @@ function computerDeleteReason(reason: string | null | undefined): CloudComputerD
   }
 }
 
-/** D1 refuses a statement with too many bound values; delete log reads go in chunks. */
-const DELETE_LOG_CHUNK = 90;
+/** D1 refuses a statement with too many bound values; `in (…)` reads go in chunks. */
+const D1_IN_CHUNK = 90;
+
+type ComputerRow = { instance_id: string; machine_key: string | null; deleted_at: number | null };
+
+/** The rows of `select … where user_id = ? and <column> in (values)`, read in chunks. */
+async function rowsIn<T>(env: CloudEnv, select: string, column: string, userId: string, values: readonly string[]): Promise<T[]> {
+  const rows: T[] = [];
+  for (let start = 0; start < values.length; start += D1_IN_CHUNK) {
+    const chunk = values.slice(start, start + D1_IN_CHUNK);
+    const read = await env.DB.prepare(`${select} where user_id = ? and ${column} in (${chunk.map(() => "?").join(", ")})`).bind(userId, ...chunk).all<T>();
+    rows.push(...(read.results ?? []));
+  }
+  return rows;
+}
 
 /**
  * Whether each listed chat's computer still exists, from the account's own
  * computer rows (deleted rows stay, marked `deleted_at`) and the delete log.
- * A chat is matched by the computer that saved it, else by its machine key:
- * one live computer with that key means it exists.
+ * One live computer with the chat's machine key means it exists: the key is
+ * the ADE on that computer, whichever computer row saved the chat. Else the
+ * chat is matched by the computer that saved it, else by the newest deleted
+ * computer with its key.
  */
 async function savedChatComputers(
   env: CloudEnv,
@@ -476,10 +491,15 @@ async function savedChatComputers(
   page: readonly CopyRow[],
 ): Promise<(row: CopyRow) => CloudChatComputer | null> {
   if (page.length === 0) return () => null;
-  const computers = (await env.DB.prepare("select instance_id, machine_key, deleted_at from cloud_computers where user_id = ?")
-    .bind(userId).all<{ instance_id: string; machine_key: string | null; deleted_at: number | null }>()).results ?? [];
-  const byInstance = new Map(computers.map((computer) => [computer.instance_id, computer]));
-  const byMachineKey = new Map<string, typeof computers>();
+  // Only the computers this page names, by id or by key: an account keeps every deleted computer's row.
+  const select = "select instance_id, machine_key, deleted_at from cloud_computers";
+  const [byId, byKey] = await Promise.all([
+    rowsIn<ComputerRow>(env, select, "instance_id", userId, [...new Set(page.flatMap((row) => (row.instance_id ? [row.instance_id] : [])))]),
+    rowsIn<ComputerRow>(env, select, "lower(machine_key)", userId, [...new Set(page.map((row) => row.machine_key.toLowerCase()))]),
+  ]);
+  const byInstance = new Map([...byId, ...byKey].map((computer) => [computer.instance_id, computer]));
+  const computers = [...byInstance.values()];
+  const byMachineKey = new Map<string, ComputerRow[]>();
   for (const computer of computers) {
     const key = computer.machine_key?.toLowerCase();
     if (!key) continue;
@@ -488,21 +508,21 @@ async function savedChatComputers(
     else byMachineKey.set(key, [computer]);
   }
   const matchOf = (row: CopyRow) => {
-    const own = row.instance_id ? byInstance.get(row.instance_id) : undefined;
-    if (own) return own;
     const sameKey = byMachineKey.get(row.machine_key.toLowerCase()) ?? [];
-    return sameKey.find((computer) => computer.deleted_at == null)
-      ?? sameKey.reduce<(typeof computers)[number] | undefined>((newest, computer) => (!newest || (computer.deleted_at ?? 0) > (newest.deleted_at ?? 0) ? computer : newest), undefined);
+    const live = sameKey.find((computer) => computer.deleted_at == null);
+    if (live) return live;
+    const own = row.instance_id ? byInstance.get(row.instance_id) : undefined;
+    return own
+      ?? sameKey.reduce<ComputerRow | undefined>((newest, computer) => (!newest || (computer.deleted_at ?? 0) > (newest.deleted_at ?? 0) ? computer : newest), undefined);
   };
   const gone = [...new Set(page.map(matchOf).filter((computer) => computer && computer.deleted_at != null).map((computer) => computer!.instance_id))];
+  const logged = await rowsIn<{ instance_id: string; reason: string; created_at: number }>(
+    env, "select instance_id, reason, created_at from cloud_delete_log", "instance_id", userId, gone,
+  );
+  // The oldest entry wins: the delete is logged first, so a later close (the tick finding it gone) never hides its reason.
+  logged.sort((a, b) => a.created_at - b.created_at);
   const reasons = new Map<string, string>();
-  for (let start = 0; start < gone.length; start += DELETE_LOG_CHUNK) {
-    const chunk = gone.slice(start, start + DELETE_LOG_CHUNK);
-    const logged = (await env.DB.prepare(`select instance_id, reason from cloud_delete_log where user_id = ? and instance_id in (${chunk.map(() => "?").join(", ")}) order by created_at asc`)
-      .bind(userId, ...chunk).all<{ instance_id: string; reason: string }>()).results ?? [];
-    // The oldest entry wins: the delete is logged first, so a later close (the tick finding it gone) never hides its reason.
-    for (const entry of logged) if (!reasons.has(entry.instance_id)) reasons.set(entry.instance_id, entry.reason);
-  }
+  for (const entry of logged) if (!reasons.has(entry.instance_id)) reasons.set(entry.instance_id, entry.reason);
   return (row) => {
     const computer = matchOf(row);
     if (!computer) return null;

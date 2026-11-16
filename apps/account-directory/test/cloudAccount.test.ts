@@ -1236,7 +1236,7 @@ describe("ADE Cloud saved chats list", () => {
     const data = harness;
     data.env.CLOUD_CHAT_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
     seedAccount(data, OWNER);
-    // Live; deleted by the person (a later provider close must not hide that); deleted by the idle cleanup; a moved-to computer that lives on under the same key.
+    // Live; deleted by the person (a later provider close must not hide that); deleted by the idle cleanup; a computer whose key a live computer has again (its chat, saved by the deleted one, still exists).
     seedComputer(data, { instance_id: "live0000001", machine_key: "key-live" });
     seedComputer(data, { instance_id: "gone0000001", machine_key: "key-mine", status: "deleted", awake_since: null, deleted_at: NOW - DAY });
     seedComputer(data, { instance_id: "gone0000002", machine_key: "key-idle", status: "deleted", awake_since: null, deleted_at: NOW - 2 * DAY });
@@ -1251,7 +1251,7 @@ describe("ADE Cloud saved chats list", () => {
     chat("key-live", "chat-live", "live0000001");
     chat("key-mine", "chat-mine", "gone0000001");
     chat("key-idle", "chat-idle", "gone0000002");
-    chat("key-moved", "chat-moved", null);
+    chat("key-moved", "chat-moved", "gone0000003");
     chat("key-unknown", "chat-unknown", null);
 
     const response = await data.send(OWNER, "GET", "/cloud/chats");

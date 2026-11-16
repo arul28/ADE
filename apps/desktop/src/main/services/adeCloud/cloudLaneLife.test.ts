@@ -86,9 +86,21 @@ describe("cloud lane life: the work check", () => {
     run = vi.fn(async () => ({ ok: true, message: null }));
     forgetMachineConnections = vi.fn();
     changed = vi.fn();
-    // The server's list by machine key; a stray row of another computer must never be deleted.
-    let saved = [{ machineKey: "mk_1", chatId: "chat_a" }, { machineKey: "MK_1", chatId: "chat_b" }, { machineKey: "mk_other", chatId: "chat_c" }];
-    listSavedChats = vi.fn(async () => ({ chats: saved, nextCursor: null }));
+    // The computer's own chats (any case of its key), the lane's copy from the computer it had before a size
+    // change, and rows that must stay: another lane's on a gone computer, this lane's on a live one.
+    const gone = { state: "deleted", deletedAt: 1, reason: "other" };
+    let saved = [
+      { machineKey: "mk_1", chatId: "chat_a", laneId: "lane_1" },
+      { machineKey: "MK_1", chatId: "chat_b", laneId: null },
+      { machineKey: "mk_old", chatId: "chat_d", laneId: "lane_1", computer: gone },
+      { machineKey: "mk_other", chatId: "chat_c", laneId: "lane_2", computer: gone },
+      { machineKey: "mk_live", chatId: "chat_e", laneId: "lane_1", computer: { state: "exists" } },
+    ];
+    // Like the server: the key filter has no case rule of its own, so a stray row must be filtered again.
+    listSavedChats = vi.fn(async (args: { machineKey?: string }) => ({
+      chats: args.machineKey ? saved.filter((chat) => chat.machineKey.toLowerCase() === args.machineKey!.toLowerCase()).concat(saved.filter((chat) => chat.machineKey === "mk_other")) : saved,
+      nextCursor: null,
+    }));
     deletedChats = [];
     deleteSavedChat = vi.fn(async (args: { machineKey: string; chatId: string }) => {
       saved = saved.filter((chat) => chat.chatId !== args.chatId);
@@ -118,7 +130,7 @@ describe("cloud lane life: the work check", () => {
 
   // A person's delete takes the lane's saved chats, after the computer is gone; "keep its chats" and a failed delete leave every one.
   it.each<[string, { keepChats?: boolean; arrange?: () => void }, { deleted: string[]; chatsKept: boolean }]>([
-    ["by default", {}, { deleted: ["chat_a", "chat_b"], chatsKept: false }],
+    ["by default", {}, { deleted: ["chat_a", "chat_b", "chat_d"], chatsKept: false }],
     ["when the person keeps its chats", { keepChats: true }, { deleted: [], chatsKept: true }],
     ["when the computer's delete fails", { arrange: () => { run.mockResolvedValue({ ok: false, message: "no" }); } }, { deleted: [], chatsKept: true }],
     ["when ADE Cloud refuses a chat's delete", { arrange: () => { deleteSavedChat.mockRejectedValue(new Error("503")); } }, { deleted: [], chatsKept: true }],

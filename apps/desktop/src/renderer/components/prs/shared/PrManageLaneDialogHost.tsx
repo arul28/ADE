@@ -13,6 +13,7 @@ import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine, unionSlotIdForBinding, useLanesForPin } from "../../../state/crossMachineLanes";
 import { useCloudLaneDelete } from "../../cloudLane/deleteCloudLane";
 import { requirePin } from "../../../state/repositoryScope";
+import type { CloudLaneDeleteOptions } from "../../../../shared/cloudLaneLife";
 
 export type PrManageLaneDialogHostProps = {
   open: boolean;
@@ -80,7 +81,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
 
   // A lane on its own ADE Cloud computer gets the cloud delete.
   const cloud = useCloudLaneDelete();
-  const handleDelete = useCallback(async (options?: { keepChats?: boolean }) => {
+  const handleDelete = useCallback(async (options?: CloudLaneDeleteOptions) => {
     if (!lane || lane.laneType === "primary") return;
 
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.

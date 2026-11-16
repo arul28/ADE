@@ -1,17 +1,19 @@
 import { useState, type ReactNode } from "react";
 import { ArrowSquareOut, Clock, Cpu, Moon, Package, Trash } from "@phosphor-icons/react";
-import { idleCleanupWhen, type CloudMachineState } from "../../../shared/adeCloud";
+import { idleCleanupWhen } from "../../../shared/adeCloud";
+import type { TerminalSessionSummary } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { useAdeCloudLaneComputers } from "../../state/adeCloudLaneIndex";
+import { useRootAppStore } from "../../state/appStore";
 import { useCloudAccount } from "../../state/cloudAccountStore";
-import { showToast } from "../app/toast/toastStore";
 import { CloudMark } from "../remoteTargets/cloudBrand";
 import { refreshCloudMachines } from "../remoteTargets/useCloudMachines";
 import { CloudTierChangeDialog } from "./CloudTierChangeDialog";
-import { sleepLaneComputer } from "./CloudLaneHeaderButton";
-import { cloudLaneLifeAvailable } from "./cloudLaneActions";
-import { freeCloudLaneWithConfirm, useCloudLaneDelete } from "./deleteCloudLane";
+import { keepLaneComputer, sleepLaneComputer } from "./CloudLaneHeaderButton";
+import { cloudLaneComputerOfLane, cloudLaneLifeAvailable } from "./cloudLaneActions";
+import { CLOUD_MACHINE_STATE_TEXT } from "./CloudLaneConnectionRow";
+import { freeCloudLaneWithConfirm } from "./deleteCloudLane";
 import "./cloudLane.css";
 
 /**
@@ -36,11 +38,15 @@ export function CloudLaneComputerPanel({
   /** Opens Manage lane's Delete tab, where the lane, its computer and its chats go together. */
   onDelete: () => void;
 }) {
-  const cloud = useCloudLaneDelete();
   const { computers } = useAdeCloudLaneComputers();
-  const owned = cloud.computerOf(pin, laneId);
+  const owned = cloudLaneComputerOfLane(pin, laneId, computers);
   const computer = owned ? computers.find((entry) => entry.instanceId === owned.instanceId) ?? null : null;
   const account = useCloudAccount();
+  // The lane's chats with a turn running, in a project's list or another machine's: Sleep asks first.
+  const runningChats = useRootAppStore((state) => runningChatIds([
+    ...Object.values(state.sessionsCacheByProject).flat(),
+    ...Object.values(state.crossMachineLanesByMachineId).flatMap((entry) => entry.sessions),
+  ], laneId)).split(" ").filter(Boolean).length;
   const [sizing, setSizing] = useState(false);
   const [freeing, setFreeing] = useState(false);
   if (!computer) {
@@ -49,13 +55,6 @@ export function CloudLaneComputerPanel({
   const life = cloudLaneLifeAvailable();
   const awake = computer.state === "running";
   const idle = account?.dueForDeletion?.find((entry) => entry.instanceId === computer.instanceId) ?? null;
-
-  const keep = async () => {
-    const result = await window.ade.cloud?.keepIdleComputer?.(computer.instanceId).catch((error: unknown) => ({ ok: false, message: error instanceof Error ? error.message : undefined }));
-    if (result?.ok) showToast({ tone: "success", title: `Kept ${laneName}'s computer`, message: "ADE Cloud won't delete it. Its unused days count again from now." });
-    else showToast({ tone: "warning", title: `Couldn't keep ${laneName}'s computer`, message: result?.message || "Send a message in the lane to keep it." });
-    refreshCloudMachines();
-  };
 
   const free = async () => {
     setFreeing(true);
@@ -73,7 +72,7 @@ export function CloudLaneComputerPanel({
         <span>ADE Cloud computer</span>
         <span className="adecl-cx-state" data-awake={awake ? "true" : undefined}>
           <i aria-hidden />
-          {COMPUTER_STATE_LABEL[computer.state]}
+          {CLOUD_MACHINE_STATE_TEXT[computer.state]}
         </span>
       </div>
       <ul className="adecl-manage-rows">
@@ -84,7 +83,7 @@ export function CloudLaneComputerPanel({
             hint={idle.held ? "ADE couldn't save its work, so it wasn't deleted." : `It isn't used, so it is ${idleCleanupWhen(idle.deletesAt, Date.now())}.`}
             tone="warn"
           >
-            <button type="button" className="kit-btn" data-size="sm" onClick={() => void keep()}>Keep it</button>
+            <button type="button" className="kit-btn" data-size="sm" onClick={() => void keepLaneComputer(computer.instanceId, laneName)}>Keep it</button>
           </ManageRow>
         ) : null}
         {life ? (
@@ -94,7 +93,7 @@ export function CloudLaneComputerPanel({
         ) : null}
         {awake ? (
           <ManageRow icon={<Moon size={14} />} title="Sleep" hint="A sleeping computer uses no hours. A message wakes it.">
-            <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, false)}>Put to sleep</button>
+            <button type="button" className="kit-btn" data-size="sm" onClick={() => void sleepLaneComputer(computer.instanceId, laneName, runningChats)}>Put to sleep</button>
           </ManageRow>
         ) : null}
         {life ? (
@@ -132,15 +131,11 @@ export function CloudLaneComputerPanel({
   );
 }
 
-const COMPUTER_STATE_LABEL: Record<CloudMachineState, string> = {
-  running: "Awake",
-  asleep: "Asleep",
-  stopped: "Asleep",
-  starting: "Waking",
-  stopping: "Going to sleep",
-  deleting: "Deleting",
-  error: "Not answering",
-};
+/** The ids of a lane's chats whose turn runs, once each, as one string: a store read that only changes when they do. */
+function runningChatIds(sessions: readonly TerminalSessionSummary[], laneId: string): string {
+  const ids = new Set(sessions.filter((session) => session.laneId === laneId && session.runtimeState === "running").map((session) => session.id));
+  return [...ids].sort().join(" ");
+}
 
 function ManageRow({ icon, title, hint, tone, children }: { icon: ReactNode; title: string; hint: string; tone?: "warn" | "crit"; children: ReactNode }) {
   return (

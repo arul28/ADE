@@ -28,6 +28,7 @@ import { unionSlotIdForBinding, usePinTargetsTab } from "../../state/crossMachin
 import { useTabCopyPin } from "../../state/repositoryScope";
 import { useCloudLaneDelete } from "../cloudLane/deleteCloudLane";
 import { requireChatPin, withChatPin } from "../chat/chatMachinePin";
+import type { CloudLaneDeleteOptions } from "../../../shared/cloudLaneLife";
 
 /**
  * How long a deleted lane on another machine keeps its deleting state while that
@@ -149,7 +150,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
 
   // A lane on its own ADE Cloud computer gets the cloud delete.
   const cloud = useCloudLaneDelete();
-  const handleDelete = useCallback((options?: { keepChats?: boolean }) => {
+  const handleDelete = useCallback((options?: CloudLaneDeleteOptions) => {
     if (!lane || lane.laneType === "primary") return;
     // An ADE Cloud lane goes with its computer: one account-level delete, warned only when work isn't on GitHub.
     if (cloud.deleteIfCloudLane({

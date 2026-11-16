@@ -40,6 +40,12 @@ export type CloudLaneWorkState = {
   message: string | null;
 };
 
+/** What a person picked when they deleted a cloud lane. */
+export type CloudLaneDeleteOptions = {
+  /** Keep its saved chats on ADE Cloud. Off: they go with the lane. */
+  keepChats?: boolean;
+};
+
 export type CloudLaneDeleteResult = {
   ok: boolean;
   /** One plain line: what happened, or why not. */
@@ -47,8 +53,8 @@ export type CloudLaneDeleteResult = {
   /** From the work check before the delete, when it ran; null when it was skipped or couldn't run. */
   unpushed: boolean | null;
   unpushedLanes: CloudLaneWorkLane[];
-  /** Whether its saved chats are still on ADE Cloud: asked to keep them, or their delete failed. Absent from an older app. */
-  chatsKept?: boolean;
+  /** Whether its saved chats are still on ADE Cloud: asked to keep them, or their delete failed. */
+  chatsKept: boolean;
 };
 
 export type CloudLaneFreeResult = {
