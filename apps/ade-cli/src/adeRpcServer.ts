@@ -7999,6 +7999,11 @@ async function runTool(args: {
     if (!mayUseUserOnlyActions(session)) {
       assertCliLaunchModelNamed(model, provider);
       assertFullModelName(model, provider);
+      // A Custom provider or route runs its own model; a different one named here
+      // would be replaced silently, so it is refused as on `chat.launchCli`.
+      assertLaunchModels("chat", "launchCli", { provider, model, presetId }, {
+        readPresets: () => readHarnessPresetsFromMachine(resolveMachineAdeDir()),
+      });
     }
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
     const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
