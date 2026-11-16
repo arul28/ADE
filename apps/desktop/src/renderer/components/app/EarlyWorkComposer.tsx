@@ -403,7 +403,7 @@ export function WorkLoadingFallback({ shown }: { shown: boolean }) {
   const showEarly = Boolean(layout && projectRoot && geometry);
   // Diagnostics only (no visible change): why the early box shows or not, on
   // the element and as a performance mark that outlives the fallback.
-  const reason = showEarly ? "shown" : decision.ok ? "no-size" : decision.reason;
+  const reason = showEarly ? "shown" : decision.ok ? "measuring" : decision.reason;
   React.useEffect(() => {
     try {
       performance.mark(`ade:early-composer:${reason}`);

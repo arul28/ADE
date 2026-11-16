@@ -621,7 +621,9 @@ export function decideEarlyComposer(context: EarlyComposerContext): EarlyCompose
   if (view.draftKind !== "chat") return { ok: false, reason: "cli-draft" };
   if (view.draftMachineId != null || view.draftCloudTarget != null) return { ok: false, reason: "draft-elsewhere" };
   if (context.laneCount === 0) return { ok: false, reason: "no-lanes" };
-  if (!context.route) return { ok: false, reason: "no-size" };
+  // The first render, before the layout effect measured the route. It never
+  // paints: the measure re-renders before the frame.
+  if (!context.route) return { ok: false, reason: "measuring" };
   const layout = readEarlyComposerLayout();
   if (!layout) return { ok: false, reason: "no-layout" };
   if (layout.projectRoot !== context.projectRoot) return { ok: false, reason: "layout-project" };
