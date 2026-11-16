@@ -23,6 +23,7 @@ import {
   setAccountConfigRootSkip,
 } from "./sharedAccountAuthService";
 import { expectedErrorKind } from "../../../../desktop/src/shared/expectedError";
+import { WEB_CLIENT_BASE_URL } from "../../../../desktop/src/shared/webClientUrl";
 
 const tempPaths: string[] = [];
 const activeServices: AccountAuthService[] = [];
@@ -100,7 +101,10 @@ describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic p
     activeServices.push(service);
 
     const start = await service.startLogin();
-    const authorizeUrl = new URL(start.authorizeUrl);
+    // ADE production signs in on ADE Web's page, which goes on to Clerk.
+    const signInPage = new URL(start.authorizeUrl);
+    expect(signInPage.origin + signInPage.pathname).toBe(`${WEB_CLIENT_BASE_URL}/sign-in`);
+    const authorizeUrl = new URL(signInPage.searchParams.get("continue") ?? "");
     expect(authorizeUrl.origin).toBe(DEFAULT_ADE_CLERK_ISSUER);
     expect(authorizeUrl.searchParams.get("client_id")).toBe(
       DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,

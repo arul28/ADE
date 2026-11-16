@@ -1,13 +1,12 @@
-import { lazy, Suspense } from "react";
-import { ArrowRight, CircleNotch, Question, WarningCircle } from "@phosphor-icons/react";
+import { lazy, Suspense, useCallback, useState } from "react";
+import { ArrowRight, CircleNotch, WarningCircle } from "@phosphor-icons/react";
 import { fetchAccountStatus, accountSessionTitle, type AdeAccountSessionState } from "../../lib/account";
-import { openExternalUrl } from "../../lib/openExternal";
-import { docs } from "../../onboarding/docsLinks";
 import { AnotherDeviceSignInPanel } from "../account/AnotherDeviceSignInPanel";
 import { useSignInFlow } from "../account/useSignInFlow";
+import type { ClerkSignInSetup } from "../../webclient/account/useClerkSignIn";
+import { ClerkSignInPanel } from "./ClerkSignInPanel";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
-import { SmartTooltip } from "../ui/SmartTooltip";
 import { AdeWordmark } from "../ui/AdeWordmark";
 
 // The notice system (popover, issue report) loads only when a sign-in error
@@ -19,25 +18,32 @@ const Banner = lazy(() => import("../ui/notice/Banner").then((module) => ({ defa
  * The launch gate's sign-in: a frosted card floating over the window mesh.
  * Needs `launchGateGlass.css` and an `.ade-gate` ancestor for its tokens. The
  * sign-in state is the Account page's (`useSignInFlow`); only the drawing
- * differs.
+ * differs. With `clerk` (ADE Web, and the page a desktop sign-in opens) the
+ * card runs the whole Clerk sign-in itself and falls back to the one button,
+ * which opens Clerk's hosted page, only when Clerk cannot be reached.
  */
 export function GlassSignInCard({
   configured,
   onSignedIn,
   sessionState = "signed_out",
   subtitle,
+  clerk,
 }: {
   configured: boolean;
   onSignedIn: () => void;
   sessionState?: AdeAccountSessionState;
   /** Replaces the default line under the title (a notice still wins). */
   subtitle?: string;
+  clerk?: ClerkSignInSetup;
 }) {
   const { phase, error, beginLogin, cancel, busy, unreadable, expired, notice, repair, signInLabel, otherDevice } = useSignInFlow({
     onSignedIn,
     sessionState,
   });
   const blocked = busy || !configured;
+  const [clerkUnavailable, setClerkUnavailable] = useState(false);
+  const onClerkUnavailable = useCallback(() => setClerkUnavailable(true), []);
+  const showClerk = Boolean(clerk) && configured && !clerkUnavailable && !unreadable;
   return (
     <div className="ade-glass-card" data-testid="sign-in-glass-card">
       <span className="ade-glass-mark">
@@ -57,7 +63,9 @@ export function GlassSignInCard({
         </div>
       ) : null}
 
-      {unreadable ? (
+      {showClerk && clerk ? (
+        <ClerkSignInPanel setup={clerk} onUnavailable={onClerkUnavailable} />
+      ) : unreadable ? (
         <div style={{ marginTop: 26, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
           {repair.available ? (
             <BrainRepairButton repair={repair} height={44} />
@@ -134,20 +142,6 @@ export function GlassSignInCard({
         />
         </Suspense>
       ) : null}
-
-      <div className="ade-glass-foot">
-        <span>Sign in to use ADE Relay</span>
-        <SmartTooltip content={{ label: "ADE Relay", description: "ADE's hosted relay pairs this machine with your account so phones and other Macs can reach it.", docUrl: docs.adeRelay }}>
-          <button
-            type="button"
-            className="ade-glass-help"
-            aria-label="Learn about ADE Relay"
-            onClick={() => openExternalUrl(docs.adeRelay)}
-          >
-            <Question size={12} weight="bold" />
-          </button>
-        </SmartTooltip>
-      </div>
     </div>
   );
 }

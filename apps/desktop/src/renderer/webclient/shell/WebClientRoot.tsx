@@ -21,6 +21,8 @@ import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
 import { createAccountNamespace } from "../adapter/account";
+import type { ClerkSignInSetup } from "../account/useClerkSignIn";
+import { WEB_CLIENT_SIGN_IN_PATH, WEB_CLIENT_SIGN_IN_RETURN_PATH } from "../../../shared/webClientUrl";
 import { parseOpenTarget, parseWebPath } from "./webRoutes";
 import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
 import {
@@ -140,6 +142,25 @@ const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
  * hosted client has no separate landing route — and no Hub.
  */
 const WELCOME_PATH = "/work";
+/**
+ * ADE's own sign-in card for ADE Web's signed-out page. Undefined when this build
+ * has no Clerk configuration; the card then shows its one button.
+ */
+function webClerkSignInSetup(accountClient: BrowserAccountClient, resumeOAuth: boolean, landingUrl: string): ClerkSignInSetup | undefined {
+  const fapiBase = accountClient.clerkFrontendApiBase();
+  if (!fapiBase) return undefined;
+  return {
+    fapiBase,
+    fresh: accountClient.signedOutByUser(),
+    oauthReturnUrl: `${window.location.origin}${WEB_CLIENT_SIGN_IN_RETURN_PATH}`,
+    resumeOAuth,
+    landingUrl,
+    finish: async (decorate) => {
+      await accountClient.startSignIn({ clerkSessionReady: true, decorateAuthorizeUrl: decorate });
+    },
+  };
+}
+
 /** Retired routes that must not survive a reload. */
 const LEGACY_PATHS = new Set(["/pair", "/hub"]);
 const APP_ROUTE_ROOTS = [
@@ -586,6 +607,53 @@ export function WebClientRoot({
         window.history.replaceState(null, "", "/");
       }
       const path = window.location.pathname;
+      const landingUrl = window.location.href;
+      const signInRoute = path === WEB_CLIENT_SIGN_IN_PATH || path === WEB_CLIENT_SIGN_IN_RETURN_PATH;
+      // A sign-in started on a computer (the desktop app, `ade login`) opens
+      // this page with its authorize URL in `?continue=`. The card signs the
+      // person in to Clerk and goes on there; this browser's own ADE Web
+      // session, signed in or not, plays no part.
+      const handoff = signInRoute ? accountClient.signInHandoff(window.location.search) : null;
+      const handoffFapiBase = handoff ? accountClient.clerkFrontendApiBase() : null;
+      if (handoff && handoffFapiBase) {
+        const { WebSignInScreen } = await import("../../components/onboarding/WebSignInGate");
+        if (disposed) return;
+        const account = createAccountNamespace(accountClient);
+        Object.assign(window.ade, {
+          account: {
+            ...account,
+            // The card's fallback button (Clerk unreachable) must finish the
+            // computer's sign-in on Clerk's own page, not sign this browser in
+            // to ADE Web.
+            startLogin: async () => {
+              window.location.assign(handoff.hostedUrl);
+              return {
+                sessionId: "browser-redirect",
+                authorizeUrl: handoff.hostedUrl,
+                expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+              };
+            },
+          },
+        });
+        const setup: ClerkSignInSetup = {
+          fapiBase: handoffFapiBase,
+          fresh: handoff.fresh,
+          oauthReturnUrl: `${window.location.origin}${WEB_CLIENT_SIGN_IN_RETURN_PATH}?continue=${encodeURIComponent(handoff.continueUrl)}`,
+          resumeOAuth: path === WEB_CLIENT_SIGN_IN_RETURN_PATH,
+          finish: (decorate) => {
+            window.location.assign(decorate(handoff.continueUrl));
+          },
+        };
+        setPhase({
+          kind: "signed-out",
+          SignIn: function ComputerSignIn() {
+            return <WebSignInScreen clerk={setup} subtitle="Sign in to finish setting up ADE on your computer." />;
+          },
+        });
+        return;
+      }
+      const resumeOAuth = path === WEB_CLIENT_SIGN_IN_RETURN_PATH;
+      if (signInRoute) window.history.replaceState(null, "", WELCOME_PATH);
       const linkInUrl = path === "/open" || isAppRoute(path);
       // A link in this URL replaces any stored one. A stored link keeps its
       // own age, so revisiting ADE Web does not keep an abandoned link alive.
@@ -635,9 +703,12 @@ export function WebClientRoot({
         window.history.replaceState(null, "", WELCOME_PATH);
         // A link waits for the sign-in; the card says so.
         const linkWaiting = (pendingTargetRef.current ?? readPendingTarget()) != null || peekCloudLink() != null;
+        const clerk = webClerkSignInSetup(accountClient, resumeOAuth, landingUrl);
         setPhase({
           kind: "signed-out",
-          SignIn: linkWaiting ? function SignInForLink() { return <WebSignInScreen linkWaiting />; } : WebSignInScreen,
+          SignIn: function SignIn() {
+            return <WebSignInScreen linkWaiting={linkWaiting} clerk={clerk} />;
+          },
         });
         return;
       }
