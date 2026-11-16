@@ -27,6 +27,27 @@ async function connect(
   return ws;
 }
 
+/**
+ * Listens on a port below every platform's ephemeral range (Linux 32768+,
+ * macOS and Windows 49152+). The OS never hands such a port to a `listen(0)`
+ * or an outgoing connection, so once freed only an explicit bind can take it.
+ */
+async function listenBelowEphemeralRange(server: http.Server): Promise<number> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const port = 20_000 + Math.floor(Math.random() * 12_000);
+    const bound = await new Promise<boolean>((resolve) => {
+      const onError = () => resolve(false);
+      server.once("error", onError);
+      server.listen(port, "127.0.0.1", () => {
+        server.off("error", onError);
+        resolve(true);
+      });
+    });
+    if (bound) return port;
+  }
+  throw new Error("No free port below the ephemeral range.");
+}
+
 async function reject(
   port: number,
   path: string,
@@ -395,12 +416,10 @@ describe("shared sync listener upgrade policy", () => {
   // After a move, the port comes back to the preferred one once it frees, even
   // with no project host attached to do it.
   it("returns to its preferred port once that port frees", async () => {
+    // Not an ephemeral port: freed, one of those can go to any other socket
+    // on the machine (even this heal's own probe) before the heal rebinds it.
     const blocker = http.createServer();
-    blocker.listen(0, "127.0.0.1");
-    await once(blocker, "listening");
-    const address = blocker.address();
-    if (!address || typeof address === "string") throw new Error("Expected a TCP blocker.");
-    const preferredPort = address.port;
+    const preferredPort = await listenBelowEphemeralRange(blocker);
     const listener = createSharedSyncListener({
       bindHost: "127.0.0.1",
       logger: { info: vi.fn(), debug: vi.fn(), warn: vi.fn() },

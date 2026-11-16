@@ -9144,7 +9144,9 @@ describe("CTO-gated Linear sync commands", () => {
       await host.dispose();
       cleanup();
     }
-  });
+    // A ceiling, not a sleep: ~180 real round trips plus a host start take
+    // ~0.3 s here, but outran the 5 s default on a loaded runner.
+  }, 30_000);
 
 });
 
@@ -12554,7 +12556,9 @@ describe("sync host handoff over a shared listener", () => {
   });
 
   it("parks new connections during handler handoff instead of dispatching them to the fallback handler", async () => {
-    const listener = createSharedSyncListener({ bindHost: "127.0.0.1", parkedPeerGraceMs: 500 });
+    // The grace is also the handoff window, timed from the detach: it must
+    // outlast a slow runner's connect, which this test does not time.
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1", parkedPeerGraceMs: 30_000 });
     const fallbackHandler = vi.fn((connection: { ws: WebSocket }) => {
       connection.ws.close(4010, "Fallback claimed socket");
     });
@@ -12576,7 +12580,11 @@ describe("sync host handoff over a shared listener", () => {
         client!.once("error", reject);
       });
       client.send("hello-during-handoff");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Frames arrive in order, so the pong comes back only after the server
+      // has handled the message before it.
+      const pong = new Promise<void>((resolve) => client!.once("pong", () => resolve()));
+      client.ping();
+      await pong;
 
       expect(primaryHandler).not.toHaveBeenCalled();
       expect(fallbackHandler).not.toHaveBeenCalled();
