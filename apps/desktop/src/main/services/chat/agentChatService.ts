@@ -436,6 +436,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import type { AdeDb } from "../state/kvDb";
 import {
   cleanupAbandonedTempFiles,
+  createStampedFileFactCache,
   createStampedJsonCache,
   writeFileAtomic,
   writeJsonWithPrevious,
@@ -9543,6 +9544,38 @@ function firstNonEmptyString(...values: unknown[]): string | null {
   return null;
 }
 
+/** One row of a runtime's command list (Claude and Codex). */
+type RuntimeSlashCommandRow = { name: string; description: string; argumentHint?: string };
+
+/** Distinct command lists kept for sharing; one per project setup in practice. */
+const INTERNED_SLASH_COMMAND_LISTS_MAX = 32;
+const internedSlashCommandLists = new Map<string, RuntimeSlashCommandRow[]>();
+
+/**
+ * One shared, frozen copy of a command list. Every chat in a project gets the
+ * same list (its commands and skills, with their descriptions), and each chat
+ * used to keep its own copy for as long as its query lived. Readers copy or
+ * filter it and never edit it; a new list is always a new array, which comes
+ * back through here.
+ */
+function internSlashCommandList(commands: RuntimeSlashCommandRow[]): RuntimeSlashCommandRow[] {
+  const key = createHash("sha1").update(JSON.stringify(commands)).digest("base64");
+  const shared = internedSlashCommandLists.get(key);
+  if (shared) {
+    internedSlashCommandLists.delete(key);
+    internedSlashCommandLists.set(key, shared);
+    return shared;
+  }
+  const frozen = Object.freeze(commands.map((command) => Object.freeze({ ...command }))) as RuntimeSlashCommandRow[];
+  internedSlashCommandLists.set(key, frozen);
+  while (internedSlashCommandLists.size > INTERNED_SLASH_COMMAND_LISTS_MAX) {
+    const oldest = internedSlashCommandLists.keys().next().value;
+    if (oldest === undefined) break;
+    internedSlashCommandLists.delete(oldest);
+  }
+  return frozen;
+}
+
 const CLAUDE_EMITTED_TEXT_MESSAGE_CAP = 8;
 
 /** Durable per-(message id, content index) record of assistant text already
@@ -14021,6 +14054,13 @@ export function createAgentChatService(args: {
     maxEntries: 1_000,
     maxBytes: 16 * 1024 * 1024,
   });
+  // The two numbers `getChatLogState` reads from a chat that is not loaded,
+  // kept while its state file is unchanged. The phone and Activity roster asks
+  // for every listed chat on each rebuild (up to once a second while a chat
+  // streams). Through `persistedStateFiles` a walk of more chats than its entry
+  // limit missed on every chat, read and parsed every file, and pushed out the
+  // files the chat list reads again. This costs one stat per chat instead.
+  const chatLogStateFacts = createStampedFileFactCache<AgentChatLogState>({ maxEntries: 10_000 });
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -17803,16 +17843,22 @@ export function createAgentChatService(args: {
     }
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) return null;
-    let persisted: PersistedChatState | null = null;
-    try {
-      persisted = readPersistedState(trimmedId);
-    } catch {
-      persisted = null;
-    }
-    return {
-      historyGeneration: normalizeHistoryGeneration(persisted?.historyGeneration),
-      maxSequence: resolveRehydratedEventSequence(0, persisted?.eventSequence),
-    };
+    // A copy: the cached fact is shared by every later read.
+    return { ...chatLogStateFacts.read(metadataPathFor(trimmedId), () => {
+      let persisted: PersistedChatState | null = null;
+      try {
+        persisted = readPersistedState(trimmedId, undefined, { cacheText: false });
+      } catch {
+        persisted = null;
+      }
+      return {
+        fact: {
+          historyGeneration: normalizeHistoryGeneration(persisted?.historyGeneration),
+          maxSequence: resolveRehydratedEventSequence(0, persisted?.eventSequence),
+        },
+        cacheable: persisted !== null,
+      };
+    }) };
   };
 
   /**
@@ -21916,9 +21962,13 @@ export function createAgentChatService(args: {
   const copilotRewindEventIdsOf = (managed: ManagedChatSession): Record<string, string> | undefined =>
     managed.copilotRewindEventIds ?? readPersistedState(managed.session.id)?.copilotRewindEventIds;
 
-  const readPersistedState = (sessionId: string, scope?: SummaryCallScope): PersistedChatState | null => {
+  const readPersistedState = (
+    sessionId: string,
+    scope?: SummaryCallScope,
+    options?: { cacheText?: boolean },
+  ): PersistedChatState | null => {
     const filePath = metadataPathFor(sessionId);
-    const recovered = persistedStateFiles.read(filePath);
+    const recovered = persistedStateFiles.read(filePath, { remember: options?.cacheText !== false });
     if (recovered.value === null) return null;
     if (recovered.source === "previous") {
       logger.warn("agent_chat.persisted_state_recovered_lkg", { sessionId });
@@ -22800,6 +22850,7 @@ export function createAgentChatService(args: {
           fsync: true,
         });
         persistedStateFiles.forget(metadataPathFor(sessionId));
+        chatLogStateFacts.forget(metadataPathFor(sessionId));
       }
     }
     logger.info("agent_chat.runtime_released_to_machine_brain", { sessionId });
@@ -22844,6 +22895,7 @@ export function createAgentChatService(args: {
         });
         if (!result.released) throw new ChatRuntimeBusyElsewhereError({ owner });
         persistedStateFiles.forget(metadataPathFor(sessionId));
+        chatLogStateFacts.forget(metadataPathFor(sessionId));
       }
       assertChatRuntimeOwnedHere(sessionId, action);
     })();
@@ -47680,9 +47732,9 @@ export function createAgentChatService(args: {
         Math.max(codexSkillCountByCatalog.get(catalogKey) ?? 0, skills.length),
       );
       const commands = agentSkillSlashCommands(skills);
-      runtime.slashCommands = adeSkillCatalogFor(managed.session) === "none"
+      runtime.slashCommands = internSlashCommandList(adeSkillCatalogFor(managed.session) === "none"
         ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
-        : commands;
+        : commands);
     }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
   };
 
@@ -49743,10 +49795,10 @@ export function createAgentChatService(args: {
         ...command,
       });
     }
-    runtime.slashCommands = filterClaudeGuiSlashCommands(
+    runtime.slashCommands = internSlashCommandList(filterClaudeGuiSlashCommands(
       [...existing.values()],
       runtime.terminalSlashCommandNames,
-    ).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    ).sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })));
   };
 
   /**
@@ -76475,6 +76527,7 @@ export function createAgentChatService(args: {
       current.transcriptPath,
     ]);
     persistedStateFiles.forget(persistedMetadataPath);
+    chatLogStateFacts.forget(persistedMetadataPath);
     for (const filePath of transcriptPaths) {
       deletePersistedChatFile(filePath);
     }
@@ -76797,6 +76850,16 @@ export function createAgentChatService(args: {
   const releaseQuietChatHistory = (): void => {
     releaseIdleChatHistory(Date.now(), 0);
     transcriptSubagentSnapshotCacheBySession.clear();
+  };
+
+  /**
+   * The brain calls this once no window and no other machine is connected
+   * (stage 2 in `brainIdleMemory.ts`): the cached text of chat state files and
+   * the roster's log-state facts go. Each refills from its file on the next read.
+   */
+  const releaseIdleStateCaches = (): void => {
+    persistedStateFiles.clear();
+    chatLogStateFacts.clear();
   };
 
   // --- Session inactivity cleanup ---
@@ -83304,6 +83367,7 @@ export function createAgentChatService(args: {
     getLaunchDefaults,
     applyFastModePolicy,
     releaseQuietChatHistory,
+    releaseIdleStateCaches,
     getPermissionCeiling: resolvePermissionCeiling,
     // A caller's request, never `automatic`: only this service starts those.
     regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => {

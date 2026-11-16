@@ -6,6 +6,7 @@ import { injectFsFault } from "../../../test/faultInjection";
 import {
   cleanupAbandonedTempFiles,
   createFileVersionTracker,
+  createStampedFileFactCache,
   createStampedJsonCache,
   readJsonWithRecovery,
   writeFileAtomic,
@@ -275,6 +276,37 @@ describe("durableFile", () => {
           value: { version: 1, sessionId: "s", value: 2 },
           source: "primary",
         });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("createStampedFileFactCache", () => {
+    it("reuses a settled file's fact until the file changes, and never keeps an unsettled or recovered answer", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const facts = createStampedFileFactCache<number>({ maxEntries: 10 });
+        let computed = 0;
+        const readValue = (cacheable = true) => facts.read(filePath, () => {
+          computed += 1;
+          return { fact: (JSON.parse(fs.readFileSync(filePath, "utf8")) as { value: number }).value, cacheable };
+        });
+
+        fs.writeFileSync(filePath, JSON.stringify({ value: 1 }));
+        expect(readValue(), "just written").toBe(1);
+        expect(readValue(), "still unsettled, so read again").toBe(1);
+        expect(computed).toBe(2);
+
+        vi.setSystemTime(Date.now() + 10_000);
+        expect(readValue(false), "settled, but a recovered answer").toBe(1);
+        expect(readValue(), "settled and from the file").toBe(1);
+        expect(readValue(), "unchanged file").toBe(1);
+        expect(computed).toBe(4);
+
+        fs.writeFileSync(filePath, JSON.stringify({ value: 22 }));
+        expect(readValue(), "rewritten file").toBe(22);
+        expect(computed).toBe(5);
       } finally {
         vi.useRealTimers();
       }

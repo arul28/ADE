@@ -22,7 +22,8 @@ import { summarizeRuntimeActivity } from "./runtimeWorkSummary";
  *    machine leave, with no chat running and no device on a project's sync
  *    host: each project database's statement cache, page cache and export
  *    thread (`AdeDb.releaseMemory`), each project's desktop helper
- *    (`ade-desktop-driver`) when no lane screen or recording uses it, then a
+ *    (`ade-desktop-driver`) when no lane screen or recording uses it, the
+ *    cached chat state files (`releaseIdleStateCaches`), then a
  *    full garbage collection that
  *    returns the freed heap pages to the system. V8 does not shrink an idle
  *    heap by itself: in a probe, an idle Node process kept every freed page
@@ -170,6 +171,11 @@ function releaseIdleMemory(runtimes: AdeRuntime[]): void {
   for (const runtime of runtimes) {
     try {
       runtime.db.releaseMemory?.();
+    } catch {
+      // Memory only.
+    }
+    try {
+      runtime.agentChatService?.releaseIdleStateCaches?.();
     } catch {
       // Memory only.
     }
