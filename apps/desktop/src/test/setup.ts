@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeEach, vi } from "vitest";
+import { windowsScaledTimeout } from "../../vitest.timeouts";
 
 type TestTempTrackerState = {
   installed: boolean;
@@ -230,6 +231,28 @@ if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "fu
 function restartWaitingFrames(): void {
   if (waitingFrames.size === 0 || vi.isFakeTimers() || !restartFrame) return;
   for (const handle of [...waitingFrames.keys()]) restartFrame(handle);
+}
+
+// vi.waitFor and vi.waitUntil give up after 1 s unless told otherwise, and
+// nearly every call here leaves that default. A chat turn that finishes in
+// ~330 ms on a quiet laptop takes ~1 s on a loaded CI shard, so those waits
+// failed at random (agentChatServiceAcpRuntime's leading-slash turns, Nov
+// 2026). A wait returns as soon as its check passes, so a longer ceiling
+// costs a passing test nothing; it only stops a slow machine reading as a
+// failure. An explicit timeout still wins.
+const DEFAULT_WAIT_TIMEOUT_MS = windowsScaledTimeout(5_000);
+type WaitOptions = number | { timeout?: number; interval?: number } | undefined;
+function withDefaultWaitTimeout(options: WaitOptions): { timeout?: number; interval?: number } {
+  if (typeof options === "number") return { timeout: options };
+  return { timeout: DEFAULT_WAIT_TIMEOUT_MS, ...options };
+}
+{
+  const originalWaitFor = vi.waitFor.bind(vi);
+  const originalWaitUntil = vi.waitUntil.bind(vi);
+  vi.waitFor = ((callback: Parameters<typeof vi.waitFor>[0], options?: WaitOptions) =>
+    originalWaitFor(callback, withDefaultWaitTimeout(options))) as typeof vi.waitFor;
+  vi.waitUntil = ((callback: Parameters<typeof vi.waitUntil>[0], options?: WaitOptions) =>
+    originalWaitUntil(callback, withDefaultWaitTimeout(options))) as typeof vi.waitUntil;
 }
 
 beforeEach(() => {
