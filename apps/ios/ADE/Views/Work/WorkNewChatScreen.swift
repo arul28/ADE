@@ -1086,6 +1086,12 @@ struct WorkNewChatScreen: View {
         return false
       }
     }
+    .onChange(of: launchAccountProvider) { _, _ in
+      // An id belongs to one provider. The read failure path may keep a valid
+      // same-provider pick, but a provider switch must never forward the old id
+      // (the host would treat it as an explicit choice and skip Smart balance).
+      selectedLaunchAccountId = nil
+    }
     .task { await applyHostLaunchDefaults() }
     .task(id: launchAccountsTaskKey) { await loadLaunchAccounts() }
     .sheet(isPresented: $linearIssuePickerPresented) {
