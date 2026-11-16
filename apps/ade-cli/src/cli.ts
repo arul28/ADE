@@ -8442,8 +8442,8 @@ function readChatLaunchConfig(args: string[]): JsonObject {
  * (An agent cannot carry the provider itself: that would write to the
  * person's list.)
  *
- * One reader so the parsing and the usage errors cannot drift between
- * `ade new`, `ade shell start-cli`, `ade chat create` and `ade chat launch`.
+ * One reader for every launch command, so the parsing and the usage errors
+ * cannot drift between them.
  * Call it AFTER `takeArgsAfterTerminator`, so a selector written after `--`
  * stays part of the prompt rather than being consumed as a flag. The
  * `--instance`/provider rule is not checked here: `collectLaunchArgs` owns it,
@@ -8471,6 +8471,9 @@ function readLaunchIdentitySelectors(
     return { instanceId, presetId: routePresetIdFromFlags(args, via, consumed), credentialId, provider: harness };
   }
   if (customRef === null) return { instanceId, presetId: null, credentialId, provider: providerFlag };
+  if (providerFlag && !(CHAT_PROVIDER_IDS as readonly string[]).includes(providerFlag)) {
+    throw new CliUsageError(`--provider must be one of: ${CHAT_PROVIDER_IDS.join(", ")}. With --custom-provider it may be left out.`);
+  }
   const found = findCustomProvider(readHarnessPresetsFromMachine(resolveMachineAdeDir()), customRef);
   if (!found.ok) throw new CliUsageError(found.message);
   const harnessProblem = customProviderHarnessProblem(found.preset, providerFlag);

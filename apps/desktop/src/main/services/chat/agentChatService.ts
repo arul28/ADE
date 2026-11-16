@@ -12139,6 +12139,9 @@ type TrackedCliTurnSignals = {
   onTrackedCliTurnStarted?: (listener: (event: TrackedCliTurnStartedEvent) => void) => () => void;
 };
 
+/** How often a launch whose OpenCode model is unknown may force a fresh inventory read. */
+const OPENCODE_LAUNCH_REFRESH_FLOOR_MS = 30_000;
+
 export function createAgentChatService(args: {
   projectRoot: string;
   /**
@@ -75184,12 +75187,18 @@ export function createAgentChatService(args: {
 
   /**
    * Read OpenCode's inventory so a model the registry misses is known to a
-   * launch. Forced: a cached inventory can predate a model OpenCode now offers,
-   * and this runs only after a miss. A failed read leaves the list as it was.
+   * launch. Forced, because a cached inventory can predate a model OpenCode now
+   * offers, but at most once per OPENCODE_LAUNCH_REFRESH_FLOOR_MS: a typo or an
+   * agent retrying it reads the cache instead of restarting the probe. A
+   * failed read leaves the list as it was.
    */
+  let lastForcedOpenCodeLaunchProbeAt = 0;
   const refreshOpenCodeModelsForLaunch = async (): Promise<void> => {
+    const now = Date.now();
+    const force = now - lastForcedOpenCodeLaunchProbeAt >= OPENCODE_LAUNCH_REFRESH_FLOOR_MS;
+    if (force) lastForcedOpenCodeLaunchProbeAt = now;
     try {
-      await probeOpenCodeInventory(true);
+      await probeOpenCodeInventory(force);
     } catch (error) {
       logger.warn("agent_chat.opencode_inventory_refresh_failed", { error: getErrorMessage(error) });
     }

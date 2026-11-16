@@ -71,17 +71,21 @@ function providerName(preset: CustomProviderTarget): string {
 /**
  * True when `given` names the model a Custom provider runs: its saved id, the
  * id its harness launches (`opencode/<provider>/<model>`), a shorter tail of
- * that launch id, or the same registry model by alias. A different prefix
- * (`other/<model>`) is a different model.
+ * that launch id, or a short alias of the same registry model. A different
+ * prefix (`other/<model>`) is a different model.
  */
-function namesProviderModel(given: string, expected: string, launchId: string): boolean {
+function namesProviderModel(given: string, expected: string, launchIds: readonly string[], viaOpenCode: boolean): boolean {
   const wanted = given.trim().toLowerCase();
   if (!wanted) return false;
-  const ids = [expected, launchId].map((id) => id.trim().toLowerCase()).filter(Boolean);
+  const ids = [expected, ...launchIds].map((id) => id.trim().toLowerCase()).filter(Boolean);
   if (ids.some((id) => id === wanted || id.endsWith(`/${wanted}`))) return true;
-  const canonical = (id: string) => (getModelById(id) ?? resolveModelAlias(id))?.id;
-  const resolved = canonical(given.trim());
-  return Boolean(resolved && (resolved === canonical(expected) || resolved === canonical(launchId)));
+  // The same registry model by alias: `opus` saved, its full id passed, or the
+  // other way round. Through OpenCode a prefixed id names one provider, and the
+  // launch id above already spells it, so a bare alias there could stand for
+  // another provider's row: no alias match.
+  if (viaOpenCode && wanted.includes("/")) return false;
+  const resolved = (getModelById(wanted) ?? resolveModelAlias(wanted))?.id;
+  return Boolean(resolved && ids.some((id) => getModelById(id)?.id === resolved || resolveModelAlias(id)?.id === resolved));
 }
 
 /**
@@ -101,7 +105,10 @@ export function customProviderModelProblem(
   const given = model?.trim() ?? "";
   if (!given) return `${name} runs ${expected}. ${pass(expected)} with it.`;
   const launchId = launchModelIdFor(preset.harness, preset.source, expected);
-  if (namesProviderModel(given, expected, launchId)) return null;
+  // Through OpenCode, the source's own id (`opencode/<provider>/<model>`, as
+  // `ade chat models` lists it) names the same model in any harness.
+  const sourceId = preset.source.kind === "opencode" ? `opencode/${preset.source.providerId}/${expected}` : "";
+  if (namesProviderModel(given, expected, [launchId, sourceId], preset.source.kind === "opencode")) return null;
   // A route id names its setup in itself: there is nothing else to pick from.
   if (isRoutePresetId(preset.id)) return `${name} runs ${expected}, not ${given}. ${pass(expected)}.`;
   return `${name} runs ${expected}, not ${given}. ${pass(expected)}, or pick another Custom provider (${LIST_COMMAND} lists them).`;
