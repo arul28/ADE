@@ -10,6 +10,7 @@ import {
   type ClerkSignUp,
 } from "./clerkFrontendApi";
 import { runClerkCaptcha, signUpNeedsCaptcha } from "./clerkCaptcha";
+import { captureError } from "../../../shared/sentry/capture";
 
 /**
  * What ADE's own sign-in card needs to run a Clerk sign-in on its page.
@@ -47,7 +48,8 @@ export type ClerkSignInStep =
   | { kind: "unavailable" }
   | { kind: "choose"; session: ClerkSessionSummary }
   | { kind: "form" }
-  | { kind: "code"; email: string; flow: "sign_in" | "sign_up"; attemptId: string }
+  /** `sends` counts the codes sent for this attempt, so each resend restarts the cooldown. */
+  | { kind: "code"; email: string; flow: "sign_in" | "sign_up"; attemptId: string; sends: number }
   | { kind: "finishing"; message: string };
 
 export type ClerkSignInBusy = null | "email" | "code" | "resend" | "switch" | `oauth_${string}`;
@@ -60,6 +62,16 @@ function errorText(error: unknown, fallback: string): string {
     return error.message;
   }
   return fallback;
+}
+
+/** The card falls back to Clerk's hosted page; report why, so a Clerk API change or outage shows up. */
+function reportUnavailable(reason: string, cause?: unknown): void {
+  captureError(cause ?? new Error(`Clerk sign-in card unavailable: ${reason}`), {
+    fingerprint: ["web", "clerk_sign_in_unavailable", reason],
+    tags: { area: "web_sign_in" },
+    level: "warning",
+    handled: true,
+  });
 }
 
 function emailCodeFactor(signIn: ClerkSignIn): string | null {
@@ -79,6 +91,15 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
   const setupRef = useRef(setup);
   setupRef.current = setup;
   const finishedRef = useRef(false);
+
+  /**
+   * A step this card does not show (a second factor): the card's one button
+   * takes over and opens Clerk's hosted page, which can ask for it.
+   */
+  const handToHostedPage = useCallback(() => {
+    setError(null);
+    setStep({ kind: "unavailable" });
+  }, []);
 
   const finish = useCallback(async (sessionId: string | null) => {
     if (finishedRef.current) return;
@@ -102,6 +123,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
   const resumeOAuth = useCallback(async (env: ClerkEnvironment, client: ClerkClientState) => {
     const { signIn, signUp } = client;
     if (signIn?.status === "complete" && signIn.createdSessionId) return finish(signIn.createdSessionId);
+    if (signIn?.status === "needs_second_factor") return handToHostedPage();
     if (signUp?.status === "complete" && signUp.createdSessionId) return finish(signUp.createdSessionId);
     const alreadySignedIn = [signIn?.firstFactorVerification, signUp?.externalAccountVerification]
       .find((verification) => verification?.errorCode === "identifier_already_signed_in" && verification.errorSessionId);
@@ -134,7 +156,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
     const session = activeClerkSession(client);
     if (!failure && session) return finish(session.id);
     throw new ClerkApiError({ code: "oauth_incomplete", message: failure ?? "Sign-in didn't complete. Try again.", status: 200 });
-  }, [api, finish]);
+  }, [api, finish, handToHostedPage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,6 +171,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
         const [env, initialClient] = await Promise.all([api.environment(), api.client()]);
         if (cancelled) return;
         if (!env.emailCodeEnabled && env.socialStrategies.length === 0) {
+          reportUnavailable("no_sign_in_methods");
           setStep({ kind: "unavailable" });
           return;
         }
@@ -172,14 +195,30 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
         }
         const session = activeClerkSession(client);
         setStep(session ? { kind: "choose", session } : { kind: "form" });
-      } catch {
-        if (!cancelled) setStep({ kind: "unavailable" });
+      } catch (cause) {
+        if (cancelled) return;
+        reportUnavailable("load_failed", cause);
+        setStep({ kind: "unavailable" });
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [api, resumeOAuth]);
+
+  // Back from Google / GitHub / Apple, or from the authorize step, the browser
+  // can restore this page from its back/forward cache exactly as it left: a
+  // button still busy and every control disabled. Hand the controls back.
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      finishedRef.current = false;
+      setBusy(null);
+      setStep((current) => (current.kind === "finishing" ? { kind: "form" } : current));
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
 
   const run = useCallback(async (label: ClerkSignInBusy, work: () => Promise<void>, fallback: string) => {
     setBusy(label);
@@ -238,7 +277,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
     }
     if (!signIn) {
       const signUp = await startSignUp(email);
-      setStep({ kind: "code", email, flow: "sign_up", attemptId: signUp.id });
+      setStep({ kind: "code", email, flow: "sign_up", attemptId: signUp.id, sends: 1 });
       return;
     }
     const emailAddressId = emailCodeFactor(signIn);
@@ -250,7 +289,7 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
       });
     }
     const prepared = await api.prepareSignInEmailCode(signIn.id, emailAddressId);
-    setStep({ kind: "code", email, flow: "sign_in", attemptId: prepared.id });
+    setStep({ kind: "code", email, flow: "sign_in", attemptId: prepared.id, sends: 1 });
   }, "Couldn't send a code to that address. Check it and try again."), [api, run, startSignUp, withFreshClient]);
 
   const submitCode = useCallback((rawCode: string) => run("code", async () => {
@@ -260,23 +299,25 @@ export function useClerkSignIn(setup: ClerkSignInSetup) {
     if (step.flow === "sign_in") {
       const result = await api.attemptSignInEmailCode(step.attemptId, code);
       if (result.status === "complete" && result.createdSessionId) return finish(result.createdSessionId);
+      if (result.status === "needs_second_factor") return handToHostedPage();
       throw new ClerkApiError({ code: "sign_in_incomplete", message: "Your account needs another step. Try Google, GitHub or Apple.", status: 0 });
     }
     const result = await api.attemptSignUpEmailCode(step.attemptId, code);
     if (result.status === "complete" && result.createdSessionId) return finish(result.createdSessionId);
     throw new ClerkApiError({ code: "sign_up_incomplete", message: "Your account needs another step. Try Google, GitHub or Apple.", status: 0 });
-  }, "That code didn't work. Check it and try again."), [api, finish, run, step]);
+  }, "That code didn't work. Check it and try again."), [api, finish, handToHostedPage, run, step]);
 
   const resendCode = useCallback(() => run("resend", async () => {
     if (step.kind !== "code") return;
     if (step.flow === "sign_up") {
       await api.prepareSignUpEmailCode(step.attemptId);
-      return;
+    } else {
+      const client = await api.client();
+      const emailAddressId = client.signIn ? emailCodeFactor(client.signIn) : null;
+      if (!client.signIn || !emailAddressId) throw new ClerkApiError({ code: "sign_in_gone", message: "Start again with your email.", status: 0 });
+      await api.prepareSignInEmailCode(client.signIn.id, emailAddressId);
     }
-    const client = await api.client();
-    const emailAddressId = client.signIn ? emailCodeFactor(client.signIn) : null;
-    if (!client.signIn || !emailAddressId) throw new ClerkApiError({ code: "sign_in_gone", message: "Start again with your email.", status: 0 });
-    await api.prepareSignInEmailCode(client.signIn.id, emailAddressId);
+    setStep((current) => (current.kind === "code" ? { ...current, sends: current.sends + 1 } : current));
   }, "Couldn't send a new code. Try again in a moment."), [api, run, step]);
 
   const continueAsCurrent = useCallback(() => {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { AppleLogo, ArrowRight, CircleNotch, GithubLogo } from "@phosphor-icons/react";
 import { CLERK_CAPTCHA_ELEMENT_ID } from "../../webclient/account/clerkCaptcha";
 import { useClerkSignIn, type ClerkSignInSetup } from "../../webclient/account/useClerkSignIn";
@@ -10,6 +10,9 @@ const PROVIDER_LABEL: Record<string, string> = {
   oauth_apple: "Apple",
 };
 const RESEND_COOLDOWN_SEC = 30;
+
+// Loads only when an error shows, like the rest of the card's notices.
+const Banner = lazy(() => import("../ui/notice/Banner").then((module) => ({ default: module.Banner })));
 
 /** Google asks for its four-colour mark on a sign-in button. */
 function GoogleMark() {
@@ -30,10 +33,12 @@ function ProviderIcon({ strategy }: { strategy: string }) {
   return null;
 }
 
-function useCountdown(seconds: number, key: unknown): number {
+/** Counts down from `seconds` each time `key` changes; no timer runs while `key` is null. */
+function useCountdown(seconds: number, key: string | null): number {
   const [left, setLeft] = useState(seconds);
   useEffect(() => {
     setLeft(seconds);
+    if (key === null) return;
     const timer = window.setInterval(() => {
       setLeft((value) => {
         if (value <= 1) window.clearInterval(timer);
@@ -64,7 +69,7 @@ export function ClerkSignInPanel({
   const [code, setCode] = useState("");
   const codeInputRef = useRef<HTMLInputElement | null>(null);
   const codeKey = step.kind === "code" ? step.attemptId : null;
-  const resendLeft = useCountdown(RESEND_COOLDOWN_SEC, codeKey);
+  const resendLeft = useCountdown(RESEND_COOLDOWN_SEC, step.kind === "code" ? `${step.attemptId}:${step.sends}` : null);
 
   useEffect(() => {
     if (step.kind === "unavailable") onUnavailable();
@@ -231,9 +236,13 @@ export function ClerkSignInPanel({
     <div className="ade-clerk" data-step={step.kind}>
       {body}
       {error ? (
-        <p className="ade-clerk-error" role="alert">
-          {error}
-        </p>
+        <Suspense fallback={null}>
+          <Banner
+            layout="inline"
+            style={{ marginTop: 12 }}
+            model={{ id: "clerk-sign-in-error", tone: "error", title: error }}
+          />
+        </Suspense>
       ) : null}
       {/* Clerk's sign-up bot check renders here, and only shows when Cloudflare wants a click. */}
       <div id={CLERK_CAPTCHA_ELEMENT_ID} className="ade-clerk-captcha" />

@@ -581,17 +581,6 @@ html[data-motion="reduced"] .ade-gate *::after {
   white-space: nowrap;
 }
 
-.ade-clerk-error {
-  margin: 12px 0 0;
-  padding: 9px 12px;
-  border-radius: 11px;
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--color-fg);
-  background: color-mix(in srgb, var(--color-error) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-error) 32%, transparent);
-}
-
 /* Empty until Cloudflare asks for a click, so it takes no room. */
 .ade-clerk-captcha {
   display: flex;

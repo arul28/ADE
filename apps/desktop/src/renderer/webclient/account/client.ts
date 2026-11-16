@@ -570,7 +570,7 @@ export class BrowserAccountClient {
    * `fresh`, because the card asks for the sign-in itself; left on, Clerk would
    * ask again on its own page.
    */
-  signInHandoff(search: string): { continueUrl: string; fresh: boolean } | null {
+  signInHandoff(search: string): { continueUrl: string; hostedUrl: string; fresh: boolean } | null {
     const config = this.config;
     if (!config) return null;
     const raw = new URLSearchParams(search).get("continue");
@@ -594,14 +594,11 @@ export class BrowserAccountClient {
     }
     const loopback = redirect.protocol === "http:" && (redirect.hostname === "127.0.0.1" || redirect.hostname === "localhost");
     if (!loopback) return null;
+    // `hostedUrl` keeps `prompt`: it is the card's fallback, Clerk's own page.
+    const hostedUrl = target.toString();
     const fresh = target.searchParams.get("prompt") === "login";
     target.searchParams.delete("prompt");
-    return { continueUrl: target.toString(), fresh };
-  }
-
-  /** The person pressed "Sign out" here and has not signed in since. */
-  signedOutByUser(): boolean {
-    return this.readSignedOutByUser();
+    return { continueUrl: target.toString(), hostedUrl, fresh };
   }
 
   /**
@@ -637,7 +634,7 @@ export class BrowserAccountClient {
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
     authorizeUrl.searchParams.set("state", state);
     authorizeUrl.searchParams.set("scope", "openid profile email offline_access");
-    if (!options.clerkSessionReady && this.readSignedOutByUser()) authorizeUrl.searchParams.set("prompt", "login");
+    if (!options.clerkSessionReady && this.signedOutByUser()) authorizeUrl.searchParams.set("prompt", "login");
     const url = options.decorateAuthorizeUrl?.(authorizeUrl.toString()) ?? authorizeUrl.toString();
     this.location.assign(url);
     return url;
@@ -1393,7 +1390,8 @@ export class BrowserAccountClient {
     this.storage.removeItem(pendingOAuthKeyFor(state));
   }
 
-  private readSignedOutByUser(): boolean {
+  /** The person pressed "Sign out" here and has not signed in since. */
+  signedOutByUser(): boolean {
     try {
       return this.storage.getItem(SIGNED_OUT_BY_USER_KEY) != null;
     } catch {

@@ -119,10 +119,11 @@ function parseVerification(value: unknown): ClerkVerification {
 }
 
 function parseSignIn(value: unknown): ClerkSignIn | null {
-  if (!isRecord(value) || !str(value.id)) return null;
+  const id = isRecord(value) ? str(value.id) : null;
+  if (!isRecord(value) || !id) return null;
   const factors = Array.isArray(value.supported_first_factors) ? value.supported_first_factors : [];
   return {
-    id: value.id as string,
+    id,
     status: str(value.status),
     supportedFirstFactors: factors.filter(isRecord).map((factor) => ({
       strategy: str(factor.strategy) ?? "",
@@ -135,10 +136,11 @@ function parseSignIn(value: unknown): ClerkSignIn | null {
 }
 
 function parseSignUp(value: unknown): ClerkSignUp | null {
-  if (!isRecord(value) || !str(value.id)) return null;
+  const id = isRecord(value) ? str(value.id) : null;
+  if (!isRecord(value) || !id) return null;
   const verifications = isRecord(value.verifications) ? value.verifications : {};
   return {
-    id: value.id as string,
+    id,
     status: str(value.status),
     missingFields: Array.isArray(value.missing_fields)
       ? value.missing_fields.filter((field): field is string => typeof field === "string")
@@ -149,14 +151,15 @@ function parseSignUp(value: unknown): ClerkSignUp | null {
 }
 
 function parseSession(value: unknown): ClerkSessionSummary | null {
-  if (!isRecord(value) || !str(value.id)) return null;
+  const id = isRecord(value) ? str(value.id) : null;
+  if (!isRecord(value) || !id) return null;
   const user = isRecord(value.user) ? value.user : {};
   const primaryId = str(user.primary_email_address_id);
   const emails = Array.isArray(user.email_addresses) ? user.email_addresses.filter(isRecord) : [];
   const primary = emails.find((email) => email.id === primaryId) ?? emails[0];
   const name = [str(user.first_name), str(user.last_name)].filter(Boolean).join(" ");
   return {
-    id: value.id as string,
+    id,
     status: str(value.status),
     email: str(primary?.email_address),
     name: name || null,

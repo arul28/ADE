@@ -618,7 +618,23 @@ export function WebClientRoot({
       if (handoff && handoffFapiBase) {
         const { WebSignInScreen } = await import("../../components/onboarding/WebSignInGate");
         if (disposed) return;
-        Object.assign(window.ade, { account: createAccountNamespace(accountClient) });
+        const account = createAccountNamespace(accountClient);
+        Object.assign(window.ade, {
+          account: {
+            ...account,
+            // The card's fallback button (Clerk unreachable) must finish the
+            // computer's sign-in on Clerk's own page, not sign this browser in
+            // to ADE Web.
+            startLogin: async () => {
+              window.location.assign(handoff.hostedUrl);
+              return {
+                sessionId: "browser-redirect",
+                authorizeUrl: handoff.hostedUrl,
+                expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+              };
+            },
+          },
+        });
         const setup: ClerkSignInSetup = {
           fapiBase: handoffFapiBase,
           fresh: handoff.fresh,

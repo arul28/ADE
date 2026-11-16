@@ -23,7 +23,6 @@ type TurnstileWidgetOptions = {
   "refresh-expired"?: "auto" | "manual" | "never";
   callback?: (token: string) => void;
   "error-callback"?: (code: string | number) => void;
-  "before-interactive-callback"?: () => void;
   "unsupported-callback"?: () => boolean | void;
 };
 
@@ -83,7 +82,7 @@ export function signUpNeedsCaptcha(env: ClerkEnvironment, args: { captchaBypass:
  * Runs the challenge and returns the fields Clerk's sign-up expects. A failed
  * challenge still returns `captcha_error`: Clerk decides what that means.
  */
-export async function runClerkCaptcha(env: ClerkEnvironment, options: { onInteractive?: () => void } = {}): Promise<ClerkCaptchaParams> {
+export async function runClerkCaptcha(env: ClerkEnvironment): Promise<ClerkCaptchaParams> {
   const slot = document.getElementById(CLERK_CAPTCHA_ELEMENT_ID);
   const smart = env.captchaWidgetType === "smart" && slot && env.captchaSiteKey;
   const siteKey = smart ? env.captchaSiteKey : env.captchaInvisibleSiteKey ?? env.captchaSiteKey;
@@ -120,7 +119,6 @@ export async function runClerkCaptcha(env: ClerkEnvironment, options: { onIntera
           retry: "never",
           "refresh-expired": "auto",
           callback: resolve,
-          "before-interactive-callback": () => options.onInteractive?.(),
           "error-callback": (code) => {
             const text = String(code);
             errors.push(text);
